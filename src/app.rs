@@ -103,10 +103,9 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     ));
     thumbnail_loader.spawn_workers(4);
 
-    // 启动后台扫描（M1 占位：扫描 ~/Pictures）
-    // 从 $HOME 直接拼，不依赖 XDG 路径解析
-    let home = std::env::var_os("HOME").expect("HOME not set");
-    let pictures = std::path::PathBuf::from(home).join("Pictures");
+    // 启动后台扫描（M1 占位：扫描用户 Pictures 目录）
+    // 优先使用 XDG user-dirs.dirs，否则按 locale 回退（zh_CN -> ~/图片，否则 ~/Pictures）。
+    let pictures = crate::config::pictures_dir();
     let paths = vec![pictures.clone()];
     let scan_handle = spawn_scan(pool.clone(), paths);
 
