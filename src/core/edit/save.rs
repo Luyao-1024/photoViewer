@@ -55,7 +55,7 @@ pub fn save_as_copy(
         blake3_hash: blake3::hash(&file_bytes).to_hex().to_string(),
     };
     let id = db::insert_media_item(pool, &new_item)?;
-    Ok(db::get_media_item(pool, id)?)
+    db::get_media_item(pool, id)
 }
 
 /// 覆盖原图：备份到 `.{ext}.bak` → 渲染 → 写回原文件 → 更新 DB 元数据。

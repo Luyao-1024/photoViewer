@@ -66,6 +66,7 @@ fn permanent_delete() {
 /// 本测试在 trash 中手动构造两条冲突条目：
 /// * `dup.jpg` + `dup.jpg.trashinfo` → 指向 file_a（原 A 路径）
 /// * `dup.2.jpg` + `dup.2.jpg.trashinfo` → 指向 file_b（原 B 路径）
+///
 /// 然后只走 `restore_from_trash(A)`，断言 B 的条目原封不动。
 #[test]
 fn basename_collision_restore_one_keeps_other() {

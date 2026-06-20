@@ -11,9 +11,11 @@ fn default_state_is_zero() {
 
 #[test]
 fn state_can_be_modified() {
-    let mut s = EditState::default();
-    s.brightness = 50;
-    s.crop = Some((10, 20, 100, 200));
+    let s = EditState {
+        brightness: 50,
+        crop: Some((10, 20, 100, 200)),
+        ..Default::default()
+    };
     assert_eq!(s.brightness, 50);
     assert_eq!(s.crop, Some((10, 20, 100, 200)));
 }

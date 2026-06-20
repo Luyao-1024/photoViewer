@@ -1,4 +1,4 @@
-use photo_viewer::core::edit::{EditRegistry, EditOperation, ParamValue, Rotation};
+use photo_viewer::core::edit::{EditRegistry, ParamValue, Rotation};
 use image::{DynamicImage, RgbImage};
 
 fn sample_img() -> DynamicImage {

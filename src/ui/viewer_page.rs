@@ -28,6 +28,10 @@ use std::sync::Arc;
 pub type NavDelta = i32;
 pub const NAV_POP: NavDelta = i32::MIN;
 
+/// Callback the host registers for keyboard navigation. Shared via `Rc` so
+/// closures capturing owned state can be cloned into GTK signal handlers.
+pub type NavCallback = Rc<dyn Fn(NavDelta)>;
+
 mod imp {
     use super::*;
 
@@ -43,7 +47,7 @@ mod imp {
         pub zoom_scale: Cell<f64>,
         /// Callback registered by the host (PhotosPage) for keyboard navigation
         /// — needs the `loader` to fetch the next item.
-        pub nav_cb: RefCell<Option<Rc<dyn Fn(NavDelta)>>>,
+        pub nav_cb: RefCell<Option<NavCallback>>,
         /// Cached CssProvider reused across gesture ticks. Without this
         /// we would allocate a new provider on every pinch-tick and
         /// never release the previous one.
@@ -310,7 +314,7 @@ impl ViewerPage {
                 // The picture re-paints on the next frame.
                 let picture = this.imp().picture.get();
                 if let Some(provider) = this.imp().zoom_provider.borrow().as_ref() {
-                    let _ = provider.load_from_data(&format!(
+                    provider.load_from_data(&format!(
                         "picture {{ transform: scale({}); }}",
                         next
                     ));

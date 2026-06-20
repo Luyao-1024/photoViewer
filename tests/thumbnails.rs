@@ -86,7 +86,7 @@ fn cache_hit_avoids_regenerate() {
         ThumbnailSize::Medium,
         tx1,
     );
-    let _ = runtime.block_on(async { rx1.await });
+    let _ = runtime.block_on(rx1);
 
     // 记录缓存 mtime
     let cache_file = walkdir::WalkDir::new(dir.path().join("cache/thumbnails/medium"))
@@ -104,7 +104,7 @@ fn cache_hit_avoids_regenerate() {
         ThumbnailSize::Medium,
         tx2,
     );
-    let _ = runtime.block_on(async { rx2.await });
+    let _ = runtime.block_on(rx2);
 
     let mtime2 = std::fs::metadata(cache_file.path()).unwrap().modified().unwrap();
     assert_eq!(mtime1, mtime2, "命中缓存时不应重新生成");

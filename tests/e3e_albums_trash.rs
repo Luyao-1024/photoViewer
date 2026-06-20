@@ -125,6 +125,6 @@ fn list_all_in(pool: &db::DbPool) -> Vec<MediaItem> {
     db::list_all_media(pool)
         .unwrap()
         .into_iter()
-        .chain(db::list_trashed_media(pool).unwrap().into_iter())
+        .chain(db::list_trashed_media(pool).unwrap())
         .collect()
 }
