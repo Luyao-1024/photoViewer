@@ -107,11 +107,16 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     // 从 $HOME 直接拼，不依赖 XDG 路径解析
     let home = std::env::var_os("HOME").expect("HOME not set");
     let pictures = std::path::PathBuf::from(home).join("Pictures");
-    let paths = vec![pictures];
+    let paths = vec![pictures.clone()];
     let scan_handle = spawn_scan(pool.clone(), paths);
 
     // 同步等待扫描完成（M1 简单版；M5 可改为后台通知）
     let _ = scan_handle.await;
+
+    // 启动文件监听（M5-T5）：监听 ~/Pictures 的后续变更并增量 upsert。
+    // JoinHandle 故意丢弃——监听循环在进程生命周期内持续运行；
+    // `RecommendedWatcher` 在循环退出时由 `drop` 自动释放底层 inotify 资源。
+    let _watcher = crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures]);
 
     // 加载所有数据 — 用 BoxedAnyObject 包装，让 MediaItem 可放入 gio::ListStore
     let items = db::list_all_media(&pool)?;

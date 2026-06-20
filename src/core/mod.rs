@@ -6,6 +6,7 @@ pub mod edit;
 pub mod error;
 pub mod media;
 pub mod metadata;
+pub mod notify_watcher;
 pub mod section_model;
 pub mod thumbnails;
 pub mod trash;

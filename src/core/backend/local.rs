@@ -1,6 +1,6 @@
 //! 本地文件系统扫描后端
 use crate::core::db::{self, DbPool};
-use crate::core::error::Result;
+use crate::core::error::{AppError, Result};
 use crate::core::media::NewMediaItem;
 use crate::core::metadata;
 use chrono::Utc;
@@ -76,9 +76,23 @@ impl LocalBackend {
         }))
     }
 
+    /// 从单个文件路径提取元数据并 upsert 到数据库。
+    ///
+    /// 专为 `notify_watcher` 等增量入口设计：
+    ///   - 路径不是文件（目录事件、临时消失等）时静默返回 `Ok(())`；
+    ///   - 解析失败时返回错误，调用方负责记录日志。
+    pub fn upsert_from_path(&self, path: &Path) -> Result<()> {
+        if !path.is_file() {
+            return Ok(());
+        }
+        let item = self
+            .process_file(path)?
+            .ok_or_else(|| AppError::Decode(format!("not an image: {}", path.display())))?;
+        self.upsert(&item).map(|_| ())
+    }
+
     /// 插入或更新（URI 冲突则 UPDATE）
-    pub fn upsert(&self, item: &NewMediaItem) -> Result<i64> {
-        let conn = self.pool.get()?;
+    pub fn upsert(&self, item: &NewMediaItem) -> Result<i64> {        let conn = self.pool.get()?;
 
         // 检查是否存在
         let existing: Option<i64> = conn
