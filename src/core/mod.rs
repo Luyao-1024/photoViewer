@@ -1,5 +1,6 @@
 pub mod albums;
 pub mod backend;
+pub mod cache;
 pub mod db;
 pub mod edit;
 pub mod error;

@@ -77,6 +77,11 @@ impl ThumbnailLoader {
         let (tx, rx) = mpsc::unbounded_channel();
         std::fs::create_dir_all(&cache_dir).ok();
         let mem_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(256).unwrap())));
+        // 启动时按 mtime LRU 清理超限缓存（2GB 上限）
+        let _ = crate::core::cache::enforce_size_limit(
+            &cache_dir.join("thumbnails"),
+            2 * 1024 * 1024 * 1024,
+        );
         Self {
             pool,
             cache_dir,
