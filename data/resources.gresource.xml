@@ -9,5 +9,6 @@
     <file>ui/photo-tile.ui</file>
     <file>ui/section-header.ui</file>
     <file>ui/viewer-page.ui</file>
+    <file>ui/trash-page.ui</file>
   </gresource>
 </gresources>

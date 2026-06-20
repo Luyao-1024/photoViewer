@@ -1,0 +1,56 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $TrashPage : Adw.NavigationPage {
+  title: "Trash";
+
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+    }
+
+    Adw.Banner banner {
+      title: "回收站中的项目将在 30 天后永久删除";
+      revealed: true;
+    }
+
+    Gtk.ScrolledWindow scrolled {
+      vexpand: true;
+
+      child: Gtk.FlowBox flow_box {
+        homogeneous: true;
+        selection-mode: multiple;
+        column-spacing: 4;
+        row-spacing: 4;
+        margin-start: 12;
+        margin-end: 12;
+        margin-top: 12;
+        margin-bottom: 12;
+        max-children-per-line: 6;
+      };
+    }
+
+    Gtk.ActionBar action_bar {
+      revealed: false;
+
+      [start]
+      Gtk.Button cancel_btn {
+        label: "Cancel";
+      }
+
+      [end]
+      Gtk.Button restore_btn {
+        label: "Restore";
+        css-classes: ["suggested-action"];
+      }
+
+      [end]
+      Gtk.Button delete_btn {
+        label: "Delete Permanently";
+        css-classes: ["destructive-action"];
+      }
+    }
+  };
+}
