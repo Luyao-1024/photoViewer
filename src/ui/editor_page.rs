@@ -22,13 +22,14 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 use libadwaita::subclass::prelude::*;
 
 use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use crate::core::db::DbPool;
 use crate::core::edit::{
-    EditRegistry, EditState, ParamValue, Rotation,
+    apply_all, EditRegistry, EditState, Rotation,
 };
 use crate::core::media::MediaItem;
 
@@ -208,16 +209,180 @@ impl EditorPage {
             this.schedule_preview_update();
         }));
 
-        // Save Copy（默认）：M4-T4 实现，先占位
+        // Save Copy（默认）：渲染 → 写新文件 → 插新 DB 行
         imp.save_copy_btn.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            tracing::info!("EditorPage: Save Copy clicked (M4-T4 will implement)");
-            this.show_toast("Save Copy 将在 M4-T4 实现");
+            this.save_as_copy();
         }));
+
+        // Save ▼ 菜单：Save Copy / Save Overwrite
+        self.setup_save_menu();
 
         // Crop 占位：V1 显示 toast
         imp.start_crop_btn.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
             this.show_toast("Crop UI 在 V2 实现");
         }));
+    }
+
+    /// Build the Save ▼ popover menu (Save Copy / Save Overwrite) and attach
+    /// it to `save_menu_btn`. Each entry dispatches to the same methods the
+    /// toolbar buttons call.
+    fn setup_save_menu(&self) {
+        let menu = gio::Menu::new();
+        menu.append(Some("Save Copy"), Some("editor.save-copy"));
+        menu.append(Some("Save Overwrite…"), Some("editor.save-overwrite"));
+
+        let popover = gtk::PopoverMenu::from_model(Some(&menu));
+        popover.set_has_arrow(false);
+        self.imp().save_menu_btn.get().set_popover(Some(&popover));
+
+        // Action group carrying the two menu actions
+        let group = gio::SimpleActionGroup::new();
+        let save_copy_action = gio::SimpleAction::new("save-copy", None);
+        save_copy_action.connect_activate(glib::clone!(@weak self as this => move |_, _| {
+            this.save_as_copy();
+        }));
+        group.add_action(&save_copy_action);
+
+        let save_overwrite_action = gio::SimpleAction::new("save-overwrite", None);
+        save_overwrite_action.connect_activate(glib::clone!(@weak self as this => move |_, _| {
+            this.save_overwrite_with_confirm();
+        }));
+        group.add_action(&save_overwrite_action);
+
+        self.insert_action_group("editor", Some(&group));
+    }
+
+    /// `Save Copy` 流程：异步渲染当前 `EditState` 到 `{stem}_edited.{ext}`，
+    /// 插入新的 `media_items` 行，完成后弹 toast 并导航返回。
+    fn save_as_copy(&self) {
+        let imp = self.imp();
+        let item = match imp.media_item.borrow().clone() {
+            Some(i) => i,
+            None => {
+                tracing::warn!("EditorPage.save_as_copy: no media_item");
+                return;
+            }
+        };
+        let state = imp.state.borrow().clone();
+        let pool = match imp.pool.borrow().clone() {
+            Some(p) => p,
+            None => {
+                tracing::warn!("EditorPage.save_as_copy: no pool");
+                return;
+            }
+        };
+        let registry = match imp.registry.borrow().clone() {
+            Some(r) => r,
+            None => {
+                tracing::warn!("EditorPage.save_as_copy: no registry");
+                return;
+            }
+        };
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result: std::thread::Result<
+                std::result::Result<crate::core::media::MediaItem, crate::core::error::AppError>,
+            > = gio::spawn_blocking(move || {
+                crate::core::edit::save_as_copy(&item, &state, &pool, &registry)
+            })
+            .await;
+
+            if let Some(this) = weak.upgrade() {
+                match result {
+                    Ok(Ok(_new_item)) => {
+                        this.show_toast("Saved a copy");
+                        // 导航回上一页（host 通过 connect_cancel 注册的回调
+                        // 通常就是 pop；用 action 名走 nav stack 同样安全）。
+                        let _ = this.activate_action("navigation.pop", None);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Save Copy failed: {}", e);
+                        this.show_toast(&format!("Save Copy failed: {}", e));
+                    }
+                    Err(_) => {
+                        tracing::error!("Save Copy worker panicked");
+                    }
+                }
+            }
+        });
+    }
+
+    /// `Save Overwrite` 流程：先弹 `AdwAlertDialog` 二次确认，用户确认后
+    /// 调度 `perform_save_overwrite` 在工作线程上完成实际渲染与 DB 更新。
+    fn save_overwrite_with_confirm(&self) {
+        let dialog = adw::AlertDialog::builder()
+            .heading("Overwrite Original?")
+            .body("This will replace the original file. The original will be backed up to .jpg.bak.")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("overwrite", "Overwrite");
+        dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            if response == "overwrite" {
+                if let Some(this) = weak.upgrade() {
+                    this.perform_save_overwrite();
+                }
+            }
+        });
+        dialog.present(self);
+    }
+
+    /// 实际执行 `save_overwrite`：备份 → 渲染 → 写回原文件 → 更新 DB。
+    fn perform_save_overwrite(&self) {
+        let imp = self.imp();
+        let item = match imp.media_item.borrow().clone() {
+            Some(i) => i,
+            None => {
+                tracing::warn!("EditorPage.perform_save_overwrite: no media_item");
+                return;
+            }
+        };
+        let state = imp.state.borrow().clone();
+        let pool = match imp.pool.borrow().clone() {
+            Some(p) => p,
+            None => {
+                tracing::warn!("EditorPage.perform_save_overwrite: no pool");
+                return;
+            }
+        };
+        let registry = match imp.registry.borrow().clone() {
+            Some(r) => r,
+            None => {
+                tracing::warn!("EditorPage.perform_save_overwrite: no registry");
+                return;
+            }
+        };
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result: std::thread::Result<
+                std::result::Result<(), crate::core::error::AppError>,
+            > = gio::spawn_blocking(move || {
+                crate::core::edit::save_overwrite(&item, &state, &pool, &registry)
+            })
+            .await;
+
+            if let Some(this) = weak.upgrade() {
+                match result {
+                    Ok(Ok(())) => {
+                        this.show_toast("Original overwritten");
+                        let _ = this.activate_action("navigation.pop", None);
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!("Save Overwrite failed: {}", e);
+                        this.show_toast(&format!("Save Overwrite failed: {}", e));
+                    }
+                    Err(_) => {
+                        tracing::error!("Save Overwrite worker panicked");
+                    }
+                }
+            }
+        });
     }
 
     fn apply_rotation_delta(&self, delta: i32) {
@@ -285,7 +450,7 @@ impl EditorPage {
             // the outer `Result` distinguishes a panic from an app-level
             // image error.
             let rendered: std::thread::Result<
-                Result<image::DynamicImage, String>,
+                std::result::Result<image::DynamicImage, String>,
             > = gio::spawn_blocking(move || apply_all(&registry, source, &state)).await;
 
             if let Some(this) = weak.upgrade() {
@@ -337,41 +502,4 @@ impl Default for EditorPage {
     fn default() -> Self {
         glib::Object::builder().build()
     }
-}
-
-/// Apply the full `EditState` pipeline (rotation → brightness → contrast →
-/// saturation → crop) to `img`. Each op is fetched from the registry by id;
-/// non-zero (or non-None for crop) params are applied in order. No-op
-/// params are skipped to avoid the cost of re-running the same op.
-fn apply_all(
-    registry: &EditRegistry,
-    mut img: image::DynamicImage,
-    state: &EditState,
-) -> Result<image::DynamicImage, String> {
-    if state.rotation != Rotation::None {
-        if let Some(op) = registry.get("rotate") {
-            img = op.apply(&img, ParamValue::Rotation(state.rotation))?;
-        }
-    }
-    if state.brightness != 0 {
-        if let Some(op) = registry.get("brightness") {
-            img = op.apply(&img, ParamValue::Int(state.brightness))?;
-        }
-    }
-    if state.contrast != 0 {
-        if let Some(op) = registry.get("contrast") {
-            img = op.apply(&img, ParamValue::Int(state.contrast))?;
-        }
-    }
-    if state.saturation != 0 {
-        if let Some(op) = registry.get("saturation") {
-            img = op.apply(&img, ParamValue::Int(state.saturation))?;
-        }
-    }
-    if let Some(crop) = state.crop {
-        if let Some(op) = registry.get("crop") {
-            img = op.apply(&img, ParamValue::Crop(Some(crop)))?;
-        }
-    }
-    Ok(img)
 }

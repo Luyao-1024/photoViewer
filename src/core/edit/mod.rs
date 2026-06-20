@@ -5,6 +5,9 @@ pub mod crop;
 pub mod op;
 pub mod rotate;
 pub mod saturation;
+pub mod save;
+
+pub use save::{save_as_copy, save_overwrite};
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -124,6 +127,43 @@ impl Default for EditRegistry {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Apply the full `EditState` pipeline (rotation → brightness → contrast →
+/// saturation → crop) to `img`. Each op is fetched from the registry by id;
+/// non-zero (or non-None for crop) params are applied in order. No-op
+/// params are skipped to avoid the cost of re-running the same op.
+pub fn apply_all(
+    registry: &EditRegistry,
+    mut img: image::DynamicImage,
+    state: &EditState,
+) -> Result<image::DynamicImage, String> {
+    if state.rotation != Rotation::None {
+        if let Some(op) = registry.get("rotate") {
+            img = op.apply(&img, ParamValue::Rotation(state.rotation))?;
+        }
+    }
+    if state.brightness != 0 {
+        if let Some(op) = registry.get("brightness") {
+            img = op.apply(&img, ParamValue::Int(state.brightness))?;
+        }
+    }
+    if state.contrast != 0 {
+        if let Some(op) = registry.get("contrast") {
+            img = op.apply(&img, ParamValue::Int(state.contrast))?;
+        }
+    }
+    if state.saturation != 0 {
+        if let Some(op) = registry.get("saturation") {
+            img = op.apply(&img, ParamValue::Int(state.saturation))?;
+        }
+    }
+    if let Some(crop) = state.crop {
+        if let Some(op) = registry.get("crop") {
+            img = op.apply(&img, ParamValue::Crop(Some(crop)))?;
+        }
+    }
+    Ok(img)
 }
 
 // Workaround: gtk::glib re-export for ParamValue::to_variant if needed

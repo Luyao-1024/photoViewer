@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("image decode failed: {0}")]
     Decode(String),
 
+    #[error("image io error: {0}")]
+    Image(#[from] image::ImageError),
+
     #[error("exif parse failed: {0}")]
     Exif(String),
 
