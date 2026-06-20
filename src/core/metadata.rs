@@ -1,7 +1,7 @@
 //! Image metadata extraction: dimensions, EXIF DateTimeOriginal, MIME type.
 use crate::core::error::{AppError, Result};
 use chrono::{DateTime, TimeZone, Utc};
-use gdk_pixbuf::PixbufExt;
+use gdk_pixbuf;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
@@ -32,9 +32,9 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
     if let Ok(dim) = image::image_dimensions(path) {
         meta.width = Some(dim.0);
         meta.height = Some(dim.1);
-    } else if let Ok(buf) = gdk_pixbuf::Pixbuf::new_from_file(path) {
-        meta.width = Some(buf.get_width() as u32);
-        meta.height = Some(buf.get_height() as u32);
+    } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
+        meta.width = Some(buf.width() as u32);
+        meta.height = Some(buf.height() as u32);
     } else {
         return Err(AppError::Decode(format!(
             "cannot decode dimensions: {}",

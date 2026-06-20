@@ -3,7 +3,9 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::sync::Arc;
 use crate::core::init_pool;
+use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{MainWindow, PhotosPage};
 
 pub fn build_app() -> adw::Application {
@@ -47,6 +49,13 @@ async fn initialize() -> anyhow::Result<gtk::gio::ListStore> {
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
     let pool = init_pool(&data_dir.join("photos.db"))?;
+
+    // 缩略图加载器单例（M2-T1）
+    let thumbnail_loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        crate::config::cache_dir(),
+    ));
+    thumbnail_loader.spawn_workers(4);
 
     // 启动后台扫描（M1 占位：扫描 ~/Pictures）
     // 从 $HOME 直接拼，不依赖 XDG 路径解析
