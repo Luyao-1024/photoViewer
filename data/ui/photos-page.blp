@@ -2,4 +2,20 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PhotosPage : Adw.NavigationPage {
+  title: "Photos";
+
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+    }
+
+    Gtk.Label placeholder_label {
+      label: "M1 占位：MediaGrid 在 Task 12 加入";
+      vexpand: true;
+      halign: center;
+      valign: center;
+    }
+  };
 }
