@@ -3,7 +3,7 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use crate::core::{init_pool, LocalBackend};
+use crate::core::init_pool;
 use crate::ui::{MainWindow, PhotosPage};
 
 pub fn build_app() -> adw::Application {
@@ -42,16 +42,23 @@ pub fn build_app() -> adw::Application {
 
 async fn initialize() -> anyhow::Result<gtk::gio::ListStore> {
     use crate::core::db;
+    use crate::core::backend::scan_worker::spawn_scan;
 
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
     let pool = init_pool(&data_dir.join("photos.db"))?;
 
-    // 启动扫描（这里只触发，更新在 Task 11）
-    let backend = LocalBackend::new(pool.clone());
-    let _ = backend; // 暂时未使用，M1-T11 接入
+    // 启动后台扫描（M1 占位：扫描 ~/Pictures）
+    // 从 $HOME 直接拼，不依赖 XDG 路径解析
+    let home = std::env::var_os("HOME").expect("HOME not set");
+    let pictures = std::path::PathBuf::from(home).join("Pictures");
+    let paths = vec![pictures];
+    let scan_handle = spawn_scan(pool.clone(), paths);
 
-    // 加载已有数据 — 用 BoxedAnyObject 包装，让 MediaItem 可放入 gio::ListStore
+    // 同步等待扫描完成（M1 简单版；M5 可改为后台通知）
+    let _ = scan_handle.await;
+
+    // 加载所有数据 — 用 BoxedAnyObject 包装，让 MediaItem 可放入 gio::ListStore
     let items = db::list_all_media(&pool)?;
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     for item in items {
