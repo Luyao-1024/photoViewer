@@ -1,0 +1,28 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $AlbumDetailPage : Adw.NavigationPage {
+  Adw.HeaderBar header_bar {
+    show-end-title-buttons: true;
+  }
+
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Gtk.ScrolledWindow scrolled {
+      vexpand: true;
+
+      child: Gtk.FlowBox flow_box {
+        homogeneous: true;
+        selection-mode: single;
+        column-spacing: 4;
+        row-spacing: 4;
+        margin-start: 12;
+        margin-end: 12;
+        margin-top: 12;
+        margin-bottom: 12;
+        max-children-per-line: 6;
+      };
+    }
+  };
+}

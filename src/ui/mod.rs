@@ -1,5 +1,6 @@
 //! UI module: top-level window and (later) pages/widgets.
 
+pub mod album_detail_page;
 pub mod albums_page;
 pub mod media_grid;
 pub mod photo_tile;
@@ -8,6 +9,7 @@ pub mod section_header;
 pub mod viewer_page;
 pub mod window;
 
+pub use album_detail_page::AlbumDetailPage;
 pub use albums_page::AlbumsPage;
 pub use media_grid::MediaGrid;
 pub use photo_tile::PhotoTile;
