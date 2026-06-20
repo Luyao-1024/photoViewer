@@ -101,6 +101,40 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 标记为已删除（不立即物理删除）
+pub fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute(
+        "UPDATE media_items SET trashed_at = unixepoch() WHERE id = ?1",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// 取消回收站标记
+pub fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute(
+        "UPDATE media_items SET trashed_at = NULL WHERE id = ?1",
+        [id],
+    )?;
+    Ok(())
+}
+
+/// 列出所有回收站中项
+pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, width, height,
+                taken_at, file_mtime, file_size, blake3_hash, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NOT NULL
+         ORDER BY trashed_at DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_media_item)?;
+    Ok(rows.filter_map(std::result::Result::ok).collect())
+}
+
 fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
     let taken_at: Option<i64> = row.get(7)?;
     let file_mtime: i64 = row.get(8)?;
