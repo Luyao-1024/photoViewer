@@ -20,6 +20,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 use libadwaita::subclass::prelude::*;
 
 use crate::core::db::{self, DbPool};
@@ -46,6 +47,8 @@ mod imp {
         pub restore_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub delete_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub empty_btn: TemplateChild<gtk::Button>,
     }
 
     #[gtk::glib::object_subclass]
@@ -145,6 +148,48 @@ impl TrashPage {
                 }
                 flow.unselect_all();
             });
+        }));
+
+        // Empty All：弹 AdwAlertDialog 确认后批量永久删除所有回收站项
+        obj.imp().empty_btn.get().connect_clicked(glib::clone!(@weak obj => move |_| {
+            let pool = match obj.imp().pool.borrow().as_ref() {
+                Some(p) => p.clone(),
+                None => return,
+            };
+            let flow_weak = obj.imp().flow_box.downgrade();
+
+            let dialog = adw::AlertDialog::builder()
+                .heading("Empty Trash?")
+                .body("All items in trash will be permanently deleted.")
+                .build();
+            dialog.add_response("cancel", "Cancel");
+            dialog.add_response("empty", "Empty");
+            dialog.set_response_appearance("empty", adw::ResponseAppearance::Destructive);
+
+            dialog.connect_response(
+                None,
+                move |_, response| {
+                    if response == "empty" {
+                        let pool = pool.clone();
+                        let flow_weak = flow_weak.clone();
+                        glib::spawn_future_local(async move {
+                            if let Ok(items) = db::list_trashed_media(&pool) {
+                                for item in items {
+                                    let _ = trash::delete_permanently(&item.uri);
+                                    let _ = db::delete_media_item(&pool, item.id);
+                                }
+                            }
+                            if let Some(flow) = flow_weak.upgrade() {
+                                while let Some(child) = flow.first_child() {
+                                    flow.remove(&child);
+                                }
+                            }
+                        });
+                    }
+                },
+            );
+
+            dialog.present(&obj);
         }));
 
         // 加载初始数据

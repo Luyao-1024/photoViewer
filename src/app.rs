@@ -5,6 +5,7 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use std::sync::{Arc, OnceLock};
 use crate::core::init_pool;
+use crate::core::db::DbPool;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{MainWindow, PhotosPage};
 
@@ -48,17 +49,23 @@ pub fn build_app() -> adw::Application {
         let app_handle = app.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
             match initialize().await {
-                Ok((media_list, loader)) => {
+                Ok((media_list, loader, pool)) => {
                     let window: MainWindow = app_handle
                         .active_window()
                         .and_downcast::<MainWindow>()
                         .expect("MainWindow not found");
                     let nav = window.nav_view();
-                    let photos = PhotosPage::new(media_list, loader);
+                    let photos = PhotosPage::new(media_list, loader.clone());
                     // Inject the nav view so the PhotosPage can push a ViewerPage
                     // when a tile is clicked.
                     photos.set_nav_target(&nav);
                     nav.push(&photos);
+
+                    // Store DB pool + loader on the window so the sidebar can
+                    // construct AlbumsPage/TrashPage on demand, then wire
+                    // row-selected to push them onto nav_view.
+                    window.set_resources(pool, loader);
+                    window.connect_sidebar(&nav);
                 }
                 Err(e) => {
                     tracing::error!("初始化失败: {}", e);
@@ -72,7 +79,7 @@ pub fn build_app() -> adw::Application {
     app
 }
 
-async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>)> {
+async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>, DbPool)> {
     use crate::core::db;
     use crate::core::backend::scan_worker::spawn_scan;
 
@@ -103,5 +110,5 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     for item in items {
         list.append(&glib::BoxedAnyObject::new(item));
     }
-    Ok((list, thumbnail_loader))
+    Ok((list, thumbnail_loader, pool))
 }
