@@ -28,14 +28,14 @@ thiserror = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-glib = "0.20"
+glib = "0.19"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 blake3 = "1"
 walkdir = "2"
 
 [build-dependencies]
-glib-build-tools = "0.20"
+glib-build-tools = "0.19"
 
 [dev-dependencies]
 tempfile = "3"

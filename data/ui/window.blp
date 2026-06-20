@@ -2,4 +2,23 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PhotoViewerWindow : Adw.ApplicationWindow {
+  title: "Photo Viewer";
+  default-width: 1200;
+  default-height: 800;
+
+  Adw.OverlaySplitView split_view {
+    sidebar-width-fraction: 0.2;
+    min-sidebar-width: 200;
+
+    sidebar: Adw.NavigationPage sidebar_page {
+      title: "Library";
+
+      Gtk.ListBox sidebar_list {
+        selection-mode: single;
+      }
+    };
+
+    content: Adw.NavigationView nav_view {
+    };
+  }
 }

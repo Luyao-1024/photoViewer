@@ -1,5 +1,5 @@
-//! UI module placeholder.
-//!
-//! Real widgets (PhotosPage, MediaGrid, PhotoTile, SectionHeader) will be
-//! added in M2/M3. The empty module exists so `pub mod ui` in lib.rs
-//! resolves cleanly during the M1 scaffold.
+//! UI module: top-level window and (later) pages/widgets.
+
+pub mod window;
+
+pub use window::MainWindow;

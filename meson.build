@@ -3,10 +3,8 @@ project('photo-viewer', 'rust',
   meson_version : '>= 0.59.0',
 )
 
-gnome = import('gnome')
-
-# V1: only schema and desktop placeholder
-# Full Blueprint integration arrives in M2
+# V1: only package the desktop file. Blueprint compilation is handled by
+# build.rs via glib_build_tools; full Blueprint integration arrives in M2.
 
 install_data(
   'data/org.gnome.PhotoViewer.desktop',
