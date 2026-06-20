@@ -11,11 +11,13 @@ template $PhotosPage : Adw.NavigationPage {
       show-end-title-buttons: true;
     }
 
-    Gtk.Label placeholder_label {
-      label: "M1 占位：MediaGrid 在 Task 12 加入";
+    Adw.ViewSwitcherBar switcher_bar {
+      stack: view_stack;
+      reveal: true;
+    }
+
+    Adw.ViewStack view_stack {
       vexpand: true;
-      halign: center;
-      valign: center;
     }
   };
 }

@@ -1,24 +1,29 @@
-//! PhotosPage：年/月/日视图（M1 占位，M1-Task 12 加入真实网格）
+//! PhotosPage: year/month/day view (shared MediaGrid, ViewSwitcherBar at bottom).
+use std::cell::Ref;
+use std::cell::RefCell;
+
 use gtk4 as gtk;
 use gtk4::glib;
-use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::subclass::prelude::*;
 use libadwaita as adw;
+use libadwaita::subclass::prelude::*;
+
+use crate::core::section_model::GroupBy;
+use crate::ui::media_grid::MediaGrid;
 
 mod imp {
     use super::*;
-    use adw::subclass::prelude::*;
-    use std::cell::RefCell;
 
-    #[derive(gtk::CompositeTemplate, Default)]
+    #[derive(Default, gtk::CompositeTemplate)]
     #[template(file = "../../data/ui/photos-page.ui")]
     pub struct PhotosPage {
-        #[template_child]
-        pub root_box: TemplateChild<gtk::Box>,
+        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
-        pub placeholder_label: TemplateChild<gtk::Label>,
-        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
+        pub switcher_bar: TemplateChild<adw::ViewSwitcherBar>,
+        #[template_child]
+        pub view_stack: TemplateChild<adw::ViewStack>,
     }
 
     #[gtk::glib::object_subclass]
@@ -50,11 +55,26 @@ gtk::glib::wrapper! {
 impl PhotosPage {
     pub fn new(media_list: gtk::gio::ListStore) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
-        *obj.imp().media_list.borrow_mut() = Some(media_list);
+        *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
+
+        // Three independent MediaGrid instances — one per grouping mode.
+        // Switcher toggles view_stack; each grid is rendered once at construction.
+        let year_grid = MediaGrid::new(media_list.clone(), GroupBy::Year);
+        let month_grid = MediaGrid::new(media_list.clone(), GroupBy::Month);
+        let day_grid = MediaGrid::new(media_list, GroupBy::Day);
+
+        let stack = obj.imp().view_stack.get();
+        stack.add_titled(&year_grid, Some("year"), "年");
+        stack.add_titled(&month_grid, Some("month"), "月");
+        stack.add_titled(&day_grid, Some("day"), "日");
+
+        // Wire the ViewSwitcherBar to our view_stack.
+        obj.imp().switcher_bar.get().set_stack(Some(&stack));
+
         obj
     }
 
-    pub fn media_list(&self) -> std::cell::Ref<'_, Option<gtk::gio::ListStore>> {
+    pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
     }
 }

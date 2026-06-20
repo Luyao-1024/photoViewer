@@ -2,8 +2,9 @@
 use crate::core::media::MediaItem;
 use chrono::{Datelike, NaiveDate, Weekday};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupBy {
+    #[default]
     Year,
     Month,
     Day,
@@ -144,5 +145,10 @@ mod tests {
     fn weekday_chinese_label() {
         assert_eq!(weekday_cn(Weekday::Sun), "周日");
         assert_eq!(weekday_cn(Weekday::Sat), "周六");
+    }
+
+    #[test]
+    fn groupby_default_is_year() {
+        assert_eq!(GroupBy::default(), GroupBy::Year);
     }
 }

@@ -1,5 +1,21 @@
 using Gtk 4.0;
-using Adw 1;
 
 template $MediaGrid : Gtk.Box {
+  orientation: vertical;
+  vexpand: true;
+  hexpand: true;
+
+  Gtk.ScrolledWindow scroller {
+    vexpand: true;
+    hexpand: true;
+
+    child: Gtk.FlowBox flow_box {
+      orientation: horizontal;
+      homogeneous: true;
+      selection-mode: single;
+      column-spacing: 4;
+      row-spacing: 4;
+      max-children-per-line: 12;
+    };
+  }
 }

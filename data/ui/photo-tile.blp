@@ -1,5 +1,14 @@
 using Gtk 4.0;
-using Adw 1;
 
 template $PhotoTile : Gtk.FlowBoxChild {
+  width-request: 96;
+  height-request: 96;
+
+  child: Gtk.Overlay overlay {
+    child: Gtk.Picture picture {
+      content-fit: cover;
+      vexpand: true;
+      hexpand: true;
+    };
+  };
 }
