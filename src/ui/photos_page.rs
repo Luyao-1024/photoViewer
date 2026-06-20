@@ -28,7 +28,6 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
-        pub active_viewer: RefCell<Option<ViewerPage>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -157,9 +156,9 @@ impl PhotosPage {
             }
         });
 
-        // Track the active viewer so subsequent tile-clicks replace it cleanly.
-        *self.imp().active_viewer.borrow_mut() = Some(viewer.clone());
-
+        // Push the new viewer. Subsequent tile-clicks push a *new*
+        // viewer; the previous one is reclaimed by the NavigationView
+        // when the user pops back, so we don't need to track it here.
         nav.push(&viewer);
     }
 }

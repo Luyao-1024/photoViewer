@@ -42,6 +42,10 @@ mod imp {
         /// Callback registered by the host (PhotosPage) for keyboard navigation
         /// — needs the `loader` to fetch the next item.
         pub nav_cb: RefCell<Option<Rc<dyn Fn(NavDelta)>>>,
+        /// Cached CssProvider reused across gesture ticks. Without this
+        /// we would allocate a new provider on every pinch-tick and
+        /// never release the previous one.
+        pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
         #[template_child]
@@ -186,11 +190,32 @@ impl ViewerPage {
             return;
         };
         let uri = boxed.borrow::<MediaItem>().uri.clone();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = tokio::sync::oneshot::channel();
         loader.request(uri, ThumbnailSize::Large, tx);
+        // Keep the receiver alive until the worker delivers the texture.
+        // Dropping `_rx` immediately would close the oneshot channel,
+        // causing the worker to skip the cache fill (it sees the sender
+        // closed) and we lose the preload benefit entirely.
+        glib::spawn_future_local(async move {
+            let _ = rx.await;
+        });
     }
 
     fn setup_gesture(&self) {
+        // Lazily allocate a single CssProvider and install it once on the
+        // display. Subsequent gesture ticks only `load_from_data` to
+        // update the transform, avoiding a fresh provider (and a leak)
+        // on every pinch event.
+        let provider = gtk::CssProvider::new();
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+        *self.imp().zoom_provider.borrow_mut() = Some(provider);
+
         let gesture = gtk::GestureZoom::new();
         let weak = self.downgrade();
         gesture.connect_scale_changed(move |_, scale| {
@@ -200,20 +225,14 @@ impl ViewerPage {
                 this.imp().zoom_scale.set(next);
 
                 // GtkPicture has no first-class `set_transform` API; we
-                // express the accumulated scale via a stylesheet. The picture
-                // re-paints on the next frame.
+                // express the accumulated scale via the shared stylesheet.
+                // The picture re-paints on the next frame.
                 let picture = this.imp().picture.get();
-                let provider = gtk::CssProvider::new();
-                let _ = provider.load_from_data(&format!(
-                    "picture {{ transform: scale({}); }}",
-                    next
-                ));
-                if let Some(display) = gtk::gdk::Display::default() {
-                    gtk::style_context_add_provider_for_display(
-                        &display,
-                        &provider,
-                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                    );
+                if let Some(provider) = this.imp().zoom_provider.borrow().as_ref() {
+                    let _ = provider.load_from_data(&format!(
+                        "picture {{ transform: scale({}); }}",
+                        next
+                    ));
                 }
                 picture.queue_draw();
             }

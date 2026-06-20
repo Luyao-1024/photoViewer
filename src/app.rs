@@ -3,17 +3,44 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use crate::core::init_pool;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{MainWindow, PhotosPage};
 
+static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
+    TOKIO.get_or_init(|| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+        // Enter the runtime context. `EnterGuard` borrows from
+        // `runtime`; we `forget` it so it lives forever (and the
+        // thread-local stays set for the process lifetime), then
+        // hand the runtime back to be stored in the OnceLock.
+        let guard = runtime.enter();
+        std::mem::forget(guard);
+        runtime
+    })
+}
+
 pub fn build_app() -> adw::Application {
+    // Build a multi-thread tokio runtime and enter its context for the
+    // lifetime of the application. GTK's main loop is *not* a tokio
+    // runtime, so `tokio::task::spawn_blocking` (used by the thumbnail
+    // worker pool and the scan worker) would otherwise panic with
+    // "there is no reactor running". We stash the runtime in a
+    // process-wide `OnceLock` and `forget` the EnterGuard so the
+    // thread-local stays set for the entire process.
+    let _ = install_tokio_runtime();
+
     let app = adw::Application::builder()
         .application_id("org.gnome.PhotoViewer")
         .build();
 
-    app.connect_activate(|app| {
+    app.connect_activate(move |app| {
         let window = MainWindow::new(app);
         window.populate_sidebar();
 
