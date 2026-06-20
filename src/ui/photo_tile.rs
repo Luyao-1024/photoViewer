@@ -54,18 +54,11 @@ impl PhotoTile {
         gtk::glib::Object::builder().build()
     }
 
-    /// M1 placeholder: clear paintable so the tile shows as a blank light-grey block.
-    /// The CSS provider is installed globally so picture widgets get a #d0d0d0 background.
+    /// Placeholder while the thumbnail loads: clear the paintable so the tile shows
+    /// as a blank transparent block. We intentionally do NOT paint any background —
+    /// the theme's default surface colour shows through (which is transparent in
+    /// most themes, or matches the window background).
     pub fn set_placeholder(&self) {
-        let css = gtk::CssProvider::new();
-        css.load_from_data("picture { background-color: #d0d0d0; }");
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &css,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
         self.imp().picture.get().set_paintable(None::<&gtk::gdk::Paintable>);
     }
 

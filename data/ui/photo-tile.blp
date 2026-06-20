@@ -3,17 +3,25 @@ using Gtk 4.0;
 template $PhotoTile : Gtk.FlowBoxChild {
   width-request: 96;
   height-request: 96;
-  // Force 1:1 square — image will letterbox inside if its aspect differs.
   valign: center;
   halign: center;
 
-  child: Gtk.Overlay overlay {
-    overflow: hidden;
-    child: Gtk.Picture picture {
-      // Contain = preserve aspect ratio, fit inside the square, letterbox if needed.
-      content-fit: contain;
-      vexpand: true;
-      hexpand: true;
+  // GtkAspectFrame forces the inner widget to maintain a 1:1 square aspect ratio,
+  // regardless of what FlowBox tries to allocate. Image letterboxes inside.
+  child: Gtk.AspectFrame aspect_frame {
+    ratio: 1.0;
+    obey-child: false;
+    hexpand: true;
+    vexpand: true;
+
+    child: Gtk.Overlay overlay {
+      overflow: hidden;
+
+      child: Gtk.Picture picture {
+        content-fit: contain;
+        vexpand: true;
+        hexpand: true;
+      };
     };
   };
 }
