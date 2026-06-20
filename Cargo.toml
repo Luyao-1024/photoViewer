@@ -20,6 +20,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 kamadak-exif = "0.6"
+image = "0.25"
 notify = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,4 +38,3 @@ glib-build-tools = "0.20"
 
 [dev-dependencies]
 tempfile = "3"
-image = "0.25"
