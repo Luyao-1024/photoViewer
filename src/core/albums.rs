@@ -13,6 +13,17 @@ pub struct Album {
     pub last_modified: DateTime<Utc>,
 }
 
+impl Album {
+    /// Basename of `folder_path` (e.g. `Pictures/Vacation` → `Vacation`).
+    /// Falls back to the full path string if no basename component exists.
+    pub fn display_name(&self) -> String {
+        self.folder_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| self.folder_path.display().to_string())
+    }
+}
+
 /// 重新计算 albums 表（启动时 + 索引完成后调用）
 pub fn refresh(pool: &DbPool) -> Result<()> {
     let conn = pool.get()?;
