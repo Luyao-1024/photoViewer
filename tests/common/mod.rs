@@ -1,4 +1,8 @@
 //! Shared test fixtures: generate test images (with or without EXIF).
+//! Each test binary is compiled separately, so individual helpers may appear
+//! unused to the dead-code lint in some binaries even though they are used in
+//! others. Allow the warning at module level.
+#![allow(dead_code)]
 use image::{ImageBuffer, Rgb};
 use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;
