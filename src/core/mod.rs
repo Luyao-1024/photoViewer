@@ -1,3 +1,4 @@
+pub mod albums;
 pub mod backend;
 pub mod db;
 pub mod error;
@@ -7,6 +8,7 @@ pub mod section_model;
 pub mod thumbnails;
 pub mod trash;
 
+pub use albums::{refresh as refresh_albums, Album};
 pub use backend::local::LocalBackend;
 pub use db::{init_pool, run_migrations, DbPool};
 pub use error::{AppError, Result};
