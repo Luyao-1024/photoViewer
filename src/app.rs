@@ -59,6 +59,9 @@ pub fn build_app() -> adw::Application {
                     // Inject the nav view so the PhotosPage can push a ViewerPage
                     // when a tile is clicked.
                     photos.set_nav_target(&nav);
+                    // Inject the DB pool so ViewerPage can launch EditorPage
+                    // (the editor needs the pool for M4-T4 save logic).
+                    photos.set_db_pool(pool.clone());
                     nav.push(&photos);
 
                     // Store DB pool + loader on the window so the sidebar can

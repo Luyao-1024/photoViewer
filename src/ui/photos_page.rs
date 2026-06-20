@@ -13,6 +13,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 
+use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::media_grid::MediaGrid;
@@ -28,6 +29,7 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
+        pub pool: RefCell<Option<DbPool>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -112,6 +114,12 @@ impl PhotosPage {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }
 
+    /// Inject the `DbPool` so viewer pages can launch `EditorPage` with
+    /// access to the database. Mirrors `set_nav_target`.
+    pub fn set_db_pool(&self, pool: DbPool) {
+        *self.imp().pool.borrow_mut() = Some(pool);
+    }
+
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
     }
@@ -132,6 +140,11 @@ impl PhotosPage {
 
         let viewer = ViewerPage::new(media_list, global_index);
         viewer.show_at(global_index, loader.clone());
+
+        // Wire the viewer's Edit button: it pushes an EditorPage onto `nav`.
+        if let Some(pool) = self.imp().pool.borrow().as_ref() {
+            viewer.set_edit_target(&nav, pool.clone());
+        }
 
         // Wire the viewer's keyboard callback: pops via the host NavigationView
         // for ESC, or advances/retreats the current index for ←/→.
