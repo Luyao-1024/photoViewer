@@ -2,11 +2,13 @@
 pub mod brightness;
 pub mod contrast;
 pub mod crop;
+pub mod destructive_rotate;
 pub mod op;
 pub mod rotate;
 pub mod saturation;
 pub mod save;
 
+pub use destructive_rotate::rotate_in_place;
 pub use save::{save_as_copy, save_overwrite};
 
 use std::collections::HashMap;

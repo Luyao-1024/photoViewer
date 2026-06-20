@@ -28,9 +28,7 @@ use libadwaita::subclass::prelude::*;
 use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use crate::core::db::DbPool;
-use crate::core::edit::{
-    apply_all, EditRegistry, EditState, Rotation,
-};
+use crate::core::edit::{apply_all, EditRegistry, EditState};
 use crate::core::media::MediaItem;
 
 mod imp {
@@ -386,17 +384,62 @@ impl EditorPage {
     }
 
     fn apply_rotation_delta(&self, delta: i32) {
-        let mut state = self.imp().state.borrow_mut();
-        let cur = state.rotation.as_degrees();
-        let new = cur.saturating_add(delta).rem_euclid(360);
-        state.rotation = match new {
-            90 => Rotation::R90,
-            180 => Rotation::R180,
-            270 => Rotation::R270,
-            _ => Rotation::None,
+        let imp = self.imp();
+        let item = match imp.media_item.borrow().clone() {
+            Some(i) => i,
+            None => {
+                tracing::warn!("EditorPage.apply_rotation_delta: no media_item");
+                return;
+            }
         };
-        drop(state);
-        self.schedule_preview_update();
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            // `gio::spawn_blocking` 在工作线程上执行破坏性旋转，覆盖原文件
+            // （保留 .jpg.bak 备份）；返回 `Result<()>` 包装为
+            // `thread::Result`（Err 仅在 worker panic 时）。
+            let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
+                gio::spawn_blocking(move || {
+                    crate::core::edit::rotate_in_place(&item.path, delta)
+                })
+                .await;
+
+            if let Some(this) = weak.upgrade() {
+                match result {
+                    Ok(Ok(())) => {
+                        this.show_undo_toast(delta);
+                    }
+                    Ok(Err(e)) => tracing::error!("旋转失败: {}", e),
+                    Err(_) => {
+                        tracing::error!("旋转 worker 异常终止");
+                    }
+                }
+            }
+        });
+    }
+
+    /// Schedule an auto-reverse rotation 5 seconds after the user pressed a
+    /// rotate button. The inverse rotation re-applies `rotate_in_place` so the
+    /// `.jpg.bak` backup is restored to the original path. A real UI with a
+    /// visible toast button + ToastOverlay would replace this later.
+    fn show_undo_toast(&self, delta: i32) {
+        let item = match self.imp().media_item.borrow().clone() {
+            Some(i) => i,
+            None => return,
+        };
+        let weak = self.downgrade();
+        let path = item.path.clone();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_secs(5),
+            move || {
+                if let Some(_this) = weak.upgrade() {
+                    if let Err(e) = crate::core::edit::rotate_in_place(&path, -delta) {
+                        tracing::error!("撤销旋转失败: {}", e);
+                    }
+                }
+            },
+        );
+        tracing::info!("已旋转 {}°，5 秒后撤销", delta);
     }
 
     /// 30fps 节流预览重算：用 `glib::timeout_add_local_once(33ms)` 延迟一次
