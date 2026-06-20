@@ -1,0 +1,25 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $ViewerPage : Adw.NavigationPage {
+  title: "Viewer";
+
+  child: Gtk.Overlay overlay {
+    child: Gtk.Picture picture {
+      can-shrink: false;
+      vexpand: true;
+      hexpand: true;
+      content-fit: contain;
+    };
+
+    [overlay]
+    Gtk.Spinner spinner {
+      vexpand: true;
+      hexpand: true;
+      halign: center;
+      valign: center;
+      spinning: true;
+      visible: true;
+    }
+  };
+}

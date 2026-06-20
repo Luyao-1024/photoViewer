@@ -28,6 +28,9 @@ pub fn build_app() -> adw::Application {
                         .expect("MainWindow not found");
                     let nav = window.nav_view();
                     let photos = PhotosPage::new(media_list, loader);
+                    // Inject the nav view so the PhotosPage can push a ViewerPage
+                    // when a tile is clicked.
+                    photos.set_nav_target(&nav);
                     nav.push(&photos);
                 }
                 Err(e) => {

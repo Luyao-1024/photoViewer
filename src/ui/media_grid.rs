@@ -10,6 +10,7 @@
 //! `FlowBox::remove_all` is also v4_12-only in 0.8, so we iterate via
 //! `observe_children` to drop existing rows on rebuild.
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -33,6 +34,7 @@ mod imp {
         pub flow_box: TemplateChild<gtk::FlowBox>,
         pub mode: Cell<GroupBy>,
         pub loader: std::cell::OnceCell<Arc<ThumbnailLoader>>,
+        pub on_activate: std::cell::OnceCell<Rc<dyn Fn(u32)>>,
     }
 
     #[gtk::glib::object_subclass]
@@ -73,17 +75,25 @@ fn size_for_mode(mode: GroupBy) -> ThumbnailSize {
 
 impl MediaGrid {
     /// Build a MediaGrid that immediately renders `(media_list, mode)`, loading
-    /// thumbnails through the shared `ThumbnailLoader`.
+    /// thumbnails through the shared `ThumbnailLoader`. `on_activate` fires
+    /// with the global index in `media_list` when the user activates a tile
+    /// (click / Enter / Space).
     pub fn new(
         media_list: gtk::gio::ListStore,
         mode: GroupBy,
         loader: Arc<ThumbnailLoader>,
+        on_activate: Rc<dyn Fn(u32)>,
     ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
         obj.imp()
             .loader
             .set(loader)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp()
+            .on_activate
+            .set(on_activate)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.rebuild(media_list, mode, size_for_mode(mode));
@@ -124,10 +134,27 @@ impl MediaGrid {
             child = next;
         }
 
-        // 4. Append section headers + photo tiles, loading thumbnails asynchronously.
+        // 4. Build a quick lookup: MediaItem.uri → global index in the ListStore.
+        let mut uri_to_index: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::with_capacity(items.len());
+        for i in 0..media_list.n_items() {
+            if let Some(obj) = media_list.item(i) {
+                if let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() {
+                    uri_to_index.insert(boxed.borrow::<MediaItem>().uri.clone(), i);
+                }
+            }
+        }
+
+        // 5. Append section headers + photo tiles, loading thumbnails asynchronously.
         let loader = self
             .imp()
             .loader
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
+        let on_activate = self
+            .imp()
+            .on_activate
             .get()
             .expect("MediaGrid::rebuild called before new()")
             .clone();
@@ -135,8 +162,19 @@ impl MediaGrid {
             let header = SectionHeader::new(&section.label);
             flow.append(&header);
             for item in &section.items {
+                let global_index = uri_to_index
+                    .get(&item.uri)
+                    .copied()
+                    .unwrap_or(u32::MAX);
                 let tile = PhotoTile::new();
                 tile.set_item(item.clone(), loader.clone(), size);
+                // Wire activation: tile click / Enter / Space → fire global index.
+                let cb = on_activate.clone();
+                tile.connect_activate(move |_| {
+                    if global_index != u32::MAX {
+                        cb(global_index);
+                    }
+                });
                 flow.append(&tile);
             }
         }

@@ -27,6 +27,7 @@ fn main() {
         "data/ui/media-grid.blp",
         "data/ui/photo-tile.blp",
         "data/ui/section-header.blp",
+        "data/ui/viewer-page.blp",
     ];
     for blp in blueprint_files {
         let ui_path = blp.replace(".blp", ".ui");
