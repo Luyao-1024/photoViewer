@@ -1,0 +1,122 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $EditorPage : Adw.NavigationPage {
+  title: "Edit";
+
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+
+      [start]
+      Gtk.Button cancel_btn {
+        label: "Cancel";
+      }
+
+      [end]
+      Gtk.Button save_copy_btn {
+        label: "Save Copy";
+        css-classes: ["suggested-action"];
+      }
+
+      [end]
+      Gtk.MenuButton save_menu_btn {
+        label: "Save";
+      }
+    }
+
+    Gtk.Overlay preview_overlay {
+      vexpand: true;
+      hexpand: true;
+
+      child: Gtk.ScrolledWindow preview_scroll {
+        vexpand: true;
+        hexpand: true;
+
+        child: Gtk.Picture preview_picture {
+          content-fit: contain;
+          vexpand: true;
+          hexpand: true;
+        };
+      };
+
+      [overlay]
+      Gtk.Spinner spinner {
+        halign: center;
+        valign: center;
+        spinning: true;
+        visible: false;
+      }
+    }
+
+    Adw.PreferencesPage prefs_page {
+      Adw.PreferencesGroup rotate_group {
+        title: "Rotate";
+
+        Gtk.Box rotate_box {
+          orientation: horizontal;
+          spacing: 6;
+          homogeneous: true;
+
+          Gtk.Button rotate_90_cw {
+            label: "↻ 90°";
+            icon-name: "object-rotate-right-symbolic";
+          }
+
+          Gtk.Button rotate_180 {
+            label: "↻ 180°";
+          }
+
+          Gtk.Button rotate_90_ccw {
+            label: "↻ 90° CCW";
+            icon-name: "object-rotate-left-symbolic";
+          }
+        }
+      }
+
+      Adw.PreferencesGroup adjust_group {
+        title: "Adjust";
+
+        Adw.ActionRow brightness_row {
+          title: "Brightness";
+          activatable: false;
+
+          Gtk.Scale brightness_scale {
+            width-request: 200;
+            draw-value: true;
+          }
+        }
+
+        Adw.ActionRow contrast_row {
+          title: "Contrast";
+          activatable: false;
+
+          Gtk.Scale contrast_scale {
+            width-request: 200;
+            draw-value: true;
+          }
+        }
+
+        Adw.ActionRow saturation_row {
+          title: "Saturation";
+          activatable: false;
+
+          Gtk.Scale saturation_scale {
+            width-request: 200;
+            draw-value: true;
+          }
+        }
+      }
+
+      Adw.PreferencesGroup crop_group {
+        title: "Crop";
+
+        Gtk.Button start_crop_btn {
+          label: "Start Crop";
+        }
+      }
+    }
+  };
+}

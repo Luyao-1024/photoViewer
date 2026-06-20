@@ -2,6 +2,8 @@
 
 pub mod album_detail_page;
 pub mod albums_page;
+pub mod edit_panel;
+pub mod editor_page;
 pub mod media_grid;
 pub mod photo_tile;
 pub mod photos_page;
@@ -12,6 +14,7 @@ pub mod window;
 
 pub use album_detail_page::AlbumDetailPage;
 pub use albums_page::AlbumsPage;
+pub use editor_page::EditorPage;
 pub use media_grid::MediaGrid;
 pub use photo_tile::PhotoTile;
 pub use photos_page::PhotosPage;

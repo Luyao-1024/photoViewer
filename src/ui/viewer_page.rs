@@ -8,8 +8,10 @@
 //! Note: items in the `gio::ListStore` are `BoxedAnyObject<MediaItem>` (see
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
 //! than `downcast::<MediaItem>()`.
+use crate::core::db::DbPool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::ui::editor_page::EditorPage;
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::glib;
@@ -46,6 +48,14 @@ mod imp {
         /// we would allocate a new provider on every pinch-tick and
         /// never release the previous one.
         pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
+        /// DB pool injected by host (needed to construct `EditorPage`).
+        pub pool: RefCell<Option<DbPool>>,
+        /// Navigation view used to push `EditorPage` when the user clicks Edit.
+        pub nav_view: RefCell<Option<adw::NavigationView>>,
+        #[template_child]
+        pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub edit_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
         #[template_child]
@@ -87,7 +97,16 @@ impl ViewerPage {
         obj.imp().current_index.set(index);
         obj.setup_gesture();
         obj.setup_keyboard();
+        obj.setup_edit_button();
         obj
+    }
+
+    /// Inject the `AdwNavigationView` and DB pool used to push an
+    /// `EditorPage` when the Edit button is pressed. Call this after
+    /// construction (mirrors `PhotosPage::set_nav_target`).
+    pub fn set_edit_target(&self, nav: &adw::NavigationView, pool: DbPool) {
+        *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+        *self.imp().pool.borrow_mut() = Some(pool);
     }
 
     /// Register a callback fired when the user presses ArrowLeft / ArrowRight /
@@ -101,6 +120,68 @@ impl ViewerPage {
         if let Some(cb) = cb {
             cb(delta);
         }
+    }
+
+    /// Wire the Edit button: build an `EditorPage` for the currently
+    /// displayed item, push it onto the host nav view, and wire its
+    /// Cancel callback to pop the editor back to the viewer.
+    fn setup_edit_button(&self) {
+        let imp = self.imp();
+        let weak = self.downgrade();
+        imp.edit_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            let nav = match this.imp().nav_view.borrow().as_ref() {
+                Some(n) => n.clone(),
+                None => {
+                    tracing::warn!("ViewerPage: Edit pressed but nav_view not set");
+                    return;
+                }
+            };
+            let pool = match this.imp().pool.borrow().as_ref() {
+                Some(p) => p.clone(),
+                None => {
+                    tracing::warn!("ViewerPage: Edit pressed but pool not set");
+                    return;
+                }
+            };
+            let item = match this.current_media_item() {
+                Some(i) => i,
+                None => return,
+            };
+            let editor = EditorPage::new(item, pool);
+            // When the user presses Cancel in the editor, pop it from the
+            // nav view and return to the viewer.
+            let nav_for_cancel = nav.downgrade();
+            editor.connect_cancel(move || {
+                if let Some(n) = nav_for_cancel.upgrade() {
+                    n.pop();
+                }
+            });
+            nav.push(&editor);
+        });
+    }
+
+    /// Resolve the `MediaItem` at the current index out of the
+    /// `BoxedAnyObject<MediaItem>` store. Returns `None` if the index is
+    /// out of range or the item can't be downcast.
+    fn current_media_item(&self) -> Option<MediaItem> {
+        let list = self.imp().media_list.borrow();
+        let list = list.as_ref()?;
+        let idx = self.imp().current_index.get();
+        if idx >= list.n_items() {
+            return None;
+        }
+        let obj = list.item(idx)?;
+        // Clone the `MediaItem` out of the `BoxedAnyObject` while both the
+        // outer `Ref` (held by `list`) and `obj`/`boxed` are alive. Using
+        // `match` (rather than `?`) makes the drop order explicit so the
+        // borrow of `boxed` does not extend past its lifetime.
+        let boxed = match obj.downcast::<glib::BoxedAnyObject>() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
+        let item = (*boxed.borrow::<MediaItem>()).clone();
+        Some(item)
     }
 
     /// Display the item at `index`, load its `Large` thumbnail, and preload

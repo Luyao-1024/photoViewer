@@ -85,6 +85,7 @@ pub trait EditOperation: Send + Sync {
     ) -> Result<image::DynamicImage, String>;
 }
 
+#[derive(Clone)]
 pub struct EditRegistry {
     ops: HashMap<&'static str, Arc<dyn EditOperation>>,
 }
