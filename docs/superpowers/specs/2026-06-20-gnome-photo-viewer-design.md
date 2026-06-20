@@ -210,26 +210,38 @@ $XDG_CACHE_HOME/photoViewer/thumbnails/
 ### 回收站映射
 
 ```rust
-async fn trash_item(item: &MediaItem) -> Result<()> {
+async fn trash_item(item: &MediaItem, pool: &DbPool) -> Result<()> {
     let file = gio::File::for_uri(&item.uri);
     // 1. gio 自动处理：移到 ~/.local/share/Trash/files/
     //    并在 ~/.local/share/Trash/info/ 写 .trashinfo（含原始路径）
     file.trash_future().await?;
 
-    // 2. DB 标记
-    sqlx::query("UPDATE media_items SET trashed_at = unixepoch() WHERE id = ?")
-        .bind(item.id)
-        .execute(&pool).await?;
+    // 2. DB 标记（rusqlite 同步 API，spawn_blocking 包裹）
+    let id = item.id;
+    spawn_blocking(move || {
+        let conn = pool.get()?;
+        conn.execute(
+            "UPDATE media_items SET trashed_at = unixepoch() WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        Ok::<_, AppError>(())
+    }).await??;
     Ok(())
 }
 
-async fn restore_item(item: &MediaItem) -> Result<()> {
+async fn restore_item(item: &MediaItem, pool: &DbPool) -> Result<()> {
     let file = gio::File::for_uri(&item.uri);
     file.restore_from_trash_future().await?;     // 依赖 trash::orig-path
 
-    sqlx::query("UPDATE media_items SET trashed_at = NULL WHERE id = ?")
-        .bind(item.id)
-        .execute(&pool).await?;
+    let id = item.id;
+    spawn_blocking(move || {
+        let conn = pool.get()?;
+        conn.execute(
+            "UPDATE media_items SET trashed_at = NULL WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
+        Ok::<_, AppError>(())
+    }).await??;
     Ok(())
 }
 ```
@@ -271,7 +283,7 @@ pub struct MediaGrid {
 }
 ```
 
-被 PhotosPage（月/日/年）、AlbumsPage、AlbumDetailPage、TrashPage 共用。
+被 PhotosPage（月/日/年）、AlbumDetailPage、TrashPage 共用。AlbumsPage 本身是相册瓦片的网格（非图片网格），用自己的布局。
 
 **无 EXIF 的图片**：归入"未知日期"虚拟 section，按 `file_mtime DESC` 排序，显示在列表末尾。
 
