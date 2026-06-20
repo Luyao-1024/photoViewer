@@ -4,4 +4,4 @@ pub mod media;
 
 pub use db::{init_pool, run_migrations, DbPool};
 pub use error::{AppError, Result};
-pub use media::MediaItem;
+pub use media::{MediaItem, NewMediaItem};

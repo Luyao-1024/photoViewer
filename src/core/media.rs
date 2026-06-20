@@ -27,6 +27,38 @@ impl MediaItem {
     }
 }
 
+/// 用于 INSERT 的新项（不含 id 和 trashed_at）
+#[derive(Debug, Clone)]
+pub struct NewMediaItem {
+    pub uri: String,
+    pub path: PathBuf,
+    pub folder_path: PathBuf,
+    pub mime_type: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub taken_at: Option<DateTime<Utc>>,
+    pub file_mtime: DateTime<Utc>,
+    pub file_size: u64,
+    pub blake3_hash: String,
+}
+
+impl From<&MediaItem> for NewMediaItem {
+    fn from(item: &MediaItem) -> Self {
+        Self {
+            uri: item.uri.clone(),
+            path: item.path.clone(),
+            folder_path: item.folder_path.clone(),
+            mime_type: item.mime_type.clone(),
+            width: item.width,
+            height: item.height,
+            taken_at: item.taken_at,
+            file_mtime: item.file_mtime,
+            file_size: item.file_size,
+            blake3_hash: item.blake3_hash.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
