@@ -8,3 +8,4 @@ Icon=org.gnome.PhotoViewer
 Terminal=false
 Categories=Graphics;Photography;Viewer;
 StartupNotify=true
+StartupWMClass=Photo Viewer

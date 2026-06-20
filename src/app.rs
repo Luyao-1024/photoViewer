@@ -42,6 +42,12 @@ pub fn build_app() -> adw::Application {
         .build();
 
     app.connect_activate(move |app| {
+        // Follow the system color scheme (libadwaita picks up the user's
+        // GNOME light/dark preference; this just opts in to automatic
+        // tracking rather than forcing light or dark).
+        let style_manager = adw::StyleManager::default();
+        style_manager.set_color_scheme(adw::ColorScheme::Default);
+
         let window = MainWindow::new(app);
         window.populate_sidebar();
 

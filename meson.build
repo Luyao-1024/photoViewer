@@ -10,3 +10,24 @@ install_data(
   'data/org.gnome.PhotoViewer.desktop',
   install_dir : get_option('datadir') / 'applications',
 )
+
+# Install application icons into the hicolor theme so the desktop entry
+# (Icon=org.gnome.PhotoViewer) resolves under standard XDG icon lookups
+# and GNOME shell taskbar grouping (StartupWMClass=Photo Viewer) finds
+# the right icon.
+icondir = join_paths(get_option('datadir'), 'icons', 'hicolor')
+install_data(
+  'data/icons/photo-viewer-64.png',
+  install_dir : icondir / '64x64' / 'apps',
+  rename : 'org.gnome.PhotoViewer.png',
+)
+install_data(
+  'data/icons/photo-viewer-128.png',
+  install_dir : icondir / '128x128' / 'apps',
+  rename : 'org.gnome.PhotoViewer.png',
+)
+install_data(
+  'data/icons/photo-viewer-symbolic.svg',
+  install_dir : icondir / 'symbolic' / 'apps',
+  rename : 'org.gnome.PhotoViewer-symbolic.svg',
+)
