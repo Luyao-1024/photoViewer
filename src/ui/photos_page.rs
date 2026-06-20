@@ -1,6 +1,7 @@
 //! PhotosPage: year/month/day view (shared MediaGrid, ViewSwitcherBar at bottom).
 use std::cell::Ref;
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -9,6 +10,7 @@ use libadwaita as adw;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::section_model::GroupBy;
+use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::media_grid::MediaGrid;
 
 mod imp {
@@ -53,15 +55,17 @@ gtk::glib::wrapper! {
 }
 
 impl PhotosPage {
-    pub fn new(media_list: gtk::gio::ListStore) -> Self {
+    /// Build a PhotosPage backed by `media_list`, sharing `loader` across the three
+    /// mode-specific MediaGrids (Year/Month/Day).
+    pub fn new(media_list: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
 
         // Three independent MediaGrid instances — one per grouping mode.
         // Switcher toggles view_stack; each grid is rendered once at construction.
-        let year_grid = MediaGrid::new(media_list.clone(), GroupBy::Year);
-        let month_grid = MediaGrid::new(media_list.clone(), GroupBy::Month);
-        let day_grid = MediaGrid::new(media_list, GroupBy::Day);
+        let year_grid = MediaGrid::new(media_list.clone(), GroupBy::Year, loader.clone());
+        let month_grid = MediaGrid::new(media_list.clone(), GroupBy::Month, loader.clone());
+        let day_grid = MediaGrid::new(media_list, GroupBy::Day, loader);
 
         let stack = obj.imp().view_stack.get();
         stack.add_titled(&year_grid, Some("year"), "年");

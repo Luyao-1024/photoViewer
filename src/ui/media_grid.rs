@@ -2,14 +2,15 @@
 //!
 //! Constructed with a `gio::ListStore` of `BoxedAnyObject` wrapping `MediaItem`s
 //! (see `app::initialize` in Task 10), plus a grouping `mode`. Internally builds
-//! section headers + placeholder photo tiles via a `FlowBox` inside a
-//! `ScrolledWindow`.
+//! section headers + photo tiles (now loading real thumbnails via `ThumbnailLoader`)
+//! through a `FlowBox` inside a `ScrolledWindow`.
 //!
 //! Implementation note: `GtkScrolledWindow` is not subclassable in gtk4-rs 0.8,
 //! so we subclass `GtkBox` and put the `ScrolledWindow` as our only child.
 //! `FlowBox::remove_all` is also v4_12-only in 0.8, so we iterate via
 //! `observe_children` to drop existing rows on rebuild.
 use std::cell::Cell;
+use std::sync::Arc;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -18,6 +19,7 @@ use gtk4::subclass::prelude::*;
 
 use crate::core::media::MediaItem;
 use crate::core::section_model::{group_items, GroupBy};
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::photo_tile::PhotoTile;
 use crate::ui::section_header::SectionHeader;
 
@@ -30,6 +32,7 @@ mod imp {
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
         pub mode: Cell<GroupBy>,
+        pub loader: std::cell::OnceCell<Arc<ThumbnailLoader>>,
     }
 
     #[gtk::glib::object_subclass]
@@ -58,26 +61,46 @@ gtk::glib::wrapper! {
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
+/// Map a grouping mode to the thumbnail size bucket (per M1-T12 spec):
+/// Year/Month use the Small bucket; Day uses the Medium bucket.
+fn size_for_mode(mode: GroupBy) -> ThumbnailSize {
+    match mode {
+        GroupBy::Year => ThumbnailSize::Small,
+        GroupBy::Month => ThumbnailSize::Small,
+        GroupBy::Day => ThumbnailSize::Medium,
+    }
+}
+
 impl MediaGrid {
-    /// Build a MediaGrid that immediately renders `(media_list, mode)`.
-    pub fn new(media_list: gtk::gio::ListStore, mode: GroupBy) -> Self {
+    /// Build a MediaGrid that immediately renders `(media_list, mode)`, loading
+    /// thumbnails through the shared `ThumbnailLoader`.
+    pub fn new(
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+    ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
-        obj.rebuild(media_list, mode);
+        obj.imp()
+            .loader
+            .set(loader)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.rebuild(media_list, mode, size_for_mode(mode));
         obj
     }
 
     /// Re-render this grid with a new mode using the given list (already grouped/owned).
     pub fn set_mode(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
         self.imp().mode.set(mode);
-        self.rebuild(media_list, mode);
+        self.rebuild(media_list, mode, size_for_mode(mode));
     }
 
     pub fn mode(&self) -> GroupBy {
         self.imp().mode.get()
     }
 
-    fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
+    fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy, size: ThumbnailSize) {
         // 1. Extract MediaItem values from each BoxedAnyObject in the store.
         let mut items: Vec<MediaItem> = Vec::with_capacity(media_list.n_items() as usize);
         for i in 0..media_list.n_items() {
@@ -101,13 +124,19 @@ impl MediaGrid {
             child = next;
         }
 
-        // 4. Append section headers + placeholder photo tiles.
+        // 4. Append section headers + photo tiles, loading thumbnails asynchronously.
+        let loader = self
+            .imp()
+            .loader
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
         for section in sections {
             let header = SectionHeader::new(&section.label);
             flow.append(&header);
-            for _item in &section.items {
+            for item in &section.items {
                 let tile = PhotoTile::new();
-                tile.set_placeholder();
+                tile.set_item(item.clone(), loader.clone(), size);
                 flow.append(&tile);
             }
         }

@@ -21,13 +21,13 @@ pub fn build_app() -> adw::Application {
         let app_handle = app.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
             match initialize().await {
-                Ok(media_list) => {
+                Ok((media_list, loader)) => {
                     let window: MainWindow = app_handle
                         .active_window()
                         .and_downcast::<MainWindow>()
                         .expect("MainWindow not found");
                     let nav = window.nav_view();
-                    let photos = PhotosPage::new(media_list);
+                    let photos = PhotosPage::new(media_list, loader);
                     nav.push(&photos);
                 }
                 Err(e) => {
@@ -42,7 +42,7 @@ pub fn build_app() -> adw::Application {
     app
 }
 
-async fn initialize() -> anyhow::Result<gtk::gio::ListStore> {
+async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>)> {
     use crate::core::db;
     use crate::core::backend::scan_worker::spawn_scan;
 
@@ -73,5 +73,5 @@ async fn initialize() -> anyhow::Result<gtk::gio::ListStore> {
     for item in items {
         list.append(&glib::BoxedAnyObject::new(item));
     }
-    Ok(list)
+    Ok((list, thumbnail_loader))
 }
