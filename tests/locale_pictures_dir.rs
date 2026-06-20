@@ -5,7 +5,14 @@
 //! synthetic `user-dirs.dirs`. Run with `--test-threads=1` to avoid races.
 use photo_viewer::config::pictures_dir;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+/// Process-wide lock that serializes env-mutating tests in this binary.
+/// `std::env::set_var`/`remove_var` mutate process-global state, so tests
+/// that touch HOME/LANG/LC_ALL/XDG_CONFIG_HOME cannot run concurrently
+/// without leaking state into each other.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Isolated env: each test sets HOME to a fresh tempdir, clears
 /// LANG/LC_ALL/XDG_*, and restores them at the end.
@@ -66,6 +73,7 @@ impl Drop for EnvGuard {
 
 #[test]
 fn falls_back_to_pictures_for_non_chinese_locale() {
+    let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempdir().unwrap();
     let home = dir.path().to_path_buf();
     // No user-dirs.dirs present.
@@ -83,6 +91,7 @@ fn falls_back_to_pictures_for_non_chinese_locale() {
 
 #[test]
 fn parses_user_dirs_pictures_with_home_substitution() {
+    let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempdir().unwrap();
     let home = dir.path().to_path_buf();
     // Create a fake user-dirs.dirs under HOME/.config/.
@@ -112,6 +121,7 @@ fn parses_user_dirs_pictures_with_home_substitution() {
 
 #[test]
 fn chinese_locale_falls_back_to_pictures_dir_unicode() {
+    let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempdir().unwrap();
     let home = dir.path().to_path_buf();
     // Pre-create ~/图片 so the locale fallback can find it.
@@ -131,6 +141,7 @@ fn chinese_locale_falls_back_to_pictures_dir_unicode() {
 
 #[test]
 fn user_dirs_takes_precedence_over_locale_fallback() {
+    let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempdir().unwrap();
     let home = dir.path().to_path_buf();
     // Both a user-dirs.dirs and ~/图片 exist; the XDG file wins.
