@@ -32,6 +32,7 @@ glib = "0.20"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 blake3 = "1"
+walkdir = "2"
 
 [build-dependencies]
 glib-build-tools = "0.20"
