@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Photo Viewer
+GenericName=Image Viewer
+Comment=Browse and view photos
+Exec=photo-viewer
+Icon=org.gnome.PhotoViewer
+Terminal=false
+Categories=Graphics;Photography;Viewer;
+StartupNotify=true

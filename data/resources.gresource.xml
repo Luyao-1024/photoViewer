@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/gnome/PhotoViewer">
+    <file>ui/window.ui</file>
+    <file>ui/photos-page.ui</file>
+    <file>ui/media-grid.ui</file>
+    <file>ui/photo-tile.ui</file>
+    <file>ui/section-header.ui</file>
+  </gresource>
+</gresources>
