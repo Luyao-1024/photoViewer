@@ -22,6 +22,7 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::ui::empty_states;
 
 mod imp {
     use super::*;
@@ -31,6 +32,8 @@ mod imp {
     pub struct AlbumsPage {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub scrolled: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
     }
@@ -65,13 +68,24 @@ impl AlbumsPage {
     /// Build an AlbumsPage and populate the flow box with one tile per album.
     /// Cover thumbnails are requested asynchronously via the shared `loader`;
     /// the page returns immediately and tiles fill in as textures arrive.
+    ///
+    /// If `albums` is empty, the scrolled window's child is swapped for an
+    /// `AdwStatusPage` describing how to add folders.
     pub fn new(albums: Vec<Album>, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = glib::Object::builder().build();
         let flow = obj.imp().flow_box.get();
 
-        for album in albums {
-            let tile = build_album_tile(&album, loader.clone());
-            flow.append(&tile);
+        if albums.is_empty() {
+            // Swap the scrolled window's child to a centered status page.
+            let empty = empty_states::no_albums();
+            empty.set_hexpand(true);
+            empty.set_vexpand(true);
+            obj.imp().scrolled.get().set_child(Some(&empty));
+        } else {
+            for album in albums {
+                let tile = build_album_tile(&album, loader.clone());
+                flow.append(&tile);
+            }
         }
 
         obj

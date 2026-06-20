@@ -20,6 +20,7 @@ use libadwaita::subclass::prelude::*;
 use crate::core::albums::Album;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::ui::empty_states;
 use crate::ui::photo_tile::PhotoTile;
 
 mod imp {
@@ -30,6 +31,8 @@ mod imp {
     pub struct AlbumDetailPage {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub scrolled: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
     }
@@ -66,6 +69,10 @@ impl AlbumDetailPage {
     ///
     /// `loader` is shared via `Arc` so each `PhotoTile` can clone it for its
     /// own async thumbnail request.
+    ///
+    /// If the filtered list is empty (album folder exists but contains no
+    /// photos), the scrolled window's child is swapped for an
+    /// `AdwStatusPage` describing the empty state.
     pub fn new(album: Album, all_media: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.set_title(&album.name);
@@ -74,11 +81,12 @@ impl AlbumDetailPage {
         // Filter media down to this album's folder. `BoxedAnyObject::borrow`
         // returns a `Cow<MediaItem>`; clone so we hand an owned `MediaItem` to
         // the tile (which stores it for the lifetime of its binding).
+        let mut matched = 0u32;
         for i in 0..all_media.n_items() {
-            let Some(obj) = all_media.item(i) else {
+            let Some(item_obj) = all_media.item(i) else {
                 continue;
             };
-            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            let Ok(boxed) = item_obj.downcast::<glib::BoxedAnyObject>() else {
                 continue;
             };
             let item: MediaItem = (*boxed.borrow::<MediaItem>()).clone();
@@ -86,7 +94,16 @@ impl AlbumDetailPage {
                 let tile = PhotoTile::new();
                 tile.set_item(item, loader.clone(), ThumbnailSize::Medium);
                 flow.append(&tile);
+                matched += 1;
             }
+        }
+
+        if matched == 0 {
+            // Swap the scrolled window's child to a centered status page.
+            let empty = empty_states::no_album_photos();
+            empty.set_hexpand(true);
+            empty.set_vexpand(true);
+            obj.imp().scrolled.get().set_child(Some(&empty));
         }
 
         obj

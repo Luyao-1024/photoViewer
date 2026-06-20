@@ -26,6 +26,7 @@ use libadwaita::subclass::prelude::*;
 use crate::core::db::{self, DbPool};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
+use crate::ui::empty_states;
 use crate::ui::photo_tile::PhotoTile;
 
 mod imp {
@@ -37,6 +38,8 @@ mod imp {
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub trashed_ids: RefCell<Vec<i64>>,
+        #[template_child]
+        pub scrolled: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
         #[template_child]
@@ -138,6 +141,7 @@ impl TrashPage {
                 None => return,
             };
             let ids = obj.imp().trashed_ids.borrow().clone();
+            let page_weak = obj.downgrade();
 
             glib::spawn_future_local(async move {
                 for id in ids {
@@ -147,6 +151,15 @@ impl TrashPage {
                     }
                 }
                 flow.unselect_all();
+                // If no items remain, swap the scrolled child for the
+                // empty-state status page.
+                if let Ok(remaining) = db::list_trashed_media(&pool) {
+                    if remaining.is_empty() {
+                        if let Some(page) = page_weak.upgrade() {
+                            show_empty_trash(&page);
+                        }
+                    }
+                }
             });
         }));
 
@@ -157,6 +170,7 @@ impl TrashPage {
                 None => return,
             };
             let flow_weak = obj.imp().flow_box.downgrade();
+            let page_weak = obj.downgrade();
 
             let dialog = adw::AlertDialog::builder()
                 .heading("Empty Trash?")
@@ -172,6 +186,7 @@ impl TrashPage {
                     if response == "empty" {
                         let pool = pool.clone();
                         let flow_weak = flow_weak.clone();
+                        let page_weak = page_weak.clone();
                         glib::spawn_future_local(async move {
                             if let Ok(items) = db::list_trashed_media(&pool) {
                                 for item in items {
@@ -183,6 +198,11 @@ impl TrashPage {
                                 while let Some(child) = flow.first_child() {
                                     flow.remove(&child);
                                 }
+                            }
+                            // After emptying, the trash is empty — show the
+                            // empty-state status page.
+                            if let Some(page) = page_weak.upgrade() {
+                                show_empty_trash(&page);
                             }
                         });
                     }
@@ -198,14 +218,20 @@ impl TrashPage {
         let flow_weak = obj.downgrade();
         glib::spawn_future_local(async move {
             if let Ok(items) = db::list_trashed_media(&pool_clone) {
-                for item in items {
-                    let tile = PhotoTile::new();
-                    tile.set_item(item, loader_clone.clone(), ThumbnailSize::Small);
+                if items.is_empty() {
                     if let Some(obj) = flow_weak.upgrade() {
-                        obj.imp().flow_box.get().append(&tile);
-                    } else {
-                        // Page 已销毁，丢弃 tile
-                        break;
+                        show_empty_trash(&obj);
+                    }
+                } else {
+                    for item in items {
+                        let tile = PhotoTile::new();
+                        tile.set_item(item, loader_clone.clone(), ThumbnailSize::Small);
+                        if let Some(obj) = flow_weak.upgrade() {
+                            obj.imp().flow_box.get().append(&tile);
+                        } else {
+                            // Page 已销毁，丢弃 tile
+                            break;
+                        }
                     }
                 }
             }
@@ -231,16 +257,35 @@ impl TrashPage {
         self.imp().action_bar.get().set_revealed(false);
 
         // 重新加载
+        let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
             if let Ok(items) = db::list_trashed_media(&pool) {
-                for item in items {
-                    let tile = PhotoTile::new();
-                    tile.set_item(item, loader.clone(), ThumbnailSize::Small);
-                    flow.append(&tile);
+                if let Some(page) = page_weak.upgrade() {
+                    if items.is_empty() {
+                        show_empty_trash(&page);
+                    } else {
+                        // Restore the flow box as the scrolled child before re-populating.
+                        page.imp().scrolled.get().set_child(Some(&flow));
+                        for item in items {
+                            let tile = PhotoTile::new();
+                            tile.set_item(item, loader.clone(), ThumbnailSize::Small);
+                            flow.append(&tile);
+                        }
+                    }
                 }
             }
         });
     }
+}
+
+/// Replace the scrolled window's child with an empty-state `AdwStatusPage`.
+/// Keeps the action bar (Empty All button) revealed in the header so the
+/// user can still see the page is the Trash.
+fn show_empty_trash(page: &TrashPage) {
+    let empty = empty_states::empty_trash();
+    empty.set_hexpand(true);
+    empty.set_vexpand(true);
+    page.imp().scrolled.get().set_child(Some(&empty));
 }
 
 impl Default for TrashPage {

@@ -16,6 +16,7 @@ use libadwaita as adw;
 use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::empty_states;
 use crate::ui::media_grid::MediaGrid;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 
@@ -72,6 +73,9 @@ impl PhotosPage {
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
+        // Snapshot the initial size before `media_list` is moved into MediaGrid.
+        let is_empty = media_list.n_items() == 0;
+
         let on_activate: Rc<dyn Fn(u32)> = {
             let weak = obj.downgrade();
             Rc::new(move |global_index| {
@@ -100,6 +104,18 @@ impl PhotosPage {
         stack.add_titled(&year_grid, Some("year"), "年");
         stack.add_titled(&month_grid, Some("month"), "月");
         stack.add_titled(&day_grid, Some("day"), "日");
+
+        // Empty-state placeholder: shown when the media list is empty.
+        // Added as a hidden stack child so we can swap to it without rebuilding.
+        let empty_page = empty_states::no_photos();
+        empty_page.set_hexpand(true);
+        empty_page.set_vexpand(true);
+        stack.add(&empty_page); // untitled → won't appear in the switcher bar
+
+        // Decide initial visible child based on data size.
+        if is_empty {
+            stack.set_visible_child(&empty_page);
+        }
 
         // Wire the ViewSwitcherBar to our view_stack.
         obj.imp().switcher_bar.get().set_stack(Some(&stack));
