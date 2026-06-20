@@ -10,7 +10,7 @@
 - `MediaGrid` 复用组件 + 自定义 `SectionModel` 实现按年/月/日分组
 - ViewSwitcher 切换 = 重建 SectionModel + 调整 item-size，不重新查 DB
 
-**Tech Stack:** Rust (edition 2021) + GTK4 + Libadwaita + rusqlite + tokio + kamadak-exif + notify + Blueprint (`.blp`)
+**Tech Stack:** Rust (edition 2021) + GTK4 + Libadwaita + rusqlite + tokio + exif + notify + Blueprint (`.blp`) → 编译经 `glib_build_tools` 在 `build.rs`
 
 ## Global Constraints
 
@@ -150,9 +150,84 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 blake3 = "1"
 
+[build-dependencies]
+glib_build_tools = "0.20"
+
 [dev-dependencies]
 tempfile = "3"
 image = "0.25"
+```
+
+- [ ] **Step 3.5: 创建 `build.rs`（关键 — 编译 Blueprint + 打包 GResource）**
+
+`build.rs`（项目根目录）：
+```rust
+fn main() {
+    // 1. 编译 Blueprint → .ui
+    let blueprint_files = [
+        "data/ui/window.blp",
+        "data/ui/photos-page.blp",
+        "data/ui/media-grid.blp",
+        "data/ui/photo-tile.blp",
+        "data/ui/section-header.blp",
+    ];
+    for blp in blueprint_files {
+        glib_build_tools::compile_blueprint(blp, &blp.replace(".blp", ".ui"));
+    }
+
+    // 2. 编译 GResource（必须包含所有 .ui 文件 + 图标）
+    glib_build_tools::compile_resources(
+        &["data"],                   // resource base dir
+        "data/resources.gresource.xml",  // 资源清单
+        "photo_viewer_resources",   // resource name (C identifier)
+    );
+}
+```
+
+`data/resources.gresource.xml`：
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/gnome/PhotoViewer">
+    <file>ui/window.ui</file>
+    <file>ui/photos-page.ui</file>
+    <file>ui/media-grid.ui</file>
+    <file>ui/photo-tile.ui</file>
+    <file>ui/section-header.ui</file>
+  </gresource>
+</gresources>
+```
+
+> 关键：必须在 `main.rs` 调用 `gio::resources_register_include!("photo_viewer_resources.gresource")`，否则 `bind_template()` 找不到模板会运行时崩溃。
+
+- [ ] **Step 3.6: 修改 `src/main.rs` 注册 GResource**
+
+```rust
+use gtk::gio;
+
+fn main() -> anyhow::Result<()> {
+    // 初始化日志
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    // 注册 GResource（必须在 GTK 操作之前）
+    gio::resources_register_include!("photo_viewer_resources.gresource")
+        .expect("Failed to register resources");
+
+    // 确保 XDG 目录存在
+    std::fs::create_dir_all(photo_viewer::config::data_dir())?;
+    std::fs::create_dir_all(photo_viewer::config::cache_dir())?;
+
+    let app = photo_viewer::app::build_app();
+    let empty: Vec<String> = vec![];
+    app.run_with_args(&empty);
+
+    Ok(())
+}
 ```
 
 - [ ] **Step 4: 创建 `src/lib.rs`**
@@ -1843,7 +1918,7 @@ pub fn build_app() -> adw::Application {
 }
 ```
 
-- [ ] **Step 6: 添加 Blueprint 编译步骤到 `meson.build`**
+- [ ] **Step 6: 简化 `meson.build`（Blueprint 由 build.rs 处理）**
 
 修改 `meson.build`：
 ```meson
@@ -1852,23 +1927,8 @@ project('photo-viewer', 'rust',
   meson_version : '>= 0.59.0',
 )
 
-gnome = import('gnome')
-blueprint_compiler = find_program('blueprint-compiler', required: false)
-
-if blueprint_compiler.found()
-  blueprint_files = files(
-    'data/ui/window.blp',
-  )
-  generated_sources = []
-  foreach blp : blueprint_files
-    out = configure_file(
-      input: blp,
-      output: '@BASENAME@.ui',
-      command: [blueprint_compiler, 'compile', '--output', '@OUTPUT@', '@INPUT@'],
-    )
-    generated_sources += out
-  endforeach
-endif
+# V1: 仅打包 desktop 文件 + Blueprint 编译由 build.rs (glib_build_tools) 处理
+# 完整 Blueprint 集成在 M2 加入
 
 install_data(
   'data/org.gnome.PhotoViewer.desktop',
@@ -2227,16 +2287,24 @@ impl MainWindow {
 }
 ```
 
-- [ ] **Step 6: 更新 meson.build — 添加新 .blp 文件**
+- [ ] **Step 6: 更新 `build.rs` 添加新的 Blueprint 文件**
 
-```meson
-if blueprint_compiler.found()
-  blueprint_files = files(
-    'data/ui/window.blp',
-    'data/ui/photos-page.blp',
-  )
-  # ... 同 Task 9
-endif
+修改 Task 1 的 `build.rs`，在 `blueprint_files` 数组中追加：
+
+```rust
+let blueprint_files = [
+    "data/ui/window.blp",
+    "data/ui/photos-page.blp",  // 新增
+];
+```
+
+同时更新 `data/resources.gresource.xml`：
+
+```xml
+<gresource prefix="/org/gnome/PhotoViewer">
+  <file>ui/window.ui</file>
+  <file>ui/photos-page.ui</file>  <!-- 新增 -->
+</gresource>
 ```
 
 - [ ] **Step 7: 编译并验证**
@@ -2326,9 +2394,10 @@ async fn initialize() -> anyhow::Result<gtk::gio::ListStore> {
     let pool = init_pool(&data_dir.join("photos.db"))?;
 
     // 启动后台扫描（M1 占位：扫描 ~/Pictures）
-    let paths = vec![photo_viewer::config::data_dir()
-        .parent().unwrap()
-        .join("Pictures")];
+    // 从 $HOME 直接拼，不依赖 XDG 路径解析
+    let home = std::env::var_os("HOME").expect("HOME not set");
+    let pictures = std::path::PathBuf::from(home).join("Pictures");
+    let paths = vec![pictures];
     let scan_handle = spawn_scan(pool.clone(), paths);
 
     // 同步等待扫描完成（M1 简单版；M5 可改为后台通知）
@@ -2809,19 +2878,30 @@ impl PhotosPage {
 
 > 注：使用 `AdwViewSwitcherBar` 而非 `AdwViewSwitcher`，因为它是底部栏样式（macOS Photos 风格）
 
-- [ ] **Step 10: 更新 meson.build**
+- [ ] **Step 10: 更新 `build.rs` 和 `resources.gresource.xml`**
 
-```meson
-if blueprint_compiler.found()
-  blueprint_files = files(
-    'data/ui/window.blp',
-    'data/ui/photos-page.blp',
-    'data/ui/media-grid.blp',
-    'data/ui/photo-tile.blp',
-    'data/ui/section-header.blp',
-  )
-  # ...
-endif
+`build.rs` 的 `blueprint_files` 数组：
+
+```rust
+let blueprint_files = [
+    "data/ui/window.blp",
+    "data/ui/photos-page.blp",
+    "data/ui/media-grid.blp",
+    "data/ui/photo-tile.blp",
+    "data/ui/section-header.blp",
+];
+```
+
+`data/resources.gresource.xml`：
+
+```xml
+<gresource prefix="/org/gnome/PhotoViewer">
+  <file>ui/window.ui</file>
+  <file>ui/photos-page.ui</file>
+  <file>ui/media-grid.ui</file>
+  <file>ui/photo-tile.ui</file>
+  <file>ui/section-header.ui</file>
+</gresource>
 ```
 
 - [ ] **Step 11: 编译并验证**

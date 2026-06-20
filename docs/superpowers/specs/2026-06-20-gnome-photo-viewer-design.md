@@ -26,7 +26,7 @@
 | 图像 | `gdk-pixbuf`, `image` crate |
 | 异步 | `tokio`（rt-multi-thread） |
 | 数据库 | `rusqlite`（bundled）+ `r2d2` 连接池 |
-| EXIF | `kamadak-exif` |
+| EXIF | `exif` |
 | HEIC/HEIF | `libheif-sys`（链接系统 `libheif`） |
 | 文件监听 | `notify` |
 | 序列化 | `serde`, `serde_json` |
