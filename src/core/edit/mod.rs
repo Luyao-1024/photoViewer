@@ -1,5 +1,10 @@
 //! 编辑操作 trait + 注册表 + 共享状态
+pub mod brightness;
+pub mod contrast;
+pub mod crop;
 pub mod op;
+pub mod rotate;
+pub mod saturation;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,8 +95,13 @@ impl EditRegistry {
     }
 
     pub fn new_with_v1() -> Self {
-        // V1 内置 op 在后续 task 注册
-        Self::new()
+        let mut r = Self::new();
+        r.register(Arc::new(rotate::RotateOp));
+        r.register(Arc::new(crop::CropOp));
+        r.register(Arc::new(brightness::BrightnessOp));
+        r.register(Arc::new(contrast::ContrastOp));
+        r.register(Arc::new(saturation::SaturationOp));
+        r
     }
 
     pub fn register(&mut self, op: Arc<dyn EditOperation>) {
