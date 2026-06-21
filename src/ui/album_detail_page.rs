@@ -81,9 +81,12 @@ impl AlbumDetailPage {
         // Hover hint: same style as MediaGrid (see grid_css::GRID_CSS).
         // `selection_mode = None` because the page's FlowBox default is
         // Single, which would briefly paint the `:selected` style on click
-        // and conflict with the hover hint.
+        // and conflict with the hover hint. The `thumb-grid` CSS class is
+        // required so the `flowbox.thumb-grid > flowboxchild:hover` selector
+        // matches this FlowBox (installed selectors only target that class).
         crate::ui::grid_css::install();
         flow.set_selection_mode(gtk::SelectionMode::None);
+        flow.add_css_class("thumb-grid");
 
         // Filter media down to this album's folder. `BoxedAnyObject::borrow`
         // returns a `Cow<MediaItem>`; clone so we hand an owned `MediaItem` to
