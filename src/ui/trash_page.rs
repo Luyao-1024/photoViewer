@@ -225,7 +225,7 @@ impl TrashPage {
                 } else {
                     for item in items {
                         let tile = PhotoTile::new();
-                        tile.set_item(item, loader_clone.clone(), ThumbnailSize::Small);
+                        tile.set_item(item, loader_clone.clone(), ThumbnailSize::Small, 125);
                         if let Some(obj) = flow_weak.upgrade() {
                             obj.imp().flow_box.get().append(&tile);
                         } else {
@@ -268,7 +268,7 @@ impl TrashPage {
                         page.imp().scrolled.get().set_child(Some(&flow));
                         for item in items {
                             let tile = PhotoTile::new();
-                            tile.set_item(item, loader.clone(), ThumbnailSize::Small);
+                            tile.set_item(item, loader.clone(), ThumbnailSize::Small, 125);
                             flow.append(&tile);
                         }
                     }

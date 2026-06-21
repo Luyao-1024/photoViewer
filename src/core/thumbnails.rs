@@ -15,8 +15,9 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 /// 缩略图尺寸档位
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ThumbnailSize {
+    #[default]
     Small,  // 256
     Medium, // 512
     Large,  // 1024

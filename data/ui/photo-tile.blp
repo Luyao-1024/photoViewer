@@ -1,27 +1,18 @@
 using Gtk 4.0;
 
-template $PhotoTile : Gtk.FlowBoxChild {
-  width-request: 96;
-  height-request: 96;
-  valign: center;
-  halign: center;
-
-  // GtkAspectFrame forces the inner widget to maintain a 1:1 square aspect ratio,
-  // regardless of what FlowBox tries to allocate. Image letterboxes inside.
-  child: Gtk.AspectFrame aspect_frame {
-    ratio: 1.0;
-    obey-child: false;
-    hexpand: true;
-    vexpand: true;
-
-    child: Gtk.Overlay overlay {
-      overflow: hidden;
-
-      child: Gtk.Picture picture {
-        content-fit: contain;
-        vexpand: true;
-        hexpand: true;
-      };
-    };
+// PhotoTile template: a `GtkWidget` wrapping one `GtkPicture` (cover fit).
+//
+// WARNING: `set_size_request(pixel_size)` alone does NOT make this a fixed
+// square cell. And because `PhotoTile` sets `can_shrink = false` (in
+// photo_tile.rs), the picture reports the loaded image's intrinsic size as
+// its MINIMUM, so the cell grows to the image size — the "thumbnail fills
+// the screen" bug. `MediaGrid` avoids this with an `AspectFrame(ratio 1.0)`
+// + `can_shrink = true`; this legacy widget does not yet. See the sizing
+// notes in media_grid.rs.
+template $PhotoTile : Gtk.Widget {
+  child: Gtk.Picture picture {
+    content-fit: cover;
+    hexpand: false;
+    vexpand: false;
   };
 }

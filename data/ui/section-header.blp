@@ -1,14 +1,13 @@
 using Gtk 4.0;
 
+// Section header used as a full-width row before each group of photo tiles.
 template $SectionHeader : Gtk.FlowBoxChild {
-  width-request: 96;
-  height-request: 96;
-
   child: Gtk.Label label {
     halign: start;
     margin-start: 12;
     margin-top: 12;
     margin-bottom: 6;
+    xalign: 0.0;
     css-classes: ["heading"];
   };
 }

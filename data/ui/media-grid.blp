@@ -1,5 +1,11 @@
 using Gtk 4.0;
 
+// MediaGrid: a vertical stack of sections, each = a full-width header label
+// followed by a GridView of square thumbnails. All sections scroll together
+// inside one ScrolledWindow (via a Viewport, because the content Box is not
+// itself Scrollable). Keeping headers OUT of the GridView means they span the
+// full width and don't inflate the photo row height (which used to letterbox
+// the square thumbnails and leave gaps).
 template $MediaGrid : Gtk.Box {
   orientation: vertical;
   vexpand: true;
@@ -9,13 +15,12 @@ template $MediaGrid : Gtk.Box {
     vexpand: true;
     hexpand: true;
 
-    child: Gtk.FlowBox flow_box {
-      orientation: horizontal;
-      homogeneous: true;
-      selection-mode: single;
-      column-spacing: 4;
-      row-spacing: 4;
-      max-children-per-line: 12;
+    child: Gtk.Viewport viewport {
+      scroll-to-focus: true;
+
+      child: Gtk.Box content {
+        orientation: vertical;
+      };
     };
   }
 }

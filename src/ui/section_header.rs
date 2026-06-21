@@ -1,4 +1,4 @@
-//! Section header (M1 just a label, M2 may add collapse button)
+//! Section header (a labeled row used to group photos in the grid).
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::subclass::prelude::*;
@@ -49,7 +49,6 @@ impl SectionHeader {
 
 impl Default for SectionHeader {
     fn default() -> Self {
-        // Empty default — useful for `Object::new()` style construction in tests.
         gtk::glib::Object::builder().build()
     }
 }

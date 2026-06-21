@@ -8,6 +8,7 @@ use gtk4::ListBoxRow;
 use libadwaita as adw;
 use glib::subclass::types::ObjectSubclassIsExt;
 
+
 use crate::core::db::DbPool;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{AlbumsPage, TrashPage};

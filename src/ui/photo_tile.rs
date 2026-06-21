@@ -1,14 +1,27 @@
-//! Single photo thumbnail tile (M1 placeholder grey, M2 loads real thumbnails)
+//! Photo tile widget — a `GtkWidget` holding one `GtkPicture`, used by the
+//! FlowBox-based pages (album detail, trash). `MediaGrid` does NOT use this;
+//! its GridView factory builds its own `AspectFrame` + `GtkPicture` cells
+//! directly (see `media_grid.rs`).
+//!
+//! KNOWN ISSUE: `PhotoTile::new` / `set_item` set `can_shrink = false` on the
+//! picture — the exact pitfall that made GridView thumbnails fill the screen.
+//! `set_size_request(pixel_size)` does NOT clamp the cell to a square when the
+//! image is larger: with `can_shrink = false` the picture's minimum is its
+//! intrinsic size, so the cell grows to the image. To get fixed square tiles
+//! here too, wrap the picture in `AspectFrame(ratio 1.0)` and drop
+//! `can_shrink(false)` — same fix as `media_grid.rs`.
 use std::cell::RefCell;
 use std::sync::Arc;
 
 use gtk4 as gtk;
 use gtk4::glib;
+use gtk4::prelude::{ObjectExt, WidgetExt};
 use gtk4::subclass::prelude::*;
 
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
-use gtk4::prelude::ObjectExt;
+
+const DEFAULT_TILE_SIZE: i32 = 125;
 
 mod imp {
     use super::*;
@@ -19,7 +32,6 @@ mod imp {
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
         pub item: RefCell<Option<MediaItem>>,
-        /// Monotonically increasing token; the receiver compares it to drop stale responses.
         pub current_token: RefCell<u64>,
     }
 
@@ -27,7 +39,7 @@ mod imp {
     impl ObjectSubclass for PhotoTile {
         const NAME: &'static str = "PhotoTile";
         type Type = super::PhotoTile;
-        type ParentType = gtk::FlowBoxChild;
+        type ParentType = gtk::Widget;
 
         fn class_init(klass: &mut Self::Class) {
             klass.bind_template();
@@ -40,42 +52,40 @@ mod imp {
 
     impl ObjectImpl for PhotoTile {}
     impl WidgetImpl for PhotoTile {}
-    impl FlowBoxChildImpl for PhotoTile {}
 }
 
 gtk::glib::wrapper! {
     pub struct PhotoTile(ObjectSubclass<imp::PhotoTile>)
-        @extends gtk::FlowBoxChild, gtk::Widget,
+        @extends gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl PhotoTile {
     pub fn new() -> Self {
-        gtk::glib::Object::builder().build()
+        let obj: Self = gtk::glib::Object::builder().build();
+        let pic = obj.imp().picture.get();
+        pic.set_size_request(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE);
+        pic.set_can_shrink(false);
+        obj
     }
 
-    /// Placeholder while the thumbnail loads: clear the paintable so the tile shows
-    /// as a blank transparent block. We intentionally do NOT paint any background —
-    /// the theme's default surface colour shows through (which is transparent in
-    /// most themes, or matches the window background).
     pub fn set_placeholder(&self) {
         self.imp().picture.get().set_paintable(None::<&gtk::gdk::Paintable>);
     }
 
-    /// M2: bind a `MediaItem` and asynchronously load its thumbnail via `ThumbnailLoader`.
-    ///
-    /// `loader` is shared via `Arc` so the spawned local future can hold a clone for
-    /// the duration of the `oneshot` await. The future is also cancellable via the
-    /// per-tile `current_token`: any newer `set_item` call invalidates older responses,
-    /// so rapid scroll/rebind does not paint stale textures.
-    pub fn set_item(&self, item: MediaItem, loader: Arc<ThumbnailLoader>, size: ThumbnailSize) {
+    pub fn set_item(
+        &self,
+        item: MediaItem,
+        loader: Arc<ThumbnailLoader>,
+        thumb_size: ThumbnailSize,
+        pixel_size: i32,
+    ) {
         *self.imp().item.borrow_mut() = Some(item.clone());
-
-        // Show the grey placeholder while the thumbnail loads, so empty tiles don't
-        // briefly render nothing underneath.
+        let pic = self.imp().picture.get();
+        pic.set_size_request(pixel_size, pixel_size);
+        pic.set_can_shrink(false);
         self.set_placeholder();
 
-        // Debounce: bump the token; older responses will be dropped when they arrive.
         let token = {
             let mut t = self.imp().current_token.borrow_mut();
             *t += 1;
@@ -83,16 +93,14 @@ impl PhotoTile {
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(item.uri.clone(), size, tx);
+        loader.request(item.uri.clone(), thumb_size, tx);
 
         let this_weak = self.downgrade();
         gtk::glib::spawn_future_local(async move {
             let texture = match rx.await {
                 Ok(t) => t,
-                Err(_) => return, // sender dropped — request was cancelled
+                Err(_) => return,
             };
-
-            // Drop stale response: the tile was rebound to a different item in the meantime.
             let still_current = this_weak
                 .upgrade()
                 .map(|t| *t.imp().current_token.borrow() == token)
