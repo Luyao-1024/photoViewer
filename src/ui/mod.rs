@@ -5,6 +5,8 @@ pub mod albums_page;
 pub mod edit_panel;
 pub mod editor_page;
 pub mod empty_states;
+pub mod grid_css;
+pub mod grid_row;
 pub mod media_grid;
 pub mod photo_tile;
 pub mod photos_page;
