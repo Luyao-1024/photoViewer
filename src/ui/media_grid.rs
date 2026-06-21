@@ -243,8 +243,8 @@ impl MediaGrid {
             section_count += 1;
         }
 
-        eprintln!(
-            "[MediaGrid::rebuild] mode={:?} sections={} photos={} spec.pixel_size={}",
+        tracing::debug!(
+            "MediaGrid::rebuild mode={:?} sections={} photos={} spec.pixel_size={}",
             mode,
             section_count,
             photo_count,
