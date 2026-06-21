@@ -78,6 +78,13 @@ impl AlbumDetailPage {
         obj.set_title(&album.name);
         let flow = obj.imp().flow_box.get();
 
+        // Hover hint: same style as MediaGrid (see grid_css::GRID_CSS).
+        // `selection_mode = None` because the page's FlowBox default is
+        // Single, which would briefly paint the `:selected` style on click
+        // and conflict with the hover hint.
+        crate::ui::grid_css::install();
+        flow.set_selection_mode(gtk::SelectionMode::None);
+
         // Filter media down to this album's folder. `BoxedAnyObject::borrow`
         // returns a `Cow<MediaItem>`; clone so we hand an owned `MediaItem` to
         // the tile (which stores it for the lifetime of its binding).
@@ -92,7 +99,7 @@ impl AlbumDetailPage {
             let item: MediaItem = (*boxed.borrow::<MediaItem>()).clone();
             if item.folder_path == album.folder_path {
                 let tile = PhotoTile::new();
-                tile.set_item(item, loader.clone(), ThumbnailSize::Medium);
+                tile.set_item(item, loader.clone(), ThumbnailSize::Medium, 250);
                 flow.append(&tile);
                 matched += 1;
             }
