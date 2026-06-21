@@ -26,13 +26,14 @@
 //! set a layout manager — GTK4 would otherwise measure via the layout manager
 //! and bypass the `measure` override.
 //!
-//! ## Gap & selection
+//! ## Gap & hover hint
 //!
 //! The FlowBox `column-spacing` / `row-spacing` (2 px) is the thin separator
-//! between tiles. Selection uses the FlowBox's `selection-mode = single` +
-//! `activate-on-single-click`; the selected child is tinted and its tile gets
-//! an accent outline (see `GRID_CSS`) — i.e. the separator doubles as the
-//! selection hint.
+//! between tiles. The hover hint (accent tint + outline) lives in
+//! `crate::ui::grid_css` and is driven by the FlowBoxChild `:hover`
+//! pseudo-class; `selection-mode = None` because `activate-on-single-click`
+//! already routes clicks to `child_activated`. The separator doubles as the
+//! hover hint.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -114,36 +115,6 @@ fn spec_for_mode(mode: GroupBy) -> ViewSpec {
     }
 }
 
-/// CSS for the thumbnail FlowBoxes: remove the default FlowBoxChild padding so
-/// tiles touch (the FlowBox `column/row spacing` is the thin separator), and
-/// highlight the selected tile with an accent tint + outline.
-const GRID_CSS: &str = "
-flowbox.thumb-grid > flowboxchild { padding: 0; }
-flowbox.thumb-grid > flowboxchild:selected {
-  background-color: alpha(@accent_color, 0.3);
-}
-flowbox.thumb-grid > flowboxchild:selected .tile {
-  outline: 2px solid @accent_color;
-  outline-offset: -1px;
-}
-";
-
-static CSS_INSTALLED: std::sync::Once = std::sync::Once::new();
-
-fn install_grid_css() {
-    CSS_INSTALLED.call_once(|| {
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(GRID_CSS);
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
-}
-
 impl MediaGrid {
     /// Build a MediaGrid that immediately renders `(media_list, mode)`.
     /// `on_activate` fires with the photo's global index in `media_list`
@@ -167,7 +138,7 @@ impl MediaGrid {
             .ok()
             .expect("MediaGrid::new called more than once");
 
-        install_grid_css();
+        crate::ui::grid_css::install();
         obj.rebuild(media_list, mode);
         obj
     }
@@ -239,7 +210,7 @@ impl MediaGrid {
                 .column_spacing(2)
                 .row_spacing(2)
                 .max_children_per_line(100)
-                .selection_mode(gtk::SelectionMode::Single)
+                .selection_mode(gtk::SelectionMode::None)
                 .build();
             flow.set_activate_on_single_click(true);
             flow.add_css_class("thumb-grid");
