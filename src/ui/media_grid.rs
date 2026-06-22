@@ -16,7 +16,7 @@
 //! Per-view tile size is configured in `spec_for_mode`:
 //! - Year  → 90×90 px on screen (thumbnail bucket Small / 256)
 //! - Month → 180×180 px (thumbnail bucket Medium / 512)
-//! - Day   → 360×360 px (thumbnail bucket Large / 1024)
+//! - Day   → 270×270 px (thumbnail bucket Large / 1024)
 //!
 //! Each tile is a `SquareTile` (see below) — a `GtkWidget` subclass wrapping
 //! a `GtkPicture` (`content-fit: cover`) that overrides `measure` to report a
@@ -109,7 +109,7 @@ fn spec_for_mode(mode: GroupBy) -> ViewSpec {
             thumb_size: ThumbnailSize::Medium,
         },
         GroupBy::Day => ViewSpec {
-            pixel_size: 360,
+            pixel_size: 270,
             thumb_size: ThumbnailSize::Large,
         },
     }
