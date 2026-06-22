@@ -87,6 +87,33 @@ mod imp {
             self.parent_constructed();
             // Sync template defaults to the current active_index.
             self.apply_state();
+
+            // Click on any of the 3 label cells → switch to that mode.
+            // The gesture is owned by its cell, so it lives as long
+            // as the widget does.
+            if let Some(row) = self
+                .obj()
+                .first_child()
+                .and_then(|c| c.downcast::<gtk::Box>().ok())
+            {
+                let mut idx: u32 = 0;
+                let mut next = row.first_child();
+                while let Some(cell) = next {
+                    if let Ok(cell_box) = cell.clone().downcast::<gtk::Box>() {
+                        let sel_weak = self.obj().downgrade();
+                        let i = idx;
+                        let gesture = gtk::GestureClick::new();
+                        gesture.connect_pressed(move |_, _n, _x, _y| {
+                            if let Some(sel) = sel_weak.upgrade() {
+                                sel.set_active_index(i);
+                            }
+                        });
+                        cell_box.add_controller(gesture);
+                    }
+                    idx += 1;
+                    next = cell.next_sibling();
+                }
+            }
         }
     }
     impl WidgetImpl for ModeSelector {}
@@ -465,6 +492,42 @@ mod tests {
             "external change should propagate to active_index + Synced"
         );
         assert_eq!(sel.active_index(), 2);
+    }
+
+    // --- Task 4: click handlers on the 3 label cells ---
+
+    #[gtk::test]
+    fn clicking_label_cell_triggers_active_index_change() {
+        let sel = ModeSelector::new();
+        // We can grab the cells via the parent Box; use the children
+        // of the ModeSelector's first row child.
+        let row = sel.first_child().expect("selector has a row child");
+        let row = row.downcast::<gtk::Box>().expect("row is a Box");
+        // Walk the row's children to find the middle cell. We only need
+        // the middle one for this test, but still assert there are 3.
+        let mut cells: Vec<gtk::Widget> = Vec::new();
+        let mut next = row.first_child();
+        while let Some(c) = next {
+            let sibling = c.next_sibling();
+            cells.push(c);
+            next = sibling;
+        }
+        assert_eq!(cells.len(), 3, "expected 3 label cells in the row");
+
+        // Find the click gesture on the middle cell and emit "pressed".
+        let middle = &cells[1];
+        let controller = middle
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .find_map(|c| c.downcast::<gtk::GestureClick>().ok())
+            .expect("middle cell should have a GtkGestureClick");
+
+        // Emit the "pressed" signal — the handler ignores the coordinates
+        // and n-press count, so pass dummy values.
+        controller.emit_by_name::<()>("pressed", &[&0i32, &0.0f64, &0.0f64]);
+
+        assert_eq!(sel.active_index(), 1);
     }
 
     /// Regression guard for the Important #2 race scenario:
