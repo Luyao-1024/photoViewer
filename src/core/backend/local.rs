@@ -51,7 +51,9 @@ impl LocalBackend {
         let meta = metadata::extract(path)?;
 
         let file_meta = std::fs::metadata(path)?;
-        let mtime = file_meta.modified().unwrap_or_else(|_| std::time::SystemTime::now());
+        let mtime = file_meta
+            .modified()
+            .unwrap_or_else(|_| std::time::SystemTime::now());
         let mtime_utc: chrono::DateTime<Utc> = mtime.into();
 
         let uri = format!("file://{}", path.display());
@@ -92,7 +94,8 @@ impl LocalBackend {
     }
 
     /// 插入或更新（URI 冲突则 UPDATE）
-    pub fn upsert(&self, item: &NewMediaItem) -> Result<i64> {        let conn = self.pool.get()?;
+    pub fn upsert(&self, item: &NewMediaItem) -> Result<i64> {
+        let conn = self.pool.get()?;
 
         // 检查是否存在
         let existing: Option<i64> = conn

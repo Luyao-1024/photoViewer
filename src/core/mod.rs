@@ -14,7 +14,9 @@ pub mod trash;
 pub use albums::{refresh as refresh_albums, Album};
 pub use backend::local::LocalBackend;
 pub use db::{init_pool, run_migrations, DbPool};
-pub use edit::{EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation, CropRect};
+pub use edit::{
+    CropRect, EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation,
+};
 pub use error::{AppError, Result};
 pub use media::{MediaItem, NewMediaItem};
 pub use metadata::{extract as extract_metadata, RawMetadata};

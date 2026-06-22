@@ -1,8 +1,10 @@
-use photo_viewer::core::edit::{EditRegistry, ParamValue, Rotation};
 use image::{DynamicImage, RgbImage};
+use photo_viewer::core::edit::{EditRegistry, ParamValue, Rotation};
 
 fn sample_img() -> DynamicImage {
-    DynamicImage::ImageRgb8(RgbImage::from_fn(100, 100, |_, _| image::Rgb([128, 128, 128])))
+    DynamicImage::ImageRgb8(RgbImage::from_fn(100, 100, |_, _| {
+        image::Rgb([128, 128, 128])
+    }))
 }
 
 #[test]

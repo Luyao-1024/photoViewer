@@ -1,7 +1,7 @@
+use chrono::Utc;
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
-use chrono::Utc;
 use tempfile::tempdir;
 
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
@@ -57,11 +57,7 @@ fn trashed_items_excluded_from_albums() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    let id = db::insert_media_item(
-        &pool,
-        &make_item("file:///p/a.jpg", "/p/a.jpg", "/p"),
-    )
-    .unwrap();
+    let id = db::insert_media_item(&pool, &make_item("file:///p/a.jpg", "/p/a.jpg", "/p")).unwrap();
     db::mark_trashed(&pool, id).unwrap();
 
     albums::refresh(&pool).unwrap();

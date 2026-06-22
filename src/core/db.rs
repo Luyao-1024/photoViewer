@@ -12,14 +12,13 @@ const SCHEMA_SQL: &str = include_str!("schema.sql");
 
 /// 初始化数据库连接池；如不存在则创建并运行迁移
 pub fn init_pool(path: &Path) -> Result<DbPool> {
-    let manager = SqliteConnectionManager::file(path)
-        .with_init(|c| {
-            c.execute_batch(
-                "PRAGMA journal_mode = WAL;
+    let manager = SqliteConnectionManager::file(path).with_init(|c| {
+        c.execute_batch(
+            "PRAGMA journal_mode = WAL;
                  PRAGMA foreign_keys = ON;
                  PRAGMA synchronous = NORMAL;",
-            )
-        });
+        )
+    });
     let pool = Pool::builder()
         .max_size(8)
         .build(manager)

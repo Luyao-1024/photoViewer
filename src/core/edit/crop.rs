@@ -27,7 +27,15 @@ impl EditOperation for CropOp {
         if let ParamValue::Crop(opt) = params {
             match opt {
                 None => Ok(img.clone()),
-                Some((x, y, w, h)) => Ok(apply_crop(img, CropRect { x, y, width: w, height: h })),
+                Some((x, y, w, h)) => Ok(apply_crop(
+                    img,
+                    CropRect {
+                        x,
+                        y,
+                        width: w,
+                        height: h,
+                    },
+                )),
             }
         } else {
             Err(format!("crop expected Crop, got {:?}", params))

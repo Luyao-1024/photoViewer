@@ -1,13 +1,13 @@
 //! AdwApplication lifecycle management
+use crate::core::db::DbPool;
+use crate::core::init_pool;
+use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::{MainWindow, PhotosPage};
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::sync::{Arc, OnceLock};
-use crate::core::init_pool;
-use crate::core::db::DbPool;
-use crate::core::thumbnails::ThumbnailLoader;
-use crate::ui::{MainWindow, PhotosPage};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -89,8 +89,8 @@ pub fn build_app() -> adw::Application {
 }
 
 async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>, DbPool)> {
-    use crate::core::db;
     use crate::core::backend::scan_worker::spawn_scan;
+    use crate::core::db;
 
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;

@@ -29,8 +29,11 @@ pub fn write_jpeg_with_exif(
     // 1) Create a base JPEG.
     let img = ImageBuffer::<Rgb<u8>, _>::from_fn(64, 48, |_, _| Rgb([128, 128, 128]));
     let mut jpeg_bytes: Vec<u8> = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut jpeg_bytes), image::ImageFormat::Jpeg)
-        .unwrap();
+    img.write_to(
+        &mut std::io::Cursor::new(&mut jpeg_bytes),
+        image::ImageFormat::Jpeg,
+    )
+    .unwrap();
 
     // 2) Build the EXIF APP1 segment using kamadak-exif's Writer.
     let exif_dt = naive.format("%Y:%m:%d %H:%M:%S").to_string();

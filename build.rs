@@ -9,11 +9,7 @@ fn compile_blueprint(src: &str, dst: &str) {
         .status()
         .expect("failed to invoke blueprint-compiler (is it installed?)");
 
-    assert!(
-        status.success(),
-        "blueprint-compiler failed for {}",
-        src
-    );
+    assert!(status.success(), "blueprint-compiler failed for {}", src);
 
     // Re-run build.rs if the source changes.
     println!("cargo:rerun-if-changed={src}");
@@ -40,8 +36,8 @@ fn main() {
 
     // 2. Compile GResource (must contain all .ui files + icons)
     glib_build_tools::compile_resources(
-        &["data"],                       // resource base dir
-        "data/resources.gresource.xml",  // resource manifest
+        &["data"],                          // resource base dir
+        "data/resources.gresource.xml",     // resource manifest
         "photo_viewer_resources.gresource", // resource name (C identifier)
     );
 

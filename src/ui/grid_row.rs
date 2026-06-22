@@ -9,11 +9,6 @@ use crate::core::media::MediaItem;
 
 #[derive(Debug, Clone)]
 pub enum GridRow {
-    Header {
-        label: String,
-    },
-    Photo {
-        item: MediaItem,
-        global_index: u32,
-    },
+    Header { label: String },
+    Photo { item: MediaItem, global_index: u32 },
 }

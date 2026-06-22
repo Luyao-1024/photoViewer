@@ -150,8 +150,7 @@ impl EditorPage {
             if let Ok(Some(img)) = loaded {
                 // >8MP 降采样到 ~8MP（保持宽高比）
                 let downsampled = if img.width() * img.height() > 8_000_000 {
-                    let scale =
-                        (8_000_000.0_f64 / (img.width() * img.height()) as f64).sqrt();
+                    let scale = (8_000_000.0_f64 / (img.width() * img.height()) as f64).sqrt();
                     img.resize(
                         (img.width() as f64 * scale) as u32,
                         (img.height() as f64 * scale) as u32,
@@ -175,50 +174,68 @@ impl EditorPage {
         let imp = self.imp();
 
         // Cancel: 委托给 host 提供的回调
-        imp.cancel_btn.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            let cb = this.imp().on_cancel.borrow().clone();
-            if let Some(cb) = cb {
-                cb();
-            }
-        }));
+        imp.cancel_btn
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                let cb = this.imp().on_cancel.borrow().clone();
+                if let Some(cb) = cb {
+                    cb();
+                }
+            }));
 
         // 旋转按钮
-        imp.rotate_90_cw.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            this.apply_rotation_delta(90);
-        }));
-        imp.rotate_180.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            this.apply_rotation_delta(180);
-        }));
-        imp.rotate_90_ccw.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            this.apply_rotation_delta(-90);
-        }));
+        imp.rotate_90_cw
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.apply_rotation_delta(90);
+            }));
+        imp.rotate_180
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.apply_rotation_delta(180);
+            }));
+        imp.rotate_90_ccw
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.apply_rotation_delta(-90);
+            }));
 
         // 调色滑块
-        imp.brightness_scale.get().connect_value_changed(glib::clone!(@weak self as this => move |s| {
-            this.imp().state.borrow_mut().brightness = s.value() as i32;
-            this.schedule_preview_update();
-        }));
-        imp.contrast_scale.get().connect_value_changed(glib::clone!(@weak self as this => move |s| {
-            this.imp().state.borrow_mut().contrast = s.value() as i32;
-            this.schedule_preview_update();
-        }));
-        imp.saturation_scale.get().connect_value_changed(glib::clone!(@weak self as this => move |s| {
-            this.imp().state.borrow_mut().saturation = s.value() as i32;
-            this.schedule_preview_update();
-        }));
+        imp.brightness_scale.get().connect_value_changed(
+            glib::clone!(@weak self as this => move |s| {
+                this.imp().state.borrow_mut().brightness = s.value() as i32;
+                this.schedule_preview_update();
+            }),
+        );
+        imp.contrast_scale.get().connect_value_changed(
+            glib::clone!(@weak self as this => move |s| {
+                this.imp().state.borrow_mut().contrast = s.value() as i32;
+                this.schedule_preview_update();
+            }),
+        );
+        imp.saturation_scale.get().connect_value_changed(
+            glib::clone!(@weak self as this => move |s| {
+                this.imp().state.borrow_mut().saturation = s.value() as i32;
+                this.schedule_preview_update();
+            }),
+        );
 
         // Save Copy（默认）：渲染 → 写新文件 → 插新 DB 行
-        imp.save_copy_btn.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            this.save_as_copy();
-        }));
+        imp.save_copy_btn
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.save_as_copy();
+            }));
 
         // Save ▼ 菜单：Save Copy / Save Overwrite
         self.setup_save_menu();
 
         // Crop 占位：V1 显示 toast
-        imp.start_crop_btn.get().connect_clicked(glib::clone!(@weak self as this => move |_| {
-            this.show_toast("Crop UI 在 V2 实现");
-        }));
+        imp.start_crop_btn
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.show_toast("Crop UI 在 V2 实现");
+            }));
     }
 
     /// Build the Save ▼ popover menu (Save Copy / Save Overwrite) and attach
@@ -311,7 +328,9 @@ impl EditorPage {
     fn save_overwrite_with_confirm(&self) {
         let dialog = adw::AlertDialog::builder()
             .heading("Overwrite Original?")
-            .body("This will replace the original file. The original will be backed up to .jpg.bak.")
+            .body(
+                "This will replace the original file. The original will be backed up to .jpg.bak.",
+            )
             .build();
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("overwrite", "Overwrite");
@@ -358,12 +377,11 @@ impl EditorPage {
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let result: std::thread::Result<
-                std::result::Result<(), crate::core::error::AppError>,
-            > = gio::spawn_blocking(move || {
-                crate::core::edit::save_overwrite(&item, &state, &pool, &registry)
-            })
-            .await;
+            let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
+                gio::spawn_blocking(move || {
+                    crate::core::edit::save_overwrite(&item, &state, &pool, &registry)
+                })
+                .await;
 
             if let Some(this) = weak.upgrade() {
                 match result {
@@ -399,10 +417,8 @@ impl EditorPage {
             // （保留 .jpg.bak 备份）；返回 `Result<()>` 包装为
             // `thread::Result`（Err 仅在 worker panic 时）。
             let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
-                gio::spawn_blocking(move || {
-                    crate::core::edit::rotate_in_place(&item.path, delta)
-                })
-                .await;
+                gio::spawn_blocking(move || crate::core::edit::rotate_in_place(&item.path, delta))
+                    .await;
 
             if let Some(this) = weak.upgrade() {
                 match result {
@@ -429,16 +445,13 @@ impl EditorPage {
         };
         let weak = self.downgrade();
         let path = item.path.clone();
-        glib::timeout_add_local_once(
-            std::time::Duration::from_secs(5),
-            move || {
-                if let Some(_this) = weak.upgrade() {
-                    if let Err(e) = crate::core::edit::rotate_in_place(&path, -delta) {
-                        tracing::error!("撤销旋转失败: {}", e);
-                    }
+        glib::timeout_add_local_once(std::time::Duration::from_secs(5), move || {
+            if let Some(_this) = weak.upgrade() {
+                if let Err(e) = crate::core::edit::rotate_in_place(&path, -delta) {
+                    tracing::error!("撤销旋转失败: {}", e);
                 }
-            },
-        );
+            }
+        });
         tracing::info!("已旋转 {}°，5 秒后撤销", delta);
     }
 
@@ -451,14 +464,16 @@ impl EditorPage {
             id.remove();
         }
         let weak = self.downgrade();
-        imp.debounce_id.borrow_mut().replace(glib::timeout_add_local_once(
-            Duration::from_millis(33),
-            move || {
-                if let Some(this) = weak.upgrade() {
-                    this.render_preview();
-                }
-            },
-        ));
+        imp.debounce_id
+            .borrow_mut()
+            .replace(glib::timeout_add_local_once(
+                Duration::from_millis(33),
+                move || {
+                    if let Some(this) = weak.upgrade() {
+                        this.render_preview();
+                    }
+                },
+            ));
     }
 
     /// 触发一次预览渲染。`spawn_blocking` 跑 `apply_all`，结果回到主线程
@@ -492,9 +507,8 @@ impl EditorPage {
             // `JoinHandle`'s `thread::Result` (Err only on worker panic), so
             // the outer `Result` distinguishes a panic from an app-level
             // image error.
-            let rendered: std::thread::Result<
-                std::result::Result<image::DynamicImage, String>,
-            > = gio::spawn_blocking(move || apply_all(&registry, source, &state)).await;
+            let rendered: std::thread::Result<std::result::Result<image::DynamicImage, String>> =
+                gio::spawn_blocking(move || apply_all(&registry, source, &state)).await;
 
             if let Some(this) = weak.upgrade() {
                 // Another render started after us — drop this stale result.
@@ -521,7 +535,10 @@ impl EditorPage {
                             rowstride,
                         );
                         let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                        this.imp().preview_picture.get().set_paintable(Some(&texture));
+                        this.imp()
+                            .preview_picture
+                            .get()
+                            .set_paintable(Some(&texture));
                     }
                     Ok(Err(e)) => {
                         tracing::warn!("EditorPage: render failed: {}", e);

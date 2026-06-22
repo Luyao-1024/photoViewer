@@ -108,109 +108,118 @@ impl TrashPage {
         }));
 
         // Cancel：清空选择 + 隐藏 ActionBar
-        obj.imp().cancel_btn.get().connect_clicked(glib::clone!(@weak obj, @weak flow => move |_| {
-            flow.unselect_all();
-            *obj.imp().trashed_ids.borrow_mut() = vec![];
-            obj.imp().action_bar.get().set_revealed(false);
-        }));
+        obj.imp().cancel_btn.get().connect_clicked(
+            glib::clone!(@weak obj, @weak flow => move |_| {
+                flow.unselect_all();
+                *obj.imp().trashed_ids.borrow_mut() = vec![];
+                obj.imp().action_bar.get().set_revealed(false);
+            }),
+        );
 
         // Restore：批量还原
-        obj.imp().restore_btn.get().connect_clicked(glib::clone!(@weak obj, @weak flow => move |_| {
-            let pool = match obj.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
-                None => return,
-            };
-            let ids = obj.imp().trashed_ids.borrow().clone();
+        obj.imp().restore_btn.get().connect_clicked(
+            glib::clone!(@weak obj, @weak flow => move |_| {
+                let pool = match obj.imp().pool.borrow().as_ref() {
+                    Some(p) => p.clone(),
+                    None => return,
+                };
+                let ids = obj.imp().trashed_ids.borrow().clone();
 
-            // 异步批处理：避免阻塞 UI
-            glib::spawn_future_local(async move {
-                for id in ids {
-                    if let Ok(item) = db::get_media_item(&pool, id) {
-                        let _ = trash::restore_from_trash(&item.uri);
-                        let _ = db::unmark_trashed(&pool, id);
-                    }
-                }
-                flow.unselect_all();
-            });
-        }));
-
-        // Delete Permanently：批量永久删除
-        obj.imp().delete_btn.get().connect_clicked(glib::clone!(@weak obj, @weak flow => move |_| {
-            let pool = match obj.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
-                None => return,
-            };
-            let ids = obj.imp().trashed_ids.borrow().clone();
-            let page_weak = obj.downgrade();
-
-            glib::spawn_future_local(async move {
-                for id in ids {
-                    if let Ok(item) = db::get_media_item(&pool, id) {
-                        let _ = trash::delete_permanently(&item.uri);
-                        let _ = db::delete_media_item(&pool, id);
-                    }
-                }
-                flow.unselect_all();
-                // If no items remain, swap the scrolled child for the
-                // empty-state status page.
-                if let Ok(remaining) = db::list_trashed_media(&pool) {
-                    if remaining.is_empty() {
-                        if let Some(page) = page_weak.upgrade() {
-                            show_empty_trash(&page);
+                // 异步批处理：避免阻塞 UI
+                glib::spawn_future_local(async move {
+                    for id in ids {
+                        if let Ok(item) = db::get_media_item(&pool, id) {
+                            let _ = trash::restore_from_trash(&item.uri);
+                            let _ = db::unmark_trashed(&pool, id);
                         }
                     }
-                }
-            });
-        }));
+                    flow.unselect_all();
+                });
+            }),
+        );
 
-        // Empty All：弹 AdwAlertDialog 确认后批量永久删除所有回收站项
-        obj.imp().empty_btn.get().connect_clicked(glib::clone!(@weak obj => move |_| {
-            let pool = match obj.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
-                None => return,
-            };
-            let flow_weak = obj.imp().flow_box.downgrade();
-            let page_weak = obj.downgrade();
+        // Delete Permanently：批量永久删除
+        obj.imp().delete_btn.get().connect_clicked(
+            glib::clone!(@weak obj, @weak flow => move |_| {
+                let pool = match obj.imp().pool.borrow().as_ref() {
+                    Some(p) => p.clone(),
+                    None => return,
+                };
+                let ids = obj.imp().trashed_ids.borrow().clone();
+                let page_weak = obj.downgrade();
 
-            let dialog = adw::AlertDialog::builder()
-                .heading("Empty Trash?")
-                .body("All items in trash will be permanently deleted.")
-                .build();
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("empty", "Empty");
-            dialog.set_response_appearance("empty", adw::ResponseAppearance::Destructive);
-
-            dialog.connect_response(
-                None,
-                move |_, response| {
-                    if response == "empty" {
-                        let pool = pool.clone();
-                        let flow_weak = flow_weak.clone();
-                        let page_weak = page_weak.clone();
-                        glib::spawn_future_local(async move {
-                            if let Ok(items) = db::list_trashed_media(&pool) {
-                                for item in items {
-                                    let _ = trash::delete_permanently(&item.uri);
-                                    let _ = db::delete_media_item(&pool, item.id);
-                                }
-                            }
-                            if let Some(flow) = flow_weak.upgrade() {
-                                while let Some(child) = flow.first_child() {
-                                    flow.remove(&child);
-                                }
-                            }
-                            // After emptying, the trash is empty — show the
-                            // empty-state status page.
+                glib::spawn_future_local(async move {
+                    for id in ids {
+                        if let Ok(item) = db::get_media_item(&pool, id) {
+                            let _ = trash::delete_permanently(&item.uri);
+                            let _ = db::delete_media_item(&pool, id);
+                        }
+                    }
+                    flow.unselect_all();
+                    // If no items remain, swap the scrolled child for the
+                    // empty-state status page.
+                    if let Ok(remaining) = db::list_trashed_media(&pool) {
+                        if remaining.is_empty() {
                             if let Some(page) = page_weak.upgrade() {
                                 show_empty_trash(&page);
                             }
-                        });
+                        }
                     }
-                },
-            );
+                });
+            }),
+        );
 
-            dialog.present(&obj);
-        }));
+        // Empty All：弹 AdwAlertDialog 确认后批量永久删除所有回收站项
+        obj.imp()
+            .empty_btn
+            .get()
+            .connect_clicked(glib::clone!(@weak obj => move |_| {
+                let pool = match obj.imp().pool.borrow().as_ref() {
+                    Some(p) => p.clone(),
+                    None => return,
+                };
+                let flow_weak = obj.imp().flow_box.downgrade();
+                let page_weak = obj.downgrade();
+
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Empty Trash?")
+                    .body("All items in trash will be permanently deleted.")
+                    .build();
+                dialog.add_response("cancel", "Cancel");
+                dialog.add_response("empty", "Empty");
+                dialog.set_response_appearance("empty", adw::ResponseAppearance::Destructive);
+
+                dialog.connect_response(
+                    None,
+                    move |_, response| {
+                        if response == "empty" {
+                            let pool = pool.clone();
+                            let flow_weak = flow_weak.clone();
+                            let page_weak = page_weak.clone();
+                            glib::spawn_future_local(async move {
+                                if let Ok(items) = db::list_trashed_media(&pool) {
+                                    for item in items {
+                                        let _ = trash::delete_permanently(&item.uri);
+                                        let _ = db::delete_media_item(&pool, item.id);
+                                    }
+                                }
+                                if let Some(flow) = flow_weak.upgrade() {
+                                    while let Some(child) = flow.first_child() {
+                                        flow.remove(&child);
+                                    }
+                                }
+                                // After emptying, the trash is empty — show the
+                                // empty-state status page.
+                                if let Some(page) = page_weak.upgrade() {
+                                    show_empty_trash(&page);
+                                }
+                            });
+                        }
+                    },
+                );
+
+                dialog.present(&obj);
+            }));
 
         // 加载初始数据
         let pool_clone = pool.clone();

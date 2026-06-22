@@ -94,7 +94,10 @@ fn cache_hit_avoids_regenerate() {
         .flatten()
         .find(|e| e.path().extension().map(|x| x == "jpg").unwrap_or(false))
         .expect("cache file should exist after first request");
-    let mtime1 = std::fs::metadata(cache_file.path()).unwrap().modified().unwrap();
+    let mtime1 = std::fs::metadata(cache_file.path())
+        .unwrap()
+        .modified()
+        .unwrap();
 
     // 第二次（应命中缓存）
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -106,6 +109,9 @@ fn cache_hit_avoids_regenerate() {
     );
     let _ = runtime.block_on(rx2);
 
-    let mtime2 = std::fs::metadata(cache_file.path()).unwrap().modified().unwrap();
+    let mtime2 = std::fs::metadata(cache_file.path())
+        .unwrap()
+        .modified()
+        .unwrap();
     assert_eq!(mtime1, mtime2, "命中缓存时不应重新生成");
 }

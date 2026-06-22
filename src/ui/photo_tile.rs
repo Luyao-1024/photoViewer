@@ -70,7 +70,10 @@ impl PhotoTile {
     }
 
     pub fn set_placeholder(&self) {
-        self.imp().picture.get().set_paintable(None::<&gtk::gdk::Paintable>);
+        self.imp()
+            .picture
+            .get()
+            .set_paintable(None::<&gtk::gdk::Paintable>);
     }
 
     pub fn set_item(

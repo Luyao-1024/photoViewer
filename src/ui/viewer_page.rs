@@ -213,7 +213,10 @@ impl ViewerPage {
             if index >= list.n_items() {
                 return;
             }
-            match list.item(index).and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok()) {
+            match list
+                .item(index)
+                .and_then(|o| o.downcast::<glib::BoxedAnyObject>().ok())
+            {
                 Some(boxed) => boxed.borrow::<MediaItem>().uri.clone(),
                 None => return,
             }
@@ -242,8 +245,7 @@ impl ViewerPage {
             if token_holder.get() != token {
                 return;
             }
-            if let (Some(picture), Some(spinner)) =
-                (picture_weak.upgrade(), spinner_weak.upgrade())
+            if let (Some(picture), Some(spinner)) = (picture_weak.upgrade(), spinner_weak.upgrade())
             {
                 picture.set_paintable(Some(&texture));
                 spinner.set_visible(false);
@@ -314,10 +316,7 @@ impl ViewerPage {
                 // The picture re-paints on the next frame.
                 let picture = this.imp().picture.get();
                 if let Some(provider) = this.imp().zoom_provider.borrow().as_ref() {
-                    provider.load_from_data(&format!(
-                        "picture {{ transform: scale({}); }}",
-                        next
-                    ));
+                    provider.load_from_data(&format!("picture {{ transform: scale({}); }}", next));
                 }
                 picture.queue_draw();
             }

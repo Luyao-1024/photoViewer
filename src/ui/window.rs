@@ -2,12 +2,11 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
-use glib::subclass::types::ObjectSubclassIsExt;
-
 
 use crate::core::db::DbPool;
 use crate::core::thumbnails::ThumbnailLoader;

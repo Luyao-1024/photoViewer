@@ -87,7 +87,8 @@ fn watcher_picks_up_new_file() {
     let root = dir.path().to_path_buf();
 
     let pool = db::init_pool(&dir.path().join("watch.db")).unwrap();
-    let _watcher = photo_viewer::core::notify_watcher::start_watching(pool.clone(), vec![root.clone()]);
+    let _watcher =
+        photo_viewer::core::notify_watcher::start_watching(pool.clone(), vec![root.clone()]);
 
     // 给 watcher 一点时间完成 setup
     std::thread::sleep(Duration::from_millis(300));

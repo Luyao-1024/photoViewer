@@ -54,7 +54,12 @@ fn full_flow_scan_albums_trash() {
     assert_eq!(total, 3);
     let cam = list
         .iter()
-        .find(|a| a.folder_path.file_name().map(|s| s == "Camera").unwrap_or(false))
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+        })
         .expect("Camera album should exist");
     let scr = list
         .iter()
@@ -97,7 +102,12 @@ fn full_flow_scan_albums_trash() {
     // Camera 计数应从 2 → 1
     let cam2 = list2
         .iter()
-        .find(|a| a.folder_path.file_name().map(|s| s == "Camera").unwrap_or(false))
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+        })
         .expect("Camera album still exists");
     assert_eq!(cam2.photo_count, 1);
 

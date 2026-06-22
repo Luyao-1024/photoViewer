@@ -60,8 +60,8 @@ pub enum EditCategory {
     Transform, // Rotate
     Color,     // Brightness, Contrast, Saturation
     Crop,
-    Filter,    // V2: Grayscale, Blur, etc.
-    Effect,    // V2: Sticker, RedEye, etc.
+    Filter, // V2: Grayscale, Blur, etc.
+    Effect, // V2: Sticker, RedEye, etc.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +97,9 @@ pub struct EditRegistry {
 
 impl EditRegistry {
     pub fn new() -> Self {
-        Self { ops: HashMap::new() }
+        Self {
+            ops: HashMap::new(),
+        }
     }
 
     pub fn new_with_v1() -> Self {

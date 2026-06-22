@@ -28,11 +28,9 @@ fn unknown_extension_returns_error() {
 fn mime_type_inferred_from_extension() {
     let dir = tmp_dir();
     let png_path = dir.path().join("test.png");
-    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(10, 10, |_, _| {
-        image::Rgb([0, 0, 0])
-    })
-    .save(&png_path)
-    .unwrap();
+    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(10, 10, |_, _| image::Rgb([0, 0, 0]))
+        .save(&png_path)
+        .unwrap();
 
     let meta = metadata::extract(&png_path).unwrap();
     assert_eq!(meta.mime_type, "image/png");

@@ -44,4 +44,3 @@ pub fn apply_color_adjust(
     }
     out
 }
-

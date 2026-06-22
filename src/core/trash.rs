@@ -38,10 +38,7 @@ fn trash_root() -> PathBuf {
 /// 记录原路径。`Path=` 字段是原文件的绝对路径。
 ///
 /// 返回 `(files_dir 中的实际文件名, info_dir 中的 trashinfo 文件路径)`。
-fn resolve_trash_entry(
-    original_path: &Path,
-    original_basename: &str,
-) -> Result<(String, PathBuf)> {
+fn resolve_trash_entry(original_path: &Path, original_basename: &str) -> Result<(String, PathBuf)> {
     let info_dir = trash_root().join("info");
     let files_dir = trash_root().join("files");
 
@@ -73,9 +70,7 @@ fn resolve_trash_entry(
                     .ok_or_else(|| AppError::Backend("trashinfo filename not utf8".into()))?;
                 let actual = file_name
                     .strip_suffix(".trashinfo")
-                    .ok_or_else(|| {
-                        AppError::Backend("trashinfo missing .trashinfo suffix".into())
-                    })?
+                    .ok_or_else(|| AppError::Backend("trashinfo missing .trashinfo suffix".into()))?
                     .to_string();
                 // 校验 files 目录里也确实存在该条目（防御性检查）
                 let in_files = files_dir.join(&actual);
@@ -88,7 +83,10 @@ fn resolve_trash_entry(
     }
 
     // 兜底：使用原始 basename（无冲突路径，gio 不创建 .trashinfo 时的兼容情况）
-    Ok((original_basename.to_string(), info_dir.join(format!("{}.trashinfo", original_basename))))
+    Ok((
+        original_basename.to_string(),
+        info_dir.join(format!("{}.trashinfo", original_basename)),
+    ))
 }
 
 /// 将文件移至系统回收站（gio 自动处理原路径记录）
@@ -178,7 +176,9 @@ pub fn delete_permanently(uri: &str) -> Result<()> {
         // 若传入的是 trash:///...，同步清理可能的 .trashinfo
         if uri.starts_with("trash:///") {
             if let Some(base) = uri.strip_prefix("trash:///") {
-                let candidate = trash_root().join("info").join(format!("{}.trashinfo", base));
+                let candidate = trash_root()
+                    .join("info")
+                    .join(format!("{}.trashinfo", base));
                 if candidate.exists() {
                     let _ = std::fs::remove_file(&candidate);
                 }

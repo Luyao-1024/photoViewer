@@ -18,7 +18,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ThumbnailSize {
     #[default]
-    Small,  // 256
+    Small, // 256
     Medium, // 512
     Large,  // 1024
 }

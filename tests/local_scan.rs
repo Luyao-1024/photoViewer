@@ -13,18 +13,20 @@ fn scan_finds_jpeg_png() {
         write_plain_jpeg(root, name);
     }
     let png_path = root.join("d.png");
-    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(10, 10, |_, _| {
-        image::Rgb([255, 0, 0])
-    })
-    .save(&png_path)
-    .unwrap();
+    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(10, 10, |_, _| image::Rgb([255, 0, 0]))
+        .save(&png_path)
+        .unwrap();
     std::fs::write(root.join("readme.txt"), b"text").unwrap();
 
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let backend = LocalBackend::new(pool.clone());
 
     let items = backend.scan_dir(root).unwrap();
-    assert_eq!(items.len(), 4, "应识别 4 张图片（JPEG×3 + PNG×1），忽略 .txt");
+    assert_eq!(
+        items.len(),
+        4,
+        "应识别 4 张图片（JPEG×3 + PNG×1），忽略 .txt"
+    );
 
     // 验证每项都有 hash 和 mime
     for item in &items {

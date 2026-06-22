@@ -9,8 +9,8 @@
 //! inserted into a container (typically swapped in place of the normal
 //! grid/flow-box). `add_css_class("compact")` is applied to `no_photos`
 //! to keep the title+icon size proportional on small pages.
-use libadwaita as adw;
 use gtk4::prelude::*;
+use libadwaita as adw;
 
 /// Empty state for the main Photos view: no photos have been imported yet.
 pub fn no_photos() -> adw::StatusPage {
@@ -64,7 +64,5 @@ pub fn scan_error(msg: &str) -> adw::StatusPage {
 /// Loading state — used during initial scan / refresh while data is
 /// being fetched from disk and indexed in the database.
 pub fn loading() -> adw::StatusPage {
-    adw::StatusPage::builder()
-        .title("Loading…")
-        .build()
+    adw::StatusPage::builder().title("Loading…").build()
 }

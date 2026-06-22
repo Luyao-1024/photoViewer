@@ -1,9 +1,9 @@
 mod common;
 use common::*;
-use gtk4 as gtk;
 use gtk::gio;
 use gtk::gio::prelude::ListModelExt;
 use gtk::glib;
+use gtk4 as gtk;
 use photo_viewer::core::backend::local::LocalBackend;
 use photo_viewer::core::db;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
@@ -19,12 +19,11 @@ fn scan_then_generate_thumbnails() {
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let backend = LocalBackend::new(pool.clone());
     let items = backend.scan_dir(root).unwrap();
-    for it in &items { backend.upsert(it).unwrap(); }
+    for it in &items {
+        backend.upsert(it).unwrap();
+    }
 
-    let _loader = Arc::new(ThumbnailLoader::new(
-        pool.clone(),
-        dir.path().join("cache"),
-    ));
+    let _loader = Arc::new(ThumbnailLoader::new(pool.clone(), dir.path().join("cache")));
 
     let list = gio::ListStore::new::<glib::BoxedAnyObject>();
     let loaded = db::list_all_media(&pool).unwrap();

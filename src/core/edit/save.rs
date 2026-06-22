@@ -27,8 +27,7 @@ pub fn save_as_copy(
     let img = image::open(&source.path)?;
 
     // 2. 应用所有编辑
-    let rendered = apply_all(registry, img, state)
-        .map_err(crate::core::error::AppError::Decode)?;
+    let rendered = apply_all(registry, img, state).map_err(crate::core::error::AppError::Decode)?;
 
     // 3. 生成新文件名（避免覆盖同名副本）
     let new_path = generate_edited_path(&source.path);
@@ -71,8 +70,7 @@ pub fn save_overwrite(
 
     // 2. 加载原图全分辨率
     let img = image::open(&source.path)?;
-    let rendered = apply_all(registry, img, state)
-        .map_err(crate::core::error::AppError::Decode)?;
+    let rendered = apply_all(registry, img, state).map_err(crate::core::error::AppError::Decode)?;
 
     // 3. 写回原路径
     rendered.save_with_format(&source.path, image::ImageFormat::Jpeg)?;
