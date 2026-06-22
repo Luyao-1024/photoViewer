@@ -114,6 +114,25 @@ mod imp {
                     next = cell.next_sibling();
                 }
             }
+
+            // Arrow-key navigation: ←/→ cycle active_index (with wrap).
+            let key_ctrl = gtk::EventControllerKey::new();
+            let sel_weak = self.obj().downgrade();
+            key_ctrl.connect_key_pressed(move |_, key, _keycode, _state| {
+                use gtk::gdk::Key;
+                let Some(sel) = sel_weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let cur = sel.active_index();
+                let next = match key {
+                    Key::Left | Key::KP_Left => (cur + 2) % 3,
+                    Key::Right | Key::KP_Right => (cur + 1) % 3,
+                    _ => return glib::Propagation::Proceed,
+                };
+                sel.set_active_index(next);
+                glib::Propagation::Stop
+            });
+            self.obj().add_controller(key_ctrl);
         }
     }
     impl WidgetImpl for ModeSelector {}
@@ -296,6 +315,9 @@ impl ModeSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk::init;
+    use gtk4::gdk;
+    use gtk4::glib::value::ToValue;
 
     // GTK is a single-threaded library; `#[test]` runs each test in a fresh
     // thread, which would panic with "Attempted to initialize GTK from two
@@ -563,5 +585,50 @@ mod tests {
         while ctx.iteration(false) {}
         assert_eq!(sel.active_index(), 1);
         assert_eq!(stack.visible_child_name().as_deref(), Some("month"));
+    }
+
+    // --- Task 5: arrow-key navigation (with wrap) ---
+
+    #[gtk::test]
+    fn right_arrow_advances_active_index_with_wrap() {
+        let _ = init();
+        let sel = ModeSelector::new();
+        let (stack, _labels) = build_stack();
+        sel.set_stack(&stack);
+
+        // Initial: 0. → → should land on 2 (with wrap).
+        let ctrl = sel
+            .observe_controllers()
+            .item(0)
+            .and_downcast::<gtk::EventControllerKey>()
+            .expect("ModeSelector should have an EventControllerKey");
+        let args: &[&dyn ToValue] = &[&gdk::Key::Right, &0u32, &gdk::ModifierType::empty()];
+        let _: bool = ctrl.emit_by_name("key-pressed", args);
+        assert_eq!(sel.active_index(), 1);
+        let _: bool = ctrl.emit_by_name("key-pressed", args);
+        assert_eq!(sel.active_index(), 2);
+        // Wrap: 2 → 0
+        let _: bool = ctrl.emit_by_name("key-pressed", args);
+        assert_eq!(sel.active_index(), 0);
+    }
+
+    #[gtk::test]
+    fn left_arrow_retreats_active_index_with_wrap() {
+        let _ = init();
+        let sel = ModeSelector::new();
+        let (stack, _labels) = build_stack();
+        sel.set_stack(&stack);
+
+        let ctrl = sel
+            .observe_controllers()
+            .item(0)
+            .and_downcast::<gtk::EventControllerKey>()
+            .expect("ModeSelector should have an EventControllerKey");
+        let args: &[&dyn ToValue] = &[&gdk::Key::Left, &0u32, &gdk::ModifierType::empty()];
+        // Wrap: 0 → 2
+        let _: bool = ctrl.emit_by_name("key-pressed", args);
+        assert_eq!(sel.active_index(), 2);
+        let _: bool = ctrl.emit_by_name("key-pressed", args);
+        assert_eq!(sel.active_index(), 1);
     }
 }
