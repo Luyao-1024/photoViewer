@@ -6,6 +6,7 @@
     <file>ui/albums-page.ui</file>
     <file>ui/album-detail-page.ui</file>
     <file>ui/media-grid.ui</file>
+    <file>ui/mode-selector.ui</file>
     <file>ui/photo-tile.ui</file>
     <file>ui/section-header.ui</file>
     <file>ui/viewer-page.ui</file>

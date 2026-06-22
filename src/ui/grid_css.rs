@@ -49,6 +49,42 @@ flowbox.thumb-grid > flowboxchild:focus {
 flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) {
   outline: none;
 }
+
+/* ModeSelector 容器：~50% 透明圆角面板 */
+box.mode-selector {
+  background: alpha(@card_bg_color, 0.5);
+  border-radius: 12px;
+  padding: 8px 16px;
+}
+
+/* 单个 label / dot 槽位 */
+box.mode-cell {
+  min-width: 60px;
+  padding: 4px 12px;
+}
+
+/* 标签：默认半透明、title-3 字号 */
+box.mode-selector label {
+  font-size: 14pt;
+  font-weight: 500;
+  color: @window_fg_color;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+/* 激活态：标签全亮 */
+box.mode-selector label.active {
+  opacity: 1.0;
+}
+
+/* 激活指示点 */
+box.mode-dot {
+  background: @accent_color;
+  border-radius: 2px;
+  min-width: 24px;
+  min-height: 4px;
+  margin-top: 2px;
+}
 ";
 
 static CSS_INSTALLED: std::sync::Once = std::sync::Once::new();
