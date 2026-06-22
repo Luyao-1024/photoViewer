@@ -42,14 +42,17 @@ PhotosPage (AdwNavigationPage)
     ├── GtkViewStack view_stack         ← 已存在，3 个 MediaGrid 子页
     └── ModeSelector (新 widget)        ← 悬浮在网格底部
         └── GtkBox vertical (css: mode-selector)
-            ├── GtkBox horizontal (halign: center)
-            │   ├── label_cell "年"   (GtkBox, 固定宽 60px, GestureClick)
-            │   ├── label_cell "月"
-            │   └── label_cell "日"
+            ├── row (GtkBox horizontal, halign: center)
+            │   ├── label_cell "年"   (GtkBox css: mode-cell, 固定宽, GestureClick)
+            │   ├── label_cell "月"   (GtkBox css: mode-cell, 固定宽, GestureClick)
+            │   └── label_cell "日"   (GtkBox css: mode-cell, 固定宽, GestureClick)
             └── dot_row (GtkBox horizontal, halign: center, valign: start, 高 6px)
-                ├── 空 cell (与 label_cell 同宽, 透明)
-                ├── 空 cell
-                └── dot_box (GtkBox css: mode-dot, 宽 60px / 高 4px)
+                ├── dot_cell (GtkBox css: mode-cell, 固定宽)
+                │   └── dot_inner (GtkBox css: mode-dot, 24×4, 默认 visible=false)
+                ├── dot_cell (GtkBox css: mode-cell, 固定宽)
+                │   └── dot_inner (GtkBox css: mode-dot, 24×4, 默认 visible=false)
+                └── dot_cell (GtkBox css: mode-cell, 固定宽)
+                    └── dot_inner (GtkBox css: mode-dot, 24×4, 默认 visible=true)
 ```
 
 `PhotosPage` 整体布局由 `GtkBox { HeaderBar, SwitcherBar, ViewStack }` 改为 `GtkOverlay { ViewStack, ModeSelector }`。
@@ -72,9 +75,10 @@ PhotosPage (AdwNavigationPage)
 **`ModeSelector` 内部行为**：
 - 3 个 label 上挂 `GtkGestureClick`：点击触发 `set_active_index(i)`。
 - 顶层 widget 上挂 `EventControllerKey`：← / → 切换相邻模式。
-- `set_active_index(i)` 做两件事：
-  1. 改变对应 label 的 `active` CSS class（未激活的 label 移除该 class，激活的加上）。
-  2. 重新计算 `dot_box` 应放在哪个 dot cell 位置：3 个 dot cell 同一时刻只有 1 个可见（`mode-dot` css），其余隐藏。
+- `set_active_index(i)` 做三件事：
+  1. 移除所有 label 的 `active` CSS class，给索引为 `i` 的 label 加上。
+  2. 隐藏所有 `dot_inner`，给索引为 `i` 的 `dot_inner` 设 `visible=true`（dot 视觉位置不动——它在自己的 cell 里，靠 visibility 切换显隐）。
+  3. 调用 `stack.set_visible_child_name(["year", "month", "day"][i])`。
 - ViewStack 可见子项改变时（来自外部或自身）→ 通过 `notify::visible-child` 回调同步内部 active_index，**避免循环触发**（通过比较上次同步的值来短路）。
 
 ### 视觉
@@ -88,6 +92,12 @@ box.mode-selector {
   border-radius: 12px;
   padding: 8px 16px;
   margin: 0 24px 24px 24px;
+}
+
+/* 单个标签 / dot 槽位：固定宽，dot 与 label 共享 size-group 同宽 */
+box.mode-cell {
+  min-width: 60px;
+  padding: 4px 12px;
 }
 
 /* 标签：默认半透明、title-3 字号 */
@@ -104,17 +114,13 @@ box.mode-selector label.active {
   opacity: 1.0;
 }
 
-/* 标签点击区扩大 */
-box.mode-selector > box > box {
-  padding: 4px 12px;
-}
-
 /* 激活指示点 */
 box.mode-dot {
   background: @accent_color;
   border-radius: 2px;
   min-width: 24px;
   min-height: 4px;
+  margin-top: 2px;
 }
 ```
 
@@ -131,7 +137,7 @@ box.mode-dot {
   → ModeSelector 内的 GestureClick handler
   → set_active_index(1)
     → 更新 label 的 active CSS class
-    → 移动 dot_box 到第 2 个 dot cell
+    → 隐藏非激活 dot_inner，显示索引 1 的 dot_inner
     → stack.set_visible_child_name("month")
       → ViewStack 触发 notify::visible-child
         → ModeSelector connected handler
