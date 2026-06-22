@@ -87,6 +87,9 @@ impl AlbumDetailPage {
         crate::ui::grid_css::install();
         flow.set_selection_mode(gtk::SelectionMode::None);
         flow.add_css_class("thumb-grid");
+        // While arrow-keying between tiles, hide the `:hover` hint so the
+        // highlight follows the keyboard focus, not the resting pointer.
+        crate::ui::grid_css::attach_kbd_nav(&flow);
 
         // Filter media down to this album's folder. `BoxedAnyObject::borrow`
         // returns a `Cow<MediaItem>`; clone so we hand an owned `MediaItem` to

@@ -29,11 +29,14 @@
 //! ## Gap & hover hint
 //!
 //! The FlowBox `column-spacing` / `row-spacing` (2 px) is the thin separator
-//! between tiles. The hover hint (accent tint + outline) lives in
-//! `crate::ui::grid_css` and is driven by the FlowBoxChild `:hover`
-//! pseudo-class; `selection-mode = None` because `activate-on-single-click`
-//! already routes clicks to `child_activated`. The separator doubles as the
-//! hover hint.
+//! between tiles. The highlight (a clean accent `outline` on the
+//! `flowboxchild` — the same node GTK uses for its keyboard-focus ring, so
+//! mouse hover and arrow-key focus look identical) lives in
+//! `crate::ui::grid_css`. `selection-mode = None` because
+//! `activate-on-single-click` already routes clicks to `child_activated`.
+//! `attach_kbd_nav` drives arrow-key cursor movement and hides `:hover` while
+//! arrow-keying so the highlight follows the keyboard cursor, not the resting
+//! pointer.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -214,14 +217,14 @@ impl MediaGrid {
                 .build();
             flow.set_activate_on_single_click(true);
             flow.add_css_class("thumb-grid");
+            // While arrow-keying between tiles, hide the `:hover` hint so the
+            // highlight follows the keyboard focus, not the resting pointer.
+            crate::ui::grid_css::attach_kbd_nav(&flow);
 
             // Build tiles + remember each child's global index for activation.
             let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
             for item in &section.items {
-                let gi = uri_to_index
-                    .get(&item.uri)
-                    .copied()
-                    .unwrap_or(u32::MAX);
+                let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
                 global_indices.push(gi);
                 let picture = build_photo_picture(spec, item.clone(), loader.clone());
                 flow.append(&picture);
@@ -375,7 +378,6 @@ fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
-    tile.add_css_class("tile");
 
     // Async thumbnail load.
     let (tx, rx) = tokio::sync::oneshot::channel();
