@@ -52,7 +52,12 @@ mod imp {
     pub struct ModeSelector {
         pub active_index: Cell<u32>,
         pub last_sync: Cell<LastSync>,
-        pub stack: std::cell::RefCell<Option<adw::ViewStack>>,
+        /// Bound ViewStack + the `SignalHandlerId` of its
+        /// `notify::visible-child` subscription. Keeping the id
+        /// alongside the stack lets `set_stack` disconnect the old
+        /// handler before installing a new one when the bound stack
+        /// is swapped (rebind).
+        pub stack: std::cell::RefCell<Option<(adw::ViewStack, glib::SignalHandlerId)>>,
         #[template_child]
         pub label_0: TemplateChild<gtk::Label>,
         #[template_child]
@@ -206,7 +211,7 @@ impl ModeSelector {
         }
         imp.active_index.set(idx);
         imp.apply_state();
-        if let Some(stack) = imp.stack.borrow().as_ref() {
+        if let Some((stack, _)) = imp.stack.borrow().as_ref() {
             let name = match idx {
                 0 => "year",
                 1 => "month",
@@ -227,19 +232,32 @@ impl ModeSelector {
     /// stack's current visible child, and subsequent stack changes
     /// (whether from us or elsewhere) keep the selector in sync.
     ///
-    /// Idempotent: calling with the same `stack` is a no-op. Calling
-    /// with a different `stack` rebinds.
+    /// Idempotent for the same `stack` (no-op on repeat calls with
+    /// the same pointer). Rebinding to a different stack is
+    /// supported: the previous stack's `notify::visible-child`
+    /// subscription is disconnected before the new one is installed,
+    /// so no stale handler can fire against the new binding.
     pub fn set_stack(&self, stack: &adw::ViewStack) {
         let imp = self.imp();
+        // Same-pointer early return. Comparing the ViewStack by
+        // pointer identity (not by value) makes the rebind contract
+        // explicit: only a *different* stack triggers a disconnect.
         {
             let current = imp.stack.borrow();
-            if let Some(existing) = current.as_ref() {
+            if let Some((existing, _)) = current.as_ref() {
                 if existing == stack {
                     return;
                 }
             }
         }
-        *imp.stack.borrow_mut() = Some(stack.clone());
+        // Disconnect the previous handler (if any) before swapping
+        // the binding. Without this the old closure would keep
+        // firing notify::visible-child against a now-stale
+        // `imp().last_sync` and silently desync the selector from
+        // the new stack.
+        if let Some((old_stack, old_handler)) = imp.stack.borrow_mut().take() {
+            old_stack.disconnect(old_handler);
+        }
 
         // Seed active_index from the stack's current visible child.
         let name = stack.visible_child_name();
@@ -258,7 +276,7 @@ impl ModeSelector {
         // `LastSync` for the state-machine protocol. External changes
         // (any other new_idx) update active_index.
         let weak = self.downgrade();
-        stack.connect_notify_local(Some("visible-child"), move |stack, _| {
+        let handler_id = stack.connect_notify_local(Some("visible-child"), move |stack, _| {
             let Some(sel) = weak.upgrade() else { return };
             let name = stack.visible_child_name();
             let new_idx = match name.as_deref() {
@@ -292,6 +310,8 @@ impl ModeSelector {
                 }
             }
         });
+
+        *imp.stack.borrow_mut() = Some((stack.clone(), handler_id));
     }
 }
 

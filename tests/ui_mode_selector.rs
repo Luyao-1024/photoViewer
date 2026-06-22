@@ -92,4 +92,65 @@ fn mode_selector_integration_suite() {
     // TemplateChild resolved (the `.get()` above would have panicked if not).
     assert_eq!(sel4.halign(), gtk::Align::Center, "template halign=center");
     assert_eq!(sel4.valign(), gtk::Align::End, "template valign=end");
+
+    // --- Structural checks (validation plan §集成测试 items 1, 2, 5) ---
+    //
+    // 1. view_stack's parent is GtkOverlay, not GtkBox — proves the
+    //    .blp template's Gtk.Overlay wrapper was actually loaded
+    //    (and not silently downgraded to the prior Gtk.Box layout).
+    let stack = page.imp().view_stack.get();
+    let stack_parent = stack
+        .parent()
+        .expect("view_stack should have a parent in the loaded template");
+    assert!(
+        stack_parent.is::<gtk::Overlay>(),
+        "view_stack should be a child of GtkOverlay (not GtkBox) — the .blp must load the overlay wrapper"
+    );
+
+    // 2. ModeSelector is a sibling of view_stack under the overlay —
+    //    confirms it is an overlay child (floating) rather than a
+    //    sibling at the page level (which would re-introduce the
+    //    very problem this redesign exists to solve: the selector
+    //    claiming grid space at the bottom).
+    let overlay = stack_parent
+        .downcast::<gtk::Overlay>()
+        .expect("parent already asserted to be GtkOverlay");
+    // Walk overlay children and confirm both view_stack and the
+    // mode_selector are reachable as siblings under it.
+    let stack_widget = stack.upcast::<gtk::Widget>();
+    let sel_widget = sel4.clone().upcast::<gtk::Widget>();
+    let overlay_children: Vec<gtk::Widget> = {
+        let mut kids = Vec::new();
+        let mut next = overlay.first_child();
+        while let Some(c) = next {
+            kids.push(c.clone());
+            next = c.next_sibling();
+        }
+        kids
+    };
+    assert!(
+        overlay_children.contains(&stack_widget),
+        "overlay should contain view_stack as a child"
+    );
+    assert!(
+        overlay_children.contains(&sel_widget),
+        "overlay should contain mode_selector as a sibling of view_stack"
+    );
+    assert_eq!(
+        overlay_children.len(),
+        2,
+        "overlay should have exactly 2 children (view_stack + mode_selector)"
+    );
+
+    // 3. ModeSelector does not claim grid space — no vexpand / hexpand.
+    //    The floating-overlay property is what keeps it from competing
+    //    with the grid for layout.
+    assert!(
+        !sel4.vexpands(),
+        "ModeSelector must not vexpand (it floats over the grid, not in it)"
+    );
+    assert!(
+        !sel4.hexpands(),
+        "ModeSelector must not hexpand (it floats over the grid, not in it)"
+    );
 }
