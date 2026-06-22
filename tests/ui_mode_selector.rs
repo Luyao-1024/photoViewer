@@ -13,8 +13,9 @@
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
-use photo_viewer::ui::ModeSelector;
+use photo_viewer::ui::{ModeSelector, PhotosPage};
 
 #[test]
 fn mode_selector_integration_suite() {
@@ -66,21 +67,18 @@ fn mode_selector_integration_suite() {
     gesture.emit_by_name::<()>("pressed", &[&0i32, &0.0f64, &0.0f64]);
     assert_eq!(stack3.visible_child_name().as_deref(), Some("day"));
 
-    // --- Test 4: PhotosPage-like wiring builds with ModeSelector ---
-    // Builds the full PhotosPage-equivalent tree (without a real
-    // ThumbnailLoader and without DB) just to confirm the template
-    // compiles and the ModeSelector inside is wired through the
-    // ViewStack.
-    use photo_viewer::core::section_model::GroupBy;
-    use photo_viewer::ui::media_grid::MediaGrid;
-    use std::rc::Rc;
+    // --- Test 4: PhotosPage builds via its template; ModeSelector TemplateChild
+    // resolves and the template applies halign=center / valign=end.
+    //
+    // This exercises the real `PhotosPage::new` path (loading
+    // `data/ui/photos-page.ui`, resolving the `mode_selector` TemplateChild,
+    // and wiring it to the inner ViewStack). It replaces an earlier version
+    // that rebuilt a ViewStack by hand and attached a fresh ModeSelector to
+    // it — that path did not load the template and did not exercise the
+    // TemplateChild wiring.
     use std::sync::Arc;
 
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    // We don't have a real loader in the test crate; pass a
-    // freshly-constructed one against an empty media list. The grid
-    // never requests a thumbnail in this test, so the loader's
-    // internal channel is unused.
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
     // Actual signature in src/core/thumbnails.rs is `(pool, cache_dir)`.
@@ -88,31 +86,10 @@ fn mode_selector_integration_suite() {
         pool.clone(),
         tmp.path().join("thumbs"),
     ));
-    let on_activate: Rc<dyn Fn(u32)> = Rc::new(|_| {});
-    let grid = MediaGrid::new(
-        media_list.clone(),
-        GroupBy::Year,
-        loader.clone(),
-        on_activate,
-    );
-    let stack4 = adw::ViewStack::new();
-    stack4.add_titled(&grid, Some("year"), "年");
-    stack4.add_titled(
-        &MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Month,
-            loader.clone(),
-            Rc::new(|_| {}),
-        ),
-        Some("month"),
-        "月",
-    );
-    stack4.add_titled(
-        &MediaGrid::new(media_list, GroupBy::Day, loader, Rc::new(|_| {})),
-        Some("day"),
-        "日",
-    );
-    let sel4 = ModeSelector::new();
-    sel4.set_stack(&stack4);
-    assert_eq!(sel4.active_index(), 0);
+
+    let page = PhotosPage::new(media_list, loader);
+    let sel4 = page.imp().mode_selector.get();
+    // TemplateChild resolved (the `.get()` above would have panicked if not).
+    assert_eq!(sel4.halign(), gtk::Align::Center, "template halign=center");
+    assert_eq!(sel4.valign(), gtk::Align::End, "template valign=end");
 }
