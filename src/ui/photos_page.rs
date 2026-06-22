@@ -1,4 +1,4 @@
-//! PhotosPage: year/month/day view (shared MediaGrid, ViewSwitcherBar at bottom).
+//! PhotosPage: year/month/day view (shared MediaGrid, ModeSelector overlay).
 //!
 //! Hosts three MediaGrid instances. When the user clicks a tile, a `ViewerPage`
 //! is pushed onto the host `AdwNavigationView` (injected via `set_nav_target`).
@@ -18,6 +18,7 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
 use crate::ui::media_grid::MediaGrid;
+use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 
 mod imp {
@@ -34,9 +35,9 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
-        pub switcher_bar: TemplateChild<adw::ViewSwitcherBar>,
-        #[template_child]
         pub view_stack: TemplateChild<adw::ViewStack>,
+        #[template_child]
+        pub mode_selector: TemplateChild<ModeSelector>,
     }
 
     #[gtk::glib::object_subclass]
@@ -117,8 +118,9 @@ impl PhotosPage {
             stack.set_visible_child(&empty_page);
         }
 
-        // Wire the ViewSwitcherBar to our view_stack.
-        obj.imp().switcher_bar.get().set_stack(Some(&stack));
+        // Wire the ModeSelector to our view_stack (it drives the visible
+        // child and reflects any external change back via notify).
+        obj.imp().mode_selector.get().set_stack(&stack);
 
         obj
     }

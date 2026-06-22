@@ -11,13 +11,21 @@ template $PhotosPage : Adw.NavigationPage {
       show-end-title-buttons: true;
     }
 
-    Adw.ViewSwitcherBar switcher_bar {
-      stack: view_stack;
-      reveal: true;
-    }
-
-    Adw.ViewStack view_stack {
+    Gtk.Overlay grid_overlay {
       vexpand: true;
+      hexpand: true;
+
+      child: Adw.ViewStack view_stack {
+        vexpand: true;
+        hexpand: true;
+      };
+
+      [overlay]
+      $ModeSelector mode_selector {
+        halign: center;
+        valign: end;
+        margin-bottom: 24;
+      }
     }
   };
 }
