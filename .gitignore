@@ -3,3 +3,6 @@
 
 # Generated Blueprint output (.ui files are produced by build.rs)
 /data/ui/*.ui
+
+# Editor config
+/.vscode/
