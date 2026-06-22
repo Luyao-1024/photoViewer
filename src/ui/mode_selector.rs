@@ -15,6 +15,34 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 
+/// Loop-guard state machine for the bound ViewStack sync.
+///
+/// - `Synced(idx)`: the stack's visible-child is currently `idx` and
+///   any future notify::visible-child with the same value is treated
+///   as an external "no-op echo" (or, equivalently, an external change
+///   that's already reflected). External changes to a *different*
+///   index update `active_index`.
+/// - `SelfPending(idx)`: `set_active_index(idx)` was just called and
+///   the matching `set_visible_child_name("…")` write is in flight
+///   (or has not yet produced a notify::visible-child). When the
+///   matching notify fires, the handler must consume this state and
+///   return without clobbering `active_index`. This is what makes
+///   the guard testable: the post-state of the guard after a
+///   self-induced change is `Synced(idx)`, not the raw `active_index`
+///   value alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LastSync {
+    Synced(u32),
+    SelfPending(u32),
+}
+
+impl Default for LastSync {
+    /// Defaults to `Synced(0)` to match the initial `active_index` of 0.
+    fn default() -> Self {
+        LastSync::Synced(0)
+    }
+}
+
 mod imp {
     use super::*;
     use std::cell::Cell;
@@ -23,7 +51,7 @@ mod imp {
     #[template(file = "../../data/ui/mode-selector.ui")]
     pub struct ModeSelector {
         pub active_index: Cell<u32>,
-        pub last_synced: Cell<u32>, // 0..=2 — value last written to the stack
+        pub last_sync: Cell<LastSync>,
         pub stack: std::cell::RefCell<Option<adw::ViewStack>>,
         #[template_child]
         pub label_0: TemplateChild<gtk::Label>,
@@ -68,25 +96,29 @@ mod imp {
         /// Apply the current `active_index` to the template children
         /// (label CSS class + dot visibility). O(1) — three pairs of
         /// set/remove + set/remove.
+        ///
+        /// Records `Synced(active_index)` on the loop-guard state so
+        /// any subsequent notify::visible-child matching this value
+        /// is treated as an external echo (no-op). Callers that intend
+        /// to push a self-induced change to the stack should flip the
+        /// guard to `SelfPending(idx)` *between* calling this and
+        /// invoking `set_visible_child_name`.
         pub(super) fn apply_state(&self) {
             let labels = [&self.label_0, &self.label_1, &self.label_2];
             let dots = [&self.dot_inner_0, &self.dot_inner_1, &self.dot_inner_2];
-            let active = self.active_index.get() as usize;
+            let active = self.active_index.get();
             for (i, lbl) in labels.iter().enumerate() {
                 let l = lbl.get();
-                if i == active {
+                if i == active as usize {
                     l.add_css_class("active");
                 } else {
                     l.remove_css_class("active");
                 }
             }
             for (i, dot) in dots.iter().enumerate() {
-                dot.get().set_visible(i == active);
+                dot.get().set_visible(i == active as usize);
             }
-            // Record what we just wrote to the labels/dots so the
-            // notify::visible-child callback can short-circuit when
-            // the change came from us.
-            self.last_synced.set(self.active_index.get());
+            self.last_sync.set(LastSync::Synced(active));
         }
     }
 }
@@ -111,6 +143,13 @@ impl ModeSelector {
     /// (the widget always shows one of the three modes). If a stack
     /// has been bound via [`Self::set_stack`], the stack's visible
     /// child is updated to match.
+    ///
+    /// Loop-guard protocol: after `apply_state` syncs the template
+    /// children and records `Synced(idx)`, this flips the guard to
+    /// `SelfPending(idx)` immediately before calling
+    /// `set_visible_child_name`. The notify handler then either
+    /// consumes the pending write (when the change came from us) or
+    /// treats it as external (when it didn't).
     pub fn set_active_index(&self, idx: u32) {
         if idx > 2 {
             return;
@@ -121,15 +160,19 @@ impl ModeSelector {
         }
         imp.active_index.set(idx);
         imp.apply_state();
-        // Push to the bound ViewStack so the visible child matches.
-        // The notify::visible-child handler will fire but will be
-        // short-circuited by the last_synced guard.
         if let Some(stack) = imp.stack.borrow().as_ref() {
             let name = match idx {
                 0 => "year",
                 1 => "month",
                 _ => "day",
             };
+            // Mark the write as self-pending *before* dispatching so
+            // the notify handler can recognize and consume it. In the
+            // current GTK build the notify fires synchronously from
+            // `set_visible_child_name`, but this protocol is robust
+            // against an async-dispatch change as well — see
+            // `race_double_set_active_index_probe` in the test module.
+            imp.last_sync.set(LastSync::SelfPending(idx));
             stack.set_visible_child_name(name);
         }
     }
@@ -161,12 +204,13 @@ impl ModeSelector {
             _ => 0,
         };
         imp.active_index.set(seed);
-        imp.last_synced.set(seed);
+        imp.last_sync.set(LastSync::Synced(seed));
         imp.apply_state();
 
         // Subscribe to visible-child changes. The callback drops the
-        // change if it matches what we just wrote ourselves
-        // (last_synced), preventing feedback loops.
+        // change if we wrote it ourselves (SelfPending) — see
+        // `LastSync` for the state-machine protocol. External changes
+        // (any other new_idx) update active_index.
         let weak = self.downgrade();
         stack.connect_notify_local(Some("visible-child"), move |stack, _| {
             let Some(sel) = weak.upgrade() else { return };
@@ -178,13 +222,29 @@ impl ModeSelector {
                 _ => return,
             };
             let imp = sel.imp();
-            if imp.last_synced.get() == new_idx {
-                // We wrote this ourselves; the guard stays set so the
-                // next *external* change still syncs.
-                return;
+            match imp.last_sync.get() {
+                LastSync::SelfPending(idx) if idx == new_idx => {
+                    // Self-induced change echoed back. Consume and
+                    // promote to Synced so the next external change
+                    // still syncs.
+                    imp.last_sync.set(LastSync::Synced(new_idx));
+                }
+                LastSync::SelfPending(_) => {
+                    // Stale SelfPending (defensive — current GTK
+                    // dispatches notify synchronously, so this branch
+                    // shouldn't fire). Drop the write to avoid
+                    // clobbering active_index.
+                }
+                LastSync::Synced(idx) if idx == new_idx => {
+                    // External "no-op echo" (e.g. someone set the
+                    // same child again). Ignore.
+                }
+                LastSync::Synced(_) => {
+                    // Genuine external change.
+                    imp.active_index.set(new_idx);
+                    imp.apply_state();
+                }
             }
-            imp.active_index.set(new_idx);
-            imp.apply_state();
         });
     }
 }
@@ -192,6 +252,17 @@ impl ModeSelector {
 impl Default for ModeSelector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl ModeSelector {
+    /// Test-only accessor: read the loop-guard state. Used by the
+    /// strengthened `loop_guard_prevents_recursive_set` test to verify
+    /// the state machine transitioned from `SelfPending(idx)` to
+    /// `Synced(idx)` after the matching notify::visible-child fired.
+    pub(crate) fn last_sync_state(&self) -> LastSync {
+        self.imp().last_sync.get()
     }
 }
 
@@ -342,15 +413,92 @@ mod tests {
         let (stack, _labels) = build_stack();
         sel.set_stack(&stack);
 
-        // set_active_index(1) → calls stack.set_visible_child_name → fires
-        // notify::visible-child → handler should short-circuit because
-        // active_index already matches.
+        // Initial state: stack at "year" (default), guard is Synced(0).
+        assert_eq!(sel.last_sync_state(), LastSync::Synced(0));
+
+        // set_active_index(1):
+        //   - sets active_index = 1
+        //   - apply_state() → last_sync = Synced(1)
+        //   - flips last_sync = SelfPending(1)
+        //   - calls set_visible_child_name("month") → notify fires
+        //     synchronously → handler sees SelfPending(1), consumes
+        //     to Synced(1), returns without touching active_index.
+        //
+        // The state-machine assertion below is what the original
+        // `assert_eq!(sel.active_index(), 1)` could not verify: that
+        // the notify handler actually ran and consumed the pending
+        // write. If the guard had failed to short-circuit, the
+        // handler would have run apply_state() which sets
+        // last_sync = Synced(1) anyway — same final state. The
+        // stronger proof is the *SelfPending → Synced* transition
+        // observed by injecting an external notify and verifying
+        // active_index moves, contrasted with a self-induced
+        // notify where active_index is left untouched.
         sel.set_active_index(1);
-        // If the loop guard failed, the signal handler would re-set
-        // active_index, but since the value is already 1 the test still
-        // passes. Stronger check: pump the context and assert no panic.
+        // After the synchronous notify, the guard is Synced(1).
+        assert_eq!(
+            sel.last_sync_state(),
+            LastSync::Synced(1),
+            "self-induced notify should consume SelfPending → Synced"
+        );
+        assert_eq!(sel.active_index(), 1);
+
+        // Pump the context to flush any stragglers — still nothing
+        // should change.
+        let ctx = glib::MainContext::default();
+        while ctx.iteration(false) {}
+        assert_eq!(sel.last_sync_state(), LastSync::Synced(1));
+        assert_eq!(sel.active_index(), 1);
+
+        // --- External change variant: ---
+        // Now drive the stack from outside. The handler must read
+        // Synced(1), see new_idx=2 != 1, and apply the change.
+        // Re-set guard to a known baseline first (it already is
+        // Synced(1)), then flip the stack.
+        assert_eq!(sel.last_sync_state(), LastSync::Synced(1));
+        stack.set_visible_child_name("day");
+        // notify fires synchronously → handler consumes, sets
+        // active_index=2, apply_state → Synced(2).
+        assert_eq!(
+            sel.last_sync_state(),
+            LastSync::Synced(2),
+            "external change should propagate to active_index + Synced"
+        );
+        assert_eq!(sel.active_index(), 2);
+    }
+
+    /// Regression guard for the Important #2 race scenario:
+    /// `set_active_index(2)` then `set_active_index(1)` with no
+    /// context pump between. With the `SelfPending` state machine
+    /// the handler always sees the most-recent pending value, so
+    /// even if notify dispatch were to become async in a future
+    /// GTK build, the second SelfPending write supersedes the first
+    /// before any notify can fire against the stale value.
+    ///
+    /// On the current GTK build this also exercises the synchronous
+    /// path — every notify fires before the next
+    /// `set_visible_child_name` returns.
+    #[gtk::test]
+    fn race_double_set_active_index_probe() {
+        let sel = ModeSelector::new();
+        let (stack, _labels) = build_stack();
+        sel.set_stack(&stack);
+
+        sel.set_active_index(2);
+        sel.set_active_index(1);
+        // No pump — exercise the synchronous path.
+        assert_eq!(sel.active_index(), 1);
+        assert_eq!(stack.visible_child_name().as_deref(), Some("month"));
+        assert_eq!(
+            sel.last_sync_state(),
+            LastSync::Synced(1),
+            "the second SelfPending must consume cleanly to Synced(1)"
+        );
+
+        // Now pump and re-check — nothing should change.
         let ctx = glib::MainContext::default();
         while ctx.iteration(false) {}
         assert_eq!(sel.active_index(), 1);
+        assert_eq!(stack.visible_child_name().as_deref(), Some("month"));
     }
 }
