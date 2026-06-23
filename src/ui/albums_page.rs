@@ -23,8 +23,8 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
 use crate::core::db::DbPool;
-use crate::core::media::MediaItem;
 use crate::core::i18n::{tr, trf};
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_detail_page::AlbumDetailPage;
 use crate::ui::empty_states;
@@ -135,7 +135,8 @@ impl AlbumsPage {
         glib::spawn_future_local(async move {
             let result: std::thread::Result<
                 std::result::Result<Vec<Album>, crate::core::error::AppError>,
-            > = gtk::gio::spawn_blocking(move || crate::core::albums::list_with_favorites(&pool)).await;
+            > = gtk::gio::spawn_blocking(move || crate::core::albums::list_with_favorites(&pool))
+                .await;
             let Ok(Ok(albums)) = result else {
                 return;
             };
@@ -222,7 +223,9 @@ impl AlbumsPage {
             };
             let item = (*boxed.borrow::<MediaItem>()).clone();
             let should_include = if album.is_virtual {
-                favorite_ids.as_ref().is_some_and(|ids| ids.contains(&item.id))
+                favorite_ids
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(&item.id))
             } else {
                 item.folder_path == album.folder_path
             };

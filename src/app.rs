@@ -150,10 +150,8 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
         return;
     }
 
-    let additions: Vec<glib::BoxedAnyObject> = items
-        .into_iter()
-        .map(glib::BoxedAnyObject::new)
-        .collect();
+    let additions: Vec<glib::BoxedAnyObject> =
+        items.into_iter().map(glib::BoxedAnyObject::new).collect();
     list.splice(list.n_items(), 0, &additions);
 }
 

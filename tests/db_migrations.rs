@@ -104,11 +104,8 @@ fn init_pool_does_not_wipe_when_columns_only_differ_in_extras() {
         )
         .unwrap();
         // 加一列旧版本里没有的扩展字段；新 schema 没引用它，迁移不会失败。
-        conn.execute(
-            "ALTER TABLE media_items ADD COLUMN legacy_extra TEXT",
-            [],
-        )
-        .unwrap();
+        conn.execute("ALTER TABLE media_items ADD COLUMN legacy_extra TEXT", [])
+            .unwrap();
     }
 
     let pool = db::init_pool(&db_path).expect("init_pool should succeed without wiping");

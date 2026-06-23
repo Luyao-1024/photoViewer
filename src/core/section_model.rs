@@ -1,6 +1,6 @@
 //! 按年/月/日对 MediaItem 分组（用于 PhotosPage 三种视图）
-use crate::core::media::MediaItem;
 use crate::core::i18n::trf;
+use crate::core::media::MediaItem;
 use chrono::{Datelike, NaiveDate, Weekday};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -126,7 +126,11 @@ fn make_label(key: &SectionKey, count: u32) -> String {
         }
         (Some(y), Some(m), None) => trf(
             "section.label.month",
-            &[("year", &y.to_string()), ("month", &m.to_string()), ("count", &count_s)],
+            &[
+                ("year", &y.to_string()),
+                ("month", &m.to_string()),
+                ("count", &count_s),
+            ],
         ),
         (Some(y), None, None) => trf(
             "section.label.year",

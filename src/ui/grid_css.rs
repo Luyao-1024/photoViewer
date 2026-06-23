@@ -151,12 +151,21 @@ box.mode-selector.on-light-background box.mode-dot {
   background: #000000;
 }
 
-/* 右键菜单（媒体网格）样式 */
+/* 右键菜单（媒体网格）样式
+   关键点：GTK4 popover 是双层结构 —— 外层 popover widget 默认透明，
+   真正承载可见背景的是内层 `> contents` 子节点。如果把 background 与
+   border-radius 写在外层，颜色只会在阴影缓冲带漏出一圈光环，中间
+   内容区还是透明、会透出后面的缩略图（这正是修复前的 UI 异常）。
+   这里把视觉样式下沉到 `> contents`，外层只保留 min-width 和 padding。 */
 popover.media-grid-context-menu {
-  padding: 0px;
-  border-radius: 10px;
-  background: alpha(@card_bg_color, 0.98);
+  padding: 0;
   min-width: 160px;
+}
+
+popover.media-grid-context-menu > contents {
+  background: alpha(@card_bg_color, 0.98);
+  background-clip: padding-box;
+  border-radius: 10px;
 }
 
 box.media-grid-context-menu-list {

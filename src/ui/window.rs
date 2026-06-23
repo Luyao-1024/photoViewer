@@ -3,17 +3,17 @@ use std::cell::RefCell;
 use std::fs;
 use std::sync::Arc;
 
-use serde_json::{Map, Value};
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
+use serde_json::{Map, Value};
 
-use crate::core::db::DbPool;
-use crate::core::i18n::{tr, trf, locale};
 use crate::config;
+use crate::core::db::DbPool;
+use crate::core::i18n::{locale, tr, trf};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{AlbumsPage, TrashPage};
 
@@ -248,29 +248,25 @@ impl MainWindow {
         let btn_zh_ref2 = btn_zh.clone();
         let btn_en_ref2 = btn_en.clone();
 
-        btn_zh.connect_clicked(move |_| {
-            match persist_locale("zh-CN") {
-                Ok(()) => {
-                    show_settings_restart_dialog(&page_zh, true, None);
-                    btn_zh_ref.set_sensitive(false);
-                    btn_en_ref.set_sensitive(true);
-                }
-                Err(err) => {
-                    show_settings_restart_dialog(&page_zh, false, Some(err));
-                }
+        btn_zh.connect_clicked(move |_| match persist_locale("zh-CN") {
+            Ok(()) => {
+                show_settings_restart_dialog(&page_zh, true, None);
+                btn_zh_ref.set_sensitive(false);
+                btn_en_ref.set_sensitive(true);
+            }
+            Err(err) => {
+                show_settings_restart_dialog(&page_zh, false, Some(err));
             }
         });
 
-        btn_en.connect_clicked(move |_| {
-            match persist_locale("en") {
-                Ok(()) => {
-                    show_settings_restart_dialog(&page_en, true, None);
-                    btn_zh_ref2.set_sensitive(true);
-                    btn_en_ref2.set_sensitive(false);
-                }
-                Err(err) => {
-                    show_settings_restart_dialog(&page_en, false, Some(err));
-                }
+        btn_en.connect_clicked(move |_| match persist_locale("en") {
+            Ok(()) => {
+                show_settings_restart_dialog(&page_en, true, None);
+                btn_zh_ref2.set_sensitive(true);
+                btn_en_ref2.set_sensitive(false);
+            }
+            Err(err) => {
+                show_settings_restart_dialog(&page_en, false, Some(err));
             }
         });
 

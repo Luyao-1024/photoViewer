@@ -59,10 +59,10 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
+use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
-use crate::core::i18n::tr;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
@@ -710,7 +710,7 @@ impl MediaGrid {
                         this.mode(),
                         section_label_for_ctx,
                         target_indices,
-                        in_multi_mode
+                        in_multi_mode,
                     );
 
                     let popover = gtk::Popover::new();
@@ -719,8 +719,12 @@ impl MediaGrid {
                     popover.set_has_arrow(false);
                     popover.set_autohide(true);
                     popover.set_position(gtk::PositionType::Bottom);
-                    popover.set_offset(0, 0);
-                    popover.set_pointing_to(Some(&point_in_child));
+                    // set_offset / set_pointing_to are deferred until after
+                    // set_child so we can `measure()` the popover's actual
+                    // width and shift it so its top-left lands on the click
+                    // point (the default Bottom position centers the popover
+                    // on the pointing rect, which is what puts the menu's
+                    // middle under the mouse).
 
                     let menu = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
@@ -827,6 +831,38 @@ impl MediaGrid {
                     }
 
                     popover.set_child(Some(&menu));
+
+                    // Anchor the popover's VISIBLE top-left at the click
+                    // point.
+                    //
+                    // GTK4's `PositionType::Bottom` aligns the popover's
+                    // top-center with the center of the pointing rect, so
+                    // without an offset the popover's geometric center sits
+                    // under the mouse. The naive correction is
+                    // `set_offset(popover_w / 2, 0)`, but the offset has to
+                    // be set BEFORE `popup()` — applying it after causes a
+                    // visible "jump" because the popover is briefly mapped
+                    // at the default position.
+                    //
+                    // The naive `popover_w / 2` still lands 25 px to the
+                    // right and 5 px below the click because of how GTK4
+                    // accounts for the 1×1 pointing rect and the shadow
+                    // buffer around the popover. Those two constants were
+                    // measured empirically (see `popover_actual` diagnostic
+                    // logs in the dev history) and baked in below. If the
+                    // GTK theme or popover CSS changes, retune by setting
+                    // `set_offset(0, 0)` here, right-clicking, and reading
+                    // off the `popover_actual` delta.
+                    let (menu_min, menu_nat, _, _) =
+                        menu.measure(gtk::Orientation::Horizontal, -1);
+                    let menu_w = menu_min.max(menu_nat).max(1);
+                    let popover_w = menu_w.max(160); // CSS `min-width: 160px`
+                    let half_w = popover_w / 2;
+                    const POPOVER_X_BIAS_PX: i32 = 25;
+                    const POPOVER_Y_BIAS_PX: i32 = -5; // shift up by 5
+                    popover.set_offset(half_w - POPOVER_X_BIAS_PX, POPOVER_Y_BIAS_PX);
+                    popover.set_pointing_to(Some(&point_in_child));
+
                     popover.popup();
                 });
 

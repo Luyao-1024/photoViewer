@@ -10,10 +10,10 @@
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
 //! than `downcast::<MediaItem>()`.
 use crate::core::db::{self, DbPool};
+use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifField};
 use crate::core::{albums, trash};
-use crate::core::i18n::tr;
 use crate::ui::album_picker::AlbumPickerDialog;
 use crate::ui::editor_page::EditorPage;
 use crate::ui::toasts;
@@ -25,7 +25,9 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{ActionRowExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
+use libadwaita::prelude::{
+    ActionRowExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt,
+};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -204,13 +206,13 @@ impl ViewerPage {
         imp.add_to_album_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.add_to_album")));
-        imp.edit_btn
-            .get()
-            .set_label(&tr("viewer.tooltip.edit"));
+        imp.edit_btn.get().set_label(&tr("viewer.tooltip.edit"));
         imp.details_close_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.details.close")));
-        imp.details_title.get().set_label(&tr("viewer.details.title"));
+        imp.details_title
+            .get()
+            .set_label(&tr("viewer.details.title"));
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an
@@ -518,9 +520,7 @@ impl ViewerPage {
     }
 
     fn refresh_favorite_button(&self, is_favorite: bool) {
-        self.imp()
-            .is_favorite
-            .set(is_favorite);
+        self.imp().is_favorite.set(is_favorite);
         let button = self.imp().favorite_btn.get();
         if is_favorite {
             button.set_label("★");
@@ -1048,13 +1048,17 @@ impl ViewerPage {
         imp.path_row.get().set_title(&tr("viewer.details.path"));
         imp.folder_row.get().set_title(&tr("viewer.details.folder"));
         imp.mime_row.get().set_title(&tr("viewer.details.type"));
-        imp.dimensions_row.get().set_title(&tr("viewer.details.dimensions"));
-        imp.size_row.get().set_title(&tr("viewer.details.size"));
-        imp.modified_row.get().set_title(&tr("viewer.details.modified"));
-        imp.taken_row.get().set_title(&tr("viewer.details.captured"));
-        imp.exif_group
+        imp.dimensions_row
             .get()
-            .set_title(&tr("viewer.details.exif"));
+            .set_title(&tr("viewer.details.dimensions"));
+        imp.size_row.get().set_title(&tr("viewer.details.size"));
+        imp.modified_row
+            .get()
+            .set_title(&tr("viewer.details.modified"));
+        imp.taken_row
+            .get()
+            .set_title(&tr("viewer.details.captured"));
+        imp.exif_group.get().set_title(&tr("viewer.details.exif"));
         imp.name_row.get().set_subtitle(item.display_name());
         imp.path_row
             .get()

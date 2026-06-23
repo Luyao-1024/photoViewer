@@ -11,8 +11,8 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use photo_viewer::ui::{MainWindow, PhotosPage};
 use photo_viewer::core::i18n::tr;
+use photo_viewer::ui::{MainWindow, PhotosPage};
 
 #[test]
 fn sidebar_navigation_suite() {

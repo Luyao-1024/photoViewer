@@ -27,9 +27,13 @@ static INSTANCE: OnceLock<I18nRuntime> = OnceLock::new();
 
 fn normalize_locale(input: Option<String>) -> String {
     match input.as_deref().map(|v| v.replace('_', "-")) {
-        Some(v) if v.eq_ignore_ascii_case("zh") || v.eq_ignore_ascii_case("zh-cn") => "zh-CN".to_string(),
+        Some(v) if v.eq_ignore_ascii_case("zh") || v.eq_ignore_ascii_case("zh-cn") => {
+            "zh-CN".to_string()
+        }
         Some(v) if v.to_ascii_lowercase().starts_with("zh") => "zh-CN".to_string(),
-        Some(v) if v.eq_ignore_ascii_case("en") || v.eq_ignore_ascii_case("en-us") => "en".to_string(),
+        Some(v) if v.eq_ignore_ascii_case("en") || v.eq_ignore_ascii_case("en-us") => {
+            "en".to_string()
+        }
         Some(v) if v.eq_ignore_ascii_case("en-us") => "en".to_string(),
         Some(v) if v == "zh-CN" => "zh-CN".to_string(),
         Some(v) if v == "en" => "en".to_string(),

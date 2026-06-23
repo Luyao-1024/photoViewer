@@ -25,8 +25,8 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums;
 use crate::core::db::{self, DbPool};
-use crate::core::media::MediaItem;
 use crate::core::i18n::tr;
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
 use crate::ui::empty_states;
@@ -157,22 +157,10 @@ impl TrashPage {
         *obj.imp().pool.borrow_mut() = Some(pool.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
         *obj.imp().media_list.borrow_mut() = media_list;
-        obj.imp()
-            .trash_banner
-            .get()
-            .set_title(&tr("trash.banner"));
-        obj.imp()
-            .empty_btn
-            .get()
-            .set_label(&tr("trash.empty_all"));
-        obj.imp()
-            .cancel_btn
-            .get()
-            .set_label(&tr("trash.cancel"));
-        obj.imp()
-            .restore_btn
-            .get()
-            .set_label(&tr("trash.restore"));
+        obj.imp().trash_banner.get().set_title(&tr("trash.banner"));
+        obj.imp().empty_btn.get().set_label(&tr("trash.empty_all"));
+        obj.imp().cancel_btn.get().set_label(&tr("trash.cancel"));
+        obj.imp().restore_btn.get().set_label(&tr("trash.restore"));
         obj.imp()
             .delete_btn
             .get()

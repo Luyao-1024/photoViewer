@@ -22,15 +22,17 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
+use libadwaita::prelude::{
+    AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt,
+};
 use libadwaita::subclass::prelude::*;
 
 use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use crate::core::db::DbPool;
 use crate::core::edit::{apply_all, EditRegistry, EditState};
-use crate::core::media::MediaItem;
 use crate::core::i18n::{tr, trf};
+use crate::core::media::MediaItem;
 
 mod imp {
     use super::*;
@@ -146,12 +148,8 @@ impl EditorPage {
             .get()
             .set_label(&tr("editor.menu.save_copy"));
         imp.save_menu_btn.get().set_label(&tr("button.save"));
-        imp.rotate_group
-            .get()
-            .set_title(&tr("editor.panel.rotate"));
-        imp.adjust_group
-            .get()
-            .set_title(&tr("editor.panel.adjust"));
+        imp.rotate_group.get().set_title(&tr("editor.panel.rotate"));
+        imp.adjust_group.get().set_title(&tr("editor.panel.adjust"));
         imp.crop_group.get().set_title(&tr("editor.panel.crop"));
         imp.brightness_row
             .get()
@@ -167,9 +165,7 @@ impl EditorPage {
         imp.rotate_90_ccw
             .get()
             .set_label(&tr("editor.rotate.90_ccw"));
-        imp.start_crop_btn
-            .get()
-            .set_label(&tr("editor.crop.start"));
+        imp.start_crop_btn.get().set_label(&tr("editor.crop.start"));
     }
 
     /// Register a callback fired when the user presses the Cancel button.
@@ -357,14 +353,17 @@ impl EditorPage {
             if let Some(this) = weak.upgrade() {
                 match result {
                     Ok(Ok(_new_item)) => {
-            this.show_toast(&tr("editor.toast.saved_copy"));
+                        this.show_toast(&tr("editor.toast.saved_copy"));
                         // 导航回上一页（host 通过 connect_cancel 注册的回调
                         // 通常就是 pop；用 action 名走 nav stack 同样安全）。
                         let _ = this.activate_action("navigation.pop", None);
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Save Copy failed: {}", e);
-                        this.show_toast(&trf("editor.toast.save_copy_failed", &[("error", &e.to_string())]));
+                        this.show_toast(&trf(
+                            "editor.toast.save_copy_failed",
+                            &[("error", &e.to_string())],
+                        ));
                     }
                     Err(_) => {
                         tracing::error!("Save Copy worker panicked");
@@ -379,9 +378,7 @@ impl EditorPage {
     fn save_overwrite_with_confirm(&self) {
         let dialog = adw::AlertDialog::builder()
             .heading(&tr("editor.overwrite_title"))
-            .body(
-                &tr("editor.overwrite_body"),
-            )
+            .body(&tr("editor.overwrite_body"))
             .build();
         dialog.add_response("cancel", &tr("button.cancel"));
         dialog.add_response("overwrite", &tr("dialog.overwrite"));

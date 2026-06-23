@@ -1,6 +1,6 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
-use std::sync::Arc;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -15,9 +15,9 @@ use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
-use crate::ui::AlbumsPage;
-use crate::ui::media_grid::{MediaGrid, FavoriteMenuState};
+use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use crate::ui::AlbumsPage;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -17,12 +17,16 @@ use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 
-use crate::core::{albums, db::{self, DbPool}, trash};
+use crate::core::i18n::tr;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::core::i18n::tr;
-use crate::ui::album_picker;
+use crate::core::{
+    albums,
+    db::{self, DbPool},
+    trash,
+};
 use crate::ui::album_detail_page::refresh_albums_page_in_nav;
+use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
 use crate::ui::mode_selector::ModeSelector;
@@ -117,16 +121,37 @@ impl PhotosPage {
     pub fn new(media_list: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.set_title(&tr("page.photos.title"));
-        obj.imp().select_all_btn.get().set_label(&tr("photos.batch.select_all"));
-        obj.imp().select_all_btn.get().set_tooltip_text(Some(&tr("photos.batch.select_all")));
-        obj.imp().add_to_album_btn.get().set_tooltip_text(Some(&tr("photos.add_to_album")));
-        obj.imp().add_to_album_btn.get().set_label(&tr("photos.batch.move_to_album"));
-        obj.imp().add_to_album_btn.get().set_tooltip_text(Some(&tr("photos.batch.move_to_album")));
-        obj.imp().favorite_btn.get().set_label(&tr("photos.batch.favorite"));
+        obj.imp()
+            .select_all_btn
+            .get()
+            .set_label(&tr("photos.batch.select_all"));
+        obj.imp()
+            .select_all_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.select_all")));
+        obj.imp()
+            .add_to_album_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.add_to_album")));
+        obj.imp()
+            .add_to_album_btn
+            .get()
+            .set_label(&tr("photos.batch.move_to_album"));
+        obj.imp()
+            .add_to_album_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.move_to_album")));
+        obj.imp()
+            .favorite_btn
+            .get()
+            .set_label(&tr("photos.batch.favorite"));
         obj.imp()
             .favorite_btn
             .set_tooltip_text(Some(&tr("viewer.button.favorite")));
-        obj.imp().unfavorite_btn.get().set_label(&tr("photos.batch.unfavorite"));
+        obj.imp()
+            .unfavorite_btn
+            .get()
+            .set_label(&tr("photos.batch.unfavorite"));
         obj.imp()
             .unfavorite_btn
             .set_tooltip_text(Some(&tr("viewer.button.favorite_active")));
@@ -352,17 +377,19 @@ impl PhotosPage {
         });
 
         let weak = obj.downgrade();
-        obj.imp().delete_to_trash_btn.get().connect_clicked(move |_| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let indices = this.selected_indices_vec();
-            if indices.is_empty() {
-                return;
-            }
-            this.delete_to_trash_for_indices(indices);
-        });
-
+        obj.imp()
+            .delete_to_trash_btn
+            .get()
+            .connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let indices = this.selected_indices_vec();
+                if indices.is_empty() {
+                    return;
+                }
+                this.delete_to_trash_for_indices(indices);
+            });
 
         obj
     }
@@ -393,19 +420,31 @@ impl PhotosPage {
             union.extend(grid.selected_indices());
         }
         let has_any = !union.is_empty();
-        let all_displayed_selected =
-            self.current_grid()
-                .map_or(false, |grid| grid.is_all_displayed_selected());
+        let all_displayed_selected = self
+            .current_grid()
+            .map_or(false, |grid| grid.is_all_displayed_selected());
         *self.imp().selected_indices.borrow_mut() = union;
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);
         self.imp().delete_to_trash_btn.get().set_visible(has_any);
         if all_displayed_selected {
-            self.imp().select_all_btn.get().set_label(&tr("photos.batch.unselect_all"));
-            self.imp().select_all_btn.get().set_tooltip_text(Some(&tr("photos.batch.unselect_all")));
+            self.imp()
+                .select_all_btn
+                .get()
+                .set_label(&tr("photos.batch.unselect_all"));
+            self.imp()
+                .select_all_btn
+                .get()
+                .set_tooltip_text(Some(&tr("photos.batch.unselect_all")));
         } else {
-            self.imp().select_all_btn.get().set_label(&tr("photos.batch.select_all"));
-            self.imp().select_all_btn.get().set_tooltip_text(Some(&tr("photos.batch.select_all")));
+            self.imp()
+                .select_all_btn
+                .get()
+                .set_label(&tr("photos.batch.select_all"));
+            self.imp()
+                .select_all_btn
+                .get()
+                .set_tooltip_text(Some(&tr("photos.batch.select_all")));
         }
 
         let state = if has_any {
@@ -420,8 +459,14 @@ impl PhotosPage {
         } else {
             FavoriteMenuState::default()
         };
-        self.imp().favorite_btn.get().set_visible(state.can_favorite);
-        self.imp().unfavorite_btn.get().set_visible(state.can_unfavorite);
+        self.imp()
+            .favorite_btn
+            .get()
+            .set_visible(state.can_favorite);
+        self.imp()
+            .unfavorite_btn
+            .get()
+            .set_visible(state.can_unfavorite);
     }
 
     fn favorite_state_for_indices(&self, indices: &[u32]) -> FavoriteMenuState {
@@ -457,7 +502,13 @@ impl PhotosPage {
     }
 
     fn selected_indices_vec(&self) -> Vec<u32> {
-        let mut selected: Vec<u32> = self.imp().selected_indices.borrow().iter().copied().collect();
+        let mut selected: Vec<u32> = self
+            .imp()
+            .selected_indices
+            .borrow()
+            .iter()
+            .copied()
+            .collect();
         selected.sort_unstable();
         selected
     }

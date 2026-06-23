@@ -9,12 +9,12 @@
 //! `ViewStack::visible-child` → `active_index` to keep the selector in
 //! sync if the stack is changed externally.
 
+use crate::core::i18n::tr;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use crate::core::i18n::tr;
 
 /// Loop-guard state machine for the bound ViewStack sync.
 ///
@@ -90,10 +90,10 @@ mod imp {
 
     impl ObjectImpl for ModeSelector {
         fn constructed(&self) {
-        self.parent_constructed();
-        // Sync template defaults to the current active_index.
-        self.apply_state();
-        self.obj().set_labels_i18n();
+            self.parent_constructed();
+            // Sync template defaults to the current active_index.
+            self.apply_state();
+            self.obj().set_labels_i18n();
 
             // Click on any of the 3 label cells → switch to that mode.
             // The gesture is owned by its cell, so it lives as long
