@@ -14,6 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
+use crate::core::i18n::tr;
 
 /// Loop-guard state machine for the bound ViewStack sync.
 ///
@@ -89,9 +90,10 @@ mod imp {
 
     impl ObjectImpl for ModeSelector {
         fn constructed(&self) {
-            self.parent_constructed();
-            // Sync template defaults to the current active_index.
-            self.apply_state();
+        self.parent_constructed();
+        // Sync template defaults to the current active_index.
+        self.apply_state();
+        self.obj().set_labels_i18n();
 
             // Click on any of the 3 label cells → switch to that mode.
             // The gesture is owned by its cell, so it lives as long
@@ -181,6 +183,13 @@ gtk::glib::wrapper! {
 }
 
 impl ModeSelector {
+    fn set_labels_i18n(&self) {
+        let imp = self.imp();
+        imp.label_0.get().set_label(&tr("photo.mode.year"));
+        imp.label_1.get().set_label(&tr("photo.mode.month"));
+        imp.label_2.get().set_label(&tr("photo.mode.day"));
+    }
+
     pub fn new() -> Self {
         gtk::glib::Object::builder().build()
     }
@@ -456,9 +465,9 @@ mod tests {
         let a = gtk::Label::new(Some("Year"));
         let b = gtk::Label::new(Some("Month"));
         let c = gtk::Label::new(Some("Day"));
-        stack.add_titled(&a, Some("year"), "年");
-        stack.add_titled(&b, Some("month"), "月");
-        stack.add_titled(&c, Some("day"), "日");
+        stack.add_titled(&a, Some("year"), "Year");
+        stack.add_titled(&b, Some("month"), "Month");
+        stack.add_titled(&c, Some("day"), "Day");
         (stack, [a, b, c])
     }
 

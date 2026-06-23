@@ -1,8 +1,12 @@
 //! 相册聚合（按 folder_path 分组）
 use crate::core::db::DbPool;
+use crate::core::db;
 use crate::core::error::Result;
+use crate::core::i18n::tr;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
+
+pub const FAVORITES_ALBUM_PATH: &str = "__photo-viewer-favorites__";
 
 #[derive(Debug, Clone)]
 pub struct Album {
@@ -11,17 +15,62 @@ pub struct Album {
     pub cover_uri: Option<String>,
     pub photo_count: i64,
     pub last_modified: DateTime<Utc>,
+    pub is_virtual: bool,
 }
 
 impl Album {
     /// Basename of `folder_path` (e.g. `Pictures/Vacation` → `Vacation`).
     /// Falls back to the full path string if no basename component exists.
     pub fn display_name(&self) -> String {
+        if self.is_virtual {
+            return self.name.clone();
+        }
         self.folder_path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.folder_path.display().to_string())
     }
+}
+
+/// 列出实体相册 + 虚拟“收藏”相册（放在列表首位）。
+pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
+    let mut list = list(pool)?;
+    list.insert(0, favorites_album(pool)?);
+    Ok(list)
+}
+
+fn favorites_album(pool: &DbPool) -> Result<Album> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT
+            COUNT(*),
+            (SELECT uri FROM media_items m2
+             WHERE m2.trashed_at IS NULL AND m2.is_favorite = 1
+             ORDER BY m2.file_mtime DESC LIMIT 1),
+            COALESCE(MAX(file_mtime), 0)
+         FROM media_items
+         WHERE trashed_at IS NULL AND is_favorite = 1",
+    )?;
+    let album = stmt.query_row([], |row| {
+        let count: i64 = row.get(0)?;
+        let cover_uri: Option<String> = row.get(1)?;
+        let last_modified: i64 = row.get(2)?;
+        Ok(Album {
+            folder_path: PathBuf::from(FAVORITES_ALBUM_PATH),
+            name: tr("album.favorites.name"),
+            cover_uri,
+            photo_count: count,
+            last_modified: chrono::DateTime::from_timestamp(last_modified, 0)
+                .unwrap_or_else(Utc::now),
+            is_virtual: true,
+        })
+    })?;
+    Ok(album)
+}
+
+/// 查询收藏媒体 ID，按收藏列表展示顺序返回。
+pub fn favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
+    db::list_favorite_media_ids(pool)
 }
 
 /// 重新计算 albums 表（启动时 + 索引完成后调用）
@@ -63,6 +112,7 @@ pub fn list(pool: &DbPool) -> Result<Vec<Album>> {
             photo_count: row.get(3)?,
             last_modified: chrono::DateTime::from_timestamp(last_modified, 0)
                 .unwrap_or_else(Utc::now),
+            is_virtual: false,
         })
     })?;
     Ok(rows.filter_map(std::result::Result::ok).collect())
@@ -88,6 +138,7 @@ pub fn find_by_folder_path(pool: &DbPool, folder: &Path) -> Result<Option<Album>
             photo_count: row.get(3)?,
             last_modified: chrono::DateTime::from_timestamp(last_modified, 0)
                 .unwrap_or_else(Utc::now),
+            is_virtual: false,
         })
     });
     // `QueryReturnedNoRows` → Ok(None),其它错误照旧上抛

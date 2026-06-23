@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PhotosPage : Adw.NavigationPage {
-  title: "Photos";
+  title: "";
 
   child: Gtk.Box root_box {
     orientation: vertical;
@@ -13,7 +13,7 @@ template $PhotosPage : Adw.NavigationPage {
       [start]
       Gtk.Button add_to_album_btn {
         icon-name: "list-add-symbolic";
-        tooltip-text: "Add to Album";
+        tooltip-text: "";
         visible: false;
         // Hidden until the user multi-selects ≥1 tile (see
         // `PhotosPage::set_add_to_album_visible`).

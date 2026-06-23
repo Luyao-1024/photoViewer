@@ -45,6 +45,7 @@ fn album(folder: &str, count: i64) -> Album {
         cover_uri: None,
         photo_count: count,
         last_modified: chrono::Utc.with_ymd_and_hms(2025, 3, 1, 12, 0, 0).unwrap(),
+        is_virtual: false,
     }
 }
 

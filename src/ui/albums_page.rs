@@ -10,6 +10,7 @@
 //! Tiles are plain `GtkFlowBoxChild` widgets constructed by `build_album_tile`
 //! and appended directly to the page's `GtkFlowBox`.
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -17,11 +18,13 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
+use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
 use crate::core::db::DbPool;
 use crate::core::media::MediaItem;
+use crate::core::i18n::{tr, trf};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_detail_page::AlbumDetailPage;
 use crate::ui::empty_states;
@@ -93,6 +96,7 @@ impl AlbumsPage {
         crate::ui::grid_css::install();
 
         let obj: Self = glib::Object::builder().build();
+        obj.set_title(&tr("page.albums.title"));
         *obj.imp().albums.borrow_mut() = albums.clone();
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
         let flow = obj.imp().flow_box.get();
@@ -108,17 +112,58 @@ impl AlbumsPage {
                 let tile = build_album_tile(&album, loader.clone());
                 flow.append(&tile);
             }
-
-            let weak = obj.downgrade();
-            flow.connect_child_activated(move |_, child| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                this.open_album_at(child.index());
-            });
         }
+        let weak = obj.downgrade();
+        flow.connect_child_activated(move |_, child| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.open_album_at(child.index());
+        });
 
         obj
+    }
+
+    pub fn refresh_from_db(&self) {
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().clone() else {
+            return;
+        };
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result: std::thread::Result<
+                std::result::Result<Vec<Album>, crate::core::error::AppError>,
+            > = gtk::gio::spawn_blocking(move || crate::core::albums::list_with_favorites(&pool)).await;
+            let Ok(Ok(albums)) = result else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            *this.imp().albums.borrow_mut() = albums.clone();
+
+            let flow = this.imp().flow_box.get();
+            while let Some(child) = flow.first_child() {
+                flow.remove(&child);
+            }
+
+            let scrolled = this.imp().scrolled.get();
+            if albums.is_empty() {
+                let empty = empty_states::no_albums();
+                empty.set_hexpand(true);
+                empty.set_vexpand(true);
+                scrolled.set_child(Some(&empty));
+                return;
+            }
+
+            for album in albums {
+                let tile = build_album_tile(&album, loader.clone());
+                flow.append(&tile);
+            }
+            scrolled.set_child(Some(&flow));
+        });
     }
 
     /// Inject the navigation target and the shared media model used to build
@@ -155,6 +200,18 @@ impl AlbumsPage {
         let Some(master_media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
             return;
         };
+
+        let favorite_ids: Option<HashSet<i64>> = if album.is_virtual {
+            let ids = crate::core::albums::favorite_media_ids(&pool).unwrap_or_default();
+            if ids.is_empty() {
+                Some(HashSet::new())
+            } else {
+                Some(ids.into_iter().collect())
+            }
+        } else {
+            None
+        };
+
         let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         for idx in 0..master_media_list.n_items() {
             let Some(obj) = master_media_list.item(idx) else {
@@ -164,7 +221,12 @@ impl AlbumsPage {
                 continue;
             };
             let item = (*boxed.borrow::<MediaItem>()).clone();
-            if item.folder_path == album.folder_path {
+            let should_include = if album.is_virtual {
+                favorite_ids.as_ref().is_some_and(|ids| ids.contains(&item.id))
+            } else {
+                item.folder_path == album.folder_path
+            };
+            if should_include {
                 media_list.append(&glib::BoxedAnyObject::new(item));
             }
         }
@@ -240,7 +302,10 @@ fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBox
         .build();
 
     let count_label = gtk::Label::builder()
-        .label(format!("{} photos", album.photo_count))
+        .label(trf(
+            "album.count",
+            &[("count", &album.photo_count.to_string())],
+        ))
         .halign(gtk::Align::Start)
         .opacity(0.7)
         .build();

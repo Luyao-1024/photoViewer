@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 template $TrashPage : Adw.NavigationPage {
-  title: "Trash";
+  title: "";
 
   child: Gtk.Box root_box {
     orientation: vertical;
@@ -12,13 +12,13 @@ template $TrashPage : Adw.NavigationPage {
 
       [end]
       Gtk.Button empty_btn {
-        label: "Empty All";
+        label: "";
         css-classes: ["destructive-action"];
       }
     }
 
-    Adw.Banner banner {
-      title: "回收站中的项目可还原，也可手动永久删除";
+    Adw.Banner trash_banner {
+      title: "";
       revealed: true;
     }
 
@@ -52,18 +52,18 @@ template $TrashPage : Adw.NavigationPage {
 
       [start]
       Gtk.Button cancel_btn {
-        label: "Cancel";
+        label: "";
       }
 
       [end]
       Gtk.Button restore_btn {
-        label: "Restore";
+        label: "";
         css-classes: ["suggested-action"];
       }
 
       [end]
       Gtk.Button delete_btn {
-        label: "Delete Permanently";
+        label: "";
         css-classes: ["destructive-action"];
       }
     }

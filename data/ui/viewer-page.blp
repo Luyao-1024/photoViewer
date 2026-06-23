@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 template $ViewerPage : Adw.NavigationPage {
-  title: "Viewer";
+  title: "";
 
   child: Adw.ToastOverlay toast_overlay {
     child: Gtk.Box root_box {
@@ -14,19 +14,25 @@ template $ViewerPage : Adw.NavigationPage {
         [end]
         Gtk.Button details_btn {
           icon-name: "info-symbolic";
-          tooltip-text: "Image Details";
+          tooltip-text: "";
         }
 
         [end]
         Gtk.Button delete_btn {
           icon-name: "user-trash-symbolic";
-          tooltip-text: "Move to Trash";
+          tooltip-text: "";
+        }
+
+        [end]
+        Gtk.Button favorite_btn {
+          label: "";
+          tooltip-text: "";
         }
 
         [end]
         Gtk.MenuButton add_to_album_btn {
           icon-name: "list-add-symbolic";
-          tooltip-text: "Add to Album";
+          tooltip-text: "";
           primary: true;
           // Menu model is set in `ViewerPage::setup_album_menu` once the
           // `nav_view` and `pool` are injected (they're needed by the menu's
@@ -35,7 +41,7 @@ template $ViewerPage : Adw.NavigationPage {
 
         [end]
         Gtk.Button edit_btn {
-          label: "Edit";
+          label: "";
           icon-name: "edit-symbolic";
         }
       }
@@ -80,7 +86,7 @@ template $ViewerPage : Adw.NavigationPage {
           width-request: 380;
           css-classes: ["background"];
 
-          Gtk.Box details_header {
+      Gtk.Box details_header {
             orientation: horizontal;
             spacing: 6;
             margin-start: 12;
@@ -88,8 +94,8 @@ template $ViewerPage : Adw.NavigationPage {
             margin-top: 6;
             margin-bottom: 6;
 
-            Gtk.Label {
-              label: "Details";
+            Gtk.Label details_title {
+              label: "";
               xalign: 0;
               hexpand: true;
               css-classes: ["title-3"];
@@ -97,7 +103,7 @@ template $ViewerPage : Adw.NavigationPage {
 
             Gtk.Button details_close_btn {
               icon-name: "window-close-symbolic";
-              tooltip-text: "Close Details";
+              tooltip-text: "";
             }
           }
 
@@ -107,51 +113,51 @@ template $ViewerPage : Adw.NavigationPage {
 
             child: Adw.PreferencesPage details_page {
               Adw.PreferencesGroup file_group {
-                title: "File";
+                title: "";
 
                 Adw.ActionRow name_row {
-                  title: "Name";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow path_row {
-                  title: "Path";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow folder_row {
-                  title: "Folder";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow mime_row {
-                  title: "Type";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow dimensions_row {
-                  title: "Dimensions";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow size_row {
-                  title: "File Size";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow modified_row {
-                  title: "Modified";
+                  title: "";
                   activatable: false;
                 }
 
                 Adw.ActionRow taken_row {
-                  title: "Captured";
+                  title: "";
                   activatable: false;
                 }
               }
 
               Adw.PreferencesGroup exif_group {
-                title: "EXIF";
+                title: "";
               }
             };
           }

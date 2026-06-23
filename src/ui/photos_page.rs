@@ -20,7 +20,9 @@ use libadwaita::prelude::NavigationPageExt;
 use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::core::i18n::tr;
 use crate::ui::album_picker;
+use crate::ui::album_detail_page::refresh_albums_page_in_nav;
 use crate::ui::empty_states;
 use crate::ui::media_grid::MediaGrid;
 use crate::ui::mode_selector::ModeSelector;
@@ -102,6 +104,8 @@ impl PhotosPage {
     /// mode-specific MediaGrids (Year/Month/Day).
     pub fn new(media_list: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
+        obj.set_title(&tr("page.photos.title"));
+        obj.imp().add_to_album_btn.get().set_tooltip_text(Some(&tr("photos.add_to_album")));
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
@@ -191,9 +195,9 @@ impl PhotosPage {
             vec![year_grid.clone(), month_grid.clone(), day_grid.clone()];
 
         let stack = obj.imp().view_stack.get();
-        stack.add_titled(&year_grid, Some("year"), "年");
-        stack.add_titled(&month_grid, Some("month"), "月");
-        stack.add_titled(&day_grid, Some("day"), "日");
+        stack.add_titled(&year_grid, Some("year"), &tr("photo.mode.year"));
+        stack.add_titled(&month_grid, Some("month"), &tr("photo.mode.month"));
+        stack.add_titled(&day_grid, Some("day"), &tr("photo.mode.day"));
 
         // Empty-state placeholder: shown when the media list is empty.
         // Added as a hidden stack child so we can swap to it without rebuilding.
@@ -407,7 +411,6 @@ impl PhotosPage {
         });
 
         let viewer = ViewerPage::new(media_list, global_index);
-        viewer.show_at(global_index);
 
         // Wire the viewer's Edit button: it pushes an EditorPage onto `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
@@ -418,6 +421,14 @@ impl PhotosPage {
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
             viewer.set_album_target(&nav, pool.clone());
         }
+        viewer.show_at(global_index);
+
+        let nav_for_refresh = nav.downgrade();
+        viewer.connect_favorite_state_changed(move |_, _| {
+            if let Some(nav) = nav_for_refresh.upgrade() {
+                refresh_albums_page_in_nav(&nav);
+            }
+        });
 
         // Wire the viewer's keyboard callback: pops via the host NavigationView
         // for ESC, or advances/retreats the current index for ←/→.

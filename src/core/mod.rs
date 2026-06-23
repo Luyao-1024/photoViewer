@@ -4,6 +4,7 @@ pub mod backend;
 pub mod bootstrap;
 pub mod cache;
 pub mod db;
+pub mod i18n;
 pub mod edit;
 pub mod error;
 pub mod media;

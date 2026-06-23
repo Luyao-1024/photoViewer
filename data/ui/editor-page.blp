@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 template $EditorPage : Adw.NavigationPage {
-  title: "Edit";
+  title: "";
 
   child: Gtk.Box root_box {
     orientation: vertical;
@@ -12,18 +12,18 @@ template $EditorPage : Adw.NavigationPage {
 
       [start]
       Gtk.Button cancel_btn {
-        label: "Cancel";
+        label: "";
       }
 
       [end]
       Gtk.Button save_copy_btn {
-        label: "Save Copy";
+        label: "";
         css-classes: ["suggested-action"];
       }
 
       [end]
       Gtk.MenuButton save_menu_btn {
-        label: "Save";
+        label: "";
       }
     }
 
@@ -53,7 +53,7 @@ template $EditorPage : Adw.NavigationPage {
 
     Adw.PreferencesPage prefs_page {
       Adw.PreferencesGroup rotate_group {
-        title: "Rotate";
+        title: "";
 
         Gtk.Box rotate_box {
           orientation: horizontal;
@@ -61,26 +61,26 @@ template $EditorPage : Adw.NavigationPage {
           homogeneous: true;
 
           Gtk.Button rotate_90_cw {
-            label: "↻ 90°";
+            label: "";
             icon-name: "object-rotate-right-symbolic";
           }
 
           Gtk.Button rotate_180 {
-            label: "↻ 180°";
+            label: "";
           }
 
           Gtk.Button rotate_90_ccw {
-            label: "↻ 90° CCW";
+            label: "";
             icon-name: "object-rotate-left-symbolic";
           }
         }
       }
 
       Adw.PreferencesGroup adjust_group {
-        title: "Adjust";
+        title: "";
 
         Adw.ActionRow brightness_row {
-          title: "Brightness";
+          title: "";
           activatable: false;
 
           Gtk.Scale brightness_scale {
@@ -90,7 +90,7 @@ template $EditorPage : Adw.NavigationPage {
         }
 
         Adw.ActionRow contrast_row {
-          title: "Contrast";
+          title: "";
           activatable: false;
 
           Gtk.Scale contrast_scale {
@@ -100,7 +100,7 @@ template $EditorPage : Adw.NavigationPage {
         }
 
         Adw.ActionRow saturation_row {
-          title: "Saturation";
+          title: "";
           activatable: false;
 
           Gtk.Scale saturation_scale {
@@ -111,10 +111,10 @@ template $EditorPage : Adw.NavigationPage {
       }
 
       Adw.PreferencesGroup crop_group {
-        title: "Crop";
+        title: "";
 
         Gtk.Button start_crop_btn {
-          label: "Start Crop";
+          label: "";
         }
       }
     }

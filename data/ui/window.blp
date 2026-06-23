@@ -2,7 +2,7 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PhotoViewerWindow : Adw.ApplicationWindow {
-  title: "Photo Viewer";
+  title: "";
   default-width: 1200;
   default-height: 800;
 
@@ -11,7 +11,7 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
     min-sidebar-width: 200;
 
     sidebar: Adw.NavigationPage sidebar_page {
-      title: "Library";
+      title: "";
 
       Gtk.ListBox sidebar_list {
         selection-mode: single;

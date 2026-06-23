@@ -37,6 +37,45 @@ cargo run
 cargo test
 ```
 
+## 多语言配置
+
+应用默认使用 `zh-CN`（中文）或 `en`（英文）文案。可通过配置文件切换语言和覆盖文案。
+
+创建文件（示例值来自 `config/i18n.example.json`）：
+
+`~/.config/photoViewer/i18n.json`
+
+```json
+{
+  "locale": "en",
+  "overrides": {
+    "app.title": "Photo Viewer",
+    "viewer.button.favorite": "Favorite",
+    "viewer.button.favorite_active": "Unfavorite"
+  }
+}
+```
+
+字段说明：
+
+- `locale`: `zh-CN` 或 `en`，决定内置语言包。
+- `overrides`: key-value 形式覆盖内置文案（只影响你提供的 key）。
+
+快速切换到英文（任选其一）：
+
+1. 使用环境变量（仅本次启动生效）：
+   ```bash
+   PHOTO_VIEWER_LOCALE=en cargo run
+   ```
+
+2. 或写入配置文件（持久生效）：
+   ```bash
+   mkdir -p ~/.config/photoViewer
+   cp config/i18n.en.example.json ~/.config/photoViewer/i18n.json
+   ```
+
+   然后重启应用即可看到英文界面。`locale: "en"` 会覆盖系统语言。
+
 ## 架构
 
 参见 [spec](docs/superpowers/specs/2026-06-20-gnome-photo-viewer-design.md)

@@ -1,12 +1,13 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
 use std::sync::Arc;
+use std::collections::HashSet;
 
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::*;
+use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
@@ -14,6 +15,7 @@ use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
+use crate::ui::AlbumsPage;
 use crate::ui::media_grid::MediaGrid;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 use std::cell::RefCell;
@@ -28,6 +30,7 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub master_media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub pool: RefCell<Option<DbPool>>,
+        pub album: RefCell<Option<Album>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
@@ -75,6 +78,7 @@ impl AlbumDetailPage {
         obj.set_title(&album.display_name());
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().master_media_list.borrow_mut() = Some(master_media_list);
+        *obj.imp().album.borrow_mut() = Some(album);
         *obj.imp().pool.borrow_mut() = Some(pool);
 
         if media_list.n_items() == 0 {
@@ -120,11 +124,30 @@ impl AlbumDetailPage {
         };
 
         let viewer = ViewerPage::new(media_list, global_index);
-        viewer.show_at(global_index);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool.clone());
             viewer.set_album_target(&nav, pool);
+            let is_favorite_album = self
+                .imp()
+                .album
+                .borrow()
+                .as_ref()
+                .is_some_and(|album| album.is_virtual);
+            let this = self.downgrade();
+            let nav_for_albums = nav.downgrade();
+            viewer.connect_favorite_state_changed(move |_, _| {
+                if is_favorite_album {
+                    if let Some(this) = this.upgrade() {
+                        this.refresh_virtual_album_media_list();
+                    }
+                    if let Some(nav) = nav_for_albums.upgrade() {
+                        refresh_albums_page_in_nav(&nav);
+                    }
+                }
+            });
         }
+        viewer.show_at(global_index);
+
         if let Some(master_list) = self.imp().master_media_list.borrow().as_ref().cloned() {
             viewer.connect_item_trashed(move |item_id| {
                 remove_media_item_by_id(&master_list, item_id);
@@ -152,6 +175,81 @@ impl AlbumDetailPage {
         });
 
         nav.push(&viewer);
+    }
+
+    fn refresh_virtual_album_media_list(&self) {
+        let is_virtual = self
+            .imp()
+            .album
+            .borrow()
+            .as_ref()
+            .is_some_and(|album| album.is_virtual);
+        if !is_virtual {
+            return;
+        }
+
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(master_list) = self.imp().master_media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let ids = crate::core::albums::favorite_media_ids(&pool).unwrap_or_default();
+        let favorites: HashSet<i64> = ids.into_iter().collect();
+        let mut items = Vec::new();
+        for idx in 0..master_list.n_items() {
+            let Some(obj) = master_list.item(idx) else {
+                continue;
+            };
+            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
+            if favorites.contains(&item.id) {
+                items.push(item);
+            }
+        }
+
+        if !self
+            .imp()
+            .album
+            .borrow()
+            .as_ref()
+            .is_some_and(|album| album.is_virtual)
+        {
+            return;
+        }
+        while media_list.n_items() > 0 {
+            media_list.remove(media_list.n_items() - 1);
+        }
+        for item in items {
+            media_list.append(&glib::BoxedAnyObject::new(item));
+        }
+        tracing::debug!(
+            "AlbumDetailPage: refreshed virtual album media list, n_items={}",
+            media_list.n_items()
+        );
+    }
+}
+
+pub(crate) fn refresh_albums_page_in_nav(nav: &adw::NavigationView) {
+    let mut page = match nav.visible_page() {
+        Some(p) => p,
+        None => return,
+    };
+    loop {
+        if let Ok(albums_page) = page.clone().downcast::<AlbumsPage>() {
+            albums_page.refresh_from_db();
+            return;
+        }
+        match nav.previous_page(&page) {
+            Some(previous) => page = previous,
+            None => return,
+        }
     }
 }
 

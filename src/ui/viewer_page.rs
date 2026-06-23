@@ -13,6 +13,7 @@ use crate::core::db::{self, DbPool};
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifField};
 use crate::core::{albums, trash};
+use crate::core::i18n::tr;
 use crate::ui::album_picker::AlbumPickerDialog;
 use crate::ui::editor_page::EditorPage;
 use crate::ui::toasts;
@@ -24,11 +25,12 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{ActionRowExt, NavigationPageExt, PreferencesGroupExt};
+use libadwaita::prelude::{ActionRowExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -91,16 +93,22 @@ mod imp {
         /// we would allocate a new provider on every pinch-tick and
         /// never release the previous one.
         pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
+        /// Optional callback invoked whenever current media favorite state changes.
+        pub favorite_state_cb: RefCell<Option<FavoriteStateCallback>>,
         /// DB pool injected by host (needed to construct `EditorPage`).
         pub pool: RefCell<Option<DbPool>>,
         /// Navigation view used to push `EditorPage` when the user clicks Edit.
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         /// Dynamic EXIF rows currently appended to `exif_group`.
         pub exif_rows: RefCell<Vec<adw::ActionRow>>,
+        /// 当前图片收藏状态（用于按钮即时渲染）。
+        pub is_favorite: Cell<bool>,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub details_title: TemplateChild<gtk::Label>,
         #[template_child]
         pub details_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -113,6 +121,8 @@ mod imp {
         pub edit_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub add_to_album_btn: TemplateChild<gtk::MenuButton>,
+        #[template_child]
+        pub favorite_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
         #[template_child]
@@ -168,16 +178,39 @@ impl ViewerPage {
     /// to actually paint something.
     pub fn new(media_list: gtk::gio::ListStore, index: u32) -> Self {
         let obj: Self = glib::Object::builder().build();
+        obj.set_title(&tr("page.viewer.title"));
         *obj.imp().media_list.borrow_mut() = Some(media_list);
         obj.imp().current_index.set(index);
+        obj.apply_i18n();
         obj.setup_gesture();
         obj.setup_keyboard();
         obj.setup_edit_button();
         obj.setup_delete_button();
         obj.setup_details_panel();
+        obj.setup_favorite_button();
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
         obj
+    }
+
+    fn apply_i18n(&self) {
+        let imp = self.imp();
+        imp.details_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.image_details")));
+        imp.delete_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
+        imp.add_to_album_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.add_to_album")));
+        imp.edit_btn
+            .get()
+            .set_label(&tr("viewer.tooltip.edit"));
+        imp.details_close_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.details.close")));
+        imp.details_title.get().set_label(&tr("viewer.details.title"));
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an
@@ -217,6 +250,10 @@ impl ViewerPage {
         *self.imp().trashed_cb.borrow_mut() = Some(Rc::new(f));
     }
 
+    pub fn connect_favorite_state_changed<F: Fn(i64, bool) + 'static>(&self, f: F) {
+        *self.imp().favorite_state_cb.borrow_mut() = Some(Rc::new(f));
+    }
+
     fn fire_nav(&self, delta: NavDelta) {
         tracing::info!(
             "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={}",
@@ -238,7 +275,7 @@ impl ViewerPage {
         let imp = self.imp();
         let weak = self.downgrade();
         let menu = gtk::gio::Menu::new();
-        menu.append(Some("Add to Album..."), Some("album.add"));
+        menu.append(Some(&tr("viewer.menu.add_to_album")), Some("album.add"));
 
         let action_group = gtk::gio::SimpleActionGroup::new();
         let add_action = gtk::gio::SimpleAction::new("add", None);
@@ -348,7 +385,10 @@ impl ViewerPage {
                 match result {
                     Ok(Ok(())) => {
                         if let Some(this) = weak_after.upgrade() {
-                            toasts::success(&this.imp().toast_overlay.get(), "已移入回收站");
+                            toasts::success(
+                                &this.imp().toast_overlay.get(),
+                                &tr("viewer.toast.moved_to_trash"),
+                            );
                             this.remove_deleted_item(item_id);
                             if let Some(cb) = this.imp().trashed_cb.borrow().clone() {
                                 cb(item_id);
@@ -360,14 +400,95 @@ impl ViewerPage {
                         if let Some(this) = weak_after.upgrade() {
                             toasts::error(
                                 &this.imp().toast_overlay.get(),
-                                &format!("移入回收站失败: {e}"),
+                                &format!("{}: {e}", &tr("viewer.toast.move_to_trash_failed")),
                             );
                         }
                     }
                     Err(_) => {
                         tracing::warn!("ViewerPage: Move to Trash worker dropped");
                         if let Some(this) = weak_after.upgrade() {
-                            toasts::error(&this.imp().toast_overlay.get(), "移入回收站失败");
+                            toasts::error(
+                                &this.imp().toast_overlay.get(),
+                                &tr("viewer.toast.move_to_trash_failed"),
+                            );
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    fn setup_favorite_button(&self) {
+        let imp = self.imp();
+        imp.favorite_btn.get().add_css_class("viewer-favorite-btn");
+        imp.favorite_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.favorite")));
+        self.refresh_favorite_button(false);
+
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(
+            ".viewer-favorite-btn.favorite-active { color: #f6c344; font-weight: 900; }",
+        );
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
+        let weak = self.downgrade();
+        imp.favorite_btn.get().connect_clicked(move |button| {
+            let Some(this) = weak.upgrade() else { return };
+            let pool = match this.imp().pool.borrow().as_ref() {
+                Some(p) => p.clone(),
+                None => {
+                    tracing::warn!("ViewerPage: Favorite pressed but pool not set");
+                    return;
+                }
+            };
+            let item_id = match this.current_media_item() {
+                Some(i) => i.id,
+                None => return,
+            };
+
+            let next_state = !this.imp().is_favorite.get();
+            button.set_sensitive(false);
+            let button_weak = button.downgrade();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let token = this.imp().current_token.get();
+            gio::spawn_blocking(move || {
+                let result = db::set_media_favorite(&pool, item_id, next_state);
+                let _ = tx.send((result, next_state, token));
+            });
+
+            let weak_after = this.downgrade();
+            glib::spawn_future_local(async move {
+                let result = rx.await;
+                if let Some(button) = button_weak.upgrade() {
+                    button.set_sensitive(true);
+                }
+                let Ok((db_result, target_state, token_expected)) = result else {
+                    return;
+                };
+                if let Some(this) = weak_after.upgrade() {
+                    if this.imp().current_token.get() != token_expected {
+                        return;
+                    }
+                    match db_result {
+                        Ok(()) => {
+                            this.refresh_favorite_button(target_state);
+                            if let Some(cb) = this.imp().favorite_state_cb.borrow().clone() {
+                                cb(item_id, target_state);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("ViewerPage: Toggle favorite failed: {e}");
+                            toasts::error(
+                                &this.imp().toast_overlay.get(),
+                                &format!("{}: {e}", &tr("viewer.toast.favorite_update_failed")),
+                            );
                         }
                     }
                 }
@@ -394,6 +515,57 @@ impl ViewerPage {
             Some(next) => self.show_at(next),
             None => self.fire_nav(NAV_POP),
         }
+    }
+
+    fn refresh_favorite_button(&self, is_favorite: bool) {
+        self.imp()
+            .is_favorite
+            .set(is_favorite);
+        let button = self.imp().favorite_btn.get();
+        if is_favorite {
+            button.set_label("★");
+            button.add_css_class("favorite-active");
+            button.set_tooltip_text(Some(&tr("viewer.button.favorite_active")));
+        } else {
+            button.set_label("☆");
+            button.remove_css_class("favorite-active");
+            button.set_tooltip_text(Some(&tr("viewer.button.favorite")));
+        }
+    }
+
+    /// 从数据库异步同步当前图片收藏状态。与 `show_at()` 的 token 绑定，避免异步回写过期。
+    fn sync_favorite_state(&self, item_id: i64) {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            self.refresh_favorite_button(false);
+            return;
+        };
+
+        let token = self.imp().current_token.get();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        gio::spawn_blocking(move || {
+            let result = db::is_media_favorite(&pool, item_id);
+            let _ = tx.send((result, token));
+        });
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok((result, token_expected)) = rx.await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token_expected {
+                return;
+            }
+            match result {
+                Ok(is_favorite) => this.refresh_favorite_button(is_favorite),
+                Err(e) => {
+                    tracing::warn!("ViewerPage: failed to read favorite state: {e}");
+                    this.refresh_favorite_button(false);
+                }
+            }
+        });
     }
 
     fn setup_details_panel(&self) {
@@ -647,6 +819,7 @@ impl ViewerPage {
             return;
         };
         self.set_title(item.display_name());
+        self.sync_favorite_state(item.id);
         tracing::info!(
             "VIEWER_DEBUG show_at resolved index={} item_id={} title={} uri={} media_path={} details_revealed={}",
             index,
@@ -871,6 +1044,17 @@ impl ViewerPage {
             item.path.display()
         );
         let imp = self.imp();
+        imp.name_row.get().set_title(&tr("viewer.details.name"));
+        imp.path_row.get().set_title(&tr("viewer.details.path"));
+        imp.folder_row.get().set_title(&tr("viewer.details.folder"));
+        imp.mime_row.get().set_title(&tr("viewer.details.type"));
+        imp.dimensions_row.get().set_title(&tr("viewer.details.dimensions"));
+        imp.size_row.get().set_title(&tr("viewer.details.size"));
+        imp.modified_row.get().set_title(&tr("viewer.details.modified"));
+        imp.taken_row.get().set_title(&tr("viewer.details.captured"));
+        imp.exif_group
+            .get()
+            .set_title(&tr("viewer.details.exif"));
         imp.name_row.get().set_subtitle(item.display_name());
         imp.path_row
             .get()
@@ -893,8 +1077,8 @@ impl ViewerPage {
             .set_subtitle(&format_datetime(item.taken_at));
 
         self.set_exif_rows(vec![ExifField {
-            tag: "Status".into(),
-            value: "Loading...".into(),
+            tag: tr("viewer.exif.status"),
+            value: tr("viewer.exif.loading"),
         }]);
         self.load_exif_details(item.path.clone(), self.imp().current_token.get());
     }
@@ -921,8 +1105,8 @@ impl ViewerPage {
             }
             if fields.is_empty() {
                 this.set_exif_rows(vec![ExifField {
-                    tag: "Status".into(),
-                    value: "Not available".into(),
+                    tag: tr("viewer.exif.status"),
+                    value: tr("viewer.not_available"),
                 }]);
             } else {
                 this.set_exif_rows(fields);
@@ -953,7 +1137,7 @@ impl ViewerPage {
 fn format_dimensions(width: Option<u32>, height: Option<u32>) -> String {
     match (width, height) {
         (Some(width), Some(height)) => format!("{width} x {height}"),
-        _ => "Not available".into(),
+        _ => tr("viewer.not_available"),
     }
 }
 
@@ -981,7 +1165,7 @@ fn format_datetime(value: Option<chrono::DateTime<Utc>>) -> String {
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })
-        .unwrap_or_else(|| "Not available".into())
+        .unwrap_or_else(|| tr("viewer.not_available"))
 }
 
 #[cfg(test)]

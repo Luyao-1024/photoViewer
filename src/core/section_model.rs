@@ -1,5 +1,6 @@
 //! 按年/月/日对 MediaItem 分组（用于 PhotosPage 三种视图）
 use crate::core::media::MediaItem;
+use crate::core::i18n::trf;
 use chrono::{Datelike, NaiveDate, Weekday};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -92,35 +93,53 @@ fn make_key(item: &MediaItem, mode: GroupBy) -> SectionKey {
     }
 }
 
-fn weekday_cn(d: Weekday) -> &'static str {
-    match d {
-        Weekday::Sun => "周日",
-        Weekday::Mon => "周一",
-        Weekday::Tue => "周二",
-        Weekday::Wed => "周三",
-        Weekday::Thu => "周四",
-        Weekday::Fri => "周五",
-        Weekday::Sat => "周六",
-    }
+fn weekday_cn(d: Weekday) -> String {
+    let key = match d {
+        Weekday::Sun => "date.weekday.sun",
+        Weekday::Mon => "date.weekday.mon",
+        Weekday::Tue => "date.weekday.tue",
+        Weekday::Wed => "date.weekday.wed",
+        Weekday::Thu => "date.weekday.thu",
+        Weekday::Fri => "date.weekday.fri",
+        Weekday::Sat => "date.weekday.sat",
+    };
+    trf(key, &[])
 }
 
 fn make_label(key: &SectionKey, count: u32) -> String {
+    let count_s = count.to_string();
     match (key.year, key.month, key.day) {
         (Some(y), Some(m), Some(d)) => {
             let wname = NaiveDate::from_ymd_opt(y, m, d)
                 .map(|nd| weekday_cn(nd.weekday()))
-                .unwrap_or("");
-            format!("{}年{}月{}日 {} · {} 张", y, m, d, wname, count)
+                .unwrap_or_default();
+            trf(
+                "section.label.day",
+                &[
+                    ("year", &y.to_string()),
+                    ("month", &m.to_string()),
+                    ("day", &d.to_string()),
+                    ("weekday", &wname),
+                    ("count", &count_s),
+                ],
+            )
         }
-        (Some(y), Some(m), None) => format!("{}年{}月 · {} 张", y, m, count),
-        (Some(y), None, None) => format!("{} · {} 张", y, count),
-        _ => format!("未知日期 · {} 张", count),
+        (Some(y), Some(m), None) => trf(
+            "section.label.month",
+            &[("year", &y.to_string()), ("month", &m.to_string()), ("count", &count_s)],
+        ),
+        (Some(y), None, None) => trf(
+            "section.label.year",
+            &[("year", &y.to_string()), ("count", &count_s)],
+        ),
+        _ => trf("section.label.unknown", &[("count", &count_s)]),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::i18n::tr;
 
     #[test]
     fn make_key_year_only() {
@@ -136,9 +155,9 @@ mod tests {
     }
 
     #[test]
-    fn weekday_chinese_label() {
-        assert_eq!(weekday_cn(Weekday::Sun), "周日");
-        assert_eq!(weekday_cn(Weekday::Sat), "周六");
+    fn weekday_label_keys() {
+        assert_eq!(weekday_cn(Weekday::Sun), tr("date.weekday.sun"));
+        assert_eq!(weekday_cn(Weekday::Sat), tr("date.weekday.sat"));
     }
 
     #[test]

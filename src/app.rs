@@ -146,9 +146,15 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
 }
 
 fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
-    for item in items {
-        list.append(&glib::BoxedAnyObject::new(item));
+    if items.is_empty() {
+        return;
     }
+
+    let additions: Vec<glib::BoxedAnyObject> = items
+        .into_iter()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    list.splice(list.n_items(), 0, &additions);
 }
 
 fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_offset: u32) {
