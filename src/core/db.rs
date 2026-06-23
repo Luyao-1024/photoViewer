@@ -5,6 +5,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::Type;
+use rusqlite::OptionalExtension;
 use std::path::Path;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
@@ -210,6 +211,51 @@ pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
          ORDER BY trashed_at DESC",
     )?;
     let rows = stmt.query_map([], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+/// 查询媒体是否已收藏。找不到 id 则返回错误。
+pub fn is_media_favorite(pool: &DbPool, media_id: i64) -> Result<bool> {
+    let conn = pool.get()?;
+    let value: Option<i64> = conn
+        .query_row(
+            "SELECT is_favorite FROM media_items WHERE id = ?1",
+            [media_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    value
+        .map(|v| v == 1)
+        .ok_or_else(|| AppError::Backend(format!("media item not found: {media_id}")))
+}
+
+/// 设置单张媒体收藏状态。
+pub fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Result<()> {
+    let conn = pool.get()?;
+    let changed = conn.execute(
+        "UPDATE media_items SET is_favorite = ?2 WHERE id = ?1",
+        rusqlite::params![media_id, if is_favorite { 1 } else { 0 }],
+    )?;
+    if changed == 0 {
+        return Err(AppError::Backend(format!(
+            "failed to update favorite flag: media item not found {media_id}"
+        )));
+    }
+    Ok(())
+}
+
+/// 列出所有未删除的收藏媒体 ID，按 `file_mtime` 倒序。
+pub fn list_favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id
+         FROM media_items
+         WHERE trashed_at IS NULL
+           AND is_favorite = 1
+         ORDER BY file_mtime DESC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
 }

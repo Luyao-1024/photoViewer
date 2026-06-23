@@ -150,6 +150,33 @@ box.mode-dot {
 box.mode-selector.on-light-background box.mode-dot {
   background: #000000;
 }
+
+/* 右键菜单（媒体网格）样式 */
+popover.media-grid-context-menu {
+  padding: 0px;
+  border-radius: 10px;
+  background: alpha(@card_bg_color, 0.98);
+  min-width: 160px;
+}
+
+box.media-grid-context-menu-list {
+  padding: 4px;
+}
+
+button.media-grid-context-item {
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+button.media-grid-context-item + button.media-grid-context-item {
+  margin-top: 2px;
+}
+
+button.media-grid-context-item:hover {
+  background: alpha(@accent_color, 0.16);
+}
 ";
 
 static CSS_INSTALLED: std::sync::Once = std::sync::Once::new();

@@ -48,7 +48,6 @@
 //! the latest modifier mask captured by an `EventControllerKey` on the
 //! content box.
 
-use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -63,10 +62,17 @@ use gtk4::subclass::prelude::*;
 use crate::core::media::MediaItem;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::core::i18n::tr;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FavoriteMenuState {
+    pub can_favorite: bool,
+    pub can_unfavorite: bool,
+}
 
 mod imp {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     #[derive(gtk::CompositeTemplate)]
     #[template(file = "../../data/ui/media-grid.ui")]
@@ -76,18 +82,24 @@ mod imp {
         #[template_child]
         pub scroller: TemplateChild<gtk::ScrolledWindow>,
         pub mode: Cell<GroupBy>,
+        pub enable_context_menu: Cell<bool>,
         pub loader: std::cell::OnceCell<Arc<ThumbnailLoader>>,
         pub on_activate: std::cell::OnceCell<Rc<dyn Fn(u32)>>,
         pub on_background_changed: std::cell::OnceCell<Rc<dyn Fn()>>,
+        pub on_add_to_album: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>)>>,
+        pub on_move_to_trash: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>)>>,
+        pub on_set_favorite: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>, bool)>>,
+        pub on_query_favorite_state: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>>,
+        /// Flattened `(flow_child, global_index)` for every rendered tile in
+        /// current mode.
+        pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32)>>,
         /// Global indices (into the shared `ListStore`) currently in the
         /// "selected" set. The set is global — it spans year/month/day
         /// sections, because `PhotosPage` is the only host and it shares one
         /// `ListStore` across the three sub-grids.
         pub selected: RefCell<HashSet<u32>>,
-        /// Latest GDK modifier state captured from the `EventControllerKey`
-        /// attached to `content`. Read by `child_activated` to decide between
-        /// "open viewer" (no modifier) and "toggle selection" (Shift/Ctrl).
-        pub modifier_state: Cell<gdk::ModifierType>,
+        /// Whether batch mode is explicitly enabled.
+        pub is_multi_select_mode: Cell<bool>,
         /// Callback fired whenever `selected` changes. Registered by the host
         /// (`PhotosPage`) so it can show/hide the toolbar "Add to Album"
         /// button and re-render selected state across all three sub-grids.
@@ -100,11 +112,17 @@ mod imp {
                 content: TemplateChild::default(),
                 scroller: TemplateChild::default(),
                 mode: Cell::default(),
+                enable_context_menu: Cell::new(false),
                 loader: std::cell::OnceCell::new(),
                 on_activate: std::cell::OnceCell::new(),
                 on_background_changed: std::cell::OnceCell::new(),
+                on_add_to_album: std::cell::OnceCell::new(),
+                on_move_to_trash: std::cell::OnceCell::new(),
+                on_set_favorite: std::cell::OnceCell::new(),
+                on_query_favorite_state: std::cell::OnceCell::new(),
+                displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
-                modifier_state: Cell::new(gdk::ModifierType::empty()),
+                is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
             }
         }
@@ -173,6 +191,11 @@ impl MediaGrid {
         loader: Arc<ThumbnailLoader>,
         on_activate: Rc<dyn Fn(u32)>,
         on_background_changed: Rc<dyn Fn()>,
+        on_add_to_album: Rc<dyn Fn(Vec<u32>)>,
+        on_move_to_trash: Rc<dyn Fn(Vec<u32>)>,
+        on_set_favorite: Rc<dyn Fn(Vec<u32>, bool)>,
+        on_query_favorite_state: Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>,
+        enable_context_menu: bool,
     ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
@@ -191,7 +214,27 @@ impl MediaGrid {
             .set(on_background_changed)
             .ok()
             .expect("MediaGrid::new called more than once");
-        obj.setup_modifier_tracker();
+        obj.imp()
+            .on_add_to_album
+            .set(on_add_to_album)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp()
+            .on_move_to_trash
+            .set(on_move_to_trash)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp()
+            .on_set_favorite
+            .set(on_set_favorite)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp()
+            .on_query_favorite_state
+            .set(on_query_favorite_state)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp().enable_context_menu.set(enable_context_menu);
 
         crate::ui::grid_css::install();
         obj.rebuild(media_list.clone(), mode);
@@ -239,10 +282,83 @@ impl MediaGrid {
         s.iter().copied().collect()
     }
 
+    /// Snapshot of currently rendered global indices in grid order.
+    pub fn displayed_indices(&self) -> Vec<u32> {
+        self.imp()
+            .displayed_items
+            .borrow()
+            .iter()
+            .map(|(_, gi)| *gi)
+            .collect()
+    }
+
+    /// Select all rendered tiles and sync visible highlights.
+    pub fn select_all(&self) {
+        self.imp().is_multi_select_mode.set(true);
+        let mut next = HashSet::new();
+        let items = self.imp().displayed_items.borrow().clone();
+        for (flow_child, gi) in items {
+            if let Some(parent) = flow_child.parent() {
+                if let Ok(flow) = parent.downcast::<gtk::FlowBox>() {
+                    flow.select_child(&flow_child);
+                }
+            }
+            next.insert(gi);
+        }
+
+        let mut changed = false;
+        {
+            let mut selected = self.imp().selected.borrow_mut();
+            if *selected != next {
+                *selected = next;
+                changed = true;
+            }
+        }
+        if changed {
+            self.fire_selection_changed();
+        }
+    }
+
+    /// Enable/disable explicit multi-select mode.
+    /// Disabling clears selection for a clean single-select state.
+    pub fn set_multi_select_mode(&self, enabled: bool) {
+        self.imp().is_multi_select_mode.set(enabled);
+        if !enabled {
+            self.clear_selection();
+        }
+    }
+
+    /// Whether explicit multi-select mode is enabled.
+    pub fn is_multi_select_mode(&self) -> bool {
+        self.imp().is_multi_select_mode.get()
+    }
+
+    /// Whether every currently rendered tile is selected.
+    pub fn is_all_displayed_selected(&self) -> bool {
+        let selected = self.imp().selected.borrow();
+        let displayed = self.imp().displayed_items.borrow();
+        if displayed.is_empty() {
+            return false;
+        }
+        for (_, gi) in displayed.iter() {
+            if !selected.contains(gi) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn selected_indices_sorted(&self) -> Vec<u32> {
+        let mut indices: Vec<u32> = self.imp().selected.borrow().iter().copied().collect();
+        indices.sort_unstable();
+        indices
+    }
+
     /// Clear the selection (both in the `selected` set AND on every visible
     /// `FlowBox`). Fires the `selection-changed` callback if the set was
     /// non-empty before.
     pub fn clear_selection(&self) {
+        self.imp().is_multi_select_mode.set(false);
         let mut changed = false;
         {
             let mut s = self.imp().selected.borrow_mut();
@@ -263,6 +379,33 @@ impl MediaGrid {
         if changed {
             self.fire_selection_changed();
         }
+    }
+
+    fn ensure_context_selection(
+        &self,
+        flow: &gtk::FlowBox,
+        clicked_child: &gtk::FlowBoxChild,
+        global_index: u32,
+    ) -> Vec<u32> {
+        let was_selected = self.imp().selected.borrow().contains(&global_index);
+        if !was_selected {
+            {
+                let mut s = self.imp().selected.borrow_mut();
+                s.clear();
+                s.insert(global_index);
+            }
+            let content = self.imp().content.get();
+            let mut section_child = content.first_child();
+            while let Some(child) = section_child {
+                if let Some(flow_box) = child.downcast_ref::<gtk::FlowBox>() {
+                    flow_box.unselect_all();
+                }
+                section_child = child.next_sibling();
+            }
+            flow.select_child(clicked_child);
+            self.fire_selection_changed();
+        }
+        self.selected_indices_sorted()
     }
 
     /// Notify whenever the scrolled viewport moves. `PhotosPage` uses this to
@@ -323,33 +466,6 @@ impl MediaGrid {
         }
     }
 
-    /// Attach an `EventControllerKey` to `content` that keeps
-    /// `modifier_state` up to date. The mask is read by `child_activated` to
-    /// decide between "open viewer" and "toggle selection".
-    ///
-    /// gtk4-rs 0.8 only exposes the `modifiers` signal (fired whenever the
-    /// modifier mask changes, e.g. on Shift / Ctrl press/release) — there is
-    /// no `key-pressed` / `key-released` callback. That signal is sufficient
-    /// for our needs: we only care about the mask at the moment a click is
-    /// processed.
-    fn setup_modifier_tracker(&self) {
-        let key_ctrl = gtk::EventControllerKey::new();
-        let imp_weak = self.downgrade();
-        key_ctrl.connect_modifiers(move |_, state| {
-            if let Some(obj) = imp_weak.upgrade() {
-                obj.imp().modifier_state.set(state);
-            }
-            glib::Propagation::Proceed
-        });
-        self.imp().content.get().add_controller(key_ctrl);
-    }
-
-    /// Decide whether `state` means "user is multi-selecting" (Shift or Ctrl).
-    fn is_multi_select_modifier(state: gdk::ModifierType) -> bool {
-        state.contains(gdk::ModifierType::SHIFT_MASK)
-            || state.contains(gdk::ModifierType::CONTROL_MASK)
-    }
-
     /// Toggle membership of `global_index` in the selected set, then toggle
     /// the visual highlight on `child` via its parent `FlowBox`. Fires
     /// `selection-changed`.
@@ -386,6 +502,31 @@ impl MediaGrid {
             .get()
             .expect("MediaGrid::rebuild called before new()")
             .clone();
+        let on_add_to_album = self
+            .imp()
+            .on_add_to_album
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
+        let on_move_to_trash = self
+            .imp()
+            .on_move_to_trash
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
+        let on_set_favorite = self
+            .imp()
+            .on_set_favorite
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
+        let on_query_favorite_state = self
+            .imp()
+            .on_query_favorite_state
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
+        let enable_context_menu = self.imp().enable_context_menu.get();
 
         let spec = spec_for_mode(mode);
 
@@ -394,6 +535,7 @@ impl MediaGrid {
         while let Some(child) = content.first_child() {
             content.remove(&child);
         }
+        self.imp().displayed_items.borrow_mut().clear();
 
         // Extract MediaItems + a uri→global-index lookup from the store.
         let items = extract_items(&media_list);
@@ -403,6 +545,7 @@ impl MediaGrid {
         let sections = group_items(&items, mode);
         let mut section_count = 0u32;
         let mut photo_count = 0u32;
+        let mut displayed_items = Vec::new();
         for section in sections {
             if section.items.is_empty() {
                 continue;
@@ -460,21 +603,31 @@ impl MediaGrid {
                     .clone();
                 let picture = build_photo_picture(spec, item.clone(), loader.clone(), on_bg);
                 flow.append(&picture);
+                if let Some(flow_child) = flow
+                    .last_child()
+                    .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+                {
+                    if gi != u32::MAX {
+                        displayed_items.push((flow_child.clone(), gi));
+                    }
+                }
                 photo_count += 1;
             }
 
             // Activation: FlowBox child-activated → look up global index.
-            // Behaviour depends on the modifier state captured at click time:
-            // - Shift / Ctrl held → toggle membership in `selected` (no viewer)
-            // - otherwise          → forward to the host's on_activate (open viewer)
+            // Only explicit multi-select mode (entered via right-click “Multi-select”)
+            // toggles selection; otherwise the item opens in viewer.
             let on_act = on_activate.clone();
             let weak = self.downgrade();
+            let global_indices_for_activation = global_indices.clone();
+            let global_indices_for_context = global_indices;
+            let section_label_for_activation = section.label.clone();
             flow.connect_child_activated(move |flow, child| {
                 let idx = child.index();
                 if idx < 0 {
                     return;
                 }
-                let Some(&gi) = global_indices.get(idx as usize) else {
+                let Some(&gi) = global_indices_for_activation.get(idx as usize) else {
                     return;
                 };
                 let (item_id, item_name, item_uri) = activation_items
@@ -484,18 +637,16 @@ impl MediaGrid {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
-                let state = this.imp().modifier_state.get();
-                let is_multi = Self::is_multi_select_modifier(state);
+                let is_multi = this.is_multi_select_mode();
                 tracing::info!(
-                    "VIEWER_DEBUG grid activate mode={:?} section={} child_index={} global_index={} item_id={} item_name={} item_uri={} modifiers={:?} multi_select={}",
+                    "VIEWER_DEBUG grid activate mode={:?} section={} child_index={} global_index={} item_id={} item_name={} item_uri={} multi_select={}",
                     this.mode(),
-                    section.label,
+                    section_label_for_activation,
                     idx,
                     gi,
                     item_id,
                     item_name,
                     item_uri,
-                    state,
                     is_multi
                 );
                 if is_multi {
@@ -506,9 +657,186 @@ impl MediaGrid {
                 }
             });
 
+            if enable_context_menu {
+                let weak_for_context = self.downgrade();
+                let section_label_for_ctx = section.label.clone();
+                let global_indices_for_context = global_indices_for_context.clone();
+                let flow_for_ctx = flow.clone();
+                let on_add_to_album_ctx = on_add_to_album.clone();
+                let on_move_to_trash_ctx = on_move_to_trash.clone();
+                let on_set_favorite_ctx = on_set_favorite.clone();
+                let on_query_favorite_state_ctx = on_query_favorite_state.clone();
+                let gesture = gtk::GestureClick::new();
+                gesture.set_button(3);
+                gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+
+                gesture.connect_released(move |gesture, _n_press, x, y| {
+                    if gesture.current_button() != 3 {
+                        return;
+                    }
+                    let Some(this) = weak_for_context.upgrade() else {
+                        return;
+                    };
+
+                    let Some(flow_child_for_ctx) = flow_for_ctx.child_at_pos(x as i32, y as i32) else {
+                        return;
+                    };
+                    let hit_idx = match flow_child_for_ctx.index() {
+                        idx if idx >= 0 => idx as usize,
+                        _ => return,
+                    };
+
+                    let gi = match global_indices_for_context.get(hit_idx).copied() {
+                        Some(index) if index != u32::MAX => index,
+                        _ => return,
+                    };
+
+                    let in_multi_mode = this.is_multi_select_mode();
+                    let target_indices = if in_multi_mode {
+                        this.ensure_context_selection(&flow_for_ctx, &flow_child_for_ctx, gi)
+                    } else {
+                        vec![gi]
+                    };
+                    let favorite_state = (on_query_favorite_state_ctx)(target_indices.clone());
+                    let child_alloc = flow_child_for_ctx.allocation();
+                    let point_in_child = gdk::Rectangle::new(
+                        (x as i32 - child_alloc.x()).max(0),
+                        (y as i32 - child_alloc.y()).max(0),
+                        1,
+                        1,
+                    );
+                    tracing::info!(
+                        "VIEWER_DEBUG context_menu mode={:?} section={} selected={:?} multi_select={}",
+                        this.mode(),
+                        section_label_for_ctx,
+                        target_indices,
+                        in_multi_mode
+                    );
+
+                    let popover = gtk::Popover::new();
+                    popover.set_parent(&flow_child_for_ctx);
+                    popover.add_css_class("media-grid-context-menu");
+                    popover.set_has_arrow(false);
+                    popover.set_autohide(true);
+                    popover.set_position(gtk::PositionType::Bottom);
+                    popover.set_offset(0, 0);
+                    popover.set_pointing_to(Some(&point_in_child));
+
+                    let menu = gtk::Box::builder()
+                        .orientation(gtk::Orientation::Vertical)
+                        .spacing(2)
+                        .css_classes(["media-grid-context-menu-list"])
+                        .build();
+
+                    // Multi-select / Exit Multi-select.
+                    if in_multi_mode {
+                        let exit_btn = gtk::Button::builder()
+                            .label(&tr("photos.batch.exit_multi_select"))
+                            .css_classes(["media-grid-context-item", "flat", "destructive-action"])
+                            .build();
+
+                        let popover_exit = popover.clone();
+                        let weak_exit = weak_for_context.clone();
+                        exit_btn.connect_clicked(move |_| {
+                            if let Some(this) = weak_exit.upgrade() {
+                                this.set_multi_select_mode(false);
+                            }
+                            popover_exit.popdown();
+                        });
+                        menu.append(&exit_btn);
+                    } else {
+                        let multi_btn = gtk::Button::builder()
+                            .label(&tr("photos.batch.multi_select"))
+                            .css_classes(["media-grid-context-item", "flat", "suggested-action"])
+                            .build();
+
+                        let weak_enter = weak_for_context.clone();
+                        let flow_for_ctx_enter = flow_for_ctx.clone();
+                        let flow_child_for_ctx_enter = flow_child_for_ctx.clone();
+                        let popover_enter = popover.clone();
+                        multi_btn.connect_clicked(move |_| {
+                            if let Some(this) = weak_enter.upgrade() {
+                                this.set_multi_select_mode(true);
+                                this.ensure_context_selection(
+                                    &flow_for_ctx_enter,
+                                    &flow_child_for_ctx_enter,
+                                    gi,
+                                );
+                            }
+                            popover_enter.popdown();
+                        });
+                        menu.append(&multi_btn);
+                    }
+
+                    // Favorite / Unfavorite (single and batch context).
+                    if favorite_state.can_favorite {
+                        let favorite_btn = gtk::Button::builder()
+                            .label(&tr("photos.batch.favorite"))
+                            .css_classes(["media-grid-context-item", "flat"])
+                            .build();
+                        let indices_for_fav = target_indices.clone();
+                        let on_set_favorite_fav = on_set_favorite_ctx.clone();
+                        let popover_fav = popover.clone();
+                        favorite_btn.connect_clicked(move |_| {
+                            on_set_favorite_fav(indices_for_fav.clone(), true);
+                            popover_fav.popdown();
+                        });
+                        menu.append(&favorite_btn);
+                    }
+                    if favorite_state.can_unfavorite {
+                        let unfav_btn = gtk::Button::builder()
+                            .label(&tr("photos.batch.unfavorite"))
+                            .css_classes(["media-grid-context-item", "flat"])
+                            .build();
+                        let indices_for_unfav = target_indices.clone();
+                        let on_set_favorite_unfav = on_set_favorite_ctx.clone();
+                        let popover_unfav = popover.clone();
+                        unfav_btn.connect_clicked(move |_| {
+                            on_set_favorite_unfav(indices_for_unfav.clone(), false);
+                            popover_unfav.popdown();
+                        });
+                        menu.append(&unfav_btn);
+                    }
+
+                    if !target_indices.is_empty() {
+                        let move_album_btn = gtk::Button::builder()
+                            .label(&tr("photos.batch.move_to_album"))
+                            .css_classes(["media-grid-context-item", "flat"])
+                            .build();
+                        let indices_for_album = target_indices.clone();
+                        let on_add_to_album_ctx = on_add_to_album_ctx.clone();
+                        let popover_album = popover.clone();
+                        move_album_btn.connect_clicked(move |_| {
+                            on_add_to_album_ctx(indices_for_album.clone());
+                            popover_album.popdown();
+                        });
+                        menu.append(&move_album_btn);
+
+                        let delete_btn = gtk::Button::builder()
+                            .label(&tr("viewer.tooltip.move_to_trash"))
+                            .css_classes(["media-grid-context-item", "flat", "destructive-action"])
+                            .build();
+                        let indices_for_trash = target_indices.clone();
+                        let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
+                        let popover_trash = popover.clone();
+                        delete_btn.connect_clicked(move |_| {
+                            on_move_to_trash_ctx(indices_for_trash.clone());
+                            popover_trash.popdown();
+                        });
+                        menu.append(&delete_btn);
+                    }
+
+                    popover.set_child(Some(&menu));
+                    popover.popup();
+                });
+
+                flow.add_controller(gesture);
+            }
+
             content.append(&flow);
             section_count += 1;
         }
+        *self.imp().displayed_items.borrow_mut() = displayed_items;
 
         tracing::debug!(
             "MediaGrid::rebuild mode={:?} sections={} photos={} spec.pixel_size={}",
@@ -837,6 +1165,11 @@ mod tests {
             loader,
             Rc::new(|_| {}),
             Rc::new(|| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_, _| {}),
+            Rc::new(|_| FavoriteMenuState::default()),
+            false,
         );
         assert_eq!(tile_count(&grid), 2);
 

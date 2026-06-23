@@ -12,6 +12,7 @@ use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use photo_viewer::ui::{MainWindow, PhotosPage};
+use photo_viewer::core::i18n::tr;
 
 #[test]
 fn sidebar_navigation_suite() {
@@ -43,11 +44,15 @@ fn sidebar_navigation_suite() {
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
+    let expected_albums = tr("page.albums.title");
+    let expected_photos = tr("page.photos.title");
+    let expected_trash = tr("page.trash.title");
+
     let albums_row = sidebar.row_at_index(1).expect("Albums row exists");
     sidebar.select_row(Some(&albums_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
-        Some("Albums"),
+        Some(expected_albums.as_str()),
         "selecting Albums should show the Albums page"
     );
 
@@ -55,7 +60,7 @@ fn sidebar_navigation_suite() {
     sidebar.select_row(Some(&photos_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
-        Some("Photos"),
+        Some(expected_photos.as_str()),
         "selecting Photos after Albums should return to the Photos root page"
     );
 
@@ -65,19 +70,19 @@ fn sidebar_navigation_suite() {
     let albums_page = nav
         .visible_page()
         .expect("Albums should be visible after selecting Albums");
-    assert_eq!(albums_page.title().as_str(), "Albums");
+    assert_eq!(albums_page.title().as_str(), expected_albums);
 
     sidebar.select_row(Some(&trash_row));
     let trash_page = nav
         .visible_page()
         .expect("Trash should be visible after selecting Trash");
-    assert_eq!(trash_page.title().as_str(), "Trash");
+    assert_eq!(trash_page.title().as_str(), expected_trash);
     assert_eq!(nav.navigation_stack().n_items(), 3);
     assert_eq!(
         nav.previous_page(&trash_page)
             .map(|page| page.title())
             .as_deref(),
-        Some("Albums"),
+        Some(expected_albums.as_str()),
         "Trash should be stacked on top of Albums without revealing Photos first"
     );
 
@@ -85,7 +90,7 @@ fn sidebar_navigation_suite() {
     let visible = nav
         .visible_page()
         .expect("Albums should be visible after returning from Trash");
-    assert_eq!(visible.title().as_str(), "Albums");
+    assert_eq!(visible.title().as_str(), expected_albums);
     assert_eq!(
         visible, albums_page,
         "selecting Albums from Trash should reveal the existing Albums page"
@@ -97,7 +102,7 @@ fn sidebar_navigation_suite() {
     sidebar.select_row(Some(&photos_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
-        Some("Photos")
+        Some(expected_photos.as_str())
     );
     assert_eq!(
         nav.navigation_stack().n_items(),

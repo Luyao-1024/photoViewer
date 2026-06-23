@@ -20,12 +20,13 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums;
 use crate::core::db::{self, DbPool};
 use crate::core::media::MediaItem;
+use crate::core::i18n::tr;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
 use crate::ui::empty_states;
@@ -81,6 +82,8 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
+        #[template_child]
+        pub trash_banner: TemplateChild<adw::Banner>,
         #[template_child]
         pub scrolled: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
@@ -150,9 +153,30 @@ impl TrashPage {
         crate::ui::grid_css::install();
 
         let obj: Self = glib::Object::builder().build();
+        obj.set_title(&tr("page.trash.title"));
         *obj.imp().pool.borrow_mut() = Some(pool.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
         *obj.imp().media_list.borrow_mut() = media_list;
+        obj.imp()
+            .trash_banner
+            .get()
+            .set_title(&tr("trash.banner"));
+        obj.imp()
+            .empty_btn
+            .get()
+            .set_label(&tr("trash.empty_all"));
+        obj.imp()
+            .cancel_btn
+            .get()
+            .set_label(&tr("trash.cancel"));
+        obj.imp()
+            .restore_btn
+            .get()
+            .set_label(&tr("trash.restore"));
+        obj.imp()
+            .delete_btn
+            .get()
+            .set_label(&tr("trash.delete_permanently"));
 
         let flow = obj.imp().flow_box.get();
 
@@ -245,11 +269,11 @@ impl TrashPage {
                 let page_weak = obj.downgrade();
 
                 let dialog = adw::AlertDialog::builder()
-                    .heading("Empty Trash?")
-                    .body("All items in trash will be permanently deleted.")
+                    .heading(&tr("trash.empty_title"))
+                    .body(&tr("trash.empty_body"))
                     .build();
-                dialog.add_response("cancel", "Cancel");
-                dialog.add_response("empty", "Empty");
+                dialog.add_response("cancel", &tr("dialog.cancel"));
+                dialog.add_response("empty", &tr("dialog.empty"));
                 dialog.set_response_appearance("empty", adw::ResponseAppearance::Destructive);
 
                 dialog.connect_response(

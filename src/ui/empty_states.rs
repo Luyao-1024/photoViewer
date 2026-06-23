@@ -11,13 +11,14 @@
 //! to keep the title+icon size proportional on small pages.
 use gtk4::prelude::*;
 use libadwaita as adw;
+use crate::core::i18n::tr;
 
 /// Empty state for the main Photos view: no photos have been imported yet.
 pub fn no_photos() -> adw::StatusPage {
     let p = adw::StatusPage::builder()
         .icon_name("image-x-generic-symbolic")
-        .title("No Photos Yet")
-        .description("Add folders in Settings to start browsing your library.")
+        .title(&tr("empty.no_photos.title"))
+        .description(&tr("empty.no_photos.description"))
         .build();
     p.add_css_class("compact");
     p
@@ -27,8 +28,8 @@ pub fn no_photos() -> adw::StatusPage {
 pub fn no_albums() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("folder-symbolic")
-        .title("No Albums")
-        .description("Organize photos into folders — they will appear here as albums.")
+        .title(&tr("empty.no_albums.title"))
+        .description(&tr("empty.no_albums.description"))
         .build()
 }
 
@@ -36,8 +37,8 @@ pub fn no_albums() -> adw::StatusPage {
 pub fn empty_trash() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("user-trash-symbolic")
-        .title("Trash is Empty")
-        .description("Deleted photos will appear here.")
+        .title(&tr("empty.trash_empty.title"))
+        .description(&tr("empty.trash_empty.description"))
         .build()
 }
 
@@ -46,8 +47,8 @@ pub fn empty_trash() -> adw::StatusPage {
 pub fn no_album_photos() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("image-missing-symbolic")
-        .title("Empty Album")
-        .description("This album contains no photos.")
+        .title(&tr("empty.no_album_photos.title"))
+        .description(&tr("empty.no_album_photos.description"))
         .build()
 }
 
@@ -56,7 +57,7 @@ pub fn no_album_photos() -> adw::StatusPage {
 pub fn scan_error(msg: &str) -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("dialog-warning-symbolic")
-        .title("Scan Failed")
+        .title(&tr("empty.scan_failed.title"))
         .description(msg)
         .build()
 }
@@ -64,5 +65,5 @@ pub fn scan_error(msg: &str) -> adw::StatusPage {
 /// Loading state — used during initial scan / refresh while data is
 /// being fetched from disk and indexed in the database.
 pub fn loading() -> adw::StatusPage {
-    adw::StatusPage::builder().title("Loading…").build()
+    adw::StatusPage::builder().title(&tr("empty.loading")).build()
 }

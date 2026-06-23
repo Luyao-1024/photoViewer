@@ -1,0 +1,15 @@
+{
+  "locale": "en",
+  "overrides": {
+    "app.title": "Photo Viewer",
+    "window.sidebar": "Library",
+    "sidebar.photos": "Photos",
+    "sidebar.albums": "Albums",
+    "sidebar.trash": "Trash",
+    "page.photos.title": "Photos",
+    "page.albums.title": "Albums",
+    "page.trash.title": "Trash",
+    "page.viewer.title": "Viewer",
+    "page.editor.title": "Edit"
+  }
+}

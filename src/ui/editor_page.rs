@@ -22,7 +22,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
 use libadwaita::subclass::prelude::*;
 
 use gdk_pixbuf::{Colorspace, Pixbuf};
@@ -30,6 +30,7 @@ use gdk_pixbuf::{Colorspace, Pixbuf};
 use crate::core::db::DbPool;
 use crate::core::edit::{apply_all, EditRegistry, EditState};
 use crate::core::media::MediaItem;
+use crate::core::i18n::{tr, trf};
 
 mod imp {
     use super::*;
@@ -68,11 +69,23 @@ mod imp {
         #[template_child]
         pub rotate_90_ccw: TemplateChild<gtk::Button>,
         #[template_child]
+        pub rotate_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub adjust_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub crop_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
         pub brightness_scale: TemplateChild<gtk::Scale>,
         #[template_child]
         pub contrast_scale: TemplateChild<gtk::Scale>,
         #[template_child]
         pub saturation_scale: TemplateChild<gtk::Scale>,
+        #[template_child]
+        pub brightness_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub contrast_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub saturation_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub start_crop_btn: TemplateChild<gtk::Button>,
         pub debounce_id: RefCell<Option<glib::SourceId>>,
@@ -114,6 +127,8 @@ impl EditorPage {
     /// completes. `pool` is stored for downstream M4-T4 save logic.
     pub fn new(media_item: MediaItem, pool: DbPool) -> Self {
         let obj: Self = glib::Object::builder().build();
+        obj.set_title(&tr("page.editor.title"));
+        obj.apply_i18n();
         *obj.imp().media_item.borrow_mut() = Some(media_item.clone());
         *obj.imp().pool.borrow_mut() = Some(pool);
         *obj.imp().registry.borrow_mut() = Some(EditRegistry::new_with_v1());
@@ -122,6 +137,39 @@ impl EditorPage {
         obj.load_source_async(media_item.path.clone());
 
         obj
+    }
+
+    fn apply_i18n(&self) {
+        let imp = self.imp();
+        imp.cancel_btn.get().set_label(&tr("button.cancel"));
+        imp.save_copy_btn
+            .get()
+            .set_label(&tr("editor.menu.save_copy"));
+        imp.save_menu_btn.get().set_label(&tr("button.save"));
+        imp.rotate_group
+            .get()
+            .set_title(&tr("editor.panel.rotate"));
+        imp.adjust_group
+            .get()
+            .set_title(&tr("editor.panel.adjust"));
+        imp.crop_group.get().set_title(&tr("editor.panel.crop"));
+        imp.brightness_row
+            .get()
+            .set_title(&tr("editor.adjust.brightness"));
+        imp.contrast_row
+            .get()
+            .set_title(&tr("editor.adjust.contrast"));
+        imp.saturation_row
+            .get()
+            .set_title(&tr("editor.adjust.saturation"));
+        imp.rotate_90_cw.get().set_label(&tr("editor.rotate.90"));
+        imp.rotate_180.get().set_label(&tr("editor.rotate.180"));
+        imp.rotate_90_ccw
+            .get()
+            .set_label(&tr("editor.rotate.90_ccw"));
+        imp.start_crop_btn
+            .get()
+            .set_label(&tr("editor.crop.start"));
     }
 
     /// Register a callback fired when the user presses the Cancel button.
@@ -234,7 +282,7 @@ impl EditorPage {
         imp.start_crop_btn
             .get()
             .connect_clicked(glib::clone!(@weak self as this => move |_| {
-                this.show_toast("Crop UI 在 V2 实现");
+                this.show_toast(&tr("editor.crop_placeholder"));
             }));
     }
 
@@ -243,8 +291,11 @@ impl EditorPage {
     /// toolbar buttons call.
     fn setup_save_menu(&self) {
         let menu = gio::Menu::new();
-        menu.append(Some("Save Copy"), Some("editor.save-copy"));
-        menu.append(Some("Save Overwrite…"), Some("editor.save-overwrite"));
+        menu.append(Some(&tr("editor.menu.save_copy")), Some("editor.save-copy"));
+        menu.append(
+            Some(&tr("editor.menu.save_overwrite")),
+            Some("editor.save-overwrite"),
+        );
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
@@ -306,14 +357,14 @@ impl EditorPage {
             if let Some(this) = weak.upgrade() {
                 match result {
                     Ok(Ok(_new_item)) => {
-                        this.show_toast("Saved a copy");
+            this.show_toast(&tr("editor.toast.saved_copy"));
                         // 导航回上一页（host 通过 connect_cancel 注册的回调
                         // 通常就是 pop；用 action 名走 nav stack 同样安全）。
                         let _ = this.activate_action("navigation.pop", None);
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Save Copy failed: {}", e);
-                        this.show_toast(&format!("Save Copy failed: {}", e));
+                        this.show_toast(&trf("editor.toast.save_copy_failed", &[("error", &e.to_string())]));
                     }
                     Err(_) => {
                         tracing::error!("Save Copy worker panicked");
@@ -327,13 +378,13 @@ impl EditorPage {
     /// 调度 `perform_save_overwrite` 在工作线程上完成实际渲染与 DB 更新。
     fn save_overwrite_with_confirm(&self) {
         let dialog = adw::AlertDialog::builder()
-            .heading("Overwrite Original?")
+            .heading(&tr("editor.overwrite_title"))
             .body(
-                "This will replace the original file. The original will be backed up to .jpg.bak.",
+                &tr("editor.overwrite_body"),
             )
             .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("overwrite", "Overwrite");
+        dialog.add_response("cancel", &tr("button.cancel"));
+        dialog.add_response("overwrite", &tr("dialog.overwrite"));
         dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -386,12 +437,15 @@ impl EditorPage {
             if let Some(this) = weak.upgrade() {
                 match result {
                     Ok(Ok(())) => {
-                        this.show_toast("Original overwritten");
+                        this.show_toast(&tr("editor.toast.overwritten"));
                         let _ = this.activate_action("navigation.pop", None);
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Save Overwrite failed: {}", e);
-                        this.show_toast(&format!("Save Overwrite failed: {}", e));
+                        this.show_toast(&trf(
+                            "editor.toast.overwrite_failed",
+                            &[("error", &e.to_string())],
+                        ));
                     }
                     Err(_) => {
                         tracing::error!("Save Overwrite worker panicked");

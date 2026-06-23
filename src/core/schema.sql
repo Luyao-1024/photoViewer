@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     file_mtime      INTEGER NOT NULL,
     file_size       INTEGER NOT NULL,
     blake3_hash     TEXT    NOT NULL,
+    is_favorite     INTEGER NOT NULL DEFAULT 0,
     trashed_at      INTEGER,
     indexed_at      INTEGER NOT NULL
 );
@@ -23,6 +24,10 @@ CREATE INDEX IF NOT EXISTS idx_media_trashed
     ON media_items(trashed_at)     WHERE trashed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_blake3
     ON media_items(blake3_hash);
+
+CREATE INDEX IF NOT EXISTS idx_media_favorite
+    ON media_items(is_favorite)
+    WHERE trashed_at IS NULL;
 
 -- albums 物化视图
 CREATE TABLE IF NOT EXISTS albums (

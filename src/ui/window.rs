@@ -1,15 +1,19 @@
 //! Main window: sidebar + content area
 use std::cell::RefCell;
+use std::fs;
 use std::sync::Arc;
 
+use serde_json::{Map, Value};
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
-use libadwaita::prelude::NavigationPageExt;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
 use crate::core::db::DbPool;
+use crate::core::i18n::{tr, trf, locale};
+use crate::config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{AlbumsPage, TrashPage};
 
@@ -28,6 +32,8 @@ mod imp {
         pub sidebar_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
+        #[template_child]
+        pub sidebar_page: TemplateChild<adw::NavigationPage>,
     }
 
     #[gtk::glib::object_subclass]
@@ -63,21 +69,28 @@ impl MainWindow {
     pub fn new(app: &adw::Application) -> Self {
         gtk::glib::Object::builder()
             .property("application", app)
+            .property("title", tr("app.title"))
             .build()
     }
 
     /// Populate the sidebar ListBox with section rows.
     /// Photos / Albums / Trash — only Photos is wired up in M1; others are placeholders.
     pub fn populate_sidebar(&self) {
+        self.imp()
+            .sidebar_page
+            .get()
+            .set_title(&tr("window.sidebar"));
         let list = self.imp().sidebar_list.get();
-        for (label, _target) in &[
-            ("Photos", "photos"),
-            ("Albums", "albums"),
-            ("Trash", "trash"),
-        ] {
+        let sidebar_rows = [
+            (tr("sidebar.photos"), "photos"),
+            (tr("sidebar.albums"), "albums"),
+            (tr("sidebar.trash"), "trash"),
+            (tr("sidebar.settings"), "settings"),
+        ];
+        for (label, _target) in &sidebar_rows {
             let row = ListBoxRow::new();
             let lbl = gtk::Label::builder()
-                .label(*label)
+                .label(label.clone())
                 .halign(gtk::Align::Start)
                 .margin_start(12)
                 .margin_end(12)
@@ -118,6 +131,15 @@ impl MainWindow {
     /// are missing the closure silently no-ops.
     pub fn connect_sidebar(&self, nav_view: &adw::NavigationView) {
         let list = self.imp().sidebar_list.get();
+        let gesture = gtk::GestureSwipe::new();
+        gesture.connect_swipe(
+            glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
+                if velocity_x.abs() > 450.0 && !visible_page_is_settings(&nav_view) {
+                    window.show_settings_page(&nav_view);
+                }
+            }),
+        );
+        self.imp().nav_view.get().add_controller(gesture);
 
         list.connect_row_selected(
             glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
@@ -130,10 +152,10 @@ impl MainWindow {
                         // Albums: if Trash is stacked on Albums, just pop Trash.
                         // Otherwise reuse an existing Albums page in the stack, or
                         // create a fresh one from the current DB snapshot.
-                        if visible_page_is(&nav_view, "Albums") {
+                        if visible_page_is_albums(&nav_view) {
                             return;
                         }
-                        if pop_to_visible_page(&nav_view, "Albums") {
+                        if pop_to_visible_page(&nav_view, is_albums_page) {
                             return;
                         }
                         let Some(page) = window.build_albums_page(&nav_view) else {
@@ -143,16 +165,19 @@ impl MainWindow {
                         nav_view.push(&page);
                     }
                     2 => {
-                        if visible_page_is(&nav_view, "Trash") {
+                        if visible_page_is_trash(&nav_view) {
                             return;
                         }
                         // If we are somewhere inside Albums, return to the
                         // top-level Albums page before stacking Trash on it.
-                        let _ = pop_to_visible_page(&nav_view, "Albums");
+                        let _ = pop_to_visible_page(&nav_view, is_albums_page);
                         let Some(page) = window.build_trash_page() else {
                             return;
                         };
                         nav_view.push(&page);
+                    }
+                    3 => {
+                        window.show_settings_page(&nav_view);
                     }
                     _ => {}
                 }
@@ -163,7 +188,7 @@ impl MainWindow {
     fn build_albums_page(&self, nav_view: &adw::NavigationView) -> Option<AlbumsPage> {
         let pool = self.imp().pool.borrow().clone()?;
         let loader = self.imp().loader.borrow().clone()?;
-        let albums = crate::core::albums::list(&pool).unwrap_or_default();
+        let albums = crate::core::albums::list_with_favorites(&pool).unwrap_or_default();
         let media_list = self.imp().media_list.borrow().clone()?;
         let page = AlbumsPage::new(albums, loader);
         page.set_nav_target(nav_view, media_list, pool);
@@ -176,31 +201,185 @@ impl MainWindow {
         let media_list = self.imp().media_list.borrow().clone()?;
         Some(TrashPage::with_media_list(pool, loader, media_list))
     }
+
+    fn show_settings_page(&self, nav_view: &adw::NavigationView) {
+        if visible_page_is_settings(nav_view) {
+            return;
+        }
+        let page = self.build_settings_page();
+        nav_view.push(&page);
+    }
+
+    fn build_settings_page(&self) -> adw::NavigationPage {
+        let page = adw::NavigationPage::builder()
+            .title(&tr("setting.page.title"))
+            .build();
+
+        let current = locale().to_string();
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .margin_top(24)
+            .margin_bottom(24)
+            .margin_start(24)
+            .margin_end(24)
+            .build();
+
+        let title = gtk::Label::new(Some(&tr("setting.section.language")));
+        title.set_xalign(0.0);
+        content.append(&title);
+
+        let description = gtk::Label::new(Some(&tr("setting.section.language_description")));
+        description.set_wrap(true);
+        description.set_xalign(0.0);
+        content.append(&description);
+
+        let lang_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let btn_zh = gtk::Button::with_label(&tr("setting.lang.zh"));
+        let btn_en = gtk::Button::with_label(&tr("setting.lang.en"));
+
+        btn_zh.set_sensitive(current != "zh-CN");
+        btn_en.set_sensitive(current != "en");
+
+        let page_zh = page.clone();
+        let page_en = page.clone();
+        let btn_zh_ref = btn_zh.clone();
+        let btn_en_ref = btn_en.clone();
+        let btn_zh_ref2 = btn_zh.clone();
+        let btn_en_ref2 = btn_en.clone();
+
+        btn_zh.connect_clicked(move |_| {
+            match persist_locale("zh-CN") {
+                Ok(()) => {
+                    show_settings_restart_dialog(&page_zh, true, None);
+                    btn_zh_ref.set_sensitive(false);
+                    btn_en_ref.set_sensitive(true);
+                }
+                Err(err) => {
+                    show_settings_restart_dialog(&page_zh, false, Some(err));
+                }
+            }
+        });
+
+        btn_en.connect_clicked(move |_| {
+            match persist_locale("en") {
+                Ok(()) => {
+                    show_settings_restart_dialog(&page_en, true, None);
+                    btn_zh_ref2.set_sensitive(true);
+                    btn_en_ref2.set_sensitive(false);
+                }
+                Err(err) => {
+                    show_settings_restart_dialog(&page_en, false, Some(err));
+                }
+            }
+        });
+
+        lang_box.append(&btn_zh);
+        lang_box.append(&btn_en);
+        content.append(&lang_box);
+
+        page.set_child(Some(&content));
+        page
+    }
+}
+
+fn show_settings_restart_dialog(
+    parent: &adw::NavigationPage,
+    success: bool,
+    error: Option<String>,
+) {
+    let heading = if success {
+        tr("setting.locale.saved")
+    } else {
+        tr("setting.locale.failed")
+    };
+    let body = if let Some(error) = error {
+        trf("setting.restart_failed", &[("error", &error)])
+    } else {
+        tr("setting.restart_hint")
+    };
+    let dialog = adw::AlertDialog::builder()
+        .heading(&heading)
+        .body(&body)
+        .build();
+    dialog.add_response("ok", &tr("button.ok"));
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("ok");
+    dialog.present(parent);
+}
+
+fn persist_locale(locale: &str) -> Result<(), String> {
+    let path = config::config_dir().join("i18n.json");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let mut object = match fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str::<Value>(&data)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default(),
+        Err(_) => Map::new(),
+    };
+    object.insert("locale".to_string(), Value::String(locale.to_string()));
+    let value = Value::Object(object);
+    let json = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn pop_to_photos_root(nav_view: &adw::NavigationView) {
     while nav_view.pop() {}
 }
 
-fn visible_page_is(nav_view: &adw::NavigationView, title: &str) -> bool {
+fn visible_page_is_albums(nav_view: &adw::NavigationView) -> bool {
     nav_view
         .visible_page()
-        .map(|page| page.title() == title)
+        .map(|page| is_albums_page(&page))
         .unwrap_or(false)
 }
 
-fn pop_to_visible_page(nav_view: &adw::NavigationView, title: &str) -> bool {
+fn visible_page_is_trash(nav_view: &adw::NavigationView) -> bool {
+    nav_view
+        .visible_page()
+        .map(|page| is_trash_page(&page))
+        .unwrap_or(false)
+}
+
+fn visible_page_is_settings(nav_view: &adw::NavigationView) -> bool {
+    nav_view
+        .visible_page()
+        .map(|page| is_settings_page(&page))
+        .unwrap_or(false)
+}
+
+fn is_albums_page(page: &adw::NavigationPage) -> bool {
+    page.clone().downcast::<AlbumsPage>().is_ok()
+}
+
+fn is_trash_page(page: &adw::NavigationPage) -> bool {
+    page.clone().downcast::<TrashPage>().is_ok()
+}
+
+fn is_settings_page(page: &adw::NavigationPage) -> bool {
+    page.title() == tr("setting.page.title")
+}
+
+fn pop_to_visible_page(
+    nav_view: &adw::NavigationView,
+    is_target: fn(&adw::NavigationPage) -> bool,
+) -> bool {
     loop {
         let Some(visible) = nav_view.visible_page() else {
             return false;
         };
-        if visible.title() == title {
+        if is_target(&visible) {
             return true;
         }
         let Some(previous) = nav_view.previous_page(&visible) else {
             return false;
         };
-        if previous.title() == title {
+        if is_target(&previous) {
             return nav_view.pop();
         }
         if !nav_view.pop() {

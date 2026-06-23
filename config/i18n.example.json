@@ -1,0 +1,10 @@
+{
+  "locale": "zh-CN",
+  "overrides": {
+    "app.title": "照片查看器",
+    "sidebar.photos": "照片",
+    "sidebar.albums": "相册",
+    "sidebar.trash": "回收站",
+    "viewer.button.favorite": "收藏"
+  }
+}

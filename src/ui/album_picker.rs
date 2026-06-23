@@ -19,6 +19,7 @@ use libadwaita::prelude::*;
 use crate::core::album_ops::{add_to_album, AlbumOpMode};
 use crate::core::albums;
 use crate::core::db::DbPool;
+use crate::core::i18n::{tr, trf};
 
 /// Present the album picker on top of `host_nav`. `media_ids` are the
 /// `media_items.id`s the user wants to add (1+ entries; empty is a no-op
@@ -51,7 +52,7 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
 
     let outer = build_album_list_page(&list_box);
     let list_page = adw::NavigationPage::builder()
-        .title("Add to Album")
+        .title(&tr("album_picker.title"))
         .child(&outer)
         .build();
     outer.append(&list_box);
@@ -63,7 +64,7 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
     // - cancelling at level 1 pops the wrapping page → back to the caller
     // - the back button in the header takes care of navigation between levels
     let wrapper = adw::NavigationPage::builder()
-        .title("Add to Album")
+        .title(&tr("album_picker.title"))
         .child(&inner)
         .build();
     host_nav.push(&wrapper);
@@ -85,8 +86,8 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
         if albums.is_empty() {
             // Replace the (still empty) list with an empty-state page.
             let empty = adw::StatusPage::builder()
-                .title("No Albums Yet")
-                .description("Create a folder under ~/Pictures and re-scan to see it here.")
+                .title(&tr("album_picker.no_albums_yet.title"))
+                .description(&tr("album_picker.no_albums_yet.description"))
                 .icon_name("folder-symbolic")
                 .vexpand(true)
                 .build();
@@ -97,7 +98,10 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
         for album in albums {
             let row = adw::ActionRow::builder()
                 .title(album.display_name())
-                .subtitle(format!("{} photos", album.photo_count))
+                .subtitle(trf(
+                    "album.count",
+                    &[("count", &album.photo_count.to_string())],
+                ))
                 .activatable(true)
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
@@ -160,11 +164,11 @@ fn push_action_page(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| folder.display().to_string());
     let title = gtk::Label::builder()
-        .label(format!("Add to \"{}\"", name_label))
+        .label(trf("album_picker.to", &[("name", &name_label)]))
         .css_classes(["title-2"])
         .build();
     let hint = gtk::Label::builder()
-        .label("Move keeps the original removed. Copy duplicates the file.")
+        .label(&tr("album_picker.hint"))
         .wrap(true)
         .halign(gtk::Align::Center)
         .css_classes(["dimmed"])
@@ -177,11 +181,11 @@ fn push_action_page(
         .margin_top(12)
         .build();
 
-    let copy_btn = gtk::Button::with_label("Copy");
+    let copy_btn = gtk::Button::with_label(&tr("album_picker.copy"));
     copy_btn.add_css_class("pill");
     copy_btn.add_css_class("suggested-action");
 
-    let move_btn = gtk::Button::with_label("Move");
+    let move_btn = gtk::Button::with_label(&tr("album_picker.move"));
     move_btn.add_css_class("pill");
     move_btn.add_css_class("destructive-action");
 
@@ -196,7 +200,7 @@ fn push_action_page(
     toolbar.set_content(Some(&content));
 
     let page = adw::NavigationPage::builder()
-        .title("Choose Action")
+        .title(&tr("album_picker.choose_action.title"))
         .child(&toolbar)
         .build();
     inner.push(&page);
