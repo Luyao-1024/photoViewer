@@ -114,11 +114,8 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
     // 消费者；消费者按 uri 在共享的 `media_list` 上做 splice/append/remove。
     let (notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
-    let _watcher = crate::core::notify_watcher::start_watching(
-        pool.clone(),
-        vec![pictures],
-        notifier,
-    );
+    let _watcher =
+        crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures], notifier);
 
     // 首屏先加载一页，剩余数据稍后分批追加，避免大图库启动时一次性构造所有 GTK 对象。
     let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
