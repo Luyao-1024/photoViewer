@@ -1,7 +1,7 @@
 //! 本地文件系统扫描后端
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
-use crate::core::media::NewMediaItem;
+use crate::core::media::{MediaItem, NewMediaItem};
 use crate::core::metadata;
 use chrono::Utc;
 use std::io::Read;
@@ -114,11 +114,11 @@ impl LocalBackend {
         db::delete_media_by_path(&self.pool, path)
     }
 
-    /// 插入或更新（URI 冲突则 UPDATE）
-    pub fn upsert(&self, item: &NewMediaItem) -> Result<i64> {
-        let conn = self.pool.get()?;
-
-        // 检查是否存在
+    /// Insert or update (URI conflict → UPDATE). Returns the fully-materialized
+    /// row so callers (notably `notify_watcher`) can forward it to the UI
+    /// without a second DB round-trip.
+    pub fn upsert(&self, item: &NewMediaItem) -> Result<MediaItem> {
+        let mut conn = self.pool.get()?;
         let existing: Option<i64> = conn
             .query_row(
                 "SELECT id FROM media_items WHERE uri = ?1",
@@ -147,9 +147,11 @@ impl LocalBackend {
                     item.blake3_hash,
                 ],
             )?;
-            Ok(id)
+            drop(conn);
+            Ok(db::get_media_item(&self.pool, id)?)
         } else {
-            Ok(db::insert_media_item(&self.pool, item)?)
+            let id = db::insert_media_item(&self.pool, item)?;
+            Ok(db::get_media_item(&self.pool, id)?)
         }
     }
 }
@@ -173,5 +175,48 @@ mod tests {
         let expected = blake3::hash(&bytes).to_hex().to_string();
 
         assert_eq!(stream_file_hash(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn upsert_returns_inserted_media_item_with_populated_id() {
+        use crate::core::media::NewMediaItem;
+        use chrono::Utc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_plain_jpeg_in(dir.path(), "x.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let new_item = NewMediaItem {
+            uri: format!("file://{}", path.display()),
+            path: path.clone(),
+            folder_path: dir.path().to_path_buf(),
+            mime_type: "image/jpeg".into(),
+            width: Some(64),
+            height: Some(48),
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: std::fs::metadata(&path).unwrap().len(),
+            blake3_hash: "placeholder".into(),
+        };
+
+        let returned = backend.upsert(&new_item).expect("upsert should succeed");
+        assert!(
+            returned.id > 0,
+            "returned MediaItem must have a populated id"
+        );
+        assert_eq!(returned.uri, new_item.uri);
+        assert_eq!(returned.blake3_hash, "placeholder");
+    }
+
+    /// Test-only helper: write a 64x48 plain JPEG (mirrors
+    /// `tests/common/mod.rs::write_plain_jpeg` without requiring that
+    /// module to be in scope for the lib's own test binary).
+    fn write_plain_jpeg_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use image::{ImageBuffer, Rgb};
+        let img = ImageBuffer::<Rgb<u8>, _>::from_fn(64, 48, |_, _| Rgb([128, 128, 128]));
+        let path = dir.join(name);
+        img.save(&path).unwrap();
+        path
     }
 }
