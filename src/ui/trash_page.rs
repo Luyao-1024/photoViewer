@@ -34,6 +34,42 @@ use crate::ui::media_grid::square_tile::SquareTile;
 const TRASH_TILE_PX: i32 = 270;
 const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
 
+fn restore_items(pool: &DbPool, ids: Vec<i64>) -> Vec<MediaItem> {
+    let mut restored_items = Vec::new();
+    for id in ids {
+        if let Ok(item) = db::get_media_item(pool, id) {
+            if trash::restore_from_trash(&item.uri).is_ok() && db::unmark_trashed(pool, id).is_ok()
+            {
+                let mut restored = item;
+                restored.trashed_at = None;
+                restored_items.push(restored);
+            }
+        }
+    }
+    let _ = albums::refresh(pool);
+    restored_items
+}
+
+fn delete_items_permanently(pool: &DbPool, ids: Vec<i64>) {
+    for id in ids {
+        if let Ok(item) = db::get_media_item(pool, id) {
+            let _ = trash::delete_permanently(&item.uri);
+            let _ = db::delete_media_item(pool, id);
+        }
+    }
+    let _ = albums::refresh(pool);
+}
+
+fn empty_trash(pool: &DbPool) {
+    if let Ok(items) = db::list_trashed_media(pool) {
+        for item in items {
+            let _ = trash::delete_permanently(&item.uri);
+            let _ = db::delete_media_item(pool, item.id);
+        }
+    }
+    let _ = albums::refresh(pool);
+}
+
 mod imp {
     use super::*;
 
@@ -157,28 +193,15 @@ impl TrashPage {
                 let media_list = obj.imp().media_list.borrow().clone();
                 let page_weak = obj.downgrade();
 
-                // 异步批处理：避免阻塞 UI
                 glib::spawn_future_local(async move {
-                    let mut restored_items = Vec::new();
-                    for id in ids {
-                        if let Ok(item) = db::get_media_item(&pool, id) {
-                            if trash::restore_from_trash(&item.uri).is_ok()
-                                && db::unmark_trashed(&pool, id).is_ok()
-                            {
-                                let mut restored = item;
-                                restored.trashed_at = None;
-                                restored_items.push(restored);
-                            }
-                        }
-                    }
+                    let restored_items = gtk::gio::spawn_blocking(move || restore_items(&pool, ids))
+                        .await
+                        .unwrap_or_default();
                     if let Some(list) = media_list {
                         for item in restored_items {
                             insert_media_item_sorted(&list, item);
                         }
                     }
-                    // albums::refresh — 还原让文件回到原相册，侧栏下次重建 AlbumsPage
-                    // 时拿到新计数。
-                    let _ = albums::refresh(&pool);
                     flow.unselect_all();
                     // refresh — 让 FlowBox 反映 DB 最新状态（trashed_at=NULL 的项消失）
                     if let Some(page) = page_weak.upgrade() {
@@ -199,14 +222,7 @@ impl TrashPage {
                 let page_weak = obj.downgrade();
 
                 glib::spawn_future_local(async move {
-                    for id in ids {
-                        if let Ok(item) = db::get_media_item(&pool, id) {
-                            let _ = trash::delete_permanently(&item.uri);
-                            let _ = db::delete_media_item(&pool, id);
-                        }
-                    }
-                    // albums::refresh — 永久删除让侧栏相册计数相应减少。
-                    let _ = albums::refresh(&pool);
+                    let _ = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, ids)).await;
                     flow.unselect_all();
                     // refresh — 完整刷新 FlowBox（全空时自动切到空状态页面），
                     // 避免部分删除后残留旧 tile。
@@ -243,14 +259,7 @@ impl TrashPage {
                             let pool = pool.clone();
                             let page_weak = page_weak.clone();
                             glib::spawn_future_local(async move {
-                                if let Ok(items) = db::list_trashed_media(&pool) {
-                                    for item in items {
-                                        let _ = trash::delete_permanently(&item.uri);
-                                        let _ = db::delete_media_item(&pool, item.id);
-                                    }
-                                }
-                                // albums::refresh — 清空回收站后侧栏相册计数同步。
-                                let _ = albums::refresh(&pool);
+                                let _ = gtk::gio::spawn_blocking(move || empty_trash(&pool)).await;
                                 // refresh — 全删后 DB 已空，refresh 内部会切到空状态页面。
                                 if let Some(page) = page_weak.upgrade() {
                                     page.refresh();
@@ -268,26 +277,10 @@ impl TrashPage {
         let loader_clone = loader.clone();
         let flow_weak = obj.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(items) = db::list_trashed_media(&pool_clone) {
-                if items.is_empty() {
-                    if let Some(obj) = flow_weak.upgrade() {
-                        *obj.imp().visible_items.borrow_mut() = vec![];
-                        show_empty_trash(&obj);
-                    }
-                } else {
-                    if let Some(obj) = flow_weak.upgrade() {
-                        *obj.imp().visible_items.borrow_mut() = items.clone();
-                    }
-                    for item in items {
-                        let tile = build_trash_tile(item, loader_clone.clone());
-                        if let Some(obj) = flow_weak.upgrade() {
-                            obj.imp().flow_box.get().append(&tile);
-                        } else {
-                            // Page 已销毁，丢弃 tile
-                            break;
-                        }
-                    }
-                }
+            if let Ok(Ok(items)) =
+                gtk::gio::spawn_blocking(move || db::list_trashed_media(&pool_clone)).await
+            {
+                render_trash_items(&flow_weak, loader_clone, items);
             }
         });
 
@@ -314,28 +307,48 @@ impl TrashPage {
         // 重新加载
         let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(items) = db::list_trashed_media(&pool) {
+            if let Ok(Ok(items)) =
+                gtk::gio::spawn_blocking(move || db::list_trashed_media(&pool)).await
+            {
                 if let Some(page) = page_weak.upgrade() {
-                    if items.is_empty() {
-                        *page.imp().visible_items.borrow_mut() = vec![];
-                        show_empty_trash(&page);
-                    } else {
-                        *page.imp().visible_items.borrow_mut() = items.clone();
-                        // Restore the same Viewport/Box/FlowBox structure used by
-                        // PhotosPage, so the FlowBox is measured by content height
-                        // instead of being stretched by the ScrolledWindow.
-                        page.imp()
-                            .scrolled
-                            .get()
-                            .set_child(Some(&page.imp().grid_viewport.get()));
-                        for item in items {
-                            let tile = build_trash_tile(item, loader.clone());
-                            flow.append(&tile);
-                        }
-                    }
+                    render_trash_items_for_page(&page, &flow, loader, items);
                 }
             }
         });
+    }
+}
+
+fn render_trash_items(
+    page_weak: &glib::WeakRef<TrashPage>,
+    loader: Arc<ThumbnailLoader>,
+    items: Vec<MediaItem>,
+) {
+    if let Some(page) = page_weak.upgrade() {
+        let flow = page.imp().flow_box.get();
+        render_trash_items_for_page(&page, &flow, loader, items);
+    }
+}
+
+fn render_trash_items_for_page(
+    page: &TrashPage,
+    flow: &gtk::FlowBox,
+    loader: Arc<ThumbnailLoader>,
+    items: Vec<MediaItem>,
+) {
+    if items.is_empty() {
+        *page.imp().visible_items.borrow_mut() = vec![];
+        show_empty_trash(page);
+        return;
+    }
+
+    *page.imp().visible_items.borrow_mut() = items.clone();
+    page.imp()
+        .scrolled
+        .get()
+        .set_child(Some(&page.imp().grid_viewport.get()));
+    for item in items {
+        let tile = build_trash_tile(item, loader.clone());
+        flow.append(&tile);
     }
 }
 
@@ -505,6 +518,21 @@ mod tests {
             .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"))
     }
 
+    fn pump_until<F: Fn() -> bool>(ctx: &glib::MainContext, max_iters: usize, done: F) {
+        for _ in 0..max_iters {
+            while ctx.pending() {
+                ctx.iteration(false);
+            }
+            if done() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+    }
+
     /// Insert a single trashed item and pump the main loop until the
     /// `TrashPage`'s FlowBox has loaded exactly one tile for it.
     fn page_with_one_trashed_item() -> (TrashPage, i64, std::path::PathBuf) {
@@ -540,11 +568,7 @@ mod tests {
 
         let page = TrashPage::new(pool.clone(), empty_loader());
         let flow = page.imp().flow_box.get();
-        let mut pumped = 0;
-        while pumped < 100 && flow.observe_children().n_items() == 0 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 100, || flow.observe_children().n_items() == 1);
         assert_eq!(
             flow.observe_children().n_items(),
             1,
@@ -564,11 +588,7 @@ mod tests {
         *page.imp().trashed_ids.borrow_mut() = vec![id];
         page.imp().restore_btn.get().emit_clicked();
 
-        let mut pumped = 0;
-        while pumped < 200 && flow.observe_children().n_items() != 0 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 200, || flow.observe_children().n_items() == 0);
         assert_eq!(
             flow.observe_children().n_items(),
             0,
@@ -612,21 +632,13 @@ mod tests {
         let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         let page = TrashPage::with_media_list(pool.clone(), empty_loader(), shared.clone());
         let flow = page.imp().flow_box.get();
-        let mut pumped = 0;
-        while pumped < 100 && flow.observe_children().n_items() == 0 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 100, || flow.observe_children().n_items() == 1);
         assert_eq!(flow.observe_children().n_items(), 1);
 
         *page.imp().trashed_ids.borrow_mut() = vec![id];
         page.imp().restore_btn.get().emit_clicked();
 
-        pumped = 0;
-        while pumped < 200 && shared.n_items() == 0 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 200, || shared.n_items() == 1);
         assert_eq!(
             shared.n_items(),
             1,
@@ -681,11 +693,7 @@ mod tests {
 
         let page = TrashPage::new(pool.clone(), empty_loader());
         let flow = page.imp().flow_box.get();
-        let mut pumped = 0;
-        while pumped < 100 && flow.observe_children().n_items() < 2 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 100, || flow.observe_children().n_items() == 2);
         assert_eq!(
             flow.observe_children().n_items(),
             2,
@@ -696,11 +704,7 @@ mod tests {
         *page.imp().trashed_ids.borrow_mut() = vec![id_a];
         page.imp().delete_btn.get().emit_clicked();
 
-        pumped = 0;
-        while pumped < 200 && flow.observe_children().n_items() != 1 {
-            ctx.iteration(false);
-            pumped += 1;
-        }
+        pump_until(&ctx, 200, || flow.observe_children().n_items() == 1);
         assert_eq!(
             flow.observe_children().n_items(),
             1,

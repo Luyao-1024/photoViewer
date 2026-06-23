@@ -6,7 +6,8 @@
 //! `save_overwrite` 先把原图备份到 `{原名}.jpg.bak`，再渲染并写回原文件，
 //! 最后刷新 `media_items` 中对应行的 `file_mtime` / `file_size` /
 //! `blake3_hash` 以反映新内容。
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
@@ -40,7 +41,6 @@ pub fn save_as_copy(
 
     // 5. 插入新 DB 行
     let new_uri = format!("file://{}", new_path.display());
-    let file_bytes = std::fs::read(&new_path)?;
     let new_item = NewMediaItem {
         uri: new_uri,
         path: new_path.clone(),
@@ -51,7 +51,7 @@ pub fn save_as_copy(
         taken_at: source.taken_at,
         file_mtime: Utc::now(),
         file_size: std::fs::metadata(&new_path).map(|m| m.len()).unwrap_or(0),
-        blake3_hash: blake3::hash(&file_bytes).to_hex().to_string(),
+        blake3_hash: stream_file_hash(&new_path)?,
     };
     let id = db::insert_media_item(pool, &new_item)?;
     db::get_media_item(pool, id)
@@ -81,15 +81,27 @@ pub fn save_overwrite(
     let new_size = std::fs::metadata(&source.path)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
-    let new_hash = blake3::hash(&std::fs::read(&source.path)?)
-        .to_hex()
-        .to_string();
+    let new_hash = stream_file_hash(&source.path)?;
     conn.execute(
         "UPDATE media_items SET file_mtime=?2, file_size=?3, blake3_hash=?4 WHERE id=?1",
         rusqlite::params![source.id, new_mtime, new_size, new_hash],
     )?;
 
     Ok(())
+}
+
+fn stream_file_hash(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// 构造 `{原名}.{ext}.bak` 路径——在原文件扩展名后再加 `.bak`。

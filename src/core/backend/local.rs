@@ -4,10 +4,25 @@ use crate::core::error::{AppError, Result};
 use crate::core::media::NewMediaItem;
 use crate::core::metadata;
 use chrono::Utc;
+use std::io::Read;
 use std::path::Path;
 use walkdir::WalkDir;
 
 const SUPPORTED_EXT: &[&str] = &["jpg", "jpeg", "png", "webp", "heic", "heif"];
+
+fn stream_file_hash(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0_u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
 
 pub struct LocalBackend {
     pool: DbPool,
@@ -63,7 +78,7 @@ impl LocalBackend {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| Path::new("/").to_path_buf());
 
-        let hash = blake3::hash(&std::fs::read(path)?).to_hex().to_string();
+        let hash = stream_file_hash(path)?;
 
         Ok(Some(NewMediaItem {
             uri,
@@ -92,6 +107,11 @@ impl LocalBackend {
             .process_file(path)?
             .ok_or_else(|| AppError::Decode(format!("not an image: {}", path.display())))?;
         self.upsert(&item).map(|_| ())
+    }
+
+    /// 删除指定路径对应的索引行，供文件监听的 remove/rename 事件使用。
+    pub fn delete_path(&self, path: &Path) -> Result<usize> {
+        db::delete_media_by_path(&self.pool, path)
     }
 
     /// 插入或更新（URI 冲突则 UPDATE）
@@ -131,5 +151,27 @@ impl LocalBackend {
         } else {
             Ok(db::insert_media_item(&self.pool, item)?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn stream_file_hash_matches_blake3_hash_for_file_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large-ish.bin");
+        let mut file = std::fs::File::create(&path).unwrap();
+        for i in 0..4096_u32 {
+            file.write_all(&i.to_le_bytes()).unwrap();
+        }
+        drop(file);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let expected = blake3::hash(&bytes).to_hex().to_string();
+
+        assert_eq!(stream_file_hash(&path).unwrap(), expected);
     }
 }

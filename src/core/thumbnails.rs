@@ -58,7 +58,7 @@ pub struct ThumbnailRequest {
 }
 
 /// 共享的 receiver 包装，便于多 worker 互斥消费
-type SharedRx = Arc<Mutex<mpsc::UnboundedReceiver<ThumbnailRequest>>>;
+type SharedRx = Arc<Mutex<mpsc::Receiver<ThumbnailRequest>>>;
 
 /// 缩略图加载器单例
 ///
@@ -67,15 +67,17 @@ type SharedRx = Arc<Mutex<mpsc::UnboundedReceiver<ThumbnailRequest>>>;
 pub struct ThumbnailLoader {
     pool: DbPool,
     cache_dir: PathBuf,
-    tx: mpsc::UnboundedSender<ThumbnailRequest>,
+    tx: mpsc::Sender<ThumbnailRequest>,
     rx: SharedRx,
     mem_cache: Arc<Mutex<LruCache<String, Texture>>>,
 }
 
 impl ThumbnailLoader {
+    pub const QUEUE_CAPACITY: usize = 2048;
+
     /// 构造加载器（不自动启动 worker；调用 `spawn_workers` 启动）
     pub fn new(pool: DbPool, cache_dir: PathBuf) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(Self::QUEUE_CAPACITY);
         std::fs::create_dir_all(&cache_dir).ok();
         let mem_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(256).unwrap())));
         // 启动时按 mtime LRU 清理超限缓存（2GB 上限）
@@ -110,7 +112,19 @@ impl ThumbnailLoader {
 
     /// 提交一个缩略图请求
     pub fn request(&self, uri: String, size: ThumbnailSize, reply: oneshot::Sender<Texture>) {
-        let _ = self.tx.send(ThumbnailRequest { uri, size, reply });
+        if let Err(e) = self.try_request(uri, size, reply) {
+            warn!("缩略图请求队列已满或关闭: {}", e);
+        }
+    }
+
+    /// 尝试提交缩略图请求；队列满时返回错误，调用方可选择丢弃过期请求。
+    pub fn try_request(
+        &self,
+        uri: String,
+        size: ThumbnailSize,
+        reply: oneshot::Sender<Texture>,
+    ) -> std::result::Result<(), mpsc::error::TrySendError<ThumbnailRequest>> {
+        self.tx.try_send(ThumbnailRequest { uri, size, reply })
     }
 }
 
@@ -228,4 +242,32 @@ fn generate(cache_dir: &Path, uri: &str, size: ThumbnailSize) -> anyhow::Result<
         .to_rgb8()
         .write_to(&mut writer, image::ImageFormat::Jpeg)?;
     Ok(cache_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::db;
+
+    #[test]
+    fn thumbnail_loader_rejects_requests_after_queue_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+
+        for _ in 0..ThumbnailLoader::QUEUE_CAPACITY {
+            let (tx, _rx) = oneshot::channel();
+            loader
+                .try_request("file:///tmp/photo.jpg".into(), ThumbnailSize::Small, tx)
+                .expect("queue slot should be available");
+        }
+
+        let (tx, _rx) = oneshot::channel();
+        assert!(
+            loader
+                .try_request("file:///tmp/photo.jpg".into(), ThumbnailSize::Small, tx)
+                .is_err(),
+            "loader should apply backpressure instead of growing without bound"
+        );
+    }
 }

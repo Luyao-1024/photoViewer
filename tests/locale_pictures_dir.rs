@@ -3,7 +3,7 @@
 //! with each other: each test calls `std::env::set_var` / `remove_var` to
 //! control `HOME`, `XDG_CONFIG_HOME` (via HOME), `LANG`, `LC_ALL`, and a
 //! synthetic `user-dirs.dirs`. Run with `--test-threads=1` to avoid races.
-use photo_viewer::config::pictures_dir;
+use photo_viewer::config::{cache_dir, config_dir, data_dir, pictures_dir};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tempfile::tempdir;
@@ -20,6 +20,57 @@ struct EnvGuard {
     saved_home: Option<std::ffi::OsString>,
     saved_lang: Option<std::ffi::OsString>,
     saved_lc_all: Option<std::ffi::OsString>,
+}
+
+struct RemoveHomeGuard {
+    saved_home: Option<std::ffi::OsString>,
+    saved_data: Option<std::ffi::OsString>,
+    saved_cache: Option<std::ffi::OsString>,
+    saved_config: Option<std::ffi::OsString>,
+}
+
+impl RemoveHomeGuard {
+    fn new() -> Self {
+        let saved_home = std::env::var_os("HOME");
+        let saved_data = std::env::var_os("XDG_DATA_HOME");
+        let saved_cache = std::env::var_os("XDG_CACHE_HOME");
+        let saved_config = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::remove_var("HOME");
+            std::env::remove_var("XDG_DATA_HOME");
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+        Self {
+            saved_home,
+            saved_data,
+            saved_cache,
+            saved_config,
+        }
+    }
+}
+
+impl Drop for RemoveHomeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.saved_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.saved_data {
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+            match &self.saved_cache {
+                Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+            match &self.saved_config {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
 }
 
 impl EnvGuard {
@@ -87,6 +138,22 @@ fn falls_back_to_pictures_for_non_chinese_locale() {
         "non-zh locale with no user-dirs.dirs should resolve to ~/Pictures"
     );
     drop(guard);
+}
+
+#[test]
+fn xdg_paths_do_not_panic_when_home_is_missing() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let _env = RemoveHomeGuard::new();
+
+    let result =
+        std::panic::catch_unwind(|| (pictures_dir(), data_dir(), cache_dir(), config_dir()));
+
+    assert!(result.is_ok(), "path helpers should not panic without HOME");
+    let (pictures, data, cache, config) = result.unwrap();
+    assert!(pictures.ends_with("Pictures"));
+    assert!(data.ends_with("photoViewer"));
+    assert!(cache.ends_with("photoViewer"));
+    assert!(config.ends_with("photoViewer"));
 }
 
 #[test]

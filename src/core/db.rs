@@ -4,6 +4,7 @@ use crate::core::media::{MediaItem, NewMediaItem};
 use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::types::Type;
 use std::path::Path;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
@@ -40,6 +41,20 @@ fn ts(dt: DateTime<Utc>) -> i64 {
 
 fn from_ts(ts: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(ts, 0).single()
+}
+
+fn required_ts(ts: i64, col: usize) -> rusqlite::Result<DateTime<Utc>> {
+    from_ts(ts).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            col,
+            Type::Integer,
+            format!("invalid timestamp: {ts}").into(),
+        )
+    })
+}
+
+fn optional_ts(ts: Option<i64>, col: usize) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    ts.map(|value| required_ts(value, col)).transpose()
 }
 
 /// 插入新项，返回自增 id
@@ -91,7 +106,24 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
     )?;
     let rows = stmt.query_map([], row_to_media_item)?;
-    Ok(rows.filter_map(std::result::Result::ok).collect())
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+/// 分页列出非回收站项，排序语义与 [`list_all_media`] 一致。
+pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, width, height,
+                taken_at, file_mtime, file_size, blake3_hash, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
 }
 
 /// 删除单行
@@ -99,6 +131,17 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;
     conn.execute("DELETE FROM media_items WHERE id = ?1", [id])?;
     Ok(())
+}
+
+/// 删除指定本地路径对应的媒体行。返回受影响行数。
+pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
+    let conn = pool.get()?;
+    let uri = format!("file://{}", path.display());
+    let changed = conn.execute(
+        "DELETE FROM media_items WHERE path = ?1 OR uri = ?2",
+        rusqlite::params![path.to_string_lossy(), uri],
+    )?;
+    Ok(changed)
 }
 
 /// 标记为已删除（不立即物理删除）
@@ -167,7 +210,8 @@ pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
          ORDER BY trashed_at DESC",
     )?;
     let rows = stmt.query_map([], row_to_media_item)?;
-    Ok(rows.filter_map(std::result::Result::ok).collect())
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
 }
 
 fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
@@ -183,10 +227,10 @@ fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
         mime_type: row.get(4)?,
         width: row.get(5)?,
         height: row.get(6)?,
-        taken_at: taken_at.and_then(from_ts),
-        file_mtime: from_ts(file_mtime).unwrap_or_else(Utc::now),
+        taken_at: optional_ts(taken_at, 7)?,
+        file_mtime: required_ts(file_mtime, 8)?,
         file_size: row.get::<_, i64>(9)? as u64,
         blake3_hash: row.get(10)?,
-        trashed_at: trashed_at.and_then(from_ts),
+        trashed_at: optional_ts(trashed_at, 11)?,
     })
 }

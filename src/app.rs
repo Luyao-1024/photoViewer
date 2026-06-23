@@ -1,6 +1,7 @@
 //! AdwApplication lifecycle management
 use crate::core::db::DbPool;
 use crate::core::init_pool;
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::{MainWindow, PhotosPage};
 use gtk4 as gtk;
@@ -10,6 +11,8 @@ use libadwaita as adw;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+const INITIAL_MEDIA_PAGE_SIZE: u32 = 1_000;
+const BACKGROUND_MEDIA_PAGE_SIZE: u32 = 2_000;
 
 fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO.get_or_init(|| {
@@ -116,7 +119,14 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
         move || {
             let pool = pool.clone();
             glib::MainContext::default().spawn_local(async move {
-                if let Err(e) = crate::core::albums::refresh(&pool) {
+                let result =
+                    gtk::gio::spawn_blocking(move || crate::core::albums::refresh(&pool)).await;
+                let result = result.unwrap_or_else(|e| {
+                    Err(crate::core::error::AppError::Backend(format!(
+                        "albums refresh join error: {e:?}"
+                    )))
+                });
+                if let Err(e) = result {
                     tracing::error!("albums refresh failed: {}", e);
                 }
             });
@@ -127,11 +137,49 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     let _watcher =
         crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures], on_change);
 
-    // 加载所有数据 — 用 BoxedAnyObject 包装，让 MediaItem 可放入 gio::ListStore
-    let items = db::list_all_media(&pool)?;
+    // 首屏先加载一页，剩余数据稍后分批追加，避免大图库启动时一次性构造所有 GTK 对象。
+    let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    append_media_items(&list, items);
+    load_remaining_media_pages(pool.clone(), list.clone(), INITIAL_MEDIA_PAGE_SIZE);
+    Ok((list, thumbnail_loader, pool))
+}
+
+fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     for item in items {
         list.append(&glib::BoxedAnyObject::new(item));
     }
-    Ok((list, thumbnail_loader, pool))
+}
+
+fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_offset: u32) {
+    glib::MainContext::default().spawn_local(async move {
+        let mut offset = start_offset;
+        loop {
+            let pool_for_page = pool.clone();
+            let result = gtk::gio::spawn_blocking(move || {
+                crate::core::db::list_media_page(&pool_for_page, offset, BACKGROUND_MEDIA_PAGE_SIZE)
+            })
+            .await;
+            let items = match result {
+                Ok(Ok(items)) => items,
+                Ok(Err(e)) => {
+                    tracing::error!("background media page load failed: {}", e);
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("background media page load join failed: {:?}", e);
+                    return;
+                }
+            };
+            if items.is_empty() {
+                return;
+            }
+            let count = items.len() as u32;
+            append_media_items(&list, items);
+            if count < BACKGROUND_MEDIA_PAGE_SIZE {
+                return;
+            }
+            offset += count;
+        }
+    });
 }
