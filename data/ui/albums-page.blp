@@ -24,6 +24,13 @@ template $AlbumsPage : Adw.NavigationPage {
         margin-top: 12;
         margin-bottom: 12;
         max-children-per-line: 4;
+
+        // `album-grid` 触发 grid_css.rs 里的 outline-based 选中样式,
+        // 让相册行选中态与 photo grid (thumb-grid) 完全一致 —— 细线强调
+        // 色边框 + 0 背景填充,而不是 GTK 默认的整块蓝色背景。
+        styles [
+          "album-grid"
+        ]
       };
     }
   };

@@ -190,6 +190,18 @@ impl ModeSelector {
         self.imp().active_index.get()
     }
 
+    /// Switch the selector foreground for contrast against the content behind
+    /// the floating panel. `true` means the panel is over bright content, so
+    /// text and the active indicator should render black; `false` renders
+    /// them white.
+    pub fn set_light_background(&self, is_light: bool) {
+        if is_light {
+            self.add_css_class("on-light-background");
+        } else {
+            self.remove_css_class("on-light-background");
+        }
+    }
+
     /// Set the active mode. Out-of-range values are silently ignored
     /// (the widget always shows one of the three modes). If a stack
     /// has been bound via [`Self::set_stack`], the stack's visible
@@ -408,6 +420,17 @@ mod tests {
         assert!(!ds[0].is_visible());
         assert!(ds[1].is_visible());
         assert!(!ds[2].is_visible());
+    }
+
+    #[gtk::test]
+    fn set_light_background_toggles_contrast_class() {
+        let sel = ModeSelector::new();
+
+        assert!(!sel.has_css_class("on-light-background"));
+        sel.set_light_background(true);
+        assert!(sel.has_css_class("on-light-background"));
+        sel.set_light_background(false);
+        assert!(!sel.has_css_class("on-light-background"));
     }
 
     #[gtk::test]

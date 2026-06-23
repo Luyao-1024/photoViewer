@@ -120,6 +120,41 @@ pub fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 移动语义下原地更新 path / folder_path / uri / file_mtime。
+///
+/// `id` 与 `blake3_hash` 保持不变（仍是同一张照片）;只把磁盘位置同步到
+/// `media_items` 行,以便随后的 `list_all_media` / `albums::refresh` 看见
+/// 新位置。`file_mtime` 取新文件的 mtime(`unixepoch` 秒),失败时回退
+/// 当前时间,避免 `mtime` 出现 NULL。
+pub fn update_media_location(
+    pool: &DbPool,
+    id: i64,
+    new_path: &Path,
+    new_folder: &Path,
+) -> Result<()> {
+    let conn = pool.get()?;
+    let uri = format!("file://{}", new_path.display());
+    let mtime = std::fs::metadata(new_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    conn.execute(
+        "UPDATE media_items
+         SET path = ?2, folder_path = ?3, uri = ?4, file_mtime = ?5
+         WHERE id = ?1",
+        rusqlite::params![
+            id,
+            new_path.to_string_lossy(),
+            new_folder.to_string_lossy(),
+            uri,
+            mtime
+        ],
+    )?;
+    Ok(())
+}
+
 /// 列出所有回收站中项
 pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;

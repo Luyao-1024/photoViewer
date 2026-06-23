@@ -102,7 +102,7 @@ impl MainWindow {
 
     /// Wire the sidebar `ListBox` `row-selected` signal to push the
     /// corresponding page onto `nav_view`. Sidebar rows are:
-    ///   0 → Photos   (root page, no-op)
+    ///   0 → Photos   (pop to root page)
     ///   1 → Albums   (pushes `AlbumsPage`)
     ///   2 → Trash    (pushes `TrashPage`)
     ///
@@ -116,7 +116,7 @@ impl MainWindow {
                 let Some(row) = row else { return };
                 match row.index() {
                     0 => {
-                        // Photos is the root page; nothing to do.
+                        pop_to_photos_root(&nav_view);
                     }
                     1 => {
                         // Albums: query album list then push a fresh AlbumsPage.
@@ -128,6 +128,7 @@ impl MainWindow {
                         };
                         let albums = crate::core::albums::list(&pool).unwrap_or_default();
                         let page = AlbumsPage::new(albums, loader);
+                        pop_to_photos_root(&nav_view);
                         nav_view.push(&page);
                     }
                     2 => {
@@ -139,6 +140,7 @@ impl MainWindow {
                             None => return,
                         };
                         let page = TrashPage::new(pool, loader);
+                        pop_to_photos_root(&nav_view);
                         nav_view.push(&page);
                     }
                     _ => {}
@@ -146,4 +148,8 @@ impl MainWindow {
             }),
         );
     }
+}
+
+fn pop_to_photos_root(nav_view: &adw::NavigationView) {
+    while nav_view.pop() {}
 }

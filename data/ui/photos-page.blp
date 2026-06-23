@@ -9,6 +9,15 @@ template $PhotosPage : Adw.NavigationPage {
 
     Adw.HeaderBar header_bar {
       show-end-title-buttons: true;
+
+      [start]
+      Gtk.Button add_to_album_btn {
+        icon-name: "list-add-symbolic";
+        tooltip-text: "Add to Album";
+        visible: false;
+        // Hidden until the user multi-selects ≥1 tile (see
+        // `PhotosPage::set_add_to_album_visible`).
+      }
     }
 
     Gtk.Overlay grid_overlay {

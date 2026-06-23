@@ -17,13 +17,22 @@ use tokio::task::JoinHandle;
 
 /// 启动后台文件监听，返回一个 `JoinHandle`。
 ///
+/// `on_change` 在每次成功 upsert 之后被同步调用一次，调用方负责把
+/// "索引有变化" 信号转发到 GTK 主线程并刷新聚合视图（如 `albums::refresh`）。
+///
 /// 调用方应保留该句柄以便在关闭时 [`JoinHandle::abort`] 监听循环。
 /// 监听在独立的阻塞线程中运行（`spawn_blocking`），不会阻塞 tokio / GTK 主循环。
-pub fn start_watching(pool: DbPool, paths: Vec<PathBuf>) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || run_watcher_loop(pool, paths))
+pub fn start_watching<F>(pool: DbPool, paths: Vec<PathBuf>, on_change: F) -> JoinHandle<()>
+where
+    F: Fn() + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || run_watcher_loop(pool, paths, on_change))
 }
 
-fn run_watcher_loop(pool: DbPool, paths: Vec<PathBuf>) {
+fn run_watcher_loop<F>(pool: DbPool, paths: Vec<PathBuf>, on_change: F)
+where
+    F: Fn() + Send + 'static,
+{
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = match notify::recommended_watcher(tx) {
         Ok(w) => w,
@@ -44,12 +53,15 @@ fn run_watcher_loop(pool: DbPool, paths: Vec<PathBuf>) {
     // 持有 watcher —— 离开作用域时它会被 drop，所有监听自动停止。
     let backend = LocalBackend::new(pool);
     for evt in rx {
-        handle_event(&backend, evt);
+        handle_event(&backend, evt, &on_change);
     }
     drop(watcher);
 }
 
-fn handle_event(backend: &LocalBackend, evt: Result<notify::Event, notify::Error>) {
+fn handle_event<F>(backend: &LocalBackend, evt: Result<notify::Event, notify::Error>, on_change: &F)
+where
+    F: Fn() + Send + 'static,
+{
     let evt = match evt {
         Ok(e) => e,
         Err(e) => {
@@ -82,6 +94,7 @@ fn handle_event(backend: &LocalBackend, evt: Result<notify::Event, notify::Error
             tracing::warn!("upsert 失败 {}: {}", path.display(), e);
         } else {
             tracing::debug!("增量 upsert 成功: {}", path.display());
+            on_change();
         }
     }
 }

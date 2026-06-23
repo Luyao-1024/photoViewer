@@ -2,7 +2,7 @@
 //!
 //! 布局：
 //! - `AdwHeaderBar`：标题栏
-//! - `AdwBanner`：30 天永久删除提示
+//! - `AdwBanner`：还原 / 手动永久删除提示
 //! - `GtkScrolledWindow` + `GtkFlowBox`（multi-select）：显示已删除的媒体项
 //! - `GtkActionBar`：底部操作栏（仅在有选中项时 reveal）
 //!   - Cancel：清空选择
@@ -23,11 +23,16 @@ use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 use libadwaita::subclass::prelude::*;
 
+use crate::core::albums;
 use crate::core::db::{self, DbPool};
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
 use crate::ui::empty_states;
-use crate::ui::photo_tile::PhotoTile;
+use crate::ui::media_grid::square_tile::SquareTile;
+
+const TRASH_TILE_PX: i32 = 270;
+const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
 
 mod imp {
     use super::*;
@@ -37,9 +42,12 @@ mod imp {
     pub struct TrashPage {
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
         #[template_child]
         pub scrolled: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub grid_viewport: TemplateChild<gtk::Viewport>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
         #[template_child]
@@ -86,6 +94,8 @@ impl TrashPage {
     /// - `pool`：SQLite 连接池；用于查询 `trashed_at IS NOT NULL` 的项以及更新/删除
     /// - `loader`：缩略图加载器，用于填充每张已删除图片的缩略图
     pub fn new(pool: DbPool, loader: Arc<ThumbnailLoader>) -> Self {
+        crate::ui::grid_css::install();
+
         let obj: Self = glib::Object::builder().build();
         *obj.imp().pool.borrow_mut() = Some(pool.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
@@ -97,11 +107,13 @@ impl TrashPage {
 
         // 选中变化 → 维护 selected 列表 + 切换 ActionBar revealed
         flow.connect_selected_children_changed(glib::clone!(@weak obj => move |flow| {
-            let selected: Vec<i64> = flow
+            let visible_items = obj.imp().visible_items.borrow();
+            let selected_indices = flow
                 .selected_children()
                 .iter()
-                .filter_map(|c| c.downcast_ref::<gtk::FlowBoxChild>().map(|c| c.index() as i64))
-                .collect();
+                .filter_map(|c| c.downcast_ref::<gtk::FlowBoxChild>().map(|c| c.index()))
+                .collect::<Vec<_>>();
+            let selected = selected_ids_for_indices(&visible_items, selected_indices);
             *obj.imp().trashed_ids.borrow_mut() = selected;
             let revealed = !obj.imp().trashed_ids.borrow().is_empty();
             obj.imp().action_bar.get().set_revealed(revealed);
@@ -133,6 +145,9 @@ impl TrashPage {
                             let _ = db::unmark_trashed(&pool, id);
                         }
                     }
+                    // albums::refresh — 还原让文件回到原相册，侧栏下次重建 AlbumsPage
+                    // 时拿到新计数。
+                    let _ = albums::refresh(&pool);
                     flow.unselect_all();
                 });
             }),
@@ -155,6 +170,8 @@ impl TrashPage {
                             let _ = db::delete_media_item(&pool, id);
                         }
                     }
+                    // albums::refresh — 永久删除让侧栏相册计数相应减少。
+                    let _ = albums::refresh(&pool);
                     flow.unselect_all();
                     // If no items remain, swap the scrolled child for the
                     // empty-state status page.
@@ -203,6 +220,8 @@ impl TrashPage {
                                         let _ = db::delete_media_item(&pool, item.id);
                                     }
                                 }
+                                // albums::refresh — 清空回收站后侧栏相册计数同步。
+                                let _ = albums::refresh(&pool);
                                 if let Some(flow) = flow_weak.upgrade() {
                                     while let Some(child) = flow.first_child() {
                                         flow.remove(&child);
@@ -229,12 +248,15 @@ impl TrashPage {
             if let Ok(items) = db::list_trashed_media(&pool_clone) {
                 if items.is_empty() {
                     if let Some(obj) = flow_weak.upgrade() {
+                        *obj.imp().visible_items.borrow_mut() = vec![];
                         show_empty_trash(&obj);
                     }
                 } else {
+                    if let Some(obj) = flow_weak.upgrade() {
+                        *obj.imp().visible_items.borrow_mut() = items.clone();
+                    }
                     for item in items {
-                        let tile = PhotoTile::new();
-                        tile.set_item(item, loader_clone.clone(), ThumbnailSize::Small, 125);
+                        let tile = build_trash_tile(item, loader_clone.clone());
                         if let Some(obj) = flow_weak.upgrade() {
                             obj.imp().flow_box.get().append(&tile);
                         } else {
@@ -263,6 +285,7 @@ impl TrashPage {
             flow.remove(&child);
         }
         *self.imp().trashed_ids.borrow_mut() = vec![];
+        *self.imp().visible_items.borrow_mut() = vec![];
         self.imp().action_bar.get().set_revealed(false);
 
         // 重新加载
@@ -271,13 +294,19 @@ impl TrashPage {
             if let Ok(items) = db::list_trashed_media(&pool) {
                 if let Some(page) = page_weak.upgrade() {
                     if items.is_empty() {
+                        *page.imp().visible_items.borrow_mut() = vec![];
                         show_empty_trash(&page);
                     } else {
-                        // Restore the flow box as the scrolled child before re-populating.
-                        page.imp().scrolled.get().set_child(Some(&flow));
+                        *page.imp().visible_items.borrow_mut() = items.clone();
+                        // Restore the same Viewport/Box/FlowBox structure used by
+                        // PhotosPage, so the FlowBox is measured by content height
+                        // instead of being stretched by the ScrolledWindow.
+                        page.imp()
+                            .scrolled
+                            .get()
+                            .set_child(Some(&page.imp().grid_viewport.get()));
                         for item in items {
-                            let tile = PhotoTile::new();
-                            tile.set_item(item, loader.clone(), ThumbnailSize::Small, 125);
+                            let tile = build_trash_tile(item, loader.clone());
                             flow.append(&tile);
                         }
                     }
@@ -285,6 +314,43 @@ impl TrashPage {
             }
         });
     }
+}
+
+fn trash_thumbnail_item(mut item: MediaItem) -> MediaItem {
+    match trash::trashed_file_uri(&item.uri) {
+        Ok(uri) => item.uri = uri,
+        Err(e) => tracing::warn!("TrashPage: failed to resolve trash thumbnail URI: {e}"),
+    }
+    item
+}
+
+fn build_trash_tile(item: MediaItem, loader: Arc<ThumbnailLoader>) -> SquareTile {
+    let tile = SquareTile::new();
+    tile.set_target(TRASH_TILE_PX);
+
+    let item = trash_thumbnail_item(item);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    loader.request(item.uri, TRASH_THUMB_SIZE, tx);
+    let tile_weak = tile.downgrade();
+    gtk::glib::spawn_future_local(async move {
+        if let Ok(texture) = rx.await {
+            if let Some(tile) = tile_weak.upgrade() {
+                tile.set_paintable(Some(&texture));
+            }
+        }
+    });
+
+    tile
+}
+
+fn selected_ids_for_indices(
+    items: &[MediaItem],
+    indices: impl IntoIterator<Item = i32>,
+) -> Vec<i64> {
+    indices
+        .into_iter()
+        .filter_map(|index| items.get(index as usize).map(|item| item.id))
+        .collect()
 }
 
 /// Replace the scrolled window's child with an empty-state `AdwStatusPage`.
@@ -299,6 +365,81 @@ fn show_empty_trash(page: &TrashPage) {
 
 impl Default for TrashPage {
     fn default() -> Self {
+        crate::ui::grid_css::install();
         glib::Object::builder().build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    fn empty_loader() -> Arc<ThumbnailLoader> {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let pool = db::init_pool(&dir.join("test.db")).unwrap();
+        Arc::new(ThumbnailLoader::new(pool, dir.join("cache")))
+    }
+
+    fn media_item(id: i64) -> MediaItem {
+        MediaItem {
+            id,
+            uri: format!("file:///tmp/{id}.jpg"),
+            path: PathBuf::from(format!("/tmp/{id}.jpg")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/jpeg".to_string(),
+            width: Some(1),
+            height: Some(1),
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 1,
+            blake3_hash: "hash".to_string(),
+            trashed_at: Some(Utc::now()),
+        }
+    }
+
+    #[test]
+    fn selected_indices_map_to_media_item_ids_not_indices() {
+        let items = vec![media_item(42), media_item(99), media_item(123)];
+
+        assert_eq!(selected_ids_for_indices(&items, [0, 2]), vec![42, 123]);
+    }
+
+    #[gtk::test]
+    fn trash_flow_box_matches_photo_grid_day_view_style() {
+        let _ = gtk::init();
+        let page = TrashPage::default();
+        let flow = page.imp().flow_box.get();
+
+        assert!(page
+            .imp()
+            .grid_viewport
+            .get()
+            .child()
+            .and_then(|child| child.downcast::<gtk::Box>().ok())
+            .is_some());
+        assert!(flow
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Box>().ok())
+            .is_some());
+        assert!(flow.has_css_class("thumb-grid"));
+        assert!(!flow.has_css_class("trash-grid"));
+        assert!(flow.is_homogeneous());
+        assert_eq!(flow.column_spacing(), 2);
+        assert_eq!(flow.row_spacing(), 2);
+        assert_eq!(flow.max_children_per_line(), 100);
+        assert_eq!(flow.selection_mode(), gtk::SelectionMode::Multiple);
+    }
+
+    #[gtk::test]
+    fn trash_tile_uses_day_view_square_thumbnail_spec() {
+        let _ = gtk::init();
+        let tile = build_trash_tile(media_item(7), empty_loader());
+
+        assert!(tile.is::<crate::ui::media_grid::square_tile::SquareTile>());
+        assert_eq!(tile.target(), TRASH_TILE_PX);
+        assert_eq!(TRASH_TILE_PX, 270);
+        assert_eq!(TRASH_THUMB_SIZE, ThumbnailSize::Large);
     }
 }

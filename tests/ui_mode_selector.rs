@@ -153,4 +153,45 @@ fn mode_selector_integration_suite() {
         !sel4.hexpands(),
         "ModeSelector must not hexpand (it floats over the grid, not in it)"
     );
+
+    // 4. The internal rows/cells fill the selector content width. If they are
+    //    centered at their natural width, the translucent panel can extend
+    //    past the three equal hit targets, which makes the Day cell look like
+    //    it has excess empty space on the right.
+    let row = sel4
+        .first_child()
+        .and_then(|c| c.downcast::<gtk::Box>().ok())
+        .expect("ModeSelector first child should be the label row");
+    assert_eq!(row.halign(), gtk::Align::Fill, "label row fills panel");
+    assert!(row.hexpands(), "label row expands inside panel");
+
+    let mut cells = Vec::new();
+    let mut next = row.first_child();
+    while let Some(c) = next {
+        let sibling = c.next_sibling();
+        cells.push(c.downcast::<gtk::Box>().expect("mode cell should be a Box"));
+        next = sibling;
+    }
+    assert_eq!(cells.len(), 3, "expected 3 label cells");
+    for (idx, cell) in cells.iter().enumerate() {
+        assert_eq!(
+            cell.halign(),
+            gtk::Align::Fill,
+            "label cell {idx} fills its equal-width slot"
+        );
+        assert!(cell.hexpands(), "label cell {idx} expands within row");
+        let label = cell
+            .first_child()
+            .and_then(|c| c.downcast::<gtk::Label>().ok())
+            .expect("label cell should contain a label");
+        assert_eq!(
+            label.halign(),
+            gtk::Align::Center,
+            "label {idx} remains visually centered"
+        );
+        assert!(
+            label.hexpands(),
+            "label {idx} expands to center in its slot"
+        );
+    }
 }

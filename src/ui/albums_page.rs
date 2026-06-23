@@ -23,6 +23,13 @@ use libadwaita::subclass::prelude::*;
 use crate::core::albums::Album;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::empty_states;
+use crate::ui::media_grid::square_tile::SquareTile;
+
+/// Cover thumbnail size, in CSS pixels. Matches the **Day** view of
+/// `MediaGrid` (`spec_for_mode(Day) = 270×270`) so a 1:1 square album cover
+/// is visually the same size as a day-mode photo tile — see `CLAUDE.md`'s
+/// "Day-view grid sizing gotcha" for why we have to wrap `GtkPicture`.
+const ALBUM_COVER_PX: i32 = 270;
 
 mod imp {
     use super::*;
@@ -72,6 +79,12 @@ impl AlbumsPage {
     /// If `albums` is empty, the scrolled window's child is swapped for an
     /// `AdwStatusPage` describing how to add folders.
     pub fn new(albums: Vec<Album>, loader: Arc<ThumbnailLoader>) -> Self {
+        // Install the grid CSS (idempotent) so the `album-grid` class on the
+        // flow box gets its outline-based `:selected` style. The MediaGrid
+        // already calls this on construction, but AlbumsPage never goes
+        // through MediaGrid, so we have to do it here too.
+        crate::ui::grid_css::install();
+
         let obj: Self = glib::Object::builder().build();
         let flow = obj.imp().flow_box.get();
 
@@ -96,6 +109,13 @@ impl AlbumsPage {
 /// with picture + name + count). The cover loads asynchronously through
 /// `loader`; while the request is in flight the picture shows a grey
 /// placeholder (matching `PhotoTile::set_placeholder`).
+///
+/// The cover is a `SquareTile` (`ALBUM_COVER_PX × ALBUM_COVER_PX`) so it is
+/// always 1:1 square, regardless of the source image's aspect ratio. A bare
+/// `GtkPicture` with `width_request` / `height_request` won't work because
+/// its natural size is the image's intrinsic size, so the parent box ends
+/// up sizing the picture to that ratio and the cover comes out rectangular
+/// (especially for portrait screenshots — see the 2026-06-23 screenshot bug).
 fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBoxChild {
     let box_ = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -106,11 +126,15 @@ fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBox
         .margin_bottom(6)
         .build();
 
-    let picture = gtk::Picture::builder()
-        .content_fit(gtk::ContentFit::Cover)
-        .width_request(240)
-        .height_request(240)
-        .build();
+    // Square cover — overrides `measure` to report a fixed square size
+    // regardless of the underlying picture's aspect ratio.
+    let cover = SquareTile::new();
+    cover.set_target(ALBUM_COVER_PX);
+    // `album-cover` CSS class lets the grid_css target this widget
+    // specifically (for the square selection outline) rather than the
+    // whole FlowBoxChild row (which also contains the name + count labels
+    // and would paint a rectangular outline around them).
+    cover.add_css_class("album-cover");
 
     // Grey placeholder so empty tiles don't briefly render nothing underneath.
     let css = gtk::CssProvider::new();
@@ -122,16 +146,16 @@ fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBox
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
-    picture.set_paintable(None::<&gtk::gdk::Paintable>);
+    cover.set_paintable(None::<&gtk::gdk::Paintable>);
 
     if let Some(uri) = &album.cover_uri {
         let (tx, rx) = tokio::sync::oneshot::channel();
         loader.request(uri.clone(), ThumbnailSize::Medium, tx);
-        let picture_weak = picture.downgrade();
+        let cover_weak = cover.downgrade();
         glib::spawn_future_local(async move {
             if let Ok(texture) = rx.await {
-                if let Some(p) = picture_weak.upgrade() {
-                    p.set_paintable(Some(&texture));
+                if let Some(c) = cover_weak.upgrade() {
+                    c.set_paintable(Some(&texture));
                 }
             }
         });
@@ -151,7 +175,7 @@ fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBox
         .opacity(0.7)
         .build();
 
-    box_.append(&picture);
+    box_.append(&cover);
     box_.append(&name_label);
     box_.append(&count_label);
 

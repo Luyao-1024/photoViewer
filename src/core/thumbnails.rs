@@ -140,7 +140,7 @@ fn worker_loop(
                 continue;
             }
         };
-        let cache_key_str = format!("{:?}:{:?}", key.0, key.1);
+        let cache_key_str = format!("{:?}:{:?}:{:?}", key.0, key.1, req.size);
 
         // 1) 内存缓存命中
         if let Some(tex) = mem_cache

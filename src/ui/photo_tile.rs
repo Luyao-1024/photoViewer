@@ -1,4 +1,4 @@
-//! Photo tile widget — a `GtkWidget` holding one `GtkPicture`, used by the
+//! Photo tile widget — a `GtkBox` holding one `GtkPicture`, used by the
 //! FlowBox-based pages (album detail, trash). `MediaGrid` does NOT use this;
 //! its GridView factory builds its own `AspectFrame` + `GtkPicture` cells
 //! directly (see `media_grid.rs`).
@@ -39,7 +39,7 @@ mod imp {
     impl ObjectSubclass for PhotoTile {
         const NAME: &'static str = "PhotoTile";
         type Type = super::PhotoTile;
-        type ParentType = gtk::Widget;
+        type ParentType = gtk::Box;
 
         fn class_init(klass: &mut Self::Class) {
             klass.bind_template();
@@ -52,17 +52,19 @@ mod imp {
 
     impl ObjectImpl for PhotoTile {}
     impl WidgetImpl for PhotoTile {}
+    impl BoxImpl for PhotoTile {}
 }
 
 gtk::glib::wrapper! {
     pub struct PhotoTile(ObjectSubclass<imp::PhotoTile>)
-        @extends gtk::Widget,
+        @extends gtk::Box, gtk::Widget,
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl PhotoTile {
     pub fn new() -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
+        obj.add_css_class("thumb-tile");
         let pic = obj.imp().picture.get();
         pic.set_size_request(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE);
         pic.set_can_shrink(false);
@@ -121,5 +123,26 @@ impl PhotoTile {
 impl Default for PhotoTile {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gtk::test]
+    fn photo_tile_template_loads_picture_child() {
+        let _ = gtk::init();
+        let tile = PhotoTile::new();
+        assert!(tile.imp().picture.get().is::<gtk::Picture>());
+    }
+
+    #[gtk::test]
+    fn photo_tile_picture_can_receive_selection_outline() {
+        let _ = gtk::init();
+        let tile = PhotoTile::new();
+
+        assert!(tile.has_css_class("thumb-tile"));
+        assert!(tile.imp().picture.get().has_css_class("photo-tile-picture"));
     }
 }

@@ -28,13 +28,20 @@ use gtk4::prelude::*;
 
 const GRID_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
+flowbox.thumb-grid > flowboxchild:hover,
+flowbox.thumb-grid > flowboxchild:focus,
+flowbox.thumb-grid > flowboxchild:selected,
+flowbox.thumb-grid > flowboxchild:selected:focus {
+  background: transparent;
+  outline: none;
+}
 
 /* One highlight style, shared by two triggers so they look identical:
    `:hover` (mouse) and `:focus` (keyboard cursor). `:focus` is used instead of
    `:focus-visible` because the window stays in pointer mode after our
    hover-grab; `:focus-visible` would not match on the first arrow press. */
-flowbox.thumb-grid > flowboxchild:hover,
-flowbox.thumb-grid > flowboxchild:focus {
+flowbox.thumb-grid > flowboxchild:hover .thumb-tile,
+flowbox.thumb-grid > flowboxchild:focus .thumb-tile {
   outline: 2px solid @accent_color;
   outline-offset: -2px;
 }
@@ -49,10 +56,60 @@ flowbox.thumb-grid > flowboxchild:focus {
 flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) {
   outline: none;
 }
+flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) .thumb-tile {
+  outline: none;
+}
 
-/* ModeSelector 容器：~50% 透明圆角面板 */
+/* Multi-select (Shift/Ctrl click) — uses the GTK `:selected` pseudo on
+   flowboxchild. Painted with a thicker, slightly translucent accent ring so
+   the user can tell at a glance which tiles are part of the active batch
+   operation. The keyboard focus ring (`:focus`) wins specificity when both
+   apply so the cursor stays visible. */
+flowbox.thumb-grid > flowboxchild:selected .thumb-tile {
+  outline: 3px solid alpha(@accent_color, 0.85);
+  outline-offset: -3px;
+}
+flowbox.thumb-grid > flowboxchild:selected:focus .thumb-tile {
+  outline: 3px solid @accent_color;
+  outline-offset: -3px;
+}
+
+/* Album grid (AlbumsPage) — 与 photo grid (thumb-grid) 一致的 outline-based
+   选中样式。GTK 默认会给 `:selected` 涂一整块强调色背景,在大型相册卡片
+   上非常刺眼。这里清除背景填充、只保留外圈细线高亮,与图片选择时的视觉
+   语言保持一致。
+
+   注意 outline 不能直接画在 `flowboxchild` 上 —— flowboxchild 包含
+   封面 + 名字 + 计数 3 个子部件,选中外圈会是长方形。所以我们把
+   outline 转移到封面 widget (`.album-cover`) 上,这样 270×270 的封面
+   周围就是 270×270 的正方形高亮,无论是 hover / focus / selected 都
+   遵循同一规则。 */
+flowbox.album-grid > flowboxchild { padding: 0; }
+
+flowbox.album-grid > flowboxchild:hover,
+flowbox.album-grid > flowboxchild:focus,
+flowbox.album-grid > flowboxchild:selected,
+flowbox.album-grid > flowboxchild:selected:focus {
+  outline: none;
+  background: transparent;
+}
+
+/* 封面轮廓(被各种状态触发)。GTK4 CSS 支持后代选择器,`.album-cover`
+   写在被 hover / focus / selected 的 flowboxchild 下面时会同时命中。 */
+flowbox.album-grid > flowboxchild:hover .album-cover,
+flowbox.album-grid > flowboxchild:focus .album-cover {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+}
+flowbox.album-grid > flowboxchild:selected .album-cover,
+flowbox.album-grid > flowboxchild:selected:focus .album-cover {
+  outline: 3px solid @accent_color;
+  outline-offset: -3px;
+}
+
+/* ModeSelector 容器：降低透明度的圆角面板 */
 box.mode-selector {
-  background: alpha(@card_bg_color, 0.5);
+  background: alpha(@card_bg_color, 0.75);
   border-radius: 12px;
   padding: 8px 16px;
 }
@@ -67,9 +124,13 @@ box.mode-cell {
 box.mode-selector label {
   font-size: 14pt;
   font-weight: 500;
-  color: @window_fg_color;
+  color: #ffffff;
   opacity: 0.55;
   transition: opacity 120ms ease;
+}
+
+box.mode-selector.on-light-background label {
+  color: #000000;
 }
 
 /* 激活态：标签全亮 */
@@ -79,11 +140,15 @@ box.mode-selector label.active {
 
 /* 激活指示点 */
 box.mode-dot {
-  background: @accent_color;
+  background: #ffffff;
   border-radius: 2px;
   min-width: 24px;
   min-height: 4px;
   margin-top: 2px;
+}
+
+box.mode-selector.on-light-background box.mode-dot {
+  background: #000000;
 }
 ";
 

@@ -44,11 +44,16 @@ fn resolve_trash_entry(original_path: &Path, original_basename: &str) -> Result<
 
     // 候选 trashinfo 路径：
     // 1. 直接以原始 basename 命名的（无冲突场景）
-    // 2. basename.N.trashinfo（N=2..max_suffix），gio 重名时的递增后缀
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    candidates.push(info_dir.join(format!("{}.trashinfo", original_basename)));
+    // 2. stem.N.ext.trashinfo（N=2..max_suffix），gio 重名时的递增后缀
+    // 3. basename.N.trashinfo，兼容旧实现和其他 trash 实现的命名
+    let mut candidates: Vec<PathBuf> =
+        vec![info_dir.join(format!("{}.trashinfo", original_basename))];
     let max_suffix = 1000usize;
     for n in 2..=max_suffix {
+        candidates.push(info_dir.join(format!(
+            "{}.trashinfo",
+            trash_name_with_suffix(original_basename, n)
+        )));
         candidates.push(info_dir.join(format!("{}.{}.trashinfo", original_basename, n)));
     }
 
@@ -89,6 +94,41 @@ fn resolve_trash_entry(original_path: &Path, original_basename: &str) -> Result<
     ))
 }
 
+fn trash_name_with_suffix(original_basename: &str, suffix: usize) -> String {
+    let path = Path::new(original_basename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(original_basename);
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => format!("{}.{}.{}", stem, suffix, ext),
+        _ => format!("{}.{}", original_basename, suffix),
+    }
+}
+
+/// Return the current filesystem URI for an item already moved to trash.
+///
+/// `media_items.uri` intentionally keeps the original `file://` URI so restore
+/// and permanent delete can find the matching `.trashinfo` entry. Thumbnail
+/// decoding, however, needs the actual file now stored under
+/// `~/.local/share/Trash/files/`.
+pub fn trashed_file_uri(uri: &str) -> Result<String> {
+    let file = gtk::gio::File::for_uri(uri);
+    let path = file
+        .path()
+        .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::Backend("orig path has no filename".into()))?
+        .to_string();
+    let (actual_name, _) = resolve_trash_entry(&path, &name)?;
+    Ok(format!(
+        "file://{}",
+        trash_root().join("files").join(actual_name).display()
+    ))
+}
+
 /// 将文件移至系统回收站（gio 自动处理原路径记录）
 pub fn move_to_trash(uri: &str) -> Result<()> {
     let file = gtk::gio::File::for_uri(uri);
@@ -112,8 +152,7 @@ pub fn restore_from_trash(uri: &str) -> Result<()> {
         .to_string();
 
     let (actual_name, trashinfo_path) = resolve_trash_entry(&path, &name)?;
-    let trash_root_uri = "trash:///";
-    let trash_child = gtk::gio::File::for_uri(trash_root_uri).child(&actual_name);
+    let trash_child = gtk::gio::File::for_path(trash_root().join("files").join(&actual_name));
     let target = gtk::gio::File::for_path(&path);
 
     // 先移动数据文件
@@ -161,7 +200,7 @@ pub fn delete_permanently(uri: &str) -> Result<()> {
             .ok_or_else(|| AppError::Backend("uri has no filename".into()))?
             .to_string();
         let (actual_name, trashinfo_path) = resolve_trash_entry(path, &name)?;
-        let trash_child = gtk::gio::File::for_uri("trash:///").child(&actual_name);
+        let trash_child = gtk::gio::File::for_path(trash_root().join("files").join(&actual_name));
         trash_child
             .delete(gtk::gio::Cancellable::NONE)
             .map_err(AppError::Gio)?;

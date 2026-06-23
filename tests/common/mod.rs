@@ -20,6 +20,15 @@ pub fn write_plain_jpeg(dir: &std::path::Path, name: &str) -> PathBuf {
     path
 }
 
+/// Generate a solid-color PNG test image (no EXIF). Used by tests that need a
+/// non-JPEG image (e.g. Chinese-named folder roundtrip via notify watcher).
+pub fn write_plain_png(dir: &std::path::Path, name: &str) -> PathBuf {
+    let img = ImageBuffer::<Rgb<u8>, _>::from_fn(64, 48, |_, _| Rgb([128, 128, 128]));
+    let path = dir.join(name);
+    img.save(&path).unwrap();
+    path
+}
+
 /// Generate a JPEG with EXIF DateTimeOriginal set to `naive` (interpreted as local time).
 pub fn write_jpeg_with_exif(
     dir: &std::path::Path,

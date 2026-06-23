@@ -89,7 +89,6 @@ pub fn build_app() -> adw::Application {
 }
 
 async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>, DbPool)> {
-    use crate::core::backend::scan_worker::spawn_scan;
     use crate::core::db;
 
     let data_dir = crate::config::data_dir();
@@ -103,19 +102,30 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     ));
     thumbnail_loader.spawn_workers(4);
 
-    // 启动后台扫描（M1 占位：扫描用户 Pictures 目录）
+    // 启动后台扫描 + 聚合 albums
     // 优先使用 XDG user-dirs.dirs，否则按 locale 回退（zh_CN -> ~/图片，否则 ~/Pictures）。
     let pictures = crate::config::pictures_dir();
-    let paths = vec![pictures.clone()];
-    let scan_handle = spawn_scan(pool.clone(), paths);
-
-    // 同步等待扫描完成（M1 简单版；M5 可改为后台通知）
-    let _ = scan_handle.await;
+    crate::core::bootstrap::scan_and_aggregate(&pool, std::slice::from_ref(&pictures)).await?;
 
     // 启动文件监听（M5-T5）：监听 ~/Pictures 的后续变更并增量 upsert。
+    // 每次 upsert 成功后，在阻塞线程里调用 on_change；closure 内部把
+    // `albums::refresh` 调度到 GTK 主线程（侧栏 Albums row 每次点击
+    // 都会重建 AlbumsPage，所以"仅 refresh，下次点击重建"足够）。
+    let on_change = {
+        let pool = pool.clone();
+        move || {
+            let pool = pool.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Err(e) = crate::core::albums::refresh(&pool) {
+                    tracing::error!("albums refresh failed: {}", e);
+                }
+            });
+        }
+    };
     // JoinHandle 故意丢弃——监听循环在进程生命周期内持续运行；
     // `RecommendedWatcher` 在循环退出时由 `drop` 自动释放底层 inotify 资源。
-    let _watcher = crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures]);
+    let _watcher =
+        crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures], on_change);
 
     // 加载所有数据 — 用 BoxedAnyObject 包装，让 MediaItem 可放入 gio::ListStore
     let items = db::list_all_media(&pool)?;

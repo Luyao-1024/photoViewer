@@ -18,23 +18,32 @@ template $TrashPage : Adw.NavigationPage {
     }
 
     Adw.Banner banner {
-      title: "回收站中的项目将在 30 天后永久删除";
+      title: "回收站中的项目可还原，也可手动永久删除";
       revealed: true;
     }
 
     Gtk.ScrolledWindow scrolled {
       vexpand: true;
 
-      child: Gtk.FlowBox flow_box {
-        homogeneous: true;
-        selection-mode: multiple;
-        column-spacing: 4;
-        row-spacing: 4;
-        margin-start: 12;
-        margin-end: 12;
-        margin-top: 12;
-        margin-bottom: 12;
-        max-children-per-line: 6;
+      child: Gtk.Viewport grid_viewport {
+        scroll-to-focus: true;
+
+        child: Gtk.Box grid_content {
+          orientation: vertical;
+
+          Gtk.FlowBox flow_box {
+            homogeneous: true;
+            selection-mode: multiple;
+            column-spacing: 2;
+            row-spacing: 2;
+            margin-start: 12;
+            margin-end: 12;
+            margin-top: 12;
+            margin-bottom: 12;
+            max-children-per-line: 100;
+            css-classes: ["thumb-grid"];
+          }
+        };
       };
     }
 

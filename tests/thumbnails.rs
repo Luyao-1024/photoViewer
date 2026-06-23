@@ -115,3 +115,38 @@ fn cache_hit_avoids_regenerate() {
         .unwrap();
     assert_eq!(mtime1, mtime2, "命中缓存时不应重新生成");
 }
+
+#[test]
+fn memory_cache_keeps_thumbnail_sizes_separate() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("large-src.jpg");
+    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(1800, 1200, |_, _| {
+        image::Rgb([128, 128, 128])
+    });
+    img.save(&src).unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    let runtime = rt();
+    let _guard = runtime.enter();
+
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    loader.spawn_workers(1);
+
+    let uri = format!("file://{}", src.display());
+
+    let (tx_small, rx_small) = tokio::sync::oneshot::channel();
+    loader.request(uri.clone(), ThumbnailSize::Small, tx_small);
+    let small = runtime.block_on(async { rx_small.await.unwrap() });
+
+    let (tx_large, rx_large) = tokio::sync::oneshot::channel();
+    loader.request(uri, ThumbnailSize::Large, tx_large);
+    let large = runtime.block_on(async { rx_large.await.unwrap() });
+
+    drop(_guard);
+    assert!(
+        large.width() > small.width(),
+        "large thumbnail should not reuse the small thumbnail from memory cache"
+    );
+}

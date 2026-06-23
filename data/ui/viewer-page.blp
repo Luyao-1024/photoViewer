@@ -4,39 +4,159 @@ using Adw 1;
 template $ViewerPage : Adw.NavigationPage {
   title: "Viewer";
 
-  child: Gtk.Box root_box {
-    orientation: vertical;
+  child: Adw.ToastOverlay toast_overlay {
+    child: Gtk.Box root_box {
+      orientation: vertical;
 
-    Adw.HeaderBar header_bar {
-      show-end-title-buttons: true;
+      Adw.HeaderBar header_bar {
+        show-end-title-buttons: true;
 
-      [end]
-      Gtk.Button edit_btn {
-        label: "Edit";
-        icon-name: "edit-symbolic";
+        [end]
+        Gtk.Button details_btn {
+          icon-name: "info-symbolic";
+          tooltip-text: "Image Details";
+        }
+
+        [end]
+        Gtk.Button delete_btn {
+          icon-name: "user-trash-symbolic";
+          tooltip-text: "Move to Trash";
+        }
+
+        [end]
+        Gtk.MenuButton add_to_album_btn {
+          icon-name: "list-add-symbolic";
+          tooltip-text: "Add to Album";
+          primary: true;
+          // Menu model is set in `ViewerPage::setup_album_menu` once the
+          // `nav_view` and `pool` are injected (they're needed by the menu's
+          // activate handler to know where to push the picker).
+        }
+
+        [end]
+        Gtk.Button edit_btn {
+          label: "Edit";
+          icon-name: "edit-symbolic";
+        }
       }
-    }
 
-    Gtk.Overlay overlay {
-      vexpand: true;
-      hexpand: true;
-
-      child: Gtk.Picture picture {
-        can-shrink: false;
+      Adw.OverlaySplitView details_split_view {
         vexpand: true;
         hexpand: true;
-        content-fit: contain;
-      };
+        show-sidebar: false;
+        sidebar-position: end;
+        min-sidebar-width: 320;
+        max-sidebar-width: 420;
 
-      [overlay]
-      Gtk.Spinner spinner {
-        vexpand: true;
-        hexpand: true;
-        halign: center;
-        valign: center;
-        spinning: true;
-        visible: true;
+        content: Gtk.Overlay image_overlay {
+          vexpand: true;
+          hexpand: true;
+
+          child: Gtk.Picture picture {
+            // Original-resolution textures have very large natural sizes (e.g.
+            // 4000×3000) which, with can-shrink=false, would force the host
+            // window to grow. can-shrink=true lets the widget be allocated any
+            // size; content-fit:contain then scales the image to fit that
+            // allocation while preserving aspect ratio.
+            can-shrink: true;
+            vexpand: true;
+            hexpand: true;
+            content-fit: contain;
+          };
+
+          [overlay]
+          Gtk.Spinner spinner {
+            vexpand: true;
+            hexpand: true;
+            halign: center;
+            valign: center;
+            spinning: true;
+            visible: true;
+          }
+        };
+
+        sidebar: Gtk.Box details_panel {
+          orientation: vertical;
+          width-request: 380;
+          css-classes: ["background"];
+
+          Gtk.Box details_header {
+            orientation: horizontal;
+            spacing: 6;
+            margin-start: 12;
+            margin-end: 6;
+            margin-top: 6;
+            margin-bottom: 6;
+
+            Gtk.Label {
+              label: "Details";
+              xalign: 0;
+              hexpand: true;
+              css-classes: ["title-3"];
+            }
+
+            Gtk.Button details_close_btn {
+              icon-name: "window-close-symbolic";
+              tooltip-text: "Close Details";
+            }
+          }
+
+          Gtk.ScrolledWindow {
+            vexpand: true;
+            hscrollbar-policy: never;
+
+            child: Adw.PreferencesPage details_page {
+              Adw.PreferencesGroup file_group {
+                title: "File";
+
+                Adw.ActionRow name_row {
+                  title: "Name";
+                  activatable: false;
+                }
+
+                Adw.ActionRow path_row {
+                  title: "Path";
+                  activatable: false;
+                }
+
+                Adw.ActionRow folder_row {
+                  title: "Folder";
+                  activatable: false;
+                }
+
+                Adw.ActionRow mime_row {
+                  title: "Type";
+                  activatable: false;
+                }
+
+                Adw.ActionRow dimensions_row {
+                  title: "Dimensions";
+                  activatable: false;
+                }
+
+                Adw.ActionRow size_row {
+                  title: "File Size";
+                  activatable: false;
+                }
+
+                Adw.ActionRow modified_row {
+                  title: "Modified";
+                  activatable: false;
+                }
+
+                Adw.ActionRow taken_row {
+                  title: "Captured";
+                  activatable: false;
+                }
+              }
+
+              Adw.PreferencesGroup exif_group {
+                title: "EXIF";
+              }
+            };
+          }
+        };
       }
-    }
+    };
   };
 }

@@ -4,12 +4,19 @@ use chrono::{DateTime, TimeZone, Utc};
 use gdk_pixbuf;
 use std::path::Path;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExifField {
+    pub tag: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RawMetadata {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub taken_at: Option<DateTime<Utc>>,
     pub mime_type: String,
+    pub exif_fields: Vec<ExifField>,
 }
 
 /// Extract metadata from a file at `path`.
@@ -42,21 +49,24 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
         )));
     }
 
-    // 2. Try to read EXIF DateTimeOriginal.
-    if let Ok(exif) = exif_reader(path) {
-        meta.taken_at = Some(exif);
+    // 2. Try to read EXIF DateTimeOriginal and readable EXIF fields.
+    if let Ok(exif) = read_exif(path) {
+        meta.taken_at = exif_datetime(&exif);
+        meta.exif_fields = exif_fields(&exif);
     }
 
     Ok(meta)
 }
 
-fn exif_reader(path: &Path) -> Result<DateTime<Utc>> {
+fn read_exif(path: &Path) -> Result<exif::Exif> {
     let file = std::fs::File::open(path)?;
     let mut bufreader = std::io::BufReader::new(&file);
-    let exif = exif::Reader::new()
+    exif::Reader::new()
         .read_from_container(&mut bufreader)
-        .map_err(|e| AppError::Exif(e.to_string()))?;
+        .map_err(|e| AppError::Exif(e.to_string()))
+}
 
+fn exif_datetime(exif: &exif::Exif) -> Option<DateTime<Utc>> {
     // Prefer DateTimeOriginal > DateTime > DateTimeDigitized.
     for field in [
         exif::Tag::DateTimeOriginal,
@@ -68,14 +78,27 @@ fn exif_reader(path: &Path) -> Result<DateTime<Utc>> {
                 if let Some(s) = vec.first() {
                     if let Ok(s) = std::str::from_utf8(s) {
                         if let Some(dt) = parse_exif_datetime(s.trim()) {
-                            return Ok(dt);
+                            return Some(dt);
                         }
                     }
                 }
             }
         }
     }
-    Err(AppError::Exif("no datetime field".into()))
+    None
+}
+
+fn exif_fields(exif: &exif::Exif) -> Vec<ExifField> {
+    let mut fields: Vec<ExifField> = exif
+        .fields()
+        .map(|field| ExifField {
+            tag: field.tag.to_string(),
+            value: field.display_value().with_unit(exif).to_string(),
+        })
+        .filter(|field| !field.value.trim().is_empty())
+        .collect();
+    fields.sort_by(|a, b| a.tag.cmp(&b.tag));
+    fields
 }
 
 /// EXIF DateTime format "YYYY:MM:DD HH:MM:SS".

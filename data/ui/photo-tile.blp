@@ -1,6 +1,6 @@
 using Gtk 4.0;
 
-// PhotoTile template: a `GtkWidget` wrapping one `GtkPicture` (cover fit).
+// PhotoTile template: a `GtkBox` wrapping one `GtkPicture` (cover fit).
 //
 // WARNING: `set_size_request(pixel_size)` alone does NOT make this a fixed
 // square cell. And because `PhotoTile` sets `can_shrink = false` (in
@@ -9,10 +9,13 @@ using Gtk 4.0;
 // the screen" bug. `MediaGrid` avoids this with an `AspectFrame(ratio 1.0)`
 // + `can_shrink = true`; this legacy widget does not yet. See the sizing
 // notes in media_grid.rs.
-template $PhotoTile : Gtk.Widget {
-  child: Gtk.Picture picture {
+template $PhotoTile : Gtk.Box {
+  orientation: vertical;
+
+  Gtk.Picture picture {
     content-fit: cover;
     hexpand: false;
     vexpand: false;
-  };
+    css-classes: ["photo-tile-picture"];
+  }
 }

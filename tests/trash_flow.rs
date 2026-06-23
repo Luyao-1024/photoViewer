@@ -1,5 +1,3 @@
-use gtk::gio::prelude::*;
-use gtk4 as gtk;
 use photo_viewer::core::trash;
 use tempfile::Builder;
 
@@ -48,14 +46,55 @@ fn permanent_delete() {
     trash::move_to_trash(&uri).unwrap();
     // 原位置应不存在（已 trash）
     assert!(!src.exists());
+    let trashed_uri = trash::trashed_file_uri(&uri).unwrap();
+    let trashed_path = std::path::PathBuf::from(
+        trashed_uri
+            .strip_prefix("file://")
+            .expect("trashed uri should be a file URI"),
+    );
 
     trash::delete_permanently(&uri).unwrap();
 
-    // 文件在 trash:/// 中也应不存在
-    let trash_child = gtk::gio::File::for_uri("trash:///").child("perm.jpg");
-    assert!(!trash_child.query_exists(gtk::gio::Cancellable::NONE));
+    // 本次 move_to_trash 对应的实际文件应已从 trash/files 中删除。
+    assert!(!trashed_path.exists());
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn trashed_file_uri_resolves_original_uri_to_actual_trash_file() {
+    let parent = scratch_dir();
+    let original_dir = parent.join("original");
+    std::fs::create_dir_all(&original_dir).unwrap();
+    let original = original_dir.join("visible.jpg");
+    let uri = format!("file://{}", original.display());
+
+    let home = std::env::var_os("HOME")
+        .map(|v| v.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let trash_files = std::path::PathBuf::from(format!("{}/.local/share/Trash/files", home));
+    let trash_info = std::path::PathBuf::from(format!("{}/.local/share/Trash/info", home));
+    std::fs::create_dir_all(&trash_files).unwrap();
+    std::fs::create_dir_all(&trash_info).unwrap();
+
+    let actual_file = trash_files.join("visible.2.jpg");
+    let actual_info = trash_info.join("visible.2.jpg.trashinfo");
+    std::fs::write(&actual_file, b"thumbnail source").unwrap();
+    std::fs::write(
+        &actual_info,
+        format!(
+            "[Trash Info]\nPath={}\nDeletionDate=2026-06-23T00:00:00\n",
+            original.display()
+        ),
+    )
+    .unwrap();
+
+    let resolved = trash::trashed_file_uri(&uri).unwrap();
+    assert_eq!(resolved, format!("file://{}", actual_file.display()));
+
+    let _ = std::fs::remove_file(&actual_file);
+    let _ = std::fs::remove_file(&actual_info);
+    let _ = std::fs::remove_dir_all(&parent);
 }
 
 /// 两个不同目录下同名文件同时存在于 trash（gio 在 basename 冲突时把第二个

@@ -1,5 +1,6 @@
 mod common;
 use common::*;
+use photo_viewer::core::album_ops::{add_to_album, AlbumOpMode};
 use photo_viewer::core::albums;
 use photo_viewer::core::backend::local::LocalBackend;
 use photo_viewer::core::db;
@@ -137,4 +138,154 @@ fn list_all_in(pool: &db::DbPool) -> Vec<MediaItem> {
         .into_iter()
         .chain(db::list_trashed_media(pool).unwrap())
         .collect()
+}
+
+/// End-to-end: scan → move via album_ops → trash → verify album counts
+/// are still consistent. Specifically:
+///   * Camera starts with 2 photos
+///   * Move img1.jpg to Screenshots (so Camera=1, Screenshots=2)
+///   * Trash img2.jpg in Camera (so Camera=0, Screenshots=2)
+///   * Final albums list: Camera=0, Screenshots=2 (sum=2)
+#[test]
+fn end_to_end_move_then_trash_then_album_count_consistent() {
+    let dir = tmp_dir();
+    let root = dir.path();
+
+    // 1. Camera (2 photos) + Screenshots (1 photo)
+    let camera = root.join("Camera");
+    std::fs::create_dir(&camera).unwrap();
+    write_plain_jpeg(&camera, "img1.jpg");
+    write_plain_jpeg(&camera, "img2.jpg");
+
+    let shots = root.join("Screenshots");
+    std::fs::create_dir(&shots).unwrap();
+    write_plain_jpeg(&shots, "scr1.jpg");
+
+    // 2. 扫描 + 入库
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    let items = backend.scan_dir(root).unwrap();
+    assert_eq!(items.len(), 3);
+    for it in &items {
+        backend.upsert(it).unwrap();
+    }
+    albums::refresh(&pool).unwrap();
+
+    let initial = albums::list(&pool).unwrap();
+    let cam_initial = initial
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap();
+    let scr_initial = initial
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Screenshots")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap();
+    assert_eq!(cam_initial, 2);
+    assert_eq!(scr_initial, 1);
+
+    // 3. Move img1.jpg from Camera → Screenshots
+    let img1 = list_all_in(&pool)
+        .into_iter()
+        .find(|m| {
+            m.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+                && m.path.file_name().map(|s| s == "img1.jpg").unwrap_or(false)
+        })
+        .expect("Camera/img1.jpg should exist");
+    add_to_album(&pool, &[img1.id], &shots, AlbumOpMode::Move).unwrap();
+
+    let after_move = albums::list(&pool).unwrap();
+    let cam_after_move = after_move
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap();
+    let scr_after_move = after_move
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Screenshots")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap();
+    assert_eq!(cam_after_move, 1, "Camera 减 1");
+    assert_eq!(scr_after_move, 2, "Screenshots 加 1");
+
+    // 4. Trash the remaining Camera photo (img2.jpg). The move already
+    //    removed img1.jpg from Camera, so this targets the only one left.
+    let img2 = list_all_in(&pool)
+        .into_iter()
+        .find(|m| {
+            m.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+                && m.path.file_name().map(|s| s == "img2.jpg").unwrap_or(false)
+        })
+        .expect("Camera/img2.jpg should exist (move didn't touch it)");
+
+    // gio trashing needs a real fs path; copy to scratch and trash
+    let scratch = real_fs_scratch();
+    let real_src = scratch.join("img2.jpg");
+    std::fs::copy(&img2.path, &real_src).unwrap();
+    let real_uri = format!("file://{}", real_src.display());
+    trash::move_to_trash(&real_uri).expect("move to trash should succeed");
+    db::mark_trashed(&pool, img2.id).unwrap();
+
+    // 5. Final album state
+    albums::refresh(&pool).unwrap();
+    let final_list = albums::list(&pool).unwrap();
+    let cam_final = final_list
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Camera")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap_or(0);
+    let scr_final = final_list
+        .iter()
+        .find(|a| {
+            a.folder_path
+                .file_name()
+                .map(|s| s == "Screenshots")
+                .unwrap_or(false)
+        })
+        .map(|a| a.photo_count)
+        .unwrap_or(0);
+    assert_eq!(cam_final, 0, "Camera 全部 move+trash 后应为 0");
+    assert_eq!(scr_final, 2, "Screenshots 保留 2 张(原 1 + 移入 1)");
+
+    // total: 2 (move 不变,trash 仅影响计数)
+    let total_final: i64 = final_list.iter().map(|a| a.photo_count).sum();
+    assert_eq!(total_final, 2);
+
+    // Camera 还存在但 photo_count = 0(因为 folder_path 已经被 move 后的
+    // 媒体行所引用,而 trashed 那一行原本在 Camera)。refresh 会清空
+    // albums 然后重算,空 folder 不进表 — 所以 Camera 实际可能不在 final
+    // list 中。如果还在则 photo_count=0,断言其一即可。
+    let _ = cam_final;
 }

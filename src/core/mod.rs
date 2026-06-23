@@ -1,5 +1,7 @@
+pub mod album_ops;
 pub mod albums;
 pub mod backend;
+pub mod bootstrap;
 pub mod cache;
 pub mod db;
 pub mod edit;
@@ -11,6 +13,7 @@ pub mod section_model;
 pub mod thumbnails;
 pub mod trash;
 
+pub use album_ops::{add_to_album, AlbumOpMode};
 pub use albums::{refresh as refresh_albums, Album};
 pub use backend::local::LocalBackend;
 pub use db::{init_pool, run_migrations, DbPool};

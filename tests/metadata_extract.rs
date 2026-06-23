@@ -12,6 +12,7 @@ fn plain_jpeg_returns_no_taken_at() {
     assert_eq!(meta.width, Some(64));
     assert_eq!(meta.height, Some(48));
     assert!(meta.taken_at.is_none(), "无 EXIF 数据应返回 None");
+    assert!(meta.exif_fields.is_empty(), "无 EXIF 数据应返回空字段列表");
 }
 
 #[test]
@@ -34,4 +35,24 @@ fn mime_type_inferred_from_extension() {
 
     let meta = metadata::extract(&png_path).unwrap();
     assert_eq!(meta.mime_type, "image/png");
+}
+
+#[test]
+fn exif_fields_include_datetime_original() {
+    let dir = tmp_dir();
+    let naive = chrono::NaiveDate::from_ymd_opt(2024, 5, 6)
+        .unwrap()
+        .and_hms_opt(7, 8, 9)
+        .unwrap();
+    let path = write_jpeg_with_exif(dir.path(), "with-exif.jpg", naive);
+
+    let meta = metadata::extract(&path).unwrap();
+
+    assert!(
+        meta.exif_fields.iter().any(|field| {
+            field.tag == "DateTimeOriginal" && field.value.contains("2024-05-06 07:08:09")
+        }),
+        "EXIF 字段列表应包含 DateTimeOriginal, got {:?}",
+        meta.exif_fields
+    );
 }

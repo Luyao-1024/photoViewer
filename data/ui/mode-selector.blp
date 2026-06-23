@@ -1,73 +1,93 @@
 using Gtk 4.0;
 
-// ModeSelector: 3 label cells + 3 dot cells. The two rows use
-// `homogeneous: true` so each label_cell_i is the same width as
-// dot_cell_i — keeping the active dot aligned under its label even
-// when the labels render at different intrinsic widths.
+// ModeSelector: 3 label cells + 3 dot cells. The two rows fill the
+// translucent panel and use `homogeneous: true` so each label_cell_i is
+// the same width as dot_cell_i — keeping the active dot aligned under
+// its label and avoiding leftover panel space after the Day cell.
 template $ModeSelector : Gtk.Box {
   orientation: vertical;
   css-classes: ["mode-selector"];
 
   Gtk.Box row {
     orientation: horizontal;
-    halign: center;
+    halign: fill;
+    hexpand: true;
     homogeneous: true;
 
     Gtk.Box label_cell_0 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Label label_0 {
         label: "年";
+        halign: center;
+        hexpand: true;
       }
     }
     Gtk.Box label_cell_1 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Label label_1 {
         label: "月";
+        halign: center;
+        hexpand: true;
       }
     }
     Gtk.Box label_cell_2 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Label label_2 {
         label: "日";
+        halign: center;
+        hexpand: true;
       }
     }
   }
 
   Gtk.Box dot_row {
     orientation: horizontal;
-    halign: center;
+    halign: fill;
+    hexpand: true;
     homogeneous: true;
 
     Gtk.Box dot_cell_0 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Box dot_inner_0 {
         visible: false;
+        halign: center;
+        hexpand: true;
         css-classes: ["mode-dot"];
       }
     }
     Gtk.Box dot_cell_1 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Box dot_inner_1 {
         visible: false;
+        halign: center;
+        hexpand: true;
         css-classes: ["mode-dot"];
       }
     }
     Gtk.Box dot_cell_2 {
       css-classes: ["mode-cell"];
-      halign: center;
+      halign: fill;
+      hexpand: true;
 
       Gtk.Box dot_inner_2 {
         visible: true;
+        halign: center;
+        hexpand: true;
         css-classes: ["mode-dot"];
       }
     }
