@@ -70,32 +70,61 @@ where
         }
     };
 
-    // 关注能反映磁盘内容变化的事件：创建 / 修改 / 重命名（touch）。
-    // 删除事件不调用 upsert（仅记录日志），后续扫描会处理遗漏。
-    let is_change = matches!(
-        evt.kind,
-        EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_))
-    );
-    if !is_change {
-        return;
-    }
-
-    for path in &evt.paths {
-        if !is_supported_image(path) {
-            continue;
+    match evt.kind {
+        EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
+            for path in &evt.paths {
+                if !is_supported_image(path) {
+                    continue;
+                }
+                if !path.is_file() {
+                    continue;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                if let Err(e) = backend.upsert_from_path(path) {
+                    tracing::warn!("upsert 失败 {}: {}", path.display(), e);
+                } else {
+                    tracing::debug!("增量 upsert 成功: {}", path.display());
+                    on_change();
+                }
+            }
         }
-        if !path.is_file() {
-            // 可能是目录事件或中间状态 —— 跳过即可。
-            continue;
+        EventKind::Remove(_) => {
+            for path in &evt.paths {
+                if !is_supported_image(path) {
+                    continue;
+                }
+                match backend.delete_path(path) {
+                    Ok(changed) if changed > 0 => {
+                        tracing::debug!("增量删除成功: {}", path.display());
+                        on_change();
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("增量删除失败 {}: {}", path.display(), e),
+                }
+            }
         }
-        // 小延迟：让写入方完成文件落盘后再读取。
-        std::thread::sleep(Duration::from_millis(50));
-        if let Err(e) = backend.upsert_from_path(path) {
-            tracing::warn!("upsert 失败 {}: {}", path.display(), e);
-        } else {
-            tracing::debug!("增量 upsert 成功: {}", path.display());
-            on_change();
+        EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+            for path in &evt.paths {
+                if !is_supported_image(path) {
+                    continue;
+                }
+                if path.is_file() {
+                    std::thread::sleep(Duration::from_millis(50));
+                    if let Err(e) = backend.upsert_from_path(path) {
+                        tracing::warn!("rename upsert 失败 {}: {}", path.display(), e);
+                    } else {
+                        on_change();
+                    }
+                } else {
+                    match backend.delete_path(path) {
+                        Ok(changed) if changed > 0 => on_change(),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("rename delete 失败 {}: {}", path.display(), e),
+                    }
+                }
+            }
         }
+        _ => {}
     }
 }
 
@@ -107,4 +136,60 @@ fn is_supported_image(path: &Path) -> bool {
             .as_deref(),
         Some("jpg") | Some("jpeg") | Some("png") | Some("webp") | Some("heic") | Some("heif")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::db;
+    use crate::core::media::NewMediaItem;
+    use chrono::Utc;
+    use notify::{event::RemoveKind, Event};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn remove_event_deletes_media_row_and_notifies_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.jpg");
+        std::fs::write(&path, b"not actually decoded in this test").unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        db::insert_media_item(
+            &pool,
+            &NewMediaItem {
+                uri: format!("file://{}", path.display()),
+                path: path.clone(),
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/jpeg".into(),
+                width: None,
+                height: None,
+                taken_at: None,
+                file_mtime: Utc::now(),
+                file_size: 1,
+                blake3_hash: "hash".into(),
+            },
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let backend = LocalBackend::new(pool.clone());
+        let changes = Arc::new(AtomicUsize::new(0));
+        let changes_for_cb = changes.clone();
+        handle_event(
+            &backend,
+            Ok(Event {
+                kind: EventKind::Remove(RemoveKind::File),
+                paths: vec![path],
+                attrs: Default::default(),
+            }),
+            &move || {
+                changes_for_cb.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        assert!(db::list_all_media(&pool).unwrap().is_empty());
+        assert_eq!(changes.load(Ordering::SeqCst), 1);
+    }
 }

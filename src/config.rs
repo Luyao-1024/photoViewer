@@ -1,6 +1,13 @@
 //! Application configuration paths (XDG Base Directory spec)
 use std::path::PathBuf;
 
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| std::env::temp_dir().join("photoViewer-home"))
+}
+
 /// Returns the locale-aware user Pictures directory.
 ///
 /// Resolution order:
@@ -13,8 +20,7 @@ pub fn pictures_dir() -> PathBuf {
         return p;
     }
 
-    let home = std::env::var_os("HOME").expect("HOME not set");
-    let home_path = PathBuf::from(home);
+    let home_path = home_dir();
 
     // 2) Locale fallback for Chinese systems: ~/图片 (set by xdg-user-dirs-update).
     if is_chinese_locale() {
@@ -80,10 +86,7 @@ pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").expect("HOME not set");
-            PathBuf::from(home).join(".local/share")
-        });
+        .unwrap_or_else(|| home_dir().join(".local/share"));
     base.join("photoViewer")
 }
 
@@ -91,10 +94,7 @@ pub fn cache_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").expect("HOME not set");
-            PathBuf::from(home).join(".cache")
-        });
+        .unwrap_or_else(|| home_dir().join(".cache"));
     base.join("photoViewer")
 }
 
@@ -102,9 +102,6 @@ pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").expect("HOME not set");
-            PathBuf::from(home).join(".config")
-        });
+        .unwrap_or_else(|| home_dir().join(".config"));
     base.join("photoViewer")
 }

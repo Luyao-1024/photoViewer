@@ -52,6 +52,34 @@ fn list_all_returns_inserted() {
 }
 
 #[test]
+fn list_all_reports_invalid_timestamp_rows() {
+    let pool = fresh_pool();
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO media_items
+            (uri, path, folder_path, mime_type, width, height,
+             taken_at, file_mtime, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6, ?7, unixepoch())",
+        rusqlite::params![
+            "file:///test/bad.jpg",
+            "/test/bad.jpg",
+            "/test",
+            "image/jpeg",
+            i64::MAX,
+            10_i64,
+            "bad-hash",
+        ],
+    )
+    .unwrap();
+
+    let err = db::list_all_media(&pool).expect_err("bad row should not be silently dropped");
+    assert!(
+        err.to_string().contains("timestamp"),
+        "error should explain the invalid timestamp, got {err}"
+    );
+}
+
+#[test]
 fn list_all_orders_by_taken_at_then_file_time_fallback() {
     let pool = fresh_pool();
 
