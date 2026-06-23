@@ -51,10 +51,11 @@ impl LocalBackend {
         let meta = metadata::extract(path)?;
 
         let file_meta = std::fs::metadata(path)?;
-        let mtime = file_meta
-            .modified()
+        let file_time = file_meta
+            .created()
+            .or_else(|_| file_meta.modified())
             .unwrap_or_else(|_| std::time::SystemTime::now());
-        let mtime_utc: chrono::DateTime<Utc> = mtime.into();
+        let file_time_utc: chrono::DateTime<Utc> = file_time.into();
 
         let uri = format!("file://{}", path.display());
         let folder = path
@@ -72,7 +73,7 @@ impl LocalBackend {
             width: meta.width,
             height: meta.height,
             taken_at: meta.taken_at,
-            file_mtime: mtime_utc,
+            file_mtime: file_time_utc,
             file_size: file_meta.len(),
             blake3_hash: hash,
         }))

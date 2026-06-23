@@ -21,6 +21,24 @@ fn item(id: i64, year: i32, month: u32, day: u32) -> MediaItem {
     }
 }
 
+fn item_without_taken_at(id: i64, year: i32, month: u32, day: u32) -> MediaItem {
+    let file_time = Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap();
+    MediaItem {
+        id,
+        uri: format!("file:///tmp/{id}.jpg"),
+        path: format!("/tmp/{id}.jpg").into(),
+        folder_path: "/tmp".into(),
+        mime_type: "image/jpeg".into(),
+        width: None,
+        height: None,
+        taken_at: None,
+        file_mtime: file_time,
+        file_size: 0,
+        blake3_hash: format!("hash-{id}"),
+        trashed_at: None,
+    }
+}
+
 #[test]
 fn group_by_year() {
     let items = vec![
@@ -65,11 +83,27 @@ fn group_by_day() {
 }
 
 #[test]
-fn unknown_date_grouped_separately() {
+fn missing_taken_at_uses_file_time_instead_of_unknown_date() {
     let mut a = item(1, 2025, 3, 1);
     a.taken_at = None;
     let b = item(2, 2025, 3, 2);
     let sections = group_items(&[a, b], GroupBy::Year);
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].label, "2025 · 2 张");
+}
+
+#[test]
+fn missing_taken_at_groups_by_file_time() {
+    let items = vec![
+        item_without_taken_at(1, 2024, 6, 1),
+        item_without_taken_at(2, 2024, 6, 2),
+    ];
+
+    let sections = group_items(&items, GroupBy::Day);
+
     assert_eq!(sections.len(), 2);
-    assert_eq!(sections[1].label, "未知日期 · 1 张");
+    assert_eq!(sections[0].key.year, Some(2024));
+    assert_eq!(sections[0].key.month, Some(6));
+    assert_eq!(sections[0].key.day, Some(1));
+    assert_eq!(sections[1].key.day, Some(2));
 }

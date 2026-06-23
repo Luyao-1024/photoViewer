@@ -79,7 +79,8 @@ pub fn get_media_item(pool: &DbPool, id: i64) -> Result<MediaItem> {
     Ok(item)
 }
 
-/// 列出所有非回收站项，按 taken_at DESC 排序
+/// 列出所有非回收站项，按照片排序时间 DESC 排序：
+/// EXIF 拍摄时间优先；没有 EXIF 时使用文件侧时间（created/mtime fallback）。
 pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
@@ -87,7 +88,7 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
                 taken_at, file_mtime, file_size, blake3_hash, trashed_at
          FROM media_items
          WHERE trashed_at IS NULL
-         ORDER BY taken_at DESC NULLS LAST, id DESC",
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
     )?;
     let rows = stmt.query_map([], row_to_media_item)?;
     Ok(rows.filter_map(std::result::Result::ok).collect())
@@ -124,8 +125,8 @@ pub fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
 ///
 /// `id` 与 `blake3_hash` 保持不变（仍是同一张照片）;只把磁盘位置同步到
 /// `media_items` 行,以便随后的 `list_all_media` / `albums::refresh` 看见
-/// 新位置。`file_mtime` 取新文件的 mtime(`unixepoch` 秒),失败时回退
-/// 当前时间,避免 `mtime` 出现 NULL。
+/// 新位置。`file_mtime` 保存文件侧排序时间（created 优先, modified
+/// fallback）,失败时回退当前时间,避免出现 NULL。
 pub fn update_media_location(
     pool: &DbPool,
     id: i64,
@@ -134,8 +135,8 @@ pub fn update_media_location(
 ) -> Result<()> {
     let conn = pool.get()?;
     let uri = format!("file://{}", new_path.display());
-    let mtime = std::fs::metadata(new_path)
-        .and_then(|m| m.modified())
+    let file_time = std::fs::metadata(new_path)
+        .and_then(|m| m.created().or_else(|_| m.modified()))
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
@@ -149,7 +150,7 @@ pub fn update_media_location(
             new_path.to_string_lossy(),
             new_folder.to_string_lossy(),
             uri,
-            mtime
+            file_time
         ],
     )?;
     Ok(())

@@ -4,9 +4,9 @@ use chrono::{Datelike, NaiveDate, Weekday};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroupBy {
-    #[default]
     Year,
     Month,
+    #[default]
     Day,
 }
 
@@ -72,28 +72,22 @@ pub fn group_items(items: &[MediaItem], mode: GroupBy) -> Vec<MediaSection> {
 }
 
 fn make_key(item: &MediaItem, mode: GroupBy) -> SectionKey {
-    match item.taken_at {
-        Some(dt) => match mode {
-            GroupBy::Year => SectionKey {
-                year: Some(dt.year()),
-                month: None,
-                day: None,
-            },
-            GroupBy::Month => SectionKey {
-                year: Some(dt.year()),
-                month: Some(dt.month()),
-                day: None,
-            },
-            GroupBy::Day => SectionKey {
-                year: Some(dt.year()),
-                month: Some(dt.month()),
-                day: Some(dt.day()),
-            },
-        },
-        None => SectionKey {
-            year: None,
+    let dt = item.sort_datetime();
+    match mode {
+        GroupBy::Year => SectionKey {
+            year: Some(dt.year()),
             month: None,
             day: None,
+        },
+        GroupBy::Month => SectionKey {
+            year: Some(dt.year()),
+            month: Some(dt.month()),
+            day: None,
+        },
+        GroupBy::Day => SectionKey {
+            year: Some(dt.year()),
+            month: Some(dt.month()),
+            day: Some(dt.day()),
         },
     }
 }
@@ -148,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn groupby_default_is_year() {
-        assert_eq!(GroupBy::default(), GroupBy::Year);
+    fn groupby_default_is_day() {
+        assert_eq!(GroupBy::default(), GroupBy::Day);
     }
 }

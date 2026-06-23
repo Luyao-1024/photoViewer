@@ -25,6 +25,10 @@ impl MediaItem {
             .and_then(|s| s.to_str())
             .unwrap_or("(unnamed)")
     }
+
+    pub fn sort_datetime(&self) -> DateTime<Utc> {
+        self.taken_at.unwrap_or(self.file_mtime)
+    }
 }
 
 /// 用于 INSERT 的新项（不含 id 和 trashed_at）

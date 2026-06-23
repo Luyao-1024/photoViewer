@@ -123,7 +123,7 @@ box.mode-cell {
 /* 标签：默认半透明、title-3 字号 */
 box.mode-selector label {
   font-size: 14pt;
-  font-weight: 500;
+  font-weight: 700;
   color: #ffffff;
   opacity: 0.55;
   transition: opacity 120ms ease;

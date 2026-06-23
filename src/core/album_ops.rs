@@ -77,9 +77,9 @@ fn add_one(
             new_item.path = dst.clone();
             new_item.folder_path = target_folder.to_path_buf();
             new_item.uri = format!("file://{}", dst.display());
-            // blake3_hash 已不变,file_mtime 取新文件
+            // blake3_hash 已不变,file_mtime 取新文件侧排序时间
             let mtime = std::fs::metadata(&dst)
-                .and_then(|m| m.modified())
+                .and_then(|m| m.created().or_else(|_| m.modified()))
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .and_then(|d| {

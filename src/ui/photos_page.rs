@@ -205,6 +205,8 @@ impl PhotosPage {
         // Decide initial visible child based on data size.
         if is_empty {
             stack.set_visible_child(&empty_page);
+        } else {
+            stack.set_visible_child_name("day");
         }
 
         // Wire the ModeSelector to our view_stack (it drives the visible
@@ -214,11 +216,11 @@ impl PhotosPage {
             let weak = obj.downgrade();
             stack.connect_notify_local(Some("visible-child"), move |_, _| {
                 if let Some(this) = weak.upgrade() {
-                    this.update_mode_selector_contrast();
+                    this.schedule_mode_selector_contrast_update();
                 }
             });
         }
-        obj.update_mode_selector_contrast();
+        obj.schedule_mode_selector_contrast_update();
 
         // Wire the "Add to Album" toolbar button. Click → collect selected
         // ids → open AlbumPickerDialog. The dialog itself does the
@@ -292,6 +294,24 @@ impl PhotosPage {
             return;
         };
         selector.set_light_background(grid.background_is_light_under(&selector).unwrap_or(false));
+    }
+
+    fn schedule_mode_selector_contrast_update(&self) {
+        self.update_mode_selector_contrast();
+
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.update_mode_selector_contrast();
+            }
+        });
+
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+            if let Some(this) = weak.upgrade() {
+                this.update_mode_selector_contrast();
+            }
+        });
     }
 
     /// Resolve a `MediaItem.id` for `global_index` by unwrapping the

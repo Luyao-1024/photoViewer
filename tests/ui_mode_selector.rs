@@ -15,6 +15,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use photo_viewer::core::media::MediaItem;
 use photo_viewer::ui::{ModeSelector, PhotosPage};
 
 #[test]
@@ -79,6 +80,20 @@ fn mode_selector_integration_suite() {
     use std::sync::Arc;
 
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(MediaItem {
+        id: 1,
+        uri: "file:///tmp/one.jpg".into(),
+        path: "/tmp/one.jpg".into(),
+        folder_path: "/tmp".into(),
+        mime_type: "image/jpeg".into(),
+        width: Some(100),
+        height: Some(100),
+        taken_at: None,
+        file_mtime: chrono::Utc::now(),
+        file_size: 100,
+        blake3_hash: "hash".into(),
+        trashed_at: None,
+    }));
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
     // Actual signature in src/core/thumbnails.rs is `(pool, cache_dir)`.
@@ -92,6 +107,12 @@ fn mode_selector_integration_suite() {
     // TemplateChild resolved (the `.get()` above would have panicked if not).
     assert_eq!(sel4.halign(), gtk::Align::Center, "template halign=center");
     assert_eq!(sel4.valign(), gtk::Align::End, "template valign=end");
+    assert_eq!(sel4.active_index(), 2, "PhotosPage should default to Day");
+    assert_eq!(
+        page.imp().view_stack.get().visible_child_name().as_deref(),
+        Some("day"),
+        "PhotosPage should show the Day grid by default when media exists"
+    );
 
     // --- Structural checks (validation plan §集成测试 items 1, 2, 5) ---
     //
