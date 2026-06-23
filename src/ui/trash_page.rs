@@ -257,8 +257,8 @@ impl TrashPage {
                 let page_weak = obj.downgrade();
 
                 let dialog = adw::AlertDialog::builder()
-                    .heading(&tr("trash.empty_title"))
-                    .body(&tr("trash.empty_body"))
+                    .heading(tr("trash.empty_title"))
+                    .body(tr("trash.empty_body"))
                     .build();
                 dialog.add_response("cancel", &tr("dialog.cancel"));
                 dialog.add_response("empty", &tr("dialog.empty"));

@@ -17,8 +17,8 @@ use libadwaita as adw;
 pub fn no_photos() -> adw::StatusPage {
     let p = adw::StatusPage::builder()
         .icon_name("image-x-generic-symbolic")
-        .title(&tr("empty.no_photos.title"))
-        .description(&tr("empty.no_photos.description"))
+        .title(tr("empty.no_photos.title"))
+        .description(tr("empty.no_photos.description"))
         .build();
     p.add_css_class("compact");
     p
@@ -28,8 +28,8 @@ pub fn no_photos() -> adw::StatusPage {
 pub fn no_albums() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("folder-symbolic")
-        .title(&tr("empty.no_albums.title"))
-        .description(&tr("empty.no_albums.description"))
+        .title(tr("empty.no_albums.title"))
+        .description(tr("empty.no_albums.description"))
         .build()
 }
 
@@ -37,8 +37,8 @@ pub fn no_albums() -> adw::StatusPage {
 pub fn empty_trash() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("user-trash-symbolic")
-        .title(&tr("empty.trash_empty.title"))
-        .description(&tr("empty.trash_empty.description"))
+        .title(tr("empty.trash_empty.title"))
+        .description(tr("empty.trash_empty.description"))
         .build()
 }
 
@@ -47,8 +47,8 @@ pub fn empty_trash() -> adw::StatusPage {
 pub fn no_album_photos() -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("image-missing-symbolic")
-        .title(&tr("empty.no_album_photos.title"))
-        .description(&tr("empty.no_album_photos.description"))
+        .title(tr("empty.no_album_photos.title"))
+        .description(tr("empty.no_album_photos.description"))
         .build()
 }
 
@@ -57,7 +57,7 @@ pub fn no_album_photos() -> adw::StatusPage {
 pub fn scan_error(msg: &str) -> adw::StatusPage {
     adw::StatusPage::builder()
         .icon_name("dialog-warning-symbolic")
-        .title(&tr("empty.scan_failed.title"))
+        .title(tr("empty.scan_failed.title"))
         .description(msg)
         .build()
 }
@@ -66,6 +66,6 @@ pub fn scan_error(msg: &str) -> adw::StatusPage {
 /// being fetched from disk and indexed in the database.
 pub fn loading() -> adw::StatusPage {
     adw::StatusPage::builder()
-        .title(&tr("empty.loading"))
+        .title(tr("empty.loading"))
         .build()
 }

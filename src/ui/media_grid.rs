@@ -735,7 +735,7 @@ impl MediaGrid {
                     // Multi-select / Exit Multi-select.
                     if in_multi_mode {
                         let exit_btn = gtk::Button::builder()
-                            .label(&tr("photos.batch.exit_multi_select"))
+                            .label(tr("photos.batch.exit_multi_select"))
                             .css_classes(["media-grid-context-item", "flat", "destructive-action"])
                             .build();
 
@@ -750,7 +750,7 @@ impl MediaGrid {
                         menu.append(&exit_btn);
                     } else {
                         let multi_btn = gtk::Button::builder()
-                            .label(&tr("photos.batch.multi_select"))
+                            .label(tr("photos.batch.multi_select"))
                             .css_classes(["media-grid-context-item", "flat", "suggested-action"])
                             .build();
 
@@ -775,7 +775,7 @@ impl MediaGrid {
                     // Favorite / Unfavorite (single and batch context).
                     if favorite_state.can_favorite {
                         let favorite_btn = gtk::Button::builder()
-                            .label(&tr("photos.batch.favorite"))
+                            .label(tr("photos.batch.favorite"))
                             .css_classes(["media-grid-context-item", "flat"])
                             .build();
                         let indices_for_fav = target_indices.clone();
@@ -789,7 +789,7 @@ impl MediaGrid {
                     }
                     if favorite_state.can_unfavorite {
                         let unfav_btn = gtk::Button::builder()
-                            .label(&tr("photos.batch.unfavorite"))
+                            .label(tr("photos.batch.unfavorite"))
                             .css_classes(["media-grid-context-item", "flat"])
                             .build();
                         let indices_for_unfav = target_indices.clone();
@@ -804,7 +804,7 @@ impl MediaGrid {
 
                     if !target_indices.is_empty() {
                         let move_album_btn = gtk::Button::builder()
-                            .label(&tr("photos.batch.move_to_album"))
+                            .label(tr("photos.batch.move_to_album"))
                             .css_classes(["media-grid-context-item", "flat"])
                             .build();
                         let indices_for_album = target_indices.clone();
@@ -817,7 +817,7 @@ impl MediaGrid {
                         menu.append(&move_album_btn);
 
                         let delete_btn = gtk::Button::builder()
-                            .label(&tr("viewer.tooltip.move_to_trash"))
+                            .label(tr("viewer.tooltip.move_to_trash"))
                             .css_classes(["media-grid-context-item", "flat", "destructive-action"])
                             .build();
                         let indices_for_trash = target_indices.clone();

@@ -422,7 +422,7 @@ impl PhotosPage {
         let has_any = !union.is_empty();
         let all_displayed_selected = self
             .current_grid()
-            .map_or(false, |grid| grid.is_all_displayed_selected());
+            .is_some_and(|grid| grid.is_all_displayed_selected());
         *self.imp().selected_indices.borrow_mut() = union;
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);

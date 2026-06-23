@@ -212,7 +212,7 @@ impl MainWindow {
 
     fn build_settings_page(&self) -> adw::NavigationPage {
         let page = adw::NavigationPage::builder()
-            .title(&tr("setting.page.title"))
+            .title(tr("setting.page.title"))
             .build();
 
         let current = locale().to_string();

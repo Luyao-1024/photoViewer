@@ -31,13 +31,13 @@ fn normalize_locale(input: Option<String>) -> String {
             "zh-CN".to_string()
         }
         Some(v) if v.to_ascii_lowercase().starts_with("zh") => "zh-CN".to_string(),
-        Some(v) if v.eq_ignore_ascii_case("en") || v.eq_ignore_ascii_case("en-us") => {
-            "en".to_string()
-        }
-        Some(v) if v.eq_ignore_ascii_case("en-us") => "en".to_string(),
-        Some(v) if v == "zh-CN" => "zh-CN".to_string(),
-        Some(v) if v == "en" => "en".to_string(),
-        Some(v) => v,
+       Some(v) if v.eq_ignore_ascii_case("en") || v.eq_ignore_ascii_case("en-us") => {
+           "en".to_string()
+       }
+       Some(v) if v.eq_ignore_ascii_case("en-us") => "en".to_string(),
+       Some(v) if v == "zh-CN" => "zh-CN".to_string(),
+       Some(v) if v == "en" => "en".to_string(),
+       Some(v) => v,
         None => "en".to_string(),
     }
 }

@@ -52,7 +52,7 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
 
     let outer = build_album_list_page(&list_box);
     let list_page = adw::NavigationPage::builder()
-        .title(&tr("album_picker.title"))
+        .title(tr("album_picker.title"))
         .child(&outer)
         .build();
     outer.append(&list_box);
@@ -64,7 +64,7 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
     // - cancelling at level 1 pops the wrapping page → back to the caller
     // - the back button in the header takes care of navigation between levels
     let wrapper = adw::NavigationPage::builder()
-        .title(&tr("album_picker.title"))
+        .title(tr("album_picker.title"))
         .child(&inner)
         .build();
     host_nav.push(&wrapper);
@@ -86,8 +86,8 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
         if albums.is_empty() {
             // Replace the (still empty) list with an empty-state page.
             let empty = adw::StatusPage::builder()
-                .title(&tr("album_picker.no_albums_yet.title"))
-                .description(&tr("album_picker.no_albums_yet.description"))
+                .title(tr("album_picker.no_albums_yet.title"))
+                .description(tr("album_picker.no_albums_yet.description"))
                 .icon_name("folder-symbolic")
                 .vexpand(true)
                 .build();
@@ -168,7 +168,7 @@ fn push_action_page(
         .css_classes(["title-2"])
         .build();
     let hint = gtk::Label::builder()
-        .label(&tr("album_picker.hint"))
+        .label(tr("album_picker.hint"))
         .wrap(true)
         .halign(gtk::Align::Center)
         .css_classes(["dimmed"])
@@ -200,7 +200,7 @@ fn push_action_page(
     toolbar.set_content(Some(&content));
 
     let page = adw::NavigationPage::builder()
-        .title(&tr("album_picker.choose_action.title"))
+        .title(tr("album_picker.choose_action.title"))
         .child(&toolbar)
         .build();
     inner.push(&page);

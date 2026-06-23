@@ -377,8 +377,8 @@ impl EditorPage {
     /// 调度 `perform_save_overwrite` 在工作线程上完成实际渲染与 DB 更新。
     fn save_overwrite_with_confirm(&self) {
         let dialog = adw::AlertDialog::builder()
-            .heading(&tr("editor.overwrite_title"))
-            .body(&tr("editor.overwrite_body"))
+            .heading(tr("editor.overwrite_title"))
+            .body(tr("editor.overwrite_body"))
             .build();
         dialog.add_response("cancel", &tr("button.cancel"));
         dialog.add_response("overwrite", &tr("dialog.overwrite"));
