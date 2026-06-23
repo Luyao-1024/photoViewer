@@ -88,9 +88,13 @@ mod imp {
         /// Set when the backdrop may have changed; consumed by the tick
         /// callback on the next allowed frame.
         pub backdrop_dirty: Cell<bool>,
-        /// Frame time (µs) of the last backdrop recompute — for ~30fps
-        /// throttling so heavy scrolling doesn't pin a core.
+        /// Frame time (µs) of the last backdrop recompute — bounds staleness
+        /// during continuous scrolling (see `tick_check`).
         pub last_recompute_us: Cell<i64>,
+        /// Frame time (µs) of the last detected motion under the pill. We wait
+        /// for scrolling to *settle* before the (expensive, main-thread)
+        /// offscreen capture so scrolling never blocks on it.
+        pub last_motion_us: Cell<i64>,
         /// Last observed backdrop signature (see [`BackdropSig`]).
         pub backdrop_sig: std::cell::RefCell<Option<BackdropSig>>,
         #[template_child]
@@ -325,31 +329,46 @@ mod imp {
                 Some((g, n)) => (Some(g), Some(n)),
                 None => (None, None),
             };
+            let now = clock.frame_time();
             let sig = self.compute_sig(grid.as_ref(), &name);
             if self.backdrop_sig.borrow().as_ref() != Some(&sig) {
                 *self.backdrop_sig.borrow_mut() = Some(sig);
+                self.last_motion_us.set(now);
                 self.backdrop_dirty.set(true);
             }
             if !self.backdrop_dirty.get() {
                 return;
             }
-            // Throttle: at most one offscreen capture + CPU displace per ~33ms
-            // so heavy scrolling doesn't pin a core.
-            let now = clock.frame_time();
-            if now - self.last_recompute_us.get() < 33_000 {
+            // The offscreen capture (`render_texture` of the whole grid) is
+            // expensive and runs on the main thread, so we do NOT capture while
+            // scrolling: wait for motion to settle (~150ms idle). A staleness
+            // cap (~500ms) still refreshes during non-stop scrolling, and the
+            // very first capture (no texture yet) fires immediately so the
+            // glass shows refraction as soon as the grid is ready, not after a
+            // settle delay.
+            let first = self.backdrop_tex.borrow().is_none();
+            let settled = now - self.last_motion_us.get() >= 150_000;
+            let stale = now - self.last_recompute_us.get() >= 500_000;
+            if !first && !settled && !stale {
                 return;
             }
             self.backdrop_dirty.set(false);
             self.last_recompute_us.set(now);
-            self.recompute_backdrop(grid.as_ref());
+            if !self.recompute_backdrop(grid.as_ref()) {
+                // Capture failed (e.g. grid not laid out yet, or offscreen) —
+                // retry next tick so the first display still gets refraction.
+                self.backdrop_dirty.set(true);
+            }
         }
 
         /// Capture the pill's rectangle of the grid behind it, lens-displace
-        /// it, cache the result, and queue a redraw. No-op offscreen.
-        fn recompute_backdrop(&self, grid: Option<&gtk::Widget>) {
+        /// it, cache the result, and queue a redraw. Returns whether a texture
+        /// was produced (`tick_check` retries on `false` so the first capture
+        /// succeeds once the grid is laid out). No-op offscreen.
+        fn recompute_backdrop(&self, grid: Option<&gtk::Widget>) -> bool {
             let obj = self.obj();
             let Some(grid) = grid else {
-                return;
+                return false;
             };
             // Lazily create + cache a renderer for this surface.
             if self.renderer.borrow().is_none() {
@@ -361,11 +380,11 @@ mod imp {
             }
             let renderer_guard = self.renderer.borrow();
             let Some(renderer) = renderer_guard.as_ref() else {
-                return;
+                return false;
             };
             let alloc = obj.allocation();
             let Some((px, py)) = obj.translate_coordinates(grid, 0.0, 0.0) else {
-                return;
+                return false;
             };
             let rect = graphene::Rect::new(
                 px as f32,
@@ -376,6 +395,9 @@ mod imp {
             if let Some(tex) = liquid_glass::refract_region(grid, &rect, renderer, GLASS_STRENGTH) {
                 *self.backdrop_tex.borrow_mut() = Some(tex.upcast::<gdk::Texture>());
                 obj.queue_draw();
+                true
+            } else {
+                false
             }
         }
     }
