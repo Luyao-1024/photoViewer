@@ -127,7 +127,9 @@ impl MainWindow {
                             None => return,
                         };
                         let albums = crate::core::albums::list(&pool).unwrap_or_default();
+                        let media_items = crate::core::db::list_all_media(&pool).unwrap_or_default();
                         let page = AlbumsPage::new(albums, loader);
+                        page.set_nav_target(&nav_view, media_items);
                         pop_to_photos_root(&nav_view);
                         nav_view.push(&page);
                     }

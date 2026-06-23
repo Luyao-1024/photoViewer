@@ -8,9 +8,8 @@
 //! - The photo count.
 //!
 //! Tiles are plain `GtkFlowBoxChild` widgets constructed by `build_album_tile`
-//! and appended directly to the page's `GtkFlowBox`. We do not need a separate
-//! `AlbumTile` GObject subclass for the placeholder visuals — activation
-//! handling is deferred to the future sidebar→nav routing task (M5-T1).
+//! and appended directly to the page's `GtkFlowBox`.
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -21,7 +20,9 @@ use libadwaita as adw;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::ui::album_detail_page::AlbumDetailPage;
 use crate::ui::empty_states;
 use crate::ui::media_grid::square_tile::SquareTile;
 
@@ -37,6 +38,10 @@ mod imp {
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(file = "../../data/ui/albums-page.ui")]
     pub struct AlbumsPage {
+        pub albums: RefCell<Vec<Album>>,
+        pub media_items: RefCell<Vec<MediaItem>>,
+        pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub nav_view: RefCell<Option<adw::NavigationView>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -86,6 +91,8 @@ impl AlbumsPage {
         crate::ui::grid_css::install();
 
         let obj: Self = glib::Object::builder().build();
+        *obj.imp().albums.borrow_mut() = albums.clone();
+        *obj.imp().loader.borrow_mut() = Some(loader.clone());
         let flow = obj.imp().flow_box.get();
 
         if albums.is_empty() {
@@ -99,9 +106,55 @@ impl AlbumsPage {
                 let tile = build_album_tile(&album, loader.clone());
                 flow.append(&tile);
             }
+
+            let weak = obj.downgrade();
+            flow.connect_child_activated(move |_, child| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                this.open_album_at(child.index());
+            });
         }
 
         obj
+    }
+
+    /// Inject the navigation target and the current media snapshot used to
+    /// build album detail pages. The media snapshot is filtered per album when
+    /// a tile is activated.
+    pub fn set_nav_target(&self, nav: &adw::NavigationView, media_items: Vec<MediaItem>) {
+        *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+        *self.imp().media_items.borrow_mut() = media_items;
+    }
+
+    fn open_album_at(&self, index: i32) {
+        if index < 0 {
+            return;
+        }
+        let Some(album) = self.imp().albums.borrow().get(index as usize).cloned() else {
+            return;
+        };
+        let Some(nav) = self.imp().nav_view.borrow().clone() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().clone() else {
+            return;
+        };
+
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        for item in self
+            .imp()
+            .media_items
+            .borrow()
+            .iter()
+            .filter(|item| item.folder_path == album.folder_path)
+        {
+            media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+        }
+
+        let page = AlbumDetailPage::new(album, media_list, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
     }
 }
 

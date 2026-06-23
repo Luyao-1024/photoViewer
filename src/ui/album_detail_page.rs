@@ -1,12 +1,4 @@
-//! AlbumDetailPage — single-album photo grid view.
-//!
-//! Reuses the same `PhotoTile` + `ThumbnailLoader` machinery as `MediaGrid`,
-//! but without section headers: shows every photo whose `folder_path` matches
-//! the album. Thumbnails are requested at the `Medium` bucket (512px).
-//!
-//! Items in `all_media` are `BoxedAnyObject<MediaItem>` (see
-//! `app::initialize`); we unwrap via `BoxedAnyObject::borrow` before handing
-//! the value to `PhotoTile::set_item`.
+//! AlbumDetailPage — single-album day-grouped photo grid view.
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -18,10 +10,13 @@ use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
-use crate::core::media::MediaItem;
-use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::core::section_model::GroupBy;
+use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
-use crate::ui::photo_tile::PhotoTile;
+use crate::ui::media_grid::MediaGrid;
+use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 mod imp {
     use super::*;
@@ -29,12 +24,12 @@ mod imp {
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(file = "../../data/ui/album-detail-page.ui")]
     pub struct AlbumDetailPage {
+        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
+        pub nav_view: RefCell<Option<adw::NavigationView>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
-        pub scrolled: TemplateChild<gtk::ScrolledWindow>,
-        #[template_child]
-        pub flow_box: TemplateChild<gtk::FlowBox>,
+        pub content_box: TemplateChild<gtk::Box>,
     }
 
     #[gtk::glib::object_subclass]
@@ -64,62 +59,83 @@ gtk::glib::wrapper! {
 }
 
 impl AlbumDetailPage {
-    /// Build an `AlbumDetailPage` populated with every media item in
-    /// `all_media` whose `folder_path` matches `album.folder_path`.
-    ///
-    /// `loader` is shared via `Arc` so each `PhotoTile` can clone it for its
-    /// own async thumbnail request.
-    ///
-    /// If the filtered list is empty (album folder exists but contains no
-    /// photos), the scrolled window's child is swapped for an
-    /// `AdwStatusPage` describing the empty state.
-    pub fn new(album: Album, all_media: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
+    /// Build an `AlbumDetailPage` populated with a pre-filtered media list.
+    /// The grid uses the same `MediaGrid` Day grouping as `PhotosPage`.
+    pub fn new(
+        album: Album,
+        media_list: gtk::gio::ListStore,
+        loader: Arc<ThumbnailLoader>,
+    ) -> Self {
         let obj: Self = glib::Object::builder().build();
-        obj.set_title(&album.name);
-        let flow = obj.imp().flow_box.get();
+        obj.set_title(&album.display_name());
+        *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
 
-        // Hover hint: same style as MediaGrid (see grid_css::GRID_CSS).
-        // `selection_mode = None` because the page's FlowBox default is
-        // Single, which would briefly paint the `:selected` style on click
-        // and conflict with the hover hint. The `thumb-grid` CSS class is
-        // required so the `flowbox.thumb-grid > flowboxchild:hover` selector
-        // matches this FlowBox (installed selectors only target that class).
-        crate::ui::grid_css::install();
-        flow.set_selection_mode(gtk::SelectionMode::None);
-        flow.add_css_class("thumb-grid");
-        // While arrow-keying between tiles, hide the `:hover` hint so the
-        // highlight follows the keyboard focus, not the resting pointer.
-        crate::ui::grid_css::attach_kbd_nav(&flow);
-
-        // Filter media down to this album's folder. `BoxedAnyObject::borrow`
-        // returns a `Cow<MediaItem>`; clone so we hand an owned `MediaItem` to
-        // the tile (which stores it for the lifetime of its binding).
-        let mut matched = 0u32;
-        for i in 0..all_media.n_items() {
-            let Some(item_obj) = all_media.item(i) else {
-                continue;
-            };
-            let Ok(boxed) = item_obj.downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            let item: MediaItem = (*boxed.borrow::<MediaItem>()).clone();
-            if item.folder_path == album.folder_path {
-                let tile = PhotoTile::new();
-                tile.set_item(item, loader.clone(), ThumbnailSize::Medium, 250);
-                flow.append(&tile);
-                matched += 1;
-            }
-        }
-
-        if matched == 0 {
-            // Swap the scrolled window's child to a centered status page.
+        if media_list.n_items() == 0 {
             let empty = empty_states::no_album_photos();
             empty.set_hexpand(true);
             empty.set_vexpand(true);
-            obj.imp().scrolled.get().set_child(Some(&empty));
+            obj.imp().content_box.get().append(&empty);
+        } else {
+            let on_activate: Rc<dyn Fn(u32)> = {
+                let weak = obj.downgrade();
+                Rc::new(move |global_index| {
+                    if let Some(this) = weak.upgrade() {
+                        this.open_viewer(global_index);
+                    }
+                })
+            };
+            let on_background_changed: Rc<dyn Fn()> = Rc::new(|| {});
+            let grid = MediaGrid::new(
+                media_list,
+                GroupBy::Day,
+                loader,
+                on_activate,
+                on_background_changed,
+            );
+            obj.imp().content_box.get().append(&grid);
         }
 
         obj
+    }
+
+    pub fn set_nav_target(&self, nav: &adw::NavigationView) {
+        *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    fn open_viewer(&self, global_index: u32) {
+        let media_list = match self.imp().media_list.borrow().as_ref() {
+            Some(l) => l.clone(),
+            None => return,
+        };
+        let nav = match self.imp().nav_view.borrow().as_ref() {
+            Some(n) => n.clone(),
+            None => return,
+        };
+
+        let viewer = ViewerPage::new(media_list, global_index);
+        viewer.show_at(global_index);
+
+        let viewer_weak = viewer.downgrade();
+        let nav_weak = nav.downgrade();
+        viewer.connect_navigation(move |delta: NavDelta| {
+            if delta == NAV_POP {
+                if let Some(n) = nav_weak.upgrade() {
+                    n.pop();
+                }
+                return;
+            }
+            if let Some(v) = viewer_weak.upgrade() {
+                let cur = v.current_index();
+                let next = (cur as i32 + delta).max(0) as u32;
+                if let Some(list) = v.imp().media_list.borrow().as_ref() {
+                    if next < list.n_items() {
+                        v.show_at(next);
+                    }
+                }
+            }
+        });
+
+        nav.push(&viewer);
     }
 }
 
