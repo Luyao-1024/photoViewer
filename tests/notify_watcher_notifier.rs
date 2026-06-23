@@ -123,8 +123,9 @@ fn watcher_emits_upserted_for_modified_file() {
         match rx.try_recv() {
             Ok(MediaChangeEvent::Upserted(item)) if item.uri == uri => upsert_count += 1,
             Ok(MediaChangeEvent::Removed { uri: u }) if u == uri => {
-                // Removed counts toward "file changed" but is not strictly
-                // what we assert on; allow it.
+                // Some backends emit Removed+Upserted on modify (delete-then-reinsert);
+                // we only assert on the Upserted count below, so swallow the Removed
+                // pair member here.
             }
             Ok(_) => {}
             Err(_) => std::thread::sleep(Duration::from_millis(50)),
