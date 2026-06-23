@@ -67,3 +67,38 @@ fn scan_recursive_subdirs() {
     let items = backend.scan_dir(root).unwrap();
     assert_eq!(items.len(), 2);
 }
+
+/// Regression for the startup re-hash cost: on a warm DB the scan must NOT
+/// re-read every file's bytes to recompute its blake3 hash. `scan_and_upsert_dir`
+/// skips any file whose `(uri, file_mtime, file_size)` already matches a row —
+/// the file is unchanged, so its hash/metadata are still valid.
+#[test]
+fn scan_and_upsert_skips_unchanged_files() {
+    let dir = tmp_dir();
+    let root = dir.path();
+    write_plain_jpeg(root, "a.jpg");
+    write_plain_jpeg(root, "b.jpg");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    // 首次扫描：两张都新增。
+    let n1 = backend.scan_and_upsert_dir(root).unwrap();
+    assert_eq!(n1, 2, "首次扫描应索引 2 张");
+    assert_eq!(db::list_all_media(&pool).unwrap().len(), 2);
+
+    // 第二次扫描：文件未改动 → 全部跳过（不重新哈希/不重新提取）。
+    let n2 = backend.scan_and_upsert_dir(root).unwrap();
+    assert_eq!(n2, 0, "未改动文件应被跳过，避免重复全文件哈希");
+    assert_eq!(
+        db::list_all_media(&pool).unwrap().len(),
+        2,
+        "跳过不应改变行数"
+    );
+
+    // 新增一张：仅新的被索引，旧的仍跳过。
+    write_plain_jpeg(root, "c.jpg");
+    let n3 = backend.scan_and_upsert_dir(root).unwrap();
+    assert_eq!(n3, 1, "仅新增的那张应被索引");
+    assert_eq!(db::list_all_media(&pool).unwrap().len(), 3);
+}

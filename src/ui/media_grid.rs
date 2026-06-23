@@ -1045,46 +1045,81 @@ fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
+
     let item_name = item.display_name().to_string();
     let item_uri = item.uri.clone();
-    tracing::info!(
-        "VIEWER_DEBUG thumb request item_id={} item_name={} uri={} size={:?} target_px={}",
-        item.id,
-        item_name,
-        item_uri,
-        spec.thumb_size,
-        spec.pixel_size
-    );
+    let size = spec.thumb_size;
+    let target_px = spec.pixel_size;
 
-    // Async thumbnail load.
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    loader.request(item.uri.clone(), spec.thumb_size, tx);
-    let tile_weak = tile.downgrade();
-    gtk::glib::spawn_future_local(async move {
-        match rx.await {
-            Ok(texture) => {
-                tracing::info!(
-                    "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
-                    item_name,
-                    item_uri,
-                    texture.width(),
-                    texture.height()
-                );
-                if let Some(t) = tile_weak.upgrade() {
-                    if let Some(is_light) = texture_is_light(&texture) {
-                        t.set_background_is_light(is_light);
-                        on_background_changed();
-                    }
-                    t.set_paintable(Some(&texture));
-                }
+    // 缩略图请求**推迟到 tile 被 map（即真正可见）时**才发出。
+    //
+    // 三个 grid（年/月/日）共享同一个 ListStore，但 ViewStack 同一时刻只
+    // map 可见的那个 grid；隐藏 grid 的 tile 不会 map，因此不会请求缩略图。
+    // 这就避免了「隐藏的年/月 grid 与可见的日 grid 抢 worker、并把日视图的
+    // 请求挤到队尾」导致的首屏空白。配合 ThumbnailLoader 的在途去重，可见
+    // tile 的请求既不会被丢、也优先被生成。`requested` 保证每个 tile 只请求
+    // 一次（重新 map 时走 mem_cache/disk 缓存，也不会重复生成）。
+    let request_once: Rc<dyn Fn()> = Rc::new({
+        let loader = loader.clone();
+        let on_background_changed = on_background_changed.clone();
+        let tile_weak = tile.downgrade();
+        let requested = std::cell::Cell::new(false);
+        move || {
+            if requested.get() {
+                return;
             }
-            Err(_) => tracing::warn!(
-                "VIEWER_DEBUG thumb dropped item_name={} uri={}",
+            requested.set(true);
+
+            tracing::info!(
+                "VIEWER_DEBUG thumb request item_name={} uri={} size={:?} target_px={}",
                 item_name,
-                item_uri
-            ),
+                item_uri,
+                size,
+                target_px
+            );
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            loader.request(item_uri.clone(), size, tx);
+            let tile_weak = tile_weak.clone();
+            let on_background_changed = on_background_changed.clone();
+            let item_name = item_name.clone();
+            let item_uri = item_uri.clone();
+            gtk::glib::spawn_future_local(async move {
+                match rx.await {
+                    Ok(texture) => {
+                        tracing::info!(
+                            "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
+                            item_name,
+                            item_uri,
+                            texture.width(),
+                            texture.height()
+                        );
+                        if let Some(t) = tile_weak.upgrade() {
+                            if let Some(is_light) = texture_is_light(&texture) {
+                                t.set_background_is_light(is_light);
+                                on_background_changed();
+                            }
+                            t.set_paintable(Some(&texture));
+                        }
+                    }
+                    Err(_) => tracing::warn!(
+                        "VIEWER_DEBUG thumb dropped item_name={} uri={}",
+                        item_name,
+                        item_uri
+                    ),
+                }
+            });
         }
     });
+
+    // tile 被 map 时触发请求；若此刻已 map（防御性），立即触发。
+    {
+        let request_once = request_once.clone();
+        tile.connect_map(move |_| request_once());
+    }
+    if tile.is_mapped() {
+        request_once();
+    }
     tile
 }
 

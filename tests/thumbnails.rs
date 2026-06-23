@@ -150,3 +150,54 @@ fn memory_cache_keeps_thumbnail_sizes_separate() {
         "large thumbnail should not reuse the small thumbnail from memory cache"
     );
 }
+
+/// Regression for the first-load "blank thumbnails" bug.
+///
+/// Three PhotosPage grids (Year/Month/Day) used to fire one request per tile
+/// at rebuild time, so a single visible source could be requested thousands
+/// of times in a burst. The loader's bounded queue (capacity `QUEUE_CAPACITY`)
+/// silently dropped the overflow via `try_send`, leaving tiles permanently
+/// blank. With in-flight dedup, every duplicate (uri, size) request attaches
+/// to the single in-flight generation instead of enqueueing separately, so
+/// none are dropped.
+///
+/// We fire `N` (> `QUEUE_CAPACITY`) requests for the SAME uri with a single
+/// worker and a large source so the worker cannot drain the burst: on the old
+/// code ~`N - QUEUE_CAPACITY` requests would be dropped (`rx.Err`); with dedup
+/// all `N` must resolve.
+#[test]
+fn duplicate_requests_are_coalesced_and_never_dropped() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    // Large source → non-trivial decode, so the single worker stays busy while
+    // the request burst fills (and on the old code, overflows) the queue.
+    let src = dir.path().join("big-src.jpg");
+    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(2400, 1600, |_, _| {
+        image::Rgb([128, 128, 128])
+    });
+    img.save(&src).unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let runtime = rt();
+    let _guard = runtime.enter();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    loader.spawn_workers(1);
+
+    let uri = format!("file://{}", src.display());
+    const N: usize = 3000; // > QUEUE_CAPACITY (2048)
+    let mut rxs = Vec::with_capacity(N);
+    for _ in 0..N {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request(uri.clone(), ThumbnailSize::Small, tx);
+        rxs.push(rx);
+    }
+
+    let mut ok = 0usize;
+    for rx in rxs {
+        if runtime.block_on(rx).map(|t| t.width() > 0).unwrap_or(false) {
+            ok += 1;
+        }
+    }
+    drop(_guard);
+    assert_eq!(ok, N, "all duplicate requests must resolve; none dropped");
+}

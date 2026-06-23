@@ -24,6 +24,22 @@ fn stream_file_hash(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// `path` 是否为支持的图片扩展名（大小写不敏感）。
+fn is_supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| SUPPORTED_EXT.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// 文件的索引时间信号：created 优先，失败回退 modified。
+///
+/// `process_file` 存入 DB 的 `file_mtime` 与 `scan_and_upsert_dir` 的跳过
+/// 判断**必须**用同一套逻辑，否则会出现「存的与比的口径不一致」导致永不命中。
+fn file_index_time(meta: &std::fs::Metadata) -> Option<std::time::SystemTime> {
+    meta.created().or_else(|_| meta.modified()).ok()
+}
+
 pub struct LocalBackend {
     pool: DbPool,
 }
@@ -39,43 +55,76 @@ impl LocalBackend {
         &self.pool
     }
 
-    /// 递归扫描目录，返回所有支持的图片项
+    /// 递归扫描目录，返回所有支持的图片项（**不做跳过**，逐个全量提取 + 全文件
+    /// 哈希）。供需要完整 `NewMediaItem` 列表的场景（测试、相册预处理）使用。
+    /// 启动扫描请用 [`Self::scan_and_upsert_dir`]，它会跳过未改动文件以避免
+    /// 重复哈希。
     pub fn scan_dir(&self, root: &Path) -> Result<Vec<NewMediaItem>> {
         let mut items = Vec::new();
-
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
             let path = entry.path();
-            if !path.is_file() {
+            if !path.is_file() || !is_supported_image(path) {
                 continue;
             }
-
-            let ext = match path.extension().and_then(|e| e.to_str()) {
-                Some(e) => e.to_ascii_lowercase(),
-                None => continue,
-            };
-            if !SUPPORTED_EXT.contains(&ext.as_str()) {
-                continue;
-            }
-
             match self.process_file(path) {
                 Ok(Some(item)) => items.push(item),
                 Ok(None) => {} // 不支持的 MIME
-                Err(e) => {
-                    tracing::warn!("跳过文件 {}: {}", path.display(), e);
-                }
+                Err(e) => tracing::warn!("跳过文件 {}: {}", path.display(), e),
             }
         }
         Ok(items)
+    }
+
+    /// 启动扫描入口：遍历 `root`，对每张图片 upsert，但**先用 `(uri, file_mtime,
+    /// file_size)` 查库短路**——未改动的文件直接跳过，不读全文件做 blake3、不重提
+    /// EXIF。返回实际（重新）索引的文件数。
+    ///
+    /// 这把「每次启动对整个图库重复哈希」（1.8GB → 数秒）降到「逐文件 stat + 一次
+    /// 索引查询」（毫秒级），除非文件真的新增/改动。
+    pub fn scan_and_upsert_dir(&self, root: &Path) -> Result<usize> {
+        let mut indexed = 0usize;
+        for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_supported_image(path) {
+                continue;
+            }
+
+            let file_meta = match std::fs::metadata(path) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("跳过文件 {}: {}", path.display(), e);
+                    continue;
+                }
+            };
+            // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。
+            if let Some(mtime) = file_index_time(&file_meta).and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            }) {
+                let uri = format!("file://{}", path.display());
+                if db::is_media_unchanged(&self.pool, &uri, mtime, file_meta.len() as i64)? {
+                    continue;
+                }
+            }
+
+            match self.process_file(path) {
+                Ok(Some(item)) => {
+                    self.upsert(&item)?;
+                    indexed += 1;
+                }
+                Ok(None) => {} // 不支持的 MIME
+                Err(e) => tracing::warn!("跳过文件 {}: {}", path.display(), e),
+            }
+        }
+        Ok(indexed)
     }
 
     fn process_file(&self, path: &Path) -> Result<Option<NewMediaItem>> {
         let meta = metadata::extract(path)?;
 
         let file_meta = std::fs::metadata(path)?;
-        let file_time = file_meta
-            .created()
-            .or_else(|_| file_meta.modified())
-            .unwrap_or_else(|_| std::time::SystemTime::now());
+        let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
 
         let uri = format!("file://{}", path.display());

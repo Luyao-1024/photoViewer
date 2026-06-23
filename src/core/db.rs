@@ -180,6 +180,30 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 启动扫描的快速短路：给定 `uri` + 文件侧 `(file_mtime 秒, file_size)`，
+/// 若已存在完全一致的行，说明文件自上次索引后未改动，其 blake3 哈希与
+/// 元数据仍然有效——调用方据此跳过昂贵的全文件哈希与 EXIF 提取。
+///
+/// 走 `uri` 的 UNIQUE 索引，单次 O(log n)，10 万级图库也不会成为瓶颈。
+pub fn is_media_unchanged(
+    pool: &DbPool,
+    uri: &str,
+    file_mtime: i64,
+    file_size: i64,
+) -> Result<bool> {
+    let conn = pool.get()?;
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM media_items
+             WHERE uri = ?1 AND file_mtime = ?2 AND file_size = ?3
+             LIMIT 1",
+            rusqlite::params![uri, file_mtime, file_size],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(existing.is_some())
+}
+
 /// 删除指定本地路径对应的媒体行。返回受影响行数。
 pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     let conn = pool.get()?;
