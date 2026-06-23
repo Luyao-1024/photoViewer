@@ -118,7 +118,7 @@ impl LocalBackend {
     /// row so callers (notably `notify_watcher`) can forward it to the UI
     /// without a second DB round-trip.
     pub fn upsert(&self, item: &NewMediaItem) -> Result<MediaItem> {
-        let mut conn = self.pool.get()?;
+        let conn = self.pool.get()?;
         let existing: Option<i64> = conn
             .query_row(
                 "SELECT id FROM media_items WHERE uri = ?1",
