@@ -107,10 +107,16 @@ flowbox.album-grid > flowboxchild:selected:focus .album-cover {
   outline-offset: -3px;
 }
 
-/* ModeSelector 容器：降低透明度的圆角面板 */
+/* ModeSelector 容器：整个液态玻璃 pill（投影 + 折射背景 + 玻璃 tint +
+   高光边缘）由 widget 自定义 snapshot 统一绘制（见
+   mode_selector.rs::snapshot）。CSS 这里只保留 padding 以布局 label/dot
+   子节点。
+
+   不再用 CSS 的 box-shadow/圆角描边 —— 早前 CSS 的圆角描边与 snapshot
+   里折射纹理的圆角裁剪是两个略微错位的矩形，看上去像两个没对齐的胶囊。
+   现在整个 pill 只在一个地方画，保证单一对齐形状。明暗对比仍由
+   on-light-background 类驱动（见下方 label/dot 颜色规则）。 */
 box.mode-selector {
-  background: alpha(@card_bg_color, 0.75);
-  border-radius: 12px;
   padding: 8px 16px;
 }
 
