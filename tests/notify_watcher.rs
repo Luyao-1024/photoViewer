@@ -83,12 +83,14 @@ fn upsert_from_path_skips_unsupported_extension() {
 #[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_picks_up_new_file() {
     // 端到端：启动 watcher，丢一个文件进去，等待 upsert 出现在 DB 中。
+    use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
 
     let pool = db::init_pool(&dir.path().join("watch.db")).unwrap();
+    let (notifier, _rx) = MediaChangeNotifier::new();
     let _watcher =
-        photo_viewer::core::notify_watcher::start_watching(pool.clone(), vec![root.clone()], || {});
+        photo_viewer::core::notify_watcher::start_watching(pool.clone(), vec![root.clone()], notifier);
 
     // 给 watcher 一点时间完成 setup
     std::thread::sleep(Duration::from_millis(300));

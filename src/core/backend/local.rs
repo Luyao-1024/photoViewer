@@ -33,6 +33,12 @@ impl LocalBackend {
         Self { pool }
     }
 
+    /// 返回内部连接池的引用，供 `notify_watcher` 在事件处理中调用
+    /// `albums::refresh(&pool)` 同步刷新物化视图。
+    pub fn pool(&self) -> &DbPool {
+        &self.pool
+    }
+
     /// 递归扫描目录，返回所有支持的图片项
     pub fn scan_dir(&self, root: &Path) -> Result<Vec<NewMediaItem>> {
         let mut items = Vec::new();
