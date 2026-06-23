@@ -7,6 +7,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
+use libadwaita::prelude::NavigationPageExt;
 
 use crate::core::db::DbPool;
 use crate::core::thumbnails::ThumbnailLoader;
@@ -119,30 +120,31 @@ impl MainWindow {
                         pop_to_photos_root(&nav_view);
                     }
                     1 => {
-                        // Albums: query album list then push a fresh AlbumsPage.
-                        let pool = window.imp().pool.borrow().clone();
-                        let Some(pool) = pool else { return };
-                        let loader = match window.imp().loader.borrow().clone() {
-                            Some(l) => l,
-                            None => return,
+                        // Albums: if Trash is stacked on Albums, just pop Trash.
+                        // Otherwise reuse an existing Albums page in the stack, or
+                        // create a fresh one from the current DB snapshot.
+                        if visible_page_is(&nav_view, "Albums") {
+                            return;
+                        }
+                        if pop_to_visible_page(&nav_view, "Albums") {
+                            return;
+                        }
+                        let Some(page) = window.build_albums_page(&nav_view) else {
+                            return;
                         };
-                        let albums = crate::core::albums::list(&pool).unwrap_or_default();
-                        let media_items = crate::core::db::list_all_media(&pool).unwrap_or_default();
-                        let page = AlbumsPage::new(albums, loader);
-                        page.set_nav_target(&nav_view, media_items);
                         pop_to_photos_root(&nav_view);
                         nav_view.push(&page);
                     }
                     2 => {
-                        // Trash: push a fresh TrashPage.
-                        let pool = window.imp().pool.borrow().clone();
-                        let Some(pool) = pool else { return };
-                        let loader = match window.imp().loader.borrow().clone() {
-                            Some(l) => l,
-                            None => return,
+                        if visible_page_is(&nav_view, "Trash") {
+                            return;
+                        }
+                        // If we are somewhere inside Albums, return to the
+                        // top-level Albums page before stacking Trash on it.
+                        let _ = pop_to_visible_page(&nav_view, "Albums");
+                        let Some(page) = window.build_trash_page() else {
+                            return;
                         };
-                        let page = TrashPage::new(pool, loader);
-                        pop_to_photos_root(&nav_view);
                         nav_view.push(&page);
                     }
                     _ => {}
@@ -150,8 +152,51 @@ impl MainWindow {
             }),
         );
     }
+
+    fn build_albums_page(&self, nav_view: &adw::NavigationView) -> Option<AlbumsPage> {
+        let pool = self.imp().pool.borrow().clone()?;
+        let loader = self.imp().loader.borrow().clone()?;
+        let albums = crate::core::albums::list(&pool).unwrap_or_default();
+        let media_items = crate::core::db::list_all_media(&pool).unwrap_or_default();
+        let page = AlbumsPage::new(albums, loader);
+        page.set_nav_target(nav_view, media_items);
+        Some(page)
+    }
+
+    fn build_trash_page(&self) -> Option<TrashPage> {
+        let pool = self.imp().pool.borrow().clone()?;
+        let loader = self.imp().loader.borrow().clone()?;
+        Some(TrashPage::new(pool, loader))
+    }
 }
 
 fn pop_to_photos_root(nav_view: &adw::NavigationView) {
     while nav_view.pop() {}
+}
+
+fn visible_page_is(nav_view: &adw::NavigationView, title: &str) -> bool {
+    nav_view
+        .visible_page()
+        .map(|page| page.title() == title)
+        .unwrap_or(false)
+}
+
+fn pop_to_visible_page(nav_view: &adw::NavigationView, title: &str) -> bool {
+    loop {
+        let Some(visible) = nav_view.visible_page() else {
+            return false;
+        };
+        if visible.title() == title {
+            return true;
+        }
+        let Some(previous) = nav_view.previous_page(&visible) else {
+            return false;
+        };
+        if previous.title() == title {
+            return nav_view.pop();
+        }
+        if !nav_view.pop() {
+            return false;
+        }
+    }
 }

@@ -5,15 +5,16 @@
 
 use std::sync::Arc;
 
+use gio::prelude::ListModelExt;
 use gtk4 as gtk;
-use gtk4::glib;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use photo_viewer::ui::{MainWindow, PhotosPage};
 
 #[test]
-fn sidebar_photos_selection_returns_to_photos_root() {
+fn sidebar_navigation_suite() {
     gtk::init().expect("GTK init failed");
 
     let app = adw::Application::builder()
@@ -56,5 +57,51 @@ fn sidebar_photos_selection_returns_to_photos_root() {
         nav.visible_page().map(|page| page.title()).as_deref(),
         Some("Photos"),
         "selecting Photos after Albums should return to the Photos root page"
+    );
+
+    let trash_row = sidebar.row_at_index(2).expect("Trash row exists");
+
+    sidebar.select_row(Some(&albums_row));
+    let albums_page = nav
+        .visible_page()
+        .expect("Albums should be visible after selecting Albums");
+    assert_eq!(albums_page.title().as_str(), "Albums");
+
+    sidebar.select_row(Some(&trash_row));
+    let trash_page = nav
+        .visible_page()
+        .expect("Trash should be visible after selecting Trash");
+    assert_eq!(trash_page.title().as_str(), "Trash");
+    assert_eq!(nav.navigation_stack().n_items(), 3);
+    assert_eq!(
+        nav.previous_page(&trash_page)
+            .map(|page| page.title())
+            .as_deref(),
+        Some("Albums"),
+        "Trash should be stacked on top of Albums without revealing Photos first"
+    );
+
+    sidebar.select_row(Some(&albums_row));
+    let visible = nav
+        .visible_page()
+        .expect("Albums should be visible after returning from Trash");
+    assert_eq!(visible.title().as_str(), "Albums");
+    assert_eq!(
+        visible, albums_page,
+        "selecting Albums from Trash should reveal the existing Albums page"
+    );
+    assert_eq!(nav.navigation_stack().n_items(), 2);
+
+    sidebar.select_row(Some(&trash_row));
+    assert_eq!(nav.navigation_stack().n_items(), 3);
+    sidebar.select_row(Some(&photos_row));
+    assert_eq!(
+        nav.visible_page().map(|page| page.title()).as_deref(),
+        Some("Photos")
+    );
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        1,
+        "selecting Photos should remove both Trash and Albums pages"
     );
 }
