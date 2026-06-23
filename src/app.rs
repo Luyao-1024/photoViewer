@@ -110,38 +110,33 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     let pictures = crate::config::pictures_dir();
     crate::core::bootstrap::scan_and_aggregate(&pool, std::slice::from_ref(&pictures)).await?;
 
-    // 启动文件监听（M5-T5）：监听 ~/Pictures 的后续变更并增量 upsert。
-    // 每次 upsert 成功后，在阻塞线程里调用 on_change；closure 内部把
-    // `albums::refresh` 调度到 GTK 主线程（侧栏 Albums row 每次点击
-    // 都会重建 AlbumsPage，所以"仅 refresh，下次点击重建"足够）。
-    let on_change = {
-        let pool = pool.clone();
-        move || {
-            let pool = pool.clone();
-            glib::MainContext::default().spawn_local(async move {
-                let result =
-                    gtk::gio::spawn_blocking(move || crate::core::albums::refresh(&pool)).await;
-                let result = result.unwrap_or_else(|e| {
-                    Err(crate::core::error::AppError::Backend(format!(
-                        "albums refresh join error: {e:?}"
-                    )))
-                });
-                if let Err(e) = result {
-                    tracing::error!("albums refresh failed: {}", e);
-                }
-            });
-        }
-    };
-    // JoinHandle 故意丢弃——监听循环在进程生命周期内持续运行；
-    // `RecommendedWatcher` 在循环退出时由 `drop` 自动释放底层 inotify 资源。
-    let _watcher =
-        crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures], on_change);
+    // 启动文件监听（M5-T5+）：监听 ~/Pictures 的后续变更并增量 upsert。
+    // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
+    // 消费者；消费者按 uri 在共享的 `media_list` 上做 splice/append/remove。
+    let (notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
+    let _watcher = crate::core::notify_watcher::start_watching(
+        pool.clone(),
+        vec![pictures],
+        notifier,
+    );
 
     // 首屏先加载一页，剩余数据稍后分批追加，避免大图库启动时一次性构造所有 GTK 对象。
     let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     append_media_items(&list, items);
     load_remaining_media_pages(pool.clone(), list.clone(), INITIAL_MEDIA_PAGE_SIZE);
+
+    // Consumer: GTK 主线程独占 `media_list` 的写权限，所以这里用 spawn_local
+    // 把 mpsc 的 receiver 排到主循环。`install_tokio_runtime` 已让 tokio
+    // reactor 在进程生命周期内驻留，所以 `rx.recv().await` 不需要额外配置。
+    let list_for_consumer = list.clone();
+    gtk::glib::MainContext::default().spawn_local(async move {
+        let mut rx = change_rx;
+        while let Some(event) = rx.recv().await {
+            crate::ui::apply_to_media_list::apply_to_media_list(&list_for_consumer, event);
+        }
+    });
+
     Ok((list, thumbnail_loader, pool))
 }
 
