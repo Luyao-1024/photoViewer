@@ -16,7 +16,7 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
 use crate::ui::AlbumsPage;
-use crate::ui::media_grid::MediaGrid;
+use crate::ui::media_grid::{MediaGrid, FavoriteMenuState};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -102,6 +102,11 @@ impl AlbumDetailPage {
                 loader,
                 on_activate,
                 on_background_changed,
+                Rc::new(|_| {}),
+                Rc::new(|_| {}),
+                Rc::new(|_, _| {}),
+                Rc::new(|_| FavoriteMenuState::default()),
+                false,
             );
             obj.imp().content_box.get().append(&grid);
         }
