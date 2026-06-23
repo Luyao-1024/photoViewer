@@ -358,6 +358,21 @@ impl PhotosPage {
             Some(n) => n.clone(),
             None => return,
         };
+        if let Some(item) = media_item_for_index(&media_list, global_index) {
+            tracing::info!(
+                "VIEWER_DEBUG photos_page open_viewer global_index={} item_id={} item_name={} item_uri={}",
+                global_index,
+                item.id,
+                item.display_name(),
+                item.uri
+            );
+        } else {
+            tracing::warn!(
+                "VIEWER_DEBUG photos_page open_viewer missing_item global_index={} list_len={}",
+                global_index,
+                media_list.n_items()
+            );
+        }
         let viewer_debug_label = format!("viewer-open-index-{global_index}");
         nav.connect_visible_page_notify({
             let label = viewer_debug_label.clone();
@@ -449,4 +464,14 @@ impl PhotosPage {
         // when the user pops back, so we don't need to track it here.
         nav.push(&viewer);
     }
+}
+
+fn media_item_for_index(
+    media_list: &gtk::gio::ListStore,
+    index: u32,
+) -> Option<crate::core::media::MediaItem> {
+    let obj = media_list.item(index)?;
+    let boxed = obj.downcast::<glib::BoxedAnyObject>().ok()?;
+    let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
+    Some(item)
 }

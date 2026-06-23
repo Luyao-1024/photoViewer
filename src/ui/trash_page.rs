@@ -42,6 +42,7 @@ mod imp {
     pub struct TrashPage {
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
         #[template_child]
@@ -94,11 +95,28 @@ impl TrashPage {
     /// - `pool`：SQLite 连接池；用于查询 `trashed_at IS NOT NULL` 的项以及更新/删除
     /// - `loader`：缩略图加载器，用于填充每张已删除图片的缩略图
     pub fn new(pool: DbPool, loader: Arc<ThumbnailLoader>) -> Self {
+        Self::build(pool, loader, None)
+    }
+
+    pub fn with_media_list(
+        pool: DbPool,
+        loader: Arc<ThumbnailLoader>,
+        media_list: gtk::gio::ListStore,
+    ) -> Self {
+        Self::build(pool, loader, Some(media_list))
+    }
+
+    fn build(
+        pool: DbPool,
+        loader: Arc<ThumbnailLoader>,
+        media_list: Option<gtk::gio::ListStore>,
+    ) -> Self {
         crate::ui::grid_css::install();
 
         let obj: Self = glib::Object::builder().build();
         *obj.imp().pool.borrow_mut() = Some(pool.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
+        *obj.imp().media_list.borrow_mut() = media_list;
 
         let flow = obj.imp().flow_box.get();
 
@@ -136,14 +154,26 @@ impl TrashPage {
                     None => return,
                 };
                 let ids = obj.imp().trashed_ids.borrow().clone();
+                let media_list = obj.imp().media_list.borrow().clone();
                 let page_weak = obj.downgrade();
 
                 // 异步批处理：避免阻塞 UI
                 glib::spawn_future_local(async move {
+                    let mut restored_items = Vec::new();
                     for id in ids {
                         if let Ok(item) = db::get_media_item(&pool, id) {
-                            let _ = trash::restore_from_trash(&item.uri);
-                            let _ = db::unmark_trashed(&pool, id);
+                            if trash::restore_from_trash(&item.uri).is_ok()
+                                && db::unmark_trashed(&pool, id).is_ok()
+                            {
+                                let mut restored = item;
+                                restored.trashed_at = None;
+                                restored_items.push(restored);
+                            }
+                        }
+                    }
+                    if let Some(list) = media_list {
+                        for item in restored_items {
+                            insert_media_item_sorted(&list, item);
                         }
                     }
                     // albums::refresh — 还原让文件回到原相册，侧栏下次重建 AlbumsPage
@@ -336,6 +366,37 @@ fn build_trash_tile(item: MediaItem, loader: Arc<ThumbnailLoader>) -> SquareTile
     tile
 }
 
+fn insert_media_item_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
+    if media_list_contains_id(list, item.id) {
+        return;
+    }
+    let insert_at = (0..list.n_items())
+        .find(|&idx| {
+            let Some(existing) = media_item_at(list, idx) else {
+                return false;
+            };
+            item.sort_datetime() > existing.sort_datetime()
+                || (item.sort_datetime() == existing.sort_datetime() && item.id > existing.id)
+        })
+        .unwrap_or_else(|| list.n_items());
+    list.insert(insert_at, &glib::BoxedAnyObject::new(item));
+}
+
+fn media_list_contains_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
+    (0..list.n_items()).any(|idx| {
+        media_item_at(list, idx)
+            .map(|item| item.id == item_id)
+            .unwrap_or(false)
+    })
+}
+
+fn media_item_at(list: &gtk::gio::ListStore, index: u32) -> Option<MediaItem> {
+    let obj = list.item(index)?;
+    let boxed = obj.downcast::<glib::BoxedAnyObject>().ok()?;
+    let item = (*boxed.borrow::<MediaItem>()).clone();
+    Some(item)
+}
+
 fn selected_ids_for_indices(
     items: &[MediaItem],
     indices: impl IntoIterator<Item = i32>,
@@ -472,7 +533,9 @@ mod tests {
             file_size: 4,
             blake3_hash: "h".to_string(),
         };
+        let uri = item.uri.clone();
         let id = db::insert_media_item(&pool, &item).unwrap();
+        trash::move_to_trash(&uri).unwrap();
         db::mark_trashed(&pool, id).unwrap();
 
         let page = TrashPage::new(pool.clone(), empty_loader());
@@ -511,6 +574,65 @@ mod tests {
             0,
             "Flow box should be empty after restoring the only item (refresh wasn't called?)"
         );
+
+        let _ = std::fs::remove_file(&real_path);
+    }
+
+    #[gtk::test]
+    fn restore_btn_reinserts_item_into_shared_media_list() {
+        let _ = gtk::init();
+        let ctx = glib::MainContext::default();
+
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        let real_dir = real_scratch();
+        let real_path = real_dir.join(format!(
+            "photo-viewer-trash-shared-restore-{}.jpg",
+            std::process::id()
+        ));
+        std::fs::write(&real_path, b"data").unwrap();
+
+        let item = crate::core::media::NewMediaItem {
+            uri: format!("file://{}", real_path.display()),
+            path: real_path.clone(),
+            folder_path: real_dir.clone(),
+            mime_type: "image/jpeg".to_string(),
+            width: Some(1),
+            height: Some(1),
+            taken_at: None,
+            file_mtime: chrono::Utc::now(),
+            file_size: 4,
+            blake3_hash: "shared-restore".to_string(),
+        };
+        let uri = item.uri.clone();
+        let id = db::insert_media_item(&pool, &item).unwrap();
+        trash::move_to_trash(&uri).unwrap();
+        db::mark_trashed(&pool, id).unwrap();
+
+        let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let page = TrashPage::with_media_list(pool.clone(), empty_loader(), shared.clone());
+        let flow = page.imp().flow_box.get();
+        let mut pumped = 0;
+        while pumped < 100 && flow.observe_children().n_items() == 0 {
+            ctx.iteration(false);
+            pumped += 1;
+        }
+        assert_eq!(flow.observe_children().n_items(), 1);
+
+        *page.imp().trashed_ids.borrow_mut() = vec![id];
+        page.imp().restore_btn.get().emit_clicked();
+
+        pumped = 0;
+        while pumped < 200 && shared.n_items() == 0 {
+            ctx.iteration(false);
+            pumped += 1;
+        }
+        assert_eq!(
+            shared.n_items(),
+            1,
+            "restoring from Trash should reinsert the item into the shared Photos model"
+        );
+        assert_eq!(media_item_at(&shared, 0).map(|item| item.id), Some(id));
 
         let _ = std::fs::remove_file(&real_path);
     }

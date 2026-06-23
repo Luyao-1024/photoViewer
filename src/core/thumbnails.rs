@@ -156,6 +156,14 @@ fn worker_loop(
         match generate(&cache_dir, &req.uri, req.size) {
             Ok(path) => match Pixbuf::from_file(&path) {
                 Ok(pb) => {
+                    tracing::info!(
+                        "VIEWER_DEBUG thumb texture_from_cache uri={} size={:?} cache_path={} pixbuf={}x{}",
+                        req.uri,
+                        req.size,
+                        path.display(),
+                        pb.width(),
+                        pb.height()
+                    );
                     let texture = Texture::for_pixbuf(&pb);
                     if let Ok(mut cache) = mem_cache.lock() {
                         cache.put(cache_key_str, texture.clone());
@@ -191,6 +199,13 @@ fn generate(cache_dir: &Path, uri: &str, size: ThumbnailSize) -> anyhow::Result<
         .join(format!("{}.jpg", hash));
 
     if cache_path.exists() {
+        tracing::info!(
+            "VIEWER_DEBUG thumb disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
+            uri,
+            src_path.display(),
+            size,
+            cache_path.display()
+        );
         return Ok(cache_path);
     }
 
@@ -199,6 +214,13 @@ fn generate(cache_dir: &Path, uri: &str, size: ThumbnailSize) -> anyhow::Result<
     }
 
     // 使用 image crate 解码 + 缩放 + 保存 JPEG
+    tracing::info!(
+        "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_path={}",
+        uri,
+        src_path.display(),
+        size,
+        cache_path.display()
+    );
     let img = image::open(&src_path)?;
     let thumb = img.thumbnail(size.max_dim(), size.max_dim());
     let mut writer = std::io::BufWriter::new(std::fs::File::create(&cache_path)?);

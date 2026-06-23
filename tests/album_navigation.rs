@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use chrono::TimeZone;
 use gtk4 as gtk;
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
@@ -12,7 +13,7 @@ use libadwaita::prelude::*;
 use photo_viewer::core::albums::Album;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
-use photo_viewer::ui::{AlbumDetailPage, AlbumsPage, MediaGrid};
+use photo_viewer::ui::{AlbumDetailPage, AlbumsPage, MediaGrid, ViewerPage};
 
 fn item(id: i64, folder: &str, file: &str) -> MediaItem {
     MediaItem {
@@ -53,17 +54,23 @@ fn album_tile_pushes_day_grouped_detail_page() {
 
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
     let nav = adw::NavigationView::new();
 
     let albums = vec![album("/tmp/Camera", 2)];
-    let media = vec![
+    let media = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for item in [
         item(1, "/tmp/Camera", "one.jpg"),
         item(2, "/tmp/Camera", "two.jpg"),
         item(3, "/tmp/Other", "three.jpg"),
-    ];
+    ] {
+        media.append(&glib::BoxedAnyObject::new(item));
+    }
     let page = AlbumsPage::new(albums, loader.clone());
-    page.set_nav_target(&nav, media);
+    page.set_nav_target(&nav, media, pool);
     nav.push(&page);
 
     let child = page
@@ -92,4 +99,23 @@ fn album_tile_pushes_day_grouped_detail_page() {
         .and_downcast::<MediaGrid>()
         .expect("album detail should reuse MediaGrid");
     assert_eq!(grid.mode(), photo_viewer::core::section_model::GroupBy::Day);
+
+    let flow = grid
+        .imp()
+        .content
+        .get()
+        .last_child()
+        .and_downcast::<gtk::FlowBox>()
+        .expect("album detail should contain a thumbnail flow box");
+    let photo = flow.child_at_index(0).expect("photo tile exists");
+    flow.emit_by_name::<()>("child-activated", &[&photo]);
+
+    let viewer = nav
+        .visible_page()
+        .and_downcast::<ViewerPage>()
+        .expect("activating an album photo should push ViewerPage");
+    assert!(
+        viewer.imp().pool.borrow().is_some(),
+        "album detail viewer must receive DbPool so Delete works"
+    );
 }

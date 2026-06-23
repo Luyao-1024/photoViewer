@@ -34,12 +34,12 @@ fn sidebar_navigation_suite() {
 
     let nav = window.nav_view();
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    let photos = PhotosPage::new(media_list, loader.clone());
+    let photos = PhotosPage::new(media_list.clone(), loader.clone());
     photos.set_nav_target(&nav);
     photos.set_db_pool(pool.clone());
     nav.push(&photos);
 
-    window.set_resources(pool, loader);
+    window.set_resources(pool, loader, media_list);
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();

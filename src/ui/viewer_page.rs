@@ -38,6 +38,7 @@ pub const NAV_POP: NavDelta = i32::MIN;
 /// Callback the host registers for keyboard navigation. Shared via `Rc` so
 /// closures capturing owned state can be cloned into GTK signal handlers.
 pub type NavCallback = Rc<dyn Fn(NavDelta)>;
+type ItemCallback = Rc<dyn Fn(i64)>;
 
 /// Convert a `file://` URI stored on `MediaItem::uri` to a `PathBuf` for
 /// the gdk-pixbuf loader. Anything without the `file://` prefix is treated
@@ -84,6 +85,8 @@ mod imp {
         pub zoom_scale: Cell<f64>,
         /// Callback registered by the host (PhotosPage) for keyboard navigation.
         pub nav_cb: RefCell<Option<NavCallback>>,
+        /// Callback fired after this viewer successfully moves an item to trash.
+        pub trashed_cb: RefCell<Option<ItemCallback>>,
         /// Cached CssProvider reused across gesture ticks. Without this
         /// we would allocate a new provider on every pinch-tick and
         /// never release the previous one.
@@ -208,6 +211,10 @@ impl ViewerPage {
     /// Escape. The callback receives the requested action: -1 / +1 / pop.
     pub fn connect_navigation<F: Fn(NavDelta) + 'static>(&self, f: F) {
         *self.imp().nav_cb.borrow_mut() = Some(Rc::new(f));
+    }
+
+    pub fn connect_item_trashed<F: Fn(i64) + 'static>(&self, f: F) {
+        *self.imp().trashed_cb.borrow_mut() = Some(Rc::new(f));
     }
 
     fn fire_nav(&self, delta: NavDelta) {
@@ -343,6 +350,9 @@ impl ViewerPage {
                         if let Some(this) = weak_after.upgrade() {
                             toasts::success(&this.imp().toast_overlay.get(), "已移入回收站");
                             this.remove_deleted_item(item_id);
+                            if let Some(cb) = this.imp().trashed_cb.borrow().clone() {
+                                cb(item_id);
+                            }
                         }
                     }
                     Ok(Err(e)) => {
@@ -638,15 +648,26 @@ impl ViewerPage {
         };
         self.set_title(item.display_name());
         tracing::info!(
-            "VIEWER_DEBUG show_at resolved index={} title={} details_revealed={}",
+            "VIEWER_DEBUG show_at resolved index={} item_id={} title={} uri={} media_path={} details_revealed={}",
             index,
+            item.id,
             item.display_name(),
+            item.uri,
+            item.path.display(),
             self.imp().details_split_view.get().shows_sidebar()
         );
         if self.imp().details_split_view.get().shows_sidebar() {
             self.update_details(&item);
         }
         let path = strip_file_uri(&item.uri);
+        tracing::info!(
+            "VIEWER_DEBUG viewer decode_start index={} item_id={} item_name={} source_uri={} decode_path={}",
+            index,
+            item.id,
+            item.display_name(),
+            item.uri,
+            path.display()
+        );
 
         // Preload neighbours first (fire-and-forget — we just want the OS
         // page cache warm). Preload is reduced from ±1±2 to ±1 only because
@@ -663,6 +684,9 @@ impl ViewerPage {
         // worker converts it to a `gdk::Texture` (which IS Send) before
         // returning — that way we can hand the texture across the oneshot.
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let decode_item_name = item.display_name().to_string();
+        let decode_source_uri = item.uri.clone();
+        let decode_path = path.clone();
         gio::spawn_blocking(move || {
             let result = gdk_pixbuf::Pixbuf::from_file(&path)
                 .map(|pb| gdk::Texture::for_pixbuf(&pb))
@@ -691,6 +715,15 @@ impl ViewerPage {
             }
             if let (Some(picture), Some(spinner)) = (picture_weak.upgrade(), spinner_weak.upgrade())
             {
+                tracing::info!(
+                    "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
+                    token,
+                    decode_item_name,
+                    decode_source_uri,
+                    decode_path.display(),
+                    texture.width(),
+                    texture.height()
+                );
                 picture.set_paintable(Some(&texture));
                 spinner.set_visible(false);
             }

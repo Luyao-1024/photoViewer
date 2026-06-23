@@ -194,7 +194,23 @@ impl MediaGrid {
         obj.setup_modifier_tracker();
 
         crate::ui::grid_css::install();
-        obj.rebuild(media_list, mode);
+        obj.rebuild(media_list.clone(), mode);
+        let weak = obj.downgrade();
+        media_list.connect_items_changed(move |list, position, removed, added| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            tracing::info!(
+                "VIEWER_DEBUG grid model_changed mode={:?} position={} removed={} added={} list_len={}",
+                this.mode(),
+                position,
+                removed,
+                added,
+                list.n_items()
+            );
+            this.clear_selection();
+            this.rebuild(list.clone(), this.mode());
+        });
         obj
     }
 
@@ -430,9 +446,12 @@ impl MediaGrid {
 
             // Build tiles + remember each child's global index for activation.
             let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
+            let mut activation_items: Vec<(i64, String, String)> =
+                Vec::with_capacity(section.items.len());
             for item in &section.items {
                 let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
                 global_indices.push(gi);
+                activation_items.push((item.id, item.display_name().to_string(), item.uri.clone()));
                 let on_bg = self
                     .imp()
                     .on_background_changed
@@ -458,11 +477,28 @@ impl MediaGrid {
                 let Some(&gi) = global_indices.get(idx as usize) else {
                     return;
                 };
+                let (item_id, item_name, item_uri) = activation_items
+                    .get(idx as usize)
+                    .map(|(id, name, uri)| (*id, name.as_str(), uri.as_str()))
+                    .unwrap_or((-1, "(missing)", "(missing)"));
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
                 let state = this.imp().modifier_state.get();
-                if Self::is_multi_select_modifier(state) {
+                let is_multi = Self::is_multi_select_modifier(state);
+                tracing::info!(
+                    "VIEWER_DEBUG grid activate mode={:?} section={} child_index={} global_index={} item_id={} item_name={} item_uri={} modifiers={:?} multi_select={}",
+                    this.mode(),
+                    section.label,
+                    idx,
+                    gi,
+                    item_id,
+                    item_name,
+                    item_uri,
+                    state,
+                    is_multi
+                );
+                if is_multi {
                     // `flow` comes from the signal arg, no extra upgrade needed.
                     this.toggle_selection(gi, child, flow);
                 } else {
@@ -645,20 +681,44 @@ fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
+    let item_name = item.display_name().to_string();
+    let item_uri = item.uri.clone();
+    tracing::info!(
+        "VIEWER_DEBUG thumb request item_id={} item_name={} uri={} size={:?} target_px={}",
+        item.id,
+        item_name,
+        item_uri,
+        spec.thumb_size,
+        spec.pixel_size
+    );
 
     // Async thumbnail load.
     let (tx, rx) = tokio::sync::oneshot::channel();
     loader.request(item.uri.clone(), spec.thumb_size, tx);
     let tile_weak = tile.downgrade();
     gtk::glib::spawn_future_local(async move {
-        if let Ok(texture) = rx.await {
-            if let Some(t) = tile_weak.upgrade() {
-                if let Some(is_light) = texture_is_light(&texture) {
-                    t.set_background_is_light(is_light);
-                    on_background_changed();
+        match rx.await {
+            Ok(texture) => {
+                tracing::info!(
+                    "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
+                    item_name,
+                    item_uri,
+                    texture.width(),
+                    texture.height()
+                );
+                if let Some(t) = tile_weak.upgrade() {
+                    if let Some(is_light) = texture_is_light(&texture) {
+                        t.set_background_is_light(is_light);
+                        on_background_changed();
+                    }
+                    t.set_paintable(Some(&texture));
                 }
-                t.set_paintable(Some(&texture));
             }
+            Err(_) => tracing::warn!(
+                "VIEWER_DEBUG thumb dropped item_name={} uri={}",
+                item_name,
+                item_uri
+            ),
         }
     });
     tile
@@ -721,5 +781,71 @@ fn uri_index_map(media_list: &gio::ListStore) -> std::collections::HashMap<Strin
 impl Default for MediaGrid {
     fn default() -> Self {
         gtk::glib::Object::builder().build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::path::PathBuf;
+
+    fn sample_item(id: i64, name: &str) -> MediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
+        MediaItem {
+            id,
+            uri: format!("file:///tmp/{name}"),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/png".into(),
+            width: Some(100),
+            height: Some(100),
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 100,
+            blake3_hash: format!("hash-{id}"),
+            trashed_at: None,
+        }
+    }
+
+    fn tile_count(grid: &MediaGrid) -> u32 {
+        let content = grid.imp().content.get();
+        let mut count = 0;
+        let mut child = content.first_child();
+        while let Some(widget) = child {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                count += flow.observe_children().n_items();
+            }
+            child = widget.next_sibling();
+        }
+        count
+    }
+
+    #[gtk::test]
+    fn grid_rebuilds_when_backing_store_removes_item() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            Rc::new(|_| {}),
+            Rc::new(|| {}),
+        );
+        assert_eq!(tile_count(&grid), 2);
+
+        media_list.remove(0);
+
+        assert_eq!(
+            tile_count(&grid),
+            1,
+            "MediaGrid must drop stale thumbnails when the shared ListStore changes"
+        );
     }
 }

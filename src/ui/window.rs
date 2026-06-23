@@ -23,6 +23,7 @@ mod imp {
     pub struct MainWindow {
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
         #[template_child]
@@ -96,9 +97,15 @@ impl MainWindow {
     /// Inject the DB pool and thumbnail loader so the sidebar can construct
     /// pages on demand. Called from `app::build_app` once initialization
     /// (DB + scan) has completed.
-    pub fn set_resources(&self, pool: DbPool, loader: Arc<ThumbnailLoader>) {
+    pub fn set_resources(
+        &self,
+        pool: DbPool,
+        loader: Arc<ThumbnailLoader>,
+        media_list: gtk::gio::ListStore,
+    ) {
         *self.imp().pool.borrow_mut() = Some(pool);
         *self.imp().loader.borrow_mut() = Some(loader);
+        *self.imp().media_list.borrow_mut() = Some(media_list);
     }
 
     /// Wire the sidebar `ListBox` `row-selected` signal to push the
@@ -157,16 +164,17 @@ impl MainWindow {
         let pool = self.imp().pool.borrow().clone()?;
         let loader = self.imp().loader.borrow().clone()?;
         let albums = crate::core::albums::list(&pool).unwrap_or_default();
-        let media_items = crate::core::db::list_all_media(&pool).unwrap_or_default();
+        let media_list = self.imp().media_list.borrow().clone()?;
         let page = AlbumsPage::new(albums, loader);
-        page.set_nav_target(nav_view, media_items);
+        page.set_nav_target(nav_view, media_list, pool);
         Some(page)
     }
 
     fn build_trash_page(&self) -> Option<TrashPage> {
         let pool = self.imp().pool.borrow().clone()?;
         let loader = self.imp().loader.borrow().clone()?;
-        Some(TrashPage::new(pool, loader))
+        let media_list = self.imp().media_list.borrow().clone()?;
+        Some(TrashPage::with_media_list(pool, loader, media_list))
     }
 }
 

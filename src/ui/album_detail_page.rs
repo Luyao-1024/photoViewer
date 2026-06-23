@@ -10,6 +10,7 @@ use libadwaita::prelude::*;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
+use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
@@ -25,6 +26,8 @@ mod imp {
     #[template(file = "../../data/ui/album-detail-page.ui")]
     pub struct AlbumDetailPage {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
+        pub master_media_list: RefCell<Option<gtk::gio::ListStore>>,
+        pub pool: RefCell<Option<DbPool>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
@@ -64,11 +67,15 @@ impl AlbumDetailPage {
     pub fn new(
         album: Album,
         media_list: gtk::gio::ListStore,
+        master_media_list: gtk::gio::ListStore,
+        pool: DbPool,
         loader: Arc<ThumbnailLoader>,
     ) -> Self {
         let obj: Self = glib::Object::builder().build();
         obj.set_title(&album.display_name());
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
+        *obj.imp().master_media_list.borrow_mut() = Some(master_media_list);
+        *obj.imp().pool.borrow_mut() = Some(pool);
 
         if media_list.n_items() == 0 {
             let empty = empty_states::no_album_photos();
@@ -114,6 +121,15 @@ impl AlbumDetailPage {
 
         let viewer = ViewerPage::new(media_list, global_index);
         viewer.show_at(global_index);
+        if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
+            viewer.set_edit_target(&nav, pool.clone());
+            viewer.set_album_target(&nav, pool);
+        }
+        if let Some(master_list) = self.imp().master_media_list.borrow().as_ref().cloned() {
+            viewer.connect_item_trashed(move |item_id| {
+                remove_media_item_by_id(&master_list, item_id);
+            });
+        }
 
         let viewer_weak = viewer.downgrade();
         let nav_weak = nav.downgrade();
@@ -139,8 +155,61 @@ impl AlbumDetailPage {
     }
 }
 
+fn remove_media_item_by_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
+    for idx in 0..list.n_items() {
+        let Some(obj) = list.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<crate::core::media::MediaItem>().id == item_id {
+            list.remove(idx);
+            return true;
+        }
+    }
+    false
+}
+
 impl Default for AlbumDetailPage {
     fn default() -> Self {
         glib::Object::builder().build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::path::PathBuf;
+
+    fn sample_item(id: i64) -> crate::core::media::MediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
+        crate::core::media::MediaItem {
+            id,
+            uri: format!("file:///tmp/{id}.jpg"),
+            path: PathBuf::from(format!("/tmp/{id}.jpg")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/jpeg".into(),
+            width: Some(100),
+            height: Some(100),
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 100,
+            blake3_hash: format!("hash-{id}"),
+            trashed_at: None,
+        }
+    }
+
+    #[gtk::test]
+    fn remove_media_item_by_id_updates_shared_master_list() {
+        let _ = gtk::init();
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        list.append(&glib::BoxedAnyObject::new(sample_item(1)));
+        list.append(&glib::BoxedAnyObject::new(sample_item(2)));
+
+        assert!(remove_media_item_by_id(&list, 1));
+        assert_eq!(list.n_items(), 1);
+        assert!(!remove_media_item_by_id(&list, 3));
     }
 }

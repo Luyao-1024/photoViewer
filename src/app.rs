@@ -61,7 +61,7 @@ pub fn build_app() -> adw::Application {
                         .and_downcast::<MainWindow>()
                         .expect("MainWindow not found");
                     let nav = window.nav_view();
-                    let photos = PhotosPage::new(media_list, loader.clone());
+                    let photos = PhotosPage::new(media_list.clone(), loader.clone());
                     // Inject the nav view so the PhotosPage can push a ViewerPage
                     // when a tile is clicked.
                     photos.set_nav_target(&nav);
@@ -73,7 +73,7 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // construct AlbumsPage/TrashPage on demand, then wire
                     // row-selected to push them onto nav_view.
-                    window.set_resources(pool, loader);
+                    window.set_resources(pool, loader, media_list);
                     window.connect_sidebar(&nav);
                 }
                 Err(e) => {

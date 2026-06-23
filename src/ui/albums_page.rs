@@ -20,6 +20,7 @@ use libadwaita as adw;
 use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
+use crate::core::db::DbPool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_detail_page::AlbumDetailPage;
@@ -39,7 +40,8 @@ mod imp {
     #[template(file = "../../data/ui/albums-page.ui")]
     pub struct AlbumsPage {
         pub albums: RefCell<Vec<Album>>,
-        pub media_items: RefCell<Vec<MediaItem>>,
+        pub media_list: RefCell<Option<gtk::gio::ListStore>>,
+        pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         #[template_child]
@@ -119,12 +121,18 @@ impl AlbumsPage {
         obj
     }
 
-    /// Inject the navigation target and the current media snapshot used to
-    /// build album detail pages. The media snapshot is filtered per album when
-    /// a tile is activated.
-    pub fn set_nav_target(&self, nav: &adw::NavigationView, media_items: Vec<MediaItem>) {
+    /// Inject the navigation target and the shared media model used to build
+    /// album detail pages. The current model is filtered per album when a tile
+    /// is activated.
+    pub fn set_nav_target(
+        &self,
+        nav: &adw::NavigationView,
+        media_list: gtk::gio::ListStore,
+        pool: DbPool,
+    ) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
-        *self.imp().media_items.borrow_mut() = media_items;
+        *self.imp().media_list.borrow_mut() = Some(media_list);
+        *self.imp().pool.borrow_mut() = Some(pool);
     }
 
     fn open_album_at(&self, index: i32) {
@@ -140,19 +148,28 @@ impl AlbumsPage {
         let Some(loader) = self.imp().loader.borrow().clone() else {
             return;
         };
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
 
+        let Some(master_media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
         let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-        for item in self
-            .imp()
-            .media_items
-            .borrow()
-            .iter()
-            .filter(|item| item.folder_path == album.folder_path)
-        {
-            media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+        for idx in 0..master_media_list.n_items() {
+            let Some(obj) = master_media_list.item(idx) else {
+                continue;
+            };
+            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let item = (*boxed.borrow::<MediaItem>()).clone();
+            if item.folder_path == album.folder_path {
+                media_list.append(&glib::BoxedAnyObject::new(item));
+            }
         }
 
-        let page = AlbumDetailPage::new(album, media_list, loader);
+        let page = AlbumDetailPage::new(album, media_list, master_media_list, pool, loader);
         page.set_nav_target(&nav);
         nav.push(&page);
     }
