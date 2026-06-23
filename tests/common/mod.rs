@@ -29,6 +29,14 @@ pub fn write_plain_png(dir: &std::path::Path, name: &str) -> PathBuf {
     path
 }
 
+/// Overwrite an existing file at `path` with a different-sized, different-colored
+/// JPEG so its bytes differ (triggering a notify Modify event) while remaining a
+/// valid, decodable image for `metadata::extract` / `upsert_from_path`.
+pub fn write_distinct_jpeg(path: &std::path::Path, w: u32, h: u32, color: [u8; 3]) {
+    let img = ImageBuffer::<Rgb<u8>, _>::from_fn(w, h, |_, _| Rgb(color));
+    img.save(path).unwrap();
+}
+
 /// Generate a JPEG with EXIF DateTimeOriginal set to `naive` (interpreted as local time).
 pub fn write_jpeg_with_exif(
     dir: &std::path::Path,

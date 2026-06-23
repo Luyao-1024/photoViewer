@@ -142,9 +142,26 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
         return;
     }
 
-    let additions: Vec<glib::BoxedAnyObject> =
-        items.into_iter().map(glib::BoxedAnyObject::new).collect();
-    list.splice(list.n_items(), 0, &additions);
+    // During startup the consumer loop may have already appended an item
+    // (via a file-system Upserted event) that also appears in this DB page.
+    // Collect the URIs already present so we skip them here, preventing
+    // duplicate grid tiles.
+    let existing: std::collections::HashSet<String> = (0..list.n_items())
+        .filter_map(|i| {
+            list.item(i)
+                .and_downcast::<glib::BoxedAnyObject>()
+                .map(|obj| obj.borrow::<MediaItem>().uri.clone())
+        })
+        .collect();
+
+    let additions: Vec<glib::BoxedAnyObject> = items
+        .into_iter()
+        .filter(|item| !existing.contains(&item.uri))
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    if !additions.is_empty() {
+        list.splice(list.n_items(), 0, &additions);
+    }
 }
 
 fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_offset: u32) {

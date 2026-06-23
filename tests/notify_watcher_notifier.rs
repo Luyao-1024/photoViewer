@@ -108,11 +108,10 @@ fn watcher_emits_upserted_for_modified_file() {
         "expected initial upsert"
     );
 
-    // Re-write to trigger Modify(Data). We use std::fs::write instead of
-    // the JPEG helper because the helper would produce a structurally
-    // identical JPEG with the same hash, which might not be observed as
-    // a Modify event on some backends.
-    std::fs::write(&path, b"different bytes for modify event").unwrap();
+    // Re-write with different (still valid) image content so the file bytes
+    // change — triggering a Modify(Data) event — while remaining a decodable
+    // JPEG for `upsert_from_path`.
+    write_distinct_jpeg(&path, 48, 48, [255, 0, 0]);
 
     // We expect either another Upserted for the same uri, OR a Removed
     // + Upserted pair (depends on backend). Count Upserted events for
