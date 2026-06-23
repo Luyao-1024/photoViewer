@@ -6,14 +6,41 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::Type;
 use rusqlite::OptionalExtension;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 
-/// 初始化数据库连接池；如不存在则创建并运行迁移
+/// 初始化数据库连接池；如不存在则创建并运行迁移。
+///
+/// 若打开或迁移失败（DB 文件损坏 / 迁移 SQL 因不兼容报错），
+/// 删除 `.db` / `.db-wal` / `.db-shm` 后重新创建一次。应用尚未对外
+/// 发布，允许通过删库换取自愈。注意：本函数**不**主动比对列名/类型，
+/// 不会因"字段看上去不一致"就误删库——只有 SQLite 自身真正失败才会触发。
 pub fn init_pool(path: &Path) -> Result<DbPool> {
+    match try_open_and_migrate(path) {
+        Ok(pool) => Ok(pool),
+        Err(err) => {
+            tracing::warn!(
+                "DB at {} failed to open/migrate ({}); deleting and regenerating.",
+                path.display(),
+                err
+            );
+            remove_db_files(path)?;
+            try_open_and_migrate(path).map_err(|e| {
+                AppError::Backend(format!(
+                    "failed to regenerate DB at {}: {e}",
+                    path.display()
+                ))
+            })
+        }
+    }
+}
+
+/// 打开连接池 + 跑 schema 迁移。任一步出错都会让上层走重建分支。
+fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
         c.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -27,6 +54,25 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
         .map_err(AppError::from)?;
     run_migrations(&pool)?;
     Ok(pool)
+}
+
+/// 删除 `path` 对应的 SQLite 主文件 + WAL/SHM 副本。文件不存在视为成功。
+fn remove_db_files(path: &Path) -> Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let candidate: PathBuf = if suffix.is_empty() {
+            path.to_path_buf()
+        } else {
+            let mut name: OsString = path.as_os_str().to_owned();
+            name.push(suffix);
+            PathBuf::from(name)
+        };
+        match std::fs::remove_file(&candidate) {
+            Ok(()) => tracing::info!("removed legacy DB file: {}", candidate.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(AppError::Io(e)),
+        }
+    }
+    Ok(())
 }
 
 /// 执行 schema.sql 迁移（幂等）
