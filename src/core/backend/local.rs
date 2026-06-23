@@ -97,16 +97,18 @@ impl LocalBackend {
     /// 从单个文件路径提取元数据并 upsert 到数据库。
     ///
     /// 专为 `notify_watcher` 等增量入口设计：
-    ///   - 路径不是文件（目录事件、临时消失等）时静默返回 `Ok(())`；
-    ///   - 解析失败时返回错误，调用方负责记录日志。
-    pub fn upsert_from_path(&self, path: &Path) -> Result<()> {
+    ///   - 路径不是文件（目录事件、临时消失等）时返回 `Ok(None)`；
+    ///   - 解析失败时返回错误，调用方负责记录日志；
+    ///   - upsert 成功时返回 `Ok(Some(MediaItem))`，调用方可以直接转发给
+    ///     `MediaChangeNotifier` 而无需再次查询 DB。
+    pub fn upsert_from_path(&self, path: &Path) -> Result<Option<MediaItem>> {
         if !path.is_file() {
-            return Ok(());
+            return Ok(None);
         }
         let item = self
             .process_file(path)?
             .ok_or_else(|| AppError::Decode(format!("not an image: {}", path.display())))?;
-        self.upsert(&item).map(|_| ())
+        self.upsert(&item).map(Some)
     }
 
     /// 删除指定路径对应的索引行，供文件监听的 remove/rename 事件使用。
@@ -209,6 +211,62 @@ mod tests {
         assert_eq!(returned.blake3_hash, "placeholder");
     }
 
+    #[test]
+    fn upsert_from_path_returns_inserted_media_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let _path = write_plain_jpeg_in(dir.path(), "new.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let returned = backend
+            .upsert_from_path(&dir.path().join("new.jpg"))
+            .expect("upsert_from_path should succeed");
+        let item = returned.expect("expected Some(MediaItem) for a valid jpeg");
+        assert!(item.id > 0);
+        assert!(item.path.ends_with("new.jpg"));
+    }
+
+    #[test]
+    fn upsert_from_path_returns_none_for_directory_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let returned = backend
+            .upsert_from_path(&dir.path().join("subdir"))
+            .expect("directory path should not error");
+        assert!(
+            returned.is_none(),
+            "directory path must yield None, not Some"
+        );
+    }
+
+    #[test]
+    fn upsert_from_path_returns_updated_item_for_existing_uri() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_plain_jpeg_in(dir.path(), "dup.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let first = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("first upsert must yield Some");
+        // Re-write the file with different (still-valid) image content to
+        // change the blake3 hash while preserving EXIF-decodable bytes.
+        write_distinct_jpeg_in(&path, 32, 32, [255, 0, 0]);
+        let second = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("second upsert must yield Some");
+        assert_eq!(first.id, second.id, "upsert must reuse the same id");
+        assert_ne!(
+            first.blake3_hash, second.blake3_hash,
+            "second upsert must reflect new content"
+        );
+    }
+
     /// Test-only helper: write a 64x48 plain JPEG (mirrors
     /// `tests/common/mod.rs::write_plain_jpeg` without requiring that
     /// module to be in scope for the lib's own test binary).
@@ -218,5 +276,14 @@ mod tests {
         let path = dir.join(name);
         img.save(&path).unwrap();
         path
+    }
+
+    /// Test-only helper: overwrite an existing JPEG with a different-sized,
+    /// different-colored image so its blake3 hash differs but EXIF decoding
+    /// still succeeds.
+    fn write_distinct_jpeg_in(path: &std::path::Path, w: u32, h: u32, color: [u8; 3]) {
+        use image::{ImageBuffer, Rgb};
+        let img = ImageBuffer::<Rgb<u8>, _>::from_fn(w, h, |_, _| Rgb(color));
+        img.save(path).unwrap();
     }
 }
