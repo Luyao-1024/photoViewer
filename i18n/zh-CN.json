@@ -126,5 +126,9 @@
     "setting.locale.saved": "语言设置已保存",
     "setting.locale.failed": "语言设置保存失败",
     "setting.restart_hint": "重启应用后生效。",
-    "setting.restart_failed": "保存语言设置失败：{error}"
+    "setting.restart_failed": "保存语言设置失败：{error}",
+    "setting.section.appearance": "外观",
+    "setting.liquid_glass": "液态玻璃特效",
+    "setting.liquid_glass_save_failed": "保存外观设置失败：{error}",
+    "setting.save_failed": "保存失败"
 }

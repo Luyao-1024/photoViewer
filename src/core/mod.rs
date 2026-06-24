@@ -11,6 +11,7 @@ pub mod media;
 pub mod media_change_notifier;
 pub mod metadata;
 pub mod notify_watcher;
+pub mod prefs;
 pub mod section_model;
 pub mod thumbnails;
 pub mod trash;

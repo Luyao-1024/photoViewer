@@ -19,23 +19,39 @@
 //! keeps click-driven multi-select for batch restore / delete.
 //!
 //! Install is idempotent (process-wide `OnceLock`), so multiple pages may call
-//! `install()` without coordinating. [`is_installed`] / [`assert_installed`]
+//! [`install`] without coordinating. [`is_installed`] / [`assert_installed`]
 //! let other code paths (e.g. the viewer's favorite button, which depends on
 //! the `.viewer-favorite-btn.favorite-active` rule) verify install has run at
 //! least once on this process.
+//!
+//! ## Liquid Glass toggle / 液态玻璃开关
+//!
+//! The CSS is assembled at install time from three parts: [`BASE_CSS`] (shared
+//! layout/state rules), a *material* block that differs by mode, and [`A11Y_CSS`]
+//! (shared accessibility fallbacks). [`build_css`] picks the material block from
+//! [`LIQUID_GLASS_MATERIAL_CSS`] (the dramatic Liquid Glass look — `saturate()`
+//! / `brightness()` boosts, bright inset top highlights, heavy floating
+//! shadows) or [`PLAIN_GLASS_MATERIAL_CSS`] (plain semi-transparent surfaces —
+//! **no** `backdrop-filter` blur, just translucent fills + hairline borders, so
+//! the off state looks clearly different from the blurred liquid glass).
+//! [`install`] reads [`crate::core::prefs::liquid_glass_enabled`]; [`reapply`]
+//! swaps the provider's CSS live when the user toggles the setting (no restart).
 
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
+use std::cell::RefCell;
 use std::sync::OnceLock;
 
-const GRID_CSS: &str = "
+/* ── BASE_CSS ─ shared between both glass modes (layout / state rules that
+do NOT define a surface material). 液态/毛玻璃两模式共用,与材质无关。 */
+const BASE_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
 /* 8px four-sided padding matches column/row spacing. Do NOT add a fixed
    padding-bottom here or on the ScrolledWindow: the ModeSelector is a glass
    overlay and should float over content instead of reserving a dark safe area.
-   每段或滚动容器 padding-bottom 会留出深色空隙，看起来像黑带。 */
+   每段或滚动容器 padding-bottom 会留出深色空隙,看起来像黑带。 */
 flowbox.thumb-grid { padding: 8px; background: transparent; }
 
 /* Hover — soft veil on the flowboxchild, no border. */
@@ -160,34 +176,6 @@ box.mode-selector.on-light-background box.mode-dot {
   background: #000000;
 }
 
-/* ── Glass material tokens ─────────────────────────────────────────────
-   GTK4 CSS in this version does not support @define-color / custom
-   properties for these values. Copy any change across every rule that
-   uses the same number. Source-of-truth values are written here once. */
-
-/* glass-base — sidebar, header, details panel */
-.glass-base {
-  background: alpha(white, 0.06);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.18);
-  backdrop-filter: blur(22px) saturate(1.18) brightness(1.04);
-  box-shadow:
-    inset 0 1px alpha(white, 0.32),
-    inset 0 -1px alpha(black, 0.10);
-}
-
-/* glass-raised — floating controls (mode selector, menus, popovers) */
-.glass-raised {
-  background: alpha(white, 0.10);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.30);
-  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
-  box-shadow:
-    0 18px 48px alpha(black, 0.26),
-    inset 0 1px alpha(white, 0.58),
-    inset 0 -1px alpha(black, 0.16);
-}
-
 /* glass-toolbar-button — individual buttons in glass header bars.
    Tiles and similar grouped controls; carries its own background +
    border-radius so it stands alone (no longer requires a `.glass-toolbar`
@@ -234,22 +222,11 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 
 /* glass-menu — popovers; GTK popovers are two-layer, style the inner
-   `> contents` so the visible background matches the rounded edge. */
+   `> contents` so the visible background matches the rounded edge. The
+   `> contents` material lives in the per-mode material block below. */
 .glass-menu {
   padding: 0;
   min-width: 190px;
-}
-
-.glass-menu > contents {
-  padding: 6px;
-  border-radius: 16px;
-  background: alpha(black, 0.42);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.22);
-  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
-  box-shadow:
-    0 18px 48px alpha(black, 0.35),
-    inset 0 1px alpha(white, 0.24);
 }
 
 .glass-menu-list {
@@ -288,6 +265,160 @@ box.mode-selector.on-light-background box.mode-dot {
 .glass-menu-item-danger:hover {
   background: alpha(#ff5449, 0.18);
   color: #ffcfca;
+}
+
+/* glass-sidebar — the left rail surface. The sidebar's blur comes from
+   .glass-base applied alongside (see window.blp); these rules only own
+   row shape + hover/selected state. */
+.glass-sidebar {
+  padding: 12px;
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-right: 1px solid alpha(white, 0.14);
+}
+
+.glass-sidebar-page {
+  background: transparent;
+}
+
+.glass-sidebar-row {
+  min-height: 40px;
+  border-radius: 12px;
+  margin-bottom: 6px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.glass-sidebar-row:hover {
+  background: alpha(white, 0.08);
+}
+
+.glass-sidebar-row:selected {
+  background: alpha(white, 0.14);
+  box-shadow:
+    inset 0 1px alpha(white, 0.35),
+    inset 0 -1px alpha(black, 0.12);
+}
+
+.glass-sidebar-row:focus-visible,
+.glass-sidebar-row:focus {
+  outline: none;
+}
+
+.glass-sidebar-label {
+  color: inherit;
+  font-weight: 500;
+}
+
+/* viewer-stage — image content area; subtle radial wash that frames
+   the picture and separates it from app chrome. */
+.viewer-stage {
+  padding: 32px;
+  background:
+    radial-gradient(circle at center, alpha(white, 0.06), transparent 55%),
+    alpha(black, 0.10);
+}
+
+.viewer-image-frame {
+  border-radius: 14px;
+  box-shadow:
+    0 24px 80px alpha(black, 0.38),
+    0 0 0 1px alpha(white, 0.10);
+}
+
+/* glass-editor-preview — analogous to .viewer-stage, but calmer: the
+   editor's adjustment sliders occupy the same screen and need every
+   ounce of readable chrome, so this is a near-flat panel with a hairline
+   border, not a heavy glass stage.
+   比 viewer-stage 更克制:编辑器界面与调节滑块同屏,需要尽可能多的可读
+   chrome,所以这是近乎平坦的面板加一道细线边框,而不是沉重的玻璃舞台。 */
+.glass-editor-preview {
+  padding: 24px;
+  background: alpha(black, 0.06);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.06);
+}
+
+/* Viewer favorite button active state. Class is added/removed by
+   ViewerPage::refresh_favorite_button; the visual now lives in the
+   global provider so it composes with .glass-toolbar-button. */
+.viewer-favorite-btn.favorite-active {
+  color: #f6c344;
+  background: alpha(#f6c344, 0.14);
+  border-color: alpha(#f6c344, 0.38);
+}
+
+/* hover keeps the gold theme — without this rule, .glass-toolbar-button:hover
+   would replace the gold background with a generic alpha(white, 0.14),
+   so the active-favorite would briefly look un-favorited on pointer-over. */
+.viewer-favorite-btn.favorite-active:hover {
+  color: #ffd86b;
+  background: alpha(#f6c344, 0.22);
+  border-color: alpha(#f6c344, 0.52);
+}
+
+/* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
+   would be too expensive at 10k–100k tiles and would blur the photo. */
+.glass-thumb-card {
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+/* thumb-loading — 缩略图生成期间的骨架脉冲占位。缩略图到位后 SquareTile
+   在 set_paintable 里移除该 class。用可动画的 background-color（GTK4 CSS
+   对 gradient 动画支持不佳），低调、明确表达加载中而非裸白块。 */
+.thumb-loading {
+  background-color: alpha(white, 0.05);
+  animation: thumb-pulse 1.4s ease-in-out infinite;
+}
+@keyframes thumb-pulse {
+  0%, 100% { background-color: alpha(white, 0.035); }
+  50%      { background-color: alpha(white, 0.11); }
+}
+";
+
+/* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass surface material.
+backdrop-filter blur+saturate+brightness, bright inset top highlights,
+heavy floating drop shadows. This is the default (opt-out) look.
+液态玻璃材质:模糊+饱和/亮度增益 + 顶部亮色内高光 + 厚重悬浮投影。 */
+const LIQUID_GLASS_MATERIAL_CSS: &str = "
+/* glass-base — sidebar, header, details panel */
+.glass-base {
+  background: alpha(white, 0.06);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.18);
+  backdrop-filter: blur(22px) saturate(1.18) brightness(1.04);
+  box-shadow:
+    inset 0 1px alpha(white, 0.32),
+    inset 0 -1px alpha(black, 0.10);
+}
+
+/* glass-raised — floating controls (mode selector, menus, popovers) */
+.glass-raised {
+  background: alpha(white, 0.10);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.30);
+  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
+  box-shadow:
+    0 18px 48px alpha(black, 0.26),
+    inset 0 1px alpha(white, 0.58),
+    inset 0 -1px alpha(black, 0.16);
+}
+
+/* glass-menu popover inner surface */
+.glass-menu > contents {
+  padding: 6px;
+  border-radius: 16px;
+  background: alpha(black, 0.42);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.22);
+  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
+  box-shadow:
+    0 18px 48px alpha(black, 0.35),
+    inset 0 1px alpha(white, 0.24);
 }
 
 /* ── Glass alert dialog — 毛玻璃半透明弹框 + 液态玻璃按钮 ──────────────
@@ -350,102 +481,12 @@ box.mode-selector.on-light-background box.mode-dot {
   border-color: alpha(#ff5449, 0.48);
 }
 
-/* glass-sidebar — the left rail surface */
-.glass-sidebar {
-  padding: 12px;
-  border-top: 0;
-  border-bottom: 0;
-  border-left: 0;
-  border-right: 1px solid alpha(white, 0.14);
-}
-
-.glass-sidebar-page {
-  background: transparent;
-}
-
-.glass-sidebar-row {
-  min-height: 40px;
-  border-radius: 12px;
-  margin-bottom: 6px;
-  padding: 0 10px;
-  background: transparent;
-  border: 1px solid transparent;
-}
-
-.glass-sidebar-row:hover {
-  background: alpha(white, 0.08);
-}
-
-.glass-sidebar-row:selected {
-  background: alpha(white, 0.14);
-  box-shadow:
-    inset 0 1px alpha(white, 0.35),
-    inset 0 -1px alpha(black, 0.12);
-}
-
-.glass-sidebar-row:focus-visible,
-.glass-sidebar-row:focus {
-  outline: none;
-}
-
-.glass-sidebar-label {
-  color: inherit;
-  font-weight: 500;
-}
-
 /* glass-header — header bar surface (calmer than glass-raised) */
 .glass-header {
   background: alpha(black, 0.18);
   background-clip: padding-box;
   border-bottom: 1px solid alpha(white, 0.08);
   backdrop-filter: blur(20px) saturate(1.10) brightness(1.02);
-}
-
-/* viewer-stage — image content area; subtle radial wash that frames
-   the picture and separates it from app chrome. */
-.viewer-stage {
-  padding: 32px;
-  background:
-    radial-gradient(circle at center, alpha(white, 0.06), transparent 55%),
-    alpha(black, 0.10);
-}
-
-.viewer-image-frame {
-  border-radius: 14px;
-  box-shadow:
-    0 24px 80px alpha(black, 0.38),
-    0 0 0 1px alpha(white, 0.10);
-}
-
-/* glass-editor-preview — analogous to .viewer-stage, but calmer: the
-   editor's adjustment sliders occupy the same screen and need every
-   ounce of readable chrome, so this is a near-flat panel with a hairline
-   border, not a heavy glass stage.
-   比 viewer-stage 更克制:编辑器界面与调节滑块同屏,需要尽可能多的可读
-   chrome,所以这是近乎平坦的面板加一道细线边框,而不是沉重的玻璃舞台。 */
-.glass-editor-preview {
-  padding: 24px;
-  background: alpha(black, 0.06);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.06);
-}
-
-/* Viewer favorite button active state. Class is added/removed by
-   ViewerPage::refresh_favorite_button; the visual now lives in the
-   global provider so it composes with .glass-toolbar-button. */
-.viewer-favorite-btn.favorite-active {
-  color: #f6c344;
-  background: alpha(#f6c344, 0.14);
-  border-color: alpha(#f6c344, 0.38);
-}
-
-/* hover keeps the gold theme — without this rule, .glass-toolbar-button:hover
-   would replace the gold background with a generic alpha(white, 0.14),
-   so the active-favorite would briefly look un-favorited on pointer-over. */
-.viewer-favorite-btn.favorite-active:hover {
-  color: #ffd86b;
-  background: alpha(#f6c344, 0.22);
-  border-color: alpha(#f6c344, 0.52);
 }
 
 /* viewer-details-panel — metadata sidebar uses glass-base, not opaque. */
@@ -455,34 +496,111 @@ box.mode-selector.on-light-background box.mode-dot {
   border-left: 1px solid alpha(white, 0.12);
   backdrop-filter: blur(22px) saturate(1.12);
 }
+";
 
-/* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
-   would be too expensive at 10k–100k tiles and would blur the photo. */
-.glass-thumb-card {
-  border-radius: 10px;
-  border: 1px solid transparent;
+/* ── PLAIN_GLASS_MATERIAL_CSS ─ plain semi-transparent surfaces, NO blur.
+Same selectors as the liquid block, but drops `backdrop-filter` entirely
+(no frosted-glass blur) along with the saturate/brightness boosts, the
+bright inset top highlights, and the heavy floating drop shadows. The
+result is a clearly different look from Liquid Glass: sharp translucent
+panels you can faintly see through, instead of blurred frosted glass.
+Alert-dialog BUTTONS are opaque solid fills here (not translucent) so they
+don't read as glass either.
+普通半透明:完全去掉 backdrop-filter(无毛玻璃模糊)、增益、高光、厚重投影,
+只留半透明背景 + 细边 + 轻阴影,与液态玻璃差异明显;弹框按钮用不透明实色。 */
+const PLAIN_GLASS_MATERIAL_CSS: &str = "
+.glass-base {
+  background: alpha(black, 0.55);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.08);
+}
+
+.glass-raised {
+  background: alpha(black, 0.62);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  box-shadow: 0 4px 12px alpha(black, 0.22);
+}
+
+.glass-menu > contents {
+  padding: 6px;
+  border-radius: 16px;
+  background: alpha(black, 0.70);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  box-shadow: 0 6px 18px alpha(black, 0.28);
+}
+
+.glass-alert-dialog {
   background: transparent;
 }
 
-/* thumb-loading — 缩略图生成期间的骨架脉冲占位。缩略图到位后 SquareTile
-   在 set_paintable 里移除该 class。用可动画的 background-color（GTK4 CSS
-   对 gradient 动画支持不佳），低调、明确表达加载中而非裸白块。 */
-.thumb-loading {
-  background-color: alpha(white, 0.05);
-  animation: thumb-pulse 1.4s ease-in-out infinite;
-}
-@keyframes thumb-pulse {
-  0%, 100% { background-color: alpha(white, 0.035); }
-  50%      { background-color: alpha(white, 0.11); }
+.glass-alert-dialog .background {
+  background: alpha(black, 0.72);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  border-radius: 20px;
+  box-shadow: 0 8px 24px alpha(black, 0.30);
+  color: #ffffff;
 }
 
-/* ── Accessibility fallback ──────────────────────────────────────────
-   GTK CssProvider supports prefers-reduced-motion, prefers-contrast and
-   prefers-color-scheme media features. It does NOT support the web draft
-   prefers-reduced-transparency feature, so GNOME's Reduce Animation setting
-   is the supported platform hook for disabling glass blur/alpha effects.
-   当用户启用 GNOME 减少动画时,所有玻璃面降级为稳定不透明中性色,不影响
-   非玻璃元素(Adwaita 默认、照片瓦片等)。 */
+.glass-alert-dialog .title-2 {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.glass-alert-dialog .body {
+  color: alpha(white, 0.72);
+}
+
+.glass-alert-dialog button.text-button {
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 0 18px;
+  background: #2a2a30;
+  border: 1px solid alpha(white, 0.10);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.glass-alert-dialog button.text-button:hover {
+  background: #36363e;
+  border-color: alpha(white, 0.18);
+}
+
+.glass-alert-dialog button.text-button:active {
+  background: #40404a;
+}
+
+.glass-alert-dialog button.destructive-action {
+  color: #ffb4ab;
+}
+
+.glass-alert-dialog button.destructive-action:hover {
+  background: alpha(#ff5449, 0.22);
+  border-color: alpha(#ff5449, 0.40);
+}
+
+.glass-header {
+  background: alpha(black, 0.50);
+  background-clip: padding-box;
+  border-bottom: 1px solid alpha(white, 0.08);
+}
+
+.viewer-details-panel {
+  background: alpha(black, 0.60);
+  background-clip: padding-box;
+  border-left: 1px solid alpha(white, 0.08);
+}
+";
+
+/* ── A11Y_CSS ─ shared accessibility fallbacks. GTK CssProvider supports
+prefers-reduced-motion, prefers-contrast and prefers-color-scheme media
+features. It does NOT support the web draft prefers-reduced-transparency
+feature, so GNOME's Reduce Animation setting is the supported platform hook
+for disabling glass blur/alpha effects. 当用户启用 GNOME 减少动画或高对比度
+时,所有玻璃面降级为稳定不透明中性色,与液态/毛玻璃模式无关。 */
+const A11Y_CSS: &str = "
 @media (prefers-reduced-motion: reduce) {
   .glass-base,
   .glass-raised,
@@ -546,12 +664,33 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 ";
 
+/// Assemble the full CSS string for the given glass mode. `true` → Liquid
+/// Glass (default), `false` → calmer classic frosted glass.
+fn build_css(liquid_glass: bool) -> String {
+    let material = if liquid_glass {
+        LIQUID_GLASS_MATERIAL_CSS
+    } else {
+        PLAIN_GLASS_MATERIAL_CSS
+    };
+    format!("{BASE_CSS}\n{material}\n{A11Y_CSS}")
+}
+
 static CSS_INSTALLED: OnceLock<()> = OnceLock::new();
 
-/// Test-only getter for the CSS string. Not for production use.
+// The currently-registered display-level provider, so `reapply` can remove it
+// before adding the replacement (remove+add forces a full restyle of every
+// widget, including popovers and AdwAlertDialogs). `gtk::CssProvider` wraps a
+// raw pointer and is NOT `Send`/`Sync`, so it cannot live in a `static`;
+// `thread_local!` sidesteps that — every GTK call (page constructors, the
+// settings toggle handler) runs on the single main thread.
+thread_local! {
+    static ACTIVE_PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
+}
+
+/// Test-only getter for the CSS string (Liquid Glass mode). Not for production use.
 #[doc(hidden)]
-pub fn css_for_tests() -> &'static str {
-    GRID_CSS
+pub fn css_for_tests() -> String {
+    build_css(true)
 }
 
 /// Has [`install`] been called at least once on this process?
@@ -570,26 +709,53 @@ pub fn assert_installed() {
     );
 }
 
-/// Register the thumbnail-grid highlight CSS with the default display.
+/// Register `css` with the default display, first removing any provider we
+/// previously registered so a swap forces a global restyle. Stores the live
+/// provider in [`ACTIVE_PROVIDER`] for the next swap.
+fn register(css: &str) {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(css);
+    if let Some(display) = gtk::gdk::Display::default() {
+        // Take the previous provider out of the slot (releasing the borrow)
+        // before touching the display, then store the new one afterwards —
+        // no nested borrows of the thread_local.
+        let old = ACTIVE_PROVIDER.with(|slot| slot.borrow_mut().take());
+        if let Some(old) = old {
+            gtk::style_context_remove_provider_for_display(&display, &old);
+        }
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        ACTIVE_PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
+    }
+}
+
+/// Register the thumbnail-grid + glass CSS with the default display.
 /// Idempotent: subsequent calls are no-ops (the body only runs the first
-/// time, guarded by [`CSS_INSTALLED`]). The first call flips
-/// [`is_installed`] to `true`.
+/// time, guarded by [`CSS_INSTALLED`]). The first call picks the material
+/// block from [`crate::core::prefs::liquid_glass_enabled`].
 pub fn install() {
     // `OnceLock::set` returns `Ok(())` only on the first call; gate the
     // provider registration on that so defensive `install()` calls from
     // MediaGrid / TrashPage / AlbumsPage constructors do not accumulate
     // duplicate CssProviders on the default display.
     if CSS_INSTALLED.set(()).is_ok() {
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(GRID_CSS);
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
+        register(&build_css(crate::core::prefs::liquid_glass_enabled()));
     }
+}
+
+/// Re-apply the CSS for the given glass mode, live. Called by the Settings
+/// page when the user toggles the Liquid Glass switch: persists elsewhere,
+/// then this swaps the provider so every glass surface (sidebar / header /
+/// mode selector / popover / alert dialog / details panel) restyles
+/// immediately without an app restart.
+pub fn reapply(liquid_glass: bool) {
+    // Defensive installs from page constructors read the pref at runtime, so
+    // mark install as already-done to keep them no-ops after a live reapply.
+    let _ = CSS_INSTALLED.set(());
+    register(&build_css(liquid_glass));
 }
 
 /// Move the keyboard cursor inside `flow` in the direction of `key`, focusing
@@ -786,13 +952,134 @@ mod tests {
     /// 没有 hover 规则时,鼠标悬停在已收藏的星标按钮上会丢失金色高亮。
     #[test]
     fn favorite_active_has_hover_override() {
+        let css = build_css(true);
         assert!(
-            GRID_CSS.contains(".viewer-favorite-btn.favorite-active"),
-            "GRID_CSS must define the base .viewer-favorite-btn.favorite-active rule",
+            css.contains(".viewer-favorite-btn.favorite-active"),
+            "CSS must define the base .viewer-favorite-btn.favorite-active rule",
         );
         assert!(
-            GRID_CSS.contains(".viewer-favorite-btn.favorite-active:hover"),
-            "GRID_CSS must define a :hover override so the gold state survives pointer-over",
+            css.contains(".viewer-favorite-btn.favorite-active:hover"),
+            "CSS must define a :hover override so the gold state survives pointer-over",
         );
+    }
+
+    /// Liquid Glass mode keeps the dramatic material signatures: saturate +
+    /// brightness boosts, the bright raised top highlight, and the heavy
+    /// floating shadow. Also confirms the BASE + A11Y shared parts are present.
+    #[test]
+    fn liquid_mode_keeps_drama_and_shared_parts() {
+        let css = build_css(true);
+        // material selectors exist
+        for sel in [
+            ".glass-base",
+            ".glass-raised",
+            ".glass-header",
+            ".glass-menu > contents",
+            ".glass-alert-dialog .background",
+            ".viewer-details-panel",
+        ] {
+            assert!(
+                css.contains(sel),
+                "liquid mode missing material selector {sel}"
+            );
+        }
+        // liquid drama
+        assert!(
+            css.contains("saturate(1.22)"),
+            "liquid mode must keep saturate boost"
+        );
+        assert!(
+            css.contains("brightness(1.06)"),
+            "liquid mode must keep brightness boost"
+        );
+        assert!(
+            css.contains("0 18px 48px"),
+            "liquid mode must keep the heavy raised drop shadow"
+        );
+        assert!(
+            css.contains("inset 0 1px alpha(white, 0.58)"),
+            "liquid mode must keep the bright raised top highlight"
+        );
+        // shared BASE + A11Y
+        assert!(
+            css.contains("flowbox.thumb-grid"),
+            "BASE shared rules present"
+        );
+        assert!(css.contains("prefers-reduced-motion"), "A11Y block present");
+    }
+
+    /// Plain mode is semi-transparent with NO blur: same selectors covered, but
+    /// there is no `backdrop-filter` at all (no frosted-glass blur) and none of
+    /// the liquid drama (saturate/brightness boosts, raised top highlight,
+    /// heavy floating shadow). Only translucent fills + hairline borders remain.
+    #[test]
+    fn plain_mode_is_translucent_no_blur() {
+        let css = build_css(false);
+        // same material selectors covered (split is complete)
+        for sel in [
+            ".glass-base",
+            ".glass-raised",
+            ".glass-header",
+            ".glass-menu > contents",
+            ".glass-alert-dialog .background",
+            ".viewer-details-panel",
+        ] {
+            assert!(
+                css.contains(sel),
+                "plain mode missing material selector {sel}"
+            );
+        }
+        // NO frosted blur (only A11Y's `backdrop-filter: none` may appear)
+        assert!(
+            !css.contains("backdrop-filter: blur"),
+            "plain mode must drop backdrop-filter blur entirely (no frosted glass)"
+        );
+        // drops liquid drama (BASE/A11Y never use these tokens, so absence is
+        // a clean signal that the plain material block has no drama)
+        assert!(
+            !css.contains("saturate("),
+            "plain mode must drop saturate boost"
+        );
+        assert!(
+            !css.contains("brightness(1.0"),
+            "plain mode must drop brightness boost"
+        );
+        assert!(
+            !css.contains("inset 0 1px alpha(white, 0.58)"),
+            "plain mode must drop the raised top highlight"
+        );
+        assert!(
+            !css.contains("0 18px 48px"),
+            "plain mode must drop the heavy raised drop shadow"
+        );
+        // shared BASE + A11Y still present
+        assert!(
+            css.contains("flowbox.thumb-grid"),
+            "BASE shared rules present"
+        );
+        assert!(css.contains("prefers-reduced-motion"), "A11Y block present");
+    }
+
+    /// Both modes must carry the shared BASE rules (layout/state) and the A11Y
+    /// fallback blocks — the only thing that differs is the material block.
+    #[test]
+    fn both_modes_share_base_and_a11y() {
+        let on = build_css(true);
+        let off = build_css(false);
+        for marker in [
+            "flowbox.thumb-grid",
+            "box.mode-selector",
+            ".glass-sidebar-row",
+            ".glass-toolbar-button",
+            ".glass-menu-item",
+            ".glass-thumb-card",
+            "prefers-reduced-motion",
+            "prefers-contrast: more",
+        ] {
+            assert!(
+                on.contains(marker) && off.contains(marker),
+                "shared marker '{marker}' must be present in both modes"
+            );
+        }
     }
 }

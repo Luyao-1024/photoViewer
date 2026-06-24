@@ -14,7 +14,9 @@ use serde_json::{Map, Value};
 use crate::config;
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
+use crate::core::prefs;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::grid_css;
 use crate::ui::{AlbumsPage, TrashPage};
 
 mod imp {
@@ -272,6 +274,48 @@ impl MainWindow {
         lang_box.append(&btn_en);
         content.append(&lang_box);
 
+        // ── Appearance: Liquid Glass toggle ───────────────────────────────
+        // The switch reflects the persisted pref and re-skins the whole app
+        // live on toggle (no restart). See grid_css::reapply.
+        let appearance_title = gtk::Label::new(Some(&tr("setting.section.appearance")));
+        appearance_title.set_xalign(0.0);
+        content.append(&appearance_title);
+
+        let switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(prefs::liquid_glass_enabled())
+            .build();
+
+        let switch_label = gtk::Label::new(Some(&tr("setting.liquid_glass")));
+        switch_label.set_halign(gtk::Align::Start);
+        switch_label.set_hexpand(true);
+
+        let glass_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        glass_row.append(&switch_label);
+        glass_row.append(&switch);
+        content.append(&glass_row);
+
+        let page_for_glass = page.clone();
+        switch.connect_notify_local(Some("active"), move |sw, _pspec| {
+            let active = sw.is_active();
+            match prefs::set_liquid_glass(active) {
+                Ok(()) => {
+                    // Live re-skin: swap the display CSS provider so every
+                    // glass surface restyles immediately (no app restart).
+                    grid_css::reapply(active);
+                }
+                Err(err) => {
+                    show_settings_error_dialog(
+                        &page_for_glass,
+                        &trf("setting.liquid_glass_save_failed", &[("error", &err)]),
+                    );
+                }
+            }
+        });
+
         page.set_child(Some(&content));
         page
     }
@@ -295,6 +339,20 @@ fn show_settings_restart_dialog(
     let dialog = adw::AlertDialog::builder()
         .heading(&heading)
         .body(&body)
+        .build();
+    dialog.add_css_class("glass-alert-dialog");
+    dialog.add_response("ok", &tr("button.ok"));
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("ok");
+    dialog.present(parent);
+}
+
+/// Surface a non-fatal settings error (e.g. failed to persist the Liquid
+/// Glass pref) as a glass alert dialog. Mirrors the locale restart dialog.
+fn show_settings_error_dialog(parent: &adw::NavigationPage, body: &str) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("setting.save_failed"))
+        .body(body)
         .build();
     dialog.add_css_class("glass-alert-dialog");
     dialog.add_response("ok", &tr("button.ok"));

@@ -51,6 +51,12 @@ pub fn build_app() -> adw::Application {
         let style_manager = adw::StyleManager::default();
         style_manager.set_color_scheme(adw::ColorScheme::Default);
 
+        // Register the grid + glass CSS before the first widget is realized so
+        // the user's Liquid Glass preference (prefs::liquid_glass_enabled,
+        // read inside install()) is honoured from the very first frame. Later
+        // defensive grid_css::install() calls from page constructors are no-ops.
+        crate::ui::grid_css::install();
+
         let window = MainWindow::new(app);
         window.populate_sidebar();
 

@@ -126,5 +126,9 @@
     "setting.locale.saved": "Language setting saved",
     "setting.locale.failed": "Save language failed",
     "setting.restart_hint": "Restart the app to apply this language change.",
-    "setting.restart_failed": "Failed to save language: {error}"
+    "setting.restart_failed": "Failed to save language: {error}",
+    "setting.section.appearance": "Appearance",
+    "setting.liquid_glass": "Liquid Glass effect",
+    "setting.liquid_glass_save_failed": "Failed to save the appearance setting: {error}",
+    "setting.save_failed": "Save failed"
 }
