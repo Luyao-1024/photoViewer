@@ -89,13 +89,11 @@ impl MainWindow {
         ];
         for (label, _target) in &sidebar_rows {
             let row = ListBoxRow::new();
+            row.add_css_class("glass-sidebar-row");
             let lbl = gtk::Label::builder()
                 .label(label.clone())
                 .halign(gtk::Align::Start)
-                .margin_start(12)
-                .margin_end(12)
-                .margin_top(8)
-                .margin_bottom(8)
+                .css_classes(["glass-sidebar-label"])
                 .build();
             row.set_child(Some(&lbl));
             list.append(&row);

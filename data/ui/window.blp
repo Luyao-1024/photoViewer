@@ -8,12 +8,15 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
 
   Adw.OverlaySplitView split_view {
     sidebar-width-fraction: 0.2;
-    min-sidebar-width: 200;
+    min-sidebar-width: 220;
+    max-sidebar-width: 280;
 
     sidebar: Adw.NavigationPage sidebar_page {
       title: "";
+      css-classes: ["glass-sidebar-page"];
 
       Gtk.ListBox sidebar_list {
+        css-classes: ["glass-sidebar"];
         selection-mode: single;
       }
     };
