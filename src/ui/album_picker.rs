@@ -137,7 +137,13 @@ fn build_album_list_page(list_box: &gtk::ListBox) -> gtk::Box {
 }
 
 /// Push the level-2 page (Copy / Move) onto `inner`.
-fn push_action_page(
+///
+/// `#[doc(hidden)]` test-only entry point: integration tests need to
+/// reach this synchronously (the normal path goes through
+/// `glib::spawn_future_local` which would deadlock a sync test). Not
+/// part of the public API — use [`AlbumPickerDialog::present`] instead.
+#[doc(hidden)]
+pub fn push_action_page(
     inner: &adw::NavigationView,
     pool: DbPool,
     media_ids: Vec<i64>,
@@ -182,12 +188,12 @@ fn push_action_page(
         .build();
 
     let copy_btn = gtk::Button::with_label(&tr("album_picker.copy"));
-    copy_btn.add_css_class("pill");
-    copy_btn.add_css_class("suggested-action");
+    copy_btn.add_css_class("glass-toolbar-button");
+    copy_btn.add_css_class("glass-toolbar-suggested");
 
     let move_btn = gtk::Button::with_label(&tr("album_picker.move"));
-    move_btn.add_css_class("pill");
-    move_btn.add_css_class("destructive-action");
+    move_btn.add_css_class("glass-toolbar-button");
+    move_btn.add_css_class("glass-toolbar-danger");
 
     btn_row.append(&copy_btn);
     btn_row.append(&move_btn);
