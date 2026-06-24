@@ -106,4 +106,35 @@ fn viewer_toolbar_uses_glass_classes() {
         !panel_classes.iter().any(|c| c == "background"),
         "details_panel should no longer carry opaque `background`, got {panel_classes:?}",
     );
+
+    // Task: favorite-active class toggle on the viewer favorite button.
+    // The class is owned by the global CSS provider (Task 7) and must be
+    // addable / removable at runtime without disturbing the base classes.
+    let initial_fav_classes = css_classes_vec(&imp.favorite_btn.get());
+    assert!(
+        !initial_fav_classes.iter().any(|c| c == "favorite-active"),
+        "favorite_btn should not initially carry favorite-active, got {initial_fav_classes:?}",
+    );
+
+    imp.favorite_btn.get().add_css_class("favorite-active");
+    let after_add_classes = css_classes_vec(&imp.favorite_btn.get());
+    assert!(
+        after_add_classes.iter().any(|c| c == "favorite-active"),
+        "favorite_btn should carry favorite-active after add_css_class, got {after_add_classes:?}",
+    );
+    assert!(
+        after_add_classes.iter().any(|c| c == "viewer-favorite-btn"),
+        "favorite_btn should still carry viewer-favorite-btn after add_css_class, got {after_add_classes:?}",
+    );
+    assert!(
+        after_add_classes.iter().any(|c| c == "glass-toolbar-button"),
+        "favorite_btn should still carry glass-toolbar-button after add_css_class, got {after_add_classes:?}",
+    );
+
+    imp.favorite_btn.get().remove_css_class("favorite-active");
+    let after_remove_classes = css_classes_vec(&imp.favorite_btn.get());
+    assert!(
+        !after_remove_classes.iter().any(|c| c == "favorite-active"),
+        "favorite_btn should not carry favorite-active after remove_css_class, got {after_remove_classes:?}",
+    );
 }
