@@ -26,6 +26,23 @@ fn sidebar_navigation_suite() {
     let window = MainWindow::new(&app);
     window.populate_sidebar();
 
+    // Glass material: each sidebar row should carry the glass-sidebar-row class.
+    {
+        let sidebar = window.imp().sidebar_list.get();
+        let n_items = sidebar.observe_children().n_items();
+        assert!(n_items > 0, "sidebar should have rows");
+        for idx in 0..n_items {
+            let row = sidebar
+                .row_at_index(idx as i32)
+                .expect("row exists in sidebar");
+            let classes: Vec<String> = row.css_classes().iter().map(|s| s.to_string()).collect();
+            assert!(
+                classes.iter().any(|c| c == "glass-sidebar-row"),
+                "row {idx} should carry glass-sidebar-row, got {classes:?}",
+            );
+        }
+    }
+
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
     let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(

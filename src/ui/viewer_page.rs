@@ -421,24 +421,17 @@ impl ViewerPage {
     }
 
     fn setup_favorite_button(&self) {
+        // The favorite-active visual lives in the global CSS provider; if
+        // install() was missed the button will silently look wrong. Assert at
+        // construction time so the regression surfaces as a panic in tests.
+        crate::ui::grid_css::assert_installed();
+
         let imp = self.imp();
         imp.favorite_btn.get().add_css_class("viewer-favorite-btn");
         imp.favorite_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.favorite")));
         self.refresh_favorite_button(false);
-
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(
-            ".viewer-favorite-btn.favorite-active { color: #f6c344; font-weight: 900; }",
-        );
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
 
         let weak = self.downgrade();
         imp.favorite_btn.get().connect_clicked(move |button| {

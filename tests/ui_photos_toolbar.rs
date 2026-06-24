@@ -1,0 +1,74 @@
+//! PhotosPage header bar + batch toolbar should carry the liquid-glass
+//! material classes introduced in Task 1 (the global glass style system).
+//!
+//! GTK is single-threaded, so all checks live in one `#[test]` function.
+//! See `tests/ui_mode_selector.rs` for the same pattern.
+
+use std::sync::Arc;
+
+use gtk4 as gtk;
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use libadwaita as adw;
+use photo_viewer::ui::PhotosPage;
+
+fn css_classes_vec<W: gtk::prelude::WidgetExt>(w: &W) -> Vec<String> {
+    w.css_classes().iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn photos_header_uses_glass_toolbar_classes() {
+    gtk::init().expect("GTK init failed");
+
+    let app = adw::Application::builder()
+        .application_id("org.gnome.PhotoViewer.PhotosToolbar")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+    let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+
+    let page = PhotosPage::new(media_list, loader);
+    let imp = page.imp();
+
+    // HeaderBar carries glass-header.
+    let header_classes = css_classes_vec(&imp.header_bar.get());
+    assert!(
+        header_classes.iter().any(|c| c == "glass-header"),
+        "header_bar should carry glass-header, got {header_classes:?}",
+    );
+
+    // All five batch action buttons carry glass-toolbar-button.
+    let buttons: [(&str, gtk::Button); 5] = [
+        ("select_all_btn", imp.select_all_btn.get()),
+        ("add_to_album_btn", imp.add_to_album_btn.get()),
+        ("favorite_btn", imp.favorite_btn.get()),
+        ("unfavorite_btn", imp.unfavorite_btn.get()),
+        ("delete_to_trash_btn", imp.delete_to_trash_btn.get()),
+    ];
+    for (name, btn) in buttons.iter() {
+        let classes = css_classes_vec(btn);
+        assert!(
+            classes.iter().any(|c| c == "glass-toolbar-button"),
+            "{name} should carry glass-toolbar-button, got {classes:?}",
+        );
+    }
+
+    // delete_to_trash_btn additionally carries glass-toolbar-danger.
+    let trash_classes = css_classes_vec(&imp.delete_to_trash_btn.get());
+    assert!(
+        trash_classes.iter().any(|c| c == "glass-toolbar-button"),
+        "delete_to_trash_btn should carry glass-toolbar-button, got {trash_classes:?}",
+    );
+    assert!(
+        trash_classes.iter().any(|c| c == "glass-toolbar-danger"),
+        "delete_to_trash_btn should carry glass-toolbar-danger, got {trash_classes:?}",
+    );
+}

@@ -576,8 +576,8 @@ impl MediaGrid {
             let flow = gtk::FlowBox::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .homogeneous(true)
-                .column_spacing(2)
-                .row_spacing(2)
+                .column_spacing(8)
+                .row_spacing(8)
                 .max_children_per_line(100)
                 .selection_mode(gtk::SelectionMode::Multiple)
                 .build();
@@ -715,7 +715,7 @@ impl MediaGrid {
 
                     let popover = gtk::Popover::new();
                     popover.set_parent(&flow_child_for_ctx);
-                    popover.add_css_class("media-grid-context-menu");
+                    popover.add_css_class("glass-menu");
                     popover.set_has_arrow(false);
                     popover.set_autohide(true);
                     popover.set_position(gtk::PositionType::Bottom);
@@ -729,14 +729,14 @@ impl MediaGrid {
                     let menu = gtk::Box::builder()
                         .orientation(gtk::Orientation::Vertical)
                         .spacing(2)
-                        .css_classes(["media-grid-context-menu-list"])
+                        .css_classes(["glass-menu-list"])
                         .build();
 
                     // Multi-select / Exit Multi-select.
                     if in_multi_mode {
                         let exit_btn = gtk::Button::builder()
                             .label(tr("photos.batch.exit_multi_select"))
-                            .css_classes(["media-grid-context-item", "flat", "destructive-action"])
+                            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
                             .build();
 
                         let popover_exit = popover.clone();
@@ -751,7 +751,7 @@ impl MediaGrid {
                     } else {
                         let multi_btn = gtk::Button::builder()
                             .label(tr("photos.batch.multi_select"))
-                            .css_classes(["media-grid-context-item", "flat", "suggested-action"])
+                            .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
                             .build();
 
                         let weak_enter = weak_for_context.clone();
@@ -776,7 +776,7 @@ impl MediaGrid {
                     if favorite_state.can_favorite {
                         let favorite_btn = gtk::Button::builder()
                             .label(tr("photos.batch.favorite"))
-                            .css_classes(["media-grid-context-item", "flat"])
+                            .css_classes(["glass-menu-item"])
                             .build();
                         let indices_for_fav = target_indices.clone();
                         let on_set_favorite_fav = on_set_favorite_ctx.clone();
@@ -790,7 +790,7 @@ impl MediaGrid {
                     if favorite_state.can_unfavorite {
                         let unfav_btn = gtk::Button::builder()
                             .label(tr("photos.batch.unfavorite"))
-                            .css_classes(["media-grid-context-item", "flat"])
+                            .css_classes(["glass-menu-item"])
                             .build();
                         let indices_for_unfav = target_indices.clone();
                         let on_set_favorite_unfav = on_set_favorite_ctx.clone();
@@ -805,7 +805,7 @@ impl MediaGrid {
                     if !target_indices.is_empty() {
                         let move_album_btn = gtk::Button::builder()
                             .label(tr("photos.batch.move_to_album"))
-                            .css_classes(["media-grid-context-item", "flat"])
+                            .css_classes(["glass-menu-item"])
                             .build();
                         let indices_for_album = target_indices.clone();
                         let on_add_to_album_ctx = on_add_to_album_ctx.clone();
@@ -818,7 +818,7 @@ impl MediaGrid {
 
                         let delete_btn = gtk::Button::builder()
                             .label(tr("viewer.tooltip.move_to_trash"))
-                            .css_classes(["media-grid-context-item", "flat", "destructive-action"])
+                            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
                             .build();
                         let indices_for_trash = target_indices.clone();
                         let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
@@ -935,6 +935,7 @@ pub mod square_tile {
                     .can_shrink(true)
                     .build();
                 obj.add_css_class("thumb-tile");
+                obj.add_css_class("glass-thumb-card");
                 picture.set_parent(&*obj);
                 *self.picture.borrow_mut() = Some(picture);
             }
@@ -1024,6 +1025,17 @@ pub mod square_tile {
             let tile = SquareTile::new();
 
             assert!(tile.has_css_class("thumb-tile"));
+        }
+
+        // Task 4: the new three-state CSS in `grid_css` targets
+        // `.glass-thumb-card`, which the legacy `.thumb-tile` selector no
+        // longer covers. The tile wrapper must carry the new class.
+        #[gtk::test]
+        fn square_tile_carries_glass_thumb_card_class() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            assert!(tile.has_css_class("glass-thumb-card"));
         }
     }
 }

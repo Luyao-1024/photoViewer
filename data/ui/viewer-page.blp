@@ -10,23 +10,27 @@ template $ViewerPage : Adw.NavigationPage {
 
       Adw.HeaderBar header_bar {
         show-end-title-buttons: true;
+        css-classes: ["glass-header"];
 
         [end]
         Gtk.Button details_btn {
           icon-name: "info-symbolic";
           tooltip-text: "";
+          css-classes: ["glass-toolbar-button"];
         }
 
         [end]
         Gtk.Button delete_btn {
           icon-name: "user-trash-symbolic";
           tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
         }
 
         [end]
         Gtk.Button favorite_btn {
           label: "";
           tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
         }
 
         [end]
@@ -34,6 +38,7 @@ template $ViewerPage : Adw.NavigationPage {
           icon-name: "list-add-symbolic";
           tooltip-text: "";
           primary: true;
+          css-classes: ["glass-toolbar-button"];
           // Menu model is set in `ViewerPage::setup_album_menu` once the
           // `nav_view` and `pool` are injected (they're needed by the menu's
           // activate handler to know where to push the picker).
@@ -43,6 +48,7 @@ template $ViewerPage : Adw.NavigationPage {
         Gtk.Button edit_btn {
           label: "";
           icon-name: "edit-symbolic";
+          css-classes: ["glass-toolbar-button"];
         }
       }
 
@@ -57,6 +63,7 @@ template $ViewerPage : Adw.NavigationPage {
         content: Gtk.Overlay image_overlay {
           vexpand: true;
           hexpand: true;
+          css-classes: ["viewer-stage"];
 
           child: Gtk.Picture picture {
             // Original-resolution textures have very large natural sizes (e.g.
@@ -68,6 +75,7 @@ template $ViewerPage : Adw.NavigationPage {
             vexpand: true;
             hexpand: true;
             content-fit: contain;
+            css-classes: ["viewer-image-frame"];
           };
 
           [overlay]
@@ -84,7 +92,7 @@ template $ViewerPage : Adw.NavigationPage {
         sidebar: Gtk.Box details_panel {
           orientation: vertical;
           width-request: 380;
-          css-classes: ["background"];
+          css-classes: ["viewer-details-panel", "glass-base"];
 
       Gtk.Box details_header {
             orientation: horizontal;
@@ -104,6 +112,7 @@ template $ViewerPage : Adw.NavigationPage {
             Gtk.Button details_close_btn {
               icon-name: "window-close-symbolic";
               tooltip-text: "";
+              css-classes: ["glass-toolbar-button"];
             }
           }
 

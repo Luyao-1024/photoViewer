@@ -4,6 +4,7 @@
 //! is pushed onto the host `AdwNavigationView` (injected via `set_nav_target`).
 //! Shift/Ctrl-click on a tile multi-selects; the "Add to Album" toolbar button
 //! appears whenever ≥1 tile is selected and opens the `AlbumPickerDialog`.
+use std::cell::Cell;
 use std::cell::Ref;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -50,6 +51,11 @@ mod imp {
         /// by listening to each grid's `selection-changed` callback; not
         /// authoritative on its own — the per-grid `selected` set is.
         pub selected_indices: RefCell<HashSet<u32>>,
+        /// Coalesces ModeSelector contrast refreshes while scrolling. A final
+        /// color decision can require one or more GTK frames after the scroll
+        /// adjustment value changes because tile bounds and newly-visible
+        /// thumbnail brightness state settle asynchronously.
+        pub contrast_update_pending: Cell<bool>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -77,6 +83,7 @@ mod imp {
                 pool: RefCell::new(None),
                 grids: RefCell::new(Vec::new()),
                 selected_indices: RefCell::new(HashSet::new()),
+                contrast_update_pending: Cell::new(false),
                 header_bar: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
@@ -291,7 +298,7 @@ impl PhotosPage {
             let weak = obj.downgrade();
             grid.connect_view_changed(move || {
                 if let Some(this) = weak.upgrade() {
-                    this.update_mode_selector_contrast();
+                    this.schedule_mode_selector_contrast_update();
                 }
             });
         }
@@ -554,6 +561,10 @@ impl PhotosPage {
     fn schedule_mode_selector_contrast_update(&self) {
         self.update_mode_selector_contrast();
 
+        if self.imp().contrast_update_pending.replace(true) {
+            return;
+        }
+
         let weak = self.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(this) = weak.upgrade() {
@@ -562,10 +573,18 @@ impl PhotosPage {
         });
 
         let weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+        let ticks_remaining = Rc::new(Cell::new(8u8));
+        glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
             if let Some(this) = weak.upgrade() {
                 this.update_mode_selector_contrast();
+                let remaining = ticks_remaining.get().saturating_sub(1);
+                ticks_remaining.set(remaining);
+                if remaining > 0 {
+                    return glib::ControlFlow::Continue;
+                }
+                this.imp().contrast_update_pending.set(false);
             }
+            glib::ControlFlow::Break
         });
     }
 

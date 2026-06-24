@@ -9,10 +9,12 @@ template $PhotosPage : Adw.NavigationPage {
 
     Adw.HeaderBar header_bar {
       show-end-title-buttons: true;
+      css-classes: ["glass-header"];
 
       [start]
       Gtk.Button select_all_btn {
         visible: false;
+        css-classes: ["glass-toolbar-button"];
       }
 
       Gtk.Button add_to_album_btn {
@@ -20,20 +22,24 @@ template $PhotosPage : Adw.NavigationPage {
         tooltip-text: "";
         visible: false;
         // Hidden until user has selected one or more photos.
+        css-classes: ["glass-toolbar-button"];
       }
 
       Gtk.Button favorite_btn {
         visible: false;
+        css-classes: ["glass-toolbar-button"];
       }
 
       Gtk.Button unfavorite_btn {
         visible: false;
+        css-classes: ["glass-toolbar-button"];
       }
 
       Gtk.Button delete_to_trash_btn {
         icon-name: "user-trash-symbolic";
         tooltip-text: "";
         visible: false;
+        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
       }
     }
 

@@ -20,11 +20,7 @@ fn watcher_emits_upserted_after_successful_upsert() {
 
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let (notifier, mut rx) = MediaChangeNotifier::new();
-    let _h = notify_watcher::start_watching(
-        pool.clone(),
-        vec![dir.path().to_path_buf()],
-        notifier,
-    );
+    let _h = notify_watcher::start_watching(pool.clone(), vec![dir.path().to_path_buf()], notifier);
 
     write_plain_png(&shots, "new.png");
 

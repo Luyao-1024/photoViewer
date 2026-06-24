@@ -215,4 +215,53 @@ fn mode_selector_integration_suite() {
             "label {idx} expands to center in its slot"
         );
     }
+
+    // --- Test 5: ModeSelector container carries the shared glass-raised
+    // material class. The CSS provides the material via the `.glass-raised`
+    // rule (Task 1), and the selector template should compose it on top of
+    // `mode-selector`. Without this, the floating selector keeps its own
+    // duplicated material in `box.mode-selector` and drifts from the
+    // menu/popover glass language.
+    use photo_viewer::ui::grid_css;
+    grid_css::install();
+
+    let sel_glass = ModeSelector::new();
+    let classes: Vec<String> = sel_glass
+        .css_classes()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        classes.iter().any(|c| c == "glass-raised"),
+        "ModeSelector should carry glass-raised, got {classes:?}",
+    );
+
+    // --- Test 6: shared liquid-glass material classes resolve cleanly ---
+
+    let label = gtk::Label::new(Some("probe"));
+    for class in [
+        "glass-base",
+        "glass-raised",
+        "glass-toolbar-button",
+        "glass-toolbar-danger",
+        "glass-menu",
+        "glass-menu-list",
+        "glass-menu-item",
+        "glass-menu-item-danger",
+        "glass-menu-item-suggested",
+        "glass-sidebar",
+        "glass-sidebar-row",
+        "glass-sidebar-label",
+        "glass-header",
+        "viewer-stage",
+        "viewer-image-frame",
+        "viewer-details-panel",
+        "glass-thumb-card",
+    ] {
+        label.add_css_class(class);
+    }
+    // Trigger style resolution; would error if any class crashes the provider.
+    let ctx = label.style_context();
+    ctx.save();
+    ctx.restore();
 }
