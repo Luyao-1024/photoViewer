@@ -375,6 +375,15 @@ box.mode-selector.on-light-background box.mode-dot {
   border-color: alpha(#f6c344, 0.38);
 }
 
+/* hover keeps the gold theme — without this rule, .glass-toolbar-button:hover
+   would replace the gold background with a generic alpha(white, 0.14),
+   so the active-favorite would briefly look un-favorited on pointer-over. */
+.viewer-favorite-btn.favorite-active:hover {
+  color: #ffd86b;
+  background: alpha(#f6c344, 0.22);
+  border-color: alpha(#f6c344, 0.52);
+}
+
 /* viewer-details-panel — metadata sidebar uses glass-base, not opaque. */
 .viewer-details-panel {
   background: alpha(black, 0.30);
@@ -602,4 +611,27 @@ pub fn attach_kbd_nav(flow: &gtk::FlowBox) {
 
     flow.add_controller(key);
     flow.add_controller(motion);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `.viewer-favorite-btn.favorite-active:hover` must exist alongside the
+    /// base `.viewer-favorite-btn.favorite-active` rule. Without the :hover
+    /// override, `.glass-toolbar-button:hover` wins (same specificity, defined
+    /// later in the source so it would override) and the gold favorite state
+    /// would briefly look un-favorited on pointer-over.
+    /// 没有 hover 规则时,鼠标悬停在已收藏的星标按钮上会丢失金色高亮。
+    #[test]
+    fn favorite_active_has_hover_override() {
+        assert!(
+            GRID_CSS.contains(".viewer-favorite-btn.favorite-active"),
+            "GRID_CSS must define the base .viewer-favorite-btn.favorite-active rule",
+        );
+        assert!(
+            GRID_CSS.contains(".viewer-favorite-btn.favorite-active:hover"),
+            "GRID_CSS must define a :hover override so the gold state survives pointer-over",
+        );
+    }
 }
