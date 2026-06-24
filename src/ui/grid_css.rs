@@ -183,14 +183,10 @@ box.mode-selector.on-light-background box.mode-dot {
     inset 0 -1px alpha(black, 0.16);
 }
 
-/* glass-toolbar — pill container for grouped header buttons */
-.glass-toolbar {
-  padding: 4px;
-  border-radius: 14px;
-  background: alpha(white, 0.07);
-  border: 1px solid alpha(white, 0.12);
-}
-
+/* glass-toolbar-button — individual buttons in glass header bars.
+   Tiles and similar grouped controls; carries its own background +
+   border-radius so it stands alone (no longer requires a `.glass-toolbar`
+   pill container — that selector was removed once nothing referenced it). */
 .glass-toolbar-button {
   min-height: 34px;
   min-width: 34px;
@@ -279,24 +275,6 @@ box.mode-selector.on-light-background box.mode-dot {
 .glass-menu-item-danger:hover {
   background: alpha(#ff5449, 0.18);
   color: #ffcfca;
-}
-
-/* glass-selected — luminous border + soft inner veil. Used on photo
-   tiles and sidebar rows. Distinct from glass-focus-ring (focus). */
-.glass-selected {
-  background: alpha(white, 0.10);
-  border: 1px solid alpha(white, 0.48);
-  box-shadow:
-    0 0 0 1px alpha(#5aa7ff, 0.55),
-    inset 0 1px alpha(white, 0.35);
-  border-radius: 10px;
-}
-
-/* glass-focus-ring — keyboard focus; applied to the OUTER edge so it
-   never hides the selected/hover treatment on the same node. */
-.glass-focus-ring {
-  outline: 2px solid alpha(#7db9ff, 0.80);
-  outline-offset: 2px;
 }
 
 /* glass-sidebar — the left rail surface */

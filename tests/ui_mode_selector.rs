@@ -242,7 +242,6 @@ fn mode_selector_integration_suite() {
     for class in [
         "glass-base",
         "glass-raised",
-        "glass-toolbar",
         "glass-toolbar-button",
         "glass-toolbar-danger",
         "glass-menu",
@@ -250,8 +249,6 @@ fn mode_selector_integration_suite() {
         "glass-menu-item",
         "glass-menu-item-danger",
         "glass-menu-item-suggested",
-        "glass-selected",
-        "glass-focus-ring",
         "glass-sidebar",
         "glass-sidebar-row",
         "glass-sidebar-label",

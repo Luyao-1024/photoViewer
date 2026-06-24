@@ -35,15 +35,17 @@ fn viewer_toolbar_uses_glass_classes() {
     let page = ViewerPage::new(media_list, 0);
     let imp = page.imp();
 
-    // HeaderBar carries both glass-header and viewer-header.
+    // HeaderBar carries glass-header. (The previous `viewer-header` class
+    // was removed in Fix #4 — it had no corresponding CSS rule and was
+    // effectively dead code.)
     let header_classes = css_classes_vec(&imp.header_bar.get());
     assert!(
         header_classes.iter().any(|c| c == "glass-header"),
         "header_bar should carry glass-header, got {header_classes:?}",
     );
     assert!(
-        header_classes.iter().any(|c| c == "viewer-header"),
-        "header_bar should carry viewer-header, got {header_classes:?}",
+        !header_classes.iter().any(|c| c == "viewer-header"),
+        "header_bar should no longer carry viewer-header (dead class removed), got {header_classes:?}",
     );
 
     // All five toolbar buttons carry glass-toolbar-button.
