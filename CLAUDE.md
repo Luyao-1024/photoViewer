@@ -20,6 +20,23 @@ cargo fmt && cargo clippy --all-targets
 
 `meson.build` is install-time only (desktop file + hicolor icons) — `cargo build` is the inner build.
 
+### Flatpak visual testing
+
+Liquid Glass / `backdrop-filter` visuals must be checked with the Flatpak GNOME 50 runtime, not the host `cargo run`: this machine's host GTK can be older than the Flatpak runtime and may ignore `backdrop-filter`.
+
+For current-worktree visual checks, build locally first and run the debug binary inside the installed app sandbox:
+
+```bash
+cargo build
+flatpak run \
+  --filesystem=/home/luyao/workspace/photo_viewer/photoViewer \
+  --filesystem=home \
+  --command=sh org.gnome.PhotoViewer \
+  -c 'exec /home/luyao/workspace/photo_viewer/photoViewer/target/debug/photo-viewer'
+```
+
+Do not use `flatpak-builder --force-clean` as a routine visual-test step in this workspace while the known `rofiles-fuse` unmount hang is present.
+
 ## Architecture
 
 Three-layer split, intentionally decoupled (`src/core/` has zero GTK dependency except `core/edit` which returns `image::DynamicImage` and touches `glib` only for `ParamValue` variant conversion):

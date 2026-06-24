@@ -256,7 +256,6 @@ fn mode_selector_integration_suite() {
         "viewer-stage",
         "viewer-image-frame",
         "viewer-details-panel",
-        "content-safe-bottom",
         "glass-thumb-card",
     ] {
         label.add_css_class(class);

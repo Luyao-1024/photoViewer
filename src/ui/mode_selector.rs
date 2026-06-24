@@ -178,7 +178,6 @@ mod imp {
             }
             self.last_sync.set(LastSync::Synced(active));
         }
-
     }
 }
 

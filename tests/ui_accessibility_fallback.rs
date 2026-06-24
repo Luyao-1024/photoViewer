@@ -1,4 +1,4 @@
-//! The grid CSS provider defines `prefers-reduced-transparency: reduce` and
+//! The grid CSS provider defines `prefers-reduced-motion: reduce` and
 //! `prefers-contrast: more` @media blocks that override the glass materials
 //! with stable opaque surfaces. This is the platform-level accessibility
 //! fallback (per the spec's section 7) and is opt-out: when the media query
@@ -16,16 +16,16 @@ fn accessibility_fallbacks_present() {
 
     let css = grid_css::css_for_tests();
 
-    // Reduced-transparency block must exist and must override at least
+    // Reduced-motion block must exist and must override at least
     // .glass-base and .glass-raised with opaque backgrounds.
     assert!(
-        css.contains("@media (prefers-reduced-transparency: reduce)"),
-        "GRID_CSS must contain a reduced-transparency @media block"
+        css.contains("@media (prefers-reduced-motion: reduce)"),
+        "GRID_CSS must contain a reduced-motion @media block"
     );
     let block_start = css
-        .find("@media (prefers-reduced-transparency: reduce)")
-        .expect("reduced-transparency block not present");
-    // Slice only the reduced-transparency block (up to the next @media
+        .find("@media (prefers-reduced-motion: reduce)")
+        .expect("reduced-motion block not present");
+    // Slice only the reduced-motion block (up to the next @media
     // or the file end). Skip past the opening `@media` so we don't match
     // it again.
     let search_start = block_start + 1;
@@ -36,17 +36,17 @@ fn accessibility_fallbacks_present() {
     let block = &css[block_start..block_end];
     assert!(
         block.contains(".glass-base"),
-        "reduced-transparency block must override .glass-base"
+        "reduced-motion block must override .glass-base"
     );
     assert!(
         block.contains(".glass-raised"),
-        "reduced-transparency block must override .glass-raised"
+        "reduced-motion block must override .glass-raised"
     );
     // backdrop-filter must be explicitly disabled (not just dimmed) inside
-    // the reduced-transparency block.
+    // the reduced-motion block.
     assert!(
         block.contains("backdrop-filter: none"),
-        "reduced-transparency block must contain `backdrop-filter: none`, got block:\n{block}"
+        "reduced-motion block must contain `backdrop-filter: none`, got block:\n{block}"
     );
 
     // High-contrast block must exist and must force thicker borders.

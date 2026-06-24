@@ -143,21 +143,7 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for MediaGrid {
-        fn constructed(&self) {
-            self.parent_constructed();
-            // `content-safe-bottom` (defined in `grid_css.rs`) reserves 128px
-            // at the bottom of the scrolled content so the floating mode
-            // selector overlay never covers the last row of thumbnails.
-            // It must be applied here, on the inner ScrolledWindow that
-            // actually scrolls — padding on outer wrappers (e.g. ViewStack)
-            // does not propagate into the scrolled content. The
-            // `.content-safe-bottom` was previously also applied to the outer
-            // ViewStack in photos-page.blp as a defensive measure; it was
-            // removed in Fix #5 because that placement had no effect.
-            self.scroller.add_css_class("content-safe-bottom");
-        }
-    }
+    impl ObjectImpl for MediaGrid {}
     impl WidgetImpl for MediaGrid {}
     impl BoxImpl for MediaGrid {}
 }

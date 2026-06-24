@@ -74,6 +74,15 @@ fn media_grid_flowbox_uses_8px_gaps() {
         false,
     );
 
+    assert!(
+        !grid
+            .imp()
+            .scroller
+            .get()
+            .has_css_class("content-safe-bottom"),
+        "MediaGrid must not reserve a fixed bottom padding behind the floating mode selector"
+    );
+
     // `rebuild` appends a `GtkLabel` header followed by a `GtkFlowBox` per
     // section, stacked inside `imp().content` (a vertical `GtkBox`). Find
     // the first FlowBox among the children and assert its spacing.

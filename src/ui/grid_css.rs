@@ -32,13 +32,10 @@ use std::sync::OnceLock;
 
 const GRID_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
-/* 8px four-sided padding matches column/row spacing. The 128px bottom
-   safe area for the floating mode selector is provided by
-   `.content-safe-bottom` on the outer ScrolledWindow; do NOT add
-   padding-bottom here: each per-section FlowBox would then reserve
-   128px, producing a dark gap between every two date sections that
-   looks like a black bar covering the photos.
-   每段 padding-bottom 会让每个分区底部都留出 128px 深色空隙。 */
+/* 8px four-sided padding matches column/row spacing. Do NOT add a fixed
+   padding-bottom here or on the ScrolledWindow: the ModeSelector is a glass
+   overlay and should float over content instead of reserving a dark safe area.
+   每段或滚动容器 padding-bottom 会留出深色空隙，看起来像黑带。 */
 flowbox.thumb-grid { padding: 8px; background: transparent; }
 
 /* Hover — soft veil on the flowboxchild, no border. */
@@ -250,7 +247,6 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .glass-menu-list {
   min-width: 190px;
-  spacing: 3px;
 }
 
 .glass-menu-item {
@@ -394,10 +390,6 @@ box.mode-selector.on-light-background box.mode-dot {
   backdrop-filter: blur(22px) saturate(1.12);
 }
 
-/* content-safe-bottom — apply to scrollable grid so the bottom
-   mode selector (≈ 58px + 24px margin + buffer) never covers tiles. */
-.content-safe-bottom { padding-bottom: 128px; }
-
 /* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
    would be too expensive at 10k–100k tiles and would blur the photo. */
 .glass-thumb-card {
@@ -407,13 +399,13 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 
 /* ── Accessibility fallback ──────────────────────────────────────────
-   When the user has enabled reduced-transparency (GNOME Settings →
-   Accessibility → Reduce animation, or a system hint), every glass
-   surface degrades to a stable opaque neutral. Scoped to surfaces that
-   use alpha fills or backdrop-filter; non-glass elements are untouched.
-   当用户启用减弱透明度时,所有玻璃面降级为稳定不透明中性色,不影响非玻璃
-   元素(Adwaita 默认、照片瓦片等)。 */
-@media (prefers-reduced-transparency: reduce) {
+   GTK CssProvider supports prefers-reduced-motion, prefers-contrast and
+   prefers-color-scheme media features. It does NOT support the web draft
+   prefers-reduced-transparency feature, so GNOME's Reduce Animation setting
+   is the supported platform hook for disabling glass blur/alpha effects.
+   当用户启用 GNOME 减少动画时,所有玻璃面降级为稳定不透明中性色,不影响
+   非玻璃元素(Adwaita 默认、照片瓦片等)。 */
+@media (prefers-reduced-motion: reduce) {
   .glass-base,
   .glass-raised,
   .glass-header,
