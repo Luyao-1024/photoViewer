@@ -7,7 +7,7 @@
 //! - `error`：高优先级，5 秒超时 — 错误反馈（操作失败、I/O 失败等）
 //! - `info`：普通优先级，2 秒超时 — 状态提示（如扫描完成、撤销倒计时等）
 //!
-//! 注意：当前 EditorPage / TrashPage 等 NavigationPage 自身尚未嵌入
+//! 注意：当前 EditorPanel / TrashPage 等 NavigationPage 自身尚未嵌入
 //! `AdwToastOverlay`，其内部 `show_toast` 仍走 tracing 日志回退；这些 helper
 //! 供未来接入页面级 / 窗口级 overlay 后使用。
 //!

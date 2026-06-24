@@ -572,8 +572,8 @@ fn ensure_opaque(pb: &Pixbuf) -> Pixbuf {
         return pb.clone();
     }
     let (w, h) = (pb.width(), pb.height());
-    let bg = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, w, h)
-        .expect("分配不透明背景 pixbuf");
+    let bg =
+        Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, w, h).expect("分配不透明背景 pixbuf");
     bg.fill(0xFFFFFFFF); // 不透明白
     pb.composite(
         &bg,

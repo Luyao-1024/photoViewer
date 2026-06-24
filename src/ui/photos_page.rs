@@ -434,7 +434,7 @@ impl PhotosPage {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }
 
-    /// Inject the `DbPool` so viewer pages can launch `EditorPage` with
+    /// Inject the `DbPool` so viewer pages can launch the editor panel with
     /// access to the database. Mirrors `set_nav_target`.
     pub fn set_db_pool(&self, pool: DbPool) {
         *self.imp().pool.borrow_mut() = Some(pool);
@@ -829,7 +829,7 @@ impl PhotosPage {
 
         let viewer = ViewerPage::new(media_list, global_index);
 
-        // Wire the viewer's Edit button: it pushes an EditorPage onto `nav`.
+        // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
             viewer.set_edit_target(&nav, pool.clone());
         }

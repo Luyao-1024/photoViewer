@@ -28,7 +28,7 @@ fn main() {
         "data/ui/section-header.blp",
         "data/ui/viewer-page.blp",
         "data/ui/trash-page.blp",
-        "data/ui/editor-page.blp",
+        "data/ui/editor-panel.blp",
     ];
     for blp in blueprint_files {
         let ui_path = blp.replace(".blp", ".ui");

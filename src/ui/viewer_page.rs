@@ -15,7 +15,7 @@ use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifField};
 use crate::core::{albums, trash};
 use crate::ui::album_picker::AlbumPickerDialog;
-use crate::ui::editor_page::EditorPage;
+use crate::ui::editor_panel::{EditorPanel, ToastKind};
 use crate::ui::toasts;
 use chrono::{Local, Utc};
 use gtk4 as gtk;
@@ -98,10 +98,14 @@ mod imp {
         pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
         /// Optional callback invoked whenever current media favorite state changes.
         pub favorite_state_cb: RefCell<Option<FavoriteStateCallback>>,
-        /// DB pool injected by host (needed to construct `EditorPage`).
+        /// DB pool injected by host (needed to construct the editor panel).
         pub pool: RefCell<Option<DbPool>>,
-        /// Navigation view used to push `EditorPage` when the user clicks Edit.
+        /// Navigation view (kept for album picker push; editor no longer pushes).
         pub nav_view: RefCell<Option<adw::NavigationView>>,
+        /// Original texture saved before editing starts; restored on cancel.
+        pub original_texture: RefCell<Option<gdk::Texture>>,
+        /// True while the editor side-panel is open (prevents nav gestures).
+        pub is_editing: Cell<bool>,
         /// Dynamic EXIF rows currently appended to `exif_group`.
         pub exif_rows: RefCell<Vec<adw::ActionRow>>,
         /// 当前图片收藏状态（用于按钮即时渲染）。
@@ -120,6 +124,10 @@ mod imp {
         pub details_close_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub details_split_view: TemplateChild<adw::OverlaySplitView>,
+        #[template_child]
+        pub editor_split_view: TemplateChild<adw::OverlaySplitView>,
+        #[template_child]
+        pub editor_panel: TemplateChild<EditorPanel>,
         #[template_child]
         pub edit_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -157,6 +165,7 @@ mod imp {
         type ParentType = adw::NavigationPage;
 
         fn class_init(klass: &mut Self::Class) {
+            EditorPanel::ensure_type();
             klass.bind_template();
         }
 
@@ -188,6 +197,7 @@ impl ViewerPage {
         obj.setup_gesture();
         obj.setup_keyboard();
         obj.setup_edit_button();
+        obj.setup_editor_callbacks();
         obj.setup_delete_button();
         obj.setup_details_panel();
         obj.setup_favorite_button();
@@ -217,7 +227,7 @@ impl ViewerPage {
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an
-    /// `EditorPage` when the Edit button is pressed. Call this after
+    /// the editor panel when the Edit button is pressed. Call this after
     /// construction (mirrors `PhotosPage::set_nav_target`).
     pub fn set_edit_target(&self, nav: &adw::NavigationView, pool: DbPool) {
         tracing::debug!(
@@ -311,21 +321,14 @@ impl ViewerPage {
         imp.add_to_album_btn.get().set_menu_model(Some(&menu));
     }
 
-    /// Wire the Edit button: build an `EditorPage` for the currently
-    /// displayed item, push it onto the host nav view, and wire its
-    /// Cancel callback to pop the editor back to the viewer.
+    /// Wire the Edit button: configure the embedded `EditorPanel` for the
+    /// current item and reveal it as a right-side overlay (same pattern as
+    /// the details panel), instead of pushing a separate `NavigationPage`.
     fn setup_edit_button(&self) {
         let imp = self.imp();
         let weak = self.downgrade();
         imp.edit_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
-            let nav = match this.imp().nav_view.borrow().as_ref() {
-                Some(n) => n.clone(),
-                None => {
-                    tracing::warn!("ViewerPage: Edit pressed but nav_view not set");
-                    return;
-                }
-            };
             let pool = match this.imp().pool.borrow().as_ref() {
                 Some(p) => p.clone(),
                 None => {
@@ -337,16 +340,97 @@ impl ViewerPage {
                 Some(i) => i,
                 None => return,
             };
-            let editor = EditorPage::new(item, pool);
-            // When the user presses Cancel in the editor, pop it from the
-            // nav view and return to the viewer.
-            let nav_for_cancel = nav.downgrade();
-            editor.connect_cancel(move || {
-                if let Some(n) = nav_for_cancel.upgrade() {
-                    n.pop();
+
+            // Close details panel if open — only one side panel at a time.
+            if this.imp().details_split_view.get().shows_sidebar() {
+                this.set_details_revealed(false, "edit_start");
+            }
+
+            // Save the original texture so we can restore on cancel.
+            *this.imp().original_texture.borrow_mut() = this
+                .imp()
+                .picture
+                .get()
+                .paintable()
+                .and_then(|p| p.downcast::<gdk::Texture>().ok());
+
+            // Configure and reveal the editor panel.
+            this.imp().editor_panel.get().configure(item, pool);
+            this.start_editing();
+        });
+    }
+
+    /// Reveal the editor side-panel and lock navigation gestures.
+    fn start_editing(&self) {
+        self.imp().is_editing.set(true);
+        self.imp().editor_split_view.get().set_show_sidebar(true);
+        self.set_can_pop(false);
+    }
+
+    /// Hide the editor side-panel, restore the original image, and
+    /// re-enable navigation gestures.
+    fn stop_editing(&self) {
+        let imp = self.imp();
+        imp.is_editing.set(false);
+        imp.editor_split_view.get().set_show_sidebar(false);
+
+        // Restore the original texture (cancel case).
+        if let Some(tex) = imp.original_texture.borrow().clone() {
+            imp.picture.get().set_paintable(Some(&tex));
+        }
+        *imp.original_texture.borrow_mut() = None;
+
+        // Re-enable pop after the slide-out animation.
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+            if let Some(this) = weak.upgrade() {
+                if !this.imp().is_editing.get()
+                    && !this.imp().editor_split_view.get().shows_sidebar()
+                {
+                    this.set_can_pop(true);
                 }
-            });
-            nav.push(&editor);
+            }
+        });
+    }
+
+    /// Connect EditorPanel callbacks to ViewerPage state (picture, spinner,
+    /// toast overlay). Called once during construction.
+    fn setup_editor_callbacks(&self) {
+        let panel = self.imp().editor_panel.get();
+
+        // Preview texture → update the viewer's picture.
+        let weak = self.downgrade();
+        panel.connect_texture_ready(move |texture| {
+            if let Some(this) = weak.upgrade() {
+                this.imp().picture.get().set_paintable(Some(&texture));
+            }
+        });
+
+        // Spinner visibility.
+        let weak = self.downgrade();
+        panel.connect_spinner(move |visible| {
+            if let Some(this) = weak.upgrade() {
+                this.imp().spinner.get().set_visible(visible);
+            }
+        });
+
+        // Close (cancel or save-complete) → hide panel.
+        let weak = self.downgrade();
+        panel.connect_close(move || {
+            if let Some(this) = weak.upgrade() {
+                this.stop_editing();
+            }
+        });
+
+        // Toast messages.
+        let weak = self.downgrade();
+        panel.connect_toast(move |msg, kind| {
+            if let Some(this) = weak.upgrade() {
+                match kind {
+                    ToastKind::Success => toasts::success(&this.imp().toast_overlay.get(), msg),
+                    ToastKind::Error => toasts::error(&this.imp().toast_overlay.get(), msg),
+                }
+            }
         });
     }
 
@@ -645,23 +729,12 @@ impl ViewerPage {
         pop_action.connect_activate(move |_, _| {
             let Some(this) = weak.upgrade() else { return };
             let details_split_view = this.imp().details_split_view.get();
-            tracing::debug!(
-                "VIEWER_DEBUG navigation.pop action index={} details_revealed={}",
-                this.imp().current_index.get(),
-                details_split_view.shows_sidebar()
-            );
-            if details_split_view.shows_sidebar() {
+            let editor_split_view = this.imp().editor_split_view.get();
+            if editor_split_view.shows_sidebar() {
+                this.stop_editing();
+            } else if details_split_view.shows_sidebar() {
                 this.set_details_revealed(false, "navigation.pop");
-                tracing::debug!(
-                    "VIEWER_DEBUG navigation.pop consumed_by_details index={} after_revealed={}",
-                    this.imp().current_index.get(),
-                    details_split_view.shows_sidebar()
-                );
             } else {
-                tracing::debug!(
-                    "VIEWER_DEBUG navigation.pop forwarding NAV_POP index={}",
-                    this.imp().current_index.get()
-                );
                 this.fire_nav(NAV_POP);
             }
         });
@@ -861,7 +934,7 @@ impl ViewerPage {
         // Decode the current image off the main thread. `Pixbuf::from_file`
         // dispatches via gdk-pixbuf loaders (JPEG/PNG/HEIC/AVIF/...) and is
         // CPU-bound for big images — `spawn_blocking` keeps the UI responsive.
-        // We use `gio::spawn_blocking` (matches `editor_page.rs`) rather than
+        // We use `gio::spawn_blocking` (matches `editor_panel.rs`) rather than
         // `tokio::task::spawn_blocking`. Pixbuf itself is `!Send`, so the
         // worker converts it to a `gdk::Texture` (which IS Send) before
         // returning — that way we can hand the texture across the oneshot.
@@ -990,47 +1063,33 @@ impl ViewerPage {
         key_ctrl.connect_key_pressed(move |_, key, _, _| match key {
             gdk::Key::Right => {
                 if let Some(this) = weak.upgrade() {
-                    tracing::debug!(
-                        "VIEWER_DEBUG key Right index={} details_revealed={}",
-                        this.imp().current_index.get(),
-                        this.imp().details_split_view.get().shows_sidebar()
-                    );
+                    if this.imp().is_editing.get() {
+                        return glib::Propagation::Stop;
+                    }
                     this.fire_nav(1);
                 }
                 glib::Propagation::Proceed
             }
             gdk::Key::Left => {
                 if let Some(this) = weak.upgrade() {
-                    tracing::debug!(
-                        "VIEWER_DEBUG key Left index={} details_revealed={}",
-                        this.imp().current_index.get(),
-                        this.imp().details_split_view.get().shows_sidebar()
-                    );
+                    if this.imp().is_editing.get() {
+                        return glib::Propagation::Stop;
+                    }
                     this.fire_nav(-1);
                 }
                 glib::Propagation::Proceed
             }
             gdk::Key::Escape => {
                 if let Some(this) = weak.upgrade() {
-                    let details_split_view = this.imp().details_split_view.get();
-                    tracing::debug!(
-                        "VIEWER_DEBUG key Escape index={} details_revealed={}",
-                        this.imp().current_index.get(),
-                        details_split_view.shows_sidebar()
-                    );
-                    if details_split_view.shows_sidebar() {
-                        this.set_details_revealed(false, "key Escape");
-                        tracing::debug!(
-                            "VIEWER_DEBUG key Escape consumed_by_details index={} after_revealed={}",
-                            this.imp().current_index.get(),
-                            details_split_view.shows_sidebar()
-                        );
+                    if this.imp().editor_split_view.get().shows_sidebar() {
+                        this.stop_editing();
                         return glib::Propagation::Stop;
                     }
-                    tracing::debug!(
-                        "VIEWER_DEBUG key Escape forwarding NAV_POP index={}",
-                        this.imp().current_index.get()
-                    );
+                    let details_split_view = this.imp().details_split_view.get();
+                    if details_split_view.shows_sidebar() {
+                        this.set_details_revealed(false, "key Escape");
+                        return glib::Propagation::Stop;
+                    }
                     this.fire_nav(NAV_POP);
                 }
                 glib::Propagation::Stop

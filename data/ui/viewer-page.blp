@@ -52,44 +52,52 @@ template $ViewerPage : Adw.NavigationPage {
         }
       }
 
-      Adw.OverlaySplitView details_split_view {
+      Adw.OverlaySplitView editor_split_view {
         vexpand: true;
         hexpand: true;
         show-sidebar: false;
         sidebar-position: end;
-        min-sidebar-width: 320;
+        min-sidebar-width: 340;
         max-sidebar-width: 420;
 
-        content: Gtk.Overlay image_overlay {
+        content: Adw.OverlaySplitView details_split_view {
           vexpand: true;
           hexpand: true;
-          css-classes: ["viewer-stage"];
+          show-sidebar: false;
+          sidebar-position: end;
+          min-sidebar-width: 320;
+          max-sidebar-width: 420;
 
-          child: Gtk.Picture picture {
-            // Original-resolution textures have very large natural sizes (e.g.
-            // 4000×3000) which, with can-shrink=false, would force the host
-            // window to grow. can-shrink=true lets the widget be allocated any
-            // size; content-fit:contain then scales the image to fit that
-            // allocation while preserving aspect ratio.
-            can-shrink: true;
+          content: Gtk.Overlay image_overlay {
             vexpand: true;
             hexpand: true;
-            content-fit: contain;
-            css-classes: ["viewer-image-frame"];
+            css-classes: ["viewer-stage"];
+
+            child: Gtk.Picture picture {
+              // Original-resolution textures have very large natural sizes (e.g.
+              // 4000×3000) which, with can-shrink=false, would force the host
+              // window to grow. can-shrink=true lets the widget be allocated any
+              // size; content-fit:contain then scales the image to fit that
+              // allocation while preserving aspect ratio.
+              can-shrink: true;
+              vexpand: true;
+              hexpand: true;
+              content-fit: contain;
+              css-classes: ["viewer-image-frame"];
+            };
+
+            [overlay]
+            Gtk.Spinner spinner {
+              vexpand: true;
+              hexpand: true;
+              halign: center;
+              valign: center;
+              spinning: true;
+              visible: true;
+            }
           };
 
-          [overlay]
-          Gtk.Spinner spinner {
-            vexpand: true;
-            hexpand: true;
-            halign: center;
-            valign: center;
-            spinning: true;
-            visible: true;
-          }
-        };
-
-        sidebar: Gtk.Box details_panel {
+          sidebar: Gtk.Box details_panel {
           orientation: vertical;
           width-request: 380;
           css-classes: ["viewer-details-panel", "glass-base"];
@@ -171,7 +179,13 @@ template $ViewerPage : Adw.NavigationPage {
             };
           }
         };
+
+        };
+
+        sidebar: $EditorPanel editor_panel {
+        };
       }
+
     };
   };
 }

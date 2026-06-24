@@ -11,6 +11,6 @@
     <file>ui/section-header.ui</file>
     <file>ui/viewer-page.ui</file>
     <file>ui/trash-page.ui</file>
-    <file>ui/editor-page.ui</file>
+    <file>ui/editor-panel.ui</file>
   </gresource>
 </gresources>

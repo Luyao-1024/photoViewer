@@ -1,61 +1,38 @@
 using Gtk 4.0;
 using Adw 1;
 
-template $EditorPage : Adw.NavigationPage {
-  title: "";
+template $EditorPanel : Gtk.Box {
+  orientation: vertical;
+  width-request: 340;
+  css-classes: ["viewer-details-panel", "glass-base"];
 
-  child: Gtk.Box root_box {
-    orientation: vertical;
+  Gtk.Box editor_header {
+    orientation: horizontal;
+    spacing: 6;
+    margin-start: 12;
+    margin-end: 6;
+    margin-top: 6;
+    margin-bottom: 6;
 
-    Adw.HeaderBar header_bar {
-      show-end-title-buttons: true;
-      css-classes: ["glass-header"];
-
-      [start]
-      Gtk.Button cancel_btn {
-        label: "";
-        css-classes: ["glass-toolbar-button"];
-      }
-
-      [end]
-      Gtk.Button save_copy_btn {
-        label: "";
-        css-classes: ["glass-toolbar-button", "glass-toolbar-suggested"];
-      }
-
-      [end]
-      Gtk.MenuButton save_menu_btn {
-        label: "";
-        css-classes: ["glass-toolbar-button"];
-      }
-    }
-
-    Gtk.Overlay preview_overlay {
-      vexpand: true;
+    Gtk.Label editor_title {
+      label: "";
+      xalign: 0;
       hexpand: true;
-      css-classes: ["glass-editor-preview"];
-
-      child: Gtk.ScrolledWindow preview_scroll {
-        vexpand: true;
-        hexpand: true;
-
-        child: Gtk.Picture preview_picture {
-          content-fit: contain;
-          vexpand: true;
-          hexpand: true;
-        };
-      };
-
-      [overlay]
-      Gtk.Spinner spinner {
-        halign: center;
-        valign: center;
-        spinning: true;
-        visible: false;
-      }
+      css-classes: ["title-3"];
     }
 
-    Adw.PreferencesPage prefs_page {
+    Gtk.Button editor_close_btn {
+      icon-name: "window-close-symbolic";
+      tooltip-text: "";
+      css-classes: ["glass-toolbar-button"];
+    }
+  }
+
+  Gtk.ScrolledWindow {
+    vexpand: true;
+    hscrollbar-policy: never;
+
+    child: Adw.PreferencesPage {
       Adw.PreferencesGroup rotate_group {
         title: "";
 
@@ -65,19 +42,14 @@ template $EditorPage : Adw.NavigationPage {
           homogeneous: true;
 
           Gtk.Button rotate_90_cw {
-            label: "";
-            icon-name: "object-rotate-right-symbolic";
             css-classes: ["glass-toolbar-button"];
           }
 
           Gtk.Button rotate_180 {
-            label: "";
             css-classes: ["glass-toolbar-button"];
           }
 
           Gtk.Button rotate_90_ccw {
-            label: "";
-            icon-name: "object-rotate-left-symbolic";
             css-classes: ["glass-toolbar-button"];
           }
         }
@@ -121,10 +93,31 @@ template $EditorPage : Adw.NavigationPage {
         title: "";
 
         Gtk.Button start_crop_btn {
-          label: "";
           css-classes: ["glass-toolbar-button"];
         }
       }
+    };
+  }
+
+  Gtk.Box action_box {
+    orientation: horizontal;
+    spacing: 6;
+    homogeneous: true;
+    margin-start: 12;
+    margin-end: 12;
+    margin-top: 6;
+    margin-bottom: 12;
+
+    Gtk.Button cancel_btn {
+      css-classes: ["glass-toolbar-button"];
     }
-  };
+
+    Gtk.Button save_copy_btn {
+      css-classes: ["glass-toolbar-button", "glass-toolbar-suggested"];
+    }
+
+    Gtk.MenuButton save_menu_btn {
+      css-classes: ["glass-toolbar-button"];
+    }
+  }
 }
