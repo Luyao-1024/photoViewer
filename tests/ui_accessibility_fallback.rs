@@ -7,7 +7,6 @@
 //! GTK is single-threaded; all checks live in one `#[test]` function.
 
 use gtk4 as gtk;
-use gtk4::prelude::*;
 use photo_viewer::ui::grid_css;
 
 #[test]
