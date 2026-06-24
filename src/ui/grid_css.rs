@@ -405,9 +405,46 @@ box.mode-selector.on-light-background box.mode-dot {
   border: 1px solid transparent;
   background: transparent;
 }
+
+/* ── Accessibility fallback ──────────────────────────────────────────
+   When the user has enabled reduced-transparency (GNOME Settings →
+   Accessibility → Reduce animation, or a system hint), every glass
+   surface degrades to a stable opaque neutral. Scoped to surfaces that
+   use alpha fills or backdrop-filter; non-glass elements are untouched.
+   当用户启用减弱透明度时,所有玻璃面降级为稳定不透明中性色,不影响非玻璃
+   元素(Adwaita 默认、照片瓦片等)。 */
+@media (prefers-reduced-transparency: reduce) {
+  .glass-base,
+  .glass-raised,
+  .glass-header,
+  .glass-sidebar,
+  .glass-toolbar-button,
+  .glass-menu > contents,
+  .viewer-stage,
+  .viewer-details-panel,
+  .glass-editor-preview {
+    background: #1f1f23;
+    background-clip: padding-box;
+    border-color: alpha(white, 0.10);
+    backdrop-filter: none;
+    box-shadow: none;
+  }
+  .glass-toolbar-button {
+    background: #2a2a30;
+  }
+  .glass-menu > contents {
+    background: #1f1f23;
+  }
+}
 ";
 
 static CSS_INSTALLED: OnceLock<()> = OnceLock::new();
+
+/// Test-only getter for the CSS string. Not for production use.
+#[doc(hidden)]
+pub fn css_for_tests() -> &'static str {
+    GRID_CSS
+}
 
 /// Has [`install`] been called at least once on this process?
 /// Reads are non-blocking and safe to call from any thread.
