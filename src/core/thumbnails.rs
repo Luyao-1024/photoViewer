@@ -555,11 +555,40 @@ fn generate(
 fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_path: &Path) -> anyhow::Result<Pixbuf> {
     let pb =
         Pixbuf::from_file(src_path).map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
-    let thumb = scale_pixbuf_to_fit(&pb, max_dim);
+    let scaled = scale_pixbuf_to_fit(&pb, max_dim);
+    // JPEG 不支持 alpha：GNOME 50 的 gdk-pixbuf JPEG 保存走 glycin，会直接拒绝
+    // `Rgba8` pixbuf。先把带 alpha 的（PNG 截图等）合成到不透明白底上再存。
+    let thumb = ensure_opaque(&scaled);
     thumb
         .savev(cache_path, "jpeg", &[])
         .map_err(|e| anyhow::anyhow!("gdk-pixbuf JPEG 保存失败: {e}"))?;
     Ok(thumb)
+}
+
+/// 返回等尺寸的**不透明**（无 alpha）pixbuf：有 alpha 时合成到不透明白底上，
+/// 无 alpha 时原样克隆。供 JPEG 保存前使用（JPEG 无 alpha 通道）。
+fn ensure_opaque(pb: &Pixbuf) -> Pixbuf {
+    if !pb.has_alpha() {
+        return pb.clone();
+    }
+    let (w, h) = (pb.width(), pb.height());
+    let bg = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, w, h)
+        .expect("分配不透明背景 pixbuf");
+    bg.fill(0xFFFFFFFF); // 不透明白
+    pb.composite(
+        &bg,
+        0,
+        0,
+        w,
+        h,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        gdk_pixbuf::InterpType::Bilinear,
+        255,
+    );
+    bg
 }
 
 /// 等比缩放到 `max_dim` 内（不放大），行为对齐 `image::DynamicImage::thumbnail`。
@@ -656,6 +685,35 @@ mod tests {
         let (w, h) = (decoded.width(), decoded.height());
         assert!(w <= 256 && h <= 256, "应在 max_dim 内, got {w}x{h}");
         assert_eq!(w.max(h), 256, "长边应正好缩到 max_dim");
+    }
+
+    /// 回归：RGBA PNG（截图）必须能生成 JPEG 缩略图。
+    /// GNOME 50 runtime 下 gdk-pixbuf 的 JPEG 保存走 glycin，拒绝 Rgba8；
+    /// 修复前此用例失败（缩略图生成失败 → tile 白/灰块）。
+    #[test]
+    fn generate_via_pixbuf_handles_rgba_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("rgba.png");
+        let img = image::RgbaImage::from_pixel(400, 300, image::Rgba([10, 20, 30, 128]));
+        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
+
+        let out = dir.path().join("out.jpg");
+        generate_via_pixbuf(&src, 256, &out).expect("RGBA PNG 应能生成 JPEG 缩略图");
+        assert!(out.exists(), "应写出 JPEG 缩略图");
+    }
+
+    /// `ensure_opaque` 契约：带 alpha 的输入必须返回无 alpha 的等尺寸 pixbuf，
+    /// 无 alpha 的输入原样返回。确定性，不依赖具体 JPEG saver 行为。
+    #[test]
+    fn ensure_opaque_strips_alpha() {
+        let rgba = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 40, 30).unwrap();
+        let opaque = ensure_opaque(&rgba);
+        assert!(!opaque.has_alpha(), "RGBA 经 ensure_opaque 后应无 alpha");
+        assert_eq!((opaque.width(), opaque.height()), (40, 30));
+
+        let rgb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 40, 30).unwrap();
+        let same = ensure_opaque(&rgb);
+        assert!(!same.has_alpha(), "无 alpha 输入应保持无 alpha");
     }
 
     /// 回归 `scale_pixbuf_to_fit`：缩入 max_dim 内且不放大。
