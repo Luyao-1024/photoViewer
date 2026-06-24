@@ -216,13 +216,27 @@ fn mode_selector_integration_suite() {
         );
     }
 
-    // --- Test 5: shared liquid-glass material classes resolve cleanly ---
-    //
-    // Each of these names must parse and resolve to a valid selector
-    // when the provider is queried. We assert that creating a widget
-    // with the class and looking up its style context does not error.
+    // --- Test 5: ModeSelector container carries the shared glass-raised
+    // material class. The CSS provides the material via the `.glass-raised`
+    // rule (Task 1), and the selector template should compose it on top of
+    // `mode-selector`. Without this, the floating selector keeps its own
+    // duplicated material in `box.mode-selector` and drifts from the
+    // menu/popover glass language.
     use photo_viewer::ui::grid_css;
     grid_css::install();
+
+    let sel_glass = ModeSelector::new();
+    let classes: Vec<String> = sel_glass
+        .css_classes()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        classes.iter().any(|c| c == "glass-raised"),
+        "ModeSelector should carry glass-raised, got {classes:?}",
+    );
+
+    // --- Test 6: shared liquid-glass material classes resolve cleanly ---
 
     let label = gtk::Label::new(Some("probe"));
     for class in [

@@ -93,31 +93,18 @@ flowbox.album-grid > flowboxchild:selected:focus .album-cover {
   outline-offset: -3px;
 }
 
-/* ModeSelector 容器：GTK 4.22+ 原生 backdrop-filter 液态玻璃。
-   GNOME 50 runtime 内 GTK 4.22.4 会把背景复制/模糊交给 GSK 渲染器；
-   旧 GTK 不识别 backdrop-filter 时仍保留半透明背景、圆角、描边和阴影
-   作为 fallback。 */
+/* mode-selector uses .glass-raised for its material; this rule only
+   owns the mode-specific container shape. */
 box.mode-selector {
-    padding: 8px 16px;
-    border-radius: 24px;
-    background: alpha(white, 0.10);
-    background-clip: padding-box;
-    border: 1px solid alpha(white, 0.28);
-    backdrop-filter: blur(22px) saturate(1.35) brightness(1.08);
-    box-shadow:
-        0 18px 48px alpha(black, 0.26),
-    inset 0 1px alpha(white, 0.58),
-    inset 0 -1px alpha(black, 0.16);
+  padding: 8px 16px;
+  border-radius: 24px;
+  min-height: 58px;
 }
 
 box.mode-selector.on-light-background {
-    background: alpha(white, 0.18);
-    border-color: alpha(white, 0.42);
-    backdrop-filter: blur(24px) saturate(1.20) brightness(1.04);
-    box-shadow:
-        0 16px 42px alpha(black, 0.20),
-    inset 0 1px alpha(white, 0.72),
-    inset 0 -1px alpha(black, 0.10);
+  /* No material override — the .glass-raised rule already provides a
+     light/dark balanced fill. Kept as a hook in case we later want a
+     different border on bright photo backgrounds. */
 }
 
 /* 单个 label / dot 槽位 */

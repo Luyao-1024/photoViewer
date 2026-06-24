@@ -143,7 +143,20 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for MediaGrid {}
+    impl ObjectImpl for MediaGrid {
+        fn constructed(&self) {
+            self.parent_constructed();
+            // `content-safe-bottom` (defined in `grid_css.rs`) reserves 128px
+            // at the bottom of the scrolled content so the floating mode
+            // selector overlay never covers the last row of thumbnails.
+            // The outer `view_stack` in `data/ui/photos-page.blp` already
+            // carries the class for the page-level safe area; we add it here
+            // too because the inner `ScrolledWindow` is what actually
+            // scrolls — padding on `view_stack` does not propagate into the
+            // scrolled content.
+            self.scroller.add_css_class("content-safe-bottom");
+        }
+    }
     impl WidgetImpl for MediaGrid {}
     impl BoxImpl for MediaGrid {}
 }
