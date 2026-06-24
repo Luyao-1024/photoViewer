@@ -1,9 +1,8 @@
 //! EditorPage carries the same liquid-glass material as the rest of the
 //! app: header gets `glass-header`, action buttons get `glass-toolbar-button`,
-//! save_copy gets `glass-toolbar-suggested`.
-//!
-//! The save-menu popover and preview_overlay glass classes are covered in
-//! `tests/ui_editor_page_phase2.rs` (Task 2).
+//! save_copy gets `glass-toolbar-suggested`, the preview overlay gets
+//! `glass-editor-preview`, and the save-menu popover built by
+//! `setup_save_menu` gets `glass-menu`.
 //!
 //! GTK is single-threaded; all checks live in one `#[test]` function.
 //! See `tests/ui_mode_selector.rs` and `tests/ui_viewer_toolbar.rs` for
@@ -93,4 +92,23 @@ fn editor_page_header_and_buttons_use_glass() {
             "{name} should carry glass-toolbar-button, got {classes:?}"
         );
     }
+
+    // preview_overlay carries glass-editor-preview (Task 2 surface).
+    let preview_classes = probe_classes(&imp.preview_overlay.get());
+    assert!(
+        preview_classes.iter().any(|c| c == "glass-editor-preview"),
+        "preview_overlay should carry glass-editor-preview, got {preview_classes:?}"
+    );
+
+    // The save_menu_btn's popover is a GtkPopoverMenu carrying glass-menu.
+    let popover: gtk::Popover = imp
+        .save_menu_btn
+        .get()
+        .popover()
+        .expect("save_menu_btn should have a popover");
+    let pop_classes = probe_classes(&popover);
+    assert!(
+        pop_classes.iter().any(|c| c == "glass-menu"),
+        "save popover should carry glass-menu, got {pop_classes:?}"
+    );
 }

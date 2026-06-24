@@ -355,6 +355,19 @@ box.mode-selector.on-light-background box.mode-dot {
     0 0 0 1px alpha(white, 0.10);
 }
 
+/* glass-editor-preview — analogous to .viewer-stage, but calmer: the
+   editor's adjustment sliders occupy the same screen and need every
+   ounce of readable chrome, so this is a near-flat panel with a hairline
+   border, not a heavy glass stage.
+   比 viewer-stage 更克制:编辑器界面与调节滑块同屏,需要尽可能多的可读
+   chrome,所以这是近乎平坦的面板加一道细线边框,而不是沉重的玻璃舞台。 */
+.glass-editor-preview {
+  padding: 24px;
+  background: alpha(black, 0.06);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.06);
+}
+
 /* Viewer favorite button active state. Class is added/removed by
    ViewerPage::refresh_favorite_button; the visual now lives in the
    global provider so it composes with .glass-toolbar-button. */

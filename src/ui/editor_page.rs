@@ -57,6 +57,8 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub preview_overlay: TemplateChild<gtk::Overlay>,
+        #[template_child]
         pub preview_picture: TemplateChild<gtk::Picture>,
         #[template_child]
         pub spinner: TemplateChild<gtk::Spinner>,
@@ -297,6 +299,7 @@ impl EditorPage {
 
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_has_arrow(false);
+        popover.add_css_class("glass-menu");
         self.imp().save_menu_btn.get().set_popover(Some(&popover));
 
         // Action group carrying the two menu actions
