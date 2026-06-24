@@ -355,6 +355,15 @@ box.mode-selector.on-light-background box.mode-dot {
     0 0 0 1px alpha(white, 0.10);
 }
 
+/* Viewer favorite button active state. Class is added/removed by
+   ViewerPage::refresh_favorite_button; the visual now lives in the
+   global provider so it composes with .glass-toolbar-button. */
+.viewer-favorite-btn.favorite-active {
+  color: #f6c344;
+  background: alpha(#f6c344, 0.14);
+  border-color: alpha(#f6c344, 0.38);
+}
+
 /* viewer-details-panel — metadata sidebar uses glass-base, not opaque. */
 .viewer-details-panel {
   background: alpha(black, 0.30);

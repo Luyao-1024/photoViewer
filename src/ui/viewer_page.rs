@@ -428,18 +428,6 @@ impl ViewerPage {
             .set_tooltip_text(Some(&tr("viewer.tooltip.favorite")));
         self.refresh_favorite_button(false);
 
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(
-            ".viewer-favorite-btn.favorite-active { color: #f6c344; font-weight: 900; }",
-        );
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-
         let weak = self.downgrade();
         imp.favorite_btn.get().connect_clicked(move |button| {
             let Some(this) = weak.upgrade() else { return };
