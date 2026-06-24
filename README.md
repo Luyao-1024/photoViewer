@@ -16,7 +16,7 @@
 - 🌗 Dark/light theme follows system
 - 🚀 1-10万张照片规模下流畅运行
 
-## 构建
+## 本地开发构建
 
 ```bash
 # 系统依赖 (Fedora)
@@ -31,7 +31,13 @@ cargo build
 cargo run
 ```
 
-## Flatpak 私有运行时构建
+说明：
+
+- `cargo build` 会运行 `build.rs`，自动把 `data/ui/*.blp` 编译成 `.ui`，并把 UI 与图标打包进 GResource。
+- 本地 `cargo run` 使用宿主系统 GTK/libadwaita，适合日常逻辑调试。
+- Liquid Glass 的 `backdrop-filter` 视觉效果需要 GTK 4.22+；如果宿主 GTK 较旧，请使用下面的 Flatpak 安装运行。
+
+## Flatpak 安装 / 更新
 
 当前 Ubuntu 24.04 系统 GTK4 停留在 4.14.x。若要在不替换系统 GTK 的前提下使用更新的 GTK 运行时，使用项目根目录的 `org.gnome.PhotoViewer.yml` 构建 Flatpak。该清单固定到 `org.gnome.Platform//50`，并通过 Rust SDK 扩展在沙箱内构建 release 二进制。
 
@@ -46,8 +52,8 @@ flatpak install flathub \
   org.gnome.Sdk//50 \
   org.freedesktop.Sdk.Extension.rust-stable
 
-flatpak-builder --user --install --force-clean \
-  build-flatpak org.gnome.PhotoViewer.yml
+flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
+  /tmp/photoViewer-flatpak-build org.gnome.PhotoViewer.yml
 
 flatpak run org.gnome.PhotoViewer
 ```
@@ -57,6 +63,14 @@ flatpak run org.gnome.PhotoViewer
 - 构建阶段允许 `cargo` 联网拉取 crate，并使用 `cargo build --release --locked` 保持依赖版本与 `Cargo.lock` 一致。
 - 运行阶段不替换系统 `/usr` 中的 GTK，应用使用 Flatpak runtime 内的 GTK/libadwaita。
 - 沙箱授予 `home` 读写权限，因为应用需要浏览、编辑和管理本地照片。
+- `--disable-rofiles-fuse` 用于规避本工作站上已知的 `rofiles-fuse` 卸载卡死问题；保留该参数不会影响正常安装。
+- 使用 `/tmp/photoViewer-flatpak-build` 作为构建目录，可以避开仓库内旧 `.flatpak-builder` 状态。若确认本机没有遗留挂载，也可以换成普通的 `build-flatpak` 目录。
+
+更新已安装应用时，在最新 `main` 上重新执行同一条 `flatpak-builder --user --install ...` 命令即可；安装结果可用下面命令确认：
+
+```bash
+flatpak info org.gnome.PhotoViewer
+```
 
 ## 测试
 
@@ -125,6 +139,7 @@ The effect is intentionally implemented as an in-app backdrop blur:
 This does not depend on host GTK 4.22. Build and run through Flatpak to use the private runtime:
 
 ```bash
-flatpak-builder --user --install --force-clean build-flatpak org.gnome.PhotoViewer.yml
+flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
+  /tmp/photoViewer-flatpak-build org.gnome.PhotoViewer.yml
 flatpak run org.gnome.PhotoViewer
 ```

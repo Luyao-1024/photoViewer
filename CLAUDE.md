@@ -35,7 +35,12 @@ flatpak run \
   -c 'exec /home/luyao/workspace/photo_viewer/photoViewer/target/debug/photo-viewer'
 ```
 
-Do not use `flatpak-builder --force-clean` as a routine visual-test step in this workspace while the known `rofiles-fuse` unmount hang is present.
+Do not use the repository-local `.flatpak-builder` state as a routine visual-test or install step while the known `rofiles-fuse` unmount hang is present. For reinstalling the latest app, prefer:
+
+```bash
+flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
+  /tmp/photoViewer-flatpak-build org.gnome.PhotoViewer.yml
+```
 
 ## Architecture
 
