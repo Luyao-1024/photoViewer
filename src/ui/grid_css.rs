@@ -18,13 +18,17 @@
 //! `selection_mode = None`; `TrashPage` deliberately does NOT install this — it
 //! keeps click-driven multi-select for batch restore / delete.
 //!
-//! Install is idempotent (process-wide `Once`), so multiple pages may call
-//! `install()` without coordinating.
+//! Install is idempotent (process-wide `OnceLock`), so multiple pages may call
+//! `install()` without coordinating. [`is_installed`] / [`assert_installed`]
+//! let other code paths (e.g. the viewer's favorite button, which depends on
+//! the `.viewer-favorite-btn.favorite-active` rule) verify install has run at
+//! least once on this process.
 
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
+use std::sync::OnceLock;
 
 const GRID_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
@@ -385,22 +389,38 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 ";
 
-static CSS_INSTALLED: std::sync::Once = std::sync::Once::new();
+static CSS_INSTALLED: OnceLock<()> = OnceLock::new();
+
+/// Has [`install`] been called at least once on this process?
+/// Reads are non-blocking and safe to call from any thread.
+pub fn is_installed() -> bool {
+    CSS_INSTALLED.get().is_some()
+}
+
+/// `debug_assert!(is_installed())` with a descriptive message and caller
+/// location. No-op in release builds.
+#[track_caller]
+pub fn assert_installed() {
+    debug_assert!(
+        is_installed(),
+        "grid_css::install() must be called before this point — see src/ui/grid_css.rs"
+    );
+}
 
 /// Register the thumbnail-grid highlight CSS with the default display.
-/// Idempotent: subsequent calls are no-ops.
+/// Idempotent: subsequent calls are no-ops. The first call flips
+/// [`is_installed`] to `true`.
 pub fn install() {
-    CSS_INSTALLED.call_once(|| {
-        let provider = gtk::CssProvider::new();
-        provider.load_from_data(GRID_CSS);
-        if let Some(display) = gtk::gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-    });
+    let _ = CSS_INSTALLED.set(());
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(GRID_CSS);
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 }
 
 /// Move the keyboard cursor inside `flow` in the direction of `key`, focusing
