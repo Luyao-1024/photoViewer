@@ -44,20 +44,27 @@ flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
   border-color: alpha(white, 0.18);
 }
 
-/* Keyboard focus — outer focus ring, distinct from selection. */
+/* Keyboard focus — glass ring. Hidden once the pointer leaves the grid
+   (see .pointer-left rule below) so the ring doesn't linger on the
+   last-hovered tile after the mouse moves away. */
 flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
-  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline: 2px solid alpha(white, 0.55);
   outline-offset: 2px;
 }
 
-/* Selected — luminous glass border + soft inner veil. The keyboard
-   focus ring wins specificity when both apply (composes via :focus). */
+/* Selected — luminous glass border + soft inner veil. Glass alone
+   communicates the selected state; no accent colour needed. */
 flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card {
   background: alpha(white, 0.10);
   border-color: alpha(white, 0.48);
   box-shadow:
-    0 0 0 1px alpha(#5aa7ff, 0.55),
     inset 0 1px alpha(white, 0.35);
+}
+
+/* Pointer-left — hide the focus ring once the mouse exits the grid.
+   kbd-nav overrides this so keyboard users still see the cursor. */
+flowbox.thumb-grid.pointer-left:not(.kbd-nav) > flowboxchild:focus > .glass-thumb-card {
+  outline: none;
 }
 
 /* Kbd-nav neutralisation — see attach_kbd_nav comments; behaviour
@@ -89,15 +96,16 @@ flowbox.album-grid > flowboxchild:selected:focus {
 }
 
 /* 封面轮廓(被各种状态触发)。GTK4 CSS 支持后代选择器,`.album-cover`
-   写在被 hover / focus / selected 的 flowboxchild 下面时会同时命中。 */
+   写在被 hover / focus / selected 的 flowboxchild 下面时会同时命中。
+   使用玻璃质感的白色描边,不使用系统强调色。 */
 flowbox.album-grid > flowboxchild:hover .album-cover,
 flowbox.album-grid > flowboxchild:focus .album-cover {
-  outline: 2px solid @accent_color;
+  outline: 2px solid alpha(white, 0.48);
   outline-offset: -2px;
 }
 flowbox.album-grid > flowboxchild:selected .album-cover,
 flowbox.album-grid > flowboxchild:selected:focus .album-cover {
-  outline: 3px solid @accent_color;
+  outline: 3px solid alpha(white, 0.48);
   outline-offset: -3px;
 }
 
@@ -205,8 +213,7 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .glass-toolbar-button:focus-visible,
 .glass-toolbar-button:focus {
-  outline: 2px solid alpha(#7db9ff, 0.80);
-  outline-offset: 2px;
+  outline: none;
 }
 
 .glass-toolbar-danger { color: #ffb4ab; }
@@ -264,8 +271,7 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .glass-menu-item:focus-visible,
 .glass-menu-item:focus {
-  outline: 2px solid alpha(#7db9ff, 0.80);
-  outline-offset: 1px;
+  outline: none;
 }
 
 .glass-menu-item:disabled {
@@ -284,6 +290,66 @@ box.mode-selector.on-light-background box.mode-dot {
   color: #ffcfca;
 }
 
+/* ── Glass alert dialog — 毛玻璃半透明弹框 + 液态玻璃按钮 ──────────────
+   AdwAlertDialog 的 CSS 类加在最外层节点(1200x800 填满窗口)，
+   可见卡片是深层后代 AdwGizmo.background(约 300x178)。
+   因此根节点保持透明，毛玻璃材质放到 .background 上。 */
+.glass-alert-dialog {
+  background: transparent;
+}
+
+.glass-alert-dialog .background {
+  background: alpha(black, 0.48);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.24);
+  border-radius: 20px;
+  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
+  box-shadow:
+    0 24px 64px alpha(black, 0.40),
+    inset 0 1px alpha(white, 0.28);
+  color: #ffffff;
+}
+
+.glass-alert-dialog .title-2 {
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.glass-alert-dialog .body {
+  color: alpha(white, 0.72);
+}
+
+/* Response buttons — 液态玻璃 pill 风格 */
+.glass-alert-dialog button.text-button {
+  min-height: 38px;
+  border-radius: 12px;
+  padding: 0 18px;
+  background: alpha(white, 0.10);
+  border: 1px solid alpha(white, 0.22);
+  color: #ffffff;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.glass-alert-dialog button.text-button:hover {
+  background: alpha(white, 0.18);
+  border-color: alpha(white, 0.36);
+}
+
+.glass-alert-dialog button.text-button:active {
+  background: alpha(white, 0.26);
+}
+
+/* Destructive response — 红色调液态玻璃 */
+.glass-alert-dialog button.destructive-action {
+  color: #ffb4ab;
+}
+
+.glass-alert-dialog button.destructive-action:hover {
+  background: alpha(#ff5449, 0.22);
+  border-color: alpha(#ff5449, 0.48);
+}
+
 /* glass-sidebar — the left rail surface */
 .glass-sidebar {
   padding: 12px;
@@ -300,6 +366,7 @@ box.mode-selector.on-light-background box.mode-dot {
 .glass-sidebar-row {
   min-height: 40px;
   border-radius: 12px;
+  margin-bottom: 6px;
   padding: 0 10px;
   background: transparent;
   border: 1px solid transparent;
@@ -318,8 +385,7 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .glass-sidebar-row:focus-visible,
 .glass-sidebar-row:focus {
-  outline: 2px solid alpha(#7db9ff, 0.80);
-  outline-offset: 2px;
+  outline: none;
 }
 
 .glass-sidebar-label {
@@ -673,12 +739,14 @@ pub fn attach_kbd_nav(flow: &gtk::FlowBox) {
     });
 
     // Pointer enter/motion → hand the highlight back to the mouse (clear
-    // `kbd-nav`) and make the tile under the pointer the keyboard-nav anchor.
+    // `kbd-nav` and `pointer-left`) and make the tile under the pointer
+    // the keyboard-nav anchor.
     let motion = gtk::EventControllerMotion::new();
     let flow_weak = flow.downgrade();
     motion.connect_enter(move |_, x, y| {
         if let Some(f) = flow_weak.upgrade() {
             f.remove_css_class("kbd-nav");
+            f.remove_css_class("pointer-left");
             focus_child_at(&f, x, y);
         }
     });
@@ -686,7 +754,19 @@ pub fn attach_kbd_nav(flow: &gtk::FlowBox) {
     motion.connect_motion(move |_, x, y| {
         if let Some(f) = flow_weak.upgrade() {
             f.remove_css_class("kbd-nav");
+            f.remove_css_class("pointer-left");
             focus_child_at(&f, x, y);
+        }
+    });
+
+    // Pointer leave → hide the focus ring so it doesn't linger on the
+    // last-hovered tile. The ring is suppressed via the `pointer-left`
+    // CSS class; actual focus is retained so arrow-key nav still works
+    // (kbd-nav overrides pointer-left to re-show the ring).
+    let flow_weak = flow.downgrade();
+    motion.connect_leave(move |_| {
+        if let Some(f) = flow_weak.upgrade() {
+            f.add_css_class("pointer-left");
         }
     });
 

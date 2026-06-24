@@ -16,7 +16,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::NavigationPageExt;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
 use crate::core::i18n::tr;
 use crate::core::section_model::GroupBy;
@@ -395,7 +395,33 @@ impl PhotosPage {
                 if indices.is_empty() {
                     return;
                 }
-                this.delete_to_trash_for_indices(indices);
+                let count = indices.len();
+                let body = if count == 1 {
+                    tr("trash.confirm_body_one")
+                } else {
+                    tr("trash.confirm_body_many").replace("{count}", &count.to_string())
+                };
+                let dialog = adw::AlertDialog::builder()
+                    .heading(tr("trash.confirm_title"))
+                    .body(body)
+                    .build();
+                dialog.add_css_class("glass-alert-dialog");
+                dialog.add_response("cancel", &tr("dialog.cancel"));
+                dialog.add_response("trash", &tr("dialog.trash"));
+                dialog.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.set_close_response("cancel");
+
+                let weak2 = this.downgrade();
+                let indices2 = indices;
+                dialog.connect_response(None, move |_, response| {
+                    if response == "trash" {
+                        if let Some(this) = weak2.upgrade() {
+                            this.delete_to_trash_for_indices(indices2.clone());
+                        }
+                    }
+                });
+                dialog.present(&this);
             });
 
         obj

@@ -296,6 +296,7 @@ fn show_settings_restart_dialog(
         .heading(&heading)
         .body(&body)
         .build();
+    dialog.add_css_class("glass-alert-dialog");
     dialog.add_response("ok", &tr("button.ok"));
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("ok");

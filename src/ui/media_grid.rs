@@ -63,6 +63,8 @@ use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use libadwaita as adw;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
@@ -916,9 +918,42 @@ impl MediaGrid {
                         let indices_for_trash = target_indices.clone();
                         let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
                         let popover_trash = popover.clone();
+                        let grid_weak = this.downgrade();
                         delete_btn.connect_clicked(move |_| {
-                            on_move_to_trash_ctx(indices_for_trash.clone());
                             popover_trash.popdown();
+
+                            let count = indices_for_trash.len();
+                            let body = if count == 1 {
+                                tr("trash.confirm_body_one")
+                            } else {
+                                tr("trash.confirm_body_many")
+                                    .replace("{count}", &count.to_string())
+                            };
+                            let dialog = adw::AlertDialog::builder()
+                                .heading(tr("trash.confirm_title"))
+                                .body(body)
+                                .build();
+                            dialog.add_css_class("glass-alert-dialog");
+                            dialog.add_response("cancel", &tr("dialog.cancel"));
+                            dialog.add_response("trash", &tr("dialog.trash"));
+                            dialog.set_response_appearance(
+                                "trash",
+                                adw::ResponseAppearance::Destructive,
+                            );
+                            dialog.set_default_response(Some("cancel"));
+                            dialog.set_close_response("cancel");
+
+                            let indices2 = indices_for_trash.clone();
+                            let on_move2 = on_move_to_trash_ctx.clone();
+                            dialog.connect_response(None, move |_, response| {
+                                if response == "trash" {
+                                    on_move2(indices2.clone());
+                                }
+                            });
+
+                            if let Some(grid) = grid_weak.upgrade() {
+                                dialog.present(&grid);
+                            }
                         });
                         menu.append(&delete_btn);
                     }

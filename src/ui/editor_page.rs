@@ -385,6 +385,7 @@ impl EditorPage {
             .heading(tr("editor.overwrite_title"))
             .body(tr("editor.overwrite_body"))
             .build();
+        dialog.add_css_class("glass-alert-dialog");
         dialog.add_response("cancel", &tr("button.cancel"));
         dialog.add_response("overwrite", &tr("dialog.overwrite"));
         dialog.set_response_appearance("overwrite", adw::ResponseAppearance::Destructive);

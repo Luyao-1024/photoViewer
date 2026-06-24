@@ -26,7 +26,8 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::{
-    ActionRowExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt,
+    ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt,
+    PreferencesRowExt,
 };
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
@@ -352,71 +353,86 @@ impl ViewerPage {
     fn setup_delete_button(&self) {
         let imp = self.imp();
         let weak = self.downgrade();
-        imp.delete_btn.get().connect_clicked(move |button| {
+        imp.delete_btn.get().connect_clicked(move |_button| {
             let Some(this) = weak.upgrade() else { return };
-            let pool = match this.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
-                None => {
-                    tracing::warn!("ViewerPage: Delete pressed but pool not set");
+
+            let dialog = adw::AlertDialog::builder()
+                .heading(tr("trash.confirm_title"))
+                .body(tr("trash.confirm_body_one"))
+                .build();
+            dialog.add_css_class("glass-alert-dialog");
+            dialog.add_response("cancel", &tr("dialog.cancel"));
+            dialog.add_response("trash", &tr("dialog.trash"));
+            dialog.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+            dialog.set_default_response(Some("cancel"));
+            dialog.set_close_response("cancel");
+
+            let weak2 = this.downgrade();
+            dialog.connect_response(None, move |_, response| {
+                if response != "trash" {
                     return;
                 }
-            };
-            let item = match this.current_media_item() {
-                Some(i) => i,
-                None => return,
-            };
+                let Some(this) = weak2.upgrade() else { return };
+                let pool = match this.imp().pool.borrow().as_ref() {
+                    Some(p) => p.clone(),
+                    None => {
+                        tracing::warn!("ViewerPage: Delete pressed but pool not set");
+                        return;
+                    }
+                };
+                let item = match this.current_media_item() {
+                    Some(i) => i,
+                    None => return,
+                };
 
-            button.set_sensitive(false);
-            let button_weak = button.downgrade();
-            let item_id = item.id;
-            let item_uri = item.uri.clone();
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            gio::spawn_blocking(move || {
-                let result = trash::move_to_trash(&item_uri)
-                    .and_then(|_| db::mark_trashed(&pool, item_id))
-                    .and_then(|_| albums::refresh(&pool));
-                let _ = tx.send(result);
-            });
+                let item_id = item.id;
+                let item_uri = item.uri.clone();
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                gio::spawn_blocking(move || {
+                    let result = trash::move_to_trash(&item_uri)
+                        .and_then(|_| db::mark_trashed(&pool, item_id))
+                        .and_then(|_| albums::refresh(&pool));
+                    let _ = tx.send(result);
+                });
 
-            let weak_after = this.downgrade();
-            glib::spawn_future_local(async move {
-                let result = rx.await;
-                if let Some(button) = button_weak.upgrade() {
-                    button.set_sensitive(true);
-                }
-                match result {
-                    Ok(Ok(())) => {
-                        if let Some(this) = weak_after.upgrade() {
-                            toasts::success(
-                                &this.imp().toast_overlay.get(),
-                                &tr("viewer.toast.moved_to_trash"),
-                            );
-                            this.remove_deleted_item(item_id);
-                            if let Some(cb) = this.imp().trashed_cb.borrow().clone() {
-                                cb(item_id);
+                let weak_after = this.downgrade();
+                glib::spawn_future_local(async move {
+                    let result = rx.await;
+                    match result {
+                        Ok(Ok(())) => {
+                            if let Some(this) = weak_after.upgrade() {
+                                toasts::success(
+                                    &this.imp().toast_overlay.get(),
+                                    &tr("viewer.toast.moved_to_trash"),
+                                );
+                                this.remove_deleted_item(item_id);
+                                if let Some(cb) = this.imp().trashed_cb.borrow().clone() {
+                                    cb(item_id);
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!("ViewerPage: Move to Trash failed: {e}");
+                            if let Some(this) = weak_after.upgrade() {
+                                toasts::error(
+                                    &this.imp().toast_overlay.get(),
+                                    &format!("{}: {e}", &tr("viewer.toast.move_to_trash_failed")),
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!("ViewerPage: Move to Trash worker dropped");
+                            if let Some(this) = weak_after.upgrade() {
+                                toasts::error(
+                                    &this.imp().toast_overlay.get(),
+                                    &tr("viewer.toast.move_to_trash_failed"),
+                                );
                             }
                         }
                     }
-                    Ok(Err(e)) => {
-                        tracing::warn!("ViewerPage: Move to Trash failed: {e}");
-                        if let Some(this) = weak_after.upgrade() {
-                            toasts::error(
-                                &this.imp().toast_overlay.get(),
-                                &format!("{}: {e}", &tr("viewer.toast.move_to_trash_failed")),
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        tracing::warn!("ViewerPage: Move to Trash worker dropped");
-                        if let Some(this) = weak_after.upgrade() {
-                            toasts::error(
-                                &this.imp().toast_overlay.get(),
-                                &tr("viewer.toast.move_to_trash_failed"),
-                            );
-                        }
-                    }
-                }
+                });
             });
+            dialog.present(&this);
         });
     }
 

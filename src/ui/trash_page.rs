@@ -260,6 +260,7 @@ impl TrashPage {
                     .heading(tr("trash.empty_title"))
                     .body(tr("trash.empty_body"))
                     .build();
+                dialog.add_css_class("glass-alert-dialog");
                 dialog.add_response("cancel", &tr("dialog.cancel"));
                 dialog.add_response("empty", &tr("dialog.empty"));
                 dialog.set_response_appearance("empty", adw::ResponseAppearance::Destructive);
