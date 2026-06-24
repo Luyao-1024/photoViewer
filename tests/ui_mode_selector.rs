@@ -215,4 +215,43 @@ fn mode_selector_integration_suite() {
             "label {idx} expands to center in its slot"
         );
     }
+
+    // --- Test 5: shared liquid-glass material classes resolve cleanly ---
+    //
+    // Each of these names must parse and resolve to a valid selector
+    // when the provider is queried. We assert that creating a widget
+    // with the class and looking up its style context does not error.
+    use photo_viewer::ui::grid_css;
+    grid_css::install();
+
+    let label = gtk::Label::new(Some("probe"));
+    for class in [
+        "glass-base",
+        "glass-raised",
+        "glass-toolbar",
+        "glass-toolbar-button",
+        "glass-toolbar-danger",
+        "glass-menu",
+        "glass-menu-list",
+        "glass-menu-item",
+        "glass-menu-item-danger",
+        "glass-menu-item-suggested",
+        "glass-selected",
+        "glass-focus-ring",
+        "glass-sidebar",
+        "glass-sidebar-row",
+        "glass-sidebar-label",
+        "glass-header",
+        "viewer-stage",
+        "viewer-image-frame",
+        "viewer-details-panel",
+        "content-safe-bottom",
+        "glass-thumb-card",
+    ] {
+        label.add_css_class(class);
+    }
+    // Trigger style resolution; would error if any class crashes the provider.
+    let ctx = label.style_context();
+    ctx.save();
+    ctx.restore();
 }

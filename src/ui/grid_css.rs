@@ -206,6 +206,237 @@ button.media-grid-context-item + button.media-grid-context-item {
 button.media-grid-context-item:hover {
   background: alpha(@accent_color, 0.16);
 }
+
+/* ── Glass material tokens ─────────────────────────────────────────────
+   GTK4 CSS in this version does not support @define-color / custom
+   properties for these values. Copy any change across every rule that
+   uses the same number. Source-of-truth values are written here once. */
+
+/* glass-base — sidebar, header, details panel */
+.glass-base {
+  background: alpha(white, 0.06);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.18);
+  backdrop-filter: blur(22px) saturate(1.18) brightness(1.04);
+  box-shadow:
+    inset 0 1px alpha(white, 0.32),
+    inset 0 -1px alpha(black, 0.10);
+}
+
+/* glass-raised — floating controls (mode selector, menus, popovers) */
+.glass-raised {
+  background: alpha(white, 0.10);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.30);
+  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
+  box-shadow:
+    0 18px 48px alpha(black, 0.26),
+    inset 0 1px alpha(white, 0.58),
+    inset 0 -1px alpha(black, 0.16);
+}
+
+/* glass-toolbar — pill container for grouped header buttons */
+.glass-toolbar {
+  padding: 4px;
+  border-radius: 14px;
+  background: alpha(white, 0.07);
+  border: 1px solid alpha(white, 0.12);
+}
+
+.glass-toolbar-button {
+  min-height: 34px;
+  min-width: 34px;
+  border-radius: 10px;
+  padding: 0 14px;
+  background: alpha(white, 0.08);
+  border: 1px solid transparent;
+  color: inherit;
+}
+
+.glass-toolbar-button:hover {
+  background: alpha(white, 0.14);
+}
+
+.glass-toolbar-button:active,
+.glass-toolbar-button:checked {
+  background: alpha(white, 0.20);
+}
+
+.glass-toolbar-button:focus-visible,
+.glass-toolbar-button:focus {
+  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline-offset: 2px;
+}
+
+.glass-toolbar-danger { color: #ffb4ab; }
+.glass-toolbar-danger:hover {
+  background: alpha(#ff5449, 0.18);
+  color: #ffb4ab;
+}
+
+/* glass-menu — popovers; GTK popovers are two-layer, style the inner
+   `> contents` so the visible background matches the rounded edge. */
+.glass-menu {
+  padding: 0;
+  min-width: 190px;
+}
+
+.glass-menu > contents {
+  padding: 6px;
+  border-radius: 16px;
+  background: alpha(black, 0.42);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.22);
+  backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
+  box-shadow:
+    0 18px 48px alpha(black, 0.35),
+    inset 0 1px alpha(white, 0.24);
+}
+
+.glass-menu-list {
+  min-width: 190px;
+  spacing: 3px;
+}
+
+.glass-menu-item {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+}
+
+.glass-menu-item:hover {
+  background: alpha(white, 0.12);
+}
+
+.glass-menu-item:focus-visible,
+.glass-menu-item:focus {
+  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline-offset: 1px;
+}
+
+.glass-menu-item:disabled {
+  color: alpha(currentColor, 0.45);
+}
+
+.glass-menu-item-suggested { color: #a8d2ff; }
+.glass-menu-item-suggested:hover {
+  background: alpha(#5aa7ff, 0.18);
+  color: #c8e0ff;
+}
+
+.glass-menu-item-danger { color: #ffb4ab; }
+.glass-menu-item-danger:hover {
+  background: alpha(#ff5449, 0.18);
+  color: #ffcfca;
+}
+
+/* glass-selected — luminous border + soft inner veil. Used on photo
+   tiles and sidebar rows. Distinct from glass-focus-ring (focus). */
+.glass-selected {
+  background: alpha(white, 0.10);
+  border: 1px solid alpha(white, 0.48);
+  box-shadow:
+    0 0 0 1px alpha(#5aa7ff, 0.55),
+    inset 0 1px alpha(white, 0.35);
+  border-radius: 10px;
+}
+
+/* glass-focus-ring — keyboard focus; applied to the OUTER edge so it
+   never hides the selected/hover treatment on the same node. */
+.glass-focus-ring {
+  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline-offset: 2px;
+}
+
+/* glass-sidebar — the left rail surface */
+.glass-sidebar {
+  padding: 12px;
+  background: alpha(white, 0.06);
+  background-clip: padding-box;
+  border-right: 1px solid alpha(white, 0.12);
+  backdrop-filter: blur(24px) saturate(1.18) brightness(1.04);
+}
+
+.glass-sidebar-page {
+  background: transparent;
+}
+
+.glass-sidebar-row {
+  min-height: 40px;
+  border-radius: 12px;
+  padding: 0 10px;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.glass-sidebar-row:hover {
+  background: alpha(white, 0.08);
+}
+
+.glass-sidebar-row:selected {
+  background: alpha(white, 0.14);
+  box-shadow:
+    inset 0 1px alpha(white, 0.35),
+    inset 0 -1px alpha(black, 0.12);
+}
+
+.glass-sidebar-row:focus-visible,
+.glass-sidebar-row:focus {
+  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline-offset: 2px;
+}
+
+.glass-sidebar-label {
+  color: inherit;
+  font-weight: 500;
+}
+
+/* glass-header — header bar surface (calmer than glass-raised) */
+.glass-header {
+  background: alpha(black, 0.18);
+  background-clip: padding-box;
+  border-bottom: 1px solid alpha(white, 0.08);
+  backdrop-filter: blur(20px) saturate(1.10) brightness(1.02);
+}
+
+/* viewer-stage — image content area; subtle radial wash that frames
+   the picture and separates it from app chrome. */
+.viewer-stage {
+  padding: 32px;
+  background:
+    radial-gradient(circle at center, alpha(white, 0.06), transparent 55%),
+    alpha(black, 0.10);
+}
+
+.viewer-image-frame {
+  border-radius: 14px;
+  box-shadow:
+    0 24px 80px alpha(black, 0.38),
+    0 0 0 1px alpha(white, 0.10);
+}
+
+/* viewer-details-panel — metadata sidebar uses glass-base, not opaque. */
+.viewer-details-panel {
+  background: alpha(black, 0.30);
+  background-clip: padding-box;
+  border-left: 1px solid alpha(white, 0.12);
+  backdrop-filter: blur(22px) saturate(1.12);
+}
+
+/* content-safe-bottom — apply to scrollable grid so the bottom
+   mode selector (≈ 58px + 24px margin + buffer) never covers tiles. */
+.content-safe-bottom { padding-bottom: 128px; }
+
+/* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
+   would be too expensive at 10k–100k tiles and would blur the photo. */
+.glass-thumb-card {
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+}
 ";
 
 static CSS_INSTALLED: std::sync::Once = std::sync::Once::new();
