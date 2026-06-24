@@ -436,6 +436,40 @@ box.mode-selector.on-light-background box.mode-dot {
     background: #1f1f23;
   }
 }
+
+/* High-contrast accessibility fallback. Same scope as the
+   reduced-transparency block. We force 2px opaque borders and a
+   slightly brighter text color so the design language remains
+   readable when the user has bumped contrast in GNOME Settings.
+   高对比度无障碍回退:强制 2px 不透明边框 + 略亮的文字色。 */
+@media (prefers-contrast: more) {
+  .glass-base,
+  .glass-raised,
+  .glass-header,
+  .glass-sidebar,
+  .glass-toolbar-button,
+  .glass-menu > contents,
+  .viewer-stage,
+  .viewer-details-panel,
+  .glass-editor-preview {
+    border: 2px solid alpha(white, 0.80);
+    background: #1f1f23;
+  }
+  .glass-menu > contents {
+    background: #1f1f23;
+  }
+  .glass-toolbar-button,
+  .glass-menu-item,
+  .glass-sidebar-row {
+    color: #ffffff;
+  }
+  /* Hover/focus states still need a visible response in high-contrast mode. */
+  .glass-toolbar-button:hover,
+  .glass-menu-item:hover,
+  .glass-sidebar-row:hover {
+    background: alpha(white, 0.32);
+  }
+}
 ";
 
 static CSS_INSTALLED: OnceLock<()> = OnceLock::new();
