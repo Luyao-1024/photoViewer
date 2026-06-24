@@ -408,18 +408,24 @@ pub fn assert_installed() {
 }
 
 /// Register the thumbnail-grid highlight CSS with the default display.
-/// Idempotent: subsequent calls are no-ops. The first call flips
+/// Idempotent: subsequent calls are no-ops (the body only runs the first
+/// time, guarded by [`CSS_INSTALLED`]). The first call flips
 /// [`is_installed`] to `true`.
 pub fn install() {
-    let _ = CSS_INSTALLED.set(());
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data(GRID_CSS);
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::style_context_add_provider_for_display(
-            &display,
-            &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+    // `OnceLock::set` returns `Ok(())` only on the first call; gate the
+    // provider registration on that so defensive `install()` calls from
+    // MediaGrid / TrashPage / AlbumsPage constructors do not accumulate
+    // duplicate CssProviders on the default display.
+    if CSS_INSTALLED.set(()).is_ok() {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(GRID_CSS);
+        if let Some(display) = gtk::gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
     }
 }
 
