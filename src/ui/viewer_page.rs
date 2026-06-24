@@ -219,7 +219,7 @@ impl ViewerPage {
     /// `EditorPage` when the Edit button is pressed. Call this after
     /// construction (mirrors `PhotosPage::set_nav_target`).
     pub fn set_edit_target(&self, nav: &adw::NavigationView, pool: DbPool) {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG set_edit_target index={} nav_visible={:?}",
             self.imp().current_index.get(),
             nav.visible_page().map(|page| page.title())
@@ -232,7 +232,7 @@ impl ViewerPage {
     /// menu entry. The actual menu + handler are built lazily in `setup`
     /// once both are available, so this is idempotent.
     pub fn set_album_target(&self, nav: &adw::NavigationView, pool: DbPool) {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG set_album_target index={} nav_visible={:?}",
             self.imp().current_index.get(),
             nav.visible_page().map(|page| page.title())
@@ -257,7 +257,7 @@ impl ViewerPage {
     }
 
     fn fire_nav(&self, delta: NavDelta) {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={}",
             delta,
             self.imp().current_index.get(),
@@ -570,7 +570,7 @@ impl ViewerPage {
             let split_view = this.imp().details_split_view.get();
             let before = split_view.shows_sidebar();
             let next = !split_view.shows_sidebar();
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG details_btn clicked index={} before_revealed={} next_revealed={}",
                 this.imp().current_index.get(),
                 before,
@@ -579,7 +579,7 @@ impl ViewerPage {
             this.set_details_revealed(next, "details_btn");
             if next {
                 if let Some(item) = this.current_media_item() {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG details_btn loading_details index={} name={}",
                         this.imp().current_index.get(),
                         item.display_name()
@@ -593,13 +593,13 @@ impl ViewerPage {
         imp.details_close_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
             let split_view = this.imp().details_split_view.get();
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG details_close_btn clicked index={} before_revealed={}",
                 this.imp().current_index.get(),
                 split_view.shows_sidebar()
             );
             this.set_details_revealed(false, "details_close_btn");
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG details_close_btn after set_reveal_child(false) revealed={}",
                 split_view.shows_sidebar()
             );
@@ -607,7 +607,7 @@ impl ViewerPage {
             let weak_after = this.downgrade();
             glib::idle_add_local_once(move || {
                 if let Some(this) = weak_after.upgrade() {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG details_close_btn idle_after revealed={} mapped={} visible={} root_is_some={}",
                         this.imp().details_split_view.get().shows_sidebar(),
                         this.is_mapped(),
@@ -616,7 +616,7 @@ impl ViewerPage {
                     );
                     this.log_nav_state("details_close_btn idle_after");
                 } else {
-                    tracing::info!("VIEWER_DEBUG details_close_btn idle_after viewer_dropped");
+                    tracing::debug!("VIEWER_DEBUG details_close_btn idle_after viewer_dropped");
                 }
             });
         });
@@ -629,20 +629,20 @@ impl ViewerPage {
         pop_action.connect_activate(move |_, _| {
             let Some(this) = weak.upgrade() else { return };
             let details_split_view = this.imp().details_split_view.get();
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG navigation.pop action index={} details_revealed={}",
                 this.imp().current_index.get(),
                 details_split_view.shows_sidebar()
             );
             if details_split_view.shows_sidebar() {
                 this.set_details_revealed(false, "navigation.pop");
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG navigation.pop consumed_by_details index={} after_revealed={}",
                     this.imp().current_index.get(),
                     details_split_view.shows_sidebar()
                 );
             } else {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG navigation.pop forwarding NAV_POP index={}",
                     this.imp().current_index.get()
                 );
@@ -655,7 +655,7 @@ impl ViewerPage {
 
     fn set_details_revealed(&self, revealed: bool, reason: &str) {
         let split_view = self.imp().details_split_view.get();
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG set_details_revealed reason={} index={} from={} to={} can_pop_before={}",
             reason,
             self.imp().current_index.get(),
@@ -678,12 +678,12 @@ impl ViewerPage {
             let weak = self.downgrade();
             glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
                 let Some(this) = weak.upgrade() else {
-                    tracing::info!("VIEWER_DEBUG restore_can_pop viewer_dropped");
+                    tracing::debug!("VIEWER_DEBUG restore_can_pop viewer_dropped");
                     return;
                 };
                 if !this.imp().details_split_view.get().shows_sidebar() {
                     this.set_can_pop(true);
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG restore_can_pop restored index={} can_pop={} visible={:?}",
                         this.imp().current_index.get(),
                         this.can_pop(),
@@ -695,7 +695,7 @@ impl ViewerPage {
                             .map(|page| page.title())
                     );
                 } else {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG restore_can_pop skipped_details_open index={} can_pop={}",
                         this.imp().current_index.get(),
                         this.can_pop()
@@ -704,7 +704,7 @@ impl ViewerPage {
             });
         }
 
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG set_details_revealed done reason={} index={} revealed={} can_pop_after={}",
             reason,
             self.imp().current_index.get(),
@@ -717,7 +717,7 @@ impl ViewerPage {
         let weak = self.downgrade();
         self.connect_unmap(move |_| {
             if let Some(this) = weak.upgrade() {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG viewer unmap index={} title={} details_revealed={}",
                     this.imp().current_index.get(),
                     this.title(),
@@ -730,7 +730,7 @@ impl ViewerPage {
         let weak = self.downgrade();
         self.connect_unrealize(move |_| {
             if let Some(this) = weak.upgrade() {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG viewer unrealize index={} title={} details_revealed={}",
                     this.imp().current_index.get(),
                     this.title(),
@@ -743,7 +743,7 @@ impl ViewerPage {
 
     fn log_nav_state(&self, label: &str) {
         if let Some(nav) = self.imp().nav_view.borrow().as_ref() {
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG nav_state label=\"{}\" visible={:?} viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
                 label,
                 nav.visible_page().map(|page| page.title()),
@@ -753,7 +753,7 @@ impl ViewerPage {
                 self.root().is_some()
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG nav_state label=\"{}\" nav_view=None viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
                 label,
                 self.title(),
@@ -791,7 +791,7 @@ impl ViewerPage {
     /// main thread, and preload its immediate neighbours. Safe to call
     /// multiple times.
     pub fn show_at(&self, index: u32) {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG show_at requested_index={} current_before={} details_revealed={}",
             index,
             self.imp().current_index.get(),
@@ -813,7 +813,7 @@ impl ViewerPage {
         };
         self.set_title(item.display_name());
         self.sync_favorite_state(item.id);
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG show_at resolved index={} item_id={} title={} uri={} media_path={} details_revealed={}",
             index,
             item.id,
@@ -826,7 +826,7 @@ impl ViewerPage {
             self.update_details(&item);
         }
         let path = strip_file_uri(&item.uri);
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG viewer decode_start index={} item_id={} item_name={} source_uri={} decode_path={}",
             index,
             item.id,
@@ -881,7 +881,7 @@ impl ViewerPage {
             }
             if let (Some(picture), Some(spinner)) = (picture_weak.upgrade(), spinner_weak.upgrade())
             {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
                     token,
                     decode_item_name,
@@ -974,7 +974,7 @@ impl ViewerPage {
         key_ctrl.connect_key_pressed(move |_, key, _, _| match key {
             gdk::Key::Right => {
                 if let Some(this) = weak.upgrade() {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG key Right index={} details_revealed={}",
                         this.imp().current_index.get(),
                         this.imp().details_split_view.get().shows_sidebar()
@@ -985,7 +985,7 @@ impl ViewerPage {
             }
             gdk::Key::Left => {
                 if let Some(this) = weak.upgrade() {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG key Left index={} details_revealed={}",
                         this.imp().current_index.get(),
                         this.imp().details_split_view.get().shows_sidebar()
@@ -997,21 +997,21 @@ impl ViewerPage {
             gdk::Key::Escape => {
                 if let Some(this) = weak.upgrade() {
                     let details_split_view = this.imp().details_split_view.get();
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG key Escape index={} details_revealed={}",
                         this.imp().current_index.get(),
                         details_split_view.shows_sidebar()
                     );
                     if details_split_view.shows_sidebar() {
                         this.set_details_revealed(false, "key Escape");
-                        tracing::info!(
+                        tracing::debug!(
                             "VIEWER_DEBUG key Escape consumed_by_details index={} after_revealed={}",
                             this.imp().current_index.get(),
                             details_split_view.shows_sidebar()
                         );
                         return glib::Propagation::Stop;
                     }
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG key Escape forwarding NAV_POP index={}",
                         this.imp().current_index.get()
                     );
@@ -1030,7 +1030,7 @@ impl ViewerPage {
     }
 
     fn update_details(&self, item: &MediaItem) {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG update_details index={} name={} path={}",
             self.imp().current_index.get(),
             item.display_name(),

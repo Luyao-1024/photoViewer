@@ -754,7 +754,7 @@ impl PhotosPage {
             None => return,
         };
         if let Some(item) = media_item_for_index(&media_list, global_index) {
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG photos_page open_viewer global_index={} item_id={} item_name={} item_uri={}",
                 global_index,
                 item.id,
@@ -762,7 +762,7 @@ impl PhotosPage {
                 item.uri
             );
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 "VIEWER_DEBUG photos_page open_viewer missing_item global_index={} list_len={}",
                 global_index,
                 media_list.n_items()
@@ -772,7 +772,7 @@ impl PhotosPage {
         nav.connect_visible_page_notify({
             let label = viewer_debug_label.clone();
             move |nav| {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG nav visible_page_notify label={} visible={:?}",
                     label,
                     nav.visible_page().map(|page| page.title())
@@ -782,7 +782,7 @@ impl PhotosPage {
         nav.connect_pushed({
             let label = viewer_debug_label.clone();
             move |nav| {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG nav pushed label={} visible={:?}",
                     label,
                     nav.visible_page().map(|page| page.title())
@@ -792,7 +792,7 @@ impl PhotosPage {
         nav.connect_popped({
             let label = viewer_debug_label.clone();
             move |nav, page| {
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG nav popped label={} popped_page={} visible_after={:?}",
                     label,
                     page.title(),
@@ -826,18 +826,18 @@ impl PhotosPage {
         let viewer_weak = viewer.downgrade();
         let nav_weak = nav.downgrade();
         viewer.connect_navigation(move |delta: NavDelta| {
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG photos_page navigation_callback delta={}",
                 delta
             );
             if delta == NAV_POP {
                 if let Some(n) = nav_weak.upgrade() {
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG photos_page executing nav.pop visible_before={:?}",
                         n.visible_page().map(|page| page.title())
                     );
                     n.pop();
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG photos_page after nav.pop visible_after={:?}",
                         n.visible_page().map(|page| page.title())
                     );
@@ -847,7 +847,7 @@ impl PhotosPage {
             if let Some(v) = viewer_weak.upgrade() {
                 let cur = v.current_index();
                 let next = (cur as i32 + delta).max(0) as u32;
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG photos_page arrow_nav cur={} delta={} next={}",
                     cur,
                     delta,
