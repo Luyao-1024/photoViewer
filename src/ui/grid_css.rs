@@ -32,7 +32,14 @@ use std::sync::OnceLock;
 
 const GRID_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
-flowbox.thumb-grid { padding: 8px 8px 128px 8px; background: transparent; }
+/* 8px four-sided padding matches column/row spacing. The 128px bottom
+   safe area for the floating mode selector is provided by
+   `.content-safe-bottom` on the outer ScrolledWindow; do NOT add
+   padding-bottom here: each per-section FlowBox would then reserve
+   128px, producing a dark gap between every two date sections that
+   looks like a black bar covering the photos.
+   每段 padding-bottom 会让每个分区底部都留出 128px 深色空隙。 */
+flowbox.thumb-grid { padding: 8px; background: transparent; }
 
 /* Hover — soft veil on the flowboxchild, no border. */
 flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
