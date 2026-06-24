@@ -287,10 +287,10 @@ box.mode-selector.on-light-background box.mode-dot {
 /* glass-sidebar — the left rail surface */
 .glass-sidebar {
   padding: 12px;
-  background: alpha(white, 0.06);
-  background-clip: padding-box;
-  border-right: 1px solid alpha(white, 0.12);
-  backdrop-filter: blur(24px) saturate(1.18) brightness(1.04);
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-right: 1px solid alpha(white, 0.14);
 }
 
 .glass-sidebar-page {

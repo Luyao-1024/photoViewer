@@ -28,7 +28,32 @@ fn sidebar_navigation_suite() {
 
     // Glass material: each sidebar row should carry the glass-sidebar-row class.
     {
+        let sidebar_page = window.imp().sidebar_page.get();
+        let page_classes: Vec<String> = sidebar_page
+            .css_classes()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            page_classes.iter().any(|c| c == "glass-sidebar-page"),
+            "sidebar page should carry glass-sidebar-page, got {page_classes:?}",
+        );
+
         let sidebar = window.imp().sidebar_list.get();
+        let list_classes: Vec<String> = sidebar
+            .css_classes()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            list_classes.iter().any(|c| c == "glass-sidebar"),
+            "sidebar list should carry glass-sidebar, got {list_classes:?}",
+        );
+        assert!(
+            list_classes.iter().any(|c| c == "glass-base"),
+            "sidebar list should carry the shared glass-base material, got {list_classes:?}",
+        );
+
         let n_items = sidebar.observe_children().n_items();
         assert!(n_items > 0, "sidebar should have rows");
         for idx in 0..n_items {
