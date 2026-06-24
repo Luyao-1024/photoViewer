@@ -243,7 +243,7 @@ impl MediaGrid {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG grid model_changed mode={:?} position={} removed={} added={} list_len={}",
                 this.mode(),
                 position,
@@ -638,7 +638,7 @@ impl MediaGrid {
                     return;
                 };
                 let is_multi = this.is_multi_select_mode();
-                tracing::info!(
+                tracing::debug!(
                     "VIEWER_DEBUG grid activate mode={:?} section={} child_index={} global_index={} item_id={} item_name={} item_uri={} multi_select={}",
                     this.mode(),
                     section_label_for_activation,
@@ -705,7 +705,7 @@ impl MediaGrid {
                         1,
                         1,
                     );
-                    tracing::info!(
+                    tracing::debug!(
                         "VIEWER_DEBUG context_menu mode={:?} section={} selected={:?} multi_select={}",
                         this.mode(),
                         section_label_for_ctx,
@@ -1082,7 +1082,7 @@ fn build_photo_picture(
             }
             requested.set(true);
 
-            tracing::info!(
+            tracing::debug!(
                 "VIEWER_DEBUG thumb request item_name={} uri={} size={:?} target_px={}",
                 item_name,
                 item_uri,
@@ -1099,7 +1099,7 @@ fn build_photo_picture(
             gtk::glib::spawn_future_local(async move {
                 match rx.await {
                     Ok(texture) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
                             item_name,
                             item_uri,
@@ -1114,11 +1114,16 @@ fn build_photo_picture(
                             t.set_paintable(Some(&texture));
                         }
                     }
-                    Err(_) => tracing::warn!(
-                        "VIEWER_DEBUG thumb dropped item_name={} uri={}",
-                        item_name,
-                        item_uri
-                    ),
+                    Err(_) => {
+                        tracing::debug!(
+                            "VIEWER_DEBUG thumb dropped→灰底占位 item_name={} uri={}",
+                            item_name,
+                            item_uri
+                        );
+                        if let Some(t) = tile_weak.upgrade() {
+                            t.set_paintable(Some(&gray_placeholder_texture()));
+                        }
+                    }
                 }
             });
         }
@@ -1133,6 +1138,16 @@ fn build_photo_picture(
         request_once();
     }
     tile
+}
+
+/// 失败缩略图的占位：浅灰纯色 texture，明确表示"加载失败"，
+/// 而不是让 `GtkPicture` 保持空 paintable 露出卡片背景（裸白块）。
+/// 2×2 pixbuf 会被 `content-fit: cover` 自动拉伸到 tile 大小。
+fn gray_placeholder_texture() -> gtk::gdk::Texture {
+    let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 2, 2)
+        .expect("分配 2x2 占位 pixbuf");
+    pb.fill(0xC8C8C8FF); // RGBA 浅灰
+    gtk::gdk::Texture::for_pixbuf(&pb)
 }
 
 fn texture_is_light(texture: &gtk::gdk::Texture) -> Option<bool> {

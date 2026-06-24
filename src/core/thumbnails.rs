@@ -274,7 +274,7 @@ fn generate(cache_dir: &Path, uri: &str, size: ThumbnailSize) -> anyhow::Result<
         .join(format!("{}.jpg", hash));
 
     if cache_path.exists() {
-        tracing::info!(
+        tracing::debug!(
             "VIEWER_DEBUG thumb disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
             uri,
             src_path.display(),
@@ -288,21 +288,40 @@ fn generate(cache_dir: &Path, uri: &str, size: ThumbnailSize) -> anyhow::Result<
         std::fs::create_dir_all(parent)?;
     }
 
-    // 使用 image crate 解码 + 缩放 + 保存 JPEG
-    tracing::info!(
+    tracing::debug!(
         "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_path={}",
         uri,
         src_path.display(),
         size,
         cache_path.display()
     );
-    let img = image::open(&src_path)?;
-    let thumb = img.thumbnail(size.max_dim(), size.max_dim());
-    let mut writer = std::io::BufWriter::new(std::fs::File::create(&cache_path)?);
-    thumb
-        .to_rgb8()
-        .write_to(&mut writer, image::ImageFormat::Jpeg)?;
+    // 统一用 gdk-pixbuf 解码 + 缩放：覆盖面广（JPEG/PNG/WebP/TIFF，flatpak
+    // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
+    // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
+    generate_via_pixbuf(&src_path, size.max_dim(), &cache_path)?;
     Ok(cache_path)
+}
+
+/// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存 JPEG。
+fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_path: &Path) -> anyhow::Result<()> {
+    let pb =
+        Pixbuf::from_file(src_path).map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
+    let thumb = scale_pixbuf_to_fit(&pb, max_dim);
+    thumb
+        .savev(cache_path, "jpeg", &[])
+        .map_err(|e| anyhow::anyhow!("gdk-pixbuf JPEG 保存失败: {e}"))?;
+    Ok(())
+}
+
+/// 等比缩放到 `max_dim` 内（不放大），行为对齐 `image::DynamicImage::thumbnail`。
+fn scale_pixbuf_to_fit(pb: &Pixbuf, max_dim: u32) -> Pixbuf {
+    let (w, h) = (pb.width(), pb.height());
+    let longest = (w.max(h).max(1)) as f64;
+    let scale = ((max_dim as f64) / longest).min(1.0);
+    let nw = ((w as f64) * scale).round().max(1.0) as i32;
+    let nh = ((h as f64) * scale).round().max(1.0) as i32;
+    pb.scale_simple(nw, nh, gdk_pixbuf::InterpType::Bilinear)
+        .unwrap_or_else(|| pb.clone())
 }
 
 #[cfg(test)]
@@ -333,5 +352,38 @@ mod tests {
             rt.block_on(rx).is_err(),
             "missing source should drop the reply, not hang"
         );
+    }
+
+    /// 回归 gdk-pixbuf 缩略图生成路径（现为主路径）。
+    /// HEIC 在 host 上不一定有 heif loader，故用 PNG（gdk-pixbuf 必带 loader）
+    /// 做确定性验证：`generate_via_pixbuf` 解码 → 等比缩放 → 存 JPEG 必须可用。
+    #[test]
+    fn pixbuf_fallback_generates_jpeg_from_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.png");
+        let img = image::RgbImage::from_pixel(400, 300, image::Rgb([10, 20, 30]));
+        image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
+
+        let out = dir.path().join("out.jpg");
+        generate_via_pixbuf(&src, 256, &out).expect("gdk-pixbuf 回退应成功");
+
+        assert!(out.exists(), "应写出 JPEG 缩略图");
+        let decoded = image::open(&out).expect("输出的 JPEG 应可被重新解码");
+        let (w, h) = (decoded.width(), decoded.height());
+        assert!(w <= 256 && h <= 256, "应在 max_dim 内, got {w}x{h}");
+        assert_eq!(w.max(h), 256, "长边应正好缩到 max_dim");
+    }
+
+    /// 回归 `scale_pixbuf_to_fit`：缩入 max_dim 内且不放大。
+    #[test]
+    fn scale_pixbuf_to_fit_fits_and_never_upscales() {
+        let big = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 400, 300).unwrap();
+        let s = scale_pixbuf_to_fit(&big, 256);
+        assert!(s.width() <= 256 && s.height() <= 256);
+        assert_eq!(s.width().max(s.height()), 256, "长边应缩到 max_dim");
+
+        let small = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 50, 40).unwrap();
+        let s2 = scale_pixbuf_to_fit(&small, 256);
+        assert_eq!((s2.width(), s2.height()), (50, 40), "小图不应被放大");
     }
 }
