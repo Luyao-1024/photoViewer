@@ -77,4 +77,33 @@ fn viewer_toolbar_uses_glass_classes() {
         fav_classes.iter().any(|c| c == "viewer-favorite-btn"),
         "favorite_btn should carry viewer-favorite-btn, got {fav_classes:?}",
     );
+
+    // Task 8: details_close_btn carries glass-toolbar-button.
+    let close_classes = css_classes_vec(&imp.details_close_btn.get());
+    assert!(
+        close_classes.iter().any(|c| c == "glass-toolbar-button"),
+        "details_close_btn should carry glass-toolbar-button, got {close_classes:?}",
+    );
+
+    // Task 8: details_panel (the OverlaySplitView sidebar slot) carries
+    // viewer-details-panel + glass-base, and no longer carries the opaque
+    // `background` class. `details_panel` is not a template_child, so we
+    // reach the widget via the split view's `sidebar()` accessor.
+    let split_view = imp.details_split_view.get();
+    let details_panel = split_view
+        .sidebar()
+        .expect("OverlaySplitView should have a sidebar widget");
+    let panel_classes = css_classes_vec(&details_panel);
+    assert!(
+        panel_classes.iter().any(|c| c == "viewer-details-panel"),
+        "details_panel should carry viewer-details-panel, got {panel_classes:?}",
+    );
+    assert!(
+        panel_classes.iter().any(|c| c == "glass-base"),
+        "details_panel should carry glass-base, got {panel_classes:?}",
+    );
+    assert!(
+        !panel_classes.iter().any(|c| c == "background"),
+        "details_panel should no longer carry opaque `background`, got {panel_classes:?}",
+    );
 }

@@ -92,7 +92,7 @@ template $ViewerPage : Adw.NavigationPage {
         sidebar: Gtk.Box details_panel {
           orientation: vertical;
           width-request: 380;
-          css-classes: ["background"];
+          css-classes: ["viewer-details-panel", "glass-base"];
 
       Gtk.Box details_header {
             orientation: horizontal;
@@ -112,6 +112,7 @@ template $ViewerPage : Adw.NavigationPage {
             Gtk.Button details_close_btn {
               icon-name: "window-close-symbolic";
               tooltip-text: "";
+              css-classes: ["glass-toolbar-button"];
             }
           }
 
