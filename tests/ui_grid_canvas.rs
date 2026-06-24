@@ -3,9 +3,9 @@
 //!
 //! Verifies that a real `MediaGrid` actually builds inner `GtkFlowBox`es with
 //! the 8 px column / row spacing introduced for the glass-style grid canvas
-//! (previously 2 px). We construct `MediaGrid` against an empty `ListStore`
-//! so no thumbnails are rendered, then dig into `imp().content` and find the
-//! first `FlowBox` that `rebuild` inserted.
+//! (previously 2 px). We construct `MediaGrid` against a seeded `ListStore`
+//! (one section worth of items) so `rebuild` emits at least one FlowBox,
+//! then dig into `imp().content` to find the first `FlowBox`.
 //!
 //! GTK is single-threaded, so all checks live in a single `#[test]`
 //! function. See `tests/ui_mode_selector.rs` for the same pattern.
