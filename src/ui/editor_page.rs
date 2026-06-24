@@ -55,6 +55,8 @@ mod imp {
         /// token and drop if it doesn't match (a newer render started).
         pub render_token: RefCell<u64>,
         #[template_child]
+        pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
         pub preview_picture: TemplateChild<gtk::Picture>,
         #[template_child]
         pub spinner: TemplateChild<gtk::Spinner>,

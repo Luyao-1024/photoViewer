@@ -218,6 +218,17 @@ box.mode-selector.on-light-background box.mode-dot {
   color: #ffb4ab;
 }
 
+/* glass-toolbar-suggested — primary action accent (blue) for Save Copy,
+   Accept, and similar high-confidence buttons. Composes with
+   .glass-toolbar-button. Mirrors .glass-menu-item-suggested so the same
+   action language is shared between toolbar and menu surfaces.
+   用于工具栏主操作按钮(蓝色),与菜单项的 suggested 风格保持一致。 */
+.glass-toolbar-suggested { color: #a8d2ff; }
+.glass-toolbar-suggested:hover {
+  background: alpha(#5aa7ff, 0.18);
+  color: #c8e0ff;
+}
+
 /* glass-menu — popovers; GTK popovers are two-layer, style the inner
    `> contents` so the visible background matches the rounded edge. */
 .glass-menu {

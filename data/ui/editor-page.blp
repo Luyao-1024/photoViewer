@@ -9,21 +9,24 @@ template $EditorPage : Adw.NavigationPage {
 
     Adw.HeaderBar header_bar {
       show-end-title-buttons: true;
+      css-classes: ["glass-header"];
 
       [start]
       Gtk.Button cancel_btn {
         label: "";
+        css-classes: ["glass-toolbar-button"];
       }
 
       [end]
       Gtk.Button save_copy_btn {
         label: "";
-        css-classes: ["suggested-action"];
+        css-classes: ["glass-toolbar-button", "glass-toolbar-suggested"];
       }
 
       [end]
       Gtk.MenuButton save_menu_btn {
         label: "";
+        css-classes: ["glass-toolbar-button"];
       }
     }
 
@@ -63,15 +66,18 @@ template $EditorPage : Adw.NavigationPage {
           Gtk.Button rotate_90_cw {
             label: "";
             icon-name: "object-rotate-right-symbolic";
+            css-classes: ["glass-toolbar-button"];
           }
 
           Gtk.Button rotate_180 {
             label: "";
+            css-classes: ["glass-toolbar-button"];
           }
 
           Gtk.Button rotate_90_ccw {
             label: "";
             icon-name: "object-rotate-left-symbolic";
+            css-classes: ["glass-toolbar-button"];
           }
         }
       }
@@ -115,6 +121,7 @@ template $EditorPage : Adw.NavigationPage {
 
         Gtk.Button start_crop_btn {
           label: "";
+          css-classes: ["glass-toolbar-button"];
         }
       }
     }
