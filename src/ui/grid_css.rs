@@ -429,6 +429,32 @@ box.mode-selector.on-light-background box.mode-dot {
   font-weight: 700;
   padding: 0;
 }
+
+/* viewer-floating-panel 内容链透明化 ─────────────────────────────
+   详情浮层叠在原图之上,但其内部 AdwPreferencesPage / AdwPreferencesGroup
+   的 .boxed-list 行默认带不透明卡片背景(libadwaita 默认样式),会盖住浮层
+   自身的半透明玻璃,导致看不到背后原图。这里把整条内容链强制透明、去掉卡片
+   投影,只保留行间细分隔,让 alpha(black) 材质(+ 运行时支持时的
+   backdrop-filter 模糊)成为可见面,原图能透出。两种玻璃模式共用,故置于此。
+   选择器以 .viewer-floating-panel 前缀提升优先级,盖过 libadwaita 的
+   `list.boxed-list > row` 等默认规则。 */
+.viewer-floating-panel preferencespage,
+.viewer-floating-panel preferencesgroup,
+.viewer-floating-panel scrolledwindow,
+.viewer-floating-panel viewport,
+.viewer-floating-panel list,
+.viewer-floating-panel .boxed-list {
+  background: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.viewer-floating-panel list row,
+.viewer-floating-panel .boxed-list > row,
+.viewer-floating-panel .boxed-list row {
+  background: transparent;
+  background-color: transparent;
+}
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass surface material.
@@ -1158,6 +1184,25 @@ mod tests {
             assert!(
                 on.contains(marker) && off.contains(marker),
                 "shared marker '{marker}' must be present in both modes"
+            );
+        }
+    }
+
+    /// The floating details panel overlays the photo, so its metadata content
+    /// (AdwPreferencesPage / .boxed-list rows) must be forced transparent in
+    /// BOTH glass modes — otherwise libadwaita's default opaque card
+    /// backgrounds mask the glass and the photo can't show through.
+    #[test]
+    fn floating_panel_content_is_transparent() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            assert!(
+                css.contains(".viewer-floating-panel .boxed-list"),
+                "floating panel must override boxed-list background ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".viewer-floating-panel preferencespage"),
+                "floating panel must override preferencespage background ({liquid} mode)"
             );
         }
     }
