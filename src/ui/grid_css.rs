@@ -455,6 +455,24 @@ box.mode-selector.on-light-background box.mode-dot {
   background: transparent;
   background-color: transparent;
 }
+
+/* details-split-view 内部 sidebar 容器透明化 ──────────────────────
+   Adw.OverlaySplitView wraps its sidebar child in an internal widget that
+   carries an opaque theme background (sidebar_bg_color). In collapsed
+   overlay mode this opaque wrapper sits between the photo and the
+   translucent glass panel, blocking the photo from showing through. Force
+   the wrapper layers transparent so the glass material on
+   .viewer-floating-panel becomes the visible surface.
+   OverlaySplitView 内部 sidebar 容器有不透明主题背景,会挡住玻璃浮层,
+   强制透明让原图能透出。 */
+.details-split-view {
+  background: transparent;
+  background-color: transparent;
+}
+.details-split-view > widget {
+  background: transparent;
+  background-color: transparent;
+}
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass surface material.

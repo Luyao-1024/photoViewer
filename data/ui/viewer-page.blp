@@ -64,6 +64,7 @@ template $ViewerPage : Adw.NavigationPage {
           vexpand: true;
           hexpand: true;
           show-sidebar: false;
+          css-classes: ["details-split-view"];
           // Overlay mode: the details panel floats over the image (collapsed)
           // instead of squeezing it, and is pinned (no scrim / no
           // click-outside-to-close) so the photo stays fully visible behind
@@ -74,43 +75,46 @@ template $ViewerPage : Adw.NavigationPage {
           min-sidebar-width: 320;
           max-sidebar-width: 420;
 
-          content: Gtk.Overlay image_overlay {
-            vexpand: true;
-            hexpand: true;
-            css-classes: ["viewer-stage"];
+          content: Gtk.Box content_box {
+            orientation: vertical;
 
-            child: Gtk.Picture picture {
-              // Original-resolution textures have very large natural sizes (e.g.
-              // 4000×3000) which, with can-shrink=false, would force the host
-              // window to grow. can-shrink=true lets the widget be allocated any
-              // size; content-fit:contain then scales the image to fit that
-              // allocation while preserving aspect ratio.
-              can-shrink: true;
+            Gtk.Overlay image_overlay {
               vexpand: true;
               hexpand: true;
-              content-fit: contain;
-              css-classes: ["viewer-image-frame"];
-            };
+              css-classes: ["viewer-stage"];
 
-            [overlay]
-            Gtk.Spinner spinner {
-              vexpand: true;
-              hexpand: true;
-              halign: center;
-              valign: center;
-              spinning: true;
-              visible: true;
+              child: Gtk.Picture picture {
+                // Original-resolution textures have very large natural sizes (e.g.
+                // 4000×3000) which, with can-shrink=false, would force the host
+                // window to grow. can-shrink=true lets the widget be allocated any
+                // size; content-fit:contain then scales the image to fit that
+                // allocation while preserving aspect ratio.
+                can-shrink: true;
+                vexpand: true;
+                hexpand: true;
+                content-fit: contain;
+                css-classes: ["viewer-image-frame"];
+              };
+
+              [overlay]
+              Gtk.Spinner spinner {
+                vexpand: true;
+                hexpand: true;
+                halign: center;
+                valign: center;
+                spinning: true;
+                visible: true;
+              }
             }
 
-            [overlay]
             Gtk.Box viewer_bottom_bar {
               orientation: horizontal;
               halign: fill;
-              valign: end;
               spacing: 8;
               margin-start: 24;
               margin-end: 24;
-              margin-bottom: 16;
+              margin-top: 8;
+              margin-bottom: 12;
               css-classes: ["viewer-thumb-bar", "glass-raised"];
 
               Gtk.ScrolledWindow thumb_scrolled {
