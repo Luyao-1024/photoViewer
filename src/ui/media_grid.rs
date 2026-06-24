@@ -149,11 +149,12 @@ mod imp {
             // `content-safe-bottom` (defined in `grid_css.rs`) reserves 128px
             // at the bottom of the scrolled content so the floating mode
             // selector overlay never covers the last row of thumbnails.
-            // The outer `view_stack` in `data/ui/photos-page.blp` already
-            // carries the class for the page-level safe area; we add it here
-            // too because the inner `ScrolledWindow` is what actually
-            // scrolls — padding on `view_stack` does not propagate into the
-            // scrolled content.
+            // It must be applied here, on the inner ScrolledWindow that
+            // actually scrolls — padding on outer wrappers (e.g. ViewStack)
+            // does not propagate into the scrolled content. The
+            // `.content-safe-bottom` was previously also applied to the outer
+            // ViewStack in photos-page.blp as a defensive measure; it was
+            // removed in Fix #5 because that placement had no effect.
             self.scroller.add_css_class("content-safe-bottom");
         }
     }
