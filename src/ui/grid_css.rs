@@ -398,6 +398,18 @@ box.mode-selector.on-light-background box.mode-dot {
   background: transparent;
 }
 
+/* thumb-loading — 缩略图生成期间的骨架脉冲占位。缩略图到位后 SquareTile
+   在 set_paintable 里移除该 class。用可动画的 background-color（GTK4 CSS
+   对 gradient 动画支持不佳），低调、明确表达加载中而非裸白块。 */
+.thumb-loading {
+  background-color: alpha(white, 0.05);
+  animation: thumb-pulse 1.4s ease-in-out infinite;
+}
+@keyframes thumb-pulse {
+  0%, 100% { background-color: alpha(white, 0.035); }
+  50%      { background-color: alpha(white, 0.11); }
+}
+
 /* ── Accessibility fallback ──────────────────────────────────────────
    GTK CssProvider supports prefers-reduced-motion, prefers-contrast and
    prefers-color-scheme media features. It does NOT support the web draft
@@ -426,6 +438,10 @@ box.mode-selector.on-light-background box.mode-dot {
   }
   .glass-menu > contents {
     background: #1f1f23;
+  }
+  .thumb-loading {
+    animation: none;
+    background-color: alpha(white, 0.05);
   }
 }
 

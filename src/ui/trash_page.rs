@@ -377,13 +377,14 @@ fn build_trash_tile(item: MediaItem, loader: Arc<ThumbnailLoader>) -> SquareTile
     tile.set_target(TRASH_TILE_PX);
 
     let item = trash_thumbnail_item(item);
+    let mtime = std::time::SystemTime::from(item.file_mtime);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    loader.request(item.uri, TRASH_THUMB_SIZE, tx);
+    loader.request(item.uri, TRASH_THUMB_SIZE, Some(mtime), tx);
     let tile_weak = tile.downgrade();
     gtk::glib::spawn_future_local(async move {
-        if let Ok(texture) = rx.await {
+        if let Ok(loaded) = rx.await {
             if let Some(tile) = tile_weak.upgrade() {
-                tile.set_paintable(Some(&texture));
+                tile.set_paintable(Some(&loaded.texture));
             }
         }
     });

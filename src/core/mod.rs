@@ -27,5 +27,5 @@ pub use media::{MediaItem, NewMediaItem};
 pub use media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
 pub use metadata::{extract as extract_metadata, RawMetadata};
 pub use section_model::{group_items, GroupBy, MediaSection, SectionKey};
-pub use thumbnails::{ThumbnailLoader, ThumbnailRequest, ThumbnailSize};
+pub use thumbnails::{ThumbnailLoader, ThumbnailSize};
 pub use trash::{delete_permanently, move_to_trash, restore_from_trash};

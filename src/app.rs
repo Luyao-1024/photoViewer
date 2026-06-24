@@ -103,7 +103,13 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
         pool.clone(),
         crate::config::cache_dir(),
     ));
-    thumbnail_loader.spawn_workers(4);
+    // worker 数随核数取（夹在 [4, 8]）：太少首屏填不满，太多与扫描/主线程争抢
+    // 且磁盘 IO 边际递减。解码是 CPU 密集突发，冷启动/滚动时才吃满。
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(4, 8);
+    thumbnail_loader.spawn_workers(workers);
 
     // 启动后台扫描 + 聚合 albums
     // 优先使用 XDG user-dirs.dirs，否则按 locale 回退（zh_CN -> ~/图片，否则 ~/Pictures）。

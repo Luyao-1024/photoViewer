@@ -98,12 +98,17 @@ impl PhotoTile {
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(item.uri.clone(), thumb_size, tx);
+        loader.request(
+            item.uri.clone(),
+            thumb_size,
+            Some(std::time::SystemTime::from(item.file_mtime)),
+            tx,
+        );
 
         let this_weak = self.downgrade();
         gtk::glib::spawn_future_local(async move {
             let texture = match rx.await {
-                Ok(t) => t,
+                Ok(loaded) => loaded.texture,
                 Err(_) => return,
             };
             let still_current = this_weak

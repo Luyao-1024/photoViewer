@@ -285,12 +285,13 @@ fn build_album_tile(album: &Album, loader: Arc<ThumbnailLoader>) -> gtk::FlowBox
 
     if let Some(uri) = &album.cover_uri {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(uri.clone(), ThumbnailSize::Medium, tx);
+        // 相册封面只有 uri（无 MediaItem）→ 传 None，request 端现场 stat 兜底。
+        loader.request(uri.clone(), ThumbnailSize::Medium, None, tx);
         let cover_weak = cover.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(texture) = rx.await {
+            if let Ok(loaded) = rx.await {
                 if let Some(c) = cover_weak.upgrade() {
-                    c.set_paintable(Some(&texture));
+                    c.set_paintable(Some(&loaded.texture));
                 }
             }
         });

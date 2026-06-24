@@ -42,13 +42,14 @@ fn generate_and_cache() {
     loader.request(
         format!("file://{}", src.display()),
         ThumbnailSize::Small,
+        None,
         tx,
     );
 
-    let tex = runtime.block_on(async { rx.await.unwrap() });
+    let loaded = runtime.block_on(async { rx.await.unwrap() });
     drop(_guard);
-    assert!(tex.width() > 0, "texture width must be > 0");
-    assert!(tex.height() > 0, "texture height must be > 0");
+    assert!(loaded.texture.width() > 0, "texture width must be > 0");
+    assert!(loaded.texture.height() > 0, "texture height must be > 0");
 
     // 验证磁盘缓存文件存在
     let cache_dir = dir.path().join("cache/thumbnails/small");
@@ -84,6 +85,7 @@ fn cache_hit_avoids_regenerate() {
     loader.request(
         format!("file://{}", src.display()),
         ThumbnailSize::Medium,
+        None,
         tx1,
     );
     let _ = runtime.block_on(rx1);
@@ -105,6 +107,7 @@ fn cache_hit_avoids_regenerate() {
     loader.request(
         format!("file://{}", src.display()),
         ThumbnailSize::Medium,
+        None,
         tx2,
     );
     let _ = runtime.block_on(rx2);
@@ -137,16 +140,16 @@ fn memory_cache_keeps_thumbnail_sizes_separate() {
     let uri = format!("file://{}", src.display());
 
     let (tx_small, rx_small) = tokio::sync::oneshot::channel();
-    loader.request(uri.clone(), ThumbnailSize::Small, tx_small);
+    loader.request(uri.clone(), ThumbnailSize::Small, None, tx_small);
     let small = runtime.block_on(async { rx_small.await.unwrap() });
 
     let (tx_large, rx_large) = tokio::sync::oneshot::channel();
-    loader.request(uri, ThumbnailSize::Large, tx_large);
+    loader.request(uri, ThumbnailSize::Large, None, tx_large);
     let large = runtime.block_on(async { rx_large.await.unwrap() });
 
     drop(_guard);
     assert!(
-        large.width() > small.width(),
+        large.texture.width() > small.texture.width(),
         "large thumbnail should not reuse the small thumbnail from memory cache"
     );
 }
@@ -188,16 +191,65 @@ fn duplicate_requests_are_coalesced_and_never_dropped() {
     let mut rxs = Vec::with_capacity(N);
     for _ in 0..N {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(uri.clone(), ThumbnailSize::Small, tx);
+        loader.request(uri.clone(), ThumbnailSize::Small, None, tx);
         rxs.push(rx);
     }
 
     let mut ok = 0usize;
     for rx in rxs {
-        if runtime.block_on(rx).map(|t| t.width() > 0).unwrap_or(false) {
+        if runtime
+            .block_on(rx)
+            .map(|t| t.texture.width() > 0)
+            .unwrap_or(false)
+        {
             ok += 1;
         }
     }
     drop(_guard);
     assert_eq!(ok, N, "all duplicate requests must resolve; none dropped");
+}
+
+/// B6 回归：`prioritize_keys` 把仍在排队的请求提到队首（BOOST），
+/// 单 worker 起来后应**先**处理被提权的项，消除优先级倒置。
+#[test]
+fn prioritize_keys_serves_boosted_before_normal() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    // A 用大图（生成慢，拉开时间窗），B 用小图。
+    let src_a = dir.path().join("big-a.jpg");
+    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(2400, 1600, |_, _| {
+        image::Rgb([60, 90, 120])
+    });
+    img.save(&src_a).unwrap();
+    let src_b = write_plain_jpeg(dir.path(), "b.jpg");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let runtime = rt();
+    let _guard = runtime.enter();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+
+    let uri_a = format!("file://{}", src_a.display());
+    let uri_b = format!("file://{}", src_b.display());
+    let key_b = ThumbnailLoader::cache_key_for(&uri_b, ThumbnailSize::Small, None).unwrap();
+
+    // 不起 worker：两条 NORMAL 先入队（A 先、B 后）。
+    let (txa, rxa) = tokio::sync::oneshot::channel();
+    loader.request(uri_a, ThumbnailSize::Small, None, txa);
+    let (txb, rxb) = tokio::sync::oneshot::channel();
+    loader.request(uri_b, ThumbnailSize::Small, None, txb);
+
+    // 提权 B（模拟可见）。此时两者都还在排队 → B 升 BOOST。
+    loader.prioritize_keys(&[key_b]);
+
+    // 起单 worker：应先弹 BOOST(B) 再弹 NORMAL(A)。
+    loader.spawn_workers(1);
+
+    // 谁先 resolve 谁就被先处理。B 小且被提权 → 应先完成。
+    let first = runtime.block_on(async {
+        tokio::select! {
+            Ok(l) = rxa => { let _ = l.texture.width(); 'A' }
+            Ok(l) = rxb => { let _ = l.texture.width(); 'B' }
+        }
+    });
+    assert_eq!(first, 'B', "BOOST 项 B 应先于 NORMAL 项 A 被处理");
 }

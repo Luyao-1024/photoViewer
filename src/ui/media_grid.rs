@@ -104,6 +104,9 @@ mod imp {
         /// (`PhotosPage`) so it can show/hide the toolbar "Add to Album"
         /// button and re-render selected state across all three sub-grids.
         pub on_selection_changed: std::cell::OnceCell<Rc<dyn Fn()>>,
+        /// 滚动触发「可见区提权」的去抖 SourceId（`Some` = 已挂起，合并突发滚动）。
+        /// `SourceId` 非 `Copy`，故用 `RefCell` 而非 `Cell`。
+        pub reprio_debounce: RefCell<Option<gtk::glib::SourceId>>,
     }
 
     impl Default for MediaGrid {
@@ -124,6 +127,7 @@ mod imp {
                 selected: RefCell::default(),
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
+                reprio_debounce: RefCell::new(None),
             }
         }
     }
@@ -254,6 +258,19 @@ impl MediaGrid {
             this.clear_selection();
             this.rebuild(list.clone(), this.mode());
         });
+
+        // 滚动时去抖触发可见区提权（B6）：可见 tile 的请求提到队首，
+        // 消除分页 rebuild / 快速滚动时的优先级倒置。
+        let weak_scroll = obj.downgrade();
+        obj.imp()
+            .scroller
+            .get()
+            .vadjustment()
+            .connect_value_changed(move |_| {
+                if let Some(this) = weak_scroll.upgrade() {
+                    this.schedule_reprioritize();
+                }
+            });
         obj
     }
 
@@ -417,6 +434,82 @@ impl MediaGrid {
         adjustment.connect_value_changed(move |_| {
             cb();
         });
+    }
+
+    /// 收集当前落在滚动可视区内的 tile 缓存键。
+    ///
+    /// 按 section→FlowBox→子节点的文档顺序遍历，对每个 tile 用
+    /// `compute_bounds(scroller)` 取其在滚动窗口坐标系下的位置（已含滚动偏移），
+    /// 与可见区 `[0, page_size]` 取交集；**越过可见下沿即 return**（后续 tile 更靠下），
+    /// 故复杂度是 O(可见) 而非 O(全部)。
+    fn collect_visible_cache_keys(&self) -> Vec<String> {
+        let scroller = self.imp().scroller.get();
+        let page_h = scroller.vadjustment().page_size() as f32;
+        let mut keys = Vec::new();
+        let content = self.imp().content.get();
+        let mut section = content.first_child();
+        while let Some(s) = section {
+            if let Some(flow) = s.downcast_ref::<gtk::FlowBox>() {
+                let mut fc = flow.first_child();
+                while let Some(c) = fc {
+                    let next = c.next_sibling();
+                    if let Some(tile) = c
+                        .first_child()
+                        .and_then(|t| t.downcast::<SquareTile>().ok())
+                    {
+                        if let Some(b) = tile.compute_bounds(&scroller) {
+                            // 越过可见下沿：后续 tile 更靠下，整体结束。
+                            if b.y() >= page_h {
+                                return keys;
+                            }
+                            // 与可见区 [0, page_h] 有交集即视为可见。
+                            if b.y() + b.height() > 0.0 {
+                                if let Some(k) = tile.cache_key() {
+                                    keys.push(k);
+                                }
+                            }
+                        }
+                    }
+                    fc = next;
+                }
+            }
+            section = s.next_sibling();
+        }
+        keys
+    }
+
+    /// 把当前可见 tile 的请求提到 worker 队列队首（BOOST），消除分页 rebuild /
+    /// 滚动时的优先级倒置。仅对仍在排队、未生成、未在途的 key 生效。
+    pub fn reprioritize_visible(&self) {
+        let Some(loader) = self.imp().loader.get() else {
+            return;
+        };
+        let keys = self.collect_visible_cache_keys();
+        if !keys.is_empty() {
+            tracing::debug!(
+                "VIEWER_DEBUG reprioritize_visible count={} scroll_y={}",
+                keys.len(),
+                self.imp().scroller.get().vadjustment().value()
+            );
+            loader.prioritize_keys(&keys);
+        }
+    }
+
+    /// 去抖调度一次可见区提权：滚动突发期间合并为一次，避免每帧遍历全量 tile。
+    fn schedule_reprioritize(&self) {
+        let imp = self.imp();
+        if imp.reprio_debounce.borrow().is_some() {
+            return; // 已挂起，合并本次
+        }
+        let weak = self.downgrade();
+        let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+            if let Some(this) = weak.upgrade() {
+                *this.imp().reprio_debounce.borrow_mut() = None;
+                this.reprioritize_visible();
+            }
+            gtk::glib::ControlFlow::Break
+        });
+        *imp.reprio_debounce.borrow_mut() = Some(id);
     }
 
     /// Return the brightness class of the visible tile currently underneath
@@ -881,6 +974,9 @@ impl MediaGrid {
             photo_count,
             spec.pixel_size
         );
+
+        // rebuild 后调度一次可见区提权（去抖）：让当前可见 tile 先于屏幕外的被生成。
+        self.schedule_reprioritize();
     }
 }
 
@@ -907,6 +1003,8 @@ pub mod square_tile {
             pub picture: RefCell<Option<gtk::Picture>>,
             pub target: Cell<i32>,
             pub background_is_light: Cell<Option<bool>>,
+            /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
+            pub cache_key: RefCell<Option<String>>,
         }
 
         impl Default for SquareTile {
@@ -915,6 +1013,7 @@ pub mod square_tile {
                     picture: RefCell::new(None),
                     target: Cell::new(90),
                     background_is_light: Cell::new(None),
+                    cache_key: RefCell::new(None),
                 }
             }
         }
@@ -1004,6 +1103,8 @@ pub mod square_tile {
             if let Some(p) = self.imp().picture.borrow().as_ref() {
                 p.set_paintable(paintable);
             }
+            // 设入任意 paintable（真实 texture 或失败灰底）即停止骨架 shimmer。
+            self.remove_css_class("thumb-loading");
         }
 
         pub fn set_background_is_light(&self, is_light: bool) {
@@ -1012,6 +1113,15 @@ pub mod square_tile {
 
         pub fn background_is_light(&self) -> Option<bool> {
             self.imp().background_is_light.get()
+        }
+
+        /// 缩略图缓存键（建 tile 时预算；可见区提权时用它匹配队列项）。
+        pub fn set_cache_key(&self, key: Option<String>) {
+            *self.imp().cache_key.borrow_mut() = key;
+        }
+
+        pub fn cache_key(&self) -> Option<String> {
+            self.imp().cache_key.borrow().clone()
         }
     }
 
@@ -1062,6 +1172,17 @@ fn build_photo_picture(
     let item_uri = item.uri.clone();
     let size = spec.thumb_size;
     let target_px = spec.pixel_size;
+    // B5：mtime 已在扫描/notify 时入库（MediaItem.file_mtime），直接复用，
+    // 跳过 request 端的主线程 stat。DateTime<Utc> → SystemTime。
+    let item_mtime = std::time::SystemTime::from(item.file_mtime);
+    // B6：预算缓存键存到 tile，供可见区提权匹配队列项（带 file_mtime，无主线程 stat）。
+    tile.set_cache_key(ThumbnailLoader::cache_key_for(
+        &item_uri,
+        size,
+        Some(item_mtime),
+    ));
+    // 加载中骨架 shimmer；set_paintable 设入任意 paintable 时移除。
+    tile.add_css_class("thumb-loading");
 
     // 缩略图请求**推迟到 tile 被 map（即真正可见）时**才发出。
     //
@@ -1091,27 +1212,28 @@ fn build_photo_picture(
             );
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            loader.request(item_uri.clone(), size, tx);
+            loader.request(item_uri.clone(), size, Some(item_mtime), tx);
             let tile_weak = tile_weak.clone();
             let on_background_changed = on_background_changed.clone();
             let item_name = item_name.clone();
             let item_uri = item_uri.clone();
             gtk::glib::spawn_future_local(async move {
                 match rx.await {
-                    Ok(texture) => {
+                    Ok(loaded) => {
                         tracing::debug!(
                             "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
                             item_name,
                             item_uri,
-                            texture.width(),
-                            texture.height()
+                            loaded.texture.width(),
+                            loaded.texture.height()
                         );
                         if let Some(t) = tile_weak.upgrade() {
-                            if let Some(is_light) = texture_is_light(&texture) {
+                            // 亮度判定已在 worker 端从 pixbuf 算好随结果回传，主线程不再 download。
+                            if let Some(is_light) = loaded.is_light {
                                 t.set_background_is_light(is_light);
                                 on_background_changed();
                             }
-                            t.set_paintable(Some(&texture));
+                            t.set_paintable(Some(&loaded.texture));
                         }
                     }
                     Err(_) => {
@@ -1148,33 +1270,6 @@ fn gray_placeholder_texture() -> gtk::gdk::Texture {
         .expect("分配 2x2 占位 pixbuf");
     pb.fill(0xC8C8C8FF); // RGBA 浅灰
     gtk::gdk::Texture::for_pixbuf(&pb)
-}
-
-fn texture_is_light(texture: &gtk::gdk::Texture) -> Option<bool> {
-    let width = texture.width();
-    let height = texture.height();
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-    let stride = width as usize * 4;
-    let mut data = vec![0u8; stride * height as usize];
-    texture.download(&mut data, stride);
-
-    let step_x = (width / 24).max(1) as usize;
-    let step_y = (height / 24).max(1) as usize;
-    let mut total = 0.0f64;
-    let mut count = 0.0f64;
-    for y in (0..height as usize).step_by(step_y) {
-        for x in (0..width as usize).step_by(step_x) {
-            let i = y * stride + x * 4;
-            let c0 = data[i] as f64;
-            let c1 = data[i + 1] as f64;
-            let c2 = data[i + 2] as f64;
-            total += (c0 + c1 + c2) / 3.0;
-            count += 1.0;
-        }
-    }
-    Some(total / count >= 160.0)
 }
 
 /// Pull every `MediaItem` out of the `BoxedAnyObject`-wrapped store.
