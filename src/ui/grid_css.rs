@@ -28,50 +28,36 @@ use gtk4::prelude::*;
 
 const GRID_CSS: &str = "
 flowbox.thumb-grid > flowboxchild { padding: 0; }
-flowbox.thumb-grid > flowboxchild:hover,
-flowbox.thumb-grid > flowboxchild:focus,
-flowbox.thumb-grid > flowboxchild:selected,
-flowbox.thumb-grid > flowboxchild:selected:focus {
+flowbox.thumb-grid { padding: 8px 8px 128px 8px; background: transparent; }
+
+/* Hover — soft veil on the flowboxchild, no border. */
+flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
+  background: alpha(white, 0.08);
+  border-color: alpha(white, 0.18);
+}
+
+/* Keyboard focus — outer focus ring, distinct from selection. */
+flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
+  outline: 2px solid alpha(#7db9ff, 0.80);
+  outline-offset: 2px;
+}
+
+/* Selected — luminous glass border + soft inner veil. The keyboard
+   focus ring wins specificity when both apply (composes via :focus). */
+flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card {
+  background: alpha(white, 0.10);
+  border-color: alpha(white, 0.48);
+  box-shadow:
+    0 0 0 1px alpha(#5aa7ff, 0.55),
+    inset 0 1px alpha(white, 0.35);
+}
+
+/* Kbd-nav neutralisation — see attach_kbd_nav comments; behaviour
+   preserved from the prior implementation. */
+flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) > .glass-thumb-card {
   background: transparent;
+  border-color: transparent;
   outline: none;
-}
-
-/* One highlight style, shared by two triggers so they look identical:
-   `:hover` (mouse) and `:focus` (keyboard cursor). `:focus` is used instead of
-   `:focus-visible` because the window stays in pointer mode after our
-   hover-grab; `:focus-visible` would not match on the first arrow press. */
-flowbox.thumb-grid > flowboxchild:hover .thumb-tile,
-flowbox.thumb-grid > flowboxchild:focus .thumb-tile {
-  outline: 2px solid @accent_color;
-  outline-offset: -2px;
-}
-
-/* While keyboard-navigating, neutralise `:hover` so the highlight follows the
-   keyboard cursor, not the resting pointer — but ONLY for tiles that are not
-   also keyboard-focused. The `:not(:focus)` guard is essential: without it this
-   rule's specificity beats `flowboxchild:focus` above, so when the cursor moves
-   onto the tile the pointer happens to rest on (matching both `:hover` and
-   `:focus`), the outline would vanish. `.kbd-nav` is added on arrow-key press
-   and removed on the next pointer motion (see attach_kbd_nav). */
-flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) {
-  outline: none;
-}
-flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) .thumb-tile {
-  outline: none;
-}
-
-/* Multi-select (Shift/Ctrl click) — uses the GTK `:selected` pseudo on
-   flowboxchild. Painted with a thicker, slightly translucent accent ring so
-   the user can tell at a glance which tiles are part of the active batch
-   operation. The keyboard focus ring (`:focus`) wins specificity when both
-   apply so the cursor stays visible. */
-flowbox.thumb-grid > flowboxchild:selected .thumb-tile {
-  outline: 3px solid alpha(@accent_color, 0.85);
-  outline-offset: -3px;
-}
-flowbox.thumb-grid > flowboxchild:selected:focus .thumb-tile {
-  outline: 3px solid @accent_color;
-  outline-offset: -3px;
 }
 
 /* Album grid (AlbumsPage) — 与 photo grid (thumb-grid) 一致的 outline-based

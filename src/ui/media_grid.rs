@@ -576,8 +576,8 @@ impl MediaGrid {
             let flow = gtk::FlowBox::builder()
                 .orientation(gtk::Orientation::Horizontal)
                 .homogeneous(true)
-                .column_spacing(2)
-                .row_spacing(2)
+                .column_spacing(8)
+                .row_spacing(8)
                 .max_children_per_line(100)
                 .selection_mode(gtk::SelectionMode::Multiple)
                 .build();
@@ -935,6 +935,7 @@ pub mod square_tile {
                     .can_shrink(true)
                     .build();
                 obj.add_css_class("thumb-tile");
+                obj.add_css_class("glass-thumb-card");
                 picture.set_parent(&*obj);
                 *self.picture.borrow_mut() = Some(picture);
             }
@@ -1024,6 +1025,17 @@ pub mod square_tile {
             let tile = SquareTile::new();
 
             assert!(tile.has_css_class("thumb-tile"));
+        }
+
+        // Task 4: the new three-state CSS in `grid_css` targets
+        // `.glass-thumb-card`, which the legacy `.thumb-tile` selector no
+        // longer covers. The tile wrapper must carry the new class.
+        #[gtk::test]
+        fn square_tile_carries_glass_thumb_card_class() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            assert!(tile.has_css_class("glass-thumb-card"));
         }
     }
 }
