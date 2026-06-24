@@ -64,6 +64,12 @@ template $ViewerPage : Adw.NavigationPage {
           vexpand: true;
           hexpand: true;
           show-sidebar: false;
+          // Overlay mode: the details panel floats over the image (collapsed)
+          // instead of squeezing it, and is pinned (no scrim / no
+          // click-outside-to-close) so the photo stays fully visible behind
+          // the translucent glass. show-sidebar still drives the slide-in.
+          collapsed: true;
+          pin-sidebar: true;
           sidebar-position: end;
           min-sidebar-width: 320;
           max-sidebar-width: 420;
@@ -100,7 +106,7 @@ template $ViewerPage : Adw.NavigationPage {
           sidebar: Gtk.Box details_panel {
           orientation: vertical;
           width-request: 380;
-          css-classes: ["viewer-details-panel", "glass-base"];
+          css-classes: ["viewer-floating-panel"];
 
       Gtk.Box details_header {
             orientation: horizontal;

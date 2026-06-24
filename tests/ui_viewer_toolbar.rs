@@ -87,22 +87,24 @@ fn viewer_toolbar_uses_glass_classes() {
         "details_close_btn should carry glass-toolbar-button, got {close_classes:?}",
     );
 
-    // Task 8: details_panel (the OverlaySplitView sidebar slot) carries
-    // viewer-details-panel + glass-base, and no longer carries the opaque
-    // `background` class. `details_panel` is not a template_child, so we
-    // reach the widget via the split view's `sidebar()` accessor.
+    // Task 8: details_panel (the OverlaySplitView sidebar slot) is a floating
+    // glass overlay over the image, so it carries the self-contained
+    // `viewer-floating-panel` class (not the flush `viewer-details-panel` /
+    // `glass-base` used by the editor), and never the opaque `background`
+    // class. `details_panel` is not a template_child, so we reach the widget
+    // via the split view's `sidebar()` accessor.
     let split_view = imp.details_split_view.get();
     let details_panel = split_view
         .sidebar()
         .expect("OverlaySplitView should have a sidebar widget");
     let panel_classes = css_classes_vec(&details_panel);
     assert!(
-        panel_classes.iter().any(|c| c == "viewer-details-panel"),
-        "details_panel should carry viewer-details-panel, got {panel_classes:?}",
+        panel_classes.iter().any(|c| c == "viewer-floating-panel"),
+        "details_panel should carry viewer-floating-panel, got {panel_classes:?}",
     );
     assert!(
-        panel_classes.iter().any(|c| c == "glass-base"),
-        "details_panel should carry glass-base, got {panel_classes:?}",
+        !panel_classes.iter().any(|c| c == "glass-base"),
+        "details_panel should not carry glass-base (floating panel is self-contained), got {panel_classes:?}",
     );
     assert!(
         !panel_classes.iter().any(|c| c == "background"),

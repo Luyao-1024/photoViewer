@@ -496,6 +496,20 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border-left: 1px solid alpha(white, 0.12);
   backdrop-filter: blur(22px) saturate(1.12);
 }
+
+/* viewer-floating-panel — 详情面板浮层:浮在原图之上(overlay),不再挤占。
+   半透明深底 + 液态模糊 + 圆角 + 悬浮投影;margin 让其脱离边缘呈悬浮卡片。 */
+.viewer-floating-panel {
+  margin: 12px;
+  border-radius: 16px;
+  background: alpha(black, 0.32);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.20);
+  backdrop-filter: blur(26px) saturate(1.20) brightness(1.05);
+  box-shadow:
+    0 14px 44px alpha(black, 0.42),
+    inset 0 1px alpha(white, 0.30);
+}
 ";
 
 /* ── PLAIN_GLASS_MATERIAL_CSS ─ plain semi-transparent surfaces, NO blur.
@@ -592,6 +606,16 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   background-clip: padding-box;
   border-left: 1px solid alpha(white, 0.08);
 }
+
+/* viewer-floating-panel — 详情面板浮层(普通模式):无模糊,更深半透明底 + 轻投影。 */
+.viewer-floating-panel {
+  margin: 12px;
+  border-radius: 12px;
+  background: alpha(black, 0.62);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  box-shadow: 0 4px 14px alpha(black, 0.30);
+}
 ";
 
 /* ── A11Y_CSS ─ shared accessibility fallbacks. GTK CssProvider supports
@@ -610,6 +634,7 @@ const A11Y_CSS: &str = "
   .glass-menu > contents,
   .viewer-stage,
   .viewer-details-panel,
+  .viewer-floating-panel,
   .glass-editor-preview {
     background: #1f1f23;
     background-clip: padding-box;
@@ -643,6 +668,7 @@ const A11Y_CSS: &str = "
   .glass-menu > contents,
   .viewer-stage,
   .viewer-details-panel,
+  .viewer-floating-panel,
   .glass-editor-preview {
     border: 2px solid alpha(white, 0.80);
     background: #1f1f23;
@@ -977,6 +1003,7 @@ mod tests {
             ".glass-menu > contents",
             ".glass-alert-dialog .background",
             ".viewer-details-panel",
+            ".viewer-floating-panel",
         ] {
             assert!(
                 css.contains(sel),
@@ -1023,6 +1050,7 @@ mod tests {
             ".glass-menu > contents",
             ".glass-alert-dialog .background",
             ".viewer-details-panel",
+            ".viewer-floating-panel",
         ] {
             assert!(
                 css.contains(sel),
