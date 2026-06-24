@@ -1,5 +1,5 @@
 project('photo-viewer', 'rust',
-  version : '0.1.0',
+  version : '0.5.0',
   meson_version : '>= 0.59.0',
 )
 
@@ -9,6 +9,11 @@ project('photo-viewer', 'rust',
 install_data(
   'data/org.gnome.PhotoViewer.desktop',
   install_dir : get_option('datadir') / 'applications',
+)
+
+install_data(
+  'data/org.gnome.PhotoViewer.metainfo.xml',
+  install_dir : get_option('datadir') / 'metainfo',
 )
 
 # Install application icons into the hicolor theme so the desktop entry

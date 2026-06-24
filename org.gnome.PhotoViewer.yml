@@ -1,0 +1,45 @@
+app-id: org.gnome.PhotoViewer
+runtime: org.gnome.Platform
+runtime-version: "50"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: photo-viewer
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+  - --filesystem=xdg-run/gvfsd
+  - --talk-name=org.gtk.vfs.*
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/pkgconfig
+  - /share/man
+  - /share/doc
+
+modules:
+  - name: photo-viewer
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+      env:
+        PATH: /usr/lib/sdk/rust-stable/bin:/app/bin:/usr/bin
+        CARGO_HOME: /run/build/photo-viewer/cargo-home
+        CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/photo-viewer /app/bin/photo-viewer
+      - install -Dm644 data/org.gnome.PhotoViewer.desktop /app/share/applications/org.gnome.PhotoViewer.desktop
+      - install -Dm644 data/org.gnome.PhotoViewer.metainfo.xml /app/share/metainfo/org.gnome.PhotoViewer.metainfo.xml
+      - install -Dm644 data/icons/photo-viewer-64.png /app/share/icons/hicolor/64x64/apps/org.gnome.PhotoViewer.png
+      - install -Dm644 data/icons/photo-viewer-128.png /app/share/icons/hicolor/128x128/apps/org.gnome.PhotoViewer.png
+      - install -Dm644 data/icons/photo-viewer-symbolic.svg /app/share/icons/hicolor/symbolic/apps/org.gnome.PhotoViewer-symbolic.svg
+    sources:
+      - type: dir
+        path: .

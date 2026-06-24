@@ -10,18 +10,11 @@
 //! sync if the stack is changed externally.
 
 use crate::core::i18n::tr;
-use crate::ui::liquid_glass;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{gdk, graphene, gsk};
 use libadwaita as adw;
-
-/// Lens displacement strength ∈ [0, 1): how hard the pill edge pulls the
-/// backdrop toward its centre. ~0.35 reads as a clear magnifying lens without
-/// turning the labels behind into mush.
-const GLASS_STRENGTH: f32 = 0.35;
 
 /// Loop-guard state machine for the bound ViewStack sync.
 ///
@@ -55,19 +48,6 @@ mod imp {
     use super::*;
     use std::cell::Cell;
 
-    /// Snapshot of the inputs that determine the refracted backdrop. Compared
-    /// each tick so we only re-capture when something behind the pill actually
-    /// moved (scroll position, pill geometry, or which grid is visible).
-    #[derive(Clone, PartialEq)]
-    pub struct BackdropSig {
-        child: Option<String>,
-        vadj: f64,
-        pill_w: i32,
-        pill_h: i32,
-        pill_x: i32,
-        pill_y: i32,
-    }
-
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(file = "../../data/ui/mode-selector.ui")]
     pub struct ModeSelector {
@@ -79,24 +59,6 @@ mod imp {
         /// handler before installing a new one when the bound stack
         /// is swapped (rebind).
         pub stack: std::cell::RefCell<Option<(adw::ViewStack, glib::SignalHandlerId)>>,
-        /// Refracted backdrop (the lens-warped region of the grid behind the
-        /// pill), cached between frames. `None` until the first successful
-        /// capture or when offscreen rendering is unavailable.
-        pub backdrop_tex: std::cell::RefCell<Option<gdk::Texture>>,
-        /// GSK renderer for the surface, lazily created and cached.
-        pub renderer: std::cell::RefCell<Option<gsk::Renderer>>,
-        /// Set when the backdrop may have changed; consumed by the tick
-        /// callback on the next allowed frame.
-        pub backdrop_dirty: Cell<bool>,
-        /// Frame time (µs) of the last backdrop recompute — bounds staleness
-        /// during continuous scrolling (see `tick_check`).
-        pub last_recompute_us: Cell<i64>,
-        /// Frame time (µs) of the last detected motion under the pill. We wait
-        /// for scrolling to *settle* before the (expensive, main-thread)
-        /// offscreen capture so scrolling never blocks on it.
-        pub last_motion_us: Cell<i64>,
-        /// Last observed backdrop signature (see [`BackdropSig`]).
-        pub backdrop_sig: std::cell::RefCell<Option<BackdropSig>>,
         #[template_child]
         pub label_0: TemplateChild<gtk::Label>,
         #[template_child]
@@ -179,73 +141,13 @@ mod imp {
             });
             self.obj().add_controller(key_ctrl);
 
-            // Per-frame backdrop change detection for the liquid-glass
-            // refraction (see `tick_check`). Cheap when nothing moves; the
-            // expensive offscreen capture runs only on change, throttled to
-            // ~30fps, so idle scrolling stays smooth.
-            self.obj().add_tick_callback(|sel, clock| {
-                sel.imp().tick_check(clock);
-                glib::ControlFlow::Continue
-            });
+            // The liquid-glass backdrop is now handled by GTK CSS
+            // `backdrop-filter` in `grid_css.rs`. Keeping the effect in CSS
+            // lets GTK/GSK use the renderer's native backdrop nodes instead of
+            // repeatedly capturing and CPU-warping the grid in a tick callback.
         }
     }
-    impl WidgetImpl for ModeSelector {
-        /// Paint the *entire* liquid-glass pill in one place — soft shadow,
-        /// refracted backdrop, glass tint, and specular rim — so there is a
-        /// single, pixel-aligned shape. An earlier version split the rim
-        /// across CSS `box-shadow` and a rounded clip here, and the two
-        /// rounded rectangles read as two misaligned pills. The parent (`Box`)
-        /// then only lays out the label/dot children on top.
-        fn snapshot(&self, snapshot: &gtk::Snapshot) {
-            let obj = self.obj();
-            let alloc = obj.allocation();
-            let w = alloc.width() as f32;
-            let h = alloc.height() as f32;
-            if w <= 0.0 || h <= 0.0 {
-                self.parent_snapshot(snapshot);
-                return;
-            }
-
-            let radius = 22.0_f32.min(w / 2.0).min(h / 2.0);
-            let on_light = obj.has_css_class("on-light-background");
-            let bounds = graphene::Rect::new(0.0, 0.0, w, h);
-
-            // (1) Soft drop shadow: a blurred dark rounded rect, nudged down.
-            let sh_bounds = graphene::Rect::new(0.0, 5.0, w, h);
-            let sh_rounded = gsk::RoundedRect::from_rect(sh_bounds, radius);
-            snapshot.push_blur(12.0);
-            snapshot.push_rounded_clip(&sh_rounded);
-            snapshot.append_color(
-                &gdk::RGBA::new(0.0, 0.0, 0.0, if on_light { 0.18 } else { 0.34 }),
-                &sh_bounds,
-            );
-            snapshot.pop(); // rounded clip
-            snapshot.pop(); // blur
-
-            // (2) Refracted backdrop (or a flat fill), clipped to the pill.
-            let rounded = gsk::RoundedRect::from_rect(bounds, radius);
-            snapshot.push_rounded_clip(&rounded);
-            if let Some(tex) = self.backdrop_tex.borrow().as_ref() {
-                snapshot.append_texture(tex, &bounds);
-                let tint = if on_light { 0.14 } else { 0.10 };
-                snapshot.append_color(&gdk::RGBA::new(1.0, 1.0, 1.0, tint), &bounds);
-            } else {
-                let a = if on_light { 0.30 } else { 0.22 };
-                snapshot.append_color(&gdk::RGBA::new(1.0, 1.0, 1.0, a), &bounds);
-            }
-
-            // (3) Specular rim — bright top edge + faint bottom shade, drawn
-            // inside the pill clip so it follows the rounded corners.
-            let top = graphene::Rect::new(0.0, 0.0, w, 1.5);
-            snapshot.append_color(&gdk::RGBA::new(1.0, 1.0, 1.0, 0.45), &top);
-            let bot = graphene::Rect::new(0.0, h - 2.0, w, 2.0);
-            snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.18), &bot);
-            snapshot.pop(); // rounded clip
-
-            // (4) Children (labels + dots) on top.
-            self.parent_snapshot(snapshot);
-        }
-    }
+    impl WidgetImpl for ModeSelector {}
     impl BoxImpl for ModeSelector {}
 
     impl ModeSelector {
@@ -277,129 +179,6 @@ mod imp {
             self.last_sync.set(LastSync::Synced(active));
         }
 
-        // --- Liquid-glass backdrop refraction -------------------------------
-
-        /// The currently-visible grid (the surface the pill floats over) and
-        /// its ViewStack name — used both for capture and change detection.
-        fn current_grid(&self) -> Option<(gtk::Widget, String)> {
-            let stack = self.stack.borrow();
-            let (stack, _) = stack.as_ref()?;
-            let name = stack.visible_child_name()?;
-            let child = stack.visible_child()?;
-            Some((child, name.to_string()))
-        }
-
-        /// The MediaGrid's vertical scroll adjustment. Its first child is the
-        /// `GtkScrolledWindow` (see media-grid.blp); watching the value detects
-        /// scrolling under the pill.
-        fn grid_vadjustment(grid: &gtk::Widget) -> Option<gtk::Adjustment> {
-            let scroller = grid.first_child()?.downcast::<gtk::ScrolledWindow>().ok()?;
-            Some(scroller.vadjustment())
-        }
-
-        /// Build the change-detection signature for this frame.
-        fn compute_sig(&self, grid: Option<&gtk::Widget>, name: &Option<String>) -> BackdropSig {
-            let obj = self.obj();
-            let alloc = obj.allocation();
-            let (vadj, px, py) = match grid {
-                Some(g) => {
-                    let v = Self::grid_vadjustment(g).map(|a| a.value()).unwrap_or(0.0);
-                    let (x, y) = obj
-                        .translate_coordinates(g, 0.0, 0.0)
-                        .map(|(x, y)| (x.round() as i32, y.round() as i32))
-                        .unwrap_or((0, 0));
-                    (v, x, y)
-                }
-                None => (0.0, 0, 0),
-            };
-            BackdropSig {
-                child: name.clone(),
-                vadj,
-                pill_w: alloc.width(),
-                pill_h: alloc.height(),
-                pill_x: px,
-                pill_y: py,
-            }
-        }
-
-        /// Per-frame: detect whether the backdrop moved and, if so (throttled
-        /// to ~30fps), re-capture + re-displace it outside the snapshot pass.
-        fn tick_check(&self, clock: &gdk::FrameClock) {
-            let (grid, name) = match self.current_grid() {
-                Some((g, n)) => (Some(g), Some(n)),
-                None => (None, None),
-            };
-            let now = clock.frame_time();
-            let sig = self.compute_sig(grid.as_ref(), &name);
-            if self.backdrop_sig.borrow().as_ref() != Some(&sig) {
-                *self.backdrop_sig.borrow_mut() = Some(sig);
-                self.last_motion_us.set(now);
-                self.backdrop_dirty.set(true);
-            }
-            if !self.backdrop_dirty.get() {
-                return;
-            }
-            // The offscreen capture (`render_texture` of the whole grid) is
-            // expensive and runs on the main thread, so we do NOT capture while
-            // scrolling: wait for motion to settle (~150ms idle). A staleness
-            // cap (~500ms) still refreshes during non-stop scrolling, and the
-            // very first capture (no texture yet) fires immediately so the
-            // glass shows refraction as soon as the grid is ready, not after a
-            // settle delay.
-            let first = self.backdrop_tex.borrow().is_none();
-            let settled = now - self.last_motion_us.get() >= 150_000;
-            let stale = now - self.last_recompute_us.get() >= 500_000;
-            if !first && !settled && !stale {
-                return;
-            }
-            self.backdrop_dirty.set(false);
-            self.last_recompute_us.set(now);
-            if !self.recompute_backdrop(grid.as_ref()) {
-                // Capture failed (e.g. grid not laid out yet, or offscreen) —
-                // retry next tick so the first display still gets refraction.
-                self.backdrop_dirty.set(true);
-            }
-        }
-
-        /// Capture the pill's rectangle of the grid behind it, lens-displace
-        /// it, cache the result, and queue a redraw. Returns whether a texture
-        /// was produced (`tick_check` retries on `false` so the first capture
-        /// succeeds once the grid is laid out). No-op offscreen.
-        fn recompute_backdrop(&self, grid: Option<&gtk::Widget>) -> bool {
-            let obj = self.obj();
-            let Some(grid) = grid else {
-                return false;
-            };
-            // Lazily create + cache a renderer for this surface.
-            if self.renderer.borrow().is_none() {
-                if let Some(surface) = grid.native().and_then(|n| n.surface()) {
-                    if let Some(r) = gsk::Renderer::for_surface(&surface) {
-                        *self.renderer.borrow_mut() = Some(r);
-                    }
-                }
-            }
-            let renderer_guard = self.renderer.borrow();
-            let Some(renderer) = renderer_guard.as_ref() else {
-                return false;
-            };
-            let alloc = obj.allocation();
-            let Some((px, py)) = obj.translate_coordinates(grid, 0.0, 0.0) else {
-                return false;
-            };
-            let rect = graphene::Rect::new(
-                px as f32,
-                py as f32,
-                alloc.width() as f32,
-                alloc.height() as f32,
-            );
-            if let Some(tex) = liquid_glass::refract_region(grid, &rect, renderer, GLASS_STRENGTH) {
-                *self.backdrop_tex.borrow_mut() = Some(tex.upcast::<gdk::Texture>());
-                obj.queue_draw();
-                true
-            } else {
-                false
-            }
-        }
     }
 }
 

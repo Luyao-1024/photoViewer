@@ -107,17 +107,31 @@ flowbox.album-grid > flowboxchild:selected:focus .album-cover {
   outline-offset: -3px;
 }
 
-/* ModeSelector 容器：整个液态玻璃 pill（投影 + 折射背景 + 玻璃 tint +
-   高光边缘）由 widget 自定义 snapshot 统一绘制（见
-   mode_selector.rs::snapshot）。CSS 这里只保留 padding 以布局 label/dot
-   子节点。
-
-   不再用 CSS 的 box-shadow/圆角描边 —— 早前 CSS 的圆角描边与 snapshot
-   里折射纹理的圆角裁剪是两个略微错位的矩形，看上去像两个没对齐的胶囊。
-   现在整个 pill 只在一个地方画，保证单一对齐形状。明暗对比仍由
-   on-light-background 类驱动（见下方 label/dot 颜色规则）。 */
+/* ModeSelector 容器：GTK 4.22+ 原生 backdrop-filter 液态玻璃。
+   GNOME 50 runtime 内 GTK 4.22.4 会把背景复制/模糊交给 GSK 渲染器；
+   旧 GTK 不识别 backdrop-filter 时仍保留半透明背景、圆角、描边和阴影
+   作为 fallback。 */
 box.mode-selector {
-  padding: 8px 16px;
+    padding: 8px 16px;
+    border-radius: 24px;
+    background: alpha(white, 0.10);
+    background-clip: padding-box;
+    border: 1px solid alpha(white, 0.28);
+    backdrop-filter: blur(22px) saturate(1.35) brightness(1.08);
+    box-shadow:
+        0 18px 48px alpha(black, 0.26),
+    inset 0 1px alpha(white, 0.58),
+    inset 0 -1px alpha(black, 0.16);
+}
+
+box.mode-selector.on-light-background {
+    background: alpha(white, 0.18);
+    border-color: alpha(white, 0.42);
+    backdrop-filter: blur(24px) saturate(1.20) brightness(1.04);
+    box-shadow:
+        0 16px 42px alpha(black, 0.20),
+    inset 0 1px alpha(white, 0.72),
+    inset 0 -1px alpha(black, 0.10);
 }
 
 /* 单个 label / dot 槽位 */

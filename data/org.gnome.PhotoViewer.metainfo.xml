@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.gnome.PhotoViewer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Photo Viewer</name>
+  <summary>Browse, organize, and edit photos</summary>
+
+  <description>
+    <p>
+      Photo Viewer is a GTK and Libadwaita photo application for browsing large
+      local photo collections, opening albums, managing trash, and applying
+      basic edits such as rotation, crop, brightness, contrast, and saturation.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">org.gnome.PhotoViewer.desktop</launchable>
+  <provides>
+    <binary>photo-viewer</binary>
+  </provides>
+
+  <categories>
+    <category>Graphics</category>
+    <category>Photography</category>
+    <category>Viewer</category>
+  </categories>
+
+  <releases>
+    <release version="0.5.0" date="2026-06-24">
+      <description>
+        <p>
+          Adds full browsing, thumbnails, viewer, albums, trash, editing, and
+          Flatpak packaging support.
+        </p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1" />
+</component>
