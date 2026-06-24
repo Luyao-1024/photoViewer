@@ -19,6 +19,8 @@
     "viewer.tooltip.favorite": "收藏",
     "viewer.tooltip.add_to_album": "添加到相册",
     "viewer.tooltip.edit": "编辑",
+    "viewer.tooltip.previous": "上一张",
+    "viewer.tooltip.next": "下一张",
     "viewer.details.close": "关闭详情",
     "viewer.details.file": "文件",
     "viewer.details.name": "名称",

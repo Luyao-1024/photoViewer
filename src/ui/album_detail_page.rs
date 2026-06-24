@@ -32,6 +32,7 @@ mod imp {
         pub pool: RefCell<Option<DbPool>>,
         pub album: RefCell<Option<Album>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
+        pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -80,6 +81,7 @@ impl AlbumDetailPage {
         *obj.imp().master_media_list.borrow_mut() = Some(master_media_list);
         *obj.imp().album.borrow_mut() = Some(album);
         *obj.imp().pool.borrow_mut() = Some(pool);
+        *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
         if media_list.n_items() == 0 {
             let empty = empty_states::no_album_photos();
@@ -150,6 +152,11 @@ impl AlbumDetailPage {
                     }
                 }
             });
+        }
+
+        // Inject the shared thumbnail loader for the filmstrip.
+        if let Some(loader) = self.imp().loader.borrow().as_ref().cloned() {
+            viewer.set_thumbnail_loader(loader);
         }
         viewer.show_at(global_index);
 

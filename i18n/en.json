@@ -19,6 +19,8 @@
     "viewer.tooltip.favorite": "Favorite",
     "viewer.tooltip.add_to_album": "Add to Album",
     "viewer.tooltip.edit": "Edit",
+    "viewer.tooltip.previous": "Previous",
+    "viewer.tooltip.next": "Next",
     "viewer.details.close": "Close Details",
     "viewer.details.file": "File",
     "viewer.details.name": "Name",

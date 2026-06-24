@@ -13,6 +13,7 @@ use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifField};
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::album_picker::AlbumPickerDialog;
 use crate::ui::editor_panel::{EditorPanel, ToastKind};
@@ -33,7 +34,17 @@ use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
+
+/// On-screen thumbnail height in the viewer filmstrip. Deliberately smaller
+/// than the Year view (90 px) so the strip stays unobtrusive.
+const THUMB_HEIGHT: i32 = 56;
+
+/// Half-window of items the filmstrip keeps around the current index.
+/// ±32 gives 65 items max — wide enough that a rebuild only fires every
+/// ~32 navigations, small enough to be cheap to build.
+const THUMB_WINDOW: u32 = 32;
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -110,6 +121,15 @@ mod imp {
         pub exif_rows: RefCell<Vec<adw::ActionRow>>,
         /// 当前图片收藏状态（用于按钮即时渲染）。
         pub is_favorite: Cell<bool>,
+        /// Thumbnail loader shared with grids — used for the filmstrip.
+        pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        /// Start index of the current filmstrip window. When the current
+        /// index falls outside `[start, start + 2*THUMB_WINDOW)`, the strip
+        /// is rebuilt; otherwise only the highlight is updated.
+        pub thumb_window_start: Cell<u32>,
+        /// Buttons currently in the filmstrip (in index order). Stored so
+        /// highlight can be toggled without rebuilding the strip.
+        pub thumb_items: RefCell<Vec<gtk::Button>>,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
@@ -156,6 +176,14 @@ mod imp {
         pub taken_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub exif_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub thumb_scrolled: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub thumb_strip: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub prev_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub next_btn: TemplateChild<gtk::Button>,
     }
 
     #[glib::object_subclass]
@@ -201,6 +229,7 @@ impl ViewerPage {
         obj.setup_delete_button();
         obj.setup_details_panel();
         obj.setup_favorite_button();
+        obj.setup_nav_buttons();
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
         obj
@@ -265,6 +294,12 @@ impl ViewerPage {
 
     pub fn connect_favorite_state_changed<F: Fn(i64, bool) + 'static>(&self, f: F) {
         *self.imp().favorite_state_cb.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// Inject the shared thumbnail loader. Must be called before `show_at`
+    /// so the filmstrip can request thumbnails.
+    pub fn set_thumbnail_loader(&self, loader: Arc<ThumbnailLoader>) {
+        *self.imp().loader.borrow_mut() = Some(loader);
     }
 
     fn fire_nav(&self, delta: NavDelta) {
@@ -626,6 +661,191 @@ impl ViewerPage {
         }
     }
 
+    /// Wire the `<` / `>` filmstrip navigation buttons. They delegate to
+    /// `fire_nav(±1)` so the host's navigation callback handles the actual
+    /// index advance, exactly like keyboard arrow keys.
+    fn setup_nav_buttons(&self) {
+        let imp = self.imp();
+        imp.prev_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.previous")));
+        imp.next_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.next")));
+
+        let weak = self.downgrade();
+        imp.prev_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.fire_nav(-1);
+            }
+        });
+        let weak = self.downgrade();
+        imp.next_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.fire_nav(1);
+            }
+        });
+    }
+
+    /// Rebuild or update the filmstrip for the current index. Called from
+    /// `show_at`. When the current index is still inside the existing window,
+    /// only the highlight is toggled and the strip scrolls to reveal the
+    /// current item; otherwise the strip is rebuilt with a new window centred
+    /// on the current index.
+    fn refresh_thumb_strip(&self) {
+        let current = self.imp().current_index.get();
+        let start = self.imp().thumb_window_start.get();
+        let items_len = self.imp().thumb_items.borrow().len() as u32;
+
+        let in_window = items_len > 0 && current >= start && current < start + items_len;
+
+        if in_window {
+            self.update_thumb_highlight(current);
+        } else {
+            self.rebuild_thumb_strip(current);
+        }
+        self.scroll_thumb_to_current();
+    }
+
+    /// Tear down the existing strip and rebuild with a window centred on
+    /// `current`. Each item is a frame-less `GtkButton` wrapping a `GtkPicture`
+    /// with `content-fit: contain` (preserves aspect ratio). After the
+    /// thumbnail texture arrives, `width-request` is set so the button sizes
+    /// to the image's aspect ratio at the fixed `THUMB_HEIGHT`.
+    fn rebuild_thumb_strip(&self, current: u32) {
+        let strip = self.imp().thumb_strip.get();
+
+        // Clear old items.
+        let old = self
+            .imp()
+            .thumb_items
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        for btn in &old {
+            strip.remove(btn);
+        }
+
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let media_guard = self.imp().media_list.borrow();
+        let Some(list) = media_guard.as_ref() else {
+            return;
+        };
+        let n_items = list.n_items();
+        if n_items == 0 {
+            return;
+        }
+
+        let start = current.saturating_sub(THUMB_WINDOW);
+        let end = current
+            .saturating_add(THUMB_WINDOW)
+            .saturating_add(1)
+            .min(n_items);
+        self.imp().thumb_window_start.set(start);
+
+        let mut new_items = Vec::new();
+        for idx in start..end {
+            let Some(obj) = list.item(idx) else {
+                continue;
+            };
+            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let item = (*boxed.borrow::<MediaItem>()).clone();
+
+            let button = gtk::Button::new();
+            button.set_has_frame(false);
+            button.add_css_class("viewer-thumb-item");
+            if idx == current {
+                button.add_css_class("viewer-thumb-current");
+            }
+
+            let picture = gtk::Picture::builder()
+                .content_fit(gtk::ContentFit::Contain)
+                .height_request(THUMB_HEIGHT)
+                .can_shrink(true)
+                .build();
+            button.set_child(Some(&picture));
+
+            // Request thumbnail.
+            let item_uri = item.uri.clone();
+            let item_mtime = std::time::SystemTime::from(item.file_mtime);
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            loader.request(item_uri.clone(), ThumbnailSize::Small, Some(item_mtime), tx);
+
+            let pic_weak = picture.downgrade();
+            glib::spawn_future_local(async move {
+                let Ok(loaded) = rx.await else {
+                    return;
+                };
+                let Some(pic) = pic_weak.upgrade() else {
+                    return;
+                };
+                let tex = loaded.texture;
+                let tex_w = tex.width();
+                let tex_h = tex.height();
+                pic.set_paintable(Some(&tex));
+                if tex_h > 0 {
+                    let w = ((THUMB_HEIGHT as f64) * tex_w as f64 / tex_h as f64).round() as i32;
+                    pic.set_width_request(w.max(36));
+                }
+            });
+
+            // Click → navigate to this index.
+            let weak = self.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let delta = idx as i32 - this.current_index() as i32;
+                    if delta != 0 {
+                        this.fire_nav(delta);
+                    }
+                }
+            });
+
+            strip.append(&button);
+            new_items.push(button);
+        }
+
+        *self.imp().thumb_items.borrow_mut() = new_items;
+    }
+
+    /// Toggle the `.viewer-thumb-current` class so only the current item is
+    /// highlighted, without rebuilding the strip.
+    fn update_thumb_highlight(&self, current: u32) {
+        let start = self.imp().thumb_window_start.get();
+        let items = self.imp().thumb_items.borrow();
+        for (i, btn) in items.iter().enumerate() {
+            let idx = start + i as u32;
+            if idx == current {
+                btn.add_css_class("viewer-thumb-current");
+            } else {
+                btn.remove_css_class("viewer-thumb-current");
+            }
+        }
+    }
+
+    /// Scroll the filmstrip so the current item is centred.
+    fn scroll_thumb_to_current(&self) {
+        let start = self.imp().thumb_window_start.get();
+        let current = self.imp().current_index.get();
+        if current < start {
+            return;
+        }
+        let offset = (current - start) as usize;
+        let items = self.imp().thumb_items.borrow();
+        let Some(btn) = items.get(offset) else {
+            return;
+        };
+        let scrolled = self.imp().thumb_scrolled.get();
+        let hadj = scrolled.hadjustment();
+        let alloc = btn.allocation();
+        let target = (alloc.x() as f64) - hadj.page_size() / 2.0 + (alloc.width() as f64) / 2.0;
+        let clamped = target.max(0.0).min(hadj.upper() - hadj.page_size());
+        hadj.set_value(clamped);
+    }
+
     /// 从数据库异步同步当前图片收藏状态。与 `show_at()` 的 token 绑定，避免异步回写过期。
     fn sync_favorite_state(&self, item_id: i64) {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
@@ -930,6 +1150,9 @@ impl ViewerPage {
         // once is too much for typical browsing.
         self.preload_neighbor(-1);
         self.preload_neighbor(1);
+
+        // Update the bottom filmstrip (highlight or rebuild + scroll).
+        self.refresh_thumb_strip();
 
         // Decode the current image off the main thread. `Pixbuf::from_file`
         // dispatches via gdk-pixbuf loaders (JPEG/PNG/HEIC/AVIF/...) and is

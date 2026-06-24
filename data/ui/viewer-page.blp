@@ -101,6 +101,48 @@ template $ViewerPage : Adw.NavigationPage {
               spinning: true;
               visible: true;
             }
+
+            [overlay]
+            Gtk.Box viewer_bottom_bar {
+              orientation: horizontal;
+              halign: fill;
+              valign: end;
+              spacing: 8;
+              margin-start: 24;
+              margin-end: 24;
+              margin-bottom: 16;
+              css-classes: ["viewer-thumb-bar", "glass-raised"];
+
+              Gtk.ScrolledWindow thumb_scrolled {
+                hexpand: true;
+                hscrollbar-policy: never;
+                vscrollbar-policy: never;
+                min-content-height: 64;
+
+                child: Gtk.Box thumb_strip {
+                  orientation: horizontal;
+                  spacing: 6;
+                };
+              }
+
+              Gtk.Box viewer_nav_buttons {
+                orientation: horizontal;
+                spacing: 2;
+                valign: center;
+
+                Gtk.Button prev_btn {
+                  label: "<";
+                  css-classes: ["glass-toolbar-button", "viewer-nav-btn"];
+                  tooltip-text: "";
+                }
+
+                Gtk.Button next_btn {
+                  label: ">";
+                  css-classes: ["glass-toolbar-button", "viewer-nav-btn"];
+                  tooltip-text: "";
+                }
+              }
+            }
           };
 
           sidebar: Gtk.Box details_panel {

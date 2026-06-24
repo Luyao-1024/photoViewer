@@ -838,6 +838,12 @@ impl PhotosPage {
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
             viewer.set_album_target(&nav, pool.clone());
         }
+
+        // Inject the shared thumbnail loader for the filmstrip.
+        if let Some(loader) = self.imp().loader.borrow().as_ref() {
+            viewer.set_thumbnail_loader(loader.clone());
+        }
+
         viewer.show_at(global_index);
 
         let nav_for_refresh = nav.downgrade();

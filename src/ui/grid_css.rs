@@ -378,6 +378,57 @@ box.mode-selector.on-light-background box.mode-dot {
   0%, 100% { background-color: alpha(white, 0.035); }
   50%      { background-color: alpha(white, 0.11); }
 }
+
+/* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
+   The bottom overlay bar in ViewerPage. The container uses .glass-raised for
+   its material (blur+shadow); these rules own the layout of the strip and the
+   per-item highlight state. Items keep original aspect ratio (set via
+   width-request after texture load in viewer_page.rs).
+   ViewerPage 底部缩略图预览栏。容器使用 .glass-raised 提供材质；这里只管
+   布局和单项高亮。缩略图保持原始宽高比。 */
+.viewer-thumb-bar {
+  padding: 6px 8px;
+  border-radius: 14px;
+}
+
+.viewer-thumb-strip {
+  padding: 0;
+}
+
+.viewer-thumb-item {
+  padding: 0;
+  min-width: 36px;
+  min-height: 56px;
+  border-radius: 8px;
+  background: transparent;
+  border: 2px solid transparent;
+  transition: border-color 120ms ease, transform 120ms ease;
+  box-shadow: 0 2px 8px alpha(black, 0.25);
+}
+
+.viewer-thumb-item:hover {
+  border-color: alpha(white, 0.35);
+}
+
+.viewer-thumb-item.viewer-thumb-current {
+  border-color: alpha(white, 0.72);
+  box-shadow:
+    0 0 12px alpha(white, 0.18),
+    0 2px 8px alpha(black, 0.30);
+}
+
+.viewer-thumb-item picture {
+  border-radius: 6px;
+}
+
+/* viewer-nav-btn — the < > navigation buttons at the strip's right end */
+.viewer-nav-btn {
+  min-width: 38px;
+  min-height: 38px;
+  font-size: 16pt;
+  font-weight: 700;
+  padding: 0;
+}
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass surface material.
