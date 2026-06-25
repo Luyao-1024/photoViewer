@@ -71,6 +71,21 @@ fn album_tile_pushes_day_grouped_detail_page() {
         media.append(&glib::BoxedAnyObject::new(item));
     }
     let page = AlbumsPage::new(albums, loader.clone());
+    let album_header_classes: Vec<String> = page
+        .imp()
+        .header_bar
+        .get()
+        .css_classes()
+        .iter()
+        .map(|class| class.to_string())
+        .collect();
+    assert!(
+        album_header_classes
+            .iter()
+            .any(|class| class == "glass-header"),
+        "AlbumsPage header should carry glass-header, got {album_header_classes:?}",
+    );
+
     page.set_nav_target(&nav, media, pool);
     nav.push(&page);
 
@@ -93,6 +108,20 @@ fn album_tile_pushes_day_grouped_detail_page() {
         detail.title().as_str(),
         "Camera",
         "detail page title should identify the current album"
+    );
+    let detail_header_classes: Vec<String> = detail
+        .imp()
+        .header_bar
+        .get()
+        .css_classes()
+        .iter()
+        .map(|class| class.to_string())
+        .collect();
+    assert!(
+        detail_header_classes
+            .iter()
+            .any(|class| class == "glass-header"),
+        "AlbumDetailPage header should carry glass-header, got {detail_header_classes:?}",
     );
 
     let grid = detail.imp().content_box.get().first_child();

@@ -83,6 +83,8 @@ mod imp {
         pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
         #[template_child]
+        pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
         pub trash_banner: TemplateChild<adw::Banner>,
         #[template_child]
         pub scrolled: TemplateChild<gtk::ScrolledWindow>,
@@ -603,6 +605,27 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&real_path);
+    }
+
+    #[gtk::test]
+    fn header_bar_uses_glass_header() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        let page = TrashPage::new(pool, empty_loader());
+        let header_classes: Vec<String> = page
+            .imp()
+            .header_bar
+            .get()
+            .css_classes()
+            .iter()
+            .map(|class| class.to_string())
+            .collect();
+
+        assert!(
+            header_classes.iter().any(|class| class == "glass-header"),
+            "TrashPage header should carry glass-header, got {header_classes:?}",
+        );
     }
 
     #[gtk::test]

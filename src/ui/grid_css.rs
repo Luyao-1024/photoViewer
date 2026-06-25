@@ -199,8 +199,28 @@ box.mode-selector.on-light-background box.mode-dot,
   color: inherit;
 }
 
+.glass-header windowcontrols button {
+  min-height: 28px;
+  min-width: 28px;
+  margin: 0 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+}
+
+.glass-header windowcontrols button image {
+  min-height: 24px;
+  min-width: 24px;
+  border-radius: 999px;
+  padding: 0;
+}
+
 .glass-toolbar-button:focus-visible,
-.glass-toolbar-button:focus {
+.glass-toolbar-button:focus,
+.glass-header windowcontrols button:focus-visible,
+.glass-header windowcontrols button:focus {
   outline: none;
 }
 
@@ -507,7 +527,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 
 /* Unified Liquid Glass button material. These selectors intentionally cover
    all button-like chrome so the Settings switch changes the whole language. */
-.glass-toolbar-button {
+.glass-toolbar-button,
+.glass-header windowcontrols button image {
   background: alpha(white, 0.12);
   background-clip: padding-box;
   border: 1px solid alpha(white, 0.28);
@@ -517,7 +538,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
     inset 0 -1px alpha(black, 0.12);
 }
 
-.glass-toolbar-button:hover {
+.glass-toolbar-button:hover,
+.glass-header windowcontrols button:hover image {
   background: alpha(white, 0.18);
   border-color: alpha(white, 0.38);
   box-shadow:
@@ -527,13 +549,31 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-toolbar-button:active,
-.glass-toolbar-button:checked {
+.glass-toolbar-button:checked,
+.glass-header windowcontrols button:active image,
+.glass-header windowcontrols button:checked image {
   background: alpha(white, 0.24);
   border-color: alpha(white, 0.44);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
     inset 0 1px alpha(white, 0.34),
     inset 0 -1px alpha(black, 0.18);
+}
+
+.glass-header windowcontrols button.close image {
+  color: inherit;
+}
+
+.glass-header windowcontrols button.close:hover image {
+  background: alpha(#ff5449, 0.24);
+  border-color: alpha(#ffb4ab, 0.42);
+  color: #ffb4ab;
+}
+
+.glass-header windowcontrols button.close:active image {
+  background: alpha(#ff5449, 0.30);
+  border-color: alpha(#ffb4ab, 0.48);
+  color: #ffb4ab;
 }
 
 .glass-toolbar-suggested:hover {
@@ -754,22 +794,42 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   box-shadow: 0 6px 18px alpha(black, 0.28);
 }
 
-.glass-toolbar-button {
+.glass-toolbar-button,
+.glass-header windowcontrols button image {
   background: alpha(white, 0.07);
   background-clip: padding-box;
   border: 1px solid alpha(white, 0.10);
   box-shadow: 0 3px 10px alpha(black, 0.18);
 }
 
-.glass-toolbar-button:hover {
+.glass-toolbar-button:hover,
+.glass-header windowcontrols button:hover image {
   background: alpha(white, 0.12);
   border-color: alpha(white, 0.16);
 }
 
 .glass-toolbar-button:active,
-.glass-toolbar-button:checked {
+.glass-toolbar-button:checked,
+.glass-header windowcontrols button:active image,
+.glass-header windowcontrols button:checked image {
   background: alpha(white, 0.16);
   border-color: alpha(white, 0.20);
+}
+
+.glass-header windowcontrols button.close image {
+  color: inherit;
+}
+
+.glass-header windowcontrols button.close:hover image {
+  background: alpha(#ff5449, 0.18);
+  border-color: alpha(#ffb4ab, 0.28);
+  color: #ffb4ab;
+}
+
+.glass-header windowcontrols button.close:active image {
+  background: alpha(#ff5449, 0.24);
+  border-color: alpha(#ffb4ab, 0.34);
+  color: #ffb4ab;
 }
 
 .glass-toolbar-suggested:hover {
@@ -1376,6 +1436,8 @@ mod tests {
 
         for selector in [
             ".glass-toolbar-button",
+            ".glass-header windowcontrols button image",
+            ".glass-header windowcontrols button.close:hover image",
             ".glass-menu-item",
             ".glass-sidebar-row:selected",
             ".viewer-overlay-nav",
@@ -1452,6 +1514,8 @@ mod tests {
 
         for selector in [
             ".glass-toolbar-button",
+            ".glass-header windowcontrols button image",
+            ".glass-header windowcontrols button.close:hover image",
             ".glass-menu-item",
             ".glass-sidebar-row:selected",
             ".viewer-overlay-nav",
@@ -1474,6 +1538,45 @@ mod tests {
                 !css.contains(liquid_signature),
                 "plain mode must not keep liquid button material signature {liquid_signature}",
             );
+        }
+    }
+
+    #[test]
+    fn window_close_button_is_red_only_on_interaction() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            let base_rule_start = css
+                .find(".glass-header windowcontrols button.close image {")
+                .expect("close window button base rule should exist");
+            let base_rule = &css[base_rule_start
+                ..css[base_rule_start..]
+                    .find('}')
+                    .map(|end| base_rule_start + end)
+                    .expect("close window button base rule should close")];
+
+            assert!(
+                !base_rule.contains("#ff5449") && !base_rule.contains("#c01c28"),
+                "close window button should not be red until hover/active ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".glass-header windowcontrols button.close:hover image"),
+                "close window button should have a red hover rule ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".glass-header windowcontrols button.close:active image"),
+                "close window button should have a red active rule ({liquid} mode)"
+            );
+            if liquid {
+                assert!(
+                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(#ff5449, 0.24);"),
+                    "liquid close hover should match the danger toolbar treatment"
+                );
+            } else {
+                assert!(
+                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(#ff5449, 0.18);"),
+                    "plain close hover should match the danger toolbar treatment"
+                );
+            }
         }
     }
 
