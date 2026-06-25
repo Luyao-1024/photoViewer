@@ -26,8 +26,8 @@ fn sidebar_navigation_suite() {
     let window = MainWindow::new(&app);
     window.populate_sidebar();
 
-    let split_view =
-        find_overlay_split_view(window.upcast_ref()).expect("main window should contain an OverlaySplitView");
+    let split_view = find_overlay_split_view(window.upcast_ref())
+        .expect("main window should contain an OverlaySplitView");
     assert_eq!(
         split_view.min_sidebar_width(),
         240.0,

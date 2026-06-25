@@ -12,7 +12,7 @@
 use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
-use crate::core::metadata::{self, ExifField};
+use crate::core::metadata::{self, ExifSummary};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::album_picker::AlbumPickerDialog;
@@ -141,8 +141,8 @@ mod imp {
         pub original_texture: RefCell<Option<gdk::Texture>>,
         /// True while the editor side-panel is open (prevents nav gestures).
         pub is_editing: Cell<bool>,
-        /// Dynamic EXIF rows currently appended to `exif_group`.
-        pub exif_rows: RefCell<Vec<adw::ActionRow>>,
+        /// Dynamic camera-parameter rows appended to `file_group`.
+        pub camera_rows: RefCell<Vec<adw::ActionRow>>,
         /// 当前图片收藏状态（用于按钮即时渲染）。
         pub is_favorite: Cell<bool>,
         /// Thumbnail loader shared with grids — used for the filmstrip.
@@ -198,8 +198,6 @@ mod imp {
         #[template_child]
         pub name_row: TemplateChild<adw::ActionRow>,
         #[template_child]
-        pub path_row: TemplateChild<adw::ActionRow>,
-        #[template_child]
         pub folder_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub mime_row: TemplateChild<adw::ActionRow>,
@@ -208,11 +206,7 @@ mod imp {
         #[template_child]
         pub size_row: TemplateChild<adw::ActionRow>,
         #[template_child]
-        pub modified_row: TemplateChild<adw::ActionRow>,
-        #[template_child]
         pub taken_row: TemplateChild<adw::ActionRow>,
-        #[template_child]
-        pub exif_group: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub thumb_scrolled: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
@@ -1680,60 +1674,90 @@ impl ViewerPage {
         );
         let imp = self.imp();
         imp.name_row.get().set_title(&tr("viewer.details.name"));
-        imp.path_row.get().set_title(&tr("viewer.details.path"));
         imp.folder_row.get().set_title(&tr("viewer.details.folder"));
         imp.mime_row.get().set_title(&tr("viewer.details.type"));
         imp.dimensions_row
             .get()
             .set_title(&tr("viewer.details.dimensions"));
         imp.size_row.get().set_title(&tr("viewer.details.size"));
-        imp.modified_row
-            .get()
-            .set_title(&tr("viewer.details.modified"));
         imp.taken_row
             .get()
             .set_title(&tr("viewer.details.captured"));
-        imp.exif_group.get().set_title(&tr("viewer.details.exif"));
+
         imp.name_row.get().set_subtitle(item.display_name());
-        imp.path_row
-            .get()
-            .set_subtitle(&item.path.to_string_lossy());
         imp.folder_row
             .get()
             .set_subtitle(&item.folder_path.to_string_lossy());
         imp.mime_row.get().set_subtitle(&item.mime_type);
+
+        // Hide rows whose value is absent instead of showing "Not available".
+        let dim = format_dimensions(item.width, item.height);
         imp.dimensions_row
             .get()
-            .set_subtitle(&format_dimensions(item.width, item.height));
-        imp.size_row
-            .get()
-            .set_subtitle(&format_file_size(item.file_size));
-        imp.modified_row
-            .get()
-            .set_subtitle(&format_datetime(Some(item.file_mtime)));
-        imp.taken_row
-            .get()
-            .set_subtitle(&format_datetime(item.taken_at));
+            .set_visible(item.width.is_some() && item.height.is_some());
+        imp.dimensions_row.get().set_subtitle(&dim);
 
-        self.set_exif_rows(vec![ExifField {
-            tag: tr("viewer.exif.status"),
-            value: tr("viewer.exif.loading"),
-        }]);
-        self.load_exif_details(item.path.clone(), self.imp().current_token.get());
+        if item.file_size > 0 {
+            imp.size_row.get().set_visible(true);
+            imp.size_row
+                .get()
+                .set_subtitle(&format_file_size(item.file_size));
+        } else {
+            imp.size_row.get().set_visible(false);
+        }
+
+        if let Some(dt) = item.taken_at {
+            imp.taken_row.get().set_visible(true);
+            imp.taken_row
+                .get()
+                .set_subtitle(&format_datetime(Some(dt)));
+        } else {
+            // No value in DB — hide for now. If the fresh EXIF parse below
+            // finds one, the callback will make it visible again.
+            imp.taken_row.get().set_visible(false);
+        }
+
+        self.clear_camera_rows();
+        self.load_camera_details(item.path.clone(), self.imp().current_token.get());
     }
 
-    fn load_exif_details(&self, path: PathBuf, token: u64) {
+    /// Walk up from an ActionRow to its owning PreferencesGroup.
+    fn file_group(&self) -> Option<adw::PreferencesGroup> {
+        self.imp()
+            .name_row
+            .get()
+            .ancestor(adw::PreferencesGroup::static_type())
+            .and_downcast::<adw::PreferencesGroup>()
+    }
+
+    /// Remove all dynamically-created camera-parameter rows from the file group.
+    fn clear_camera_rows(&self) {
+        if let Some(g) = &self.file_group() {
+            for row in self.imp().camera_rows.borrow_mut().drain(..) {
+                g.remove(&row);
+            }
+        }
+    }
+
+    fn load_camera_details(&self, path: PathBuf, token: u64) {
+        let path_dbg = path.display().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         gio::spawn_blocking(move || {
-            let fields = metadata::extract(&path)
-                .map(|m| m.exif_fields)
-                .unwrap_or_default();
-            let _ = tx.send(fields);
+            let meta = metadata::extract(&path).ok();
+            let summary = meta.as_ref().and_then(|m| m.camera.clone());
+            let taken_at = meta.as_ref().and_then(|m| m.taken_at);
+            tracing::info!(
+                "load_camera_details spawn_blocking path={} summary_some={} taken_at_some={}",
+                path_dbg,
+                summary.is_some(),
+                taken_at.is_some(),
+            );
+            let _ = tx.send((summary, taken_at));
         });
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let Ok(fields) = rx.await else {
+            let Ok((summary, taken_at)) = rx.await else {
                 return;
             };
             let Some(this) = weak.upgrade() else {
@@ -1742,34 +1766,233 @@ impl ViewerPage {
             if this.imp().current_token.get() != token {
                 return;
             }
-            if fields.is_empty() {
-                this.set_exif_rows(vec![ExifField {
-                    tag: tr("viewer.exif.status"),
-                    value: tr("viewer.not_available"),
-                }]);
-            } else {
-                this.set_exif_rows(fields);
+            // If the stored MediaItem has no taken_at (e.g. HEIC scanned
+            // before the ISOBMFF parser was fixed), fill it from the fresh
+            // EXIF parse.
+            if let Some(dt) = taken_at {
+                let imp = this.imp();
+                let row = imp.taken_row.get();
+                if !row.is_visible() {
+                    row.set_visible(true);
+                }
+                row.set_subtitle(&format_datetime(Some(dt)));
             }
+            this.populate_camera_rows(summary);
         });
     }
 
-    fn set_exif_rows(&self, fields: Vec<ExifField>) {
+    /// Build `ActionRow`s from `ExifSummary` and append them to the file
+    /// group (same group that holds name / folder / dimensions etc.).
+    ///
+    /// Related parameters are merged into fewer rows with compact notation
+    /// so the details panel stays scannable.
+    fn populate_camera_rows(&self, summary: Option<ExifSummary>) {
+        let Some(group) = self.file_group() else {
+            tracing::warn!("populate_camera_rows: no PreferencesGroup for name_row");
+            return;
+        };
         let imp = self.imp();
-        let group = imp.exif_group.get();
-        for row in imp.exif_rows.borrow_mut().drain(..) {
-            group.remove(&row);
-        }
 
-        let mut rows = imp.exif_rows.borrow_mut();
-        for field in fields {
-            let row = adw::ActionRow::builder()
-                .title(field.tag)
-                .subtitle(field.value)
-                .activatable(false)
-                .build();
+        let Some(s) = summary else {
+            return;
+        };
+
+        let mut rows = imp.camera_rows.borrow_mut();
+
+        // Device: Make + Model (phone lens name duplicates body/focal/aperture,
+        // so we skip the lens row and show only the merged body here).
+        let body = match (&s.make, &s.model) {
+            (Some(mk), Some(md)) if md.contains(mk.as_str()) => md.clone(),
+            (Some(mk), Some(md)) => format!("{} {}", mk, md),
+            (_, Some(md)) => md.clone(),
+            (Some(mk), _) => mk.clone(),
+            _ => String::new(),
+        };
+        if !body.is_empty() {
+            let row = action_row(&tr("camera.body"), &body);
             group.add(&row);
             rows.push(row);
         }
+
+        // Exposure triangle: aperture, shutter, ISO
+        let mut exp: Vec<String> = Vec::new();
+        if let Some(v) = s.aperture {
+            exp.push(format!("f/{:.1}", v));
+        }
+        if let Some((num, den)) = s.exposure_time {
+            exp.push(if den == 0 {
+                format!("{}/{}s", num, den)
+            } else {
+                format_exposure(num, den)
+            });
+        }
+        if let Some(v) = s.iso {
+            exp.push(format!("ISO {}", v));
+        }
+        if !exp.is_empty() {
+            let row = action_row(&tr("camera.exposure"), &exp.join("  "));
+            group.add(&row);
+            rows.push(row);
+        }
+
+        // Focal length + 35mm eq
+        match (s.focal_length_mm, s.focal_length_35mm_mm) {
+            (Some(fl), Some(fl35)) => {
+                let row = action_row(
+                    &tr("camera.focal_length"),
+                    &format!("{:.1} mm  (35mm: {} mm)", fl, fl35),
+                );
+                group.add(&row);
+                rows.push(row);
+            }
+            (Some(fl), None) => {
+                let row = action_row(&tr("camera.focal_length"), &format!("{:.1} mm", fl));
+                group.add(&row);
+                rows.push(row);
+            }
+            (None, Some(fl35)) => {
+                let row = action_row(&tr("camera.focal_length"), &format!("35mm: {} mm", fl35));
+                group.add(&row);
+                rows.push(row);
+            }
+            _ => {}
+        }
+
+        // Exposure mode + bias
+        let mode_str = s.exposure_mode.map(|m| {
+            use crate::core::metadata::ExposureMode;
+            tr(match m {
+                ExposureMode::Auto => "camera.exposure_mode.auto",
+                ExposureMode::Manual => "camera.exposure_mode.manual",
+                ExposureMode::AutoBracket => "camera.exposure_mode.auto_bracket",
+                ExposureMode::AperturePriority => "camera.exposure_mode.aperture_priority",
+                ExposureMode::ShutterPriority => "camera.exposure_mode.shutter_priority",
+                ExposureMode::Program => "camera.exposure_mode.program",
+            })
+        });
+        let bias_str = s.exposure_bias_ev.map(|v| {
+            let sign = if v >= 0.0 { "+" } else { "" };
+            format!("{}{:.1} EV", sign, v)
+        });
+        match (mode_str, bias_str) {
+            (Some(m), Some(b)) => {
+                let row = action_row(&tr("camera.exposure_mode"), &format!("{}, {}", m, b));
+                group.add(&row);
+                rows.push(row);
+            }
+            (Some(m), None) => {
+                let row = action_row(&tr("camera.exposure_mode"), &m);
+                group.add(&row);
+                rows.push(row);
+            }
+            (None, Some(b)) => {
+                let row = action_row(&tr("camera.exposure_bias"), &b);
+                group.add(&row);
+                rows.push(row);
+            }
+            _ => {}
+        }
+
+        // Location: GPS + altitude
+        let gps_str = s.gps.as_ref().map(|gps| {
+            format!(
+                "{}°{}′{:.1}″{}  {}°{}′{:.1}″{}",
+                gps.lat.deg,
+                gps.lat.min,
+                gps.lat.sec,
+                if gps.lat.north_or_east { "N" } else { "S" },
+                gps.lon.deg,
+                gps.lon.min,
+                gps.lon.sec,
+                if gps.lon.north_or_east { "E" } else { "W" },
+            )
+        });
+        let alt_str = s.altitude_m.map(|a| format!("{:.1} m", a));
+        match (gps_str, alt_str) {
+            (Some(g), Some(a)) => {
+                let row = action_row(&tr("camera.location"), &format!("{}  .  {}", g, a));
+                group.add(&row);
+                rows.push(row);
+            }
+            (Some(g), None) => {
+                let row = action_row(&tr("camera.location"), &g);
+                group.add(&row);
+                rows.push(row);
+            }
+            (None, Some(a)) => {
+                let row = action_row(&tr("camera.location"), &a);
+                group.add(&row);
+                rows.push(row);
+            }
+            _ => {}
+        }
+
+        // Secondary: metering, flash, WB
+        let metering_str = s.metering_mode.map(|m| {
+            use crate::core::metadata::MeteringMode;
+            tr(match m {
+                MeteringMode::Average => "camera.metering.average",
+                MeteringMode::CenterWeighted => "camera.metering.center_weighted",
+                MeteringMode::Spot => "camera.metering.spot",
+                MeteringMode::Other => "camera.metering.other",
+            })
+        });
+        let flash_str = s.flash.and_then(|f| {
+            use crate::core::metadata::FlashState;
+            match f {
+                FlashState::Fired => Some(tr("camera.flash.fired")),
+                FlashState::NotFired => None,
+            }
+        });
+        let wb_str = s.white_balance.and_then(|w| {
+            use crate::core::metadata::WhiteBalance;
+            match w {
+                WhiteBalance::Auto => None,
+                WhiteBalance::Manual => Some(tr("camera.white_balance.manual")),
+            }
+        });
+        let secondary: Vec<String> = [metering_str, flash_str, wb_str]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !secondary.is_empty() {
+            let row = action_row(&tr("camera.secondary"), &secondary.join("  .  "));
+            group.add(&row);
+            rows.push(row);
+        }
+    }
+}
+
+/// Build a non-activatable `ActionRow` with translated title and plain subtitle.
+fn action_row(title: &str, subtitle: &str) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .activatable(false)
+        .build()
+}
+
+/// Pretty-print an exposure-time rational.
+///
+/// - `(1, 125)` → `"1/125s"`
+/// - `(1865378, 1000000000)` ≈ 1/536 → `"1/536s"`
+/// - `(5, 10)` = 0.5s → `"0.5s"`
+fn format_exposure(num: u32, den: u32) -> String {
+    if den == 0 {
+        return format!("{}/{}s", num, den);
+    }
+    let v = num as f64 / den as f64;
+    if v < 1.0 {
+        // Fractional: display as 1/N so photographers can read it naturally.
+        let n = (1.0 / v).round() as u32;
+        if n >= 10000 {
+            // Fallback: too large a reciprocal, just show the decimal.
+            format!("{:.4}s", v)
+        } else {
+            format!("1/{}s", n)
+        }
+    } else {
+        format!("{:.1}s", v)
     }
 }
 

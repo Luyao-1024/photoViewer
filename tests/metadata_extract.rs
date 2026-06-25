@@ -12,7 +12,7 @@ fn plain_jpeg_returns_no_taken_at() {
     assert_eq!(meta.width, Some(64));
     assert_eq!(meta.height, Some(48));
     assert!(meta.taken_at.is_none(), "无 EXIF 数据应返回 None");
-    assert!(meta.exif_fields.is_empty(), "无 EXIF 数据应返回空字段列表");
+    assert!(meta.camera.is_none(), "无 EXIF 数据应无 camera summary");
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn mime_type_inferred_from_extension() {
 }
 
 #[test]
-fn exif_fields_include_datetime_original() {
+fn camera_summary_from_exif_jpeg() {
     let dir = tmp_dir();
     let naive = chrono::NaiveDate::from_ymd_opt(2024, 5, 6)
         .unwrap()
@@ -48,11 +48,15 @@ fn exif_fields_include_datetime_original() {
 
     let meta = metadata::extract(&path).unwrap();
 
+    // The test JPEG fixture only carries DateTimeOriginal; it should still
+    // parse (DateTimeOriginal is not enough to produce a camera summary by
+    // itself, but taken_at should be set).
     assert!(
-        meta.exif_fields.iter().any(|field| {
-            field.tag == "DateTimeOriginal" && field.value.contains("2024-05-06 07:08:09")
-        }),
-        "EXIF 字段列表应包含 DateTimeOriginal, got {:?}",
-        meta.exif_fields
+        meta.taken_at.is_some(),
+        "DateTimeOriginal should set taken_at"
+    );
+    assert!(
+        meta.camera.is_none(),
+        "EXIF with only DateTimeOriginal produces no camera summary"
     );
 }
