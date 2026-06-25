@@ -1076,6 +1076,8 @@ pub mod square_tile {
                     .build();
                 obj.add_css_class("thumb-tile");
                 obj.add_css_class("glass-thumb-card");
+                obj.set_overflow(gtk::Overflow::Hidden);
+                picture.add_css_class("thumb-image");
                 picture.set_parent(&*obj);
                 *self.picture.borrow_mut() = Some(picture);
             }
@@ -1187,6 +1189,22 @@ pub mod square_tile {
             let tile = SquareTile::new();
 
             assert!(tile.has_css_class("glass-thumb-card"));
+        }
+
+        #[gtk::test]
+        fn square_tile_clips_thumbnail_to_glass_card_radius() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            assert_eq!(tile.overflow(), gtk::Overflow::Hidden);
+            let picture = tile
+                .imp()
+                .picture
+                .borrow()
+                .as_ref()
+                .expect("SquareTile should construct its picture child")
+                .clone();
+            assert!(picture.has_css_class("thumb-image"));
         }
     }
 }

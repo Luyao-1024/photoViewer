@@ -348,6 +348,10 @@ box.mode-selector.on-light-background box.mode-dot,
   background: transparent;
 }
 
+.thumb-image {
+  border-radius: 10px;
+}
+
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {
@@ -1593,6 +1597,7 @@ mod tests {
             ".glass-toolbar-button",
             ".glass-menu-item",
             ".glass-thumb-card",
+            ".thumb-image",
         ] {
             assert!(
                 on.contains(marker) && off.contains(marker),
