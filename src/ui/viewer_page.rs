@@ -40,6 +40,9 @@ type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
 /// On-screen thumbnail height in the viewer filmstrip. Deliberately smaller
 /// than the Year view (90 px) so the strip stays unobtrusive.
 const THUMB_HEIGHT: i32 = 56;
+const THUMB_MIN_WIDTH: i32 = 36;
+const THUMB_MIN_ASPECT: f64 = 9.0 / 21.0;
+const THUMB_MAX_ASPECT: f64 = 21.0 / 9.0;
 
 /// 初次打开 viewer 时,缩略图栏向左右各加载的条数。缩略图栏保持有限窗口,
 /// 不追随超宽视口无限补齐; 当前项通过视觉位移保持居中。
@@ -855,9 +858,9 @@ impl ViewerPage {
 
     /// Tear down the existing strip and rebuild with `[start, end)`.
     /// Each item is a frame-less `GtkButton` wrapping a `GtkPicture` with
-    /// `content-fit: contain` (preserves aspect ratio). After the thumbnail
-    /// texture arrives, `width-request` is set so the button sizes to the
-    /// image's aspect ratio at the fixed `THUMB_HEIGHT`.
+    /// `content-fit: cover`. After the thumbnail texture arrives,
+    /// `width-request` is set from the image aspect ratio, clamped to
+    /// 21:9 / 9:21 so extreme panoramas do not dominate the filmstrip.
     fn rebuild_thumb_strip(&self, start: u32, end: u32, current: u32) {
         let imp = self.imp();
         let strip = imp.thumb_strip.get();
@@ -919,7 +922,8 @@ impl ViewerPage {
         );
 
         let picture = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Contain)
+            .content_fit(gtk::ContentFit::Cover)
+            .width_request(THUMB_MIN_WIDTH)
             .height_request(THUMB_HEIGHT)
             .can_shrink(true)
             .build();
@@ -946,10 +950,7 @@ impl ViewerPage {
             let tex_w = tex.width();
             let tex_h = tex.height();
             pic.set_paintable(Some(&tex));
-            if tex_h > 0 {
-                let w = ((THUMB_HEIGHT as f64) * tex_w as f64 / tex_h as f64).round() as i32;
-                pic.set_width_request(w.max(36));
-            }
+            pic.set_width_request(clamped_thumb_width_for_texture(tex_w, tex_h));
             if let Some(this) = viewer_weak.upgrade() {
                 this.schedule_scroll_thumb_to_current();
             }
@@ -1816,6 +1817,15 @@ fn thumb_item_widths(items: &[gtk::Button]) -> Vec<f64> {
         .collect()
 }
 
+fn clamped_thumb_width_for_texture(tex_w: i32, tex_h: i32) -> i32 {
+    if tex_w <= 0 || tex_h <= 0 {
+        return THUMB_MIN_WIDTH;
+    }
+
+    let aspect = (tex_w as f64 / tex_h as f64).clamp(THUMB_MIN_ASPECT, THUMB_MAX_ASPECT);
+    (((THUMB_HEIGHT as f64) * aspect).round() as i32).max(THUMB_MIN_WIDTH)
+}
+
 fn thumb_item_content_geometry(
     widths: &[f64],
     offset: usize,
@@ -2189,6 +2199,15 @@ mod tests {
     }
 
     #[test]
+    fn filmstrip_thumbnail_width_is_clamped_to_reasonable_aspect_ratio() {
+        assert_eq!(clamped_thumb_width_for_texture(2100, 900), 131);
+        assert_eq!(clamped_thumb_width_for_texture(4200, 900), 131);
+        assert_eq!(clamped_thumb_width_for_texture(900, 2100), 36);
+        assert_eq!(clamped_thumb_width_for_texture(900, 900), 56);
+        assert_eq!(clamped_thumb_width_for_texture(0, 900), 36);
+    }
+
+    #[test]
     fn item_geometry_uses_sequence_when_current_allocation_x_is_stale() {
         let widths = [118.0, 118.0, 118.0, 118.0, 112.0, 118.0, 118.0];
         let (content_x, width, content_width) =
@@ -2269,6 +2288,17 @@ mod tests {
         assert!(
             !viewer.imp().thumb_scrolled.get().propagates_natural_width(),
             "thumb scroller must not propagate the filmstrip child width into the viewer window"
+        );
+        let (hpolicy, vpolicy) = viewer.imp().thumb_scrolled.get().policy();
+        assert_eq!(
+            hpolicy,
+            gtk::PolicyType::External,
+            "thumb scroller needs a horizontal adjustment but no visible scrollbar; Never lets child width resize the viewer"
+        );
+        assert_eq!(
+            vpolicy,
+            gtk::PolicyType::Never,
+            "thumb scroller should not expose vertical scrolling"
         );
         let bottom_bar = viewer
             .imp()

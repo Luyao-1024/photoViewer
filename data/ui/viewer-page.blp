@@ -145,7 +145,11 @@ template $ViewerPage : Adw.NavigationPage {
               Gtk.ScrolledWindow thumb_scrolled {
                 hexpand: true;
                 propagate-natural-width: false;
-                hscrollbar-policy: never;
+                // Keep a horizontal adjustment for programmatic filmstrip
+                // positioning without showing a scrollbar. `never` disables
+                // scrolling and lets the loaded thumbnail row feed its minimum
+                // width into the viewer window.
+                hscrollbar-policy: external;
                 vscrollbar-policy: never;
                 min-content-height: 64;
 

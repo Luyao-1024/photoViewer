@@ -23,6 +23,10 @@ Overlay controls should have stable dimensions. Hidden panels should not leave c
 
 The thumbnail strip should initialize centered on the active image. If centering only happens after user interaction, the adjustment is being applied before the widget has a final allocation; schedule the centering after layout or after the thumbnail model is populated.
 
+Filmstrip thumbnails crop with `ContentFit::Cover` inside a bounded aspect-ratio frame. Displayed thumbnails must not be more extreme than 21:9 horizontally or 9:21 vertically, and the minimum width still preserves a usable click target.
+
+The filmstrip `ScrolledWindow` must keep `propagate-natural-width: false` and use horizontal policy `external`, not `never`. `external` hides the scrollbar while preserving a real horizontal adjustment; `never` lets the loaded thumbnail row's minimum width propagate upward and can make the viewer window grow as more thumbnails are loaded.
+
 ## Navigation Buttons
 
 Left/right image navigation belongs to viewer chrome. When positioned as top-right overlay controls, keep them visually consistent with the active material mode and avoid blocking the original image more than necessary.

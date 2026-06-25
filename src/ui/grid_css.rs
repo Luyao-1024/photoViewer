@@ -383,11 +383,12 @@ button.viewer-thumb-item.viewer-thumb-current {
   margin-right: 12px;
   padding: 4px;
   transform: scale(1.30);
-  background: alpha(#78b8ff, 0.24);
-  outline: 2px solid alpha(#78b8ff, 0.95);
+  background: alpha(white, 0.10);
+  outline: 2px solid alpha(white, 0.55);
   outline-offset: 2px;
   box-shadow:
-    0 0 0 4px alpha(#78b8ff, 0.18),
+    inset 0 1px alpha(white, 0.35),
+    0 0 0 4px alpha(white, 0.12),
     0 10px 24px alpha(black, 0.48);
   opacity: 1.0;
 }
@@ -400,8 +401,8 @@ button.viewer-thumb-item picture {
 }
 
 button.viewer-thumb-item.viewer-thumb-current picture {
-  border: 2px solid alpha(#78b8ff, 0.95);
-  box-shadow: 0 0 18px alpha(#78b8ff, 0.36);
+  border: 2px solid alpha(white, 0.48);
+  box-shadow: 0 0 18px alpha(white, 0.20);
 }
 
 /* viewer-overlay-nav — previous/next controls floating over the image. The
@@ -1250,8 +1251,8 @@ mod tests {
             "current filmstrip thumbnail should reserve fixed side breathing room",
         );
         assert!(
-            css.contains("background: alpha(#78b8ff, 0.24)"),
-            "current filmstrip thumbnail should use a visible per-item accent plate",
+            css.contains("background: alpha(white, 0.10)"),
+            "current filmstrip thumbnail should use the shared glass selection veil",
         );
         assert!(
             css.contains("button.viewer-thumb-item"),
@@ -1266,16 +1267,16 @@ mod tests {
             "hover state should also suppress the default GTK button frame",
         );
         assert!(
-            css.contains("border: 2px solid alpha(#78b8ff, 0.95)"),
-            "current filmstrip thumbnail image should draw a visible accent ring",
+            css.contains("border: 2px solid alpha(white, 0.48)"),
+            "current filmstrip thumbnail image should use the same glass ring as grid selection",
         );
         assert!(
-            css.contains("outline: 2px solid alpha(#78b8ff, 0.95)"),
-            "current filmstrip thumbnail should draw an outer emphasis ring that matches the enlarged image",
+            css.contains("outline: 2px solid alpha(white, 0.55)"),
+            "current filmstrip thumbnail should draw an outer glass emphasis ring",
         );
         assert!(
-            css.contains("alpha(#78b8ff, 0.36)"),
-            "current filmstrip thumbnail should use an accent glow that cannot be confused with white content inside screenshots",
+            !css.contains("#78b8ff"),
+            "viewer filmstrip should not use a separate blue accent family",
         );
         assert!(
             css.contains("button.viewer-thumb-item.viewer-thumb-current picture"),
