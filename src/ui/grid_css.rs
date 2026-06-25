@@ -335,15 +335,14 @@ box.mode-selector.on-light-background box.mode-dot,
 }
 
 /* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
-   The bottom overlay bar in ViewerPage. The container uses .glass-raised for
-   its material (blur+shadow); these rules own the layout of the strip and the
-   per-item highlight state. Items keep original aspect ratio (set via
-   width-request after texture load in viewer_page.rs).
-   ViewerPage 底部缩略图预览栏。容器使用 .glass-raised 提供材质；这里只管
-   布局和单项高亮。缩略图保持原始宽高比。 */
+   The bottom overlay in ViewerPage. The bar is layout-only so the thumbnails
+   float without a capsule background; these rules own per-item emphasis.
+   Items keep original aspect ratio (set via width-request after texture load
+   in viewer_page.rs).
+   ViewerPage 底部缩略图预览栏。容器只负责布局,不绘制背景胶囊；这里只管
+   单项强调。缩略图保持原始宽高比。 */
 .viewer-thumb-bar {
-  padding: 9px 8px;
-  border-radius: 14px;
+  padding: 10px 8px;
 }
 
 .viewer-thumb-strip {
@@ -353,33 +352,56 @@ box.mode-selector.on-light-background box.mode-dot,
   min-width: 0;
 }
 
-.viewer-thumb-item {
-  padding: 0;
+button.viewer-thumb-item {
+  padding: 1px;
   min-width: 36px;
   min-height: 56px;
   border-radius: 8px;
   background: transparent;
-  border: 2px solid transparent;
-  transition: border-color 120ms ease, transform 120ms ease;
-  box-shadow: 0 2px 8px alpha(black, 0.25);
+  background-image: none;
+  border: 0;
+  outline: none;
+  transition: background-color 120ms ease, opacity 120ms ease, outline-color 120ms ease, transform 120ms ease;
+  box-shadow: none;
+  opacity: 0.42;
 }
 
-.viewer-thumb-item:hover {
-  border-color: alpha(white, 0.35);
+button.viewer-thumb-item:hover,
+button.viewer-thumb-item:focus,
+button.viewer-thumb-item:focus-visible,
+button.viewer-thumb-item:active,
+button.viewer-thumb-item:checked {
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  outline: none;
+  border-color: transparent;
 }
 
-.viewer-thumb-item.viewer-thumb-current {
-  border-color: alpha(white, 0.72);
-  margin-left: 8px;
-  margin-right: 8px;
-  transform: scale(1.06);
+button.viewer-thumb-item.viewer-thumb-current {
+  margin-left: 12px;
+  margin-right: 12px;
+  padding: 4px;
+  transform: scale(1.30);
+  background: alpha(#78b8ff, 0.24);
+  outline: 2px solid alpha(#78b8ff, 0.95);
+  outline-offset: 2px;
   box-shadow:
-    0 0 12px alpha(white, 0.18),
-    0 4px 14px alpha(black, 0.34);
+    0 0 0 4px alpha(#78b8ff, 0.18),
+    0 10px 24px alpha(black, 0.48);
+  opacity: 1.0;
 }
 
-.viewer-thumb-item picture {
+button.viewer-thumb-item picture {
   border-radius: 6px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+button.viewer-thumb-item.viewer-thumb-current picture {
+  border: 2px solid alpha(#78b8ff, 0.95);
+  box-shadow: 0 0 18px alpha(#78b8ff, 0.36);
 }
 
 /* viewer-overlay-nav — previous/next controls floating over the image. The
@@ -443,8 +465,8 @@ box.mode-selector.on-light-background box.mode-dot,
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass material:
-   backdrop blur+saturate+brightness, bright inset top highlights, and heavy
-   floating shadows. This is the default (opt-out) look. */
+backdrop blur+saturate+brightness, bright inset top highlights, and heavy
+floating shadows. This is the default (opt-out) look. */
 const LIQUID_GLASS_MATERIAL_CSS: &str = "
 /* glass-base — sidebar, header, details panel */
 .glass-base {
@@ -901,8 +923,8 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 ";
 
 /* GTK's CssProvider in the supported runtime rejects web-style @media
-   feature queries. Keep this hook empty until accessibility adaptation is
-   implemented through GTK settings or explicit runtime class toggles. */
+feature queries. Keep this hook empty until accessibility adaptation is
+implemented through GTK settings or explicit runtime class toggles. */
 const A11Y_CSS: &str = "";
 
 /// Assemble the full CSS string for the given glass mode. `true` → Liquid
@@ -1205,19 +1227,59 @@ mod tests {
     }
 
     #[test]
-    fn current_viewer_thumbnail_is_slightly_enlarged() {
+    fn current_viewer_thumbnail_is_prominently_enlarged() {
         let css = build_css(true);
         assert!(
             css.contains(".viewer-thumb-item.viewer-thumb-current"),
             "CSS must define the current filmstrip thumbnail state",
         );
         assert!(
-            css.contains("transform: scale(1.06)"),
-            "current filmstrip thumbnail should be subtly enlarged",
+            css.contains("transform: scale(1.30)"),
+            "current filmstrip thumbnail should be prominently enlarged",
         );
         assert!(
-            css.contains("margin-left: 8px") && css.contains("margin-right: 8px"),
+            css.contains("opacity: 0.42"),
+            "non-current filmstrip thumbnails should be visually de-emphasized",
+        );
+        assert!(
+            css.contains("opacity: 1.0"),
+            "current filmstrip thumbnail should stay fully bright",
+        );
+        assert!(
+            css.contains("margin-left: 12px") && css.contains("margin-right: 12px"),
             "current filmstrip thumbnail should reserve fixed side breathing room",
+        );
+        assert!(
+            css.contains("background: alpha(#78b8ff, 0.24)"),
+            "current filmstrip thumbnail should use a visible per-item accent plate",
+        );
+        assert!(
+            css.contains("button.viewer-thumb-item"),
+            "viewer filmstrip thumbnails are GtkButtons and need a button-node reset",
+        );
+        assert!(
+            css.contains("border: 0"),
+            "non-current viewer thumbnails should not draw a button border",
+        );
+        assert!(
+            css.contains("button.viewer-thumb-item:hover"),
+            "hover state should also suppress the default GTK button frame",
+        );
+        assert!(
+            css.contains("border: 2px solid alpha(#78b8ff, 0.95)"),
+            "current filmstrip thumbnail image should draw a visible accent ring",
+        );
+        assert!(
+            css.contains("outline: 2px solid alpha(#78b8ff, 0.95)"),
+            "current filmstrip thumbnail should draw an outer emphasis ring that matches the enlarged image",
+        );
+        assert!(
+            css.contains("alpha(#78b8ff, 0.36)"),
+            "current filmstrip thumbnail should use an accent glow that cannot be confused with white content inside screenshots",
+        );
+        assert!(
+            css.contains("button.viewer-thumb-item.viewer-thumb-current picture"),
+            "current filmstrip thumbnail emphasis should be painted on the image node, not the reset button node",
         );
     }
 

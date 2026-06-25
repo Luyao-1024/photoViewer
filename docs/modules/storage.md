@@ -44,4 +44,4 @@ The local backend scans filesystem paths and inserts/updates media rows. The wat
 
 `ThumbnailLoader` owns an mpsc queue feeding blocking workers. Requests return textures through `oneshot::Sender`.
 
-Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and an in-memory LRU avoids unnecessary decoding.
+Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and an in-memory LRU avoids unnecessary decoding. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.

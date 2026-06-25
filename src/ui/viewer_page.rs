@@ -51,6 +51,7 @@ const THUMB_DEFAULT_WINDOW_LEN: u32 = 2 * THUMB_INITIAL_HALF + 1;
 /// Estimated thumbnail advance (button width + spacing) used before async
 /// thumbnails have reported their natural widths.
 const THUMB_ESTIMATED_ADVANCE: f64 = 78.0;
+const THUMB_STRIP_SPACING: f64 = 6.0;
 
 /// 用户滚动接近边缘时,每次懒加载追加的条数 —— "半栏"。滚动条触发后向一侧
 /// 补这些,避免一次性预渲染全部缩略图导致 viewer 被撑大。
@@ -993,9 +994,11 @@ impl ViewerPage {
 
         let start = self.imp().thumb_window_start.get();
         let current = self.imp().current_index.get();
-        let offset = current.checked_sub(start).map(|v| v as usize);
+        let Some(offset) = current.checked_sub(start).map(|v| v as usize) else {
+            return false;
+        };
         let items = self.imp().thumb_items.borrow();
-        let Some(btn) = offset.and_then(|offset| items.get(offset)) else {
+        let Some(btn) = items.get(offset) else {
             return false;
         };
 
@@ -1004,27 +1007,27 @@ impl ViewerPage {
             return false;
         }
 
-        let content_width = self
-            .thumb_items_content_width()
-            .unwrap_or_else(|| (items.len() as f64) * THUMB_ESTIMATED_ADVANCE);
-        let (target, residual, visual_transform) = compute_thumb_positioning(
-            alloc.x() as f64,
-            alloc.width() as f64,
-            page_size,
-            upper,
-            content_width,
-        );
+        let item_widths = thumb_item_widths(&items);
+        let (button_x, button_w, content_width) =
+            thumb_item_content_geometry(&item_widths, offset, THUMB_STRIP_SPACING).unwrap_or((
+                alloc.x() as f64,
+                alloc.width() as f64,
+                (items.len() as f64) * THUMB_ESTIMATED_ADVANCE,
+            ));
+        let (target, residual, visual_transform) =
+            compute_thumb_positioning(button_x, button_w, page_size, upper, content_width);
         let imp = self.imp();
         imp.thumb_programmatic_scroll.set(true);
         hadj.set_value(target);
         imp.thumb_programmatic_scroll.set(false);
         self.apply_thumb_strip_transform(visual_transform);
         tracing::info!(
-            "VIEWER_TRACE thumb_scroll current={} start={} button_x={} button_w={} page_size={} upper={} content_width={} target={} residual={} transform={}",
+            "VIEWER_TRACE thumb_scroll current={} start={} button_x={} content_x={} button_w={} page_size={} upper={} content_width={} target={} residual={} transform={}",
             current,
             start,
             alloc.x(),
-            alloc.width(),
+            button_x,
+            button_w,
             page_size,
             upper,
             content_width,
@@ -1033,16 +1036,6 @@ impl ViewerPage {
             visual_transform
         );
         true
-    }
-
-    fn thumb_items_content_width(&self) -> Option<f64> {
-        let items = self.imp().thumb_items.borrow();
-        let first = items.first()?.allocation();
-        let last = items.last()?.allocation();
-        if first.width() <= 0 || last.width() <= 0 {
-            return None;
-        }
-        Some((last.x() + last.width() - first.x()).max(0) as f64)
     }
 
     fn apply_thumb_strip_transform(&self, offset: f64) {
@@ -1816,6 +1809,32 @@ fn compute_thumb_positioning(
     (target, residual, transform)
 }
 
+fn thumb_item_widths(items: &[gtk::Button]) -> Vec<f64> {
+    items
+        .iter()
+        .map(|item| item.allocation().width() as f64)
+        .collect()
+}
+
+fn thumb_item_content_geometry(
+    widths: &[f64],
+    offset: usize,
+    spacing: f64,
+) -> Option<(f64, f64, f64)> {
+    let width = *widths.get(offset)?;
+    if width <= 0.0 || widths.iter().any(|width| *width <= 0.0) {
+        return None;
+    }
+
+    let x = widths
+        .iter()
+        .take(offset)
+        .fold(0.0, |acc, width| acc + width + spacing);
+    let content_width =
+        widths.iter().sum::<f64>() + widths.len().saturating_sub(1) as f64 * spacing;
+    Some((x, width, content_width))
+}
+
 fn clamp_thumb_residual(residual: f64, upper: f64, page_size: f64) -> f64 {
     let scrollable = (upper - page_size).max(0.0);
     if scrollable <= 0.0 {
@@ -2170,6 +2189,26 @@ mod tests {
     }
 
     #[test]
+    fn item_geometry_uses_sequence_when_current_allocation_x_is_stale() {
+        let widths = [118.0, 118.0, 118.0, 118.0, 112.0, 118.0, 118.0];
+        let (content_x, width, content_width) =
+            thumb_item_content_geometry(&widths, 4, THUMB_STRIP_SPACING).unwrap();
+
+        assert_eq!(content_x, 4.0 * (118.0 + THUMB_STRIP_SPACING));
+        assert_eq!(width, 112.0);
+        assert_eq!(
+            content_width,
+            widths.iter().sum::<f64>() + (widths.len() - 1) as f64 * THUMB_STRIP_SPACING
+        );
+
+        let (_, _, transform) = compute_thumb_positioning(content_x, width, 1140.0, 1140.0, 1140.0);
+        assert!(
+            transform.abs() < 100.0,
+            "current index 4 must not be positioned from a stale allocation x near the left edge"
+        );
+    }
+
+    #[test]
     fn scroll_value_centres_middle_thumbnail_without_residual() {
         let middle_btn_x = 5.0 * (SCROLL_BTN_W + SCROLL_SPACING);
         let (value, residual) = compute_thumb_scroll_and_residual(
@@ -2230,6 +2269,25 @@ mod tests {
         assert!(
             !viewer.imp().thumb_scrolled.get().propagates_natural_width(),
             "thumb scroller must not propagate the filmstrip child width into the viewer window"
+        );
+        let bottom_bar = viewer
+            .imp()
+            .thumb_scrolled
+            .get()
+            .parent()
+            .expect("thumb scroller should be inside viewer bottom bar");
+        let bottom_bar_classes = bottom_bar.css_classes();
+        assert!(
+            bottom_bar_classes
+                .iter()
+                .any(|class| class == "viewer-thumb-bar"),
+            "thumb scroller parent should keep the viewer-thumb-bar layout class"
+        );
+        assert!(
+            !bottom_bar_classes
+                .iter()
+                .any(|class| class == "glass-raised"),
+            "viewer thumbnail strip should not render a raised glass background bar"
         );
         assert!(
             viewer

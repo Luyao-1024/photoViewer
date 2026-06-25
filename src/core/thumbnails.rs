@@ -2,16 +2,19 @@
 //!
 //! - 多个 tokio blocking worker 并行处理缩略图生成/读取
 //! - 按 `path + mtime` 计算 blake3 哈希作为缓存键（mtime 变了自动失效）
-//! - 缓存目录按 `thumbnails/{small|medium|large}/<hash 前两位>/<hash>.jpg` 分桶
+//! - 缓存目录按 `thumbnails/{small|medium|large}/<hash 前两位>/<hash>.(jpg|webp)` 分桶
 //! - 内存 LRU 缓存已加载的 `Texture`，避免重复解码
 //! - **优先级队列**：可见 tile 可经 `prioritize_keys` 提到队首（BOOST），
 //!   先于普通（NORMAL）请求被 worker 取走，消除分页 rebuild / 滚动时的优先级倒置。
 use crate::core::db::DbPool;
 use gdk_pixbuf::Pixbuf;
 use gtk4::gdk::Texture;
+use image::ImageEncoder;
 use lru::LruCache;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
+use std::fs::File;
+use std::io::BufWriter;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -510,16 +513,21 @@ fn generate(
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<Pixbuf> {
     let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let key = format!("{}{:?}", src_path.display(), mtime);
+    let key = format!("thumb-v2:{}{:?}", src_path.display(), mtime);
     let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
 
-    let cache_path = cache_dir
+    let cache_stem = cache_dir
         .join("thumbnails")
         .join(size.subdir())
         .join(&hash[..2])
-        .join(format!("{}.jpg", hash));
+        .join(hash.as_str());
+    let jpeg_path = cache_stem.with_extension("jpg");
+    let webp_path = cache_stem.with_extension("webp");
 
-    if cache_path.exists() {
+    for cache_path in [&webp_path, &jpeg_path] {
+        if !cache_path.exists() {
+            continue;
+        }
         tracing::debug!(
             "VIEWER_DEBUG thumb disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
             uri,
@@ -532,37 +540,107 @@ fn generate(
             .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", cache_path, e));
     }
 
-    if let Some(parent) = cache_path.parent() {
+    if let Some(parent) = cache_stem.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     tracing::debug!(
-        "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_path={}",
+        "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_stem={}",
         uri,
         src_path.display(),
         size,
-        cache_path.display()
+        cache_stem.display()
     );
     // 统一用 gdk-pixbuf 解码 + 缩放：覆盖面广（JPEG/PNG/WebP/TIFF，flatpak
     // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
     // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
     // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
-    generate_via_pixbuf(&src_path, size.max_dim(), &cache_path)
+    generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)
 }
 
-/// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存 JPEG。
+/// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
 /// 返回内存里已缩放好的 pixbuf，让调用方直接做成 Texture，省掉读盘重解码。
-fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_path: &Path) -> anyhow::Result<Pixbuf> {
+fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
     let pb =
         Pixbuf::from_file(src_path).map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
     let scaled = scale_pixbuf_to_fit(&pb, max_dim);
-    // JPEG 不支持 alpha：GNOME 50 的 gdk-pixbuf JPEG 保存走 glycin，会直接拒绝
-    // `Rgba8` pixbuf。先把带 alpha 的（PNG 截图等）合成到不透明白底上再存。
+    if pixbuf_has_transparency(&scaled) {
+        let cache_path = cache_stem.with_extension("webp");
+        save_pixbuf_as_webp(&scaled, &cache_path)?;
+        return Ok(scaled);
+    }
+
+    let cache_path = cache_stem.with_extension("jpg");
     let thumb = ensure_opaque(&scaled);
-    thumb
-        .savev(cache_path, "jpeg", &[])
-        .map_err(|e| anyhow::anyhow!("gdk-pixbuf JPEG 保存失败: {e}"))?;
+    thumb.savev(cache_path, "jpeg", &[]).map_err(|e| {
+        anyhow::anyhow!(
+            "gdk-pixbuf JPEG 保存失败 {:?}: {}",
+            cache_stem.with_extension("jpg"),
+            e
+        )
+    })?;
     Ok(thumb)
+}
+
+fn pixbuf_has_transparency(pb: &Pixbuf) -> bool {
+    if !pb.has_alpha() {
+        return false;
+    }
+    let bytes = pb.read_pixel_bytes();
+    let buf: &[u8] = bytes.as_ref();
+    let n_channels = pb.n_channels() as usize;
+    let rowstride = pb.rowstride() as usize;
+    if n_channels < 4 {
+        return false;
+    }
+    for y in 0..pb.height() as usize {
+        for x in 0..pb.width() as usize {
+            let i = y * rowstride + x * n_channels + 3;
+            if i < buf.len() && buf[i] < 255 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn save_pixbuf_as_webp(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
+    let rgba = pixbuf_to_rgba_bytes(pb)?;
+    let file = File::create(cache_path)?;
+    let writer = BufWriter::new(file);
+    image::codecs::webp::WebPEncoder::new_lossless(writer)
+        .write_image(
+            &rgba,
+            pb.width() as u32,
+            pb.height() as u32,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| anyhow::anyhow!("WebP 缩略图保存失败 {:?}: {}", cache_path, e))
+}
+
+fn pixbuf_to_rgba_bytes(pb: &Pixbuf) -> anyhow::Result<Vec<u8>> {
+    let width = pb.width() as usize;
+    let height = pb.height() as usize;
+    let n_channels = pb.n_channels() as usize;
+    let rowstride = pb.rowstride() as usize;
+    if n_channels != 3 && n_channels != 4 {
+        anyhow::bail!("不支持的 pixbuf 通道数: {}", n_channels);
+    }
+
+    let bytes = pb.read_pixel_bytes();
+    let buf: &[u8] = bytes.as_ref();
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * rowstride + x * n_channels;
+            if i + n_channels > buf.len() {
+                anyhow::bail!("pixbuf 像素缓冲区越界");
+            }
+            rgba.extend_from_slice(&buf[i..i + 3]);
+            rgba.push(if n_channels == 4 { buf[i + 3] } else { 255 });
+        }
+    }
+    Ok(rgba)
 }
 
 /// 返回等尺寸的**不透明**（无 alpha）pixbuf：有 alpha 时合成到不透明白底上，
@@ -677,19 +755,19 @@ mod tests {
         let img = image::RgbImage::from_pixel(400, 300, image::Rgb([10, 20, 30]));
         image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
 
-        let out = dir.path().join("out.jpg");
+        let out = dir.path().join("out");
         generate_via_pixbuf(&src, 256, &out).expect("gdk-pixbuf 回退应成功");
+        let jpeg = out.with_extension("jpg");
 
-        assert!(out.exists(), "应写出 JPEG 缩略图");
-        let decoded = image::open(&out).expect("输出的 JPEG 应可被重新解码");
+        assert!(jpeg.exists(), "应写出 JPEG 缩略图");
+        let decoded = image::open(&jpeg).expect("输出的 JPEG 应可被重新解码");
         let (w, h) = (decoded.width(), decoded.height());
         assert!(w <= 256 && h <= 256, "应在 max_dim 内, got {w}x{h}");
         assert_eq!(w.max(h), 256, "长边应正好缩到 max_dim");
     }
 
-    /// 回归：RGBA PNG（截图）必须能生成 JPEG 缩略图。
-    /// GNOME 50 runtime 下 gdk-pixbuf 的 JPEG 保存走 glycin，拒绝 Rgba8；
-    /// 修复前此用例失败（缩略图生成失败 → tile 白/灰块）。
+    /// 回归：RGBA PNG（截图）必须能生成缩略图,且不能把透明像素合成到白底。
+    /// 透明图走 WebP 缓存，避免 viewer / grid 里出现白边。
     #[test]
     fn generate_via_pixbuf_handles_rgba_png() {
         let dir = tempfile::tempdir().unwrap();
@@ -697,9 +775,40 @@ mod tests {
         let img = image::RgbaImage::from_pixel(400, 300, image::Rgba([10, 20, 30, 128]));
         image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
 
-        let out = dir.path().join("out.jpg");
-        generate_via_pixbuf(&src, 256, &out).expect("RGBA PNG 应能生成 JPEG 缩略图");
-        assert!(out.exists(), "应写出 JPEG 缩略图");
+        let out = dir.path().join("out");
+        generate_via_pixbuf(&src, 256, &out).expect("RGBA PNG 应能生成 WebP 缩略图");
+        assert!(out.with_extension("webp").exists(), "应写出 WebP 缩略图");
+    }
+
+    #[test]
+    fn alpha_thumbnail_is_cached_as_webp_without_white_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("transparent-border.png");
+        let mut img = image::RgbaImage::from_pixel(400, 300, image::Rgba([0, 0, 0, 0]));
+        for y in 40..260 {
+            for x in 50..350 {
+                img.put_pixel(x, y, image::Rgba([10, 20, 30, 255]));
+            }
+        }
+        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
+
+        let out = dir.path().join("out");
+        let thumb = generate_via_pixbuf(&src, 256, &out).expect("透明 PNG 应能生成 WebP 缩略图");
+        let webp = out.with_extension("webp");
+
+        assert!(webp.exists(), "带 alpha 的缩略图应写出 WebP 缓存");
+        assert!(thumb.has_alpha(), "内存缩略图应保留 alpha");
+        let decoded = Pixbuf::from_file(&webp).expect("WebP 缓存应能被 gdk-pixbuf 读回");
+        assert!(decoded.has_alpha(), "WebP 缓存读回应保留 alpha");
+
+        let bytes = decoded.read_pixel_bytes();
+        let buf: &[u8] = bytes.as_ref();
+        assert_eq!(
+            decoded.n_channels(),
+            4,
+            "带 alpha 的 WebP 缓存应解码为 RGBA pixbuf"
+        );
+        assert_eq!(buf[3], 0, "透明边缘不应被合成成白色不透明像素");
     }
 
     /// `ensure_opaque` 契约：带 alpha 的输入必须返回无 alpha 的等尺寸 pixbuf，
