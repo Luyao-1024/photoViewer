@@ -393,6 +393,9 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .viewer-thumb-strip {
   padding: 0;
+  /* 让 strip 内 65 个按钮的 min-width 之和不再撑大 viewer ——
+     GTK widget 的 min-width 默认继承子节点,设 0 切断累积 */
+  min-width: 0;
 }
 
 .viewer-thumb-item {

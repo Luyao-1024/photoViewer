@@ -399,7 +399,7 @@ fn insert_media_item_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
     }
     let insert_at = (0..list.n_items())
         .find(|&idx| {
-            let Some(existing) = media_item_at(list, idx) else {
+            let Some(existing) = crate::ui::media_list::media_item_at(list, idx) else {
                 return false;
             };
             item.sort_datetime() > existing.sort_datetime()
@@ -411,17 +411,10 @@ fn insert_media_item_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
 
 fn media_list_contains_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
     (0..list.n_items()).any(|idx| {
-        media_item_at(list, idx)
+        crate::ui::media_list::media_item_at(list, idx)
             .map(|item| item.id == item_id)
             .unwrap_or(false)
     })
-}
-
-fn media_item_at(list: &gtk::gio::ListStore, index: u32) -> Option<MediaItem> {
-    let obj = list.item(index)?;
-    let boxed = obj.downcast::<glib::BoxedAnyObject>().ok()?;
-    let item = (*boxed.borrow::<MediaItem>()).clone();
-    Some(item)
 }
 
 fn selected_ids_for_indices(
@@ -658,7 +651,10 @@ mod tests {
             1,
             "restoring from Trash should reinsert the item into the shared Photos model"
         );
-        assert_eq!(media_item_at(&shared, 0).map(|item| item.id), Some(id));
+        assert_eq!(
+            crate::ui::media_list::media_item_at(&shared, 0).map(|item| item.id),
+            Some(id)
+        );
 
         let _ = std::fs::remove_file(&real_path);
     }

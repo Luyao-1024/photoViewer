@@ -2,14 +2,26 @@ use std::path::Path;
 use std::process::Command;
 
 fn compile_blueprint(src: &str, dst: &str) {
+    let tmp = format!("{dst}.tmp");
     let status = Command::new("blueprint-compiler")
         .args(["compile", "--output"])
-        .arg(dst)
+        .arg(&tmp)
         .arg(src)
         .status()
         .expect("failed to invoke blueprint-compiler (is it installed?)");
 
     assert!(status.success(), "blueprint-compiler failed for {}", src);
+
+    let changed = match (std::fs::read(dst), std::fs::read(&tmp)) {
+        (Ok(existing), Ok(new)) => existing != new,
+        (Err(_), Ok(_)) => true,
+        (_, Err(e)) => panic!("failed to read compiled blueprint output {tmp}: {e}"),
+    };
+    if changed {
+        std::fs::rename(&tmp, dst).expect("failed to update compiled blueprint output");
+    } else {
+        std::fs::remove_file(&tmp).expect("failed to remove unchanged blueprint temp output");
+    }
 
     // Re-run build.rs if the source changes.
     println!("cargo:rerun-if-changed={src}");

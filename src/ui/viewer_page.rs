@@ -41,10 +41,20 @@ type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
 /// than the Year view (90 px) so the strip stays unobtrusive.
 const THUMB_HEIGHT: i32 = 56;
 
-/// Half-window of items the filmstrip keeps around the current index.
-/// ±32 gives 65 items max — wide enough that a rebuild only fires every
-/// ~32 navigations, small enough to be cheap to build.
-const THUMB_WINDOW: u32 = 32;
+/// 初次打开 viewer 时,缩略图栏向左右各加载的条数 —— "一栏" 大约能填满底部
+/// 条可见宽度的项目数。中心对称,所以默认总条目数 = 2 * THUMB_INITIAL_HALF + 1。
+/// Initial visible window per side: enough to fill ~one row of the bottom
+/// strip. Total = 2*THUMB_INITIAL_HALF + 1 items centred on the current.
+const THUMB_INITIAL_HALF: u32 = 5;
+
+/// 用户滚动接近边缘时,每次懒加载追加的条数 —— "半栏"。滚动条触发后向一侧
+/// 补这些,避免一次性预渲染全部缩略图导致 viewer 被撑大。
+/// Lazy-load chunk per scroll-edge event: "half row" extension per side.
+const THUMB_LAZY_HALF: u32 = 4;
+
+/// 缩略图栏总条目硬上限,防止大图库场景下无限扩展。
+/// Hard cap on total items kept in memory.
+const THUMB_WINDOW_MAX: u32 = 40;
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -123,13 +133,23 @@ mod imp {
         pub is_favorite: Cell<bool>,
         /// Thumbnail loader shared with grids — used for the filmstrip.
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
-        /// Start index of the current filmstrip window. When the current
-        /// index falls outside `[start, start + 2*THUMB_WINDOW)`, the strip
-        /// is rebuilt; otherwise only the highlight is updated.
+        /// Inclusive start index of the current filmstrip window.
+        /// 当前已加载的缩略图窗口左端(含)。
         pub thumb_window_start: Cell<u32>,
+        /// Exclusive end index of the current filmstrip window.
+        /// 当前已加载的缩略图窗口右端(不含)。
+        pub thumb_window_end: Cell<u32>,
         /// Buttons currently in the filmstrip (in index order). Stored so
         /// highlight can be toggled without rebuilding the strip.
         pub thumb_items: RefCell<Vec<gtk::Button>>,
+        /// 已排队但尚未执行的懒加载方向。滚动条触发后置位,扩展完成后清空,
+        /// 防止 value-changed 在一次扩展未完成时反复触发导致重复构建。
+        /// Pending lazy-extend direction (-1 left, +1 right, None idle).
+        pub thumb_pending_extend: Cell<Option<i8>>,
+        /// True while `ViewerPage` is setting the filmstrip adjustment itself.
+        /// The adjustment emits `value-changed` synchronously, so the lazy-load
+        /// edge listener must ignore these programmatic moves.
+        pub thumb_programmatic_scroll: Cell<bool>,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
@@ -230,6 +250,7 @@ impl ViewerPage {
         obj.setup_details_panel();
         obj.setup_favorite_button();
         obj.setup_nav_buttons();
+        obj.setup_thumb_strip_listener();
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
         obj
@@ -690,125 +711,168 @@ impl ViewerPage {
     /// Rebuild or update the filmstrip for the current index. Called from
     /// `show_at`. When the current index is still inside the existing window,
     /// only the highlight is toggled and the strip scrolls to reveal the
-    /// current item; otherwise the strip is rebuilt with a new window centred
-    /// on the current index.
+    /// current item; otherwise the strip is rebuilt with an initial window
+    /// (±THUMB_INITIAL_HALF) centred on the current index.
     fn refresh_thumb_strip(&self) {
         let current = self.imp().current_index.get();
         let start = self.imp().thumb_window_start.get();
-        let items_len = self.imp().thumb_items.borrow().len() as u32;
+        let end = self.imp().thumb_window_end.get();
 
-        let in_window = items_len > 0 && current >= start && current < start + items_len;
+        let in_window = end > start && current >= start && current < end;
 
         if in_window {
             self.update_thumb_highlight(current);
         } else {
-            self.rebuild_thumb_strip(current);
+            self.load_initial_thumb_window(current);
         }
         self.scroll_thumb_to_current();
     }
 
-    /// Tear down the existing strip and rebuild with a window centred on
-    /// `current`. Each item is a frame-less `GtkButton` wrapping a `GtkPicture`
-    /// with `content-fit: contain` (preserves aspect ratio). After the
-    /// thumbnail texture arrives, `width-request` is set so the button sizes
-    /// to the image's aspect ratio at the fixed `THUMB_HEIGHT`.
-    fn rebuild_thumb_strip(&self, current: u32) {
-        let strip = self.imp().thumb_strip.get();
+    /// First-time load: only `2*THUMB_INITIAL_HALF + 1` items centred on
+    /// `current`. The strip's natural width is therefore bounded to ~one row
+    /// of thumbnails regardless of album size, which prevents the viewer
+    /// layer from being inflated by 65+ buttons as before.
+    fn load_initial_thumb_window(&self, current: u32) {
+        let Some(n_items) = self.list_n_items() else {
+            return;
+        };
+        if n_items == 0 {
+            return;
+        }
+        let (start, end) = compute_initial_thumb_window(current, n_items);
+        self.rebuild_thumb_strip(start, end, current);
+    }
+
+    /// Lazy extend the loaded window by `THUMB_LAZY_HALF` items in the given
+    /// direction (`-1` = prepend on the left, `+1` = append on the right).
+    /// Bounded by `[0, n_items)` and the `THUMB_WINDOW_MAX` cap.
+    fn try_extend_thumb_window(&self, direction: i8) {
+        let imp = self.imp();
+        if imp.thumb_pending_extend.get() == Some(direction) {
+            // Debounce: rebuild itself can fire value-changed; suppress
+            // cascading extends until the next idle clears this flag.
+            return;
+        }
+        let Some(n_items) = self.list_n_items() else {
+            return;
+        };
+        let start = imp.thumb_window_start.get();
+        let end = imp.thumb_window_end.get();
+        let items_len = imp.thumb_items.borrow().len();
+
+        let Some((new_start, new_end)) =
+            compute_extended_thumb_window(direction, start, end, n_items, items_len)
+        else {
+            return;
+        };
+
+        let current = imp.current_index.get();
+        imp.thumb_pending_extend.set(Some(direction));
+        self.rebuild_thumb_strip(new_start, new_end, current);
+
+        // Clear the debounce flag on next idle so a subsequent scroll
+        // past the new edge can extend again.
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.imp().thumb_pending_extend.set(None);
+            }
+        });
+    }
+
+    /// Tear down the existing strip and rebuild with `[start, end)`.
+    /// Each item is a frame-less `GtkButton` wrapping a `GtkPicture` with
+    /// `content-fit: contain` (preserves aspect ratio). After the thumbnail
+    /// texture arrives, `width-request` is set so the button sizes to the
+    /// image's aspect ratio at the fixed `THUMB_HEIGHT`.
+    fn rebuild_thumb_strip(&self, start: u32, end: u32, current: u32) {
+        let imp = self.imp();
+        let strip = imp.thumb_strip.get();
 
         // Clear old items.
-        let old = self
-            .imp()
-            .thumb_items
-            .borrow_mut()
-            .drain(..)
-            .collect::<Vec<_>>();
+        let old = imp.thumb_items.borrow_mut().drain(..).collect::<Vec<_>>();
         for btn in &old {
             strip.remove(btn);
         }
 
-        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
-            return;
-        };
-        let media_guard = self.imp().media_list.borrow();
-        let Some(list) = media_guard.as_ref() else {
-            return;
-        };
-        let n_items = list.n_items();
-        if n_items == 0 {
-            return;
-        }
-
-        let start = current.saturating_sub(THUMB_WINDOW);
-        let end = current
-            .saturating_add(THUMB_WINDOW)
-            .saturating_add(1)
-            .min(n_items);
-        self.imp().thumb_window_start.set(start);
-
-        let mut new_items = Vec::new();
+        let mut new_items = Vec::with_capacity((end - start) as usize);
         for idx in start..end {
-            let Some(obj) = list.item(idx) else {
+            let Some(btn) = self.make_thumb_button(idx, current) else {
                 continue;
             };
-            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            let item = (*boxed.borrow::<MediaItem>()).clone();
-
-            let button = gtk::Button::new();
-            button.set_has_frame(false);
-            button.add_css_class("viewer-thumb-item");
-            if idx == current {
-                button.add_css_class("viewer-thumb-current");
-            }
-
-            let picture = gtk::Picture::builder()
-                .content_fit(gtk::ContentFit::Contain)
-                .height_request(THUMB_HEIGHT)
-                .can_shrink(true)
-                .build();
-            button.set_child(Some(&picture));
-
-            // Request thumbnail.
-            let item_uri = item.uri.clone();
-            let item_mtime = std::time::SystemTime::from(item.file_mtime);
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            loader.request(item_uri.clone(), ThumbnailSize::Small, Some(item_mtime), tx);
-
-            let pic_weak = picture.downgrade();
-            glib::spawn_future_local(async move {
-                let Ok(loaded) = rx.await else {
-                    return;
-                };
-                let Some(pic) = pic_weak.upgrade() else {
-                    return;
-                };
-                let tex = loaded.texture;
-                let tex_w = tex.width();
-                let tex_h = tex.height();
-                pic.set_paintable(Some(&tex));
-                if tex_h > 0 {
-                    let w = ((THUMB_HEIGHT as f64) * tex_w as f64 / tex_h as f64).round() as i32;
-                    pic.set_width_request(w.max(36));
-                }
-            });
-
-            // Click → navigate to this index.
-            let weak = self.downgrade();
-            button.connect_clicked(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    let delta = idx as i32 - this.current_index() as i32;
-                    if delta != 0 {
-                        this.fire_nav(delta);
-                    }
-                }
-            });
-
-            strip.append(&button);
-            new_items.push(button);
+            strip.append(&btn);
+            new_items.push(btn);
         }
 
-        *self.imp().thumb_items.borrow_mut() = new_items;
+        imp.thumb_window_start.set(start);
+        imp.thumb_window_end.set(end);
+        *imp.thumb_items.borrow_mut() = new_items;
+    }
+
+    /// Construct one filmstrip button + async thumbnail request. Shared by
+    /// initial load and lazy extend so both code paths render identically.
+    /// Returns `None` only when the media list / loader hasn't been injected
+    /// yet (early construction), which the caller treats as a no-op.
+    fn make_thumb_button(&self, idx: u32, current: u32) -> Option<gtk::Button> {
+        let loader = self.imp().loader.borrow().as_ref()?.clone();
+        let item = {
+            let media_guard = self.imp().media_list.borrow();
+            let list = media_guard.as_ref()?;
+            crate::ui::media_list::media_item_at(list, idx)?
+        };
+
+        let button = gtk::Button::new();
+        button.set_has_frame(false);
+        button.add_css_class("viewer-thumb-item");
+        if idx == current {
+            button.add_css_class("viewer-thumb-current");
+        }
+
+        let picture = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Contain)
+            .height_request(THUMB_HEIGHT)
+            .can_shrink(true)
+            .build();
+        button.set_child(Some(&picture));
+
+        // Request thumbnail. The ThumbnailLoader caches by `path + mtime`, so
+        // extending the strip after the items were already requested once is a
+        // cache hit (no extra decode).
+        let item_uri = item.uri.clone();
+        let item_mtime = std::time::SystemTime::from(item.file_mtime);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request(item_uri, ThumbnailSize::Small, Some(item_mtime), tx);
+
+        let pic_weak = picture.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(loaded) = rx.await else {
+                return;
+            };
+            let Some(pic) = pic_weak.upgrade() else {
+                return;
+            };
+            let tex = loaded.texture;
+            let tex_w = tex.width();
+            let tex_h = tex.height();
+            pic.set_paintable(Some(&tex));
+            if tex_h > 0 {
+                let w = ((THUMB_HEIGHT as f64) * tex_w as f64 / tex_h as f64).round() as i32;
+                pic.set_width_request(w.max(36));
+            }
+        });
+
+        // Click → navigate to this index.
+        let weak = self.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                let delta = idx as i32 - this.current_index() as i32;
+                if delta != 0 {
+                    this.fire_nav(delta);
+                }
+            }
+        });
+
+        Some(button)
     }
 
     /// Toggle the `.viewer-thumb-current` class so only the current item is
@@ -826,24 +890,113 @@ impl ViewerPage {
         }
     }
 
-    /// Scroll the filmstrip so the current item is centred.
-    fn scroll_thumb_to_current(&self) {
+    /// Compute the horizontal scroll value that centres the current item
+    /// inside the visible strip. Returns `None` when the current item isn't
+    /// in the loaded window yet (e.g. before the first `load_initial_thumb_window`).
+    fn compute_thumb_target_value(&self) -> Option<f64> {
         let start = self.imp().thumb_window_start.get();
         let current = self.imp().current_index.get();
         if current < start {
-            return;
+            return None;
         }
         let offset = (current - start) as usize;
         let items = self.imp().thumb_items.borrow();
-        let Some(btn) = items.get(offset) else {
+        let btn = items.get(offset)?;
+        let scrolled = self.imp().thumb_scrolled.get();
+        let hadj = scrolled.hadjustment();
+        let alloc = btn.allocation();
+        Some(compute_thumb_scroll_target(
+            alloc.x() as f64,
+            alloc.width() as f64,
+            hadj.page_size(),
+            hadj.upper(),
+        ))
+    }
+
+    /// Move `thumb_scrolled`'s horizontal adjustment to reveal the current
+    /// item. This intentionally snaps instead of animating: the adjustment's
+    /// `value-changed` signal drives lazy loading, and animating that value
+    /// during initial viewer allocation can produce high-frequency layout
+    /// churn on GNOME.
+    fn scroll_thumb_to_current(&self) {
+        let Some(target) = self.compute_thumb_target_value() else {
             return;
         };
         let scrolled = self.imp().thumb_scrolled.get();
         let hadj = scrolled.hadjustment();
-        let alloc = btn.allocation();
-        let target = (alloc.x() as f64) - hadj.page_size() / 2.0 + (alloc.width() as f64) / 2.0;
-        let clamped = target.max(0.0).min(hadj.upper() - hadj.page_size());
-        hadj.set_value(clamped);
+        let imp = self.imp();
+        imp.thumb_programmatic_scroll.set(true);
+        hadj.set_value(target);
+        imp.thumb_programmatic_scroll.set(false);
+    }
+
+    /// Wire the horizontal adjustment's `value-changed` signal so that
+    /// scrolling near either edge of the strip lazy-loads another half-row
+    /// of thumbnails (see `try_extend_thumb_window`).
+    fn setup_thumb_strip_listener(&self) {
+        let scrolled = self.imp().thumb_scrolled.get();
+        let hadj = scrolled.hadjustment();
+        let weak = self.downgrade();
+        hadj.connect_value_changed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.on_thumb_adj_changed();
+            }
+        });
+    }
+
+    fn on_thumb_adj_changed(&self) {
+        let imp = self.imp();
+
+        if imp.thumb_programmatic_scroll.get() {
+            return;
+        }
+
+        let scrolled = imp.thumb_scrolled.get();
+        let hadj = scrolled.hadjustment();
+        let value = hadj.value();
+        let page_size = hadj.page_size();
+        let upper = hadj.upper();
+        if page_size <= 0.0 {
+            return;
+        }
+
+        // Distance (in pixels) from each scroll edge.
+        let left_dist = value;
+        let right_dist = upper - value - page_size;
+        // Trigger when within ~30% of page size from the edge — far enough
+        // that the user has clearly committed to scrolling further, close
+        // enough that the rebuild happens before they hit the hard stop.
+        let threshold = page_size * 0.3;
+
+        let Some(n_items) = self.list_n_items() else {
+            return;
+        };
+        let start = imp.thumb_window_start.get();
+        let end = imp.thumb_window_end.get();
+        let items_len = imp.thumb_items.borrow().len();
+        let at_cap = items_len >= THUMB_WINDOW_MAX as usize;
+
+        let mut direction: Option<i8> = None;
+        if left_dist < threshold && start > 0 && !at_cap {
+            direction = Some(-1);
+        }
+        if right_dist < threshold && end < n_items && !at_cap {
+            // If both edges qualify, pick the one the user is closer to.
+            direction = Some(match direction {
+                Some(-1) if right_dist < left_dist => 1,
+                other => other.unwrap_or(1),
+            });
+        }
+
+        if let Some(dir) = direction {
+            self.try_extend_thumb_window(dir);
+        }
+    }
+
+    /// Convenience accessor for `gio::ListStore::n_items` that swallows the
+    /// `media_list not injected yet` case and returns `None`.
+    fn list_n_items(&self) -> Option<u32> {
+        self.imp().media_list.borrow().as_ref().map(|l| l.n_items())
     }
 
     /// 从数据库异步同步当前图片收藏状态。与 `show_at()` 的 token 绑定，避免异步回写过期。
@@ -1080,20 +1233,7 @@ impl ViewerPage {
         let list = self.imp().media_list.borrow();
         let list = list.as_ref()?;
         let idx = self.imp().current_index.get();
-        if idx >= list.n_items() {
-            return None;
-        }
-        let obj = list.item(idx)?;
-        // Clone the `MediaItem` out of the `BoxedAnyObject` while both the
-        // outer `Ref` (held by `list`) and `obj`/`boxed` are alive. Using
-        // `match` (rather than `?`) makes the drop order explicit so the
-        // borrow of `boxed` does not extend past its lifetime.
-        let boxed = match obj.downcast::<glib::BoxedAnyObject>() {
-            Ok(b) => b,
-            Err(_) => return None,
-        };
-        let item = (*boxed.borrow::<MediaItem>()).clone();
-        Some(item)
+        crate::ui::media_list::media_item_at(list, idx)
     }
 
     /// Display the item at `index`, decode the **original** image off the
@@ -1429,6 +1569,64 @@ impl ViewerPage {
     }
 }
 
+/// Pure calculation: scroll target that centres a thumbnail of width `btn_w`
+/// at content x `btn_x` inside a viewport of width `page_size`, when the
+/// total content width is `upper`. The result is clamped to the adjustment's
+/// legal range `[0, upper - page_size]`.
+fn compute_thumb_scroll_target(btn_x: f64, btn_w: f64, page_size: f64, upper: f64) -> f64 {
+    let target = btn_x - page_size / 2.0 + btn_w / 2.0;
+    let max_value = (upper - page_size).max(0.0);
+    target.max(0.0).min(max_value)
+}
+
+/// Pure calculation: compute the initial `[start, end)` window centred on
+/// `current`. The window is bounded by `[0, n_items)` and clips at the album
+/// ends (no negative or out-of-bounds indices).
+fn compute_initial_thumb_window(current: u32, n_items: u32) -> (u32, u32) {
+    if n_items == 0 {
+        return (0, 0);
+    }
+    let start = current.saturating_sub(THUMB_INITIAL_HALF);
+    let end = current
+        .saturating_add(THUMB_INITIAL_HALF)
+        .saturating_add(1)
+        .min(n_items);
+    (start, end)
+}
+
+/// Pure calculation: extend `[current_start, current_end)` by `THUMB_LAZY_HALF`
+/// in `direction` (`-1` = prepend on the left, `+1` = append on the right).
+/// Returns `None` when there's nothing to extend (already at album edge, or
+/// the `THUMB_WINDOW_MAX` cap is reached).
+fn compute_extended_thumb_window(
+    direction: i8,
+    current_start: u32,
+    current_end: u32,
+    n_items: u32,
+    current_items_len: usize,
+) -> Option<(u32, u32)> {
+    debug_assert!(
+        direction == -1 || direction == 1,
+        "compute_extended_thumb_window: direction must be -1 or 1, got {direction}"
+    );
+    if current_items_len >= THUMB_WINDOW_MAX as usize {
+        return None;
+    }
+    if direction < 0 {
+        let new_start = current_start.saturating_sub(THUMB_LAZY_HALF);
+        if new_start == current_start {
+            return None;
+        }
+        Some((new_start, current_end))
+    } else {
+        let new_end = current_end.saturating_add(THUMB_LAZY_HALF).min(n_items);
+        if new_end == current_end {
+            return None;
+        }
+        Some((current_start, new_end))
+    }
+}
+
 fn format_dimensions(width: Option<u32>, height: Option<u32>) -> String {
     match (width, height) {
         (Some(width), Some(height)) => format!("{width} x {height}"),
@@ -1470,6 +1668,161 @@ mod tests {
     use glib::value::ToValue;
     use std::cell::Cell;
 
+    // ── filmstrip window calculations ──────────────────────────────────
+
+    #[test]
+    fn initial_window_centred_on_current_in_middle_of_album() {
+        // 100 photos, current = 50 → ±5 items centred, no clipping.
+        let (start, end) = compute_initial_thumb_window(50, 100);
+        assert_eq!(start, 45);
+        assert_eq!(end, 56);
+        assert_eq!(end - start, 2 * THUMB_INITIAL_HALF + 1);
+    }
+
+    #[test]
+    fn initial_window_clips_at_album_start() {
+        // current near 0 → start clamped to 0.
+        let (start, end) = compute_initial_thumb_window(2, 100);
+        assert_eq!(start, 0);
+        assert_eq!(end, 2 + THUMB_INITIAL_HALF + 1);
+        // Still centred enough to show current at index 2 of the window.
+        assert!(end > 2);
+    }
+
+    #[test]
+    fn initial_window_clips_at_album_end() {
+        // current near the end → end clamped to n_items.
+        let n = 100u32;
+        let current = n - 2;
+        let (start, end) = compute_initial_thumb_window(current, n);
+        assert_eq!(end, n);
+        assert!(start <= current);
+    }
+
+    #[test]
+    fn initial_window_is_empty_for_empty_album() {
+        assert_eq!(compute_initial_thumb_window(0, 0), (0, 0));
+        assert_eq!(compute_initial_thumb_window(5, 0), (0, 0));
+    }
+
+    #[test]
+    fn extend_left_grows_window_without_changing_end() {
+        // 100 photos, window [30, 40], extend left by LAZY_HALF.
+        let (new_start, new_end) = compute_extended_thumb_window(-1, 30, 40, 100, 10).unwrap();
+        assert_eq!(new_start, 30 - THUMB_LAZY_HALF);
+        assert_eq!(new_end, 40);
+    }
+
+    #[test]
+    fn extend_right_grows_window_without_changing_start() {
+        let (new_start, new_end) = compute_extended_thumb_window(1, 30, 40, 100, 10).unwrap();
+        assert_eq!(new_start, 30);
+        assert_eq!(new_end, 40 + THUMB_LAZY_HALF);
+    }
+
+    #[test]
+    fn extend_left_returns_none_at_album_start() {
+        // Already at 0, can't go further left.
+        assert!(compute_extended_thumb_window(-1, 0, 10, 100, 10).is_none());
+    }
+
+    #[test]
+    fn extend_right_returns_none_at_album_end() {
+        // Window already touches the end of the album.
+        assert!(compute_extended_thumb_window(1, 90, 100, 100, 10).is_none());
+    }
+
+    #[test]
+    fn extend_returns_none_at_window_cap() {
+        // Already at the cap, regardless of direction.
+        assert!(
+            compute_extended_thumb_window(-1, 50, 90, 100, THUMB_WINDOW_MAX as usize).is_none()
+        );
+        assert!(compute_extended_thumb_window(1, 50, 90, 100, THUMB_WINDOW_MAX as usize).is_none());
+    }
+
+    #[test]
+    fn extend_left_clamps_to_zero_not_negative() {
+        // start is small but non-zero → new_start must not underflow.
+        let (new_start, _) = compute_extended_thumb_window(-1, 2, 12, 100, 10).unwrap();
+        assert_eq!(new_start, 0);
+    }
+
+    #[test]
+    fn extend_right_clamps_to_n_items() {
+        let (_, new_end) = compute_extended_thumb_window(1, 92, 99, 100, 10).unwrap();
+        assert_eq!(new_end, 100);
+    }
+
+    #[test]
+    fn initial_window_total_item_count_matches_docstring() {
+        // Regression: ensures the "one row" count is what we promise — 11
+        // items centred on the current image, regardless of album size.
+        for n in [11u32, 100, 1000] {
+            let current = n / 2;
+            let (start, end) = compute_initial_thumb_window(current, n);
+            // Bounded by n_items and never exceeds the half-window radius
+            // on the constrained side.
+            let radius = THUMB_INITIAL_HALF;
+            let max_size = 2 * radius + 1;
+            let actual = end - start;
+            assert!(actual <= max_size, "n={n} actual={actual}");
+        }
+    }
+
+    // ── scroll-to-current target calculation ─────────────────────────────
+
+    /// Reasonable layout: page_size=300, 11 items, button width=60,
+    /// spacing=6. Total upper = 720.
+    const SCROLL_PAGE_SIZE: f64 = 300.0;
+    const SCROLL_BTN_W: f64 = 60.0;
+    const SCROLL_SPACING: f64 = 6.0;
+    const SCROLL_UPPER: f64 = 11.0 * SCROLL_BTN_W + 10.0 * SCROLL_SPACING; // 720
+
+    #[test]
+    fn scroll_target_first_item_clamps_to_left_edge() {
+        let target = compute_thumb_scroll_target(0.0, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
+        assert_eq!(target, 0.0);
+    }
+
+    #[test]
+    fn scroll_target_last_item_clamps_to_right_edge() {
+        let btn_x = 10.0 * (SCROLL_BTN_W + SCROLL_SPACING);
+        let target =
+            compute_thumb_scroll_target(btn_x, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
+        let max_value = SCROLL_UPPER - SCROLL_PAGE_SIZE;
+        assert_eq!(target, max_value);
+    }
+
+    #[test]
+    fn scroll_target_middle_item_centres_when_content_overflows_viewport() {
+        let btn_x = 4.0 * (SCROLL_BTN_W + SCROLL_SPACING);
+        let target =
+            compute_thumb_scroll_target(btn_x, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
+        assert!((target - 144.0).abs() < 0.5, "expected ~144, got {target}");
+    }
+
+    #[gtk::test]
+    fn thumb_strip_template_starts_without_layout_spacers() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        let strip = viewer.imp().thumb_strip.get();
+        let mut count = 0;
+        let mut child = strip.first_child();
+        while let Some(widget) = child {
+            count += 1;
+            child = widget.next_sibling();
+        }
+
+        assert_eq!(
+            count, 0,
+            "thumb_strip must not contain template spacer children because viewport-sized children feed back into ScrolledWindow allocation"
+        );
+    }
+
     fn sample_media_item() -> MediaItem {
         MediaItem {
             id: 1,
@@ -1487,9 +1840,14 @@ mod tests {
         }
     }
 
+    fn init_viewer_test() {
+        let _ = gtk::init();
+        crate::ui::grid_css::install();
+    }
+
     #[gtk::test]
     fn escape_closes_details_panel_without_navigation_pop() {
-        let _ = gtk::init();
+        init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
         let viewer = ViewerPage::new(media_list, 0);
@@ -1531,7 +1889,7 @@ mod tests {
 
     #[gtk::test]
     fn close_details_button_keeps_viewer_page_visible() {
-        let _ = gtk::init();
+        init_viewer_test();
         let nav = adw::NavigationView::new();
         let root = adw::NavigationPage::builder()
             .title("Root")
@@ -1560,7 +1918,7 @@ mod tests {
 
     #[gtk::test]
     fn navigation_pop_closes_details_before_leaving_viewer() {
-        let _ = gtk::init();
+        init_viewer_test();
         let nav = adw::NavigationView::new();
         let root = adw::NavigationPage::builder()
             .title("Root")
@@ -1589,7 +1947,7 @@ mod tests {
 
     #[gtk::test]
     fn details_panel_temporarily_disables_navigation_pop() {
-        let _ = gtk::init();
+        init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
         let viewer = ViewerPage::new(media_list, 0);
