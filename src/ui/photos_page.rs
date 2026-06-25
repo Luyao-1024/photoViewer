@@ -698,9 +698,9 @@ impl PhotosPage {
                     let Ok(item) = db::get_media_item(&pool, id) else {
                         continue;
                     };
-                    if trash::move_to_trash(&item.uri).is_ok()
-                        && db::mark_trashed(&pool, item.id).is_ok()
-                    {
+                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
+                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
+                    if trash::move_to_trash_marked(&pool, item.id, &item.uri).is_ok() {
                         removed.push(item.id);
                     }
                 }

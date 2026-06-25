@@ -28,9 +28,14 @@ Albums are folder-derived rather than a separate user-authored collection model.
 
 Trash views must distinguish reversible trash state from permanent delete. Database state and filesystem state need to remain consistent across restore/delete operations.
 
+**Trashed files live in the HOST `~/.local/share/Trash`, not the sandbox `XDG_DATA_HOME/Trash`.** Under Flatpak the gvfs trash backend runs on the host, so `gio::File::trash()` moves files to `~/.local/share/Trash/files/` even though the sandbox sees a per-app `XDG_DATA_HOME`. `src/core/trash.rs` therefore searches both roots, scans every `.trashinfo` (gio collision suffixes can start at `.0`), and percent-decodes the `Path=` field (non-ASCII like `图片` is stored as `%E5%9B%BE%E7%89%87`). Thumbnail decoding, restore, and permanent-delete all depend on this resolution being correct.
+
+**The Trash view is fully reconciled with the system trash at startup (`trash::reconcile_trash`), and kept live thereafter.** Bidirectional: it adds trashed rows for trash entries whose original path was under the pictures dir (inserting from the `Trash/files` copy under the original uri, or marking an existing live row), and prunes DB trashed rows whose file is no longer in the system trash (externally emptied). Restored files (original present) are left to the scan. The watcher also watches the trash dir: external restore/empty/delete is debounced → re-reconciled → `TrashChanged` → the visible Trash view refreshes without a page switch. See [`storage.md`](storage.md).
+
 When touching trash flows, verify:
 
 - Moving an item to trash hides it from live photo queries.
+- The trashed row survives the filesystem watcher's removal event (the original file is gone, but the row must still appear in the trash view). See [`storage.md`](storage.md): `delete_media_by_path` filters `AND trashed_at IS NULL`.
 - Restoring makes it visible again.
 - Permanent delete removes the expected record/file state.
 - Multi-select actions keep selection and empty states coherent.

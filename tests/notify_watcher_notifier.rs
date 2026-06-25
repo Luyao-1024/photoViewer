@@ -21,7 +21,8 @@ fn spawn_watcher(
 ) {
     let pool = db::init_pool(&root.join("test.db")).unwrap();
     let (notifier, rx) = MediaChangeNotifier::new();
-    let h = notify_watcher::start_watching(pool.clone(), vec![root], notifier);
+    let h =
+        notify_watcher::start_watching(pool.clone(), vec![root.clone()], vec![], root, notifier);
     // Give the watcher a moment to call `watcher.watch(...)`.
     std::thread::sleep(Duration::from_millis(300));
     (pool, rx, h)
@@ -41,6 +42,7 @@ fn wait_for_uri(
                 let matches = match &event {
                     MediaChangeEvent::Upserted(item) => item.uri == uri,
                     MediaChangeEvent::Removed { uri: u } => u == uri,
+                    MediaChangeEvent::TrashChanged => false,
                 };
                 if matches {
                     return Some(event);

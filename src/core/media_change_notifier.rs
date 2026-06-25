@@ -16,6 +16,11 @@ pub enum MediaChangeEvent {
     Upserted(MediaItem),
     /// An item was removed. Consumer matches by `uri`.
     Removed { uri: String },
+    /// The system trash changed (external restore / empty / delete-from-trash, or
+    /// the app's own trash op). The watcher has already re-run `reconcile_trash`
+    /// against the DB; consumers should refresh any visible Trash view so it
+    /// matches without a page switch.
+    TrashChanged,
 }
 
 /// Producer side of the media-change channel.
@@ -47,6 +52,14 @@ impl MediaChangeNotifier {
     pub fn removed(&self, uri: String) {
         if let Err(e) = self.tx.send(MediaChangeEvent::Removed { uri }) {
             tracing::warn!("MediaChangeNotifier::removed send failed: {e}");
+        }
+    }
+
+    /// Notify that the system trash changed and the DB has been re-reconciled.
+    /// Consumers refresh any visible Trash view.
+    pub fn trash_changed(&self) {
+        if let Err(e) = self.tx.send(MediaChangeEvent::TrashChanged) {
+            tracing::warn!("MediaChangeNotifier::trash_changed send failed: {e}");
         }
     }
 }

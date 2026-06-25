@@ -202,6 +202,19 @@ impl MainWindow {
         Some(TrashPage::with_media_list(pool, loader, media_list))
     }
 
+    /// 若当前可见页面是回收站页，重读 DB 刷新它。供 `TrashChanged` 事件调用——
+    /// 文件管理器改了系统回收站后，watcher 已对账 DB，这里让打开着的回收站页实时
+    /// 跟着变，无需用户切换页面。
+    pub fn refresh_visible_trash_page(&self) {
+        let nav = self.imp().nav_view.get();
+        let Some(page) = nav.visible_page() else {
+            return;
+        };
+        if let Some(trash) = page.downcast_ref::<TrashPage>() {
+            trash.refresh();
+        }
+    }
+
     fn show_settings_page(&self, nav_view: &adw::NavigationView) {
         if visible_page_is_settings(nav_view) {
             return;

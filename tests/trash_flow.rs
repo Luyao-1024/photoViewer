@@ -189,3 +189,64 @@ fn basename_collision_restore_one_keeps_other() {
     let _ = std::fs::remove_file(&file_a);
     let _ = std::fs::remove_dir_all(&parent);
 }
+
+/// gio/gvfs 把回收站文件落在 HOST `~/.local/share/Trash`，`.trashinfo` 的
+/// `Path=` 是 URL percent-encoded（非 ASCII 如 `图片` → `%E5%9B%BE%E7%89%87`），
+/// 且重名后缀可能从 `.0` 开始（不只是 `.2`）。旧解析器只猜 `.2..1000` 后缀、
+/// 且不 decode `Path=`，二者叠加让 `trashed_file_uri` 指向不存在的旧路径，
+/// 回收站缩略图全部解码失败（"看不见图片"）。这里按 gio 真实输出构造条目。
+fn percent_encode_path(uri: &str) -> String {
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    let mut out = String::new();
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+#[test]
+fn trashed_file_uri_resolves_percent_encoded_path_with_gio_dot_zero_suffix() {
+    let home = std::env::var_os("HOME")
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let trash_files = std::path::PathBuf::from(format!("{home}/.local/share/Trash/files"));
+    let trash_info = std::path::PathBuf::from(format!("{home}/.local/share/Trash/info"));
+    std::fs::create_dir_all(&trash_files).unwrap();
+    std::fs::create_dir_all(&trash_info).unwrap();
+
+    // 原路径含非 ASCII 目录"图片"，放在独立 scratch 下避免污染真实图库。
+    let parent = scratch_dir();
+    let original_dir = parent.join("图片");
+    std::fs::create_dir_all(&original_dir).unwrap();
+    let original = original_dir.join("probe.heic");
+    let uri = format!("file://{}", original.display());
+
+    // gio 重名后缀 .0：files/probe.0.heic + info/probe.0.heic.trashinfo
+    let actual_file = trash_files.join("probe.0.heic");
+    let actual_info = trash_info.join("probe.0.heic.trashinfo");
+    std::fs::write(&actual_file, b"thumbnail source").unwrap();
+    std::fs::write(
+        &actual_info,
+        format!(
+            "[Trash Info]\nPath={}\nDeletionDate=2026-06-26T00:00:00\n",
+            percent_encode_path(&uri),
+        ),
+    )
+    .unwrap();
+
+    let resolved = trash::trashed_file_uri(&uri).unwrap();
+    assert_eq!(
+        resolved,
+        format!("file://{}", actual_file.display()),
+        "must resolve to gio's actual trashed file (percent-decoded Path= + .0 suffix in host trash)"
+    );
+
+    let _ = std::fs::remove_file(&actual_file);
+    let _ = std::fs::remove_file(&actual_info);
+    let _ = std::fs::remove_dir_all(&parent);
+}

@@ -555,8 +555,9 @@ impl ViewerPage {
                 let item_uri = item.uri.clone();
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 gio::spawn_blocking(move || {
-                    let result = trash::move_to_trash(&item_uri)
-                        .and_then(|_| db::mark_trashed(&pool, item_id))
+                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
+                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
+                    let result = trash::move_to_trash_marked(&pool, item_id, &item_uri)
                         .and_then(|_| albums::refresh(&pool));
                     let _ = tx.send(result);
                 });

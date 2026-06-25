@@ -141,6 +141,21 @@ pub fn get_media_item(pool: &DbPool, id: i64) -> Result<MediaItem> {
     Ok(item)
 }
 
+/// 按 `uri` 查询；找不到返回 `Ok(None)`。供回收站对账等"按原 uri 定位行"的场景使用。
+pub fn get_media_item_by_uri(pool: &DbPool, uri: &str) -> Result<Option<MediaItem>> {
+    let conn = pool.get()?;
+    let item = conn
+        .query_row(
+            "SELECT id, uri, path, folder_path, mime_type, width, height,
+                    taken_at, file_mtime, file_size, blake3_hash, trashed_at
+             FROM media_items WHERE uri = ?1",
+            [uri],
+            row_to_media_item,
+        )
+        .optional()?;
+    Ok(item)
+}
+
 /// 列出所有非回收站项，按照片排序时间 DESC 排序：
 /// EXIF 拍摄时间优先；没有 EXIF 时使用文件侧时间（created/mtime fallback）。
 pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
@@ -185,6 +200,11 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
 /// 元数据仍然有效——调用方据此跳过昂贵的全文件哈希与 EXIF 提取。
 ///
 /// 走 `uri` 的 UNIQUE 索引，单次 O(log n)，10 万级图库也不会成为瓶颈。
+///
+/// 注意：被标记为回收站（`trashed_at IS NOT NULL`）的行**不算**"未改动"。
+/// 回收站行意味着文件本该不在原路径；若启动扫描又能看到它，说明它被外部
+/// （文件管理器）从系统回收站还原了，必须重新 upsert 以清掉 `trashed_at`，
+/// 否则还原后的图片不会重新出现在相册里。
 pub fn is_media_unchanged(
     pool: &DbPool,
     uri: &str,
@@ -196,6 +216,7 @@ pub fn is_media_unchanged(
         .query_row(
             "SELECT id FROM media_items
              WHERE uri = ?1 AND file_mtime = ?2 AND file_size = ?3
+               AND trashed_at IS NULL
              LIMIT 1",
             rusqlite::params![uri, file_mtime, file_size],
             |row| row.get(0),
@@ -205,11 +226,17 @@ pub fn is_media_unchanged(
 }
 
 /// 删除指定本地路径对应的媒体行。返回受影响行数。
+///
+/// 注意：只有 `trashed_at IS NULL` 的行才会被删。被应用标记为回收站
+/// （`mark_trashed`）的行，其原文件已被 gio 移到 `~/.local/share/Trash/`，
+/// 原路径消失是预期行为 —— 文件系统监听器看到 Remove 事件时绝不能把这些行
+/// 硬删，否则回收站页面会因为 `list_trashed_media` 返回空而"看不见图片"。
+/// 该函数目前只被 `notify_watcher` 经由 `backend.delete_path` 调用。
 pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     let conn = pool.get()?;
     let uri = format!("file://{}", path.display());
     let changed = conn.execute(
-        "DELETE FROM media_items WHERE path = ?1 OR uri = ?2",
+        "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
         rusqlite::params![path.to_string_lossy(), uri],
     )?;
     Ok(changed)

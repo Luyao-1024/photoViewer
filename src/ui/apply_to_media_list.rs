@@ -44,6 +44,9 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) 
                 }
             }
         }
+        // TrashChanged 不影响 live 相册列表（回收站视图自己监听该事件刷新）。
+        // 此 arm 仅为穷尽匹配；正常调用方在分发前已把 TrashChanged 单独处理。
+        MediaChangeEvent::TrashChanged => {}
     }
 }
 

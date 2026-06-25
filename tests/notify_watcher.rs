@@ -92,6 +92,8 @@ fn watcher_picks_up_new_file() {
     let _watcher = photo_viewer::core::notify_watcher::start_watching(
         pool.clone(),
         vec![root.clone()],
+        vec![],
+        root.clone(),
         notifier,
     );
 

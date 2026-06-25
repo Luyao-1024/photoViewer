@@ -149,6 +149,38 @@ impl LocalBackend {
         }))
     }
 
+    /// 与 [`Self::process_file`] 同样的元数据/哈希提取，但把结果的 `uri` / `path` /
+    /// `folder_path` 覆盖成 `uri` / `path` / `folder`，而非 `source` 自身的路径。
+    ///
+    /// 供回收站对账使用：被外部删除的图片物理上在 `Trash/files/<name>`，但其 DB 行
+    /// 必须记原始位置（缩略图解析、还原都靠原始 `uri` 找 `.trashinfo`），所以从
+    /// 回收站副本读元数据、写到原始路径下。
+    pub fn process_file_at(
+        &self,
+        source: &Path,
+        uri: &str,
+        path: &Path,
+        folder: &Path,
+    ) -> Result<NewMediaItem> {
+        let meta = metadata::extract(source)?;
+        let file_meta = std::fs::metadata(source)?;
+        let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
+        let file_time_utc: chrono::DateTime<Utc> = file_time.into();
+        let hash = stream_file_hash(source)?;
+        Ok(NewMediaItem {
+            uri: uri.to_string(),
+            path: path.to_path_buf(),
+            folder_path: folder.to_path_buf(),
+            mime_type: meta.mime_type,
+            width: meta.width,
+            height: meta.height,
+            taken_at: meta.taken_at,
+            file_mtime: file_time_utc,
+            file_size: file_meta.len(),
+            blake3_hash: hash,
+        })
+    }
+
     /// 从单个文件路径提取元数据并 upsert 到数据库。
     ///
     /// 专为 `notify_watcher` 等增量入口设计：
@@ -174,6 +206,11 @@ impl LocalBackend {
     /// Insert or update (URI conflict → UPDATE). Returns the fully-materialized
     /// row so callers (notably `notify_watcher`) can forward it to the UI
     /// without a second DB round-trip.
+    ///
+    /// 更新既有行时一并清空 `trashed_at`：upsert 只在文件确实存在于（原）路径时
+    /// 被调用——一个仍标记为回收站的行此刻文件却在原路径，只可能是被外部从系统
+    /// 回收站还原了，应重新视为 live，否则还原后的图片不会回到相册、也不会从
+    /// 回收站视图消失。
     pub fn upsert(&self, item: &NewMediaItem) -> Result<MediaItem> {
         let conn = self.pool.get()?;
         let existing: Option<i64> = conn
@@ -189,7 +226,7 @@ impl LocalBackend {
                 "UPDATE media_items
                  SET path=?2, folder_path=?3, mime_type=?4, width=?5,
                      height=?6, taken_at=?7, file_mtime=?8, file_size=?9,
-                     blake3_hash=?10, indexed_at=unixepoch()
+                     blake3_hash=?10, trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
                     id,
@@ -340,5 +377,72 @@ mod tests {
         use image::{ImageBuffer, Rgb};
         let img = ImageBuffer::<Rgb<u8>, _>::from_fn(w, h, |_, _| Rgb(color));
         img.save(path).unwrap();
+    }
+
+    /// 文件监听器看到被外部还原的文件重新出现在原路径 → `upsert_from_path`。
+    /// 此刻行仍是 trashed，upsert 必须清掉 `trashed_at`，否则图片既不回相册、
+    /// 也赖在回收站视图里。
+    #[test]
+    fn upsert_clears_trashed_at_when_file_reappears() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_plain_jpeg_in(dir.path(), "restored.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let item = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("initial upsert must yield Some");
+        crate::core::db::mark_trashed(&pool, item.id).unwrap();
+        assert!(
+            crate::core::db::get_media_item(&pool, item.id)
+                .unwrap()
+                .trashed_at
+                .is_some(),
+            "precondition: row must be trashed"
+        );
+
+        // 模拟文件被外部还原后监听器收到的 Create 事件
+        let restored = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("re-upsert must yield Some");
+        assert_eq!(restored.id, item.id);
+        assert!(
+            restored.trashed_at.is_none(),
+            "upsert of a reappearing file must clear trashed_at (external restore)"
+        );
+        assert!(
+            crate::core::db::list_trashed_media(&pool)
+                .unwrap()
+                .is_empty(),
+            "restored item must no longer be in the trash list"
+        );
+    }
+
+    /// 启动扫描路径：文件在应用关闭期间被外部还原。即便 mtime/size 与索引时
+    /// 完全一致，`is_media_unchanged` 也不能对 trashed 行短路——否则扫描会跳过
+    /// 它，`trashed_at` 永远清不掉。
+    #[test]
+    fn scan_reindexes_restored_file_clearing_trashed_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_plain_jpeg_in(dir.path(), "scan-restored.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool.clone());
+
+        let item = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("initial upsert must yield Some");
+        crate::core::db::mark_trashed(&pool, item.id).unwrap();
+
+        // 文件仍在原路径（被外部还原），mtime/size 未变
+        backend.scan_and_upsert_dir(dir.path()).unwrap();
+
+        let after = crate::core::db::get_media_item(&pool, item.id).unwrap();
+        assert!(
+            after.trashed_at.is_none(),
+            "startup scan must re-index a restored (present) file and clear trashed_at"
+        );
     }
 }

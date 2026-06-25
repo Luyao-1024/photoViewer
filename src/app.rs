@@ -64,7 +64,7 @@ pub fn build_app() -> adw::Application {
         let app_handle = app.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
             match initialize().await {
-                Ok((media_list, loader, pool)) => {
+                Ok((media_list, loader, pool, change_rx)) => {
                     let window: MainWindow = app_handle
                         .active_window()
                         .and_downcast::<MainWindow>()
@@ -82,8 +82,31 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // construct AlbumsPage/TrashPage on demand, then wire
                     // row-selected to push them onto nav_view.
-                    window.set_resources(pool, loader, media_list);
+                    window.set_resources(pool, loader, media_list.clone());
                     window.connect_sidebar(&nav);
+
+                    // Consumer: GTK 主线程独占 media_list 写权限，所以 spawn_local
+                    // 排空 change_rx。Upserted/Removed → 同步到 media_list；
+                    // TrashChanged → 刷新当前可见的回收站页面（文件管理器改了回收站
+                    // 后无需切换页面即可看到）。
+                    let window_for_consumer = window.downgrade();
+                    gtk::glib::MainContext::default().spawn_local(async move {
+                        let mut rx = change_rx;
+                        while let Some(event) = rx.recv().await {
+                            use crate::core::media_change_notifier::MediaChangeEvent;
+                            match event {
+                                MediaChangeEvent::TrashChanged => {
+                                    if let Some(window) = window_for_consumer.upgrade() {
+                                        window.refresh_visible_trash_page();
+                                    }
+                                }
+                                other => crate::ui::apply_to_media_list::apply_to_media_list(
+                                    &media_list,
+                                    other,
+                                ),
+                            }
+                        }
+                    });
                 }
                 Err(e) => {
                     tracing::error!("初始化失败: {}", e);
@@ -97,7 +120,12 @@ pub fn build_app() -> adw::Application {
     app
 }
 
-async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoader>, DbPool)> {
+async fn initialize() -> anyhow::Result<(
+    gtk::gio::ListStore,
+    Arc<ThumbnailLoader>,
+    DbPool,
+    tokio::sync::mpsc::UnboundedReceiver<crate::core::media_change_notifier::MediaChangeEvent>,
+)> {
     use crate::core::db;
 
     let data_dir = crate::config::data_dir();
@@ -122,12 +150,49 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     let pictures = crate::config::pictures_dir();
     crate::core::bootstrap::scan_and_aggregate(&pool, std::slice::from_ref(&pictures)).await?;
 
+    // 回收站对账：扫描系统回收站，把"原路径在相册目录下、确实已被删"的图片补进 DB
+    //（标 trashed）。这样被外部（文件管理器）删除、或历史 DB 行丢失的图片也能在
+    // 回收站视图出现。必须在加载首屏 grid 前完成：补进来的都是 trashed 行，不会
+    // 进 live grid，但会进 list_trashed_media。详见 trash::reconcile_trash。
+    {
+        let pool_for_trash = pool.clone();
+        let pictures_for_trash = pictures.clone();
+        tokio::task::spawn_blocking(move || -> crate::core::error::Result<()> {
+            match crate::core::trash::reconcile_trash(&pool_for_trash, &pictures_for_trash) {
+                Ok(stats) => tracing::info!(
+                    "回收站对账完成：新增 {}、标记 {}、清理 {}、跳过 {}",
+                    stats.inserted,
+                    stats.marked,
+                    stats.pruned,
+                    stats.skipped
+                ),
+                Err(e) => tracing::warn!("回收站对账失败: {e}"),
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| {
+            crate::core::error::AppError::Backend(format!("reconcile_trash join error: {e}"))
+        })??;
+    }
+
     // 启动文件监听（M5-T5+）：监听 ~/Pictures 的后续变更并增量 upsert。
     // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
     // 消费者；消费者按 uri 在共享的 `media_list` 上做 splice/append/remove。
+    //
+    // 同时监听系统回收站根：文件管理器对回收站的还原/清空/删除只动回收站目录，
+    // 必须单独监听才能实时感知（见 notify_watcher 的防抖对账）。
     let (notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
-    let _watcher =
-        crate::core::notify_watcher::start_watching(pool.clone(), vec![pictures], notifier);
+    let trash_roots = crate::core::trash::trash_roots();
+    let mut watch_paths = vec![pictures.clone()];
+    watch_paths.extend(trash_roots.iter().filter(|r| r.exists()).cloned());
+    let _watcher = crate::core::notify_watcher::start_watching(
+        pool.clone(),
+        watch_paths,
+        trash_roots,
+        pictures.clone(),
+        notifier,
+    );
 
     // 首屏先加载一页，剩余数据稍后分批追加，避免大图库启动时一次性构造所有 GTK 对象。
     let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
@@ -135,18 +200,9 @@ async fn initialize() -> anyhow::Result<(gtk::gio::ListStore, Arc<ThumbnailLoade
     append_media_items(&list, items);
     load_remaining_media_pages(pool.clone(), list.clone(), INITIAL_MEDIA_PAGE_SIZE);
 
-    // Consumer: GTK 主线程独占 `media_list` 的写权限，所以这里用 spawn_local
-    // 把 mpsc 的 receiver 排到主循环。`install_tokio_runtime` 已让 tokio
-    // reactor 在进程生命周期内驻留，所以 `rx.recv().await` 不需要额外配置。
-    let list_for_consumer = list.clone();
-    gtk::glib::MainContext::default().spawn_local(async move {
-        let mut rx = change_rx;
-        while let Some(event) = rx.recv().await {
-            crate::ui::apply_to_media_list::apply_to_media_list(&list_for_consumer, event);
-        }
-    });
-
-    Ok((list, thumbnail_loader, pool))
+    // change_rx 交给 activate 处的消费者：那里能拿到 MainWindow，TrashChanged 时
+    // 可以刷新可见的回收站页面（相册列表的 Upserted/Removed 也由它应用到 media_list）。
+    Ok((list, thumbnail_loader, pool, change_rx))
 }
 
 fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
