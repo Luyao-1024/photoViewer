@@ -387,7 +387,7 @@ box.mode-selector.on-light-background box.mode-dot {
    ViewerPage 底部缩略图预览栏。容器使用 .glass-raised 提供材质；这里只管
    布局和单项高亮。缩略图保持原始宽高比。 */
 .viewer-thumb-bar {
-  padding: 6px 8px;
+  padding: 9px 8px;
   border-radius: 14px;
 }
 
@@ -415,9 +415,12 @@ box.mode-selector.on-light-background box.mode-dot {
 
 .viewer-thumb-item.viewer-thumb-current {
   border-color: alpha(white, 0.72);
+  margin-left: 8px;
+  margin-right: 8px;
+  transform: scale(1.06);
   box-shadow:
     0 0 12px alpha(white, 0.18),
-    0 2px 8px alpha(black, 0.30);
+    0 4px 14px alpha(black, 0.34);
 }
 
 .viewer-thumb-item picture {
@@ -1084,6 +1087,23 @@ mod tests {
         assert!(
             css.contains(".viewer-favorite-btn.favorite-active:hover"),
             "CSS must define a :hover override so the gold state survives pointer-over",
+        );
+    }
+
+    #[test]
+    fn current_viewer_thumbnail_is_slightly_enlarged() {
+        let css = build_css(true);
+        assert!(
+            css.contains(".viewer-thumb-item.viewer-thumb-current"),
+            "CSS must define the current filmstrip thumbnail state",
+        );
+        assert!(
+            css.contains("transform: scale(1.06)"),
+            "current filmstrip thumbnail should be subtly enlarged",
+        );
+        assert!(
+            css.contains("margin-left: 8px") && css.contains("margin-right: 8px"),
+            "current filmstrip thumbnail should reserve fixed side breathing room",
         );
     }
 

@@ -117,6 +117,10 @@ mod imp {
         /// we would allocate a new provider on every pinch-tick and
         /// never release the previous one.
         pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
+        /// Cached CssProvider for filmstrip visual translation. The
+        /// translation must not participate in GTK layout, otherwise repeated
+        /// navigation can feed content width back into the toplevel window.
+        pub thumb_transform_provider: RefCell<Option<gtk::CssProvider>>,
         /// Optional callback invoked whenever current media favorite state changes.
         pub favorite_state_cb: RefCell<Option<FavoriteStateCallback>>,
         /// DB pool injected by host (needed to construct the editor panel).
@@ -725,7 +729,8 @@ impl ViewerPage {
         } else {
             self.load_initial_thumb_window(current);
         }
-        self.scroll_thumb_to_current();
+        self.try_extend_thumb_window_for_current();
+        self.schedule_scroll_thumb_to_current();
     }
 
     /// First-time load: only `2*THUMB_INITIAL_HALF + 1` items centred on
@@ -769,6 +774,7 @@ impl ViewerPage {
         let current = imp.current_index.get();
         imp.thumb_pending_extend.set(Some(direction));
         self.rebuild_thumb_strip(new_start, new_end, current);
+        self.schedule_scroll_thumb_to_current();
 
         // Clear the debounce flag on next idle so a subsequent scroll
         // past the new edge can extend again.
@@ -780,6 +786,24 @@ impl ViewerPage {
         });
     }
 
+    fn try_extend_thumb_window_for_current(&self) {
+        let imp = self.imp();
+        let Some(n_items) = self.list_n_items() else {
+            return;
+        };
+        let current = imp.current_index.get();
+        let start = imp.thumb_window_start.get();
+        let end = imp.thumb_window_end.get();
+        let items_len = imp.thumb_items.borrow().len();
+
+        let Some(direction) =
+            compute_current_thumb_extend_direction(current, start, end, n_items, items_len)
+        else {
+            return;
+        };
+        self.try_extend_thumb_window(direction);
+    }
+
     /// Tear down the existing strip and rebuild with `[start, end)`.
     /// Each item is a frame-less `GtkButton` wrapping a `GtkPicture` with
     /// `content-fit: contain` (preserves aspect ratio). After the thumbnail
@@ -789,11 +813,11 @@ impl ViewerPage {
         let imp = self.imp();
         let strip = imp.thumb_strip.get();
 
-        // Clear old items.
-        let old = imp.thumb_items.borrow_mut().drain(..).collect::<Vec<_>>();
-        for btn in &old {
-            strip.remove(btn);
+        // Clear old buttons.
+        while let Some(child) = strip.first_child() {
+            strip.remove(&child);
         }
+        imp.thumb_items.borrow_mut().clear();
 
         let mut new_items = Vec::with_capacity((end - start) as usize);
         for idx in start..end {
@@ -844,6 +868,7 @@ impl ViewerPage {
         loader.request(item_uri, ThumbnailSize::Small, Some(item_mtime), tx);
 
         let pic_weak = picture.downgrade();
+        let viewer_weak = self.downgrade();
         glib::spawn_future_local(async move {
             let Ok(loaded) = rx.await else {
                 return;
@@ -858,6 +883,9 @@ impl ViewerPage {
             if tex_h > 0 {
                 let w = ((THUMB_HEIGHT as f64) * tex_w as f64 / tex_h as f64).round() as i32;
                 pic.set_width_request(w.max(36));
+            }
+            if let Some(this) = viewer_weak.upgrade() {
+                this.schedule_scroll_thumb_to_current();
             }
         });
 
@@ -890,44 +918,72 @@ impl ViewerPage {
         }
     }
 
-    /// Compute the horizontal scroll value that centres the current item
-    /// inside the visible strip. Returns `None` when the current item isn't
-    /// in the loaded window yet (e.g. before the first `load_initial_thumb_window`).
-    fn compute_thumb_target_value(&self) -> Option<f64> {
+    fn update_thumb_strip_transform(&self) -> bool {
         let start = self.imp().thumb_window_start.get();
         let current = self.imp().current_index.get();
-        if current < start {
-            return None;
-        }
-        let offset = (current - start) as usize;
+        let offset = current.checked_sub(start).map(|v| v as usize);
         let items = self.imp().thumb_items.borrow();
-        let btn = items.get(offset)?;
-        let scrolled = self.imp().thumb_scrolled.get();
-        let hadj = scrolled.hadjustment();
+        let Some(btn) = offset.and_then(|offset| items.get(offset)) else {
+            return false;
+        };
+
+        let page_size = self.imp().thumb_scrolled.get().hadjustment().page_size();
         let alloc = btn.allocation();
-        Some(compute_thumb_scroll_target(
-            alloc.x() as f64,
-            alloc.width() as f64,
-            hadj.page_size(),
-            hadj.upper(),
-        ))
+        if page_size <= 0.0 || alloc.width() <= 0 {
+            return false;
+        }
+
+        let offset = compute_thumb_visual_offset(alloc.x() as f64, alloc.width() as f64, page_size);
+        self.apply_thumb_strip_transform(offset);
+        true
+    }
+
+    fn apply_thumb_strip_transform(&self, offset: f64) {
+        if self.imp().thumb_transform_provider.borrow().is_none() {
+            let provider = gtk::CssProvider::new();
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &provider,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
+            *self.imp().thumb_transform_provider.borrow_mut() = Some(provider);
+        }
+
+        if let Some(provider) = self.imp().thumb_transform_provider.borrow().as_ref() {
+            provider.load_from_data(&format!(
+                ".viewer-thumb-strip {{ transform: translate({offset}px, 0); }}"
+            ));
+        }
+        self.imp().thumb_strip.get().queue_draw();
     }
 
     /// Move `thumb_scrolled`'s horizontal adjustment to reveal the current
-    /// item. This intentionally snaps instead of animating: the adjustment's
-    /// `value-changed` signal drives lazy loading, and animating that value
-    /// during initial viewer allocation can produce high-frequency layout
-    /// churn on GNOME.
+    /// item. The visible movement is a CSS transform on `thumb_strip`, not
+    /// layout spacers or margins, so it cannot increase the toplevel window's
+    /// natural width.
     fn scroll_thumb_to_current(&self) {
-        let Some(target) = self.compute_thumb_target_value() else {
-            return;
-        };
+        self.update_thumb_strip_transform();
         let scrolled = self.imp().thumb_scrolled.get();
         let hadj = scrolled.hadjustment();
         let imp = self.imp();
         imp.thumb_programmatic_scroll.set(true);
-        hadj.set_value(target);
+        hadj.set_value(0.0);
         imp.thumb_programmatic_scroll.set(false);
+    }
+
+    fn schedule_scroll_thumb_to_current(&self) {
+        let weak = self.downgrade();
+        self.imp()
+            .thumb_scrolled
+            .get()
+            .add_tick_callback(move |_, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.scroll_thumb_to_current();
+                }
+                glib::ControlFlow::Break
+            });
     }
 
     /// Wire the horizontal adjustment's `value-changed` signal so that
@@ -1573,10 +1629,8 @@ impl ViewerPage {
 /// at content x `btn_x` inside a viewport of width `page_size`, when the
 /// total content width is `upper`. The result is clamped to the adjustment's
 /// legal range `[0, upper - page_size]`.
-fn compute_thumb_scroll_target(btn_x: f64, btn_w: f64, page_size: f64, upper: f64) -> f64 {
-    let target = btn_x - page_size / 2.0 + btn_w / 2.0;
-    let max_value = (upper - page_size).max(0.0);
-    target.max(0.0).min(max_value)
+fn compute_thumb_visual_offset(btn_x: f64, btn_w: f64, page_size: f64) -> f64 {
+    page_size / 2.0 - (btn_x + btn_w / 2.0)
 }
 
 /// Pure calculation: compute the initial `[start, end)` window centred on
@@ -1586,11 +1640,11 @@ fn compute_initial_thumb_window(current: u32, n_items: u32) -> (u32, u32) {
     if n_items == 0 {
         return (0, 0);
     }
-    let start = current.saturating_sub(THUMB_INITIAL_HALF);
-    let end = current
-        .saturating_add(THUMB_INITIAL_HALF)
-        .saturating_add(1)
-        .min(n_items);
+    let target_len = (2 * THUMB_INITIAL_HALF + 1).min(n_items);
+    let mut start = current.saturating_sub(THUMB_INITIAL_HALF);
+    let mut end = start.saturating_add(target_len).min(n_items);
+    start = end.saturating_sub(target_len);
+    end = start.saturating_add(target_len).min(n_items);
     (start, end)
 }
 
@@ -1624,6 +1678,36 @@ fn compute_extended_thumb_window(
             return None;
         }
         Some((current_start, new_end))
+    }
+}
+
+fn compute_current_thumb_extend_direction(
+    current: u32,
+    start: u32,
+    end: u32,
+    n_items: u32,
+    current_items_len: usize,
+) -> Option<i8> {
+    if current < start
+        || current >= end
+        || current_items_len >= THUMB_WINDOW_MAX as usize
+        || end <= start
+    {
+        return None;
+    }
+
+    let left_remaining = current.saturating_sub(start);
+    let right_remaining = end.saturating_sub(current).saturating_sub(1);
+
+    let wants_left = left_remaining <= THUMB_LAZY_HALF && start > 0;
+    let wants_right = right_remaining <= THUMB_LAZY_HALF && end < n_items;
+
+    match (wants_left, wants_right) {
+        (true, true) if left_remaining <= right_remaining => Some(-1),
+        (true, true) => Some(1),
+        (true, false) => Some(-1),
+        (false, true) => Some(1),
+        (false, false) => None,
     }
 }
 
@@ -1681,21 +1765,23 @@ mod tests {
 
     #[test]
     fn initial_window_clips_at_album_start() {
-        // current near 0 → start clamped to 0.
+        // current near 0 → start clamped to 0, missing left-side items are
+        // backfilled on the right so the strip still has a full window.
         let (start, end) = compute_initial_thumb_window(2, 100);
         assert_eq!(start, 0);
-        assert_eq!(end, 2 + THUMB_INITIAL_HALF + 1);
-        // Still centred enough to show current at index 2 of the window.
+        assert_eq!(end, 2 * THUMB_INITIAL_HALF + 1);
         assert!(end > 2);
     }
 
     #[test]
     fn initial_window_clips_at_album_end() {
-        // current near the end → end clamped to n_items.
+        // current near the end → end clamped to n_items, with a full window
+        // backfilled on the left when enough items exist.
         let n = 100u32;
         let current = n - 2;
         let (start, end) = compute_initial_thumb_window(current, n);
         assert_eq!(end, n);
+        assert_eq!(end - start, 2 * THUMB_INITIAL_HALF + 1);
         assert!(start <= current);
     }
 
@@ -1755,6 +1841,51 @@ mod tests {
     }
 
     #[test]
+    fn current_near_right_edge_triggers_right_thumb_extend() {
+        assert_eq!(
+            compute_current_thumb_extend_direction(7, 0, 11, 100, 11),
+            Some(1),
+            "current at offset 7 leaves only 3 thumbnails to the right, so preload more"
+        );
+    }
+
+    #[test]
+    fn current_near_left_edge_triggers_left_thumb_extend() {
+        assert_eq!(
+            compute_current_thumb_extend_direction(23, 20, 31, 100, 11),
+            Some(-1),
+            "current at offset 3 leaves only 3 thumbnails to the left, so preload more"
+        );
+    }
+
+    #[test]
+    fn current_in_middle_does_not_extend_thumb_window() {
+        assert_eq!(
+            compute_current_thumb_extend_direction(50, 45, 56, 100, 11),
+            None
+        );
+    }
+
+    #[test]
+    fn current_edge_extend_respects_album_edges_and_window_cap() {
+        assert_eq!(
+            compute_current_thumb_extend_direction(2, 0, 11, 100, 11),
+            None,
+            "near the left edge cannot extend when already at album start"
+        );
+        assert_eq!(
+            compute_current_thumb_extend_direction(97, 89, 100, 100, 11),
+            None,
+            "near the right edge cannot extend when already at album end"
+        );
+        assert_eq!(
+            compute_current_thumb_extend_direction(57, 50, 90, 100, THUMB_WINDOW_MAX as usize),
+            None,
+            "window cap still prevents eager extension"
+        );
+    }
+
+    #[test]
     fn initial_window_total_item_count_matches_docstring() {
         // Regression: ensures the "one row" count is what we promise — 11
         // items centred on the current image, regardless of album size.
@@ -1770,36 +1901,33 @@ mod tests {
         }
     }
 
-    // ── scroll-to-current target calculation ─────────────────────────────
+    // ── scroll-to-current visual transform calculation ───────────────────
 
     /// Reasonable layout: page_size=300, 11 items, button width=60,
     /// spacing=6. Total upper = 720.
     const SCROLL_PAGE_SIZE: f64 = 300.0;
     const SCROLL_BTN_W: f64 = 60.0;
     const SCROLL_SPACING: f64 = 6.0;
-    const SCROLL_UPPER: f64 = 11.0 * SCROLL_BTN_W + 10.0 * SCROLL_SPACING; // 720
 
     #[test]
-    fn scroll_target_first_item_clamps_to_left_edge() {
-        let target = compute_thumb_scroll_target(0.0, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
-        assert_eq!(target, 0.0);
+    fn visual_offset_centres_first_thumbnail_without_layout_spacer() {
+        let offset = compute_thumb_visual_offset(0.0, SCROLL_BTN_W, SCROLL_PAGE_SIZE);
+        assert_eq!(offset, 120.0);
+        assert!(
+            (0.0 + offset + SCROLL_BTN_W / 2.0 - SCROLL_PAGE_SIZE / 2.0).abs() < 0.5,
+            "first thumbnail center should align with viewport center after transform"
+        );
     }
 
     #[test]
-    fn scroll_target_last_item_clamps_to_right_edge() {
-        let btn_x = 10.0 * (SCROLL_BTN_W + SCROLL_SPACING);
-        let target =
-            compute_thumb_scroll_target(btn_x, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
-        let max_value = SCROLL_UPPER - SCROLL_PAGE_SIZE;
-        assert_eq!(target, max_value);
-    }
-
-    #[test]
-    fn scroll_target_middle_item_centres_when_content_overflows_viewport() {
-        let btn_x = 4.0 * (SCROLL_BTN_W + SCROLL_SPACING);
-        let target =
-            compute_thumb_scroll_target(btn_x, SCROLL_BTN_W, SCROLL_PAGE_SIZE, SCROLL_UPPER);
-        assert!((target - 144.0).abs() < 0.5, "expected ~144, got {target}");
+    fn visual_offset_centres_last_thumbnail_without_layout_spacer() {
+        let last_btn_x = 10.0 * (SCROLL_BTN_W + SCROLL_SPACING);
+        let offset = compute_thumb_visual_offset(last_btn_x, SCROLL_BTN_W, SCROLL_PAGE_SIZE);
+        assert_eq!(offset, -540.0);
+        assert!(
+            (last_btn_x + offset + SCROLL_BTN_W / 2.0 - SCROLL_PAGE_SIZE / 2.0).abs() < 0.5,
+            "last thumbnail center should align with viewport center after transform"
+        );
     }
 
     #[gtk::test]
@@ -1808,6 +1936,21 @@ mod tests {
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
         let viewer = ViewerPage::new(media_list, 0);
+
+        assert!(
+            !viewer.imp().thumb_scrolled.get().propagates_natural_width(),
+            "thumb scroller must not propagate the filmstrip child width into the viewer window"
+        );
+        assert!(
+            viewer
+                .imp()
+                .thumb_strip
+                .get()
+                .css_classes()
+                .iter()
+                .any(|class| class == "viewer-thumb-strip"),
+            "thumb_strip must carry viewer-thumb-strip so CSS can suppress natural-width growth"
+        );
 
         let strip = viewer.imp().thumb_strip.get();
         let mut count = 0;

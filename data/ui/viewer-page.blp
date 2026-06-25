@@ -121,6 +121,7 @@ template $ViewerPage : Adw.NavigationPage {
 
               Gtk.ScrolledWindow thumb_scrolled {
                 hexpand: true;
+                propagate-natural-width: false;
                 hscrollbar-policy: never;
                 vscrollbar-policy: never;
                 min-content-height: 64;
@@ -128,6 +129,7 @@ template $ViewerPage : Adw.NavigationPage {
                 child: Gtk.Box thumb_strip {
                   orientation: horizontal;
                   spacing: 6;
+                  css-classes: ["viewer-thumb-strip"];
                 };
               }
 
