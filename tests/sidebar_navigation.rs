@@ -26,6 +26,19 @@ fn sidebar_navigation_suite() {
     let window = MainWindow::new(&app);
     window.populate_sidebar();
 
+    let split_view =
+        find_overlay_split_view(window.upcast_ref()).expect("main window should contain an OverlaySplitView");
+    assert_eq!(
+        split_view.min_sidebar_width(),
+        240.0,
+        "main sidebar width should stay stable when viewer pages change content sizing"
+    );
+    assert_eq!(
+        split_view.max_sidebar_width(),
+        240.0,
+        "main sidebar width should stay stable when viewer pages change content sizing"
+    );
+
     // Glass material: each sidebar row should carry the glass-sidebar-row class.
     {
         let sidebar_page = window.imp().sidebar_page.get();
@@ -151,4 +164,20 @@ fn sidebar_navigation_suite() {
         1,
         "selecting Photos should remove both Trash and Albums pages"
     );
+}
+
+fn find_overlay_split_view(root: &gtk::Widget) -> Option<adw::OverlaySplitView> {
+    if let Some(split_view) = root.downcast_ref::<adw::OverlaySplitView>() {
+        return Some(split_view.clone());
+    }
+
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(split_view) = find_overlay_split_view(&widget) {
+            return Some(split_view);
+        }
+        child = widget.next_sibling();
+    }
+
+    None
 }

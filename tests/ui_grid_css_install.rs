@@ -18,11 +18,23 @@ fn install_guard_works() {
 }
 
 #[test]
-fn grid_css_avoids_known_unsupported_gtk_properties() {
+fn grid_css_keeps_web_only_rules_outside_liquid_blur() {
     let css = photo_viewer::ui::grid_css::css_for_tests();
 
     assert!(
         !css.contains("spacing:"),
         "GTK CSS does not support `spacing`; set GtkBox spacing in the widget builder/template"
+    );
+    assert!(
+        css.contains("backdrop-filter: blur("),
+        "Liquid Glass intentionally keeps backdrop-filter because it is the desired visual material"
+    );
+    assert!(
+        !css.contains("@media ("),
+        "GTK CssProvider in the supported runtime rejects CSS @media rules"
+    );
+    assert!(
+        !css.contains("@keyframes") && !css.contains("animation:"),
+        "GTK CssProvider in the supported runtime rejects web keyframe animation"
     );
 }

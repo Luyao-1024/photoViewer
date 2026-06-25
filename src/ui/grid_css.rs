@@ -29,11 +29,11 @@
 //! The CSS is assembled at install time from three parts: [`BASE_CSS`] (shared
 //! layout/state rules), a *material* block that differs by mode, and [`A11Y_CSS`]
 //! (shared accessibility fallbacks). [`build_css`] picks the material block from
-//! [`LIQUID_GLASS_MATERIAL_CSS`] (the dramatic Liquid Glass look — `saturate()`
-//! / `brightness()` boosts, bright inset top highlights, heavy floating
-//! shadows) or [`PLAIN_GLASS_MATERIAL_CSS`] (plain semi-transparent surfaces —
-//! **no** `backdrop-filter` blur, just translucent fills + hairline borders, so
-//! the off state looks clearly different from the blurred liquid glass).
+//! [`LIQUID_GLASS_MATERIAL_CSS`] (the dramatic Liquid Glass look — backdrop
+//! blur/saturation, bright inset highlights, luminous hairlines, and
+//! dimensional floating shadows) or [`PLAIN_GLASS_MATERIAL_CSS`] (plain
+//! semi-transparent surfaces — translucent fills + hairline borders, so the
+//! off state looks clearly different from the liquid glass material).
 //! [`install`] reads [`crate::core::prefs::liquid_glass_enabled`]; [`reapply`]
 //! swaps the provider's CSS live when the user toggles the setting (no restart).
 
@@ -125,28 +125,36 @@ flowbox.album-grid > flowboxchild:selected:focus .album-cover {
   outline-offset: -3px;
 }
 
-/* mode-selector uses .glass-raised for its material; this rule only
-   owns the mode-specific container shape. */
-box.mode-selector {
+/* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
+   Apply `glass-raised glass-segmented` to the outer container, `glass-segment`
+   to equal-width slots, `glass-segment-label` to labels, and
+   `glass-segment-indicator` to the active underline/dot. The existing
+   ModeSelector selectors stay here so its current implementation and visual
+   contract remain unchanged. */
+box.mode-selector,
+.glass-segmented {
   padding: 8px 16px;
   border-radius: 24px;
   min-height: 58px;
 }
 
-box.mode-selector.on-light-background {
+box.mode-selector.on-light-background,
+.glass-segmented.on-light-background {
   /* No material override — the .glass-raised rule already provides a
      light/dark balanced fill. Kept as a hook in case we later want a
      different border on bright photo backgrounds. */
 }
 
 /* 单个 label / dot 槽位 */
-box.mode-cell {
+box.mode-cell,
+.glass-segment {
   min-width: 60px;
   padding: 4px 12px;
 }
 
 /* 标签：默认半透明、title-3 字号 */
-box.mode-selector label {
+box.mode-selector label,
+.glass-segment-label {
   font-size: 14pt;
   font-weight: 700;
   color: #ffffff;
@@ -154,17 +162,20 @@ box.mode-selector label {
   transition: opacity 120ms ease;
 }
 
-box.mode-selector.on-light-background label {
+box.mode-selector.on-light-background label,
+.glass-segmented.on-light-background .glass-segment-label {
   color: #000000;
 }
 
 /* 激活态：标签全亮 */
-box.mode-selector label.active {
+box.mode-selector label.active,
+.glass-segment-label.active {
   opacity: 1.0;
 }
 
 /* 激活指示点 */
-box.mode-dot {
+box.mode-dot,
+.glass-segment-indicator {
   background: #ffffff;
   border-radius: 2px;
   min-width: 24px;
@@ -172,31 +183,20 @@ box.mode-dot {
   margin-top: 2px;
 }
 
-box.mode-selector.on-light-background box.mode-dot {
+box.mode-selector.on-light-background box.mode-dot,
+.glass-segmented.on-light-background .glass-segment-indicator {
   background: #000000;
 }
 
 /* glass-toolbar-button — individual buttons in glass header bars.
-   Tiles and similar grouped controls; carries its own background +
-   border-radius so it stands alone (no longer requires a `.glass-toolbar`
-   pill container — that selector was removed once nothing referenced it). */
+   This base rule owns only geometry; the actual material lives in the
+   Liquid/Plain material blocks so Settings can switch every button at once. */
 .glass-toolbar-button {
   min-height: 34px;
   min-width: 34px;
   border-radius: 10px;
   padding: 0 14px;
-  background: alpha(white, 0.08);
-  border: 1px solid transparent;
   color: inherit;
-}
-
-.glass-toolbar-button:hover {
-  background: alpha(white, 0.14);
-}
-
-.glass-toolbar-button:active,
-.glass-toolbar-button:checked {
-  background: alpha(white, 0.20);
 }
 
 .glass-toolbar-button:focus-visible,
@@ -205,10 +205,6 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 
 .glass-toolbar-danger { color: #ffb4ab; }
-.glass-toolbar-danger:hover {
-  background: alpha(#ff5449, 0.18);
-  color: #ffb4ab;
-}
 
 /* glass-toolbar-suggested — primary action accent (blue) for Save Copy,
    Accept, and similar high-confidence buttons. Composes with
@@ -216,10 +212,6 @@ box.mode-selector.on-light-background box.mode-dot {
    action language is shared between toolbar and menu surfaces.
    用于工具栏主操作按钮(蓝色),与菜单项的 suggested 风格保持一致。 */
 .glass-toolbar-suggested { color: #a8d2ff; }
-.glass-toolbar-suggested:hover {
-  background: alpha(#5aa7ff, 0.18);
-  color: #c8e0ff;
-}
 
 /* glass-menu — popovers; GTK popovers are two-layer, style the inner
    `> contents` so the visible background matches the rounded edge. The
@@ -237,13 +229,7 @@ box.mode-selector.on-light-background box.mode-dot {
   min-height: 36px;
   border-radius: 10px;
   padding: 0 12px;
-  background: transparent;
-  border: 1px solid transparent;
   color: inherit;
-}
-
-.glass-menu-item:hover {
-  background: alpha(white, 0.12);
 }
 
 .glass-menu-item:focus-visible,
@@ -256,16 +242,8 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 
 .glass-menu-item-suggested { color: #a8d2ff; }
-.glass-menu-item-suggested:hover {
-  background: alpha(#5aa7ff, 0.18);
-  color: #c8e0ff;
-}
 
 .glass-menu-item-danger { color: #ffb4ab; }
-.glass-menu-item-danger:hover {
-  background: alpha(#ff5449, 0.18);
-  color: #ffcfca;
-}
 
 /* glass-sidebar — the left rail surface. The sidebar's blur comes from
    .glass-base applied alongside (see window.blp); these rules only own
@@ -287,19 +265,6 @@ box.mode-selector.on-light-background box.mode-dot {
   border-radius: 12px;
   margin-bottom: 6px;
   padding: 0 10px;
-  background: transparent;
-  border: 1px solid transparent;
-}
-
-.glass-sidebar-row:hover {
-  background: alpha(white, 0.08);
-}
-
-.glass-sidebar-row:selected {
-  background: alpha(white, 0.14);
-  box-shadow:
-    inset 0 1px alpha(white, 0.35),
-    inset 0 -1px alpha(black, 0.12);
 }
 
 .glass-sidebar-row:focus-visible,
@@ -346,8 +311,6 @@ box.mode-selector.on-light-background box.mode-dot {
    global provider so it composes with .glass-toolbar-button. */
 .viewer-favorite-btn.favorite-active {
   color: #f6c344;
-  background: alpha(#f6c344, 0.14);
-  border-color: alpha(#f6c344, 0.38);
 }
 
 /* hover keeps the gold theme — without this rule, .glass-toolbar-button:hover
@@ -355,8 +318,6 @@ box.mode-selector.on-light-background box.mode-dot {
    so the active-favorite would briefly look un-favorited on pointer-over. */
 .viewer-favorite-btn.favorite-active:hover {
   color: #ffd86b;
-  background: alpha(#f6c344, 0.22);
-  border-color: alpha(#f6c344, 0.52);
 }
 
 /* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
@@ -367,16 +328,10 @@ box.mode-selector.on-light-background box.mode-dot {
   background: transparent;
 }
 
-/* thumb-loading — 缩略图生成期间的骨架脉冲占位。缩略图到位后 SquareTile
-   在 set_paintable 里移除该 class。用可动画的 background-color（GTK4 CSS
-   对 gradient 动画支持不佳），低调、明确表达加载中而非裸白块。 */
+/* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
+   在 set_paintable 里移除该 class。 */
 .thumb-loading {
   background-color: alpha(white, 0.05);
-  animation: thumb-pulse 1.4s ease-in-out infinite;
-}
-@keyframes thumb-pulse {
-  0%, 100% { background-color: alpha(white, 0.035); }
-  50%      { background-color: alpha(white, 0.11); }
 }
 
 /* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
@@ -427,13 +382,19 @@ box.mode-selector.on-light-background box.mode-dot {
   border-radius: 6px;
 }
 
-/* viewer-nav-btn — the < > navigation buttons at the strip's right end */
-.viewer-nav-btn {
-  min-width: 38px;
+/* viewer-overlay-nav — previous/next controls floating over the image. The
+   material is mode-specific so it follows the Settings Liquid Glass switch. */
+.viewer-overlay-nav {
+  padding: 6px;
+  border-radius: 16px;
+}
+
+.viewer-overlay-nav-btn {
+  min-width: 42px;
   min-height: 38px;
-  font-size: 16pt;
-  font-weight: 700;
   padding: 0;
+  border-radius: 10px;
+  color: #ffffff;
 }
 
 /* viewer-floating-panel 内容链透明化 ─────────────────────────────
@@ -481,10 +442,9 @@ box.mode-selector.on-light-background box.mode-dot {
 }
 ";
 
-/* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass surface material.
-backdrop-filter blur+saturate+brightness, bright inset top highlights,
-heavy floating drop shadows. This is the default (opt-out) look.
-液态玻璃材质:模糊+饱和/亮度增益 + 顶部亮色内高光 + 厚重悬浮投影。 */
+/* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass material:
+   backdrop blur+saturate+brightness, bright inset top highlights, and heavy
+   floating shadows. This is the default (opt-out) look. */
 const LIQUID_GLASS_MATERIAL_CSS: &str = "
 /* glass-base — sidebar, header, details panel */
 .glass-base {
@@ -520,6 +480,133 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   box-shadow:
     0 18px 48px alpha(black, 0.35),
     inset 0 1px alpha(white, 0.24);
+}
+
+/* Unified Liquid Glass button material. These selectors intentionally cover
+   all button-like chrome so the Settings switch changes the whole language. */
+.glass-toolbar-button {
+  background: alpha(white, 0.12);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.28);
+  box-shadow:
+    0 12px 32px alpha(black, 0.24),
+    inset 0 1px alpha(white, 0.44),
+    inset 0 -1px alpha(black, 0.12);
+}
+
+.glass-toolbar-button:hover {
+  background: alpha(white, 0.18);
+  border-color: alpha(white, 0.38);
+  box-shadow:
+    0 14px 36px alpha(black, 0.30),
+    inset 0 1px alpha(white, 0.52),
+    inset 0 -1px alpha(black, 0.14);
+}
+
+.glass-toolbar-button:active,
+.glass-toolbar-button:checked {
+  background: alpha(white, 0.24);
+  border-color: alpha(white, 0.44);
+  box-shadow:
+    0 8px 22px alpha(black, 0.24),
+    inset 0 1px alpha(white, 0.34),
+    inset 0 -1px alpha(black, 0.18);
+}
+
+.glass-toolbar-suggested:hover {
+  background: alpha(#5aa7ff, 0.24);
+  border-color: alpha(#a8d2ff, 0.42);
+  color: #c8e0ff;
+}
+
+.glass-toolbar-danger:hover {
+  background: alpha(#ff5449, 0.24);
+  border-color: alpha(#ffb4ab, 0.42);
+  color: #ffb4ab;
+}
+
+.glass-menu-item {
+  background: alpha(white, 0.05);
+  background-clip: padding-box;
+  border: 1px solid transparent;
+}
+
+.glass-menu-item:hover {
+  background: alpha(white, 0.16);
+  border-color: alpha(white, 0.26);
+  box-shadow:
+    inset 0 1px alpha(white, 0.36),
+    inset 0 -1px alpha(black, 0.10);
+}
+
+.glass-menu-item-suggested:hover {
+  background: alpha(#5aa7ff, 0.24);
+  border-color: alpha(#a8d2ff, 0.34);
+  color: #c8e0ff;
+}
+
+.glass-menu-item-danger:hover {
+  background: alpha(#ff5449, 0.24);
+  border-color: alpha(#ffb4ab, 0.34);
+  color: #ffcfca;
+}
+
+.glass-sidebar-row {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.glass-sidebar-row:hover {
+  background: alpha(white, 0.10);
+  border-color: alpha(white, 0.18);
+  box-shadow:
+    inset 0 1px alpha(white, 0.28);
+}
+
+.glass-sidebar-row:selected {
+  background: alpha(white, 0.16);
+  border-color: alpha(white, 0.28);
+  box-shadow:
+    inset 0 1px alpha(white, 0.36),
+    inset 0 -1px alpha(black, 0.12);
+}
+
+.viewer-overlay-nav {
+  background: alpha(black, 0.24);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.30);
+  box-shadow:
+    0 16px 42px alpha(black, 0.34),
+    inset 0 1px alpha(white, 0.36),
+    inset 0 -1px alpha(black, 0.16);
+}
+
+.viewer-overlay-nav-btn {
+  background: alpha(white, 0.13);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.26);
+  box-shadow:
+    inset 0 1px alpha(white, 0.36),
+    inset 0 -1px alpha(black, 0.10);
+}
+
+.viewer-overlay-nav-btn:hover {
+  background: alpha(white, 0.22);
+  border-color: alpha(white, 0.38);
+}
+
+.viewer-favorite-btn.favorite-active {
+  background: alpha(#f6c344, 0.16);
+  border-color: alpha(#f6c344, 0.42);
+  box-shadow:
+    0 10px 28px alpha(black, 0.22),
+    inset 0 1px alpha(white, 0.34),
+    inset 0 -1px alpha(#6b4b00, 0.20);
+}
+
+.viewer-favorite-btn.favorite-active:hover {
+  background: alpha(#f6c344, 0.24);
+  border-color: alpha(#ffd86b, 0.56);
 }
 
 /* ── Glass alert dialog — 毛玻璃半透明弹框 + 液态玻璃按钮 ──────────────
@@ -615,14 +702,11 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 
 /* ── PLAIN_GLASS_MATERIAL_CSS ─ plain semi-transparent surfaces, NO blur.
 Same selectors as the liquid block, but drops `backdrop-filter` entirely
-(no frosted-glass blur) along with the saturate/brightness boosts, the
-bright inset top highlights, and the heavy floating drop shadows. The
-result is a clearly different look from Liquid Glass: sharp translucent
-panels you can faintly see through, instead of blurred frosted glass.
-Alert-dialog BUTTONS are opaque solid fills here (not translucent) so they
-don't read as glass either.
-普通半透明:完全去掉 backdrop-filter(无毛玻璃模糊)、增益、高光、厚重投影,
-只留半透明背景 + 细边 + 轻阴影,与液态玻璃差异明显;弹框按钮用不透明实色。 */
+along with the bright inset top highlights and the heavy floating drop
+shadows. The result is a clearly different look from Liquid Glass: sharp
+translucent panels and controls with restrained borders.
+普通半透明:没有 backdrop-filter、高光、厚重投影,只留半透明背景 + 细边 +
+轻阴影,与液态玻璃差异明显。 */
 const PLAIN_GLASS_MATERIAL_CSS: &str = "
 .glass-base {
   background: alpha(black, 0.55);
@@ -644,6 +728,103 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   background-clip: padding-box;
   border: 1px solid alpha(white, 0.10);
   box-shadow: 0 6px 18px alpha(black, 0.28);
+}
+
+.glass-toolbar-button {
+  background: alpha(white, 0.07);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  box-shadow: 0 3px 10px alpha(black, 0.18);
+}
+
+.glass-toolbar-button:hover {
+  background: alpha(white, 0.12);
+  border-color: alpha(white, 0.16);
+}
+
+.glass-toolbar-button:active,
+.glass-toolbar-button:checked {
+  background: alpha(white, 0.16);
+  border-color: alpha(white, 0.20);
+}
+
+.glass-toolbar-suggested:hover {
+  background: alpha(#5aa7ff, 0.18);
+  border-color: alpha(#a8d2ff, 0.28);
+  color: #c8e0ff;
+}
+
+.glass-toolbar-danger:hover {
+  background: alpha(#ff5449, 0.18);
+  border-color: alpha(#ffb4ab, 0.28);
+  color: #ffb4ab;
+}
+
+.glass-menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.glass-menu-item:hover {
+  background: alpha(white, 0.11);
+  border-color: alpha(white, 0.12);
+}
+
+.glass-menu-item-suggested:hover {
+  background: alpha(#5aa7ff, 0.18);
+  border-color: alpha(#a8d2ff, 0.22);
+  color: #c8e0ff;
+}
+
+.glass-menu-item-danger:hover {
+  background: alpha(#ff5449, 0.18);
+  border-color: alpha(#ffb4ab, 0.22);
+  color: #ffcfca;
+}
+
+.glass-sidebar-row {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.glass-sidebar-row:hover {
+  background: alpha(white, 0.07);
+  border-color: alpha(white, 0.08);
+}
+
+.glass-sidebar-row:selected {
+  background: alpha(white, 0.12);
+  border-color: alpha(white, 0.14);
+  box-shadow: 0 2px 8px alpha(black, 0.16);
+}
+
+.viewer-overlay-nav {
+  background: alpha(black, 0.46);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.12);
+  box-shadow: 0 6px 18px alpha(black, 0.28);
+}
+
+.viewer-overlay-nav-btn {
+  background: alpha(white, 0.08);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+}
+
+.viewer-overlay-nav-btn:hover {
+  background: alpha(white, 0.14);
+  border-color: alpha(white, 0.16);
+}
+
+.viewer-favorite-btn.favorite-active {
+  background: alpha(#f6c344, 0.12);
+  border-color: alpha(#f6c344, 0.28);
+  box-shadow: 0 3px 10px alpha(black, 0.18);
+}
+
+.viewer-favorite-btn.favorite-active:hover {
+  background: alpha(#f6c344, 0.18);
+  border-color: alpha(#f6c344, 0.38);
 }
 
 .glass-alert-dialog {
@@ -719,77 +900,10 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 }
 ";
 
-/* ── A11Y_CSS ─ shared accessibility fallbacks. GTK CssProvider supports
-prefers-reduced-motion, prefers-contrast and prefers-color-scheme media
-features. It does NOT support the web draft prefers-reduced-transparency
-feature, so GNOME's Reduce Animation setting is the supported platform hook
-for disabling glass blur/alpha effects. 当用户启用 GNOME 减少动画或高对比度
-时,所有玻璃面降级为稳定不透明中性色,与液态/毛玻璃模式无关。 */
-const A11Y_CSS: &str = "
-@media (prefers-reduced-motion: reduce) {
-  .glass-base,
-  .glass-raised,
-  .glass-header,
-  .glass-sidebar,
-  .glass-toolbar-button,
-  .glass-menu > contents,
-  .viewer-stage,
-  .viewer-details-panel,
-  .viewer-floating-panel,
-  .glass-editor-preview {
-    background: #1f1f23;
-    background-clip: padding-box;
-    border-color: alpha(white, 0.10);
-    backdrop-filter: none;
-    box-shadow: none;
-  }
-  .glass-toolbar-button {
-    background: #2a2a30;
-  }
-  .glass-menu > contents {
-    background: #1f1f23;
-  }
-  .thumb-loading {
-    animation: none;
-    background-color: alpha(white, 0.05);
-  }
-}
-
-/* High-contrast accessibility fallback. Same scope as the
-   reduced-transparency block. We force 2px opaque borders and a
-   slightly brighter text color so the design language remains
-   readable when the user has bumped contrast in GNOME Settings.
-   高对比度无障碍回退:强制 2px 不透明边框 + 略亮的文字色。 */
-@media (prefers-contrast: more) {
-  .glass-base,
-  .glass-raised,
-  .glass-header,
-  .glass-sidebar,
-  .glass-toolbar-button,
-  .glass-menu > contents,
-  .viewer-stage,
-  .viewer-details-panel,
-  .viewer-floating-panel,
-  .glass-editor-preview {
-    border: 2px solid alpha(white, 0.80);
-    background: #1f1f23;
-  }
-  .glass-menu > contents {
-    background: #1f1f23;
-  }
-  .glass-toolbar-button,
-  .glass-menu-item,
-  .glass-sidebar-row {
-    color: #ffffff;
-  }
-  /* Hover/focus states still need a visible response in high-contrast mode. */
-  .glass-toolbar-button:hover,
-  .glass-menu-item:hover,
-  .glass-sidebar-row:hover {
-    background: alpha(white, 0.32);
-  }
-}
-";
+/* GTK's CssProvider in the supported runtime rejects web-style @media
+   feature queries. Keep this hook empty until accessibility adaptation is
+   implemented through GTK settings or explicit runtime class toggles. */
+const A11Y_CSS: &str = "";
 
 /// Assemble the full CSS string for the given glass mode. `true` → Liquid
 /// Glass (default), `false` → calmer classic frosted glass.
@@ -1107,9 +1221,9 @@ mod tests {
         );
     }
 
-    /// Liquid Glass mode keeps the dramatic material signatures: saturate +
-    /// brightness boosts, the bright raised top highlight, and the heavy
-    /// floating shadow. Also confirms the BASE + A11Y shared parts are present.
+    /// Liquid Glass mode keeps the dramatic GTK-supported material signatures:
+    /// bright raised top highlights and the heavy floating shadow. Also
+    /// confirms the shared BASE rules are present.
     #[test]
     fn liquid_mode_keeps_drama_and_shared_parts() {
         let css = build_css(true);
@@ -1130,14 +1244,6 @@ mod tests {
         }
         // liquid drama
         assert!(
-            css.contains("saturate(1.22)"),
-            "liquid mode must keep saturate boost"
-        );
-        assert!(
-            css.contains("brightness(1.06)"),
-            "liquid mode must keep brightness boost"
-        );
-        assert!(
             css.contains("0 18px 48px"),
             "liquid mode must keep the heavy raised drop shadow"
         );
@@ -1145,18 +1251,17 @@ mod tests {
             css.contains("inset 0 1px alpha(white, 0.58)"),
             "liquid mode must keep the bright raised top highlight"
         );
-        // shared BASE + A11Y
+        // shared BASE
         assert!(
             css.contains("flowbox.thumb-grid"),
             "BASE shared rules present"
         );
-        assert!(css.contains("prefers-reduced-motion"), "A11Y block present");
     }
 
     /// Plain mode is semi-transparent with NO blur: same selectors covered, but
-    /// there is no `backdrop-filter` at all (no frosted-glass blur) and none of
-    /// the liquid drama (saturate/brightness boosts, raised top highlight,
-    /// heavy floating shadow). Only translucent fills + hairline borders remain.
+    /// there is no web `backdrop-filter` at all and none of the liquid drama
+    /// (raised top highlight, heavy floating shadow). Only translucent fills +
+    /// hairline borders remain.
     #[test]
     fn plain_mode_is_translucent_no_blur() {
         let css = build_css(false);
@@ -1175,21 +1280,12 @@ mod tests {
                 "plain mode missing material selector {sel}"
             );
         }
-        // NO frosted blur (only A11Y's `backdrop-filter: none` may appear)
+        // NO unsupported web blur property.
         assert!(
-            !css.contains("backdrop-filter: blur"),
-            "plain mode must drop backdrop-filter blur entirely (no frosted glass)"
+            !css.contains("backdrop-filter:"),
+            "plain mode must avoid unsupported backdrop-filter CSS"
         );
-        // drops liquid drama (BASE/A11Y never use these tokens, so absence is
-        // a clean signal that the plain material block has no drama)
-        assert!(
-            !css.contains("saturate("),
-            "plain mode must drop saturate boost"
-        );
-        assert!(
-            !css.contains("brightness(1.0"),
-            "plain mode must drop brightness boost"
-        );
+        // drops liquid drama
         assert!(
             !css.contains("inset 0 1px alpha(white, 0.58)"),
             "plain mode must drop the raised top highlight"
@@ -1198,16 +1294,126 @@ mod tests {
             !css.contains("0 18px 48px"),
             "plain mode must drop the heavy raised drop shadow"
         );
-        // shared BASE + A11Y still present
+        // shared BASE still present
         assert!(
             css.contains("flowbox.thumb-grid"),
             "BASE shared rules present"
         );
-        assert!(css.contains("prefers-reduced-motion"), "A11Y block present");
     }
 
-    /// Both modes must carry the shared BASE rules (layout/state) and the A11Y
-    /// fallback blocks — the only thing that differs is the material block.
+    /// The Liquid Glass setting must affect the full button language, not only
+    /// panels. Toolbar buttons, popover menu rows, sidebar rows, the viewer
+    /// overlay nav, and active favorite state should all carry the same liquid
+    /// signatures: bright inset highlight + dimensional glass shadow.
+    #[test]
+    fn liquid_mode_gives_buttons_unified_liquid_material() {
+        let css = build_css(true);
+
+        for selector in [
+            ".glass-toolbar-button",
+            ".glass-menu-item",
+            ".glass-sidebar-row:selected",
+            ".viewer-overlay-nav",
+            ".viewer-overlay-nav-btn",
+            ".viewer-favorite-btn.favorite-active",
+        ] {
+            assert!(
+                css.contains(selector),
+                "liquid mode missing button material selector {selector}",
+            );
+        }
+
+        for liquid_signature in [
+            "inset 0 1px alpha(white, 0.44)",
+            "inset 0 1px alpha(white, 0.36)",
+            "0 12px 32px alpha(black, 0.24)",
+            "0 16px 42px alpha(black, 0.34)",
+        ] {
+            assert!(
+                css.contains(liquid_signature),
+                "liquid mode missing shared button material signature {liquid_signature}",
+            );
+        }
+    }
+
+    #[test]
+    fn liquid_mode_selector_keeps_original_glass_raised_material() {
+        let css = build_css(true);
+
+        for marker in [
+            "box.mode-selector,\n.glass-segmented {",
+            "box.mode-cell,\n.glass-segment {",
+            "box.mode-dot,\n.glass-segment-indicator {",
+            ".glass-raised {",
+            "backdrop-filter: blur(28px) saturate(1.22) brightness(1.06)",
+            "0 18px 48px alpha(black, 0.26)",
+            "inset 0 1px alpha(white, 0.58)",
+        ] {
+            assert!(
+                css.contains(marker),
+                "liquid mode selector should keep original glass-raised marker {marker}",
+            );
+        }
+        assert!(
+            !css.contains("box.mode-selector box.mode-cell.active"),
+            "ModeSelector should not introduce a new active-cell implementation"
+        );
+    }
+
+    #[test]
+    fn segmented_glass_style_is_exposed_as_reusable_css_classes() {
+        let css = build_css(true);
+
+        for marker in [
+            ".glass-segmented",
+            ".glass-segment",
+            ".glass-segment-label",
+            ".glass-segment-indicator",
+            ".glass-segment-label.active",
+        ] {
+            assert!(
+                css.contains(marker),
+                "segmented glass style should expose reusable marker {marker}",
+            );
+        }
+    }
+
+    /// Plain mode keeps the same selectors but removes the liquid button
+    /// signatures. This makes the Settings switch visually meaningful across
+    /// every button-like control.
+    #[test]
+    fn plain_mode_keeps_buttons_plain_not_liquid() {
+        let css = build_css(false);
+
+        for selector in [
+            ".glass-toolbar-button",
+            ".glass-menu-item",
+            ".glass-sidebar-row:selected",
+            ".viewer-overlay-nav",
+            ".viewer-overlay-nav-btn",
+            ".viewer-favorite-btn.favorite-active",
+        ] {
+            assert!(
+                css.contains(selector),
+                "plain mode missing button selector {selector}",
+            );
+        }
+
+        for liquid_signature in [
+            "inset 0 1px alpha(white, 0.44)",
+            "inset 0 1px alpha(white, 0.36)",
+            "0 12px 32px alpha(black, 0.24)",
+            "0 16px 42px alpha(black, 0.34)",
+        ] {
+            assert!(
+                !css.contains(liquid_signature),
+                "plain mode must not keep liquid button material signature {liquid_signature}",
+            );
+        }
+    }
+
+    /// Both modes must carry the shared BASE rules (layout/state); the only
+    /// thing that differs is the material block.
     #[test]
     fn both_modes_share_base_and_a11y() {
         let on = build_css(true);
@@ -1219,8 +1425,6 @@ mod tests {
             ".glass-toolbar-button",
             ".glass-menu-item",
             ".glass-thumb-card",
-            "prefers-reduced-motion",
-            "prefers-contrast: more",
         ] {
             assert!(
                 on.contains(marker) && off.contains(marker),

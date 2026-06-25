@@ -55,6 +55,7 @@ const THUMB_LAZY_HALF: u32 = 4;
 /// 缩略图栏总条目硬上限,防止大图库场景下无限扩展。
 /// Hard cap on total items kept in memory.
 const THUMB_WINDOW_MAX: u32 = 40;
+const THUMB_CENTER_RETRY_FRAMES: u8 = 8;
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -72,6 +73,10 @@ type ItemCallback = Rc<dyn Fn(i64)>;
 fn strip_file_uri(uri: &str) -> PathBuf {
     let stripped = uri.strip_prefix("file://").unwrap_or(uri);
     PathBuf::from(stripped)
+}
+
+fn should_retry_thumb_centering(applied: bool, attempts_remaining: u8) -> bool {
+    !applied && attempts_remaining > 0
 }
 
 fn find_media_index_by_id(list: &gio::ListStore, item_id: i64) -> Option<u32> {
@@ -226,7 +231,14 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for ViewerPage {}
+    impl ObjectImpl for ViewerPage {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+            obj.set_details_sidebar_child_visible(false);
+            obj.set_editor_sidebar_child_visible(false);
+        }
+    }
     impl WidgetImpl for ViewerPage {}
     impl NavigationPageImpl for ViewerPage {}
 }
@@ -423,6 +435,7 @@ impl ViewerPage {
     /// Reveal the editor side-panel and lock navigation gestures.
     fn start_editing(&self) {
         self.imp().is_editing.set(true);
+        self.set_editor_sidebar_child_visible(true);
         self.imp().editor_split_view.get().set_show_sidebar(true);
         self.set_can_pop(false);
     }
@@ -447,6 +460,7 @@ impl ViewerPage {
                 if !this.imp().is_editing.get()
                     && !this.imp().editor_split_view.get().shows_sidebar()
                 {
+                    this.set_editor_sidebar_child_visible(false);
                     this.set_can_pop(true);
                 }
             }
@@ -963,26 +977,36 @@ impl ViewerPage {
     /// item. The visible movement is a CSS transform on `thumb_strip`, not
     /// layout spacers or margins, so it cannot increase the toplevel window's
     /// natural width.
-    fn scroll_thumb_to_current(&self) {
-        self.update_thumb_strip_transform();
+    fn scroll_thumb_to_current(&self) -> bool {
+        let applied = self.update_thumb_strip_transform();
         let scrolled = self.imp().thumb_scrolled.get();
         let hadj = scrolled.hadjustment();
         let imp = self.imp();
         imp.thumb_programmatic_scroll.set(true);
         hadj.set_value(0.0);
         imp.thumb_programmatic_scroll.set(false);
+        applied
     }
 
     fn schedule_scroll_thumb_to_current(&self) {
         let weak = self.downgrade();
+        let attempts_remaining = Rc::new(Cell::new(THUMB_CENTER_RETRY_FRAMES));
         self.imp()
             .thumb_scrolled
             .get()
             .add_tick_callback(move |_, _| {
-                if let Some(this) = weak.upgrade() {
-                    this.scroll_thumb_to_current();
+                let applied = weak
+                    .upgrade()
+                    .map(|this| this.scroll_thumb_to_current())
+                    .unwrap_or(true);
+
+                let remaining = attempts_remaining.get().saturating_sub(1);
+                attempts_remaining.set(remaining);
+                if should_retry_thumb_centering(applied, remaining) {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
                 }
-                glib::ControlFlow::Break
             });
     }
 
@@ -1182,6 +1206,9 @@ impl ViewerPage {
             self.can_pop()
         );
 
+        if revealed {
+            self.set_details_sidebar_child_visible(true);
+        }
         split_view.set_show_sidebar(revealed);
 
         if revealed {
@@ -1200,6 +1227,7 @@ impl ViewerPage {
                     return;
                 };
                 if !this.imp().details_split_view.get().shows_sidebar() {
+                    this.set_details_sidebar_child_visible(false);
                     this.set_can_pop(true);
                     tracing::debug!(
                         "VIEWER_DEBUG restore_can_pop restored index={} can_pop={} visible={:?}",
@@ -1229,6 +1257,16 @@ impl ViewerPage {
             split_view.shows_sidebar(),
             self.can_pop()
         );
+    }
+
+    fn set_details_sidebar_child_visible(&self, visible: bool) {
+        if let Some(sidebar) = self.imp().details_split_view.get().sidebar() {
+            sidebar.set_visible(visible);
+        }
+    }
+
+    fn set_editor_sidebar_child_visible(&self, visible: bool) {
+        self.imp().editor_panel.get().set_visible(visible);
     }
 
     fn setup_lifecycle_logging(&self) {
@@ -1927,6 +1965,22 @@ mod tests {
         assert!(
             (last_btn_x + offset + SCROLL_BTN_W / 2.0 - SCROLL_PAGE_SIZE / 2.0).abs() < 0.5,
             "last thumbnail center should align with viewport center after transform"
+        );
+    }
+
+    #[test]
+    fn thumb_centering_retries_until_allocation_is_ready() {
+        assert!(
+            should_retry_thumb_centering(false, 3),
+            "initial viewer entry can run before thumbnail allocation; it must retry"
+        );
+        assert!(
+            !should_retry_thumb_centering(true, 3),
+            "successful centering should stop the tick callback"
+        );
+        assert!(
+            !should_retry_thumb_centering(false, 0),
+            "retry loop must have a hard stop"
         );
     }
 

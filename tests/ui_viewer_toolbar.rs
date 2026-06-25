@@ -110,6 +110,34 @@ fn viewer_toolbar_uses_glass_classes() {
         !panel_classes.iter().any(|c| c == "background"),
         "details_panel should no longer carry opaque `background`, got {panel_classes:?}",
     );
+    assert!(
+        !details_panel.is_visible(),
+        "hidden details sidebar should also hide its child widget to avoid zero-width allocation warnings",
+    );
+    assert!(
+        !imp.editor_panel.get().is_visible(),
+        "hidden editor sidebar should also hide its child widget to avoid zero-width allocation warnings",
+    );
+
+    let prev_parent = imp
+        .prev_btn
+        .get()
+        .parent()
+        .expect("prev button should have a parent container");
+    let prev_parent_classes = css_classes_vec(&prev_parent);
+    assert!(
+        prev_parent_classes.iter().any(|c| c == "viewer-overlay-nav"),
+        "prev/next buttons should live in the image overlay nav container, got {prev_parent_classes:?}",
+    );
+    for (name, classes) in [
+        ("prev_btn", css_classes_vec(&imp.prev_btn.get())),
+        ("next_btn", css_classes_vec(&imp.next_btn.get())),
+    ] {
+        assert!(
+            classes.iter().any(|c| c == "viewer-overlay-nav-btn"),
+            "{name} should use the overlay glass nav button class, got {classes:?}",
+        );
+    }
 
     // Task: favorite-active class toggle on the viewer favorite button.
     // The class is owned by the global CSS provider (Task 7) and must be

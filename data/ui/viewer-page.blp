@@ -107,6 +107,29 @@ template $ViewerPage : Adw.NavigationPage {
                 spinning: true;
                 visible: true;
               }
+
+              [overlay]
+              Gtk.Box viewer_nav_buttons {
+                orientation: horizontal;
+                spacing: 6;
+                halign: end;
+                valign: start;
+                margin-top: 16;
+                margin-end: 16;
+                css-classes: ["viewer-overlay-nav", "glass-raised"];
+
+                Gtk.Button prev_btn {
+                  icon-name: "go-previous-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+
+                Gtk.Button next_btn {
+                  icon-name: "go-next-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+              }
             }
 
             Gtk.Box viewer_bottom_bar {
@@ -133,23 +156,6 @@ template $ViewerPage : Adw.NavigationPage {
                 };
               }
 
-              Gtk.Box viewer_nav_buttons {
-                orientation: horizontal;
-                spacing: 2;
-                valign: center;
-
-                Gtk.Button prev_btn {
-                  label: "<";
-                  css-classes: ["glass-toolbar-button", "viewer-nav-btn"];
-                  tooltip-text: "";
-                }
-
-                Gtk.Button next_btn {
-                  label: ">";
-                  css-classes: ["glass-toolbar-button", "viewer-nav-btn"];
-                  tooltip-text: "";
-                }
-              }
             }
           };
 
