@@ -712,6 +712,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
    半透明深底 + 液态模糊 + 圆角 + 悬浮投影;margin 让其脱离边缘呈悬浮卡片。 */
 .viewer-floating-panel {
   margin: 12px;
+  margin-left: 0;
   border-radius: 16px;
   background: alpha(black, 0.32);
   background-clip: padding-box;
@@ -915,6 +916,7 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 /* viewer-floating-panel — 详情面板浮层(普通模式):无模糊,更深半透明底 + 轻投影。 */
 .viewer-floating-panel {
   margin: 12px;
+  margin-left: 0;
   border-radius: 12px;
   background: alpha(black, 0.62);
   background-clip: padding-box;
@@ -1511,6 +1513,20 @@ mod tests {
             assert!(
                 css.contains(".viewer-floating-panel preferencespage"),
                 "floating panel must override preferencespage background ({liquid} mode)"
+            );
+        }
+    }
+
+    /// The details panel floats over bright photos. Keep the top/end/bottom
+    /// breathing room, but do not leave a transparent leading gutter that can
+    /// show as a bright vertical band beside the panel.
+    #[test]
+    fn floating_panel_has_no_leading_transparent_gutter() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            assert!(
+                css.contains("margin-left: 0;"),
+                "floating panel should paint from the overlay sidebar's leading edge ({liquid} mode)"
             );
         }
     }
