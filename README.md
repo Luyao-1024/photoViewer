@@ -119,8 +119,8 @@ cargo test
 
 ## 架构
 
-参见 [spec](docs/superpowers/specs/2026-06-20-gnome-photo-viewer-design.md)
-和 [M1 plan](docs/superpowers/plans/2026-06-20-m1-foundation-and-browsing.md)。
+参见 [docs/README.md](docs/README.md)。当前文档按功能模块组织；历史设计 spec 和 milestone
+plan 保留在 `docs/superpowers/` 中作为背景资料。
 
 ## Changelog
 
