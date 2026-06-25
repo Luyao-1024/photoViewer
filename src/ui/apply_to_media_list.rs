@@ -10,22 +10,29 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-/// Apply a `MediaChangeEvent` to `list`, preserving the position of
-/// existing items. The function is panic-free: any unexpected type
-/// mismatch in a list item is silently skipped.
+/// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
+/// `db::list_all_media`: photo sort time descending, then id descending.
+/// The function is panic-free: any unexpected type mismatch in a list item is
+/// silently skipped.
 pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) {
     match event {
         MediaChangeEvent::Upserted(item) => {
             let uri = item.uri.clone();
             for i in 0..list.n_items() {
                 if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-                    if obj.borrow::<MediaItem>().uri == uri {
-                        list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+                    let existing = obj.borrow::<MediaItem>();
+                    if existing.uri == uri {
+                        if same_sort_position(&existing, &item) {
+                            list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+                        } else {
+                            list.remove(i);
+                            insert_sorted(list, item);
+                        }
                         return;
                     }
                 }
             }
-            list.append(&glib::BoxedAnyObject::new(item));
+            insert_sorted(list, item);
         }
         MediaChangeEvent::Removed { uri } => {
             for i in 0..list.n_items() {
@@ -40,14 +47,45 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) 
     }
 }
 
+fn same_sort_position(a: &MediaItem, b: &MediaItem) -> bool {
+    a.sort_datetime() == b.sort_datetime() && a.id == b.id
+}
+
+fn should_sort_before(candidate: &MediaItem, existing: &MediaItem) -> bool {
+    candidate.sort_datetime() > existing.sort_datetime()
+        || (candidate.sort_datetime() == existing.sort_datetime() && candidate.id > existing.id)
+}
+
+fn insert_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
+    let pos = sorted_insert_position(list, &item);
+    list.insert(pos, &glib::BoxedAnyObject::new(item));
+}
+
+fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
+    for i in 0..list.n_items() {
+        let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if should_sort_before(item, &obj.borrow::<MediaItem>()) {
+            return i;
+        }
+    }
+    list.n_items()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::media::MediaItem;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use std::path::PathBuf;
 
     fn item(id: i64, uri: &str) -> MediaItem {
+        item_at(id, uri, 2026, 6, 25, 12)
+    }
+
+    fn item_at(id: i64, uri: &str, year: i32, month: u32, day: u32, hour: u32) -> MediaItem {
+        let dt = Utc.with_ymd_and_hms(year, month, day, hour, 0, 0).unwrap();
         MediaItem {
             id,
             uri: uri.into(),
@@ -57,7 +95,7 @@ mod tests {
             width: Some(64),
             height: Some(48),
             taken_at: None,
-            file_mtime: Utc::now(),
+            file_mtime: dt,
             file_size: 1,
             blake3_hash: "h".into(),
             trashed_at: None,
@@ -82,15 +120,32 @@ mod tests {
     }
 
     #[test]
-    fn upserted_appends_when_uri_absent() {
-        let list = list_with(vec![item(1, "file:///tmp/a.jpg")]);
+    fn upserted_places_older_absent_item_at_end() {
+        let list = list_with(vec![item_at(1, "file:///tmp/a.jpg", 2026, 6, 25, 12)]);
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(item(2, "file:///tmp/b.jpg")),
+            MediaChangeEvent::Upserted(item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12)),
         );
         assert_eq!(list.n_items(), 2);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/a.jpg");
         assert_eq!(nth_uri(&list, 1), "file:///tmp/b.jpg");
+    }
+
+    #[test]
+    fn upserted_inserts_new_item_by_global_photo_order() {
+        let list = list_with(vec![
+            item_at(1, "file:///tmp/newer.jpg", 2026, 6, 25, 12),
+            item_at(2, "file:///tmp/older.jpg", 2026, 6, 23, 12),
+        ]);
+
+        apply_to_media_list(
+            &list,
+            MediaChangeEvent::Upserted(item_at(3, "file:///tmp/middle.jpg", 2026, 6, 24, 12)),
+        );
+
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/newer.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/middle.jpg");
+        assert_eq!(nth_uri(&list, 2), "file:///tmp/older.jpg");
     }
 
     #[test]
@@ -107,6 +162,26 @@ mod tests {
         assert_eq!(nth_uri(&list, 1), "file:///tmp/b.jpg");
         // Sanity: the new blake3 hash actually took effect.
         let boxed = list.item(1).and_downcast::<glib::BoxedAnyObject>().unwrap();
+        assert_eq!(boxed.borrow::<MediaItem>().blake3_hash, "new-hash");
+    }
+
+    #[test]
+    fn upserted_moves_existing_item_when_sort_time_changes() {
+        let list = list_with(vec![
+            item_at(1, "file:///tmp/a.jpg", 2026, 6, 25, 12),
+            item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12),
+            item_at(3, "file:///tmp/c.jpg", 2026, 6, 23, 12),
+        ]);
+        let mut updated = item_at(3, "file:///tmp/c.jpg", 2026, 6, 26, 12);
+        updated.blake3_hash = "new-hash".into();
+
+        apply_to_media_list(&list, MediaChangeEvent::Upserted(updated));
+
+        assert_eq!(list.n_items(), 3);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/c.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/a.jpg");
+        assert_eq!(nth_uri(&list, 2), "file:///tmp/b.jpg");
+        let boxed = list.item(0).and_downcast::<glib::BoxedAnyObject>().unwrap();
         assert_eq!(boxed.borrow::<MediaItem>().blake3_hash, "new-hash");
     }
 

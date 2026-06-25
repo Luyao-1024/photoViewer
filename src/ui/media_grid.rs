@@ -733,12 +733,18 @@ impl MediaGrid {
                     return;
                 };
                 let is_multi = this.is_multi_select_mode();
-                tracing::debug!(
-                    "VIEWER_DEBUG grid activate mode={:?} section={} child_index={} global_index={} item_id={} item_name={} item_uri={} multi_select={}",
+                let displayed_indices = this.displayed_indices();
+                let displayed_pos = displayed_indices.iter().position(|index| *index == gi);
+                tracing::info!(
+                    "VIEWER_TRACE grid_activate mode={:?} section={} section_child_index={} global_index={} displayed_pos={:?} displayed_len={} displayed_first={:?} displayed_last={:?} item_id={} item_name={} item_uri={} multi_select={}",
                     this.mode(),
                     section_label_for_activation,
                     idx,
                     gi,
+                    displayed_pos,
+                    displayed_indices.len(),
+                    displayed_indices.first(),
+                    displayed_indices.last(),
                     item_id,
                     item_name,
                     item_uri,

@@ -779,19 +779,49 @@ impl PhotosPage {
             Some(n) => n.clone(),
             None => return,
         };
+        let displayed_indices = self
+            .current_grid()
+            .map(|grid| grid.displayed_indices())
+            .unwrap_or_default();
+        let displayed_pos = displayed_indices
+            .iter()
+            .position(|index| *index == global_index);
+        let around = [
+            global_index.checked_sub(2),
+            global_index.checked_sub(1),
+            Some(global_index),
+            global_index.checked_add(1),
+            global_index.checked_add(2),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|index| {
+            media_item_for_index(&media_list, index)
+                .map(|item| format!("{index}:{}:{}", item.id, item.display_name()))
+        })
+        .collect::<Vec<_>>();
         if let Some(item) = media_item_for_index(&media_list, global_index) {
-            tracing::debug!(
-                "VIEWER_DEBUG photos_page open_viewer global_index={} item_id={} item_name={} item_uri={}",
+            tracing::info!(
+                "VIEWER_TRACE photos_open_viewer global_index={} list_len={} displayed_pos={:?} displayed_len={} displayed_first={:?} displayed_last={:?} around={:?} item_id={} item_name={} item_uri={} sort_time={}",
                 global_index,
+                media_list.n_items(),
+                displayed_pos,
+                displayed_indices.len(),
+                displayed_indices.first(),
+                displayed_indices.last(),
+                around,
                 item.id,
                 item.display_name(),
-                item.uri
+                item.uri,
+                item.sort_datetime()
             );
         } else {
-            tracing::debug!(
-                "VIEWER_DEBUG photos_page open_viewer missing_item global_index={} list_len={}",
+            tracing::info!(
+                "VIEWER_TRACE photos_open_viewer missing_item global_index={} list_len={} displayed_pos={:?} displayed_len={}",
                 global_index,
-                media_list.n_items()
+                media_list.n_items(),
+                displayed_pos,
+                displayed_indices.len()
             );
         }
         let viewer_debug_label = format!("viewer-open-index-{global_index}");
