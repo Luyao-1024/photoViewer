@@ -684,9 +684,10 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
         .map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
 
     // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
+    // videoflip video-direction=auto 从所有来源（容器 tkhd、编码 SEI、tags）自动检测并应用旋转。
     // videoconvert 会自动处理色彩空间转换（包括 HDR→SDR）。
     let desc = format!(
-        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
         uri
     );
     let pipeline = gst::parse::launch(&desc)
@@ -805,21 +806,10 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
 
     pipeline.set_state(gst::State::Null).ok();
 
-    // 读取视频旋转元数据并应用方向校正。
-    let rotation = read_video_rotation(path);
-    let pb = if rotation != 0 {
-        let orientation = match rotation {
-            90 => 6,
-            180 => 3,
-            270 => 8,
-            _ => 1,
-        };
-        orientation::apply_orientation_to_pixbuf(&pb, orientation)
-    } else {
-        pb
-    };
+    // 旋转已由 GStreamer pipeline 中的 videoflip video-direction=auto 自动处理，
+    // 无需手动读取容器元数据并应用方向校正。
 
-    info!("VIDEO_THUMB 提取成功 {}x{} rotation={}", pb.width(), pb.height(), rotation);
+    info!("VIDEO_THUMB 提取成功 {}x{}", pb.width(), pb.height());
 
     // 在左下角叠加半透明播放图标。
     let pb = overlay_play_icon(&pb);
@@ -835,73 +825,81 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
 ///   - 90°:  a=0, b=1, c=-1, d=0
 ///   - 180°: a=-1, b=0, c=0, d=-1
 ///   - 270°: a=0, b=-1, c=1, d=0
+///
+/// 递归搜索 tkhd atom 以处理嵌套的 box 结构（moov → trak → tkhd）。
+#[allow(dead_code)] // used in tests
 fn read_video_rotation(path: &Path) -> i32 {
     let Ok(data) = std::fs::read(path) else {
         return 0;
     };
 
-    // 查找 tkhd atom（可能有多个 track，取第一个视频 track）。
-    let mut pos = 0usize;
-    while pos + 8 <= data.len() {
-        let size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap_or([0; 4])) as usize;
-        let typ = &data[pos + 4..pos + 8];
+    // 递归搜索 tkhd atom。
+    fn find_tkhd_rotation(data: &[u8], start: usize, end: usize) -> i32 {
+        let mut pos = start;
+        while pos + 8 <= end && pos + 8 <= data.len() {
+            let size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap_or([0; 4])) as usize;
+            if size < 8 {
+                break;
+            }
+            let typ = &data[pos + 4..pos + 8];
 
-        if typ == b"tkhd" && size >= 84 {
-            let version = data[pos + 8];
-            let matrix_offset = if version == 0 {
-                pos + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 + 2 // 40 bytes from content start
-            } else {
-                pos + 8 + 4 + 8 + 8 + 4 + 4 + 8 + 8 + 2 + 2 + 2 + 2 // 56 bytes from content start
-            };
-
-            if matrix_offset + 36 <= data.len() {
-                let a = i32::from_be_bytes(
-                    data[matrix_offset..matrix_offset + 4]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
-                let b = i32::from_be_bytes(
-                    data[matrix_offset + 4..matrix_offset + 8]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
-                let c = i32::from_be_bytes(
-                    data[matrix_offset + 12..matrix_offset + 16]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
-                let d = i32::from_be_bytes(
-                    data[matrix_offset + 16..matrix_offset + 20]
-                        .try_into()
-                        .unwrap_or([0; 4]),
-                );
-
-                // 转换为浮点（16.16 定点数）。
-                let a_f = a as f64 / 65536.0;
-                let b_f = b as f64 / 65536.0;
-                let _c_f = c as f64 / 65536.0;
-                let _d_f = d as f64 / 65536.0;
-
-                // 判断旋转角度。
-                if a_f.abs() < 0.01 && (b_f - 1.0).abs() < 0.01 {
-                    return 90;
-                }
-                if (a_f - (-1.0)).abs() < 0.01 && b_f.abs() < 0.01 {
-                    return 180;
-                }
-                if a_f.abs() < 0.01 && (b_f - (-1.0)).abs() < 0.01 {
-                    return 270;
+            // 递归进入容器 atom（moov, trak 等）。
+            if typ == b"moov" || typ == b"trak" {
+                let child_start = pos + 8;
+                let child_end = pos + size;
+                if child_end <= data.len() {
+                    let result = find_tkhd_rotation(data, child_start, child_end);
+                    if result != 0 {
+                        return result;
+                    }
                 }
             }
-        }
 
-        if size < 8 {
-            break;
+            // 找到 tkhd atom，解析旋转矩阵。
+            if typ == b"tkhd" && size >= 84 {
+                let version = data[pos + 8];
+                // 矩阵偏移量：version + flags + creation_time + modification_time +
+                // track_ID + reserved + duration + reserved + layer + alternate_group +
+                // volume + reserved = 40 bytes for version 0, 52 for version 1
+                let matrix_offset = if version == 0 {
+                    pos + 8 + 40 // 4 + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 2 + 2 + 2
+                } else {
+                    pos + 8 + 52 // 4 + 8 + 8 + 4 + 4 + 8 + 8 + 2 + 2 + 2 + 2
+                };
+
+                if matrix_offset + 36 <= data.len() {
+                    let a = i32::from_be_bytes(
+                        data[matrix_offset..matrix_offset + 4]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    );
+                    let b = i32::from_be_bytes(
+                        data[matrix_offset + 4..matrix_offset + 8]
+                            .try_into()
+                            .unwrap_or([0; 4]),
+                    );
+
+                    let a_f = a as f64 / 65536.0;
+                    let b_f = b as f64 / 65536.0;
+
+                    if a_f.abs() < 0.01 && (b_f - 1.0).abs() < 0.01 {
+                        return 90;
+                    }
+                    if (a_f - (-1.0)).abs() < 0.01 && b_f.abs() < 0.01 {
+                        return 180;
+                    }
+                    if a_f.abs() < 0.01 && (b_f - (-1.0)).abs() < 0.01 {
+                        return 270;
+                    }
+                }
+            }
+
+            pos += size;
         }
-        pos += size;
+        0
     }
 
-    0
+    find_tkhd_rotation(&data, 0, data.len())
 }
 
 /// 在 pixbuf 左下角叠加一个半透明播放三角形，标记为视频缩略图。
@@ -1417,5 +1415,22 @@ mod tests {
                 panic!("extract_video_frame 失败: {e}");
             }
         }
+    }
+
+    /// 测试从 MP4 文件读取旋转信息。
+    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib read_video_rotation_from_mp4 -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn read_video_rotation_from_mp4() {
+        let path = match std::env::var("VIDEO_TEST_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
+                return;
+            }
+        };
+        let rotation = read_video_rotation(&path);
+        eprintln!("视频旋转: {} rotation={}", path.display(), rotation);
+        assert!(rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270);
     }
 }
