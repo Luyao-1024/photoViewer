@@ -539,6 +539,22 @@ fn cache_key_str(uri: &str, size: ThumbnailSize, mtime: Option<SystemTime>) -> O
     Some(format!("{path:?}:{mtime:?}:{size:?}"))
 }
 
+/// 同步加载缩略图缓存文件，确保文件完全写入后再解码。
+///
+/// 使用 `std::fs::read` 读取整个文件到内存，然后从内存构造 Pixbuf。
+/// 这避免了 gdk-pixbuf 直接读取文件时可能遇到的竞态条件（文件被写入一半）。
+fn load_pixbuf_sync(path: &Path) -> anyhow::Result<Pixbuf> {
+    let data = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("读取缓存文件失败 {:?}: {}", path, e))?;
+    if data.is_empty() {
+        anyhow::bail!("缓存文件为空: {:?}", path);
+    }
+    let bytes = glib::Bytes::from(&data);
+    let stream = gtk4::gio::MemoryInputStream::from_bytes(&bytes);
+    Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)
+        .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", path, e))
+}
+
 fn generate(
     cache_dir: &Path,
     uri: &str,
@@ -569,8 +585,8 @@ fn generate(
             cache_path.display()
         );
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
-        return Pixbuf::from_file(cache_path)
-            .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", cache_path, e));
+        // 使用同步读取确保文件完全写入后再解码。
+        return load_pixbuf_sync(cache_path);
     }
 
     if let Some(parent) = cache_stem.parent() {
