@@ -684,10 +684,9 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
         .map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
 
     // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
-    // videoconvert 会将 HDR (bt2100-hlg 等) 自动转换到 SDR (bt601)。
-    // 指定 colorimetry=bt601 和 color-mode=none 确保色彩空间正确转换。
+    // videoconvert 会自动处理色彩空间转换（包括 HDR→SDR）。
     let desc = format!(
-        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB,colorimetry=bt601 ! appsink name=sink",
+        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
         uri
     );
     let pipeline = gst::parse::launch(&desc)
@@ -1387,6 +1386,32 @@ mod tests {
             Ok(pb) => {
                 eprintln!("成功! 帧尺寸: {}x{}", pb.width(), pb.height());
                 assert!(pb.width() > 0 && pb.height() > 0);
+            }
+            Err(e) => {
+                panic!("extract_video_frame 失败: {e}");
+            }
+        }
+    }
+
+    /// 保存视频帧到文件以便对比。
+    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib save_video_frame -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn save_video_frame() {
+        let path = match std::env::var("VIDEO_TEST_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
+                return;
+            }
+        };
+        let result = extract_video_frame(&path, 1024);
+        match result {
+            Ok(pb) => {
+                pb.savev("/tmp/test_video_frame.jpg", "jpeg", &[("quality", "90")])
+                    .expect("保存帧失败");
+                eprintln!("帧已保存到 /tmp/test_video_frame.jpg");
+                eprintln!("帧尺寸: {}x{}", pb.width(), pb.height());
             }
             Err(e) => {
                 panic!("extract_video_frame 失败: {e}");
