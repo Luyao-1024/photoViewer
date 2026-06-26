@@ -23,9 +23,14 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 
 `MainWindow` owns the sidebar and an `adw::NavigationView`.
 
-- Sidebar row 0: Photos root page.
-- Sidebar row 1: Albums page.
-- Sidebar row 2: Trash page.
+- The sidebar is a single `Gtk.ListBox` whose rows map to a `targets[index]`
+  dispatch (not a hardcoded index). Order: Photos, a collapsible **Albums**
+  group header, the album rows nested under it, Trash, Settings.
+- Photos row → pop to the root `PhotosPage`.
+- An album row → push that album's `AlbumDetailPage` **directly** (there is no
+  intermediate album-grid page). The Albums header is non-selectable and only
+  collapses/expands its children.
+- Trash row → push `TrashPage`. Settings row → peek the settings page on top.
 - `PhotosPage` owns Year/Month/Day `MediaGrid` instances backed by the same `gio::ListStore`.
 - Opening a photo pushes `ViewerPage`.
 - Viewer actions can open `EditorPage` or reveal side panels.

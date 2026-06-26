@@ -80,9 +80,12 @@ pub fn build_app() -> adw::Application {
                     nav.push(&photos);
 
                     // Store DB pool + loader on the window so the sidebar can
-                    // construct AlbumsPage/TrashPage on demand, then wire
+                    // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
                     window.set_resources(pool, loader, media_list.clone());
+                    // Now that the pool is available, populate the album rows
+                    // nested under the sidebar's Albums group header.
+                    window.populate_album_rows();
                     window.connect_sidebar(&nav);
 
                     // Consumer: GTK 主线程独占 media_list 写权限，所以 spawn_local

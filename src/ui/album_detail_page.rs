@@ -17,7 +17,6 @@ use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
-use crate::ui::AlbumsPage;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -120,6 +119,16 @@ impl AlbumDetailPage {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }
 
+    /// The album's folder_path. The sidebar uses this to detect "already
+    /// viewing this album" and avoid pushing a duplicate detail page.
+    pub fn album_folder_path(&self) -> Option<std::path::PathBuf> {
+        self.imp()
+            .album
+            .borrow()
+            .as_ref()
+            .map(|album| album.folder_path.clone())
+    }
+
     fn open_viewer(&self, global_index: u32) {
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
@@ -148,7 +157,7 @@ impl AlbumDetailPage {
                         this.refresh_virtual_album_media_list();
                     }
                     if let Some(nav) = nav_for_albums.upgrade() {
-                        refresh_albums_page_in_nav(&nav);
+                        crate::ui::window::refresh_albums_sidebar(&nav);
                     }
                 }
             });
@@ -207,37 +216,10 @@ impl AlbumDetailPage {
             return;
         };
 
-        let favorites: HashSet<i64> = if album.is_favorites_album() {
-            crate::core::albums::favorite_media_ids(&pool)
-                .unwrap_or_default()
-                .into_iter()
-                .collect()
-        } else {
-            HashSet::new()
-        };
-        let mut items = Vec::new();
-        for idx in 0..master_list.n_items() {
-            let Some(obj) = master_list.item(idx) else {
-                continue;
-            };
-            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
-            let should_include = if album.is_favorites_album() {
-                favorites.contains(&item.id)
-            } else if album.is_images_album() {
-                item.is_image()
-            } else if album.is_videos_album() {
-                item.is_video()
-            } else {
-                false
-            };
-            if should_include {
-                items.push(item);
-            }
-        }
-
+        // Re-evaluate the per-album predicate (shared with the sidebar) against
+        // the current DB/favorites state and splice it into the live store so
+        // the grid + open viewer track the new membership without a page rebuild.
+        let items = filtered_items_for_album(&album, &master_list, &pool);
         while media_list.n_items() > 0 {
             media_list.remove(media_list.n_items() - 1);
         }
@@ -251,21 +233,49 @@ impl AlbumDetailPage {
     }
 }
 
-pub(crate) fn refresh_albums_page_in_nav(nav: &adw::NavigationView) {
-    let mut page = match nav.visible_page() {
-        Some(p) => p,
-        None => return,
+/// Build the per-album filtered media items from the shared master list.
+///
+/// Mirrors the album semantics established by `albums::list_with_favorites`:
+/// favorites album → the favorites id set; images/videos albums → `media_kind`;
+/// folder albums → equal `folder_path`. The sidebar builds an `AlbumDetailPage`
+/// from this, and the favorites album refreshes its already-attached media
+/// list on favorite toggles via [`AlbumDetailPage::refresh_virtual_album_media_list`].
+pub(crate) fn filtered_items_for_album(
+    album: &Album,
+    master: &gtk::gio::ListStore,
+    pool: &DbPool,
+) -> Vec<crate::core::media::MediaItem> {
+    let favorite_ids: HashSet<i64> = if album.is_favorites_album() {
+        crate::core::albums::favorite_media_ids(pool)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    } else {
+        HashSet::new()
     };
-    loop {
-        if let Ok(albums_page) = page.clone().downcast::<AlbumsPage>() {
-            albums_page.refresh_from_db();
-            return;
-        }
-        match nav.previous_page(&page) {
-            Some(previous) => page = previous,
-            None => return,
+    let mut items = Vec::new();
+    for idx in 0..master.n_items() {
+        let Some(obj) = master.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
+        let should_include = if album.is_favorites_album() {
+            favorite_ids.contains(&item.id)
+        } else if album.is_images_album() {
+            item.is_image()
+        } else if album.is_videos_album() {
+            item.is_video()
+        } else {
+            item.folder_path == album.folder_path
+        };
+        if should_include {
+            items.push(item);
         }
     }
+    items
 }
 
 fn remove_media_item_by_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {

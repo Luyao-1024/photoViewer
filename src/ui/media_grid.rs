@@ -1037,7 +1037,7 @@ impl MediaGrid {
 /// reports `target × target`. FlowBox measures its children directly, so this
 /// override takes effect and every cell comes out square.
 ///
-/// `pub` so other pages (`AlbumsPage`) can reuse it for cover thumbnails
+/// `pub` so other pages (e.g. the trash grid) can reuse it for cover thumbnails
 /// that must also be 1:1 squares — see `CLAUDE.md` "Day-view grid sizing
 /// gotcha" for the underlying GTK4 sizing pitfall.
 pub mod square_tile {

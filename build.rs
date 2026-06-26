@@ -32,7 +32,6 @@ fn main() {
     let blueprint_files = [
         "data/ui/window.blp",
         "data/ui/photos-page.blp",
-        "data/ui/albums-page.blp",
         "data/ui/album-detail-page.blp",
         "data/ui/media-grid.blp",
         "data/ui/mode-selector.blp",

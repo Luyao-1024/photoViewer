@@ -26,12 +26,12 @@ use crate::core::{
     db::{self, DbPool},
     trash,
 };
-use crate::ui::album_detail_page::refresh_albums_page_in_nav;
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use crate::ui::window::refresh_albums_sidebar;
 
 mod imp {
     use super::*;
@@ -719,7 +719,7 @@ impl PhotosPage {
                 this.remove_media_by_ids(&removed);
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_page_in_nav(&nav);
+                    refresh_albums_sidebar(&nav);
                 }
             }
         });
@@ -748,7 +748,7 @@ impl PhotosPage {
             if let Some(this) = weak.upgrade() {
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_page_in_nav(&nav);
+                    refresh_albums_sidebar(&nav);
                 }
             }
         });
@@ -902,7 +902,7 @@ impl PhotosPage {
         let nav_for_refresh = nav.downgrade();
         viewer.connect_favorite_state_changed(move |_, _| {
             if let Some(nav) = nav_for_refresh.upgrade() {
-                refresh_albums_page_in_nav(&nav);
+                refresh_albums_sidebar(&nav);
             }
         });
 

@@ -91,40 +91,6 @@ flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) > .glass-thumb-card 
   outline: none;
 }
 
-/* Album grid (AlbumsPage) — 与 photo grid (thumb-grid) 一致的 outline-based
-   选中样式。GTK 默认会给 `:selected` 涂一整块强调色背景,在大型相册卡片
-   上非常刺眼。这里清除背景填充、只保留外圈细线高亮,与图片选择时的视觉
-   语言保持一致。
-
-   注意 outline 不能直接画在 `flowboxchild` 上 —— flowboxchild 包含
-   封面 + 名字 + 计数 3 个子部件,选中外圈会是长方形。所以我们把
-   outline 转移到封面 widget (`.album-cover`) 上,这样 270×270 的封面
-   周围就是 270×270 的正方形高亮,无论是 hover / focus / selected 都
-   遵循同一规则。 */
-flowbox.album-grid > flowboxchild { padding: 0; }
-
-flowbox.album-grid > flowboxchild:hover,
-flowbox.album-grid > flowboxchild:focus,
-flowbox.album-grid > flowboxchild:selected,
-flowbox.album-grid > flowboxchild:selected:focus {
-  outline: none;
-  background: transparent;
-}
-
-/* 封面轮廓(被各种状态触发)。GTK4 CSS 支持后代选择器,`.album-cover`
-   写在被 hover / focus / selected 的 flowboxchild 下面时会同时命中。
-   使用玻璃质感的白色描边,不使用系统强调色。 */
-flowbox.album-grid > flowboxchild:hover .album-cover,
-flowbox.album-grid > flowboxchild:focus .album-cover {
-  outline: 2px solid alpha(white, 0.48);
-  outline-offset: -2px;
-}
-flowbox.album-grid > flowboxchild:selected .album-cover,
-flowbox.album-grid > flowboxchild:selected:focus .album-cover {
-  outline: 3px solid alpha(white, 0.48);
-  outline-offset: -3px;
-}
-
 /* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
    Apply `glass-raised glass-segmented` to the outer container, `glass-segment`
    to equal-width slots, `glass-segment-label` to labels, and
@@ -307,6 +273,48 @@ box.mode-selector.on-light-background box.mode-dot,
 .glass-sidebar-label {
   color: inherit;
   font-weight: 500;
+}
+
+/* Album sub-rows are nested under the Albums group header. They reuse the
+   glass-sidebar-row material (hover/selected veil lives in the per-mode
+   blocks); this only indents the content so the row reads as a child of the
+   group while keeping its rounded highlight full-width — matching the Honor
+   gallery tree layout in the reference screenshot.
+   相册子行缩进于「相册」分组头之下;选中/hover 玻璃材质复用 .glass-sidebar-row,
+   这里只做内容缩进,圆角高亮仍占满整行。 */
+.glass-sidebar-subrow {
+  padding-left: 28px;
+  min-height: 36px;
+}
+
+/* Leading symbolic icon — slightly muted so the label stays primary. */
+.glass-sidebar-icon {
+  opacity: 0.72;
+}
+
+/* Right-aligned count badge on album rows. */
+.glass-sidebar-count {
+  color: inherit;
+  opacity: 0.5;
+  font-size: 0.92em;
+  font-weight: 500;
+}
+
+/* Albums group header — a non-selectable disclosure row. Bolder label, no
+   hover/selected veil (it never claims the selection), and a muted arrow. */
+.glass-sidebar-section {
+  min-height: 34px;
+  margin-top: 6px;
+}
+
+.glass-sidebar-section-label {
+  color: inherit;
+  font-weight: 700;
+  opacity: 0.78;
+}
+
+.glass-sidebar-arrow {
+  opacity: 0.6;
 }
 
 /* viewer-stage — image content area; subtle radial wash that frames
@@ -1081,7 +1089,7 @@ fn register(css: &str) {
 pub fn install() {
     // `OnceLock::set` returns `Ok(())` only on the first call; gate the
     // provider registration on that so defensive `install()` calls from
-    // MediaGrid / TrashPage / AlbumsPage constructors do not accumulate
+    // MediaGrid / TrashPage / AlbumDetailPage constructors do not accumulate
     // duplicate CssProviders on the default display.
     if CSS_INSTALLED.set(()).is_ok() {
         register(&build_css(crate::core::prefs::liquid_glass_enabled()));

@@ -11,18 +11,20 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 | `src/core/albums.rs` | Album query/model helpers |
 | `src/core/album_ops.rs` | Album operations |
 | `src/core/trash.rs` | Trash operations |
-| `src/ui/albums_page.rs` | Albums overview |
-| `src/ui/album_detail_page.rs` | Album detail grid |
+| `src/ui/window.rs` | Sidebar: lists albums directly under the Albums group header |
+| `src/ui/album_detail_page.rs` | Album detail grid + `filtered_items_for_album` helper |
 | `src/ui/trash_page.rs` | Trash UI and actions |
-| `data/ui/albums-page.blp` | Albums template |
 | `data/ui/album-detail-page.blp` | Album detail template |
 | `data/ui/trash-page.blp` | Trash template |
+| `tests/album_navigation.rs` | Album detail + viewer push |
 | `tests/e3e_albums_trash.rs` | End-to-end albums/trash flow |
 | `tests/trash_flow.rs` | Trash behavior |
 
 ## Albums
 
-Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album covers and counts derived from media rows so scanner/database state remains the source of truth.
+Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album counts derived from media rows so scanner/database state remains the source of truth.
+
+Albums are **listed directly in the sidebar** under a collapsible "Albums" group header — selecting an album row pushes its `AlbumDetailPage` immediately. There is no separate albums-grid overview page; the sidebar IS the album list. The per-album filtered media list is built by `album_detail_page::filtered_items_for_album`, shared between the sidebar (on open) and the favorites album (on favorite-toggle refresh). A favorite/trash change refreshes the sidebar counts via `window::refresh_albums_sidebar`.
 
 The Albums page also has virtual logical albums:
 
