@@ -10,6 +10,10 @@ use crate::core::db::DbPool;
 use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use crate::core::orientation;
 use gdk_pixbuf::Pixbuf;
+use gstreamer as gst;
+use gstreamer::prelude::*;
+use gstreamer_app as gst_app;
+use gstreamer_video as gst_video;
 use gtk4::gdk::Texture;
 use image::ImageEncoder;
 use lru::LruCache;
@@ -574,7 +578,25 @@ fn generate(
     }
 
     if mime_from_extension(&src_path).and_then(media_kind_from_mime) == Some(MediaKind::Video) {
-        return generate_video_placeholder(size.max_dim(), &cache_stem);
+        match extract_video_frame(&src_path, size.max_dim()) {
+            Ok(pb) => {
+                let scaled = scale_pixbuf_to_fit(&pb, size.max_dim());
+                let cache_path = cache_stem.with_extension("jpg");
+                let thumb = ensure_opaque(&scaled);
+                thumb.savev(&cache_path, "jpeg", &[]).map_err(|e| {
+                    anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e)
+                })?;
+                return Ok(thumb);
+            }
+            Err(e) => {
+                warn!(
+                    "视频帧提取失败，回退占位图 {}: {}",
+                    src_path.display(),
+                    e
+                );
+                return generate_video_placeholder(size.max_dim(), &cache_stem);
+            }
+        }
     }
 
     info!(
@@ -631,6 +653,226 @@ fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result
         )
     })?;
     Ok(pb)
+}
+
+/// 用 GStreamer 从视频文件中提取一帧作为缩略图。
+///
+/// 流程：`filesrc → decodebin → videoconvert → appsink`，seek 到视频开头约 1 秒处
+/// （或总时长的 10%），拉取一帧 RGB 数据，构造 `Pixbuf`。提取成功后在左下角叠加
+/// 半透明播放图标，让用户一眼识别为视频。
+fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
+    info!("VIDEO_THUMB 提取视频帧: {}", path.display());
+    gst::init().map_err(|e| anyhow::anyhow!("GStreamer 初始化失败: {e}"))?;
+
+    let uri = glib::filename_to_uri(path, None)
+        .map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
+
+    // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
+    let desc = format!(
+        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        uri
+    );
+    let pipeline = gst::parse::launch(&desc)
+        .map_err(|e| anyhow::anyhow!("创建 pipeline 失败: {e}"))?;
+    let pipeline = pipeline
+        .downcast::<gst::Pipeline>()
+        .map_err(|_| anyhow::anyhow!("pipeline 类型转换失败"))?;
+
+    // 获取 appsink 元素。
+    let appsink_el = pipeline
+        .by_name("sink")
+        .ok_or_else(|| anyhow::anyhow!("找不到 appsink 元素"))?;
+    let appsink = appsink_el
+        .downcast_ref::<gst_app::AppSink>()
+        .ok_or_else(|| anyhow::anyhow!("appsink 类型转换失败"))?;
+
+    appsink.set_max_buffers(1);
+    appsink.set_drop(true);
+
+    // 启动 pipeline。
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|e| anyhow::anyhow!("设置 Playing 失败: {e}"))?;
+
+    // 等待 pipeline 进入 Playing（带超时）。
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| anyhow::anyhow!("pipeline 无 bus"))?;
+    let start = std::time::Instant::now();
+    loop {
+        let (_, state, _) = pipeline.state(gst::ClockTime::from_mseconds(100));
+        if state == gst::State::Playing {
+            break;
+        }
+        if start.elapsed().as_secs() >= 5 {
+            let (_, cur_state, _) = pipeline.state(gst::ClockTime::ZERO);
+            pipeline.set_state(gst::State::Null).ok();
+            anyhow::bail!("等待 Playing 超时，当前状态: {:?}", cur_state);
+        }
+        while let Some(msg) = bus.pop() {
+            if let gst::MessageView::Error(e) = msg.view() {
+                pipeline.set_state(gst::State::Null).ok();
+                anyhow::bail!("GStreamer 错误: {}", e.error().message());
+            }
+        }
+    }
+
+    // 查询时长并 seek 到合适位置。
+    let seek_pos = if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
+        let one_sec = gst::ClockTime::from_seconds(1);
+        let ten_pct = duration
+            .nseconds()
+            .checked_mul(10)
+            .and_then(|n| n.checked_div(100))
+            .map(gst::ClockTime::from_nseconds)
+            .unwrap_or(gst::ClockTime::ZERO);
+        let target = std::cmp::max(one_sec, ten_pct);
+        if target >= duration {
+            gst::ClockTime::ZERO
+        } else {
+            target
+        }
+    } else {
+        gst::ClockTime::from_seconds(1)
+    };
+
+    if !seek_pos.is_none() {
+        let _ = pipeline.seek_simple(
+            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+            seek_pos,
+        );
+        // 等待 seek 完成。
+        let _ = bus.timed_pop_filtered(
+            gst::ClockTime::from_seconds(3),
+            &[gst::MessageType::AsyncDone, gst::MessageType::Error],
+        );
+    }
+
+    // 拉取一帧。
+    let sample = match appsink.try_pull_sample(gst::ClockTime::from_seconds(3)) {
+        Some(s) => s,
+        None => {
+            pipeline.set_state(gst::State::Null).ok();
+            anyhow::bail!("拉取视频帧超时或无数据");
+        }
+    };
+
+    let buffer = sample
+        .buffer()
+        .ok_or_else(|| anyhow::anyhow!("sample 无 buffer"))?;
+    let caps = sample
+        .caps()
+        .ok_or_else(|| anyhow::anyhow!("sample 无 caps"))?;
+    let vinfo = gst_video::VideoInfo::from_caps(caps)
+        .map_err(|e| anyhow::anyhow!("解析视频 caps 失败: {e}"))?;
+
+    let width = vinfo.width() as i32;
+    let height = vinfo.height() as i32;
+    let stride = vinfo.stride()[0] as i32;
+
+    let map = buffer
+        .map_readable()
+        .map_err(|e| anyhow::anyhow!("buffer 映射失败: {e}"))?;
+    let data = map.as_slice();
+
+    // 构造 Pixbuf（RGB，无 alpha，3 通道）。
+    let pb = Pixbuf::from_mut_slice(
+        data.to_vec().into_boxed_slice(),
+        gdk_pixbuf::Colorspace::Rgb,
+        false,
+        8,
+        width,
+        height,
+        stride,
+    );
+
+    pipeline.set_state(gst::State::Null).ok();
+    info!("VIDEO_THUMB 提取成功 {}x{}", width, height);
+
+    // 在左下角叠加半透明播放图标。
+    let pb = overlay_play_icon(&pb);
+
+    Ok(pb)
+}
+
+/// 在 pixbuf 左下角叠加一个半透明播放三角形，标记为视频缩略图。
+fn overlay_play_icon(pb: &Pixbuf) -> Pixbuf {
+    let pb = pb.clone();
+    let w = pb.width();
+    let h = pb.height();
+    if w < 20 || h < 20 {
+        return pb;
+    }
+
+    // 图标尺寸：约 1/6 宽度，最小 16px，最大 48px。
+    let icon_size = (w / 6).clamp(16, 48);
+    let margin = icon_size / 4;
+
+    // 三角形参数：指向右方的等腰三角形。
+    let tri_h = icon_size;
+    let tri_w = (icon_size as f64 * 0.86) as i32; // 等边三角形比例
+    let ox = margin;
+    let oy = h - margin - tri_h;
+
+    let rowstride = pb.rowstride() as usize;
+    let channels = pb.n_channels() as usize;
+    let has_alpha = pb.has_alpha();
+
+    unsafe {
+        let pixels = pb.pixels();
+        // 半透明深色圆形背景。
+        let bg_r: u8 = 0;
+        let bg_g: u8 = 0;
+        let bg_b: u8 = 0;
+        let bg_a: u8 = 140;
+        let cx = ox + tri_w / 2;
+        let cy = oy + tri_h / 2;
+        let radius = (tri_h / 2 + 4) as f64;
+
+        for y in (oy - 4).max(0)..(oy + tri_h + 4).min(h) {
+            for x in (ox - 4).max(0)..(ox + tri_w + 4).min(w) {
+                let dx = (x - cx) as f64;
+                let dy = (y - cy) as f64;
+                if dx * dx + dy * dy <= radius * radius {
+                    let i = y as usize * rowstride + x as usize * channels;
+                    if i + 2 < pixels.len() {
+                        let alpha = bg_a as f64 / 255.0;
+                        let inv = 1.0 - alpha;
+                        pixels[i] = (bg_r as f64 * alpha + pixels[i] as f64 * inv) as u8;
+                        pixels[i + 1] = (bg_g as f64 * alpha + pixels[i + 1] as f64 * inv) as u8;
+                        pixels[i + 2] = (bg_b as f64 * alpha + pixels[i + 2] as f64 * inv) as u8;
+                        if has_alpha && i + 3 < pixels.len() {
+                            pixels[i + 3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 白色三角形（指向右方）。
+        for dy in 0..tri_h {
+            let row_half = (dy as f64 / tri_h as f64 * tri_w as f64 / 2.0) as i32;
+            let left = cx - row_half;
+            let right = cx + row_half;
+            for x in left.max(0)..right.min(w) {
+                let y = oy + dy;
+                if y < 0 || y >= h {
+                    continue;
+                }
+                let i = y as usize * rowstride + x as usize * channels;
+                if i + 2 < pixels.len() {
+                    pixels[i] = 255;
+                    pixels[i + 1] = 255;
+                    pixels[i + 2] = 255;
+                    if has_alpha && i + 3 < pixels.len() {
+                        pixels[i + 3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
+    pb
 }
 
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
@@ -980,5 +1222,65 @@ mod tests {
             "b",
             "最后弹出 b 的过期 NORMAL 项"
         );
+    }
+
+    /// `overlay_play_icon` 在 pixbuf 左下角绘制半透明背景 + 白色三角形。
+    #[test]
+    fn overlay_play_icon_modifies_pixels() {
+        let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 200, 150).unwrap();
+        pb.fill(0x808080ff); // 灰色填充
+        let result = overlay_play_icon(&pb);
+        // overlay 后尺寸不变
+        assert_eq!(result.width(), 200);
+        assert_eq!(result.height(), 150);
+        // 左下角区域像素应被修改（不再是纯灰）
+        let bytes = result.read_pixel_bytes();
+        let buf: &[u8] = bytes.as_ref();
+        let rowstride = result.rowstride() as usize;
+        // 采样左下角附近一点
+        let sample_y = 150 - 20;
+        let sample_x = 20;
+        let i = sample_y * rowstride + sample_x * 3;
+        assert!(i + 2 < buf.len());
+        // 像素值应与原始灰色 (128,128,128) 不同
+        assert!(
+            buf[i] != 128 || buf[i + 1] != 128 || buf[i + 2] != 128,
+            "左下角像素应被 overlay 修改"
+        );
+    }
+
+    /// `overlay_play_icon` 对过小的 pixbuf 不做修改。
+    #[test]
+    fn overlay_play_icon_skips_tiny_pixbuf() {
+        let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 10, 10).unwrap();
+        pb.fill(0x808080ff);
+        let result = overlay_play_icon(&pb);
+        let bytes_orig = pb.read_pixel_bytes();
+        let bytes_result = result.read_pixel_bytes();
+        assert_eq!(bytes_orig.as_ref(), bytes_result.as_ref(), "10x10 pixbuf 不应被修改");
+    }
+
+    /// 视频帧提取端到端测试（需要真实视频文件）。
+    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib extract_video_frame_from_file -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn extract_video_frame_from_file() {
+        let path = match std::env::var("VIDEO_TEST_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
+                return;
+            }
+        };
+        let result = extract_video_frame(&path, 256);
+        match result {
+            Ok(pb) => {
+                eprintln!("成功! 帧尺寸: {}x{}", pb.width(), pb.height());
+                assert!(pb.width() > 0 && pb.height() > 0);
+            }
+            Err(e) => {
+                panic!("extract_video_frame 失败: {e}");
+            }
+        }
     }
 }
