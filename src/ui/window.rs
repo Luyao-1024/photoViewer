@@ -8,7 +8,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
+use libadwaita::prelude::{ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
 use serde_json::{Map, Value};
 
 use crate::config;
@@ -330,15 +330,12 @@ impl MainWindow {
         });
 
         // ── Storage: Clear Cache ────────────────────────────────────────────
-        // Buttons to clear thumbnail cache and reset the database.
-        let storage_title = gtk::Label::new(Some(&tr("setting.section.storage")));
-        storage_title.set_xalign(0.0);
-        content.append(&storage_title);
-
-        let storage_desc = gtk::Label::new(Some(&tr("setting.section.storage_description")));
-        storage_desc.set_wrap(true);
-        storage_desc.set_xalign(0.0);
-        content.append(&storage_desc);
+        // Show current storage usage with action rows matching the project's
+        // Adw.PreferencesGroup + Adw.ActionRow design pattern.
+        let storage_group = adw::PreferencesGroup::new();
+        storage_group.set_title(&tr("setting.section.storage"));
+        storage_group.set_description(Some(&tr("setting.section.storage_description")));
+        content.append(&storage_group);
 
         // Show current storage usage
         let cache_dir = config::cache_dir();
@@ -347,31 +344,27 @@ impl MainWindow {
         let db_path = crate::config::data_dir().join("photos.db");
         let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-        let thumb_size_label = gtk::Label::new(Some(&trf(
-            "setting.storage.thumbnails_size",
-            &[("size", &format_size(thumb_size))],
-        )));
-        thumb_size_label.set_xalign(0.0);
-        content.append(&thumb_size_label);
+        // Thumbnail cache row with size and clear button
+        let thumb_row = adw::ActionRow::new();
+        thumb_row.set_title(&tr("setting.clear_thumbnails"));
+        thumb_row.set_subtitle(&format_size(thumb_size));
+        thumb_row.set_activatable(false);
 
-        let db_size_label = gtk::Label::new(Some(&trf(
-            "setting.storage.database_size",
-            &[("size", &format_size(db_size))],
-        )));
-        db_size_label.set_xalign(0.0);
-        content.append(&db_size_label);
-
-        // Clear thumbnails button
-        let btn_clear_thumbs = gtk::Button::with_label(&tr("setting.clear_thumbnails"));
-        btn_clear_thumbs.add_css_class("destructive-action");
-        content.append(&btn_clear_thumbs);
+        let btn_clear_thumbs = gtk::Button::new();
+        btn_clear_thumbs.set_icon_name("user-trash-symbolic");
+        btn_clear_thumbs.set_valign(gtk::Align::Center);
+        btn_clear_thumbs.add_css_class("glass-toolbar-button");
+        btn_clear_thumbs.add_css_class("glass-toolbar-danger");
+        btn_clear_thumbs.set_tooltip_text(Some(&tr("setting.clear_thumbnails")));
+        thumb_row.add_suffix(&btn_clear_thumbs);
+        storage_group.add(&thumb_row);
 
         let page_for_thumbs = page.clone();
         let loader_for_thumbs = self.imp().loader.borrow().clone();
-        let thumb_size_label_for_thumbs = thumb_size_label.clone();
+        let thumb_row_for_thumbs = thumb_row.clone();
         btn_clear_thumbs.connect_clicked(move |_| {
             let loader_clone = loader_for_thumbs.clone();
-            let label_clone = thumb_size_label_for_thumbs.clone();
+            let row_clone = thumb_row_for_thumbs.clone();
             show_clear_confirm_dialog(
                 &page_for_thumbs,
                 &tr("setting.clear_thumbnails_confirm_title"),
@@ -385,11 +378,8 @@ impl MainWindow {
                             if let Some(ref loader) = loader_clone {
                                 loader.clear_mem_cache();
                             }
-                            // Update size label
-                            label_clone.set_text(&trf(
-                                "setting.storage.thumbnails_size",
-                                &[("size", &format_size(0))],
-                            ));
+                            // Update subtitle
+                            row_clone.set_subtitle(&format_size(0));
                             show_clear_success_toast(&trf("setting.clear_thumbnails_success", &[("count", &count.to_string())]));
                         }
                         Err(err) => {
@@ -400,19 +390,31 @@ impl MainWindow {
             );
         });
 
-        // Reset database button
-        let btn_clear_db = gtk::Button::with_label(&tr("setting.clear_database"));
-        btn_clear_db.add_css_class("destructive-action");
-        content.append(&btn_clear_db);
+        // Database row with size and clear button
+        let db_row = adw::ActionRow::new();
+        db_row.set_title(&tr("setting.clear_database"));
+        db_row.set_subtitle(&format_size(db_size));
+        db_row.set_activatable(false);
+
+        let btn_clear_db = gtk::Button::new();
+        btn_clear_db.set_icon_name("user-trash-symbolic");
+        btn_clear_db.set_valign(gtk::Align::Center);
+        btn_clear_db.add_css_class("glass-toolbar-button");
+        btn_clear_db.add_css_class("glass-toolbar-danger");
+        btn_clear_db.set_tooltip_text(Some(&tr("setting.clear_database")));
+        db_row.add_suffix(&btn_clear_db);
+        storage_group.add(&db_row);
 
         let page_for_db = page.clone();
         let pool_for_db = self.imp().pool.borrow().clone();
         let loader_for_db = self.imp().loader.borrow().clone();
         let media_list_for_db = self.imp().media_list.borrow().clone();
+        let db_row_for_db = db_row.clone();
         btn_clear_db.connect_clicked(move |_| {
             let pool_clone = pool_for_db.clone();
             let loader_clone = loader_for_db.clone();
             let media_list_clone = media_list_for_db.clone();
+            let row_clone = db_row_for_db.clone();
             show_clear_confirm_dialog(
                 &page_for_db,
                 &tr("setting.clear_database_confirm_title"),
@@ -429,6 +431,8 @@ impl MainWindow {
                                 if let Some(ref media_list) = media_list_clone {
                                     media_list.remove_all();
                                 }
+                                // Update subtitle
+                                row_clone.set_subtitle(&format_size(0));
                                 show_clear_success_toast(&trf("setting.clear_database_success", &[("count", &count.to_string())]));
                             }
                             Err(err) => {
