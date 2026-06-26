@@ -36,6 +36,29 @@ fn scan_finds_jpeg_png() {
 }
 
 #[test]
+fn scan_finds_images_and_videos_in_same_directory() {
+    let dir = tmp_dir();
+    let root = dir.path();
+    write_plain_jpeg(root, "photo.jpg");
+    std::fs::write(root.join("clip.mp4"), b"fake mp4 bytes").unwrap();
+    std::fs::write(root.join("notes.txt"), b"text").unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    let mut items = backend.scan_dir(root).unwrap();
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+
+    assert_eq!(
+        items.len(),
+        2,
+        "scan should include one image and one video"
+    );
+    assert!(items.iter().any(|item| item.mime_type == "image/jpeg"));
+    assert!(items.iter().any(|item| item.mime_type == "video/mp4"));
+}
+
+#[test]
 fn upsert_inserts_and_updates_by_uri() {
     let dir = tmp_dir();
     let root = dir.path();

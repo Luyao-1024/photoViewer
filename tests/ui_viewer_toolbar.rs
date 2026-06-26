@@ -10,6 +10,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use photo_viewer::core::media::MediaItem;
 use photo_viewer::ui::ViewerPage;
 
 fn css_classes_vec<W: gtk::prelude::WidgetExt>(w: &W) -> Vec<String> {
@@ -118,6 +119,14 @@ fn viewer_toolbar_uses_glass_classes() {
         !imp.editor_panel.get().is_visible(),
         "hidden editor sidebar should also hide its child widget to avoid zero-width allocation warnings",
     );
+    assert!(
+        !imp.video.get().is_visible(),
+        "video widget should start hidden until a video media item is shown",
+    );
+    assert!(
+        !imp.video_progress.get().is_visible(),
+        "video progress should start hidden until a video media item is shown",
+    );
 
     let prev_parent = imp
         .prev_btn
@@ -168,5 +177,51 @@ fn viewer_toolbar_uses_glass_classes() {
     assert!(
         !after_remove_classes.iter().any(|c| c == "favorite-active"),
         "favorite_btn should not carry favorite-active after remove_css_class, got {after_remove_classes:?}",
+    );
+
+    assert_viewer_video_mode_shows_video_progress_and_disables_editing();
+}
+
+fn assert_viewer_video_mode_shows_video_progress_and_disables_editing() {
+    let dir = tempfile::tempdir().unwrap();
+    let video_path = dir.path().join("clip.mp4");
+    std::fs::write(&video_path, b"fake mp4").unwrap();
+    let now = chrono::Utc::now();
+    let item = MediaItem {
+        id: 1,
+        uri: format!("file://{}", video_path.display()),
+        path: video_path.clone(),
+        folder_path: video_path.parent().unwrap_or(dir.path()).to_path_buf(),
+        mime_type: "video/mp4".into(),
+        width: None,
+        height: None,
+        taken_at: None,
+        file_mtime: now,
+        file_size: 8,
+        blake3_hash: "hash".into(),
+        trashed_at: None,
+    };
+
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
+    media_list.append(&gtk::glib::BoxedAnyObject::new(item));
+    let page = ViewerPage::new(media_list, 0);
+    page.show_at(0);
+    let imp = page.imp();
+
+    assert!(
+        imp.video.get().is_visible(),
+        "video widget should be visible for video media"
+    );
+    assert!(
+        imp.video_progress.get().is_visible(),
+        "video progress should be visible for video media"
+    );
+    assert!(
+        !imp.picture.get().is_visible(),
+        "image widget should be hidden for video media"
+    );
+    assert!(
+        !imp.edit_btn.get().is_sensitive(),
+        "video media should not be editable"
     );
 }

@@ -3,7 +3,9 @@
 //! with each other: each test calls `std::env::set_var` / `remove_var` to
 //! control `HOME`, `XDG_CONFIG_HOME` (via HOME), `LANG`, `LC_ALL`, and a
 //! synthetic `user-dirs.dirs`. Run with `--test-threads=1` to avoid races.
-use photo_viewer::config::{cache_dir, config_dir, data_dir, pictures_dir};
+use photo_viewer::config::{
+    cache_dir, config_dir, data_dir, media_roots, pictures_dir, videos_dir,
+};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tempfile::tempdir;
@@ -183,6 +185,44 @@ fn parses_user_dirs_pictures_with_home_substitution() {
         home.join("MyPics"),
         "XDG_PICTURES_DIR with $HOME/ prefix should be substituted"
     );
+    drop(guard);
+}
+
+#[test]
+fn parses_user_dirs_videos_with_home_substitution() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    let config_dir = home.join(".config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("user-dirs.dirs"),
+        "XDG_PICTURES_DIR=\"$HOME/MyPics\"\nXDG_VIDEOS_DIR=\"$HOME/MyVideos\"\n",
+    )
+    .unwrap();
+
+    let guard = EnvGuard::new(&home);
+    guard.set_locale("en_US.UTF-8");
+
+    assert_eq!(videos_dir(), home.join("MyVideos"));
+    assert_eq!(
+        media_roots(),
+        vec![home.join("MyPics"), home.join("MyVideos")]
+    );
+    drop(guard);
+}
+
+#[test]
+fn chinese_locale_falls_back_to_videos_dir_unicode() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("视频")).unwrap();
+
+    let guard = EnvGuard::new(&home);
+    guard.set_locale("zh_CN.UTF-8");
+
+    assert_eq!(videos_dir(), home.join("视频"));
     drop(guard);
 }
 

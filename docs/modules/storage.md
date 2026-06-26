@@ -10,7 +10,7 @@ Storage covers SQLite schema/migrations, media rows, filesystem scanning, metada
 |---|---|
 | `src/core/db.rs` | SQLite pool, migrations, pragmas |
 | `src/core/schema.sql` | Embedded schema |
-| `src/core/media.rs` | `MediaItem` and insert/update model |
+| `src/core/media.rs` | `MediaItem`, media kind helpers, and insert/update model |
 | `src/core/backend/local.rs` | Local filesystem scanner |
 | `src/core/backend/scan_worker.rs` | Background scan worker |
 | `src/core/metadata.rs` | EXIF metadata extraction |
@@ -30,6 +30,8 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
+`mime_type` is the media discriminator. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, and thumbnails agree.
+
 ## Metadata Extraction (`metadata.rs`)
 
 `extract()` reads dimensions (via `image::image_dimensions`, falling back to gdk-pixbuf) and EXIF (DateTimeOriginal + readable fields) via kamadak-exif.
@@ -38,9 +40,9 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 ## Scanning And Watching
 
-The local backend scans filesystem paths and inserts/updates media rows. The watcher handles incremental changes after startup. Changes to scanner behavior should consider:
+The local backend scans filesystem paths and inserts/updates media rows. Startup scans the de-duplicated media roots from `config::media_roots()` (`XDG_PICTURES_DIR`/`~/Pictures` or `~/图片`, plus `XDG_VIDEOS_DIR`/`~/Videos` or `~/视频`). Images and videos can live under either root. The watcher handles incremental changes after startup. Changes to scanner behavior should consider:
 
-- New supported file extensions.
+- New supported image/video file extensions.
 - Metadata extraction failures.
 - Duplicate paths.
 - Deletions and trash transitions.
@@ -58,10 +60,10 @@ The local backend scans filesystem paths and inserts/updates media rows. The wat
 
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.
 
-**The system trash is also watched live (`notify_watcher`).** In addition to the pictures dir, the watcher installs inotify on the trash roots. Events whose path is under a trash root are NOT treated as pictures upsert/delete — they set a dirty flag, and after a ~400ms quiet period (debounce; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `MediaChangeEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the pictures-dir watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
+**The system trash is also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the trash roots. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after a ~400ms quiet period (debounce; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `MediaChangeEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 
 ## Thumbnails
 
 `ThumbnailLoader` owns an mpsc queue feeding blocking workers. Requests return textures through `oneshot::Sender`.
 
-Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and an in-memory LRU avoids unnecessary decoding. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.
+Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and an in-memory LRU avoids unnecessary decoding. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. Videos currently use a cached JPEG placeholder thumbnail rather than frame extraction. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.

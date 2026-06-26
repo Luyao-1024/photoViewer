@@ -7,6 +7,7 @@
 //! - **优先级队列**：可见 tile 可经 `prioritize_keys` 提到队首（BOOST），
 //!   先于普通（NORMAL）请求被 worker 取走，消除分页 rebuild / 滚动时的优先级倒置。
 use crate::core::db::DbPool;
+use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use crate::core::orientation;
 use gdk_pixbuf::Pixbuf;
 use gtk4::gdk::Texture;
@@ -572,6 +573,10 @@ fn generate(
         std::fs::create_dir_all(parent)?;
     }
 
+    if mime_from_extension(&src_path).and_then(media_kind_from_mime) == Some(MediaKind::Video) {
+        return generate_video_placeholder(size.max_dim(), &cache_stem);
+    }
+
     info!(
         "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_stem={}",
         uri,
@@ -584,6 +589,48 @@ fn generate(
     // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
     // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
     generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)
+}
+
+fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
+    let width = max_dim as i32;
+    let height = ((max_dim as f64) * 9.0 / 16.0).round().max(1.0) as i32;
+    let pb = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height)
+        .ok_or_else(|| anyhow::anyhow!("failed to allocate video thumbnail"))?;
+    pb.fill(0x20242cff);
+
+    let rowstride = pb.rowstride() as usize;
+    let channels = pb.n_channels() as usize;
+    let cx = width / 2;
+    let cy = height / 2;
+    let tri_w = (width / 5).max(18);
+    let tri_h = (height / 3).max(18);
+    unsafe {
+        let pixels = pb.pixels();
+        for y in (cy - tri_h / 2).max(0)..(cy + tri_h / 2).min(height) {
+            let rel_y = y - (cy - tri_h / 2);
+            let half_height = tri_h.max(1);
+            let right = cx - tri_w / 3 + (tri_w * rel_y / half_height);
+            let left = cx - tri_w / 3;
+            for x in left.max(0)..right.min(width) {
+                let i = y as usize * rowstride + x as usize * channels;
+                if i + 2 < pixels.len() {
+                    pixels[i] = 238;
+                    pixels[i + 1] = 242;
+                    pixels[i + 2] = 247;
+                }
+            }
+        }
+    }
+
+    let cache_path = cache_stem.with_extension("jpg");
+    pb.savev(cache_path, "jpeg", &[]).map_err(|e| {
+        anyhow::anyhow!(
+            "video placeholder thumbnail save failed {:?}: {}",
+            cache_stem.with_extension("jpg"),
+            e
+        )
+    })?;
+    Ok(pb)
 }
 
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
@@ -815,6 +862,22 @@ mod tests {
         let out = dir.path().join("out");
         generate_via_pixbuf(&src, 256, &out).expect("RGBA PNG 应能生成 WebP 缩略图");
         assert!(out.with_extension("webp").exists(), "应写出 WebP 缩略图");
+    }
+
+    #[test]
+    fn video_placeholder_thumbnail_is_cached_as_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("video");
+
+        let thumb =
+            generate_video_placeholder(256, &out).expect("video placeholder should generate");
+
+        assert!(
+            out.with_extension("jpg").exists(),
+            "placeholder should be cached"
+        );
+        assert_eq!(thumb.width(), 256);
+        assert!(thumb.height() > 0);
     }
 
     #[test]

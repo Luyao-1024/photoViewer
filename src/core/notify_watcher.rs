@@ -16,6 +16,7 @@
 use crate::core::albums;
 use crate::core::backend::local::LocalBackend;
 use crate::core::db::DbPool;
+use crate::core::media::is_supported_media_path;
 use crate::core::media_change_notifier::MediaChangeNotifier;
 use crate::core::trash;
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -154,7 +155,7 @@ fn handle_event(
     match evt.kind {
         EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
             for path in &evt.paths {
-                if !is_supported_image(path) {
+                if !is_supported_media_path(path) {
                     continue;
                 }
                 if !path.is_file() {
@@ -179,7 +180,7 @@ fn handle_event(
         }
         EventKind::Remove(_) => {
             for path in &evt.paths {
-                if !is_supported_image(path) {
+                if !is_supported_media_path(path) {
                     continue;
                 }
                 let uri = format!("file://{}", path.display());
@@ -198,7 +199,7 @@ fn handle_event(
         }
         EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
             for path in &evt.paths {
-                if !is_supported_image(path) {
+                if !is_supported_media_path(path) {
                     continue;
                 }
                 if path.is_file() {
@@ -231,16 +232,6 @@ fn handle_event(
         }
         _ => {}
     }
-}
-
-fn is_supported_image(path: &Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
-        Some("jpg") | Some("jpeg") | Some("png") | Some("webp") | Some("heic") | Some("heif")
-    )
 }
 
 #[cfg(test)]
@@ -293,6 +284,50 @@ mod tests {
         match rx.try_recv() {
             Ok(MediaChangeEvent::Removed { uri: received }) => assert_eq!(received, uri),
             other => panic!("expected Removed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_event_accepts_video_media_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.mp4");
+        std::fs::write(&path, b"not actually decoded in this test").unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        let uri = format!("file://{}", path.display());
+        db::insert_media_item(
+            &pool,
+            &NewMediaItem {
+                uri: uri.clone(),
+                path: path.clone(),
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "video/mp4".into(),
+                width: None,
+                height: None,
+                taken_at: None,
+                file_mtime: Utc::now(),
+                file_size: 1,
+                blake3_hash: "hash".into(),
+            },
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let backend = LocalBackend::new(pool.clone());
+        let (notifier, mut rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
+        handle_event(
+            &backend,
+            Ok(Event {
+                kind: EventKind::Remove(RemoveKind::File),
+                paths: vec![path],
+                attrs: Default::default(),
+            }),
+            &notifier,
+        );
+
+        assert!(db::list_all_media(&pool).unwrap().is_empty());
+        match rx.try_recv() {
+            Ok(MediaChangeEvent::Removed { uri: received }) => assert_eq!(received, uri),
+            other => panic!("expected Removed for video, got {other:?}"),
         }
     }
 

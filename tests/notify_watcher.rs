@@ -5,7 +5,7 @@
 //!
 //! 测试聚焦三件事：
 //!   1. `upsert_from_path` 在已有/新文件上行为正确；
-//!   2. `is_supported_image` 的扩展名过滤；
+//!   2. supported media extension filtering;
 //!   3. `start_watching` 在临时目录里能创建 watcher 而不 panic（端到端可观测）。
 mod common;
 use common::*;

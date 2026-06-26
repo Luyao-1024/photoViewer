@@ -38,6 +38,25 @@ fn mime_type_inferred_from_extension() {
 }
 
 #[test]
+fn video_extension_returns_video_metadata_without_image_decode() {
+    let dir = tmp_dir();
+    let path = dir.path().join("clip.mp4");
+    std::fs::write(
+        &path,
+        b"not a real mp4, but extension is enough for indexing",
+    )
+    .unwrap();
+
+    let meta = metadata::extract(&path).unwrap();
+
+    assert_eq!(meta.mime_type, "video/mp4");
+    assert_eq!(meta.width, None);
+    assert_eq!(meta.height, None);
+    assert!(meta.taken_at.is_none());
+    assert!(meta.camera.is_none());
+}
+
+#[test]
 fn camera_summary_from_exif_jpeg() {
     let dir = tmp_dir();
     let naive = chrono::NaiveDate::from_ymd_opt(2024, 5, 6)

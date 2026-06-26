@@ -1,5 +1,6 @@
 //! Image metadata extraction: dimensions, EXIF DateTimeOriginal, MIME type.
 use crate::core::error::{AppError, Result};
+use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use chrono::{DateTime, TimeZone, Utc};
 use gdk_pixbuf;
 use std::path::Path;
@@ -193,18 +194,26 @@ pub struct RawMetadata {
 
 /// Extract metadata from a file at `path`.
 pub fn extract(path: &Path) -> Result<RawMetadata> {
-    let mime_type = mime_from_extension(path);
-    if mime_type.is_empty() {
+    let Some(mime_type) = mime_from_extension(path).map(str::to_string) else {
         return Err(AppError::Decode(format!(
             "unknown extension: {}",
             path.display()
         )));
-    }
+    };
 
     let mut meta = RawMetadata {
         mime_type,
         ..Default::default()
     };
+
+    if media_kind_from_mime(&meta.mime_type) == Some(MediaKind::Video) {
+        tracing::info!(
+            "metadata::extract path={} mime={} video=true",
+            path.display(),
+            meta.mime_type
+        );
+        return Ok(meta);
+    }
 
     // 1. Read file header to get dimensions (gdk-pixbuf handles JPEG/PNG/WebP,
     //    with image::image_dimensions as a fallback that does not upscale).
@@ -247,7 +256,7 @@ fn read_exif(path: &Path) -> Result<exif::Exif> {
     // and EXIF silently comes back empty. We parse the container ourselves
     // (no size cap) and hand the raw TIFF block to `Reader::read_raw`. See
     // `extract_heic_exif_tiff`.
-    if mime_from_extension(path) == "image/heic" {
+    if mime_from_extension(path) == Some("image/heic") {
         tracing::info!("read_exif: HEIC path detected, parsing ISOBMFF...");
         let data = std::fs::read(path)?;
         let tiff = extract_heic_exif_tiff(&data)
@@ -682,19 +691,6 @@ fn parse_exif_datetime(s: &str) -> Option<DateTime<Utc>> {
     let naive = chrono::NaiveDate::from_ymd_opt(y, m, d)?.and_hms_opt(h, mi, s)?;
     let local_dt = Local.from_local_datetime(&naive).single()?;
     Some(local_dt.with_timezone(&Utc))
-}
-
-fn mime_from_extension(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => match ext.to_ascii_lowercase().as_str() {
-            "jpg" | "jpeg" => "image/jpeg".into(),
-            "png" => "image/png".into(),
-            "webp" => "image/webp".into(),
-            "heic" | "heif" => "image/heic".into(),
-            _ => String::new(),
-        },
-        None => String::new(),
-    }
 }
 
 #[cfg(test)]

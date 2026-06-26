@@ -99,6 +99,15 @@ template $ViewerPage : Adw.NavigationPage {
               };
 
               [overlay]
+              Gtk.Video video {
+                visible: false;
+                vexpand: true;
+                hexpand: true;
+                autoplay: true;
+                css-classes: ["viewer-image-frame"];
+              }
+
+              [overlay]
               Gtk.DrawingArea crop_overlay {
                 visible: false;
                 vexpand: true;
@@ -140,34 +149,55 @@ template $ViewerPage : Adw.NavigationPage {
               }
             }
 
-            Gtk.Box viewer_bottom_bar {
-              orientation: horizontal;
-              halign: fill;
-              spacing: 8;
+            Gtk.Box viewer_bottom_stack {
+              orientation: vertical;
               margin-start: 24;
               margin-end: 24;
               margin-top: 8;
               margin-bottom: 12;
-              css-classes: ["viewer-thumb-bar"];
+              spacing: 6;
 
-              Gtk.ScrolledWindow thumb_scrolled {
+              Gtk.Scale video_progress {
+                visible: false;
+                orientation: horizontal;
+                draw-value: false;
                 hexpand: true;
-                propagate-natural-width: false;
-                // Keep a horizontal adjustment for programmatic filmstrip
-                // positioning without showing a scrollbar. `never` disables
-                // scrolling and lets the loaded thumbnail row feed its minimum
-                // width into the viewer window.
-                hscrollbar-policy: external;
-                vscrollbar-policy: never;
-                min-content-height: 64;
+                css-classes: ["viewer-video-progress"];
 
-                child: Gtk.Box thumb_strip {
-                  orientation: horizontal;
-                  spacing: 6;
-                  css-classes: ["viewer-thumb-strip"];
+                adjustment: Gtk.Adjustment {
+                  lower: 0;
+                  upper: 1;
+                  step-increment: 0.01;
+                  page-increment: 0.1;
+                  value: 0;
                 };
               }
 
+              Gtk.Box viewer_bottom_bar {
+                orientation: horizontal;
+                halign: fill;
+                spacing: 8;
+                css-classes: ["viewer-thumb-bar"];
+
+                Gtk.ScrolledWindow thumb_scrolled {
+                  hexpand: true;
+                  propagate-natural-width: false;
+                  // Keep a horizontal adjustment for programmatic filmstrip
+                  // positioning without showing a scrollbar. `never` disables
+                  // scrolling and lets the loaded thumbnail row feed its minimum
+                  // width into the viewer window.
+                  hscrollbar-policy: external;
+                  vscrollbar-policy: never;
+                  min-content-height: 64;
+
+                  child: Gtk.Box thumb_strip {
+                    orientation: horizontal;
+                    spacing: 6;
+                    css-classes: ["viewer-thumb-strip"];
+                  };
+                }
+
+              }
             }
           };
 
