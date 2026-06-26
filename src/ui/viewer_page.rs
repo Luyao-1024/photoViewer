@@ -13,10 +13,11 @@ use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary};
+use crate::core::orientation;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::album_picker::AlbumPickerDialog;
-use crate::ui::editor_panel::{EditorPanel, ToastKind};
+use crate::ui::editor_panel::{EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::toasts;
 use chrono::{Local, Utc};
 use gtk4 as gtk;
@@ -498,6 +499,16 @@ impl ViewerPage {
             }
         });
 
+        let weak = self.downgrade();
+        panel.connect_save_result(move |kind, heading, body| {
+            if let Some(this) = weak.upgrade() {
+                if save_result_closes_editor(kind) {
+                    this.stop_editing();
+                }
+                this.present_save_result_dialog(&heading, &body);
+            }
+        });
+
         // Toast messages.
         let weak = self.downgrade();
         panel.connect_toast(move |msg, kind| {
@@ -508,6 +519,18 @@ impl ViewerPage {
                 }
             }
         });
+    }
+
+    fn present_save_result_dialog(&self, heading: &str, body: &str) {
+        let dialog = adw::AlertDialog::builder()
+            .heading(heading)
+            .body(body)
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("ok", &tr("button.ok"));
+        dialog.set_default_response(Some("ok"));
+        dialog.set_close_response("ok");
+        dialog.present(self);
     }
 
     fn setup_delete_button(&self) {
@@ -907,13 +930,23 @@ impl ViewerPage {
         if idx == current {
             button.add_css_class("viewer-thumb-current");
         }
+        let fs_mtime = std::fs::metadata(&item.path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        let item_mtime = fs_mtime.unwrap_or_else(|| std::time::SystemTime::from(item.file_mtime));
+        let cache_key =
+            ThumbnailLoader::cache_key_for(&item.uri, ThumbnailSize::Small, Some(item_mtime));
         tracing::info!(
-            "VIEWER_TRACE thumb_button idx={} is_current={} item_id={} item_name={} item_uri={}",
+            "VIEWER_TRACE thumb_button idx={} is_current={} item_id={} item_name={} item_uri={} media_item_mtime={} request_mtime={:?} fs_mtime={:?} cache_key={:?}",
             idx,
             idx == current,
             item.id,
             item.display_name(),
-            item.uri
+            item.uri,
+            item.file_mtime,
+            item_mtime,
+            fs_mtime,
+            cache_key
         );
 
         let picture = gtk::Picture::builder()
@@ -928,7 +961,6 @@ impl ViewerPage {
         // extending the strip after the items were already requested once is a
         // cache hit (no extra decode).
         let item_uri = item.uri.clone();
-        let item_mtime = std::time::SystemTime::from(item.file_mtime);
         let (tx, rx) = tokio::sync::oneshot::channel();
         loader.request(item_uri, ThumbnailSize::Small, Some(item_mtime), tx);
 
@@ -1504,9 +1536,9 @@ impl ViewerPage {
         let decode_source_uri = item.uri.clone();
         let decode_path = path.clone();
         gio::spawn_blocking(move || {
-            let result = gdk_pixbuf::Pixbuf::from_file(&path)
+            let result = orientation::load_oriented_pixbuf(&path)
                 .map(|pb| gdk::Texture::for_pixbuf(&pb))
-                .map_err(|e| format!("Pixbuf::from_file({path:?}) failed: {e}"));
+                .map_err(|e| format!("load_oriented_pixbuf({path:?}) failed: {e}"));
             let _ = tx.send(result);
         });
 
@@ -1578,7 +1610,7 @@ impl ViewerPage {
         gio::spawn_blocking(move || {
             // Result intentionally dropped — we only care that the file
             // got read into the page cache.
-            let _ = gdk_pixbuf::Pixbuf::from_file(&path);
+            let _ = orientation::load_oriented_pixbuf(&path);
         });
     }
 
@@ -1708,9 +1740,7 @@ impl ViewerPage {
 
         if let Some(dt) = item.taken_at {
             imp.taken_row.get().set_visible(true);
-            imp.taken_row
-                .get()
-                .set_subtitle(&format_datetime(Some(dt)));
+            imp.taken_row.get().set_subtitle(&format_datetime(Some(dt)));
         } else {
             // No value in DB — hide for now. If the fresh EXIF parse below
             // finds one, the callback will make it visible again.
@@ -2112,6 +2142,10 @@ fn compute_initial_thumb_window_for_len(current: u32, n_items: u32, target_len: 
     (start, end)
 }
 
+fn save_result_closes_editor(kind: SaveResultKind) -> bool {
+    kind == SaveResultKind::Success
+}
+
 /// Pure calculation: extend `[current_start, current_end)` by `THUMB_LAZY_HALF`
 /// in `direction` (`-1` = prepend on the left, `+1` = append on the right).
 /// Returns `None` when there's nothing to extend (already at album edge, or
@@ -2217,6 +2251,12 @@ mod tests {
     use std::cell::Cell;
 
     // ── filmstrip window calculations ──────────────────────────────────
+
+    #[test]
+    fn save_result_closes_editor_only_on_success() {
+        assert!(save_result_closes_editor(SaveResultKind::Success));
+        assert!(!save_result_closes_editor(SaveResultKind::Error));
+    }
 
     #[test]
     fn initial_window_centred_on_current_in_middle_of_album() {

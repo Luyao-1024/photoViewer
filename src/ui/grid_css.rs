@@ -224,7 +224,12 @@ box.mode-selector.on-light-background box.mode-dot,
   outline: none;
 }
 
-.glass-toolbar-danger { color: #ffb4ab; }
+.glass-toolbar-button.glass-toolbar-danger,
+.glass-toolbar-danger {
+  background: alpha(#ff5449, 0.16);
+  border-color: alpha(#ffb4ab, 0.34);
+  color: #ffb4ab;
+}
 
 /* glass-toolbar-suggested — primary action accent (blue) for Save Copy,
    Accept, and similar high-confidence buttons. Composes with

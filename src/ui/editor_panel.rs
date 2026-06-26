@@ -4,11 +4,12 @@
 //! 通过回调与 ViewerPage 通信：
 //! - `connect_texture_ready`: 渲染完成后回调，宿主据此更新预览图片
 //! - `connect_spinner`: 控制宿主的 loading spinner
-//! - `connect_close`: 用户取消或保存完成后回调，宿主据此收起面板
+//! - `connect_close`: 用户取消或保存成功时回调，宿主据此收起面板
+//! - `connect_save_result`: 保存完成后回调，宿主据此弹出结果对话框
 //! - `connect_toast`: 显示 toast 消息（成功/错误）
 //!
 //! 生命周期：
-//! 1. 模板初始化 → `constructed` vfunc 连接信号 + i18n + 保存菜单
+//! 1. 模板初始化 → `constructed` vfunc 连接信号 + i18n
 //! 2. 宿主调用 `configure(item, pool)` → 重置状态、加载原图、首次渲染
 //! 3. 用户操作（旋转 / 调色滑块）→ 修改 `EditState` → `schedule_preview_update`
 //! 4. 30fps 节流：`glib::timeout_add_local_once(33ms)`，新请求取消旧 timer
@@ -39,9 +40,16 @@ type TextureCallback = Rc<dyn Fn(gdk::Texture)>;
 type SpinnerCallback = Rc<dyn Fn(bool)>;
 type CloseCallback = Rc<dyn Fn()>;
 type ToastCallback = Rc<dyn Fn(&str, ToastKind)>;
+type SaveResultCallback = Rc<dyn Fn(SaveResultKind, String, String)>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
+    Success,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveResultKind {
     Success,
     Error,
 }
@@ -94,11 +102,12 @@ mod imp {
         #[template_child]
         pub save_copy_btn: TemplateChild<gtk::Button>,
         #[template_child]
-        pub save_menu_btn: TemplateChild<gtk::MenuButton>,
+        pub save_overwrite_btn: TemplateChild<gtk::Button>,
         pub debounce_id: RefCell<Option<glib::SourceId>>,
         pub on_texture_ready: RefCell<Option<TextureCallback>>,
         pub on_spinner: RefCell<Option<SpinnerCallback>>,
         pub on_close: RefCell<Option<CloseCallback>>,
+        pub on_save_result: RefCell<Option<SaveResultCallback>>,
         pub on_toast: RefCell<Option<ToastCallback>>,
     }
 
@@ -124,7 +133,6 @@ mod imp {
             obj.apply_i18n();
             obj.setup_scales();
             obj.connect_signals();
-            obj.setup_save_menu();
         }
     }
     impl WidgetImpl for EditorPanel {}
@@ -166,7 +174,9 @@ impl EditorPanel {
         imp.save_copy_btn
             .get()
             .set_label(&tr("editor.menu.save_copy"));
-        imp.save_menu_btn.get().set_label(&tr("button.save"));
+        imp.save_overwrite_btn
+            .get()
+            .set_label(&tr("editor.save_overwrite"));
     }
 
     fn setup_scales(&self) {
@@ -213,6 +223,10 @@ impl EditorPanel {
         *self.imp().on_close.borrow_mut() = Some(Rc::new(f));
     }
 
+    pub fn connect_save_result<F: Fn(SaveResultKind, String, String) + 'static>(&self, f: F) {
+        *self.imp().on_save_result.borrow_mut() = Some(Rc::new(f));
+    }
+
     pub fn connect_toast<F: Fn(&str, ToastKind) + 'static>(&self, f: F) {
         *self.imp().on_toast.borrow_mut() = Some(Rc::new(f));
     }
@@ -235,6 +249,12 @@ impl EditorPanel {
         }
     }
 
+    fn fire_save_result(&self, kind: SaveResultKind, heading: String, body: String) {
+        if let Some(cb) = self.imp().on_save_result.borrow().clone() {
+            cb(kind, heading, body);
+        }
+    }
+
     fn fire_toast(&self, msg: &str, kind: ToastKind) {
         if let Some(cb) = self.imp().on_toast.borrow().clone() {
             cb(msg, kind);
@@ -246,7 +266,12 @@ impl EditorPanel {
         let token = self.imp().load_token.get();
         glib::spawn_future_local(async move {
             let loaded: std::thread::Result<Option<image::DynamicImage>> =
-                gio::spawn_blocking(move || image::open(&path).ok()).await;
+                gio::spawn_blocking(move || {
+                    crate::core::orientation::load_oriented_pixbuf(&path)
+                        .ok()
+                        .and_then(dynamic_image_from_pixbuf)
+                })
+                .await;
 
             if let Ok(Some(img)) = loaded {
                 let downsampled = if img.width() * img.height() > 8_000_000 {
@@ -329,40 +354,17 @@ impl EditorPanel {
                 this.save_as_copy();
             }));
 
+        imp.save_overwrite_btn
+            .get()
+            .connect_clicked(glib::clone!(@weak self as this => move |_| {
+                this.save_overwrite_with_confirm();
+            }));
+
         imp.start_crop_btn
             .get()
             .connect_clicked(glib::clone!(@weak self as this => move |_| {
                 this.fire_toast(&tr("editor.crop_placeholder"), ToastKind::Success);
             }));
-    }
-
-    fn setup_save_menu(&self) {
-        let menu = gio::Menu::new();
-        menu.append(Some(&tr("editor.menu.save_copy")), Some("editor.save-copy"));
-        menu.append(
-            Some(&tr("editor.menu.save_overwrite")),
-            Some("editor.save-overwrite"),
-        );
-
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popover.set_has_arrow(false);
-        popover.add_css_class("glass-menu");
-        self.imp().save_menu_btn.get().set_popover(Some(&popover));
-
-        let group = gio::SimpleActionGroup::new();
-        let save_copy_action = gio::SimpleAction::new("save-copy", None);
-        save_copy_action.connect_activate(glib::clone!(@weak self as this => move |_, _| {
-            this.save_as_copy();
-        }));
-        group.add_action(&save_copy_action);
-
-        let save_overwrite_action = gio::SimpleAction::new("save-overwrite", None);
-        save_overwrite_action.connect_activate(glib::clone!(@weak self as this => move |_, _| {
-            this.save_overwrite_with_confirm();
-        }));
-        group.add_action(&save_overwrite_action);
-
-        self.insert_action_group("editor", Some(&group));
     }
 
     fn save_as_copy(&self) {
@@ -396,21 +398,31 @@ impl EditorPanel {
             if let Some(this) = weak.upgrade() {
                 match result {
                     Ok(Ok(_)) => {
-                        this.fire_toast(&tr("editor.toast.saved_copy"), ToastKind::Success);
+                        this.fire_save_result(
+                            SaveResultKind::Success,
+                            tr("editor.save_result.copy_success_title"),
+                            tr("editor.save_result.copy_success_body"),
+                        );
                         this.fire_close();
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Save Copy failed: {}", e);
-                        this.fire_toast(
-                            &trf(
-                                "editor.toast.save_copy_failed",
+                        this.fire_save_result(
+                            SaveResultKind::Error,
+                            tr("editor.save_result.copy_failed_title"),
+                            trf(
+                                "editor.save_result.copy_failed_body",
                                 &[("error", &e.to_string())],
                             ),
-                            ToastKind::Error,
                         );
                     }
                     Err(_) => {
                         tracing::error!("Save Copy worker panicked");
+                        this.fire_save_result(
+                            SaveResultKind::Error,
+                            tr("editor.save_result.copy_failed_title"),
+                            tr("editor.save_result.worker_failed_body"),
+                        );
                     }
                 }
             }
@@ -467,21 +479,31 @@ impl EditorPanel {
             if let Some(this) = weak.upgrade() {
                 match result {
                     Ok(Ok(())) => {
-                        this.fire_toast(&tr("editor.toast.overwritten"), ToastKind::Success);
+                        this.fire_save_result(
+                            SaveResultKind::Success,
+                            tr("editor.save_result.overwrite_success_title"),
+                            tr("editor.save_result.overwrite_success_body"),
+                        );
                         this.fire_close();
                     }
                     Ok(Err(e)) => {
                         tracing::error!("Save Overwrite failed: {}", e);
-                        this.fire_toast(
-                            &trf(
-                                "editor.toast.overwrite_failed",
+                        this.fire_save_result(
+                            SaveResultKind::Error,
+                            tr("editor.save_result.overwrite_failed_title"),
+                            trf(
+                                "editor.save_result.overwrite_failed_body",
                                 &[("error", &e.to_string())],
                             ),
-                            ToastKind::Error,
                         );
                     }
                     Err(_) => {
                         tracing::error!("Save Overwrite worker panicked");
+                        this.fire_save_result(
+                            SaveResultKind::Error,
+                            tr("editor.save_result.overwrite_failed_title"),
+                            tr("editor.save_result.worker_failed_body"),
+                        );
                     }
                 }
             }
@@ -489,45 +511,11 @@ impl EditorPanel {
     }
 
     fn apply_rotation_delta(&self, delta: i32) {
-        let imp = self.imp();
-        let item = match imp.media_item.borrow().clone() {
-            Some(i) => i,
-            None => return,
-        };
-
-        let weak = self.downgrade();
-        glib::spawn_future_local(async move {
-            let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
-                gio::spawn_blocking(move || crate::core::edit::rotate_in_place(&item.path, delta))
-                    .await;
-
-            if let Some(this) = weak.upgrade() {
-                match result {
-                    Ok(Ok(())) => {
-                        this.show_undo_toast(delta);
-                    }
-                    Ok(Err(e)) => tracing::error!("旋转失败: {}", e),
-                    Err(_) => tracing::error!("旋转 worker 异常终止"),
-                }
-            }
-        });
-    }
-
-    fn show_undo_toast(&self, delta: i32) {
-        let item = match self.imp().media_item.borrow().clone() {
-            Some(i) => i,
-            None => return,
-        };
-        let weak = self.downgrade();
-        let path = item.path.clone();
-        glib::timeout_add_local_once(std::time::Duration::from_secs(5), move || {
-            if let Some(_this) = weak.upgrade() {
-                if let Err(e) = crate::core::edit::rotate_in_place(&path, -delta) {
-                    tracing::error!("撤销旋转失败: {}", e);
-                }
-            }
-        });
-        tracing::info!("已旋转 {}°，5 秒后撤销", delta);
+        let mut state = self.imp().state.borrow_mut();
+        state.rotation = state.rotation.rotated_by(delta);
+        drop(state);
+        tracing::info!("ROTATE_TRACE editor_memory_rotate delta={}", delta);
+        self.schedule_preview_update();
     }
 
     fn schedule_preview_update(&self) {
@@ -542,6 +530,7 @@ impl EditorPanel {
                 Duration::from_millis(33),
                 move || {
                     if let Some(this) = weak.upgrade() {
+                        this.imp().debounce_id.borrow_mut().take();
                         this.render_preview();
                     }
                 },
@@ -605,5 +594,38 @@ impl EditorPanel {
                 this.fire_spinner(false);
             }
         });
+    }
+}
+
+fn dynamic_image_from_pixbuf(pb: Pixbuf) -> Option<image::DynamicImage> {
+    let width = pb.width() as usize;
+    let height = pb.height() as usize;
+    let n_channels = pb.n_channels() as usize;
+    let rowstride = pb.rowstride() as usize;
+    let bytes = pb.read_pixel_bytes();
+    let src: &[u8] = bytes.as_ref();
+
+    match n_channels {
+        3 => {
+            let mut out = Vec::with_capacity(width * height * 3);
+            for y in 0..height {
+                let start = y * rowstride;
+                let end = start + width * 3;
+                out.extend_from_slice(src.get(start..end)?);
+            }
+            image::RgbImage::from_raw(width as u32, height as u32, out)
+                .map(image::DynamicImage::ImageRgb8)
+        }
+        4 => {
+            let mut out = Vec::with_capacity(width * height * 4);
+            for y in 0..height {
+                let start = y * rowstride;
+                let end = start + width * 4;
+                out.extend_from_slice(src.get(start..end)?);
+            }
+            image::RgbaImage::from_raw(width as u32, height as u32, out)
+                .map(image::DynamicImage::ImageRgba8)
+        }
+        _ => None,
     }
 }

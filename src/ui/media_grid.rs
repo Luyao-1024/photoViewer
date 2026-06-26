@@ -696,7 +696,14 @@ impl MediaGrid {
                     .get()
                     .expect("MediaGrid::rebuild called before new()")
                     .clone();
-                let picture = build_photo_picture(spec, item.clone(), loader.clone(), on_bg);
+                let picture = build_photo_picture(
+                    spec,
+                    item.clone(),
+                    media_list.clone(),
+                    gi,
+                    loader.clone(),
+                    on_bg,
+                );
                 flow.append(&picture);
                 if let Some(flow_child) = flow
                     .last_child()
@@ -1221,22 +1228,23 @@ use square_tile::SquareTile;
 fn build_photo_picture(
     spec: ViewSpec,
     item: MediaItem,
+    media_list: gio::ListStore,
+    global_index: u32,
     loader: Arc<ThumbnailLoader>,
     on_background_changed: Rc<dyn Fn()>,
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
 
-    let item_name = item.display_name().to_string();
-    let item_uri = item.uri.clone();
+    let fallback_item = item.clone();
     let size = spec.thumb_size;
     let target_px = spec.pixel_size;
     // B5：mtime 已在扫描/notify 时入库（MediaItem.file_mtime），直接复用，
     // 跳过 request 端的主线程 stat。DateTime<Utc> → SystemTime。
-    let item_mtime = std::time::SystemTime::from(item.file_mtime);
+    let item_mtime = thumbnail_request_mtime(&item);
     // B6：预算缓存键存到 tile，供可见区提权匹配队列项（带 file_mtime，无主线程 stat）。
     tile.set_cache_key(ThumbnailLoader::cache_key_for(
-        &item_uri,
+        &item.uri,
         size,
         Some(item_mtime),
     ));
@@ -1262,12 +1270,27 @@ fn build_photo_picture(
             }
             requested.set(true);
 
-            tracing::debug!(
-                "VIEWER_DEBUG thumb request item_name={} uri={} size={:?} target_px={}",
+            let current_item = crate::ui::media_list::media_item_at(&media_list, global_index)
+                .unwrap_or_else(|| fallback_item.clone());
+            let item_name = current_item.display_name().to_string();
+            let item_uri = current_item.uri.clone();
+            let item_mtime = thumbnail_request_mtime(&current_item);
+            let cache_key = ThumbnailLoader::cache_key_for(&item_uri, size, Some(item_mtime));
+            if let Some(tile) = tile_weak.upgrade() {
+                tile.set_cache_key(cache_key.clone());
+            }
+
+            tracing::info!(
+                "THUMB_TRACE grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
+                current_item.id,
                 item_name,
                 item_uri,
                 size,
-                target_px
+                target_px,
+                global_index,
+                current_item.file_mtime,
+                item_mtime,
+                cache_key
             );
 
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1319,6 +1342,12 @@ fn build_photo_picture(
         request_once();
     }
     tile
+}
+
+fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
+    std::fs::metadata(&item.path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| std::time::SystemTime::from(item.file_mtime))
 }
 
 /// 失败缩略图的占位：浅灰纯色 texture，明确表示"加载失败"，
@@ -1432,5 +1461,20 @@ mod tests {
             1,
             "MediaGrid must drop stale thumbnails when the shared ListStore changes"
         );
+    }
+
+    #[test]
+    fn thumbnail_request_mtime_prefers_file_modified_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotated.png");
+        std::fs::write(&path, b"metadata").unwrap();
+
+        let mut item = sample_item(1, "rotated.png");
+        item.path = path;
+        item.file_mtime = chrono::DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH);
+
+        let mtime = thumbnail_request_mtime(&item);
+
+        assert!(mtime > std::time::SystemTime::UNIX_EPOCH);
     }
 }

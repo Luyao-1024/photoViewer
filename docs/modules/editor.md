@@ -2,7 +2,7 @@
 
 ## Scope
 
-The editor module covers non-destructive operation state, destructive rotation with undo, crop/brightness/contrast/saturation controls, and save behavior.
+The editor module covers non-destructive operation state, orientation-metadata rotation with undo, crop/brightness/contrast/saturation controls, and save behavior.
 
 ## Key Files
 
@@ -11,7 +11,8 @@ The editor module covers non-destructive operation state, destructive rotation w
 | `src/core/edit/mod.rs` | Edit state and registry surface |
 | `src/core/edit/op.rs` | `EditOperation` trait |
 | `src/core/edit/rotate.rs` | Non-destructive rotation operation |
-| `src/core/edit/destructive_rotate.rs` | Destructive rotate plus undo path |
+| `src/core/edit/destructive_rotate.rs` | Orientation-metadata rotate plus undo path |
+| `src/core/orientation.rs` | Read/write orientation metadata and apply it to display pixbufs |
 | `src/core/edit/brightness.rs` | Brightness operation |
 | `src/core/edit/contrast.rs` | Contrast operation |
 | `src/core/edit/saturation.rs` | Saturation operation |
@@ -28,9 +29,15 @@ The editor module covers non-destructive operation state, destructive rotation w
 
 The pipeline order is rotation, brightness, contrast, saturation, then crop. Preserve this order unless a test and product decision explicitly require changing resulting image semantics.
 
-## Destructive Rotate
+## Editing Session
 
-Destructive rotation has a short undo toast path. Changes here should verify both the immediate file/database result and the undo behavior.
+Entering the editor loads the source image into memory with orientation applied for display. Rotate, brightness, contrast, saturation, and crop controls update only `EditState` plus the preview texture. They must not mutate the source file, source metadata, database row, thumbnail cache, or create source backups before the user chooses a save action.
+
+Save Copy writes a new file next to the source named `{stem}_edited_{milliseconds}.{ext}`. The timestamp is Unix epoch milliseconds, and the original extension is preserved. If the source stem already ends with `_edited_<digits>`, Save Copy replaces only that final timestamp suffix instead of appending another `edited` segment. Save Copy and Save Overwrite render edited pixels from the in-memory editing state, then save with the target path's image format so `.png` paths contain PNG bytes.
+
+Orientation-metadata rotation is still implemented in `src/core/orientation.rs` and `src/core/edit/destructive_rotate.rs` for non-editor flows. The editor must treat rotation as a normal pending edit until Save Copy or Save Overwrite.
+
+The editor footer exposes Save Copy as the suggested action and Save Overwrite as a direct danger-styled button. Save Overwrite still shows its confirmation dialog before writing.
 
 ## Adding An Operation
 

@@ -7,6 +7,7 @@
 //! - **优先级队列**：可见 tile 可经 `prioritize_keys` 提到队首（BOOST），
 //!   先于普通（NORMAL）请求被 worker 取走，消除分页 rebuild / 滚动时的优先级倒置。
 use crate::core::db::DbPool;
+use crate::core::orientation;
 use gdk_pixbuf::Pixbuf;
 use gtk4::gdk::Texture;
 use image::ImageEncoder;
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{info, warn};
 
 /// 缩略图尺寸档位
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -258,6 +259,10 @@ impl ThumbnailLoader {
             warn!("缩略图请求无法计算缓存键（源文件缺失?）: {}", uri);
             return; // reply 被 drop → 调用方 rx 收到 Err
         };
+        info!(
+            "THUMB_TRACE request uri={} size={:?} supplied_mtime={:?} cache_key={}",
+            uri, size, mtime, cache_key
+        );
 
         let mut st = match self.state.lock() {
             Ok(s) => s,
@@ -265,12 +270,23 @@ impl ThumbnailLoader {
         };
         // 1) 内存命中
         if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
+            info!(
+                "THUMB_TRACE mem_cache_hit uri={} size={:?} cache_key={}",
+                uri, size, cache_key
+            );
             drop(st);
             let _ = reply.send(loaded);
             return;
         }
         // 2) 已在途 → 挂载等待者，不再入队
         if let Some(waiters) = st.in_flight.get_mut(&cache_key) {
+            info!(
+                "THUMB_TRACE in_flight_join uri={} size={:?} cache_key={} waiters_before={}",
+                uri,
+                size,
+                cache_key,
+                waiters.len()
+            );
             waiters.push(reply);
             return;
         }
@@ -316,6 +332,10 @@ impl ThumbnailLoader {
             }
         };
         if enqueued {
+            info!(
+                "THUMB_TRACE enqueued uri={} size={:?} cache_key={}",
+                uri, size, cache_key
+            );
             cvar.notify_one();
         } else {
             // 队列已满且全是不同的未缓存项：回滚在途项，避免等待者被永久挂起。
@@ -421,6 +441,14 @@ fn worker_loop(
         // in_flight 等待者列表上，由下面的广播一并唤醒。
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
+                info!(
+                    "THUMB_TRACE worker_generated uri={} size={:?} cache_key={} texture={}x{}",
+                    req.uri,
+                    req.size,
+                    req.cache_key,
+                    pb.width(),
+                    pb.height()
+                );
                 // 亮度判定下沉到 worker：直接就地采样 pixbuf 像素，主线程零回读。
                 let is_light = pixbuf_is_light(&pb);
                 let texture = Texture::for_pixbuf(&pb);
@@ -528,7 +556,7 @@ fn generate(
         if !cache_path.exists() {
             continue;
         }
-        tracing::debug!(
+        info!(
             "VIEWER_DEBUG thumb disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
             uri,
             src_path.display(),
@@ -536,7 +564,7 @@ fn generate(
             cache_path.display()
         );
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
-        return Pixbuf::from_file(&cache_path)
+        return Pixbuf::from_file(cache_path)
             .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", cache_path, e));
     }
 
@@ -544,7 +572,7 @@ fn generate(
         std::fs::create_dir_all(parent)?;
     }
 
-    tracing::debug!(
+    info!(
         "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_stem={}",
         uri,
         src_path.display(),
@@ -561,8 +589,17 @@ fn generate(
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
 /// 返回内存里已缩放好的 pixbuf，让调用方直接做成 Texture，省掉读盘重解码。
 fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
-    let pb =
-        Pixbuf::from_file(src_path).map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
+    let orientation_value = orientation::read_orientation(src_path).ok();
+    let pb = orientation::load_oriented_pixbuf(src_path)
+        .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
+    info!(
+        "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={}",
+        src_path.display(),
+        orientation_value,
+        pb.width(),
+        pb.height(),
+        max_dim
+    );
     let scaled = scale_pixbuf_to_fit(&pb, max_dim);
     if pixbuf_has_transparency(&scaled) {
         let cache_path = cache_stem.with_extension("webp");

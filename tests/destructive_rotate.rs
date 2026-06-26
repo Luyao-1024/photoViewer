@@ -1,31 +1,49 @@
 //! Destructive rotate + undo tests.
 //!
-//! Verifies that `rotate_in_place` overwrites the original file while
-//! preserving a `.jpg.bak` snapshot of the pre-rotation bytes, and that
-//! applying the inverse rotation restores the file to its pre-first-rotation
-//! contents.
+//! Verifies that `rotate_in_place` updates orientation metadata without
+//! rotating encoded pixels.
 mod common;
 
 use common::*;
 use photo_viewer::core::edit::destructive_rotate;
+use photo_viewer::core::orientation::{load_oriented_pixbuf, read_orientation};
 use tempfile::tempdir;
 
 #[test]
-fn rotate_creates_backup_and_unrotate_restores() {
+fn rotate_jpeg_updates_orientation_without_changing_pixels() {
     let dir = tempdir().unwrap();
     let src = write_plain_jpeg(dir.path(), "rot.jpg");
-    let original_bytes = std::fs::read(&src).unwrap();
+    let original = image::open(&src).unwrap().to_rgb8();
 
     destructive_rotate::rotate_in_place(&src, 90).unwrap();
 
-    let rotated_bytes = std::fs::read(&src).unwrap();
-    let backup_bytes = std::fs::read(src.with_extension("jpg.bak")).unwrap();
-    // 备份 = 旋转前原图（original_bytes），新文件 = 旋转后内容
-    assert_eq!(backup_bytes, original_bytes); // backup = pre-rotation
-    assert_ne!(rotated_bytes, original_bytes); // file changed
+    let after = image::open(&src).unwrap().to_rgb8();
+    assert_eq!(after.dimensions(), original.dimensions());
+    assert_eq!(after.as_raw(), original.as_raw());
+    assert_eq!(read_orientation(&src).unwrap(), 6);
+    assert!(src.with_extension("jpg.bak").exists());
 
-    // 反向旋转还原
+    let displayed = load_oriented_pixbuf(&src).unwrap();
+    assert_eq!((displayed.width(), displayed.height()), (48, 64));
+
     destructive_rotate::rotate_in_place(&src, -90).unwrap();
-    let restored_bytes = std::fs::read(&src).unwrap();
-    assert_eq!(restored_bytes, backup_bytes); // restored to pre-first-rotation
+    assert_eq!(read_orientation(&src).unwrap(), 1);
+}
+
+#[test]
+fn rotate_png_updates_orientation_without_changing_pixels() {
+    let dir = tempdir().unwrap();
+    let src = write_plain_png(dir.path(), "rot.png");
+    let original = image::open(&src).unwrap().to_rgb8();
+
+    destructive_rotate::rotate_in_place(&src, 90).unwrap();
+
+    let after = image::open(&src).unwrap().to_rgb8();
+    assert_eq!(after.dimensions(), original.dimensions());
+    assert_eq!(after.as_raw(), original.as_raw());
+    assert_eq!(read_orientation(&src).unwrap(), 6);
+    assert!(src.with_extension("png.bak").exists());
+
+    let displayed = load_oriented_pixbuf(&src).unwrap();
+    assert_eq!((displayed.width(), displayed.height()), (48, 64));
 }

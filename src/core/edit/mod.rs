@@ -35,6 +35,19 @@ impl Rotation {
             Self::R270 => 270,
         }
     }
+
+    pub fn from_degrees(degrees: i32) -> Self {
+        match degrees.rem_euclid(360) {
+            90 => Self::R90,
+            180 => Self::R180,
+            270 => Self::R270,
+            _ => Self::None,
+        }
+    }
+
+    pub fn rotated_by(self, delta_degrees: i32) -> Self {
+        Self::from_degrees(self.as_degrees() + delta_degrees)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
