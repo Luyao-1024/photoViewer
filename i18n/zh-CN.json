@@ -168,5 +168,18 @@
     "setting.section.appearance": "外观",
     "setting.liquid_glass": "液态玻璃特效",
     "setting.liquid_glass_save_failed": "保存外观设置失败：{error}",
-    "setting.save_failed": "保存失败"
+    "setting.save_failed": "保存失败",
+    "setting.section.storage": "存储",
+    "setting.section.storage_description": "管理应用缓存和数据库。",
+    "setting.clear_thumbnails": "清理缩略图缓存",
+    "setting.clear_database": "重置数据库",
+    "setting.clear_thumbnails_confirm_title": "清理缩略图缓存？",
+    "setting.clear_thumbnails_confirm_body": "将删除所有缓存的缩略图文件，下次浏览时会重新生成。",
+    "setting.clear_database_confirm_title": "重置数据库？",
+    "setting.clear_database_confirm_body": "将清空所有媒体记录和相册数据，不会删除原始文件。",
+    "setting.clear_success": "清理完成",
+    "setting.clear_thumbnails_success": "已删除 {count} 个缩略图文件",
+    "setting.clear_database_success": "已重置数据库，删除 {count} 条记录",
+    "setting.clear_failed": "清理失败：{error}",
+    "dialog.confirm": "确认"
 }

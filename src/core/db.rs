@@ -249,6 +249,15 @@ pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     Ok(changed)
 }
 
+/// 清空所有媒体记录。返回删除的记录数。
+///
+/// 用于重置数据库，不会删除原始文件。
+pub fn clear_all_media(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count = conn.execute("DELETE FROM media_items", [])?;
+    Ok(count)
+}
+
 /// 标记为已删除（不立即物理删除）
 pub fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;

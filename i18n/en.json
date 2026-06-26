@@ -168,5 +168,18 @@
     "setting.section.appearance": "Appearance",
     "setting.liquid_glass": "Liquid Glass effect",
     "setting.liquid_glass_save_failed": "Failed to save the appearance setting: {error}",
-    "setting.save_failed": "Save failed"
+    "setting.save_failed": "Save failed",
+    "setting.section.storage": "Storage",
+    "setting.section.storage_description": "Manage app cache and database.",
+    "setting.clear_thumbnails": "Clear Thumbnail Cache",
+    "setting.clear_database": "Reset Database",
+    "setting.clear_thumbnails_confirm_title": "Clear thumbnail cache?",
+    "setting.clear_thumbnails_confirm_body": "All cached thumbnails will be deleted and regenerated when browsing.",
+    "setting.clear_database_confirm_title": "Reset database?",
+    "setting.clear_database_confirm_body": "All media records and album data will be cleared. Original files will not be deleted.",
+    "setting.clear_success": "Cleanup complete",
+    "setting.clear_thumbnails_success": "Deleted {count} thumbnail files",
+    "setting.clear_database_success": "Database reset, removed {count} records",
+    "setting.clear_failed": "Cleanup failed: {error}",
+    "dialog.confirm": "Confirm"
 }

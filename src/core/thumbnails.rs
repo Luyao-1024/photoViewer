@@ -412,6 +412,16 @@ impl ThumbnailLoader {
         cache_key_str(uri, size, mtime)
     }
 
+    /// 清空内存缓存（LRU 缓存和在途去重映射）。
+    ///
+    /// 用于清理功能，强制后续请求重新从磁盘加载缩略图。
+    pub fn clear_mem_cache(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.mem_cache.clear();
+            state.in_flight.clear();
+        }
+    }
+
     /// 关闭队列：唤醒所有 worker 并让它们退出。生产中 loader 是泄漏单例、永不调用；
     /// 仅供测试收尾，避免 worker 线程跨用例泄漏。
     pub fn shutdown(&self) {

@@ -329,6 +329,89 @@ impl MainWindow {
             }
         });
 
+        // ── Storage: Clear Cache ────────────────────────────────────────────
+        // Buttons to clear thumbnail cache and reset the database.
+        let storage_title = gtk::Label::new(Some(&tr("setting.section.storage")));
+        storage_title.set_xalign(0.0);
+        content.append(&storage_title);
+
+        let storage_desc = gtk::Label::new(Some(&tr("setting.section.storage_description")));
+        storage_desc.set_wrap(true);
+        storage_desc.set_xalign(0.0);
+        content.append(&storage_desc);
+
+        // Clear thumbnails button
+        let btn_clear_thumbs = gtk::Button::with_label(&tr("setting.clear_thumbnails"));
+        btn_clear_thumbs.add_css_class("destructive-action");
+        content.append(&btn_clear_thumbs);
+
+        let page_for_thumbs = page.clone();
+        let loader_for_thumbs = self.imp().loader.borrow().clone();
+        btn_clear_thumbs.connect_clicked(move |_| {
+            let loader_clone = loader_for_thumbs.clone();
+            show_clear_confirm_dialog(
+                &page_for_thumbs,
+                &tr("setting.clear_thumbnails_confirm_title"),
+                &tr("setting.clear_thumbnails_confirm_body"),
+                move || {
+                    let cache_dir = config::cache_dir();
+                    let thumb_dir = cache_dir.join("thumbnails");
+                    match crate::core::cache::enforce_size_limit(&thumb_dir, 0) {
+                        Ok(count) => {
+                            // Clear in-memory cache
+                            if let Some(ref loader) = loader_clone {
+                                loader.clear_mem_cache();
+                            }
+                            show_clear_success_toast(&trf("setting.clear_thumbnails_success", &[("count", &count.to_string())]));
+                        }
+                        Err(err) => {
+                            show_clear_error_toast(&trf("setting.clear_failed", &[("error", &err.to_string())]));
+                        }
+                    }
+                },
+            );
+        });
+
+        // Reset database button
+        let btn_clear_db = gtk::Button::with_label(&tr("setting.clear_database"));
+        btn_clear_db.add_css_class("destructive-action");
+        content.append(&btn_clear_db);
+
+        let page_for_db = page.clone();
+        let pool_for_db = self.imp().pool.borrow().clone();
+        let loader_for_db = self.imp().loader.borrow().clone();
+        let media_list_for_db = self.imp().media_list.borrow().clone();
+        btn_clear_db.connect_clicked(move |_| {
+            let pool_clone = pool_for_db.clone();
+            let loader_clone = loader_for_db.clone();
+            let media_list_clone = media_list_for_db.clone();
+            show_clear_confirm_dialog(
+                &page_for_db,
+                &tr("setting.clear_database_confirm_title"),
+                &tr("setting.clear_database_confirm_body"),
+                move || {
+                    if let Some(ref pool) = pool_clone {
+                        match crate::core::db::clear_all_media(pool) {
+                            Ok(count) => {
+                                // Clear in-memory thumbnail cache
+                                if let Some(ref loader) = loader_clone {
+                                    loader.clear_mem_cache();
+                                }
+                                // Clear the media list in UI
+                                if let Some(ref media_list) = media_list_clone {
+                                    media_list.remove_all();
+                                }
+                                show_clear_success_toast(&trf("setting.clear_database_success", &[("count", &count.to_string())]));
+                            }
+                            Err(err) => {
+                                show_clear_error_toast(&trf("setting.clear_failed", &[("error", &err.to_string())]));
+                            }
+                        }
+                    }
+                },
+            );
+        });
+
         page.set_child(Some(&content));
         page
     }
@@ -429,6 +512,55 @@ fn is_trash_page(page: &adw::NavigationPage) -> bool {
 
 fn is_settings_page(page: &adw::NavigationPage) -> bool {
     page.title() == tr("setting.page.title")
+}
+
+/// Show a confirmation dialog for clearing cache/database.
+fn show_clear_confirm_dialog<F: Fn() + 'static>(
+    parent: &adw::NavigationPage,
+    title: &str,
+    body: &str,
+    on_confirm: F,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(title)
+        .body(body)
+        .build();
+    dialog.add_css_class("glass-alert-dialog");
+    dialog.add_response("cancel", &tr("button.cancel"));
+    dialog.add_response("confirm", &tr("dialog.confirm"));
+    dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    dialog.connect_response(Some("confirm"), move |_, _| {
+        on_confirm();
+    });
+
+    dialog.present(parent);
+}
+
+/// Show a success toast notification.
+fn show_clear_success_toast(message: &str) {
+    let app = gtk::Application::default();
+    if let Some(window) = app.active_window() {
+        if let Ok(_win) = window.downcast::<MainWindow>() {
+            let notification = gtk::gio::Notification::new(&tr("setting.clear_success"));
+            notification.set_body(Some(message));
+            app.send_notification(None, &notification);
+        }
+    }
+}
+
+/// Show an error toast notification.
+fn show_clear_error_toast(message: &str) {
+    let app = gtk::Application::default();
+    if let Some(window) = app.active_window() {
+        if let Ok(_win) = window.downcast::<MainWindow>() {
+            let notification = gtk::gio::Notification::new(&tr("setting.clear_failed"));
+            notification.set_body(Some(message));
+            app.send_notification(None, &notification);
+        }
+    }
 }
 
 fn pop_to_visible_page(
