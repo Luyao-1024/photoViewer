@@ -8,7 +8,10 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::ListBoxRow;
 use libadwaita as adw;
-use libadwaita::prelude::{ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt, PreferencesRowExt};
+use libadwaita::prelude::{
+    ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt,
+    PreferencesRowExt,
+};
 use serde_json::{Map, Value};
 
 use crate::config;
@@ -380,10 +383,16 @@ impl MainWindow {
                             }
                             // Update subtitle
                             row_clone.set_subtitle(&format_size(0));
-                            show_clear_success_toast(&trf("setting.clear_thumbnails_success", &[("count", &count.to_string())]));
+                            show_clear_success_toast(&trf(
+                                "setting.clear_thumbnails_success",
+                                &[("count", &count.to_string())],
+                            ));
                         }
                         Err(err) => {
-                            show_clear_error_toast(&trf("setting.clear_failed", &[("error", &err.to_string())]));
+                            show_clear_error_toast(&trf(
+                                "setting.clear_failed",
+                                &[("error", &err.to_string())],
+                            ));
                         }
                     }
                 },
@@ -433,10 +442,16 @@ impl MainWindow {
                                 }
                                 // Update subtitle
                                 row_clone.set_subtitle(&format_size(0));
-                                show_clear_success_toast(&trf("setting.clear_database_success", &[("count", &count.to_string())]));
+                                show_clear_success_toast(&trf(
+                                    "setting.clear_database_success",
+                                    &[("count", &count.to_string())],
+                                ));
                             }
                             Err(err) => {
-                                show_clear_error_toast(&trf("setting.clear_failed", &[("error", &err.to_string())]));
+                                show_clear_error_toast(&trf(
+                                    "setting.clear_failed",
+                                    &[("error", &err.to_string())],
+                                ));
                             }
                         }
                     }

@@ -5,8 +5,8 @@ use exif::{Field, In, Tag, Value};
 use gdk_pixbuf::{Pixbuf, PixbufRotation};
 
 use crate::core::error::{AppError, Result};
-use crate::core::metadata::extract_heic_exif_tiff;
 use crate::core::media::mime_from_extension;
+use crate::core::metadata::extract_heic_exif_tiff;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const EXIF_PREFIX: &[u8] = b"Exif\0\0";
