@@ -668,8 +668,10 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
         .map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
 
     // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
+    // videoconvert 会将 HDR (bt2100-hlg 等) 自动转换到 SDR (bt601)。
+    // 指定 colorimetry=bt601 和 color-mode=none 确保色彩空间正确转换。
     let desc = format!(
-        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        "uridecodebin uri={} ! videoconvert ! video/x-raw,format=RGB,colorimetry=bt601 ! appsink name=sink",
         uri
     );
     let pipeline = gst::parse::launch(&desc)
@@ -787,12 +789,104 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
     );
 
     pipeline.set_state(gst::State::Null).ok();
-    info!("VIDEO_THUMB 提取成功 {}x{}", width, height);
+
+    // 读取视频旋转元数据并应用方向校正。
+    let rotation = read_video_rotation(path);
+    let pb = if rotation != 0 {
+        let orientation = match rotation {
+            90 => 6,
+            180 => 3,
+            270 => 8,
+            _ => 1,
+        };
+        orientation::apply_orientation_to_pixbuf(&pb, orientation)
+    } else {
+        pb
+    };
+
+    info!("VIDEO_THUMB 提取成功 {}x{} rotation={}", pb.width(), pb.height(), rotation);
 
     // 在左下角叠加半透明播放图标。
     let pb = overlay_play_icon(&pb);
 
     Ok(pb)
+}
+
+/// 从 MP4/MOV 容器的 tkhd atom 中读取视频旋转角度（0/90/180/270）。
+///
+/// MP4 容器在 track header (tkhd) 中存储一个 3×3 仿射矩阵。
+/// 旋转信息编码在矩阵的 a,b,c,d 分量中（16.16 定点数）：
+///   - 0°:   a=1, b=0, c=0, d=1
+///   - 90°:  a=0, b=1, c=-1, d=0
+///   - 180°: a=-1, b=0, c=0, d=-1
+///   - 270°: a=0, b=-1, c=1, d=0
+fn read_video_rotation(path: &Path) -> i32 {
+    let Ok(data) = std::fs::read(path) else {
+        return 0;
+    };
+
+    // 查找 tkhd atom（可能有多个 track，取第一个视频 track）。
+    let mut pos = 0usize;
+    while pos + 8 <= data.len() {
+        let size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap_or([0; 4])) as usize;
+        let typ = &data[pos + 4..pos + 8];
+
+        if typ == b"tkhd" && size >= 84 {
+            let version = data[pos + 8];
+            let matrix_offset = if version == 0 {
+                pos + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 + 2 // 40 bytes from content start
+            } else {
+                pos + 8 + 4 + 8 + 8 + 4 + 4 + 8 + 8 + 2 + 2 + 2 + 2 // 56 bytes from content start
+            };
+
+            if matrix_offset + 36 <= data.len() {
+                let a = i32::from_be_bytes(
+                    data[matrix_offset..matrix_offset + 4]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                );
+                let b = i32::from_be_bytes(
+                    data[matrix_offset + 4..matrix_offset + 8]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                );
+                let c = i32::from_be_bytes(
+                    data[matrix_offset + 12..matrix_offset + 16]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                );
+                let d = i32::from_be_bytes(
+                    data[matrix_offset + 16..matrix_offset + 20]
+                        .try_into()
+                        .unwrap_or([0; 4]),
+                );
+
+                // 转换为浮点（16.16 定点数）。
+                let a_f = a as f64 / 65536.0;
+                let b_f = b as f64 / 65536.0;
+                let _c_f = c as f64 / 65536.0;
+                let _d_f = d as f64 / 65536.0;
+
+                // 判断旋转角度。
+                if a_f.abs() < 0.01 && (b_f - 1.0).abs() < 0.01 {
+                    return 90;
+                }
+                if (a_f - (-1.0)).abs() < 0.01 && b_f.abs() < 0.01 {
+                    return 180;
+                }
+                if a_f.abs() < 0.01 && (b_f - (-1.0)).abs() < 0.01 {
+                    return 270;
+                }
+            }
+        }
+
+        if size < 8 {
+            break;
+        }
+        pos += size;
+    }
+
+    0
 }
 
 /// 在 pixbuf 左下角叠加一个半透明播放三角形，标记为视频缩略图。
