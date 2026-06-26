@@ -70,11 +70,13 @@ fn editor_panel_buttons_use_glass() {
     panel.configure(make_media(), pool.clone());
     let imp = panel.imp();
 
-    // Action buttons (cancel / save_copy / save_overwrite) carry glass-toolbar-button.
+    // Action buttons (reset / cancel / save_copy / save_overwrite) carry glass-toolbar-button.
+    let reset = probe_classes(&imp.reset_btn.get());
     let cancel = probe_classes(&imp.cancel_btn.get());
     let save_copy = probe_classes(&imp.save_copy_btn.get());
     let save_overwrite = probe_classes(&imp.save_overwrite_btn.get());
     for (name, classes) in [
+        ("reset_btn", &reset),
         ("cancel_btn", &cancel),
         ("save_copy_btn", &save_copy),
         ("save_overwrite_btn", &save_overwrite),
@@ -94,6 +96,10 @@ fn editor_panel_buttons_use_glass() {
     assert!(
         save_overwrite.iter().any(|c| c == "glass-toolbar-danger"),
         "save_overwrite_btn should carry glass-toolbar-danger, got {save_overwrite:?}"
+    );
+    assert!(
+        reset.iter().any(|c| c == "circular"),
+        "reset_btn should be a circular icon button, got {reset:?}"
     );
 
     // Rotate + crop buttons carry glass-toolbar-button.
@@ -175,6 +181,158 @@ fn editor_panel_buttons_use_glass() {
     );
     rotate_panel.imp().rotate_90_cw.get().emit_clicked();
     assert_eq!(rotate_panel.imp().state.borrow().rotation, Rotation::R180);
+
+    rotate_panel.imp().brightness_scale.get().set_value(42.0);
+    rotate_panel.imp().state.borrow_mut().crop = Some((4, 5, 40, 30));
+    rotate_panel.imp().reset_btn.get().emit_clicked();
+    assert_eq!(rotate_panel.imp().state.borrow().rotation, Rotation::None);
+    assert_eq!(rotate_panel.imp().state.borrow().brightness, 0);
+    assert_eq!(rotate_panel.imp().state.borrow().crop, None);
+    assert_eq!(rotate_panel.imp().brightness_scale.get().value() as i32, 0);
+
+    rotate_panel.imp().source_dimensions.set((64, 48));
+    assert!(!rotate_panel.imp().crop_ratio_box.get().is_visible());
+    rotate_panel.imp().start_crop_btn.get().emit_clicked();
+    assert!(
+        rotate_panel.imp().crop_mode_active.get(),
+        "Start Crop should enable inline crop mode"
+    );
+    assert!(
+        rotate_panel.imp().crop_ratio_box.get().is_visible(),
+        "graphical crop ratio control should stay inside the editor panel"
+    );
+    assert!(rotate_panel
+        .imp()
+        .crop_ratio_preview
+        .get()
+        .is::<gtk::DrawingArea>());
+    assert!(
+        rotate_panel
+            .imp()
+            .crop_ratio_prev_btn
+            .get()
+            .is::<gtk::Button>()
+            && rotate_panel
+                .imp()
+                .crop_ratio_next_btn
+                .get()
+                .is::<gtk::Button>(),
+        "crop ratio should be selected with previous/next buttons, not a dropdown"
+    );
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_prev_btn.get().width_request(),
+        28,
+        "crop ratio arrow buttons should stay close to the icon size"
+    );
+    assert!(
+        probe_classes(&rotate_panel.imp().crop_ratio_prev_btn.get())
+            .iter()
+            .any(|c| c == "crop-ratio-arrow-button"),
+        "crop ratio previous button should override generic toolbar padding"
+    );
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_next_btn.get().width_request(),
+        28,
+        "crop ratio arrow buttons should stay close to the icon size"
+    );
+    assert!(
+        probe_classes(&rotate_panel.imp().crop_ratio_next_btn.get())
+            .iter()
+            .any(|c| c == "crop-ratio-arrow-button"),
+        "crop ratio next button should override generic toolbar padding"
+    );
+    assert_eq!(
+        rotate_panel
+            .imp()
+            .crop_ratio_prev_btn
+            .get()
+            .height_request(),
+        40,
+        "crop ratio arrow buttons should avoid large empty hit areas"
+    );
+    assert_eq!(
+        rotate_panel
+            .imp()
+            .crop_ratio_next_btn
+            .get()
+            .height_request(),
+        40,
+        "crop ratio arrow buttons should avoid large empty hit areas"
+    );
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_preview.get().width_request(),
+        150,
+        "crop ratio preview should be large enough to read"
+    );
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_preview.get().height_request(),
+        76,
+        "crop ratio preview should be large enough to read"
+    );
+    assert_eq!(
+        rotate_panel.imp().start_crop_btn.get().width_request(),
+        132,
+        "Done Crop should not occupy a full row"
+    );
+    assert_eq!(rotate_panel.imp().crop_ratio_index.get(), 0);
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_label.get().label().as_str(),
+        photo_viewer::core::i18n::tr("editor.crop.ratio.source")
+    );
+    rotate_panel.imp().crop_ratio_prev_btn.get().emit_clicked();
+    assert_eq!(rotate_panel.imp().crop_ratio_index.get(), 5);
+    assert_eq!(
+        rotate_panel.imp().crop_ratio_label.get().label().as_str(),
+        photo_viewer::core::i18n::tr("editor.crop.ratio.free")
+    );
+    rotate_panel.imp().crop_ratio_next_btn.get().emit_clicked();
+    assert_eq!(rotate_panel.imp().crop_ratio_index.get(), 0);
+    assert!(
+        rotate_panel.imp().state.borrow().crop.is_some(),
+        "Start Crop should create a draggable crop rectangle"
+    );
+
+    for _ in 0..100 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        if rotate_panel.imp().source_image.borrow().is_some()
+            && rotate_panel.imp().debounce_id.borrow().is_none()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        rotate_panel.imp().source_image.borrow().is_some(),
+        "test image should be loaded before probing overlay updates"
+    );
+    let spinner_updates = Rc::new(Cell::new(0));
+    rotate_panel.connect_spinner({
+        let spinner_updates = Rc::clone(&spinner_updates);
+        move |visible| {
+            if visible {
+                spinner_updates.set(spinner_updates.get() + 1);
+            }
+        }
+    });
+    spinner_updates.set(0);
+    rotate_panel.set_crop_rect_from_overlay((8, 8, 24, 18));
+    for _ in 0..20 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        spinner_updates.get(),
+        0,
+        "dragging the crop overlay should update only the overlay, not rerender the image preview"
+    );
+
+    rotate_panel.imp().reset_btn.get().emit_clicked();
+    assert!(!rotate_panel.imp().crop_mode_active.get());
+    assert_eq!(rotate_panel.imp().state.borrow().crop, None);
 
     assert_eq!(
         read_orientation(&rotate_src).unwrap(),

@@ -99,6 +99,14 @@ template $ViewerPage : Adw.NavigationPage {
               };
 
               [overlay]
+              Gtk.DrawingArea crop_overlay {
+                visible: false;
+                vexpand: true;
+                hexpand: true;
+                css-classes: ["crop-selection-overlay"];
+              }
+
+              [overlay]
               Gtk.Spinner spinner {
                 vexpand: true;
                 hexpand: true;

@@ -199,6 +199,13 @@ box.mode-selector.on-light-background box.mode-dot,
   color: inherit;
 }
 
+.glass-toolbar-button.crop-ratio-arrow-button {
+  min-width: 28px;
+  min-height: 40px;
+  padding: 0 4px;
+  border-radius: 8px;
+}
+
 .glass-header windowcontrols button {
   min-height: 28px;
   min-width: 28px;

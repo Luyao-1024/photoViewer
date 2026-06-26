@@ -68,6 +68,58 @@ pub struct EditState {
     pub crop: Option<(u32, u32, u32, u32)>,
 }
 
+impl EditState {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn has_pending_edits(&self) -> bool {
+        self.rotation != Rotation::None
+            || self.brightness != 0
+            || self.contrast != 0
+            || self.saturation != 0
+            || self.crop.is_some()
+    }
+
+    pub fn for_preview(&self, crop_mode_active: bool) -> Self {
+        let mut state = self.clone();
+        if crop_mode_active {
+            state.crop = None;
+        }
+        state
+    }
+}
+
+pub fn centered_crop_rect_for_aspect(
+    image_width: u32,
+    image_height: u32,
+    aspect_width: u32,
+    aspect_height: u32,
+) -> Option<CropRect> {
+    if image_width == 0 || image_height == 0 || aspect_width == 0 || aspect_height == 0 {
+        return None;
+    }
+
+    let image_ratio = image_width as f64 / image_height as f64;
+    let target_ratio = aspect_width as f64 / aspect_height as f64;
+    let (width, height) = if image_ratio > target_ratio {
+        let height = image_height;
+        let width = ((height as f64 * target_ratio).round() as u32).clamp(1, image_width);
+        (width, height)
+    } else {
+        let width = image_width;
+        let height = ((width as f64 / target_ratio).round() as u32).clamp(1, image_height);
+        (width, height)
+    };
+
+    Some(CropRect {
+        x: (image_width - width) / 2,
+        y: (image_height - height) / 2,
+        width,
+        height,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditCategory {
     Transform, // Rotate

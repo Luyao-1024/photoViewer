@@ -38,3 +38,7 @@ Left/right image navigation belongs to viewer chrome. When positioned as top-rig
 ## Details And Editor Panels
 
 Details/editor side panels should be treated as overlay chrome, not as layout that changes the main image viewport unexpectedly. Collapsed state should hide or unparent expensive/size-forcing child regions where needed.
+
+The editor crop selector is drawn as a `GtkDrawingArea` overlay above the viewer `GtkPicture`. It must stay in the image overlay so users can drag the crop rectangle directly over the photo. Coordinate conversion maps the displayed contain-fitted image rectangle back to oriented source-image pixels before updating `EditorPanel`. A hit crop rectangle remains visually selected after click/drag begin so the movable/resizable affordance is obvious.
+
+When the editor sidebar is open, the viewer overlay previous/next navigation buttons are hidden. Keyboard and gesture navigation are already blocked by `is_editing`; the visible chrome must match that locked state so editing controls are not mixed with viewer navigation.

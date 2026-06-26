@@ -1,5 +1,7 @@
 use image::{DynamicImage, RgbImage};
-use photo_viewer::core::edit::{EditRegistry, ParamValue, Rotation};
+use photo_viewer::core::edit::{
+    centered_crop_rect_for_aspect, EditRegistry, EditState, ParamValue, Rotation,
+};
 
 fn sample_img() -> DynamicImage {
     DynamicImage::ImageRgb8(RgbImage::from_fn(100, 100, |_, _| {
@@ -58,4 +60,60 @@ fn crop_some_crops_image() {
         .unwrap();
     assert_eq!(out.width(), 50);
     assert_eq!(out.height(), 60);
+}
+
+#[test]
+fn edit_state_reset_clears_pending_edits() {
+    let mut state = EditState {
+        rotation: Rotation::R90,
+        brightness: 25,
+        contrast: -10,
+        saturation: 40,
+        crop: Some((10, 20, 30, 40)),
+    };
+
+    state.reset();
+
+    assert_eq!(state.rotation, Rotation::None);
+    assert_eq!(state.brightness, 0);
+    assert_eq!(state.contrast, 0);
+    assert_eq!(state.saturation, 0);
+    assert_eq!(state.crop, None);
+}
+
+#[test]
+fn centered_crop_rect_for_aspect_uses_largest_centered_rect() {
+    let rect = centered_crop_rect_for_aspect(400, 300, 16, 9).unwrap();
+
+    assert_eq!(rect.x, 0);
+    assert_eq!(rect.y, 37);
+    assert_eq!(rect.width, 400);
+    assert_eq!(rect.height, 225);
+}
+
+#[test]
+fn centered_crop_rect_for_square_centers_on_wide_image() {
+    let rect = centered_crop_rect_for_aspect(400, 300, 1, 1).unwrap();
+
+    assert_eq!(rect.x, 50);
+    assert_eq!(rect.y, 0);
+    assert_eq!(rect.width, 300);
+    assert_eq!(rect.height, 300);
+}
+
+#[test]
+fn edit_state_for_preview_omits_crop_while_crop_mode_is_active() {
+    let state = EditState {
+        rotation: Rotation::R90,
+        brightness: 12,
+        contrast: 0,
+        saturation: 0,
+        crop: Some((10, 20, 30, 40)),
+    };
+
+    let preview = state.for_preview(true);
+
+    assert_eq!(preview.rotation, Rotation::R90);
+    assert_eq!(preview.brightness, 12);
+    assert_eq!(preview.crop, None);
 }

@@ -21,6 +21,13 @@ template $EditorPanel : Gtk.Box {
       css-classes: ["title-3"];
     }
 
+    Gtk.Button reset_btn {
+      icon-name: "edit-undo-symbolic";
+      tooltip-text: "";
+      sensitive: false;
+      css-classes: ["glass-toolbar-button", "circular"];
+    }
+
     Gtk.Button editor_close_btn {
       icon-name: "window-close-symbolic";
       tooltip-text: "";
@@ -92,8 +99,58 @@ template $EditorPanel : Gtk.Box {
       Adw.PreferencesGroup crop_group {
         title: "";
 
-        Gtk.Button start_crop_btn {
-          css-classes: ["glass-toolbar-button"];
+        Gtk.Box crop_ratio_box {
+          orientation: horizontal;
+          spacing: 8;
+          halign: center;
+          visible: false;
+          margin-bottom: 8;
+
+          Gtk.Button crop_ratio_prev_btn {
+            icon-name: "go-previous-symbolic";
+            width-request: 28;
+            height-request: 40;
+            valign: center;
+            css-classes: ["glass-toolbar-button", "crop-ratio-arrow-button"];
+          }
+
+          Gtk.Box {
+            orientation: vertical;
+            spacing: 4;
+            width-request: 156;
+            valign: center;
+
+            Gtk.DrawingArea crop_ratio_preview {
+              width-request: 150;
+              height-request: 76;
+              halign: center;
+            }
+
+            Gtk.Label crop_ratio_label {
+              xalign: 0.5;
+              halign: center;
+            }
+          }
+
+          Gtk.Button crop_ratio_next_btn {
+            icon-name: "go-next-symbolic";
+            width-request: 28;
+            height-request: 40;
+            valign: center;
+            css-classes: ["glass-toolbar-button", "crop-ratio-arrow-button"];
+          }
+        }
+
+        Gtk.Box crop_action_box {
+          orientation: horizontal;
+          spacing: 6;
+          halign: center;
+          margin-top: 2;
+
+          Gtk.Button start_crop_btn {
+            width-request: 132;
+            css-classes: ["glass-toolbar-button", "glass-toolbar-suggested"];
+          }
         }
       }
     };
