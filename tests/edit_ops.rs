@@ -63,6 +63,38 @@ fn crop_some_crops_image() {
 }
 
 #[test]
+fn saturation_minus_100_converts_color_to_grayscale() {
+    let r = EditRegistry::new_with_v1();
+    let op = r.get("saturation").unwrap();
+    let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(1, 1, image::Rgb([90, 150, 210])));
+
+    let out = op.apply(&img, ParamValue::Int(-100)).unwrap().to_rgb8();
+    let pixel = out.get_pixel(0, 0).0;
+
+    assert_eq!(pixel[0], pixel[1]);
+    assert_eq!(pixel[1], pixel[2]);
+}
+
+#[test]
+fn saturation_positive_increases_channel_spread_without_reordering_hue() {
+    let r = EditRegistry::new_with_v1();
+    let op = r.get("saturation").unwrap();
+    let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(1, 1, image::Rgb([110, 140, 170])));
+
+    let out = op.apply(&img, ParamValue::Int(100)).unwrap().to_rgb8();
+    let pixel = out.get_pixel(0, 0).0;
+
+    assert!(
+        pixel[0] < pixel[1] && pixel[1] < pixel[2],
+        "saturation should preserve channel ordering for this blue-tinted color, got {pixel:?}"
+    );
+    assert!(
+        pixel[2] - pixel[0] > 170 - 110,
+        "positive saturation should increase colorfulness, got {pixel:?}"
+    );
+}
+
+#[test]
 fn edit_state_reset_clears_pending_edits() {
     let mut state = EditState {
         rotation: Rotation::R90,

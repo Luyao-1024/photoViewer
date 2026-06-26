@@ -22,7 +22,7 @@ pub fn apply_crop(img: &DynamicImage, rect: CropRect) -> DynamicImage {
     )
 }
 
-/// 应用亮度/对比度/饱和度调整（使用 image::DynamicImage::brighten + contrast + huerotate）
+/// 应用亮度/对比度/饱和度调整
 pub fn apply_color_adjust(
     img: &DynamicImage,
     brightness: i32,
@@ -38,9 +38,33 @@ pub fn apply_color_adjust(
         out = out.adjust_contrast(contrast as f32 / 100.0 * 100.0);
     }
     if saturation != 0 {
-        // 简化：饱和度 0 → 原图，+100 → 完全饱和，-100 → 灰度
-        // 使用 huerotate 近似（更精确的实现需要颜色空间转换）
-        out = out.huerotate(saturation);
+        out = adjust_saturation(&out, saturation);
     }
     out
+}
+
+fn adjust_saturation(img: &DynamicImage, saturation: i32) -> DynamicImage {
+    let factor = 1.0 + (saturation.clamp(-100, 100) as f32 / 100.0);
+    let mut rgba = img.to_rgba8();
+
+    for pixel in rgba.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        let r = r as f32;
+        let g = g as f32;
+        let b = b as f32;
+        let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        pixel.0 = [
+            scale_channel_from_luma(r, luma, factor),
+            scale_channel_from_luma(g, luma, factor),
+            scale_channel_from_luma(b, luma, factor),
+            a,
+        ];
+    }
+
+    DynamicImage::ImageRgba8(rgba)
+}
+
+fn scale_channel_from_luma(channel: f32, luma: f32, factor: f32) -> u8 {
+    (luma + (channel - luma) * factor).round().clamp(0.0, 255.0) as u8
 }
