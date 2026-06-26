@@ -396,7 +396,7 @@ fn gps_dms(exif: &exif::Exif, tag: exif::Tag) -> Option<(u32, u32, f64)> {
 /// Extract the raw TIFF block of the first `Exif` item in a HEIC/HEIF file,
 /// or `None` if the file has no such item. Returns enough for
 /// `exif::Reader::read_raw` regardless of item size (no 64 KB cap).
-fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
+pub fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
     // Walk top-level boxes to the `meta` box.
     let mut off = 0usize;
     while let Some((size, typ, hdr)) = box_header(data, off) {
