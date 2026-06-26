@@ -167,10 +167,6 @@ mod imp {
         pub original_texture: RefCell<Option<gdk::Texture>>,
         /// True while the editor side-panel is open (prevents nav gestures).
         pub is_editing: Cell<bool>,
-        /// Currently attached video stream, held so progress seeking can address it.
-        pub video_stream: RefCell<Option<gtk::MediaFile>>,
-        /// Guard against progress `value-changed` loops while timestamp updates the slider.
-        pub video_progress_updating: Cell<bool>,
         /// Dynamic camera-parameter rows appended to `file_group`.
         pub camera_rows: RefCell<Vec<adw::ActionRow>>,
         /// 当前图片收藏状态（用于按钮即时渲染）。
@@ -230,8 +226,6 @@ mod imp {
         pub picture: TemplateChild<gtk::Picture>,
         #[template_child]
         pub video: TemplateChild<gtk::Video>,
-        #[template_child]
-        pub video_progress: TemplateChild<gtk::Scale>,
         #[template_child]
         pub crop_overlay: TemplateChild<gtk::DrawingArea>,
         #[template_child]
@@ -310,7 +304,6 @@ impl ViewerPage {
         obj.setup_details_panel();
         obj.setup_favorite_button();
         obj.setup_nav_buttons();
-        obj.setup_video_progress();
         obj.setup_thumb_strip_listener();
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
@@ -963,59 +956,27 @@ impl ViewerPage {
         });
     }
 
-    fn setup_video_progress(&self) {
-        let progress = self.imp().video_progress.get();
-        progress.set_range(0.0, 1.0);
-        progress.set_value(0.0);
-
-        let weak = self.downgrade();
-        progress.connect_value_changed(move |scale| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let imp = this.imp();
-            if imp.video_progress_updating.get() {
-                return;
-            }
-            let Some(stream) = imp.video_stream.borrow().clone() else {
-                return;
-            };
-            let duration = stream.duration();
-            if duration <= 0 || !stream.is_seekable() {
-                return;
-            }
-            let target = (scale.value().clamp(0.0, 1.0) * duration as f64).round() as i64;
-            stream.seek(target);
-        });
-    }
-
-    fn set_video_progress_value(&self, value: f64) {
-        let imp = self.imp();
-        imp.video_progress_updating.set(true);
-        imp.video_progress.get().set_value(value.clamp(0.0, 1.0));
-        imp.video_progress_updating.set(false);
-    }
-
     fn stop_video_playback(&self) {
-        if let Some(stream) = self.imp().video_stream.borrow_mut().take() {
+        // Pause the in-flight stream so audio/playback does not continue behind
+        // an image, then detach it. The GtkVideo keeps its own built-in
+        // play/pause + progress controls, so there is no separate slider to reset.
+        if let Some(stream) = self.imp().video.get().media_stream() {
             stream.pause();
         }
         self.imp()
             .video
             .get()
             .set_media_stream(gtk::MediaStream::NONE);
-        self.set_video_progress_value(0.0);
     }
 
     fn show_image_stage(&self) {
         self.stop_video_playback();
         self.imp().video.get().set_visible(false);
-        self.imp().video_progress.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(true);
     }
 
-    fn show_video_stage(&self, item: &MediaItem, token: u64) {
+    fn show_video_stage(&self, item: &MediaItem) {
         self.stop_video_playback();
         self.imp()
             .picture
@@ -1023,7 +984,6 @@ impl ViewerPage {
             .set_paintable(None::<&gdk::Paintable>);
         self.imp().picture.get().set_visible(false);
         self.imp().video.get().set_visible(true);
-        self.imp().video_progress.get().set_visible(true);
         self.imp().spinner.get().set_visible(false);
         self.imp().edit_btn.get().set_sensitive(false);
         self.set_crop_overlay(CropOverlayUpdate {
@@ -1036,37 +996,6 @@ impl ViewerPage {
         stream.set_loop(false);
         stream.set_playing(true);
         self.imp().video.get().set_media_stream(Some(&stream));
-        *self.imp().video_stream.borrow_mut() = Some(stream.clone());
-
-        let weak = self.downgrade();
-        stream.connect_timestamp_notify(move |stream| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            if this.imp().current_token.get() != token {
-                return;
-            }
-            let duration = stream.duration();
-            if duration <= 0 {
-                this.set_video_progress_value(0.0);
-                return;
-            }
-            this.set_video_progress_value(stream.timestamp() as f64 / duration as f64);
-        });
-
-        let weak = self.downgrade();
-        stream.connect_duration_notify(move |stream| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            if this.imp().current_token.get() != token {
-                return;
-            }
-            this.imp()
-                .video_progress
-                .get()
-                .set_sensitive(stream.duration() > 0 && stream.is_seekable());
-        });
     }
 
     /// Rebuild or update the filmstrip for the current index. Called from
@@ -1829,7 +1758,7 @@ impl ViewerPage {
         }
         if item.is_video() {
             self.refresh_thumb_strip();
-            self.show_video_stage(&item, token);
+            self.show_video_stage(&item);
             return;
         }
         self.show_image_stage();

@@ -157,22 +157,6 @@ template $ViewerPage : Adw.NavigationPage {
               margin-bottom: 12;
               spacing: 6;
 
-              Gtk.Scale video_progress {
-                visible: false;
-                orientation: horizontal;
-                draw-value: false;
-                hexpand: true;
-                css-classes: ["viewer-video-progress"];
-
-                adjustment: Gtk.Adjustment {
-                  lower: 0;
-                  upper: 1;
-                  step-increment: 0.01;
-                  page-increment: 0.1;
-                  value: 0;
-                };
-              }
-
               Gtk.Box viewer_bottom_bar {
                 orientation: horizontal;
                 halign: fill;

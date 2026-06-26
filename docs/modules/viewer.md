@@ -33,7 +33,7 @@ The filmstrip `ScrolledWindow` must keep `propagate-natural-width: false` and us
 
 Thumbnail generation applies the same orientation metadata as the original viewer decode. Because the thumbnail cache key includes source mtime, orientation-only edits must update the in-memory `MediaItem.file_mtime` before refreshing the strip; waiting for the filesystem watcher leaves the current viewer session using the old cache key and can show a stale direction.
 
-For videos, the progress scale is shown above the filmstrip and maps its `[0, 1]` value to the media stream duration for seeking. Programmatic timestamp updates must guard against triggering a seek loop.
+For videos, play/pause and seeking are handled by the `GtkVideo`'s own built-in media controller (its progress bar sits directly under the video). There is no separate progress widget above the filmstrip — an earlier custom `Gtk.Scale` duplicated the built-in bar and was removed.
 
 ## Navigation Buttons
 

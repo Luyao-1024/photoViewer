@@ -123,10 +123,6 @@ fn viewer_toolbar_uses_glass_classes() {
         !imp.video.get().is_visible(),
         "video widget should start hidden until a video media item is shown",
     );
-    assert!(
-        !imp.video_progress.get().is_visible(),
-        "video progress should start hidden until a video media item is shown",
-    );
 
     let prev_parent = imp
         .prev_btn
@@ -179,10 +175,10 @@ fn viewer_toolbar_uses_glass_classes() {
         "favorite_btn should not carry favorite-active after remove_css_class, got {after_remove_classes:?}",
     );
 
-    assert_viewer_video_mode_shows_video_progress_and_disables_editing();
+    assert_viewer_video_mode_disables_editing();
 }
 
-fn assert_viewer_video_mode_shows_video_progress_and_disables_editing() {
+fn assert_viewer_video_mode_disables_editing() {
     let dir = tempfile::tempdir().unwrap();
     let video_path = dir.path().join("clip.mp4");
     std::fs::write(&video_path, b"fake mp4").unwrap();
@@ -211,10 +207,6 @@ fn assert_viewer_video_mode_shows_video_progress_and_disables_editing() {
     assert!(
         imp.video.get().is_visible(),
         "video widget should be visible for video media"
-    );
-    assert!(
-        imp.video_progress.get().is_visible(),
-        "video progress should be visible for video media"
     );
     assert!(
         !imp.picture.get().is_visible(),
