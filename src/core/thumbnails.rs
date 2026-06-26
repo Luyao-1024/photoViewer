@@ -23,6 +23,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 use tokio::sync::oneshot;
@@ -554,8 +555,8 @@ fn cache_key_str(uri: &str, size: ThumbnailSize, mtime: Option<SystemTime>) -> O
 /// 使用 `std::fs::read` 读取整个文件到内存，然后从内存构造 Pixbuf。
 /// 这避免了 gdk-pixbuf 直接读取文件时可能遇到的竞态条件（文件被写入一半）。
 fn load_pixbuf_sync(path: &Path) -> anyhow::Result<Pixbuf> {
-    let data = std::fs::read(path)
-        .map_err(|e| anyhow::anyhow!("读取缓存文件失败 {:?}: {}", path, e))?;
+    let data =
+        std::fs::read(path).map_err(|e| anyhow::anyhow!("读取缓存文件失败 {:?}: {}", path, e))?;
     if data.is_empty() {
         anyhow::bail!("缓存文件为空: {:?}", path);
     }
@@ -609,17 +610,13 @@ fn generate(
                 let scaled = scale_pixbuf_to_fit(&pb, size.max_dim());
                 let cache_path = cache_stem.with_extension("jpg");
                 let thumb = ensure_opaque(&scaled);
-                thumb.savev(&cache_path, "jpeg", &[]).map_err(|e| {
-                    anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e)
-                })?;
+                thumb
+                    .savev(&cache_path, "jpeg", &[])
+                    .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
                 return Ok(thumb);
             }
             Err(e) => {
-                warn!(
-                    "视频帧提取失败，回退占位图 {}: {}",
-                    src_path.display(),
-                    e
-                );
+                warn!("视频帧提取失败，回退占位图 {}: {}", src_path.display(), e);
                 return generate_video_placeholder(size.max_dim(), &cache_stem);
             }
         }
@@ -683,25 +680,94 @@ fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result
 
 /// 用 GStreamer 从视频文件中提取一帧作为缩略图。
 ///
-/// 流程：`filesrc → decodebin → videoconvert → appsink`，seek 到视频开头约 1 秒处
-/// （或总时长的 10%），拉取一帧 RGB 数据，构造 `Pixbuf`。提取成功后在左下角叠加
-/// 半透明播放图标，让用户一眼识别为视频。
-fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
-    info!("VIDEO_THUMB 提取视频帧: {}", path.display());
+/// 提取视频封面帧：优先调用 [`extract_video_frame_ffmpeg`]（基于 libav，正确处理
+/// limited→full 色彩范围、HDR→SDR 色调映射与旋转），失败时回退到内置 GStreamer
+/// 管线 [`extract_video_frame_gst`]。两条路径返回的帧均已在左下角叠加播放图标。
+fn extract_video_frame(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
+    match extract_video_frame_ffmpeg(path, max_dim) {
+        Ok(pb) => Ok(pb),
+        Err(e) => {
+            warn!(
+                "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer {}: {}",
+                path.display(),
+                e
+            );
+            extract_video_frame_gst(path, max_dim)
+        }
+    }
+}
+
+/// 用外部 `ffmpegthumbnailer` 生成封面帧。它内部走 libav，会正确扩展 limited
+/// range（YUV 16–235 → RGB 0–255）并做 HDR→SDR 与旋转，避免手写管线把窄范围
+/// 原样塞进 RGB 导致缩略图发灰、低饱和。输出 PNG（无损，避免二次 JPEG 压缩），
+/// 解码后在左下角叠加播放图标。
+fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
+    // 临时输出文件：复用 PID + 路径哈希命名（PID 惯例见 prefs.rs），落在系统 tmp。
+    let tmp = std::env::temp_dir().join(format!(
+        "pvthumb-{}-{}.png",
+        std::process::id(),
+        blake3::hash(path.to_string_lossy().as_bytes()).to_hex()
+    ));
+
+    let out = Command::new("ffmpegthumbnailer")
+        .args([
+            "-i",
+            &path.to_string_lossy(),
+            "-o",
+            &tmp.to_string_lossy(),
+            "-s",
+            &max_dim.to_string(),
+            "-t",
+            "10%",
+            "-c",
+            "png",
+            "-f",
+        ])
+        .output()
+        .map_err(|e| anyhow::anyhow!("启动 ffmpegthumbnailer 失败: {e}"))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!(
+            "ffmpegthumbnailer 退出码 {:?}: {}",
+            out.status.code(),
+            stderr.trim()
+        );
+    }
+
+    let pb = load_pixbuf_sync(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    let pb = pb?;
+    let pb = overlay_play_icon(&pb);
+    info!(
+        "VIDEO_THUMB ffmpegthumbnailer 提取成功 {}x{}",
+        pb.width(),
+        pb.height()
+    );
+    Ok(pb)
+}
+
+/// GStreamer fallback：`uridecodebin → videoflip(auto) → videoconvert → appsink`，
+/// seek 到约 1 秒（或总时长 10%）处拉取一帧。输出 caps 显式指定 `colorimetry=sRGB`
+/// 以强制 videoconvert 做 limited→full 色彩范围扩展，修复 TV-range 视频发灰。
+fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
+    info!("VIDEO_THUMB 提取视频帧(GStreamer): {}", path.display());
     gst::init().map_err(|e| anyhow::anyhow!("GStreamer 初始化失败: {e}"))?;
 
-    let uri = glib::filename_to_uri(path, None)
-        .map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
+    let uri =
+        glib::filename_to_uri(path, None).map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
 
     // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
     // videoflip video-direction=auto 从所有来源（容器 tkhd、编码 SEI、tags）自动检测并应用旋转。
-    // videoconvert 会自动处理色彩空间转换（包括 HDR→SDR）。
+    // videoconvert 负责 YUV→RGB；显式 colorimetry=sRGB 强制输出 full-range sRGB，
+    // 避免 limited-range(TV) 视频黑/白点被压在 16/235 导致缩略图发灰低饱和。
     let desc = format!(
-        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
+        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB,colorimetry=sRGB ! appsink name=sink",
         uri
     );
-    let pipeline = gst::parse::launch(&desc)
-        .map_err(|e| anyhow::anyhow!("创建 pipeline 失败: {e}"))?;
+    let pipeline =
+        gst::parse::launch(&desc).map_err(|e| anyhow::anyhow!("创建 pipeline 失败: {e}"))?;
     let pipeline = pipeline
         .downcast::<gst::Pipeline>()
         .map_err(|_| anyhow::anyhow!("pipeline 类型转换失败"))?;
@@ -765,10 +831,7 @@ fn extract_video_frame(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
     };
 
     if !seek_pos.is_none() {
-        let _ = pipeline.seek_simple(
-            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-            seek_pos,
-        );
+        let _ = pipeline.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, seek_pos);
         // 等待 seek 完成。
         let _ = bus.timed_pop_filtered(
             gst::ClockTime::from_seconds(3),
@@ -1374,7 +1437,11 @@ mod tests {
         let result = overlay_play_icon(&pb);
         let bytes_orig = pb.read_pixel_bytes();
         let bytes_result = result.read_pixel_bytes();
-        assert_eq!(bytes_orig.as_ref(), bytes_result.as_ref(), "10x10 pixbuf 不应被修改");
+        assert_eq!(
+            bytes_orig.as_ref(),
+            bytes_result.as_ref(),
+            "10x10 pixbuf 不应被修改"
+        );
     }
 
     /// 视频帧提取端到端测试（需要真实视频文件）。

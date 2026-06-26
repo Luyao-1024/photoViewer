@@ -43,6 +43,8 @@ Left/right image navigation belongs to viewer chrome. When positioned as top-rig
 
 Details/editor side panels should be treated as overlay chrome, not as layout that changes the main image viewport unexpectedly. Collapsed state should hide or unparent expensive/size-forcing child regions where needed.
 
+The details panel mirrors its row set to the media kind: photos get EXIF camera-parameter rows (aperture, exposure, focal length, location, …), while videos get `ffprobe`-derived rows (duration, codec + profile, frame rate, bit rate, container, device) appended to the same `file_group` via the same dynamic-`ActionRow` mechanism. Video `width`/`height`/`taken_at` light up the shared dimensions/captured rows just like photos. Both sets load asynchronously (`load_camera_details` / `load_video_details`) behind a navigation token so switching items cancels stale loads.
+
 Videos are view-only. Keep the Edit button disabled for `video/*` items and guard the click handler so videos cannot configure `EditorPanel`.
 
 The editor crop selector is drawn as a `GtkDrawingArea` overlay above the viewer `GtkPicture`. It must stay in the image overlay so users can drag the crop rectangle directly over the photo. Coordinate conversion maps the displayed contain-fitted image rectangle back to oriented source-image pixels before updating `EditorPanel`. A hit crop rectangle remains visually selected after click/drag begin so the movable/resizable affordance is obvious.

@@ -12,7 +12,7 @@
 use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
-use crate::core::metadata::{self, ExifSummary};
+use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::orientation;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
@@ -169,6 +169,8 @@ mod imp {
         pub is_editing: Cell<bool>,
         /// Dynamic camera-parameter rows appended to `file_group`.
         pub camera_rows: RefCell<Vec<adw::ActionRow>>,
+        /// Dynamic video-info rows appended to `file_group` (duration/codec/…).
+        pub video_rows: RefCell<Vec<adw::ActionRow>>,
         /// 当前图片收藏状态（用于按钮即时渲染）。
         pub is_favorite: Cell<bool>,
         /// Thumbnail loader shared with grids — used for the filmstrip.
@@ -2010,7 +2012,12 @@ impl ViewerPage {
         }
 
         self.clear_camera_rows();
-        self.load_camera_details(item.path.clone(), self.imp().current_token.get());
+        self.clear_video_rows();
+        if item.is_video() {
+            self.load_video_details(item.path.clone(), self.imp().current_token.get());
+        } else {
+            self.load_camera_details(item.path.clone(), self.imp().current_token.get());
+        }
     }
 
     /// Walk up from an ActionRow to its owning PreferencesGroup.
@@ -2253,6 +2260,103 @@ impl ViewerPage {
             rows.push(row);
         }
     }
+
+    /// Remove all dynamically-created video-info rows from the file group.
+    fn clear_video_rows(&self) {
+        if let Some(g) = &self.file_group() {
+            for row in self.imp().video_rows.borrow_mut().drain(..) {
+                g.remove(&row);
+            }
+        }
+    }
+
+    /// 异步加载视频元数据（ffprobe），完成后填充视频属性行；带 token 过期保护。
+    /// 镜像 [`load_camera_details`]。
+    fn load_video_details(&self, path: PathBuf, token: u64) {
+        let path_dbg = path.display().to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        gio::spawn_blocking(move || {
+            let meta = metadata::extract(&path).ok();
+            let summary = meta.as_ref().and_then(|m| m.video.clone());
+            tracing::info!(
+                "load_video_details spawn_blocking path={} summary_some={}",
+                path_dbg,
+                summary.is_some(),
+            );
+            let _ = tx.send(summary);
+        });
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(summary) = rx.await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
+            }
+            this.populate_video_rows(summary.as_ref());
+        });
+    }
+
+    /// Build video `ActionRow`s (duration / codec / fps / bitrate / container /
+    /// device) and append them to the file group. Mirrors `populate_camera_rows`.
+    fn populate_video_rows(&self, summary: Option<&VideoSummary>) {
+        let Some(group) = self.file_group() else {
+            tracing::warn!("populate_video_rows: no PreferencesGroup for name_row");
+            return;
+        };
+        let Some(s) = summary else {
+            return;
+        };
+
+        let mut rows = self.imp().video_rows.borrow_mut();
+
+        if let Some(d) = s.duration_secs {
+            if let Some(formatted) = format_duration(d) {
+                let row = action_row(&tr("video.duration"), &formatted);
+                group.add(&row);
+                rows.push(row);
+            }
+        }
+        if let Some(codec) = &s.codec {
+            let row = action_row(&tr("video.codec"), codec);
+            group.add(&row);
+            rows.push(row);
+        }
+        if let Some(fps) = s.fps {
+            let row = action_row(&tr("video.fps"), &format!("{:.0} fps", fps.round()));
+            group.add(&row);
+            rows.push(row);
+        }
+        if let Some(br) = s.bitrate {
+            if let Some(formatted) = format_bitrate(br) {
+                let row = action_row(&tr("video.bitrate"), &formatted);
+                group.add(&row);
+                rows.push(row);
+            }
+        }
+        if let Some(container) = &s.container {
+            let row = action_row(&tr("video.container"), container);
+            group.add(&row);
+            rows.push(row);
+        }
+        // Device: make + model 合并（与相机行一致）。
+        let body = match (&s.make, &s.model) {
+            (Some(mk), Some(md)) if md.contains(mk.as_str()) => md.clone(),
+            (Some(mk), Some(md)) => format!("{} {}", mk, md),
+            (_, Some(md)) => md.clone(),
+            (Some(mk), _) => mk.clone(),
+            _ => String::new(),
+        };
+        if !body.is_empty() {
+            let row = action_row(&tr("video.device"), &body);
+            group.add(&row);
+            rows.push(row);
+        }
+    }
 }
 
 /// Build a non-activatable `ActionRow` with translated title and plain subtitle.
@@ -2286,6 +2390,36 @@ fn format_exposure(num: u32, den: u32) -> String {
     } else {
         format!("{:.1}s", v)
     }
+}
+
+/// 格式化视频时长（秒）为 `M:SS` / `MM:SS`，超过 1 小时则 `H:MM:SS`。
+/// 非正数或非有限值返回 `None`（UI 隐藏该行）。
+fn format_duration(secs: f64) -> Option<String> {
+    if !secs.is_finite() || secs <= 0.0 {
+        return None;
+    }
+    let total = secs.round() as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    Some(if h > 0 {
+        format!("{}:{:02}:{:02}", h, m, s)
+    } else {
+        format!("{}:{:02}", m, s)
+    })
+}
+
+/// 格式化比特率：≥ 1 Mbps 用 Mbps，否则 kbps。0 返回 `None`。
+fn format_bitrate(bps: u64) -> Option<String> {
+    if bps == 0 {
+        return None;
+    }
+    let mbps = bps as f64 / 1_000_000.0;
+    Some(if mbps >= 1.0 {
+        format!("{:.1} Mbps", mbps)
+    } else {
+        format!("{} kbps", bps / 1000)
+    })
 }
 
 /// Pure calculation: scroll adjustment value plus a visual-only residual that
