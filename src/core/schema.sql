@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS albums (
     last_modified   INTEGER NOT NULL
 );
 
+-- album_order 持久化用户在侧栏中拖动重排相册得到的顺序。
+-- 单独成表而非加列到 `albums`：`albums` 在每次扫描 / `albums::refresh` 时被
+-- DELETE + 重新 INSERT，独立表才不会被这轮重建清掉。键是 `folder_path`
+-- （对虚拟相册则是其魔法路径），因此虚拟相册同样可被拖动排序。
+CREATE TABLE IF NOT EXISTS album_order (
+    folder_path     TEXT PRIMARY KEY,
+    sort_order      INTEGER NOT NULL
+);
+
 -- edits 非破坏性编辑记录
 CREATE TABLE IF NOT EXISTS edits (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

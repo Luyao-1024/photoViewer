@@ -317,6 +317,20 @@ box.mode-selector.on-light-background box.mode-dot,
   opacity: 0.6;
 }
 
+/* Drag-to-reorder an album row. The dragged row is dimmed while held, and the
+   drop target shows an accent edge (top or bottom half) so the user sees where
+   the album will land. Inset shadow layers on top of the glass material, so it
+   reads correctly in both Liquid Glass and plain translucent modes. */
+.glass-sidebar-row-dragging {
+  opacity: 0.4;
+}
+.glass-sidebar-row-drop-above {
+  box-shadow: inset 0 2px 0 var(--accent-bg-color);
+}
+.glass-sidebar-row-drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent-bg-color);
+}
+
 /* viewer-stage — image content area; subtle radial wash that frames
    the picture and separates it from app chrome. */
 .viewer-stage {

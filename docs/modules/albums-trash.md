@@ -17,6 +17,7 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 | `data/ui/album-detail-page.blp` | Album detail template |
 | `data/ui/trash-page.blp` | Trash template |
 | `tests/album_navigation.rs` | Album detail + viewer push |
+| `tests/album_order.rs` | Persistent sidebar album ordering (`set_album_order`) |
 | `tests/e3e_albums_trash.rs` | End-to-end albums/trash flow |
 | `tests/trash_flow.rs` | Trash behavior |
 
@@ -25,6 +26,8 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album counts derived from media rows so scanner/database state remains the source of truth.
 
 Albums are **listed directly in the sidebar** under a collapsible "Albums" group header — selecting an album row pushes its `AlbumDetailPage` immediately. There is no separate albums-grid overview page; the sidebar IS the album list. The per-album filtered media list is built by `album_detail_page::filtered_items_for_album`, shared between the sidebar (on open) and the favorites album (on favorite-toggle refresh). A favorite/trash change refreshes the sidebar counts via `window::refresh_albums_sidebar`.
+
+Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 
 The Albums page also has virtual logical albums:
 

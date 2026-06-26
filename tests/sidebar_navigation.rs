@@ -9,12 +9,21 @@ use std::sync::Arc;
 
 use gio::prelude::ListModelExt;
 use gtk4 as gtk;
+use gtk4::prelude::ObjectExt;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{gio, glib};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use photo_viewer::core::i18n::tr;
 use photo_viewer::ui::{MainWindow, PhotosPage};
+
+/// The `visible` *property flag* — i.e. what `set_visible` controls — rather
+/// than `is_visible()`, which also walks the ancestor chain and is always
+/// `false` in a headless test that never shows the window. Reading the flag
+/// lets us assert the collapse/expand toggle actually flips row visibility.
+fn visible_flag(w: &gtk::Widget) -> bool {
+    w.property::<bool>("visible")
+}
 
 #[test]
 fn sidebar_navigation_suite() {
@@ -125,7 +134,10 @@ fn sidebar_navigation_suite() {
             album_rows.len()
         );
         for row in album_rows.iter() {
-            assert!(row.is_visible(), "album rows start expanded/visible");
+            assert!(
+                visible_flag(row.upcast_ref()),
+                "album rows start expanded/visible"
+            );
             let classes: Vec<String> = row.css_classes().iter().map(|s| s.to_string()).collect();
             assert!(
                 classes.iter().any(|c| c == "glass-sidebar-subrow"),
@@ -173,12 +185,15 @@ fn sidebar_navigation_suite() {
             "album rows should still exist while collapsed"
         );
         for row in album_rows.iter() {
-            assert!(!row.is_visible(), "album rows should hide when collapsed");
+            assert!(
+                !visible_flag(row.upcast_ref()),
+                "album rows should hide when collapsed"
+            );
         }
     }
     window.toggle_albums_expanded();
     assert!(
-        window.imp().album_rows.borrow()[0].is_visible(),
+        visible_flag(window.imp().album_rows.borrow()[0].upcast_ref()),
         "album rows should reappear when expanded",
     );
 }

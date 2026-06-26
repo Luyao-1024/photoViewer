@@ -47,6 +47,10 @@ impl Album {
 }
 
 /// 列出实体相册 + 虚拟“收藏/图片/视频”相册（放在列表首位）。
+///
+/// 若 `album_order` 表中存有用户拖动重排后的顺序，则按该顺序重排结果；
+/// 未记录顺序的相册追加到末尾并保留其默认相对顺序（虚拟相册在前、文件夹按
+/// 最近修改倒序）。
 pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
     let mut list = list(pool)?;
     list.insert(0, favorites_album(pool)?);
@@ -58,7 +62,67 @@ pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
         2,
         media_kind_album(pool, "video", VIDEOS_ALBUM_PATH, tr("album.videos.name"))?,
     );
-    Ok(list)
+    apply_saved_order(list, pool)
+}
+
+/// 按 `album_order` 表中保存的顺序重排相册列表。
+///
+/// - 有记录 `sort_order` 的相册按该值升序排前；
+/// - 没有记录的相册按它们在传入列表中的相对顺序追加在末尾；
+/// - 表为空时原样返回（全新库 / 从未拖动过 → 维持虚拟相册置顶的默认行为）。
+fn apply_saved_order(albums: Vec<Album>, pool: &DbPool) -> Result<Vec<Album>> {
+    let order = album_order_map(pool)?;
+    if order.is_empty() {
+        return Ok(albums);
+    }
+    // (保存的序号 or None, 传入时的原索引, 相册) —— 用原索引做稳定 tiebreaker。
+    let mut keyed: Vec<(Option<i64>, usize, Album)> = albums
+        .into_iter()
+        .enumerate()
+        .map(|(i, album)| {
+            let key = album.folder_path.to_string_lossy();
+            (order.get(key.as_ref()).copied(), i, album)
+        })
+        .collect();
+    keyed.sort_by(|a, b| match (a.0, b.0) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.1.cmp(&b.1)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(&b.1),
+    });
+    Ok(keyed.into_iter().map(|(_, _, album)| album).collect())
+}
+
+/// 读取 `album_order` 表为 `folder_path → sort_order` 映射。
+fn album_order_map(pool: &DbPool) -> Result<std::collections::HashMap<String, i64>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare("SELECT folder_path, sort_order FROM album_order")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (path, order) = row?;
+        map.insert(path, order);
+    }
+    Ok(map)
+}
+
+/// 持久化侧栏相册的完整顺序。`ordered` 为从上到下的 `folder_path` 列表。
+///
+/// 先 `DELETE` 再逐条写入，保证表内容与当前显示顺序完全一致；扫描中新出现的、
+/// 尚未被拖动过的相册不会出现在此列表中，会按 `apply_saved_order` 的回退规则
+/// 落到末尾。重排动作本身不频繁，列表也不大，整表重写可接受。
+pub fn set_album_order(pool: &DbPool, ordered: &[String]) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute("DELETE FROM album_order", [])?;
+    for (i, path) in ordered.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO album_order (folder_path, sort_order) VALUES (?1, ?2)",
+            rusqlite::params![path, i as i64],
+        )?;
+    }
+    Ok(())
 }
 
 fn favorites_album(pool: &DbPool) -> Result<Album> {

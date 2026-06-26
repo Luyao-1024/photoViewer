@@ -30,6 +30,12 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 - An album row → push that album's `AlbumDetailPage` **directly** (there is no
   intermediate album-grid page). The Albums header is non-selectable and only
   collapses/expands its children.
+- Album rows are **drag-to-reorder** (long-press + drag): each carries a
+  `DragSource` whose payload is its `folder_path`, and a `DropTarget` that
+  persists the new order via `albums::set_album_order` then rebuilds the rows.
+  The order lives in a standalone `album_order` table (decoupled from the
+  `albums` materialized view, which is wiped and rebuilt on every scan), and
+  `albums::list_with_favorites` re-applies it — virtual and folder albums alike.
 - Trash row → push `TrashPage`. Settings row → peek the settings page on top.
 - `PhotosPage` owns Year/Month/Day `MediaGrid` instances backed by the same `gio::ListStore`.
 - Opening a photo pushes `ViewerPage`.

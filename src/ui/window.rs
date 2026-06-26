@@ -15,7 +15,7 @@ use libadwaita::prelude::{
 use serde_json::{Map, Value};
 
 use crate::config;
-use crate::core::albums::{list_with_favorites, Album};
+use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::prefs;
@@ -217,6 +217,7 @@ impl MainWindow {
         for (pos, album) in (2_i32..).zip(albums.iter()) {
             let row = build_album_row(album);
             row.set_visible(expanded);
+            self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
             list.insert(&row, pos);
             self.imp().album_rows.borrow_mut().push(row);
             self.imp()
@@ -272,6 +273,126 @@ impl MainWindow {
     /// and re-selects the album row whose detail page is on top of the stack.
     pub fn refresh_album_rows(&self) {
         self.rebuild_album_rows();
+    }
+
+    /// Persist a drag-to-reorder: move the album at `source_path` so it lands
+    /// just before (`drop_after = false`) or just after (`drop_after = true`)
+    /// the album at `target_path`, then rebuild the rows so the sidebar matches.
+    ///
+    /// The new full order is derived from the currently displayed `targets`
+    /// (the source of truth for what the user sees), written wholesale to
+    /// `album_order`, then `rebuild_album_rows` re-fetches and re-applies it.
+    fn reorder_album(&self, source_path: &str, target_path: &str, drop_after: bool) {
+        if source_path == target_path {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+
+        // Current top-to-bottom album order, minus the dragged album.
+        let mut order: Vec<String> = self
+            .imp()
+            .targets
+            .borrow()
+            .iter()
+            .filter_map(|target| match target {
+                SidebarTarget::Album(a) => Some(a.folder_path.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .filter(|p| p != source_path)
+            .collect();
+
+        let insert_at = match order.iter().position(|p| p == target_path) {
+            Some(idx) => {
+                if drop_after {
+                    (idx + 1).min(order.len())
+                } else {
+                    idx
+                }
+            }
+            None => order.len(),
+        };
+        order.insert(insert_at, source_path.to_string());
+
+        if let Err(err) = set_album_order(&pool, &order) {
+            tracing::warn!("failed to persist album order: {err}");
+        }
+        self.rebuild_album_rows();
+    }
+
+    /// Wire long-press-drag reorder onto an album row: a `DragSource` carries
+    /// the row's `folder_path` as the drag payload (and dims the row while
+    /// dragging), and a `DropTarget` accepts another album's path, showing an
+    /// above/below insertion indicator and persisting the new order on drop.
+    ///
+    /// `Gtk.DragSource` only begins a drag after the pointer moves past the
+    /// drag threshold, so a plain click still selects the row normally — only
+    /// a press-and-drag reorders.
+    fn attach_album_dnd(&self, row: &gtk::ListBoxRow, folder_path: String) {
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gtk::gdk::DragAction::MOVE);
+        let value = glib::Value::from(folder_path.as_str());
+        drag.set_content(Some(&gtk::gdk::ContentProvider::for_value(&value)));
+
+        let drag_row = row.downgrade();
+        drag.connect_drag_begin(move |_, _| {
+            if let Some(r) = drag_row.upgrade() {
+                r.add_css_class("glass-sidebar-row-dragging");
+            }
+        });
+        let drag_row = row.downgrade();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(r) = drag_row.upgrade() {
+                r.remove_css_class("glass-sidebar-row-dragging");
+            }
+        });
+        row.add_controller(drag);
+
+        let drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+
+        let motion_row = row.downgrade();
+        drop.connect_motion(move |_t, _x, y| {
+            if let Some(r) = motion_row.upgrade() {
+                let half = r.height().max(1) as f64 / 2.0;
+                r.remove_css_class("glass-sidebar-row-drop-above");
+                r.remove_css_class("glass-sidebar-row-drop-below");
+                r.add_css_class(if y > half {
+                    "glass-sidebar-row-drop-below"
+                } else {
+                    "glass-sidebar-row-drop-above"
+                });
+            }
+            gtk::gdk::DragAction::MOVE
+        });
+        let leave_row = row.downgrade();
+        drop.connect_leave(move |_t| {
+            if let Some(r) = leave_row.upgrade() {
+                r.remove_css_class("glass-sidebar-row-drop-above");
+                r.remove_css_class("glass-sidebar-row-drop-below");
+            }
+        });
+
+        let weak = self.downgrade();
+        let drop_row = row.downgrade();
+        let target_path = folder_path;
+        drop.connect_drop(move |_t, value, _x, y| {
+            let Some(window) = weak.upgrade() else {
+                return false;
+            };
+            let Some(r) = drop_row.upgrade() else {
+                return false;
+            };
+            r.remove_css_class("glass-sidebar-row-drop-above");
+            r.remove_css_class("glass-sidebar-row-drop-below");
+            let Ok(src) = value.get::<String>() else {
+                return false;
+            };
+            let half = r.height().max(1) as f64 / 2.0;
+            window.reorder_album(&src, &target_path, y > half);
+            true
+        });
+        row.add_controller(drop);
     }
 
     /// Accessor for the content area's NavigationView (used by later tasks).
