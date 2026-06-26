@@ -171,6 +171,8 @@
     "setting.save_failed": "保存失败",
     "setting.section.storage": "存储",
     "setting.section.storage_description": "管理应用缓存和数据库。",
+    "setting.storage.thumbnails_size": "缩略图缓存：{size}",
+    "setting.storage.database_size": "数据库：{size}",
     "setting.clear_thumbnails": "清理缩略图缓存",
     "setting.clear_database": "重置数据库",
     "setting.clear_thumbnails_confirm_title": "清理缩略图缓存？",

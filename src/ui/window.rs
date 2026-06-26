@@ -340,6 +340,27 @@ impl MainWindow {
         storage_desc.set_xalign(0.0);
         content.append(&storage_desc);
 
+        // Show current storage usage
+        let cache_dir = config::cache_dir();
+        let thumb_dir = cache_dir.join("thumbnails");
+        let thumb_size = crate::core::cache::dir_size(&thumb_dir);
+        let db_path = crate::config::data_dir().join("photos.db");
+        let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+
+        let thumb_size_label = gtk::Label::new(Some(&trf(
+            "setting.storage.thumbnails_size",
+            &[("size", &format_size(thumb_size))],
+        )));
+        thumb_size_label.set_xalign(0.0);
+        content.append(&thumb_size_label);
+
+        let db_size_label = gtk::Label::new(Some(&trf(
+            "setting.storage.database_size",
+            &[("size", &format_size(db_size))],
+        )));
+        db_size_label.set_xalign(0.0);
+        content.append(&db_size_label);
+
         // Clear thumbnails button
         let btn_clear_thumbs = gtk::Button::with_label(&tr("setting.clear_thumbnails"));
         btn_clear_thumbs.add_css_class("destructive-action");
@@ -347,8 +368,10 @@ impl MainWindow {
 
         let page_for_thumbs = page.clone();
         let loader_for_thumbs = self.imp().loader.borrow().clone();
+        let thumb_size_label_for_thumbs = thumb_size_label.clone();
         btn_clear_thumbs.connect_clicked(move |_| {
             let loader_clone = loader_for_thumbs.clone();
+            let label_clone = thumb_size_label_for_thumbs.clone();
             show_clear_confirm_dialog(
                 &page_for_thumbs,
                 &tr("setting.clear_thumbnails_confirm_title"),
@@ -362,6 +385,11 @@ impl MainWindow {
                             if let Some(ref loader) = loader_clone {
                                 loader.clear_mem_cache();
                             }
+                            // Update size label
+                            label_clone.set_text(&trf(
+                                "setting.storage.thumbnails_size",
+                                &[("size", &format_size(0))],
+                            ));
                             show_clear_success_toast(&trf("setting.clear_thumbnails_success", &[("count", &count.to_string())]));
                         }
                         Err(err) => {
@@ -560,6 +588,23 @@ fn show_clear_error_toast(message: &str) {
             notification.set_body(Some(message));
             app.send_notification(None, &notification);
         }
+    }
+}
+
+/// Format bytes into human-readable size (KB, MB, GB).
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
     }
 }
 

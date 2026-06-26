@@ -171,6 +171,8 @@
     "setting.save_failed": "Save failed",
     "setting.section.storage": "Storage",
     "setting.section.storage_description": "Manage app cache and database.",
+    "setting.storage.thumbnails_size": "Thumbnail cache: {size}",
+    "setting.storage.database_size": "Database: {size}",
     "setting.clear_thumbnails": "Clear Thumbnail Cache",
     "setting.clear_database": "Reset Database",
     "setting.clear_thumbnails_confirm_title": "Clear thumbnail cache?",
