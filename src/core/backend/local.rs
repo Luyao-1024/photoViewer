@@ -214,15 +214,16 @@ impl LocalBackend {
         if let Some(id) = existing {
             conn.execute(
                 "UPDATE media_items
-                 SET path=?2, folder_path=?3, mime_type=?4, width=?5,
-                     height=?6, taken_at=?7, file_mtime=?8, file_size=?9,
-                     blake3_hash=?10, trashed_at=NULL, indexed_at=unixepoch()
+                 SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5, width=?6,
+                     height=?7, taken_at=?8, file_mtime=?9, file_size=?10,
+                     blake3_hash=?11, trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
                     id,
                     item.path.to_string_lossy(),
                     item.folder_path.to_string_lossy(),
                     item.mime_type,
+                    db::media_kind_db_value(&item.mime_type),
                     item.width,
                     item.height,
                     item.taken_at.map(|t| t.timestamp()),

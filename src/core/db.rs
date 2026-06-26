@@ -1,6 +1,6 @@
 //! SQLite 连接池与迁移管理
 use crate::core::error::{AppError, Result};
-use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::media::{media_kind_from_mime, MediaItem, MediaKind, NewMediaItem};
 use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -104,19 +104,26 @@ fn optional_ts(ts: Option<i64>, col: usize) -> rusqlite::Result<Option<DateTime<
     ts.map(|value| required_ts(value, col)).transpose()
 }
 
+pub fn media_kind_db_value(mime_type: &str) -> &'static str {
+    media_kind_from_mime(mime_type)
+        .unwrap_or(MediaKind::Image)
+        .as_db_value()
+}
+
 /// 插入新项，返回自增 id
 pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
-            (uri, path, folder_path, mime_type, width, height,
+            (uri, path, folder_path, mime_type, media_kind, width, height,
              taken_at, file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch())",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
         rusqlite::params![
             item.uri,
             item.path.to_string_lossy(),
             item.folder_path.to_string_lossy(),
             item.mime_type,
+            media_kind_db_value(&item.mime_type),
             item.width,
             item.height,
             item.taken_at.map(ts),

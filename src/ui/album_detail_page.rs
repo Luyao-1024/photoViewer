@@ -139,7 +139,7 @@ impl AlbumDetailPage {
                 .album
                 .borrow()
                 .as_ref()
-                .is_some_and(|album| album.is_virtual);
+                .is_some_and(|album| album.is_favorites_album());
             let this = self.downgrade();
             let nav_for_albums = nav.downgrade();
             viewer.connect_favorite_state_changed(move |_, _| {
@@ -190,13 +190,10 @@ impl AlbumDetailPage {
     }
 
     fn refresh_virtual_album_media_list(&self) {
-        let is_virtual = self
-            .imp()
-            .album
-            .borrow()
-            .as_ref()
-            .is_some_and(|album| album.is_virtual);
-        if !is_virtual {
+        let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
+            return;
+        };
+        if !album.is_virtual {
             return;
         }
 
@@ -210,8 +207,14 @@ impl AlbumDetailPage {
             return;
         };
 
-        let ids = crate::core::albums::favorite_media_ids(&pool).unwrap_or_default();
-        let favorites: HashSet<i64> = ids.into_iter().collect();
+        let favorites: HashSet<i64> = if album.is_favorites_album() {
+            crate::core::albums::favorite_media_ids(&pool)
+                .unwrap_or_default()
+                .into_iter()
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let mut items = Vec::new();
         for idx in 0..master_list.n_items() {
             let Some(obj) = master_list.item(idx) else {
@@ -221,20 +224,20 @@ impl AlbumDetailPage {
                 continue;
             };
             let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
-            if favorites.contains(&item.id) {
+            let should_include = if album.is_favorites_album() {
+                favorites.contains(&item.id)
+            } else if album.is_images_album() {
+                item.is_image()
+            } else if album.is_videos_album() {
+                item.is_video()
+            } else {
+                false
+            };
+            if should_include {
                 items.push(item);
             }
         }
 
-        if !self
-            .imp()
-            .album
-            .borrow()
-            .as_ref()
-            .is_some_and(|album| album.is_virtual)
-        {
-            return;
-        }
         while media_list.n_items() > 0 {
             media_list.remove(media_list.n_items() - 1);
         }

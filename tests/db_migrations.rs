@@ -1,4 +1,6 @@
+use chrono::Utc;
 use photo_viewer::core::db;
+use photo_viewer::core::media::NewMediaItem;
 use rusqlite::Connection;
 use tempfile::tempdir;
 
@@ -22,6 +24,54 @@ fn migrations_create_all_tables() {
     assert!(tables.contains(&"albums".to_string()));
     assert!(tables.contains(&"edits".to_string()));
     assert!(tables.contains(&"settings".to_string()));
+}
+
+#[test]
+fn media_items_has_media_kind_column_and_upsert_populates_it() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let pool = db::init_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(media_items)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(
+        columns.iter().any(|c| c == "media_kind"),
+        "media_items should persist image/video type separately from MIME, got {columns:?}"
+    );
+
+    drop(conn);
+    db::insert_media_item(
+        &pool,
+        &NewMediaItem {
+            uri: "file:///tmp/clip.mp4".into(),
+            path: "/tmp/clip.mp4".into(),
+            folder_path: "/tmp".into(),
+            mime_type: "video/mp4".into(),
+            width: None,
+            height: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 10,
+            blake3_hash: "hash-video".into(),
+        },
+    )
+    .unwrap();
+
+    let conn = pool.get().unwrap();
+    let media_kind: String = conn
+        .query_row(
+            "SELECT media_kind FROM media_items WHERE uri = 'file:///tmp/clip.mp4'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(media_kind, "video");
 }
 
 #[test]

@@ -30,7 +30,7 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
-`mime_type` is the media discriminator. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, and thumbnails agree.
+`media_items.media_kind` is the persisted media discriminator (`image` / `video`), derived from MIME at insert/update time. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
 
 ## Metadata Extraction (`metadata.rs`)
 

@@ -22,7 +22,15 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 
 ## Albums
 
-Albums are folder-derived rather than a separate user-authored collection model. Keep album covers and counts derived from media rows so scanner/database state remains the source of truth.
+Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album covers and counts derived from media rows so scanner/database state remains the source of truth.
+
+The Albums page also has virtual logical albums:
+
+- Favorites: filtered by `is_favorite`.
+- Photos: filtered by `media_items.media_kind = 'image'`.
+- Videos: filtered by `media_items.media_kind = 'video'`.
+
+The Photos and Videos virtual albums are type-based only. Do not infer them from folder paths; images and videos may live under either picture or video roots.
 
 ## Trash
 

@@ -202,7 +202,7 @@ impl AlbumsPage {
             return;
         };
 
-        let favorite_ids: Option<HashSet<i64>> = if album.is_virtual {
+        let favorite_ids: Option<HashSet<i64>> = if album.is_favorites_album() {
             let ids = crate::core::albums::favorite_media_ids(&pool).unwrap_or_default();
             if ids.is_empty() {
                 Some(HashSet::new())
@@ -222,10 +222,14 @@ impl AlbumsPage {
                 continue;
             };
             let item = (*boxed.borrow::<MediaItem>()).clone();
-            let should_include = if album.is_virtual {
+            let should_include = if album.is_favorites_album() {
                 favorite_ids
                     .as_ref()
                     .is_some_and(|ids| ids.contains(&item.id))
+            } else if album.is_images_album() {
+                item.is_image()
+            } else if album.is_videos_album() {
+                item.is_video()
             } else {
                 item.folder_path == album.folder_path
             };
