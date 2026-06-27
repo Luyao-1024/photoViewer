@@ -7,5 +7,5 @@
 # Editor config
 /.vscode/
 
-# Log files
-*.log
+# Log directory
+/log/
