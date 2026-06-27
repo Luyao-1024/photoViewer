@@ -151,7 +151,7 @@ fn save_as_copy_replaces_existing_edited_timestamp_suffix() {
         "existing edited timestamp should be replaced, got {file_name}"
     );
     assert!(
-        file_name.strip_prefix("src_edited_").unwrap().contains('_') == false,
+        !file_name.strip_prefix("src_edited_").unwrap().contains('_'),
         "saved copy name should not append another edited segment, got {file_name}"
     );
     assert!(file_name.ends_with(".jpg"));

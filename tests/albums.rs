@@ -2,7 +2,7 @@ use chrono::Utc;
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
-use std::path::PathBuf;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
@@ -101,11 +101,11 @@ fn list_with_favorites_includes_type_virtual_albums() {
 
     let images = list
         .iter()
-        .find(|album| album.folder_path == PathBuf::from(albums::IMAGES_ALBUM_PATH))
+        .find(|album| album.folder_path.as_path() == Path::new(albums::IMAGES_ALBUM_PATH))
         .expect("images virtual album should exist");
     let videos = list
         .iter()
-        .find(|album| album.folder_path == PathBuf::from(albums::VIDEOS_ALBUM_PATH))
+        .find(|album| album.folder_path.as_path() == Path::new(albums::VIDEOS_ALBUM_PATH))
         .expect("videos virtual album should exist");
 
     assert!(images.is_virtual);

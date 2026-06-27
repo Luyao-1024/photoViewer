@@ -576,7 +576,7 @@ impl MainWindow {
 
     fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
         let dialog = adw::Dialog::builder()
-            .title(&tr("setting.page.title"))
+            .title(tr("setting.page.title"))
             .content_width(540)
             .content_height(760)
             .child(&self.build_settings_page(host))

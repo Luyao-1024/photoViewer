@@ -34,15 +34,15 @@ impl Album {
     }
 
     pub fn is_favorites_album(&self) -> bool {
-        self.is_virtual && self.folder_path == PathBuf::from(FAVORITES_ALBUM_PATH)
+        self.is_virtual && self.folder_path.as_path() == Path::new(FAVORITES_ALBUM_PATH)
     }
 
     pub fn is_images_album(&self) -> bool {
-        self.is_virtual && self.folder_path == PathBuf::from(IMAGES_ALBUM_PATH)
+        self.is_virtual && self.folder_path.as_path() == Path::new(IMAGES_ALBUM_PATH)
     }
 
     pub fn is_videos_album(&self) -> bool {
-        self.is_virtual && self.folder_path == PathBuf::from(VIDEOS_ALBUM_PATH)
+        self.is_virtual && self.folder_path.as_path() == Path::new(VIDEOS_ALBUM_PATH)
     }
 }
 
