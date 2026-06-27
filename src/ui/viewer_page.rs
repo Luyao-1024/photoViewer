@@ -323,7 +323,9 @@ impl ViewerPage {
         imp.add_to_album_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.add_to_album")));
-        imp.edit_btn.get().set_label(&tr("viewer.tooltip.edit"));
+        imp.edit_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.edit")));
         imp.details_close_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.details.close")));

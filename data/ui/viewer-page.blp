@@ -10,7 +10,7 @@ template $ViewerPage : Adw.NavigationPage {
 
       Adw.HeaderBar header_bar {
         show-end-title-buttons: true;
-        css-classes: ["glass-header"];
+        css-classes: ["glass-header", "viewer-toolbar"];
 
         [end]
         Gtk.Button details_btn {
@@ -46,8 +46,7 @@ template $ViewerPage : Adw.NavigationPage {
 
         [end]
         Gtk.Button edit_btn {
-          label: "";
-          icon-name: "edit-symbolic";
+          icon-name: "document-edit-symbolic";
           css-classes: ["glass-toolbar-button"];
         }
       }

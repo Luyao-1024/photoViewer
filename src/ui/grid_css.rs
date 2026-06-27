@@ -165,6 +165,18 @@ box.mode-selector.on-light-background box.mode-dot,
   color: inherit;
 }
 
+/* Viewer header buttons are square (1:1) to reclaim horizontal space.
+   The base .glass-toolbar-button is shared by every header bar (photos,
+   trash, albums, editor), so this geometry override is scoped to the
+   viewer header only. Mirrors .viewer-overlay-nav-btn's zero padding and
+   matches its min-height so the floating prev/next arrows and the header
+   buttons read as one consistent row of glass controls. */
+.viewer-toolbar .glass-toolbar-button {
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0;
+}
+
 .glass-toolbar-button.crop-ratio-arrow-button {
   min-width: 28px;
   min-height: 40px;

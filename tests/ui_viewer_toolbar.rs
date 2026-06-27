@@ -49,6 +49,14 @@ fn viewer_toolbar_uses_glass_classes() {
         "header_bar should no longer carry viewer-header (dead class removed), got {header_classes:?}",
     );
 
+    // The viewer header carries a `viewer-toolbar` scope class so the global
+    // CSS can give its buttons square (1:1) geometry without touching the
+    // shared .glass-toolbar-button rule used by every other page's header.
+    assert!(
+        header_classes.iter().any(|c| c == "viewer-toolbar"),
+        "header_bar should carry viewer-toolbar (scopes square button geometry), got {header_classes:?}",
+    );
+
     // All five toolbar buttons carry glass-toolbar-button.
     let button_classes: [(&str, Vec<String>); 5] = [
         ("details_btn", css_classes_vec(&imp.details_btn.get())),
@@ -66,6 +74,13 @@ fn viewer_toolbar_uses_glass_classes() {
             "{name} should carry glass-toolbar-button, got {classes:?}",
         );
     }
+
+    // edit_btn is icon-only (document-edit-symbolic), never a text label.
+    let edit_label: Option<String> = imp.edit_btn.get().label().map(|s| s.to_string());
+    assert!(
+        edit_label.is_none(),
+        "edit_btn should be icon-only, got label {edit_label:?}",
+    );
 
     // delete_btn also carries glass-toolbar-danger.
     let del_classes = css_classes_vec(&imp.delete_btn.get());
