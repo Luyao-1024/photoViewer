@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # This is a GTK4 + libadwaita + GStreamer desktop app, not a plain Rust
+      # crate: the build needs native development libraries and the Blueprint
+      # compiler (build.rs compiles data/ui/*.blp). UI tests also need a
+      # virtual display because they instantiate GTK widgets.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev libheif-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            blueprint-compiler xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # type_complexity and too_many_arguments in src/ui/media_grid.rs are
+      # acknowledged complexity, not regressions — allow them, deny the rest.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Test (headless)
+        run: xvfb-run -a cargo test --all
