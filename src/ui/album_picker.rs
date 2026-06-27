@@ -75,6 +75,7 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
     let inner_for_listing = inner.clone();
     let pool_for_listing = pool.clone();
     let media_ids_for_rows = media_ids.clone();
+    let host_nav_for_rows = host_nav.clone();
     glib::spawn_future_local(async move {
         let albums = match albums::list(&pool_for_listing) {
             Ok(a) => a,
@@ -109,12 +110,14 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
             let pool_clone = pool_for_listing.clone();
             let ids_clone = media_ids_for_rows.clone();
             let folder = album.folder_path.clone();
+            let host_nav_clone = host_nav_for_rows.clone();
             row.connect_activated(move |_| {
                 push_action_page(
                     &inner_clone,
                     pool_clone.clone(),
                     ids_clone.clone(),
                     folder.clone(),
+                    &host_nav_clone,
                 );
             });
             list_box.append(&row);
@@ -148,6 +151,7 @@ pub fn push_action_page(
     pool: DbPool,
     media_ids: Vec<i64>,
     folder: std::path::PathBuf,
+    host_nav: &adw::NavigationView,
 ) {
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::builder()
@@ -216,6 +220,7 @@ pub fn push_action_page(
     let media_ids_copy = media_ids.clone();
     let folder_copy = folder.clone();
     let inner_copy = inner.clone();
+    let host_nav_copy = host_nav.clone();
     copy_btn.connect_clicked(move |_| {
         run_op(
             pool_copy.clone(),
@@ -223,6 +228,7 @@ pub fn push_action_page(
             folder_copy.clone(),
             AlbumOpMode::Copy,
             inner_copy.clone(),
+            host_nav_copy.clone(),
         );
     });
 
@@ -230,6 +236,7 @@ pub fn push_action_page(
     let media_ids_move = media_ids;
     let folder_move = folder;
     let inner_move = inner.clone();
+    let host_nav_move = host_nav.clone();
     move_btn.connect_clicked(move |_| {
         run_op(
             pool_move.clone(),
@@ -237,6 +244,7 @@ pub fn push_action_page(
             folder_move.clone(),
             AlbumOpMode::Move,
             inner_move.clone(),
+            host_nav_move.clone(),
         );
     });
 }
@@ -249,6 +257,7 @@ fn run_op(
     folder: std::path::PathBuf,
     mode: AlbumOpMode,
     inner: adw::NavigationView,
+    host_nav: adw::NavigationView,
 ) {
     let folder_name = folder
         .file_name()
@@ -267,6 +276,9 @@ fn run_op(
                     AlbumOpMode::Move => "Moved",
                 };
                 tracing::info!("{} {} photo(s) to {}", verb, items.len(), folder_name);
+                // 操作已成功，DB 已由 add_to_album 内部调用 albums::refresh 更新。
+                // 此处刷新侧栏相册行，使照片计数即时反映。
+                super::window::refresh_albums_sidebar(&host_nav);
                 // Pop the entire dialog (inner has 2 levels). Once the
                 // user is back at level 1 with no further navigation, the
                 // wrapper will be popped by the host's pop handler.

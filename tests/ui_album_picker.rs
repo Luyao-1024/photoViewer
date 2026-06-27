@@ -54,6 +54,7 @@ fn album_picker_buttons_use_glass() {
         pool,
         vec![1],
         std::path::PathBuf::from("/tmp/test-album"),
+        &inner,
     );
 
     // Locate Copy and Move buttons by label (zh-CN or en).

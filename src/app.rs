@@ -103,10 +103,18 @@ pub fn build_app() -> adw::Application {
                                         window.refresh_visible_trash_page();
                                     }
                                 }
-                                other => crate::ui::apply_to_media_list::apply_to_media_list(
-                                    &media_list,
-                                    other,
-                                ),
+                                other => {
+                                    crate::ui::apply_to_media_list::apply_to_media_list(
+                                        &media_list,
+                                        other,
+                                    );
+                                    // 文件系统监视器已更新 DB（albums::refresh），
+                                    // 此处同步刷新侧栏相册行，使新增/删除的相册
+                                    // 及照片计数即时反映到 UI。
+                                    if let Some(window) = window_for_consumer.upgrade() {
+                                        window.refresh_album_rows();
+                                    }
+                                }
                             }
                         }
                     });
