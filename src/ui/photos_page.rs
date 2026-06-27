@@ -72,8 +72,10 @@ mod imp {
         pub add_to_album_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub favorite_btn: TemplateChild<gtk::Button>,
-        #[template_child]
-        pub unfavorite_btn: TemplateChild<gtk::Button>,
+        /// 收藏/取消收藏弹层菜单项（在 new 里建好并 set_parent 到 favorite_btn；
+        /// refresh_selection_ui 按选中集状态切换 sensitive）。
+        pub favorite_item_btn: RefCell<Option<gtk::Button>>,
+        pub unfavorite_item_btn: RefCell<Option<gtk::Button>>,
         #[template_child]
         pub delete_to_trash_btn: TemplateChild<gtk::Button>,
     }
@@ -95,7 +97,8 @@ mod imp {
                 select_all_btn: TemplateChild::default(),
                 add_to_album_btn: TemplateChild::default(),
                 favorite_btn: TemplateChild::default(),
-                unfavorite_btn: TemplateChild::default(),
+                favorite_item_btn: RefCell::new(None),
+                unfavorite_item_btn: RefCell::new(None),
                 delete_to_trash_btn: TemplateChild::default(),
             }
         }
@@ -133,6 +136,8 @@ impl PhotosPage {
     pub fn new(media_list: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.set_title(&tr("page.photos.title"));
+        // select_all_btn keeps a text label (toggles 全选/取消全选);
+        // add_to_album_btn (+) and delete_to_trash_btn (trash) are icon-only.
         obj.imp()
             .select_all_btn
             .get()
@@ -145,32 +150,12 @@ impl PhotosPage {
             .add_to_album_btn
             .get()
             .set_tooltip_text(Some(&tr("photos.add_to_album")));
-        obj.imp()
-            .add_to_album_btn
-            .get()
-            .set_label(&tr("photos.batch.move_to_album"));
-        obj.imp()
-            .add_to_album_btn
-            .get()
-            .set_tooltip_text(Some(&tr("photos.batch.move_to_album")));
+        // favorite_btn is the merged heart trigger (icon-only); clicking it
+        // opens a popover with 收藏/取消收藏, so it carries a tooltip only.
         obj.imp()
             .favorite_btn
             .get()
-            .set_label(&tr("photos.batch.favorite"));
-        obj.imp()
-            .favorite_btn
-            .set_tooltip_text(Some(&tr("viewer.button.favorite")));
-        obj.imp()
-            .unfavorite_btn
-            .get()
-            .set_label(&tr("photos.batch.unfavorite"));
-        obj.imp()
-            .unfavorite_btn
-            .set_tooltip_text(Some(&tr("viewer.button.favorite_active")));
-        obj.imp()
-            .delete_to_trash_btn
-            .get()
-            .set_label(&tr("viewer.tooltip.move_to_trash"));
+            .set_tooltip_text(Some(&tr("photos.batch.favorite")));
         obj.imp()
             .delete_to_trash_btn
             .get()
@@ -364,29 +349,84 @@ impl PhotosPage {
             this.open_album_picker_for_current_selection();
         });
 
-        let weak = obj.downgrade();
-        obj.imp().favorite_btn.get().connect_clicked(move |_| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let indices = this.selected_indices_vec();
-            if indices.is_empty() {
-                return;
-            }
-            this.set_favorite_for_indices(indices, true);
-        });
+        // 收藏/取消收藏合并为一个心形按钮 + glass-menu 弹层。弹层在 new 里
+        // 建好并 set_parent 到 favorite_btn：点击 favorite_btn 弹出，菜单项按
+        // 选中集状态启用（见 refresh_selection_ui）。
+        {
+            let menu = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(2)
+                .css_classes(["glass-menu-list"])
+                .build();
 
-        let weak = obj.downgrade();
-        obj.imp().unfavorite_btn.get().connect_clicked(move |_| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let indices = this.selected_indices_vec();
-            if indices.is_empty() {
-                return;
-            }
-            this.set_favorite_for_indices(indices, false);
-        });
+            let favorite_item = gtk::Button::builder()
+                .label(tr("photos.batch.favorite"))
+                .css_classes(["glass-menu-item"])
+                .build();
+            let unfavorite_item = gtk::Button::builder()
+                .label(tr("photos.batch.unfavorite"))
+                .css_classes(["glass-menu-item"])
+                .build();
+
+            let popover = gtk::Popover::builder().autohide(true).build();
+            popover.add_css_class("glass-menu");
+            popover.set_child(Some(&menu));
+
+            let weak = obj.downgrade();
+            let popover_for_fav = popover.clone();
+            favorite_item.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let indices = this.selected_indices_vec();
+                    if !indices.is_empty() {
+                        this.set_favorite_for_indices(indices, true);
+                    }
+                }
+                popover_for_fav.popdown();
+            });
+
+            let weak = obj.downgrade();
+            let popover_for_unfav = popover.clone();
+            unfavorite_item.connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    let indices = this.selected_indices_vec();
+                    if !indices.is_empty() {
+                        this.set_favorite_for_indices(indices, false);
+                    }
+                }
+                popover_for_unfav.popdown();
+            });
+
+            menu.append(&favorite_item);
+            menu.append(&unfavorite_item);
+
+            // Anchor the popover to the heart button.
+            popover.set_parent(&obj.imp().favorite_btn.get());
+            *obj.imp().favorite_item_btn.borrow_mut() = Some(favorite_item);
+            *obj.imp().unfavorite_item_btn.borrow_mut() = Some(unfavorite_item);
+
+            // Smart toggle: a uniformly favorited or uniformly unfavorited
+            // selection acts directly (favorite all / unfavorite all); only a
+            // mixed selection opens the popover with both options.
+            let weak = obj.downgrade();
+            let popover_for_trigger = popover.clone();
+            obj.imp().favorite_btn.get().connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let indices = this.selected_indices_vec();
+                if indices.is_empty() {
+                    return;
+                }
+                let state = this.favorite_state_for_indices(&indices);
+                if state.can_favorite && state.can_unfavorite {
+                    popover_for_trigger.popup();
+                } else if state.can_favorite {
+                    this.set_favorite_for_indices(indices, true);
+                } else if state.can_unfavorite {
+                    this.set_favorite_for_indices(indices, false);
+                }
+            });
+        }
 
         let weak = obj.downgrade();
         obj.imp()
@@ -465,6 +505,7 @@ impl PhotosPage {
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);
         self.imp().delete_to_trash_btn.get().set_visible(has_any);
+        // select_all_btn keeps a text label that toggles 全选/取消全选.
         if all_displayed_selected {
             self.imp()
                 .select_all_btn
@@ -497,14 +538,29 @@ impl PhotosPage {
         } else {
             FavoriteMenuState::default()
         };
-        self.imp()
-            .favorite_btn
-            .get()
-            .set_visible(state.can_favorite);
-        self.imp()
-            .unfavorite_btn
-            .get()
-            .set_visible(state.can_unfavorite);
+        // Smart favorite toggle. The heart button shows whenever there is a
+        // selection. It turns red (favorite-active — the same class/effect as
+        // the viewer's favorited heart) when every selected photo is already
+        // favorited; clicking then unfavorites all. If none are favorited,
+        // clicking favorites all. A mixed selection leaves the heart plain and
+        // opens the popover (handled in the click handler).
+        let all_favorited = has_any && !state.can_favorite && state.can_unfavorite;
+        let fav_btn = self.imp().favorite_btn.get();
+        fav_btn.set_visible(has_any);
+        if all_favorited {
+            fav_btn.add_css_class("favorite-active");
+            fav_btn.set_tooltip_text(Some(&tr("photos.batch.unfavorite")));
+        } else {
+            fav_btn.remove_css_class("favorite-active");
+            fav_btn.set_tooltip_text(Some(&tr("photos.batch.favorite")));
+        }
+        // Popover items stay wired for the mixed case.
+        if let Some(btn) = self.imp().favorite_item_btn.borrow().as_ref() {
+            btn.set_sensitive(state.can_favorite);
+        }
+        if let Some(btn) = self.imp().unfavorite_item_btn.borrow().as_ref() {
+            btn.set_sensitive(state.can_unfavorite);
+        }
     }
 
     fn favorite_state_for_indices(&self, indices: &[u32]) -> FavoriteMenuState {
@@ -765,7 +821,6 @@ impl PhotosPage {
         self.imp().select_all_btn.get().set_visible(false);
         self.imp().add_to_album_btn.get().set_visible(false);
         self.imp().favorite_btn.get().set_visible(false);
-        self.imp().unfavorite_btn.get().set_visible(false);
         self.imp().delete_to_trash_btn.get().set_visible(false);
     }
 
@@ -885,11 +940,6 @@ impl PhotosPage {
         // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
             viewer.set_edit_target(&nav, pool.clone());
-        }
-
-        // Wire the viewer's "Add to Album" entry (single-photo).
-        if let Some(pool) = self.imp().pool.borrow().as_ref() {
-            viewer.set_album_target(&nav, pool.clone());
         }
 
         // Inject the shared thumbnail loader for the filmstrip.

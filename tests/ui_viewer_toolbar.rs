@@ -57,16 +57,13 @@ fn viewer_toolbar_uses_glass_classes() {
         "header_bar should carry viewer-toolbar (scopes square button geometry), got {header_classes:?}",
     );
 
-    // All five toolbar buttons carry glass-toolbar-button.
-    let button_classes: [(&str, Vec<String>); 5] = [
-        ("details_btn", css_classes_vec(&imp.details_btn.get())),
-        ("delete_btn", css_classes_vec(&imp.delete_btn.get())),
+    // All four header buttons carry glass-toolbar-button. Header order is
+    // favorite → edit → delete → details (add-to-album was removed).
+    let button_classes: [(&str, Vec<String>); 4] = [
         ("favorite_btn", css_classes_vec(&imp.favorite_btn.get())),
-        (
-            "add_to_album_btn",
-            css_classes_vec(&imp.add_to_album_btn.get()),
-        ),
         ("edit_btn", css_classes_vec(&imp.edit_btn.get())),
+        ("delete_btn", css_classes_vec(&imp.delete_btn.get())),
+        ("details_btn", css_classes_vec(&imp.details_btn.get())),
     ];
     for (name, classes) in button_classes.iter() {
         assert!(

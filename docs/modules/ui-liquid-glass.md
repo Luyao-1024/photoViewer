@@ -52,6 +52,15 @@ The style is intentionally one glass container with lightweight internal state. 
 4. Never put `backdrop-filter` in `BASE_CSS`.
 5. Extend CSS tests when adding selectors or changing mode behavior.
 
+## Button Material Modes
+
+The shared `.glass-toolbar-button` material is **always-on** by default — photos, trash, albums, and editor headers all carry their glass capsule at rest. Two scopes opt out to a **hover-only** treatment (bare icon at rest, glass surface only on `:hover` / `:focus-visible`), because they float over content that should stay uncluttered:
+
+- `.viewer-chrome .glass-toolbar-button` + `.viewer-overlay-nav-btn` — the viewer header actions and the bottom-right prev/next arrows, floating over a full-bleed photo.
+- `.sidebar-settings-button` — the sidebar footer settings button (`preferences-system-symbolic`), floating over the sidebar surface.
+
+Each scope gets its own bare-at-rest reset plus a hover/focus material rule in **both** `LIQUID_GLASS_MATERIAL_CSS` and `PLAIN_GLASS_MATERIAL_CSS`. Add new hover-only buttons by introducing a unique class and mirroring these two rules; do not loosen the shared `.glass-toolbar-button` rule, which other headers depend on being always-on.
+
 ## Runtime Notes
 
 `backdrop-filter` renders correctly in the Flatpak GNOME 50 runtime. Older host GTK versions can print parser warnings and fall back to translucent fill, border, and shadow. This is expected; verify visuals with Flatpak rather than removing the property.

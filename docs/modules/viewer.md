@@ -37,7 +37,13 @@ For videos, play/pause and seeking are handled by the `GtkVideo`'s own built-in 
 
 ## Navigation Buttons
 
-Left/right image navigation belongs to viewer chrome. When positioned as top-right overlay controls, keep them visually consistent with the active material mode and avoid blocking the original image more than necessary.
+Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair in the bottom-right corner over the photo. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original image more than necessary.
+
+## Header Toolbar
+
+The viewer header carries four actions, left-to-right: favorite, edit, delete, details. (The earlier add-to-album entry was removed from the viewer — album assignment for a photo is reached from the photos grid batch menu instead.) All viewer header buttons share one hover-only treatment: bare at rest, glass surface on hover/focus, scoped via the `.viewer-chrome` class so the shared `.glass-toolbar-button` rule used by other pages' headers stays always-on.
+
+The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the Favorites album). Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
 
 ## Details And Editor Panels
 

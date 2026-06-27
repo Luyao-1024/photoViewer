@@ -1049,6 +1049,10 @@ pub mod square_tile {
 
         pub struct SquareTile {
             pub picture: RefCell<Option<gtk::Picture>>,
+            /// 半透明白色勾选标记，浮于缩略图右下角；始终 parented/allocated，
+            /// 通过 CSS（flowboxchild:selected .thumb-checkmark）控制显隐，
+            /// 仅在选中时可见。见 grid_css 的 .thumb-checkmark 规则。
+            pub checkmark: RefCell<Option<gtk::Image>>,
             pub target: Cell<i32>,
             pub background_is_light: Cell<Option<bool>>,
             /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
@@ -1059,6 +1063,7 @@ pub mod square_tile {
             fn default() -> Self {
                 Self {
                     picture: RefCell::new(None),
+                    checkmark: RefCell::new(None),
                     target: Cell::new(90),
                     background_is_light: Cell::new(None),
                     cache_key: RefCell::new(None),
@@ -1087,11 +1092,27 @@ pub mod square_tile {
                 picture.add_css_class("thumb-image");
                 picture.set_parent(&*obj);
                 *self.picture.borrow_mut() = Some(picture);
+
+                // Selection checkmark: a translucent-white tick pinned to the
+                // bottom-right, drawn above the picture. It is always
+                // parented/allocated but invisible (opacity 0) until the
+                // wrapping FlowBoxChild becomes :selected, when CSS reveals it.
+                // Parented after the picture so GTK draws it on top.
+                let checkmark = gtk::Image::builder()
+                    .icon_name("object-select-symbolic")
+                    .pixel_size(22)
+                    .build();
+                checkmark.add_css_class("thumb-checkmark");
+                checkmark.set_parent(&*obj);
+                *self.checkmark.borrow_mut() = Some(checkmark);
             }
 
             fn dispose(&self) {
                 if let Some(p) = self.picture.borrow_mut().take() {
                     p.unparent();
+                }
+                if let Some(c) = self.checkmark.borrow_mut().take() {
+                    c.unparent();
                 }
             }
         }
@@ -1118,6 +1139,19 @@ pub mod square_tile {
             fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
                 if let Some(p) = self.picture.borrow().as_ref() {
                     p.size_allocate(&gtk::Allocation::new(0, 0, width, height), baseline);
+                }
+                // Pin the checkmark to the bottom-right corner with a small
+                // margin. Use its natural (pixel-size) extent, clamped to the
+                // tile so it never overflows the clipped card.
+                if let Some(c) = self.checkmark.borrow().as_ref() {
+                    let (_, cw, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
+                    let (_, ch, _, _) = c.measure(gtk::Orientation::Vertical, -1);
+                    let cw = cw.clamp(1, width);
+                    let ch = ch.clamp(1, height);
+                    let margin = 6;
+                    let x = (width - cw - margin).max(0);
+                    let y = (height - ch - margin).max(0);
+                    c.size_allocate(&gtk::Allocation::new(x, y, cw, ch), -1);
                 }
             }
         }
@@ -1212,6 +1246,26 @@ pub mod square_tile {
                 .expect("SquareTile should construct its picture child")
                 .clone();
             assert!(picture.has_css_class("thumb-image"));
+        }
+
+        // The translucent-white selection checkmark is parented atop the
+        // picture in every tile and revealed by CSS on flowboxchild:selected.
+        #[gtk::test]
+        fn square_tile_has_selection_checkmark_atop_picture() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            let checkmark = tile
+                .imp()
+                .checkmark
+                .borrow()
+                .as_ref()
+                .expect("SquareTile should construct its checkmark child")
+                .clone();
+            assert!(checkmark.has_css_class("thumb-checkmark"));
+            // Parented (always allocated; visibility driven by CSS opacity)
+            // and drawn above the picture.
+            assert!(checkmark.parent().is_some());
         }
     }
 }

@@ -84,8 +84,24 @@ Design intent:
 - The `Adw.HeaderBar` is glass chrome. Its selection actions appear only when
   the user has selected media, keeping normal browsing visually calm.
 - Selection mode should make batch actions discoverable without permanently
-  occupying header space. Add-to-album, favorite/unfavorite, and trash actions
-  belong in the header because they apply to the selected set.
+  occupying header space. Add-to-album, favorite, and trash actions belong in
+  the header because they apply to the selected set.
+- The batch-action toolbar is split across the header: select-all (text label,
+  toggling 全选 / 取消全选) stays on the left (`[start]`); the icon-only batch
+  actions live on the right (`[end]`) — add-to-album (`list-add-symbolic`, the
+  `+`), favorite (`emblem-favorite-symbolic`), and trash (`user-trash-symbolic`).
+  All use always-on glass (the shared `.glass-toolbar-button` material): the
+  capsule is present at rest so the action set stands out when it appears in
+  selection mode. Tooltips carry the action labels. See
+  [Toolbar Button Glass States](#toolbar-button-glass-states).
+- Favorite is a single heart button that acts as a smart toggle, mirroring the
+  viewer's single-item favorite: if every selected photo is favorited, the heart
+  turns translucent red (`.viewer-favorite-btn.favorite-active`, identical to the
+  viewer) and clicking unfavorites all; if none are favorited, clicking favorites
+  all; only a mixed selection (some favorited, some not) opens the `glass-menu`
+  popover with 收藏 / 取消收藏. Do not split favorite/unfavorite back into two
+  header buttons. (The per-tile right-click context menu keeps its own separate
+  favorite/unfavorite entries.)
 - The grid area should extend behind the floating selector. Do not add fixed
   bottom padding or a dark reserved band for the selector.
 
@@ -108,6 +124,13 @@ Design intent:
   should be lightweight and must not change tile dimensions.
 - Tile hover, selection, and focus states should be visible but restrained.
   Avoid large opaque overlays that obscure thumbnail content.
+- Selection is shown primarily by a translucent-white checkmark
+  (`object-select-symbolic`) pinned to the tile's bottom-right corner, plus a
+  softer secondary glass border. The checkmark widget (`SquareTile`'s
+  `.thumb-checkmark` child) is always present but invisible (CSS `opacity: 0`)
+  and revealed via `flowboxchild:selected .thumb-checkmark { opacity: 1 }`, so
+  it tracks the FlowBox selection automatically. Keep this as the canonical
+  grid selection affordance.
 
 ## Year/Month/Day Mode Selector
 
@@ -156,11 +179,14 @@ Design intent:
 
 - The active image or video is the page's visual center. It should be contained,
   correctly oriented, and never force the app window or sidebar to grow.
-- The top header contains item actions: details, trash, favorite, add to album,
-  and edit. These actions should stay compact and icon-led.
+- The top header contains item actions, left-to-right: favorite, edit, delete
+  (trash), and details. (Album assignment is reached from the photos grid batch
+  menu, not the viewer.) These actions stay compact and icon-led, and use
+  hover-only glass (scoped via `.viewer-chrome`): bare at rest, glass on hover.
 - Previous/next controls are viewer chrome. In the current design they sit as a
-  raised glass group in the top-right of the stage, minimizing coverage of the
-  media.
+  compact bare pair in the bottom-right corner of the stage — no capsule
+  container, each button draws its own glass surface only on hover/focus —
+  minimizing coverage of the media.
 - The bottom filmstrip is a secondary navigation aid. It should stay low,
   bounded, horizontally scrollable, and centered on the active item after layout.
 - The built-in `GtkVideo` controls own video playback and seeking. Do not add a
@@ -278,6 +304,35 @@ Design intent:
   exposed a separate surface.
 - Verify important material changes through the Flatpak GNOME runtime when
   backdrop-filter behavior matters.
+
+## Toolbar Button Glass States
+
+Toolbar buttons share the `.glass-toolbar-button` material, but their **rest
+state depends on where they live**. This is a standing rule — new buttons
+inherit the state of their container, and the shared always-on
+`.glass-toolbar-button` rule must never be loosened to change one group.
+
+**Hover-only glass** — bare icon/text at rest; the glass capsule appears only on
+`:hover` / `:focus-visible` (and deepens on `:active`). Use this for chrome that
+floats over content where a calm rest state matters:
+
+- Viewer header actions — `.viewer-chrome` (favorite, edit, delete, details).
+- Viewer previous/next overlay arrows — `.viewer-overlay-nav-btn` (bottom-right).
+- Sidebar footer settings button — `.sidebar-settings-button`.
+
+**Always-on glass** — the glass capsule is present at rest. Use this inside
+dedicated sub-window surfaces where a persistent affordance reads as part of
+the surface: the editor panel, the details panel, the settings dialog, the
+album picker, and alert dialogs. The Photos page batch-action toolbar (which
+only appears in selection mode) is also always-on so the action set stands out.
+
+Rule of thumb: **a button on the main window stage that overlays media/photo
+content is hover-only; a button inside a dialog or floating side panel is
+always-on.** Each hover-only group is scoped by a dedicated class (listed
+above). When adding a hover-only group, define the bare-at-rest reset plus the
+hover/focus/active material in **both** the Liquid and Plain material blocks
+(mirroring `.viewer-chrome`), keep any `glass-toolbar-danger` red hover
+override, and extend the `grid_css` tests.
 
 ## Design Checklist For UI Changes
 

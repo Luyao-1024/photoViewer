@@ -45,12 +45,13 @@ fn photos_header_uses_glass_toolbar_classes() {
         "header_bar should carry glass-header, got {header_classes:?}",
     );
 
-    // All five batch action buttons carry glass-toolbar-button.
-    let buttons: [(&str, gtk::Button); 5] = [
+    // The four batch-action toolbar widgets carry glass-toolbar-button.
+    // favorite_btn is now the merged heart trigger (icon-only); its two
+    // actions live in a popover built in PhotosPage::new.
+    let buttons: [(&str, gtk::Button); 4] = [
         ("select_all_btn", imp.select_all_btn.get()),
         ("add_to_album_btn", imp.add_to_album_btn.get()),
         ("favorite_btn", imp.favorite_btn.get()),
-        ("unfavorite_btn", imp.unfavorite_btn.get()),
         ("delete_to_trash_btn", imp.delete_to_trash_btn.get()),
     ];
     for (name, btn) in buttons.iter() {
@@ -58,6 +59,45 @@ fn photos_header_uses_glass_toolbar_classes() {
         assert!(
             classes.iter().any(|c| c == "glass-toolbar-button"),
             "{name} should carry glass-toolbar-button, got {classes:?}",
+        );
+    }
+
+    // favorite_btn is a smart toggle: it reuses the viewer's red-heart hook
+    // (viewer-favorite-btn + favorite-active) so an all-favorited selection
+    // shows the same translucent red heart as the viewer. With no selection it
+    // must not yet be active.
+    let fav_classes = css_classes_vec(&imp.favorite_btn.get());
+    assert!(
+        fav_classes.iter().any(|c| c == "viewer-favorite-btn"),
+        "favorite_btn should carry viewer-favorite-btn (red-heart hook), got {fav_classes:?}",
+    );
+    assert!(
+        !fav_classes.iter().any(|c| c == "favorite-active"),
+        "favorite_btn should not be favorite-active without a favorited selection, got {fav_classes:?}",
+    );
+
+    // The merged favorite popover exposes 收藏 / 取消收藏 as glass-menu items,
+    // wired in PhotosPage::new and anchored to favorite_btn.
+    let fav_item = imp
+        .favorite_item_btn
+        .borrow()
+        .as_ref()
+        .expect("favorite popover should have a 收藏 item")
+        .clone();
+    let unfav_item = imp
+        .unfavorite_item_btn
+        .borrow()
+        .as_ref()
+        .expect("favorite popover should have a 取消收藏 item")
+        .clone();
+    for (name, btn) in [
+        ("favorite_item", &fav_item),
+        ("unfavorite_item", &unfav_item),
+    ] {
+        let classes = css_classes_vec(btn);
+        assert!(
+            classes.iter().any(|c| c == "glass-menu-item"),
+            "{name} should carry glass-menu-item, got {classes:?}",
         );
     }
 

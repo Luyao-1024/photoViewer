@@ -142,7 +142,6 @@ impl AlbumDetailPage {
         let viewer = ViewerPage::new(media_list, global_index);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool.clone());
-            viewer.set_album_target(&nav, pool);
             let is_favorite_album = self
                 .imp()
                 .album

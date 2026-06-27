@@ -7,6 +7,13 @@ template $PhotosPage : Adw.NavigationPage {
   child: Gtk.Box root_box {
     orientation: vertical;
 
+    // Select-all (text) stays on the left (`[start]`); the batch actions live
+    // on the right (`[end]`). The batch-action buttons use the shared always-on
+    // `.glass-toolbar-button` glass (they only appear in selection mode, so a
+    // persistent capsule helps them stand out). Adw.HeaderBar packs `[end]`
+    // children edge-first (first declared = rightmost), so the right group is
+    // declared in reverse of its left-to-right order:
+    // add_to_album, favorite, delete_to_trash.
     Adw.HeaderBar header_bar {
       show-end-title-buttons: true;
       css-classes: ["glass-header"];
@@ -17,29 +24,32 @@ template $PhotosPage : Adw.NavigationPage {
         css-classes: ["glass-toolbar-button"];
       }
 
+      [end]
+      Gtk.Button delete_to_trash_btn {
+        icon-name: "user-trash-symbolic";
+        tooltip-text: "";
+        visible: false;
+        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+      }
+
+      [end]
+      Gtk.Button favorite_btn {
+        // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
+        // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
+        // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
+        icon-name: "emblem-favorite-symbolic";
+        tooltip-text: "";
+        visible: false;
+        css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+      }
+
+      [end]
       Gtk.Button add_to_album_btn {
         icon-name: "list-add-symbolic";
         tooltip-text: "";
         visible: false;
         // Hidden until user has selected one or more photos.
         css-classes: ["glass-toolbar-button"];
-      }
-
-      Gtk.Button favorite_btn {
-        visible: false;
-        css-classes: ["glass-toolbar-button"];
-      }
-
-      Gtk.Button unfavorite_btn {
-        visible: false;
-        css-classes: ["glass-toolbar-button"];
-      }
-
-      Gtk.Button delete_to_trash_btn {
-        icon-name: "user-trash-symbolic";
-        tooltip-text: "";
-        visible: false;
-        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
       }
     }
 

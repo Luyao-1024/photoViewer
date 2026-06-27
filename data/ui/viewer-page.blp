@@ -10,8 +10,14 @@ template $ViewerPage : Adw.NavigationPage {
 
       Adw.HeaderBar header_bar {
         show-end-title-buttons: true;
-        css-classes: ["glass-header", "viewer-toolbar"];
+        // `viewer-chrome` scopes the shared hover-only glass + square button
+        // geometry. `viewer-toolbar` is retained as the header identity
+        // asserted by tests.
+        css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
+        // Header actions render left-to-right as favorite, edit, delete,
+        // details. Adw.HeaderBar packs `[end]` children edge-first (first
+        // declared = rightmost), so declare them in reverse.
         [end]
         Gtk.Button details_btn {
           icon-name: "info-symbolic";
@@ -27,27 +33,16 @@ template $ViewerPage : Adw.NavigationPage {
         }
 
         [end]
-        Gtk.Button favorite_btn {
-          label: "";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
-        }
-
-        [end]
-        Gtk.MenuButton add_to_album_btn {
-          icon-name: "list-add-symbolic";
-          tooltip-text: "";
-          primary: true;
-          css-classes: ["glass-toolbar-button"];
-          // Menu model is set in `ViewerPage::setup_album_menu` once the
-          // `nav_view` and `pool` are injected (they're needed by the menu's
-          // activate handler to know where to push the picker).
-        }
-
-        [end]
         Gtk.Button edit_btn {
           icon-name: "document-edit-symbolic";
           css-classes: ["glass-toolbar-button"];
+        }
+
+        [end]
+        Gtk.Button favorite_btn {
+          icon-name: "emblem-favorite-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
         }
       }
 
@@ -125,14 +120,18 @@ template $ViewerPage : Adw.NavigationPage {
               }
 
               [overlay]
+              // Previous/next float as a compact bare pair in the bottom-right
+              // corner over the photo: no capsule background (just the symbolic
+              // arrows), tight margins, and each button lights up its own glass
+              // surface on hover. See the viewer-chrome hover rules in grid_css.
               Gtk.Box viewer_nav_buttons {
                 orientation: horizontal;
-                spacing: 6;
+                spacing: 4;
                 halign: end;
-                valign: start;
-                margin-top: 16;
-                margin-end: 16;
-                css-classes: ["viewer-overlay-nav", "glass-raised"];
+                valign: end;
+                margin-bottom: 10;
+                margin-end: 10;
+                css-classes: ["viewer-overlay-nav"];
 
                 Gtk.Button prev_btn {
                   icon-name: "go-previous-symbolic";

@@ -16,7 +16,6 @@ use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::orientation;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
-use crate::ui::album_picker::AlbumPickerDialog;
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::toasts;
 use chrono::{Local, Utc};
@@ -221,8 +220,6 @@ mod imp {
         #[template_child]
         pub edit_btn: TemplateChild<gtk::Button>,
         #[template_child]
-        pub add_to_album_btn: TemplateChild<gtk::MenuButton>,
-        #[template_child]
         pub favorite_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
@@ -320,9 +317,6 @@ impl ViewerPage {
         imp.delete_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
-        imp.add_to_album_btn
-            .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.add_to_album")));
         imp.edit_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.edit")));
@@ -345,20 +339,6 @@ impl ViewerPage {
         );
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
         *self.imp().pool.borrow_mut() = Some(pool);
-    }
-
-    /// Inject the `AdwNavigationView` and DB pool used by the "Add to Album"
-    /// menu entry. The actual menu + handler are built lazily in `setup`
-    /// once both are available, so this is idempotent.
-    pub fn set_album_target(&self, nav: &adw::NavigationView, pool: DbPool) {
-        tracing::debug!(
-            "VIEWER_DEBUG set_album_target index={} nav_visible={:?}",
-            self.imp().current_index.get(),
-            nav.visible_page().map(|page| page.title())
-        );
-        *self.imp().nav_view.borrow_mut() = Some(nav.clone());
-        *self.imp().pool.borrow_mut() = Some(pool);
-        self.setup_album_menu();
     }
 
     /// Register a callback fired when the user presses ArrowLeft / ArrowRight /
@@ -392,47 +372,6 @@ impl ViewerPage {
         if let Some(cb) = cb {
             cb(delta);
         }
-    }
-
-    /// Build the menu shown by the "Add to Album" `MenuButton`. Constructed
-    /// lazily after `set_album_target` is called (which is when the host
-    /// nav view and DB pool are known). The menu currently has one item;
-    /// more can be added without further wiring changes.
-    fn setup_album_menu(&self) {
-        let imp = self.imp();
-        let weak = self.downgrade();
-        let menu = gtk::gio::Menu::new();
-        menu.append(Some(&tr("viewer.menu.add_to_album")), Some("album.add"));
-
-        let action_group = gtk::gio::SimpleActionGroup::new();
-        let add_action = gtk::gio::SimpleAction::new("add", None);
-        add_action.connect_activate(move |_, _| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            let nav = match this.imp().nav_view.borrow().as_ref() {
-                Some(n) => n.clone(),
-                None => {
-                    tracing::warn!("ViewerPage: Add to Album pressed but nav_view not set");
-                    return;
-                }
-            };
-            let pool = match this.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
-                None => {
-                    tracing::warn!("ViewerPage: Add to Album pressed but pool not set");
-                    return;
-                }
-            };
-            let Some(item) = this.current_media_item() else {
-                return;
-            };
-            AlbumPickerDialog::present(&nav, pool, vec![item.id]);
-        });
-        action_group.add_action(&add_action);
-        self.insert_action_group("album", Some(&action_group));
-
-        imp.add_to_album_btn.get().set_menu_model(Some(&menu));
     }
 
     /// Wire the Edit button: configure the embedded `EditorPanel` for the
@@ -923,12 +862,15 @@ impl ViewerPage {
     fn refresh_favorite_button(&self, is_favorite: bool) {
         self.imp().is_favorite.set(is_favorite);
         let button = self.imp().favorite_btn.get();
+        // The button always shows the heart icon (emblem-favorite-symbolic,
+        // set in the template — same glyph as the Favorites album). Favoriting
+        // only flips the .favorite-active class so the global CSS recolors the
+        // heart translucent red; there is no label/icon swap and no button
+        // capsule.
         if is_favorite {
-            button.set_label("★");
             button.add_css_class("favorite-active");
             button.set_tooltip_text(Some(&tr("viewer.button.favorite_active")));
         } else {
-            button.set_label("☆");
             button.remove_css_class("favorite-active");
             button.set_tooltip_text(Some(&tr("viewer.button.favorite")));
         }

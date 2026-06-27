@@ -91,6 +91,23 @@ flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) > .glass-thumb-card 
   outline: none;
 }
 
+/* Selection checkmark — a translucent white tick pinned to each tile's
+   bottom-right corner. The checkmark widget is parented in every SquareTile
+   but kept invisible (opacity 0) until the wrapping FlowBoxChild becomes
+   :selected, so it appears only on selected photos. A subtle icon shadow
+   keeps it legible over bright thumbnails. This is the primary selected-state
+   affordance; the softer glass border on .glass-thumb-card is secondary. */
+.thumb-checkmark {
+  color: alpha(white, 0.92);
+  opacity: 0;
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.55);
+  transition: opacity 120ms ease;
+}
+
+flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {
+  opacity: 1;
+}
+
 /* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
    Apply `glass-raised glass-segmented` to the outer container, `glass-segment`
    to equal-width slots, `glass-segment-label` to labels, and
@@ -165,13 +182,13 @@ box.mode-selector.on-light-background box.mode-dot,
   color: inherit;
 }
 
-/* Viewer header buttons are square (1:1) to reclaim horizontal space.
-   The base .glass-toolbar-button is shared by every header bar (photos,
-   trash, albums, editor), so this geometry override is scoped to the
-   viewer header only. Mirrors .viewer-overlay-nav-btn's zero padding and
-   matches its min-height so the floating prev/next arrows and the header
-   buttons read as one consistent row of glass controls. */
-.viewer-toolbar .glass-toolbar-button {
+/* Viewer chrome buttons (the viewer header) are square (1:1). The base
+   .glass-toolbar-button is shared by every header bar (photos, trash, albums,
+   editor), so this geometry override is scoped to .viewer-chrome, which the
+   viewer header carries. The floating prev/next arrows
+   (.viewer-overlay-nav-btn) are intentionally smaller and live in their own
+   compact bottom-right pair, so they do not match this. */
+.viewer-chrome .glass-toolbar-button {
   min-width: 38px;
   min-height: 38px;
   padding: 0;
@@ -388,17 +405,17 @@ box.mode-selector.on-light-background box.mode-dot,
 }
 
 /* Viewer favorite button active state. Class is added/removed by
-   ViewerPage::refresh_favorite_button; the visual now lives in the
-   global provider so it composes with .glass-toolbar-button. */
+   ViewerPage::refresh_favorite_button. Only the heart ICON recolors to a
+   translucent red — the button itself stays bare (no capsule), matching the
+   rest of the viewer chrome. 透明质感的半透明红,不是实心红。 */
 .viewer-favorite-btn.favorite-active {
-  color: #f6c344;
+  color: alpha(#ff5e51, 0.92);
 }
 
-/* hover keeps the gold theme — without this rule, .glass-toolbar-button:hover
-   would replace the gold background with a generic alpha(white, 0.14),
-   so the active-favorite would briefly look un-favorited on pointer-over. */
+/* A touch brighter on hover so the red heart still reads against the lit
+   glass capsule that appears behind it on pointer-over. */
 .viewer-favorite-btn.favorite-active:hover {
-  color: #ffd86b;
+  color: alpha(#ff7a6e, 0.96);
 }
 
 /* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
@@ -490,16 +507,18 @@ button.viewer-thumb-item.viewer-thumb-current picture {
   box-shadow: 0 0 18px alpha(white, 0.20);
 }
 
-/* viewer-overlay-nav — previous/next controls floating over the image. The
-   material is mode-specific so it follows the Settings Liquid Glass switch. */
+/* viewer-overlay-nav — layout box only for the prev/next overlay buttons.
+   It has NO capsule material: the container is bare and each button draws
+   its own glass surface on hover/focus (see the viewer-chrome hover rules in
+   the material blocks), so the pair reads as two light arrows floating over
+   the photo instead of a blocking chrome bar. */
 .viewer-overlay-nav {
-  padding: 6px;
-  border-radius: 16px;
+  padding: 0;
 }
 
 .viewer-overlay-nav-btn {
-  min-width: 42px;
-  min-height: 38px;
+  min-width: 36px;
+  min-height: 32px;
   padding: 0;
   border-radius: 10px;
   color: #ffffff;
@@ -714,14 +733,13 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   opacity: 0.56;
 }
 
+/* viewer-overlay-nav capsule is intentionally bare — no background, border,
+   or shadow. The prev/next buttons inside draw their own glass surface on
+   hover/focus, so a container capsule would only add clutter over the photo. */
 .viewer-overlay-nav {
-  background: alpha(black, 0.24);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.30);
-  box-shadow:
-    0 16px 42px alpha(black, 0.34),
-    inset 0 1px alpha(white, 0.36),
-    inset 0 -1px alpha(black, 0.16);
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .viewer-overlay-nav-btn {
@@ -738,18 +756,90 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border-color: alpha(white, 0.38);
 }
 
-.viewer-favorite-btn.favorite-active {
-  background: alpha(#f6c344, 0.16);
-  border-color: alpha(#f6c344, 0.42);
-  box-shadow:
-    0 10px 28px alpha(black, 0.22),
-    inset 0 1px alpha(white, 0.34),
-    inset 0 -1px alpha(#6b4b00, 0.20);
+/* ── Viewer chrome: glass material only on hover/focus ──────────────
+   The viewer floats over a full-bleed photo, so its header buttons and the
+   prev/next overlay arrows are bare at rest (icon only, no capsule) and only
+   gain their glass material when the pointer hovers or keyboard focus lands
+   on them — keeping the photo uncluttered. .glass-toolbar-button is shared
+   by every header bar (photos, trash, albums, editor), so the bare-at-rest
+   reset is scoped to .viewer-chrome (carried by the viewer header) and
+   .viewer-overlay-nav-btn. A favorited photo signals state through its red
+   heart icon, not a button capsule. */
+.viewer-chrome .glass-toolbar-button,
+.viewer-overlay-nav-btn {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
 }
 
-.viewer-favorite-btn.favorite-active:hover {
-  background: alpha(#f6c344, 0.24);
-  border-color: alpha(#ffd86b, 0.56);
+.viewer-chrome .glass-toolbar-button:hover,
+.viewer-chrome .glass-toolbar-button:focus-visible,
+.viewer-overlay-nav-btn:hover,
+.viewer-overlay-nav-btn:focus-visible {
+  background: alpha(white, 0.18);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.38);
+  box-shadow:
+    0 14px 36px alpha(black, 0.30),
+    inset 0 1px alpha(white, 0.52),
+    inset 0 -1px alpha(black, 0.14);
+}
+
+.viewer-chrome .glass-toolbar-button:active,
+.viewer-chrome .glass-toolbar-button:checked {
+  background: alpha(white, 0.24);
+  border: 1px solid alpha(white, 0.44);
+  box-shadow:
+    0 8px 22px alpha(black, 0.24),
+    inset 0 1px alpha(white, 0.34),
+    inset 0 -1px alpha(black, 0.18);
+}
+
+/* Delete keeps its red danger treatment on hover inside the viewer. */
+.viewer-chrome .glass-toolbar-button.glass-toolbar-danger:hover {
+  background: alpha(#ff5449, 0.24);
+  border: 1px solid alpha(#ffb4ab, 0.42);
+  box-shadow:
+    0 14px 36px alpha(black, 0.30),
+    inset 0 1px alpha(white, 0.52),
+    inset 0 -1px alpha(black, 0.14);
+  color: #ffb4ab;
+}
+
+/* Favorite-active has no surface material here — it only recolors the heart
+   icon via the .viewer-favorite-btn.favorite-active color rule in BASE_CSS. */
+
+/* ── Sidebar settings button: glass material only on hover/focus (liquid) ──
+   Same hover-only language as the viewer chrome: the footer settings button
+   shows just its icon at rest and only draws a glass capsule on hover/focus,
+   keeping the sidebar footer calm. `.sidebar-settings-button` is unique to
+   this one button, so scoping to it alone is enough. */
+.sidebar-settings-button {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sidebar-settings-button:hover,
+.sidebar-settings-button:focus-visible {
+  background: alpha(white, 0.18);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.38);
+  box-shadow:
+    0 14px 36px alpha(black, 0.30),
+    inset 0 1px alpha(white, 0.52),
+    inset 0 -1px alpha(black, 0.14);
+}
+
+.sidebar-settings-button:active {
+  background: alpha(white, 0.24);
+  border: 1px solid alpha(white, 0.44);
+  box-shadow:
+    0 8px 22px alpha(black, 0.24),
+    inset 0 1px alpha(white, 0.34),
+    inset 0 -1px alpha(black, 0.18);
 }
 
 /* ── Glass alert dialog — 毛玻璃半透明弹框 + 液态玻璃按钮 ──────────────
@@ -976,11 +1066,11 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   opacity: 0.56;
 }
 
+/* viewer-overlay-nav capsule is bare in plain mode too — see liquid block. */
 .viewer-overlay-nav {
-  background: alpha(black, 0.46);
-  background-clip: padding-box;
-  border: 1px solid alpha(white, 0.12);
-  box-shadow: 0 6px 18px alpha(black, 0.28);
+  background: transparent;
+  border: none;
+  box-shadow: none;
 }
 
 .viewer-overlay-nav-btn {
@@ -994,16 +1084,67 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   border-color: alpha(white, 0.16);
 }
 
-.viewer-favorite-btn.favorite-active {
-  background: alpha(#f6c344, 0.12);
-  border-color: alpha(#f6c344, 0.28);
-  box-shadow: 0 3px 10px alpha(black, 0.18);
+/* ── Viewer chrome: glass material only on hover/focus (plain mode) ──
+   Mirrors the liquid block but with the calmer plain material: viewer chrome
+   buttons (the header) and overlay nav arrows are bare at rest and gain a
+   translucent fill on hover/focus. No blur, no inset highlight, no heavy
+   shadow — same restrained treatment as the other plain buttons. Scoped to
+   .viewer-chrome (see liquid block). */
+.viewer-chrome .glass-toolbar-button,
+.viewer-overlay-nav-btn {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
 }
 
-.viewer-favorite-btn.favorite-active:hover {
-  background: alpha(#f6c344, 0.18);
-  border-color: alpha(#f6c344, 0.38);
+.viewer-chrome .glass-toolbar-button:hover,
+.viewer-chrome .glass-toolbar-button:focus-visible,
+.viewer-overlay-nav-btn:hover,
+.viewer-overlay-nav-btn:focus-visible {
+  background: alpha(white, 0.12);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.16);
 }
+
+.viewer-chrome .glass-toolbar-button:active,
+.viewer-chrome .glass-toolbar-button:checked {
+  background: alpha(white, 0.16);
+  border: 1px solid alpha(white, 0.20);
+}
+
+/* Delete keeps its red danger treatment on hover inside the viewer. */
+.viewer-chrome .glass-toolbar-button.glass-toolbar-danger:hover {
+  background: alpha(#ff5449, 0.18);
+  border: 1px solid alpha(#ffb4ab, 0.28);
+  color: #ffb4ab;
+}
+
+/* ── Sidebar settings button: glass only on hover/focus (plain mode) ──
+   Mirrors the liquid block with the calmer plain material: bare icon at rest,
+   translucent fill on hover/focus. No blur, no inset highlight, no heavy
+   shadow. Scoped to .sidebar-settings-button (see liquid block). */
+.sidebar-settings-button {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sidebar-settings-button:hover,
+.sidebar-settings-button:focus-visible {
+  background: alpha(white, 0.12);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.16);
+}
+
+.sidebar-settings-button:active {
+  background: alpha(white, 0.16);
+  border: 1px solid alpha(white, 0.20);
+}
+
+/* Favorite-active has no surface material here either — heart icon color
+   only (see BASE_CSS). */
 
 .glass-alert-dialog {
   background: transparent;
@@ -1366,10 +1507,9 @@ mod tests {
 
     /// `.viewer-favorite-btn.favorite-active:hover` must exist alongside the
     /// base `.viewer-favorite-btn.favorite-active` rule. Without the :hover
-    /// override, `.glass-toolbar-button:hover` wins (same specificity, defined
-    /// later in the source so it would override) and the gold favorite state
-    /// would briefly look un-favorited on pointer-over.
-    /// 没有 hover 规则时,鼠标悬停在已收藏的星标按钮上会丢失金色高亮。
+    /// override, the bare-at-rest/hover viewer-chrome rules would win and the
+    /// favorited heart would not brighten on pointer-over.
+    /// 没有 hover 规则时,鼠标悬停在已收藏的爱心上不会提亮红色。
     #[test]
     fn favorite_active_has_hover_override() {
         let css = build_css(true);
@@ -1379,7 +1519,125 @@ mod tests {
         );
         assert!(
             css.contains(".viewer-favorite-btn.favorite-active:hover"),
-            "CSS must define a :hover override so the gold state survives pointer-over",
+            "CSS must define a :hover override so the red heart brightens on pointer-over",
+        );
+    }
+
+    /// Viewer chrome (header buttons + prev/next overlay nav) floats over a
+    /// full-bleed photo, so it must be bare at rest and only gain its glass
+    /// material on hover/focus — in BOTH glass modes. The reset is scoped to
+    /// .viewer-chrome / .viewer-overlay-nav-btn so the shared
+    /// .glass-toolbar-button rule used by every other header (photos, trash,
+    /// albums, editor) stays always-on. A favorited photo signals state
+    /// via a translucent red heart icon, not a button capsule.
+    #[test]
+    fn viewer_chrome_is_glass_only_on_hover() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+
+            // At rest: viewer chrome + overlay nav are bare (transparent),
+            // scoped to the viewer so other headers keep always-on glass.
+            assert!(
+                css.contains(".viewer-chrome .glass-toolbar-button,\n.viewer-overlay-nav-btn {"),
+                "viewer chrome buttons must be reset to bare at rest ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".viewer-overlay-nav-btn {\n  background: transparent"),
+                "overlay nav arrows must be bare at rest ({liquid} mode)"
+            );
+
+            // The prev/next capsule container is gone — bare background in
+            // both modes, so only the buttons light up on hover.
+            assert!(
+                css.contains(".viewer-overlay-nav {\n  background: transparent"),
+                "viewer overlay nav capsule must be bare/transparent ({liquid} mode)"
+            );
+
+            // On hover / keyboard focus the glass material returns.
+            assert!(
+                css.contains(".viewer-chrome .glass-toolbar-button:hover"),
+                "viewer chrome buttons must regain material on hover ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".viewer-chrome .glass-toolbar-button:focus-visible"),
+                "keyboard focus must also reveal viewer buttons ({liquid} mode)"
+            );
+            assert!(
+                css.contains(".viewer-overlay-nav-btn:hover"),
+                "overlay nav arrows must regain material on hover ({liquid} mode)"
+            );
+
+            // The shared (non-viewer) toolbar button material stays always-on.
+            assert!(
+                css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {"),
+                "shared toolbar button base rule must remain always-on ({liquid} mode)"
+            );
+
+            // Favorite state = translucent red heart icon, no gold capsule.
+            assert!(
+                css.contains(".viewer-favorite-btn.favorite-active {"),
+                "favorited heart must have a color rule ({liquid} mode)"
+            );
+            assert!(
+                css.contains("alpha(#ff5e51, 0.92)"),
+                "favorited heart must be translucent red ({liquid} mode)"
+            );
+            assert!(
+                !css.contains("alpha(#f6c344"),
+                "favorite must no longer use the gold capsule color ({liquid} mode)"
+            );
+        }
+    }
+
+    /// The sidebar settings button mirrors the viewer-chrome hover-only
+    /// treatment: bare icon at rest, glass capsule on hover/focus, in BOTH
+    /// glass modes. Scoped to .sidebar-settings-button so the shared always-on
+    /// .glass-toolbar-button rule (photos, trash, albums, editor headers) is
+    /// unaffected.
+    #[test]
+    fn sidebar_settings_button_is_glass_only_on_hover() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+
+            // At rest: the settings button is bare (transparent), scoped to
+            // .sidebar-settings-button so other glass-toolbar-button instances
+            // keep their always-on material.
+            assert!(
+                css.contains(".sidebar-settings-button {\n  background: transparent"),
+                "sidebar settings button must be bare at rest ({liquid} mode)"
+            );
+
+            // On hover / keyboard focus the glass material returns.
+            assert!(
+                css.contains(
+                    ".sidebar-settings-button:hover,\n.sidebar-settings-button:focus-visible {"
+                ),
+                "sidebar settings button must regain material on hover/focus ({liquid} mode)"
+            );
+        }
+    }
+
+    /// Each thumbnail carries a translucent-white checkmark pinned to its
+    /// bottom-right; it is invisible at rest and revealed only when the
+    /// wrapping FlowBoxChild is selected. This is the primary selected-state
+    /// affordance.
+    #[test]
+    fn thumb_checkmark_shows_only_on_selected() {
+        let css = build_css(true);
+
+        // Default: hidden (opacity 0), translucent white, with an icon shadow
+        // for legibility over bright thumbnails.
+        assert!(
+            css.contains(".thumb-checkmark {\n  color: alpha(white, 0.92);\n  opacity: 0;"),
+            "thumb checkmark must be translucent white and hidden at rest"
+        );
+
+        // Revealed only on the selected flowbox child.
+        assert!(
+            css.contains(
+                "flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {\n  opacity: 1;"
+            ),
+            "thumb checkmark must be revealed (opacity 1) on flowboxchild:selected"
         );
     }
 
@@ -1538,7 +1796,6 @@ mod tests {
             ".glass-header windowcontrols button.close:hover image",
             ".glass-menu-item",
             ".glass-sidebar-row:selected",
-            ".viewer-overlay-nav",
             ".viewer-overlay-nav-btn",
             ".viewer-favorite-btn.favorite-active",
         ] {
@@ -1552,7 +1809,6 @@ mod tests {
             "inset 0 1px alpha(white, 0.44)",
             "inset 0 1px alpha(white, 0.36)",
             "0 12px 32px alpha(black, 0.24)",
-            "0 16px 42px alpha(black, 0.34)",
         ] {
             assert!(
                 css.contains(liquid_signature),
@@ -1616,7 +1872,6 @@ mod tests {
             ".glass-header windowcontrols button.close:hover image",
             ".glass-menu-item",
             ".glass-sidebar-row:selected",
-            ".viewer-overlay-nav",
             ".viewer-overlay-nav-btn",
             ".viewer-favorite-btn.favorite-active",
         ] {
@@ -1630,7 +1885,6 @@ mod tests {
             "inset 0 1px alpha(white, 0.44)",
             "inset 0 1px alpha(white, 0.36)",
             "0 12px 32px alpha(black, 0.24)",
-            "0 16px 42px alpha(black, 0.34)",
         ] {
             assert!(
                 !css.contains(liquid_signature),
