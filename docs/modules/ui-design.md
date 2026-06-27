@@ -52,7 +52,14 @@ Design intent:
 
 - The sidebar is a stable left rail with glass material. It must not shrink or
   expand when viewer pages, side panels, or album pages are pushed.
-- Top-level rows are Photos, Albums group header, Trash, and Settings.
+- Top-level rows are Photos, Albums group header, and Trash.
+- Settings is exposed as a fixed gear button at the sidebar footer and opens a
+  popup dialog (rather than a navigation row/page).
+- The sidebar uses a single material owner: `.glass-sidebar-surface.glass-base`
+  wraps both the navigation list and the settings footer. The `Gtk.ListBox`,
+  rows, and footer stay transparent/layout-only. Do not put `glass-base` on
+  the list and footer separately; two independently painted glass surfaces
+  create a visible color break at the settings button.
 - The Albums header is a collapsible group control, not a destination page.
   Album rows appear directly under it, including virtual albums such as
   Favorites, Photos, and Videos.
@@ -229,8 +236,10 @@ imply app-local deletion if the operation is actually backed by host trash.
 
 ## Settings
 
-Settings is reached from the sidebar and currently owns user-facing visual
-preferences such as the Liquid Glass toggle.
+Settings is reached from the sidebar footer gear button and currently owns user-facing visual
+preferences such as the Liquid Glass toggle. It opens as a popup dialog; while
+the dialog is visible, the gallery content behind it is dimmed/blurred in the
+Liquid Glass mode so the modal layer reads clearly above the library.
 
 Design intent:
 
@@ -239,6 +248,8 @@ Design intent:
 - The Liquid Glass setting changes the visual material live. It should affect
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
+- Keep static software information such as app name, version, author, and
+  license as compact small footer text at the bottom of the settings dialog.
 - Settings should not become a general-purpose page for operational actions
   such as scan, restore, or album management unless the information architecture
   is revisited.
@@ -260,6 +271,11 @@ Design intent:
   highlights, and shadows belong in the Liquid or Plain material blocks.
 - New glass surfaces must have matching Liquid and Plain definitions.
 - Avoid opaque child backgrounds inside floating glass panels.
+- When a visual area contains multiple child widgets that should read as one
+  surface, put the material class on the shared parent and reset child
+  backgrounds to transparent. The sidebar/settings-footer color mismatch was
+  caused by `Gtk.ListBox` painting over the shared parent while the footer
+  exposed a separate surface.
 - Verify important material changes through the Flatpak GNOME runtime when
   backdrop-filter behavior matters.
 

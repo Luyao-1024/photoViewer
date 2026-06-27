@@ -35,7 +35,6 @@ pub enum SidebarTarget {
     AlbumsHeader,
     Album(Album),
     Trash,
-    Settings,
 }
 
 /// Icon shown beside each album row, matching the screenshot's per-album glyph.
@@ -79,12 +78,15 @@ mod imp {
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
+        pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
         #[template_child]
         pub sidebar_page: TemplateChild<adw::NavigationPage>,
+        #[template_child]
+        pub settings_button: TemplateChild<gtk::Button>,
     }
 
     #[gtk::glib::object_subclass]
@@ -125,7 +127,7 @@ impl MainWindow {
     }
 
     /// Build the static sidebar skeleton: Photos, the collapsible Albums group
-    /// header, Trash, and Settings. The album rows nested under the header are
+    /// header, and Trash. The album rows nested under the header are
     /// inserted later by [`Self::populate_album_rows`] once the DB pool is
     /// available (the app calls it after `set_resources`).
     pub fn populate_sidebar(&self) {
@@ -163,9 +165,9 @@ impl MainWindow {
         list.append(&trash_row);
         targets.push(SidebarTarget::Trash);
 
-        let settings_row = build_nav_row(&tr("sidebar.settings"), "preferences-system-symbolic");
-        list.append(&settings_row);
-        targets.push(SidebarTarget::Settings);
+        self.imp()
+            .settings_button
+            .set_tooltip_text(Some(&tr("sidebar.settings")));
 
         *self.imp().targets.borrow_mut() = targets;
 
@@ -197,12 +199,12 @@ impl MainWindow {
         }
 
         // Keep `targets` in lock-step: after removal it should read
-        // [Photos, AlbumsHeader, Trash, Settings]. The albums occupied the
-        // indices strictly between the header (1) and Trash (len-2).
+        // [Photos, AlbumsHeader, Trash]. The albums occupied the
+        // indices strictly between the header (1) and Trash (len-1).
         {
             let mut targets = self.imp().targets.borrow_mut();
-            if targets.len() >= 4 {
-                let end = targets.len() - 2;
+            if targets.len() >= 3 {
+                let end = targets.len() - 1;
                 if end > 2 {
                     targets.drain(2..end);
                 }
@@ -213,7 +215,7 @@ impl MainWindow {
         let expanded = self.imp().albums_expanded.get();
 
         // Insert album rows starting at index 2 (after Photos + header),
-        // pushing Trash/Settings back down so the order is preserved.
+        // pushing Trash back down so the order is preserved.
         for (pos, album) in (2_i32..).zip(albums.iter()) {
             let row = build_album_row(album);
             row.set_visible(expanded);
@@ -414,12 +416,11 @@ impl MainWindow {
         *self.imp().media_list.borrow_mut() = Some(media_list);
     }
 
-    /// Wire the sidebar `ListBox` `row-selected` signal to navigate by row
+    /// Wire the sidebar `ListBox` row-selected signal to navigate by row
     /// identity (`targets[index]`), not a hardcoded index:
     ///   - Photos → pop back to the root Photos page.
     ///   - An album row → push that album's `AlbumDetailPage` directly.
     ///   - Trash → push the `TrashPage`.
-    ///   - Settings → peek the settings page on top.
     ///
     /// The Albums header is non-selectable, so it never lands here; its collapse
     /// toggle is driven by its own `GestureClick`.
@@ -431,8 +432,8 @@ impl MainWindow {
         let gesture = gtk::GestureSwipe::new();
         gesture.connect_swipe(
             glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
-                if velocity_x.abs() > 450.0 && !visible_page_is_settings(&nav_view) {
-                    window.show_settings_page(&nav_view);
+                if velocity_x.abs() > 450.0 {
+                    window.show_settings_dialog();
                 }
             }),
         );
@@ -467,13 +468,14 @@ impl MainWindow {
                         *window.imp().active_album.borrow_mut() = None;
                         window.show_trash_page(&nav_view);
                     }
-                    SidebarTarget::Settings => {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.show_settings_page(&nav_view);
-                    }
                 }
             }),
         );
+
+        let settings_btn = self.imp().settings_button.get();
+        settings_btn.connect_clicked(glib::clone!(@weak self as window => move |_| {
+            window.show_settings_dialog();
+        }));
     }
 
     fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
@@ -545,19 +547,48 @@ impl MainWindow {
         }
     }
 
-    fn show_settings_page(&self, nav_view: &adw::NavigationView) {
-        if visible_page_is_settings(nav_view) {
+    fn show_settings_dialog(&self) {
+        if self.imp().settings_dialog.borrow().is_some() {
             return;
         }
-        let page = self.build_settings_page();
-        nav_view.push(&page);
+
+        self.imp()
+            .nav_view
+            .add_css_class("settings-background-blur");
+        let host = self.clone().upcast::<gtk::Widget>();
+        let dialog = self.build_settings_dialog(&host);
+        self.imp()
+            .settings_dialog
+            .borrow_mut()
+            .replace(dialog.clone());
+        let weak = self.downgrade();
+        dialog.connect_closed(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window
+                    .imp()
+                    .nav_view
+                    .remove_css_class("settings-background-blur");
+                window.imp().settings_dialog.borrow_mut().take();
+            }
+        });
+        dialog.present(self);
     }
 
-    fn build_settings_page(&self) -> adw::NavigationPage {
-        let page = adw::NavigationPage::builder()
-            .title(tr("setting.page.title"))
+    fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
+        let dialog = adw::Dialog::builder()
+            .title(&tr("setting.page.title"))
+            .content_width(540)
+            .content_height(760)
+            .child(&self.build_settings_page(host))
             .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_css_class("settings-dialog-backdrop");
+        dialog.set_can_close(true);
+        add_close_on_backdrop_click(&dialog);
+        dialog
+    }
 
+    fn build_settings_page(&self, parent: &gtk::Widget) -> gtk::Box {
         let current = locale().to_string();
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -567,6 +598,7 @@ impl MainWindow {
             .margin_start(24)
             .margin_end(24)
             .build();
+        content.add_css_class("settings-dialog-content");
 
         let title = gtk::Label::new(Some(&tr("setting.section.language")));
         title.set_xalign(0.0);
@@ -584,8 +616,8 @@ impl MainWindow {
         btn_zh.set_sensitive(current != "zh-CN");
         btn_en.set_sensitive(current != "en");
 
-        let page_zh = page.clone();
-        let page_en = page.clone();
+        let parent_for_zh = parent.clone();
+        let parent_for_en = parent.clone();
         let btn_zh_ref = btn_zh.clone();
         let btn_en_ref = btn_en.clone();
         let btn_zh_ref2 = btn_zh.clone();
@@ -593,23 +625,23 @@ impl MainWindow {
 
         btn_zh.connect_clicked(move |_| match persist_locale("zh-CN") {
             Ok(()) => {
-                show_settings_restart_dialog(&page_zh, true, None);
+                show_settings_restart_dialog(&parent_for_zh, true, None);
                 btn_zh_ref.set_sensitive(false);
                 btn_en_ref.set_sensitive(true);
             }
             Err(err) => {
-                show_settings_restart_dialog(&page_zh, false, Some(err));
+                show_settings_restart_dialog(&parent_for_zh, false, Some(err));
             }
         });
 
         btn_en.connect_clicked(move |_| match persist_locale("en") {
             Ok(()) => {
-                show_settings_restart_dialog(&page_en, true, None);
+                show_settings_restart_dialog(&parent_for_en, true, None);
                 btn_zh_ref2.set_sensitive(true);
                 btn_en_ref2.set_sensitive(false);
             }
             Err(err) => {
-                show_settings_restart_dialog(&page_en, false, Some(err));
+                show_settings_restart_dialog(&parent_for_en, false, Some(err));
             }
         });
 
@@ -641,7 +673,7 @@ impl MainWindow {
         glass_row.append(&switch);
         content.append(&glass_row);
 
-        let page_for_glass = page.clone();
+        let parent_for_glass = parent.clone();
         switch.connect_notify_local(Some("active"), move |sw, _pspec| {
             let active = sw.is_active();
             match prefs::set_liquid_glass(active) {
@@ -652,7 +684,7 @@ impl MainWindow {
                 }
                 Err(err) => {
                     show_settings_error_dialog(
-                        &page_for_glass,
+                        &parent_for_glass,
                         &trf("setting.liquid_glass_save_failed", &[("error", &err)]),
                     );
                 }
@@ -689,14 +721,14 @@ impl MainWindow {
         thumb_row.add_suffix(&btn_clear_thumbs);
         storage_group.add(&thumb_row);
 
-        let page_for_thumbs = page.clone();
+        let parent_for_thumbs = parent.clone();
         let loader_for_thumbs = self.imp().loader.borrow().clone();
         let thumb_row_for_thumbs = thumb_row.clone();
         btn_clear_thumbs.connect_clicked(move |_| {
             let loader_clone = loader_for_thumbs.clone();
             let row_clone = thumb_row_for_thumbs.clone();
             show_clear_confirm_dialog(
-                &page_for_thumbs,
+                &parent_for_thumbs,
                 &tr("setting.clear_thumbnails_confirm_title"),
                 &tr("setting.clear_thumbnails_confirm_body"),
                 move || {
@@ -741,7 +773,7 @@ impl MainWindow {
         db_row.add_suffix(&btn_clear_db);
         storage_group.add(&db_row);
 
-        let page_for_db = page.clone();
+        let parent_for_db = parent.clone();
         let pool_for_db = self.imp().pool.borrow().clone();
         let loader_for_db = self.imp().loader.borrow().clone();
         let media_list_for_db = self.imp().media_list.borrow().clone();
@@ -752,7 +784,7 @@ impl MainWindow {
             let media_list_clone = media_list_for_db.clone();
             let row_clone = db_row_for_db.clone();
             show_clear_confirm_dialog(
-                &page_for_db,
+                &parent_for_db,
                 &tr("setting.clear_database_confirm_title"),
                 &tr("setting.clear_database_confirm_body"),
                 move || {
@@ -786,16 +818,62 @@ impl MainWindow {
             );
         });
 
-        page.set_child(Some(&content));
-        page
+        let spacer = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .vexpand(true)
+            .build();
+        content.append(&spacer);
+        content.append(&build_about_label());
+
+        content
     }
 }
 
-fn show_settings_restart_dialog(
-    parent: &adw::NavigationPage,
-    success: bool,
-    error: Option<String>,
-) {
+fn add_close_on_backdrop_click(dialog: &adw::Dialog) {
+    let gesture = gtk::GestureClick::new();
+    gesture.connect_released(glib::clone!(@weak dialog => move |_, _n_press, x, y| {
+        let picked = dialog.pick(x, y, gtk::PickFlags::DEFAULT);
+        if !picked
+            .as_ref()
+            .is_some_and(|widget| widget_or_ancestor_has_class(widget, "settings-dialog-content"))
+        {
+            let _ = dialog.close();
+        }
+    }));
+    dialog.add_controller(gesture);
+}
+
+fn widget_or_ancestor_has_class(widget: &gtk::Widget, class_name: &str) -> bool {
+    let mut current = Some(widget.clone());
+    while let Some(w) = current {
+        if w.css_classes()
+            .iter()
+            .any(|class| class.as_str() == class_name)
+        {
+            return true;
+        }
+        current = w.parent();
+    }
+    false
+}
+
+fn build_about_label() -> gtk::Label {
+    let text = format!(
+        "{} {} - Wang Luyao - {}",
+        tr("app.title"),
+        env!("CARGO_PKG_VERSION"),
+        tr("setting.about.license_value")
+    );
+    gtk::Label::builder()
+        .label(text)
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .halign(gtk::Align::Center)
+        .css_classes(["settings-about-text"])
+        .build()
+}
+
+fn show_settings_restart_dialog(parent: &gtk::Widget, success: bool, error: Option<String>) {
     let heading = if success {
         tr("setting.locale.saved")
     } else {
@@ -819,7 +897,7 @@ fn show_settings_restart_dialog(
 
 /// Surface a non-fatal settings error (e.g. failed to persist the Liquid
 /// Glass pref) as a glass alert dialog. Mirrors the locale restart dialog.
-fn show_settings_error_dialog(parent: &adw::NavigationPage, body: &str) {
+fn show_settings_error_dialog(parent: &gtk::Widget, body: &str) {
     let dialog = adw::AlertDialog::builder()
         .heading(tr("setting.save_failed"))
         .body(body)
@@ -862,24 +940,13 @@ fn visible_page_is_trash(nav_view: &adw::NavigationView) -> bool {
         .unwrap_or(false)
 }
 
-fn visible_page_is_settings(nav_view: &adw::NavigationView) -> bool {
-    nav_view
-        .visible_page()
-        .map(|page| is_settings_page(&page))
-        .unwrap_or(false)
-}
-
 fn is_trash_page(page: &adw::NavigationPage) -> bool {
     page.clone().downcast::<TrashPage>().is_ok()
 }
 
-fn is_settings_page(page: &adw::NavigationPage) -> bool {
-    page.title() == tr("setting.page.title")
-}
-
 /// Show a confirmation dialog for clearing cache/database.
 fn show_clear_confirm_dialog<F: Fn() + 'static>(
-    parent: &adw::NavigationPage,
+    parent: &gtk::Widget,
     title: &str,
     body: &str,
     on_confirm: F,

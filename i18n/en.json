@@ -189,5 +189,6 @@
     "setting.clear_thumbnails_success": "Deleted {count} thumbnail files",
     "setting.clear_database_success": "Database reset, removed {count} records",
     "setting.clear_failed": "Cleanup failed: {error}",
+    "setting.about.license_value": "MIT",
     "dialog.confirm": "Confirm"
 }

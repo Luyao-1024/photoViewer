@@ -189,5 +189,6 @@
     "setting.clear_thumbnails_success": "已删除 {count} 个缩略图文件",
     "setting.clear_database_success": "已重置数据库，删除 {count} 条记录",
     "setting.clear_failed": "清理失败：{error}",
+    "setting.about.license_value": "MIT",
     "dialog.confirm": "确认"
 }

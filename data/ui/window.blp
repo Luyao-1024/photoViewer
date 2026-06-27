@@ -14,9 +14,32 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
       title: "";
       css-classes: ["glass-sidebar-page"];
 
-      Gtk.ListBox sidebar_list {
-        css-classes: ["glass-sidebar", "glass-base"];
-        selection-mode: single;
+      Gtk.Box {
+        orientation: vertical;
+        css-classes: ["glass-sidebar-surface", "glass-base"];
+
+        Gtk.ListBox sidebar_list {
+          css-classes: ["glass-sidebar"];
+          hexpand: true;
+          vexpand: true;
+          selection-mode: single;
+        }
+
+        Gtk.Box {
+          css-classes: ["glass-sidebar-footer"];
+          margin-start: 8;
+          margin-end: 8;
+          margin-bottom: 8;
+
+          Gtk.Button settings_button {
+            icon-name: "preferences-system-symbolic";
+            css-classes: ["glass-toolbar-button", "circular", "sidebar-settings-button"];
+            width-request: 40;
+            height-request: 40;
+            valign: center;
+            halign: start;
+          }
+        }
       }
     };
 

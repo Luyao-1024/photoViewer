@@ -72,13 +72,23 @@ fn sidebar_navigation_suite() {
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let sidebar_bg_classes: Vec<String> = sidebar
+            .parent()
+            .map(|p| p.css_classes().iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
         assert!(
             list_classes.iter().any(|c| c == "glass-sidebar"),
             "sidebar list should carry glass-sidebar, got {list_classes:?}",
         );
         assert!(
-            list_classes.iter().any(|c| c == "glass-base"),
-            "sidebar list should carry the shared glass-base material, got {list_classes:?}",
+            sidebar_bg_classes.iter().any(|c| c == "glass-base"),
+            "sidebar surface should use glass-base material, got list={list_classes:?}",
+        );
+        assert!(
+            sidebar_bg_classes
+                .iter()
+                .any(|c| c == "glass-sidebar-surface"),
+            "sidebar surface should own the shared sidebar background, got {sidebar_bg_classes:?}",
         );
 
         let n_items = sidebar.observe_children().n_items();
@@ -116,6 +126,24 @@ fn sidebar_navigation_suite() {
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
+    let settings_btn = window.imp().settings_button.get();
+    let settings_btn_classes: Vec<String> = settings_btn
+        .css_classes()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert!(
+        settings_btn_classes
+            .iter()
+            .any(|c| c == "glass-toolbar-button"),
+        "settings button should use glass toolbar button styling, got {settings_btn_classes:?}",
+    );
+    assert!(
+        settings_btn_classes
+            .iter()
+            .any(|c| c == "sidebar-settings-button"),
+        "settings button should include sidebar-settings-button, got {settings_btn_classes:?}",
+    );
 
     // Row 1 is the Albums group header — non-selectable (it only collapses).
     let header = sidebar.row_at_index(1).expect("Albums header row exists");
@@ -165,10 +193,10 @@ fn sidebar_navigation_suite() {
         "selecting Photos should return to the Photos root page",
     );
 
-    // Trash sits right before Settings (last two rows). Selecting it pushes the
-    // Trash page on top of the Photos root.
+    // Trash is the last list row. Selecting it pushes the Trash page on top of
+    // the Photos root.
     let n_items = sidebar.observe_children().n_items() as i32;
-    let trash_row = sidebar.row_at_index(n_items - 2).expect("Trash row exists");
+    let trash_row = sidebar.row_at_index(n_items - 1).expect("Trash row exists");
     sidebar.select_row(Some(&trash_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),

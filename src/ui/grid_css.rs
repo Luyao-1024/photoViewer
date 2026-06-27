@@ -243,19 +243,34 @@ box.mode-selector.on-light-background box.mode-dot,
 
 .glass-menu-item-danger { color: #ffb4ab; }
 
-/* glass-sidebar — the left rail surface. The sidebar's blur comes from
-   .glass-base applied alongside (see window.blp); these rules only own
-   row shape + hover/selected state. */
+/* glass-sidebar — list/layout only. The sidebar surface itself is the parent
+   .glass-sidebar-surface.glass-base, so list and footer stay on one material. */
+.glass-sidebar-surface,
+.glass-sidebar,
+.glass-sidebar-footer {
+  background: transparent;
+  background-color: transparent;
+}
+
 .glass-sidebar {
   padding: 12px;
-  border-top: 0;
-  border-bottom: 0;
-  border-left: 0;
-  border-right: 1px solid alpha(white, 0.14);
+  border: 0;
+}
+
+.glass-sidebar row {
+  background: transparent;
+  background-color: transparent;
 }
 
 .glass-sidebar-page {
   background: transparent;
+}
+
+.sidebar-settings-button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 999px;
 }
 
 .glass-sidebar-row {
@@ -672,6 +687,21 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
     inset 0 -1px alpha(black, 0.12);
 }
 
+.settings-background-blur {
+  filter: blur(12px) brightness(0.82);
+}
+
+.settings-dialog-backdrop {
+  background: alpha(black, 0.16);
+  backdrop-filter: blur(18px) saturate(1.08) brightness(0.94);
+}
+
+.settings-about-text {
+  margin-top: 8px;
+  font-size: 0.86em;
+  opacity: 0.56;
+}
+
 .viewer-overlay-nav {
   background: alpha(black, 0.24);
   background-clip: padding-box;
@@ -918,6 +948,20 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
   background: alpha(white, 0.12);
   border-color: alpha(white, 0.14);
   box-shadow: 0 2px 8px alpha(black, 0.16);
+}
+
+.settings-background-blur {
+  opacity: 0.72;
+}
+
+.settings-dialog-backdrop {
+  background: alpha(black, 0.34);
+}
+
+.settings-about-text {
+  margin-top: 8px;
+  font-size: 0.86em;
+  opacity: 0.56;
 }
 
 .viewer-overlay-nav {
@@ -1397,6 +1441,8 @@ mod tests {
             ".glass-header",
             ".glass-menu > contents",
             ".glass-alert-dialog .background",
+            ".settings-dialog-backdrop",
+            ".settings-background-blur",
             ".viewer-details-panel",
             ".viewer-floating-panel",
         ] {
@@ -1435,6 +1481,8 @@ mod tests {
             ".glass-header",
             ".glass-menu > contents",
             ".glass-alert-dialog .background",
+            ".settings-dialog-backdrop",
+            ".settings-background-blur",
             ".viewer-details-panel",
             ".viewer-floating-panel",
         ] {
