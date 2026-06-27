@@ -115,13 +115,14 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
-            (uri, path, folder_path, mime_type, width, height,
+            (uri, path, folder_path, mime_type, media_kind, width, height,
              taken_at, file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch())
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())
          ON CONFLICT(uri) DO UPDATE SET
              path=excluded.path,
              folder_path=excluded.folder_path,
              mime_type=excluded.mime_type,
+             media_kind=excluded.media_kind,
              width=excluded.width,
              height=excluded.height,
              taken_at=excluded.taken_at,
@@ -135,6 +136,7 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
             item.path.to_string_lossy(),
             item.folder_path.to_string_lossy(),
             item.mime_type,
+            db::media_kind_db_value(&item.mime_type),
             item.width,
             item.height,
             item.taken_at.map(|t| t.timestamp()),

@@ -2,7 +2,6 @@
 
 pub mod album_detail_page;
 pub mod album_picker;
-pub mod albums_page;
 pub mod apply_to_media_list;
 pub mod edit_panel;
 pub mod editor_panel;
@@ -22,7 +21,6 @@ pub mod window;
 
 pub use album_detail_page::AlbumDetailPage;
 pub use album_picker::AlbumPickerDialog;
-pub use albums_page::AlbumsPage;
 pub use editor_panel::EditorPanel;
 pub use media_grid::MediaGrid;
 pub use mode_selector::ModeSelector;

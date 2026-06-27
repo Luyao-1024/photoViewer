@@ -10,7 +10,7 @@ Storage covers SQLite schema/migrations, media rows, filesystem scanning, metada
 |---|---|
 | `src/core/db.rs` | SQLite pool, migrations, pragmas |
 | `src/core/schema.sql` | Embedded schema |
-| `src/core/media.rs` | `MediaItem` and insert/update model |
+| `src/core/media.rs` | `MediaItem`, media kind helpers, and insert/update model |
 | `src/core/backend/local.rs` | Local filesystem scanner |
 | `src/core/backend/scan_worker.rs` | Background scan worker |
 | `src/core/metadata.rs` | EXIF metadata extraction |
@@ -30,17 +30,21 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
+`media_items.media_kind` is the persisted media discriminator (`image` / `video`), derived from MIME at insert/update time. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
+
 ## Metadata Extraction (`metadata.rs`)
 
 `extract()` reads dimensions (via `image::image_dimensions`, falling back to gdk-pixbuf) and EXIF (DateTimeOriginal + readable fields) via kamadak-exif.
 
-**HEIC/HEIF needs a dedicated EXIF path.** kamadak-exif's `read_from_container` *can* parse the ISOBMFF container, but it caps the Exif item at `MAX_EXIF_SIZE = 65535` bytes. Camera phones (iPhone, many Androids) embed a high-resolution JPEG thumbnail inside the Exif item, pushing it to several hundred KB, so kamadak-exif rejects those files with "Exif data too large" and EXIF silently comes back empty. `read_exif` therefore routes `image/heic` through a small in-tree ISOBMFF parser (`extract_heic_exif_tiff` and helpers) that locates the `Exif` item via `meta`/`iinf`/`iloc`, gathers its bytes (construction methods 0 and 1), strips the 4-byte `tiff_header_offset` prefix, and hands the raw TIFF block to `exif::Reader::read_raw` (no size cap). Do not "simplify" this back to `read_from_container` for HEIC — it reintroduces empty-EXIF for real phone photos. The regression is guarded by `oversized_heic_exif_item_is_recovered` in `metadata.rs`.
+**Video metadata comes from `ffprobe`.** For `video/*` items, `extract()` shells out to `ffprobe -print_format json -show_format -show_streams` (parsed with `serde_json::Value`, no `serde` derive) and fills `width`/`height`/`taken_at` (so videos sort and group by time like photos) plus a `VideoSummary` (duration, codec + profile, fps, bitrate, container, make/model). The rich fields are not persisted (no schema columns) and are re-fetched at view time by the details panel, exactly like the EXIF camera summary. If `ffprobe` is missing or fails, the video branch returns only `mime_type` — non-fatal; the panel still shows name/type/size.
+
+**HEIC/HEIF needs a dedicated EXIF path.** kamadak-exif's `read_from_container` *can* parse the ISOBMFF container, but it caps the Exif item at `MAX_EXIF_SIZE = 65535` bytes. Camera phones (iPhone, many Androids) embed a high-resolution JPEG thumbnail inside the Exif item, pushing it to several hundred KB, so kamadak-exif rejects those files with "Exif data too large" and EXIF silently comes back empty. Both `metadata::read_exif` and `orientation::read_exif` therefore route `image/heic` through a shared in-tree ISOBMFF parser (`extract_heic_exif_tiff` and helpers) that locates the `Exif` item via `meta`/`iinf`/`iloc`, gathers its bytes (construction methods 0 and 1), strips the 4-byte `tiff_header_offset` prefix, and hands the raw TIFF block to `exif::Reader::read_raw` (no size cap). Do not "simplify" this back to `read_from_container` for HEIC — it reintroduces empty-EXIF for real phone photos and causes thumbnail generation failures ("Exif data too large"). The regression is guarded by `oversized_heic_exif_item_is_recovered` in `metadata.rs`.
 
 ## Scanning And Watching
 
-The local backend scans filesystem paths and inserts/updates media rows. The watcher handles incremental changes after startup. Changes to scanner behavior should consider:
+The local backend scans filesystem paths and inserts/updates media rows. Startup scans the de-duplicated media roots from `config::media_roots()` (`XDG_PICTURES_DIR`/`~/Pictures` or `~/图片`, plus `XDG_VIDEOS_DIR`/`~/Videos` or `~/视频`). Images and videos can live under either root. The watcher handles incremental changes after startup. Changes to scanner behavior should consider:
 
-- New supported file extensions.
+- New supported image/video file extensions.
 - Metadata extraction failures.
 - Duplicate paths.
 - Deletions and trash transitions.
@@ -58,10 +62,12 @@ The local backend scans filesystem paths and inserts/updates media rows. The wat
 
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.
 
-**The system trash is also watched live (`notify_watcher`).** In addition to the pictures dir, the watcher installs inotify on the trash roots. Events whose path is under a trash root are NOT treated as pictures upsert/delete — they set a dirty flag, and after a ~400ms quiet period (debounce; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `MediaChangeEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the pictures-dir watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
+**The system trash is also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the trash roots. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after a ~400ms quiet period (debounce; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `MediaChangeEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 
 ## Thumbnails
 
 `ThumbnailLoader` owns an mpsc queue feeding blocking workers. Requests return textures through `oneshot::Sender`.
 
 Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and an in-memory LRU avoids unnecessary decoding. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.
+
+**Video thumbnails use `ffmpegthumbnailer` with a GStreamer fallback.** Most phone/camera video is limited-range (TV) YUV (16–235); the original `videoconvert → RGB` pipeline passed that through unexpanded, producing washed-out, low-saturation thumbnails (verified: black floor stuck at Y≈18, white ceiling at ≈227 instead of 0/255). `extract_video_frame` now prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), decoding its PNG output, compositing the bottom-left play icon, and returning a `Pixbuf`. If `ffmpegthumbnailer` is missing or fails, it falls back to `extract_video_frame_gst` — the previous `uridecodebin → videoflip(auto) → videoconvert → appsink` pipeline, but with the output caps pinned to `colorimetry=sRGB` so the fallback also expands to full-range RGB. Only if both fail does it draw the synthetic `generate_video_placeholder`. `videoflip video-direction=auto` (GStreamer path) and ffmpegthumbnailer both auto-apply rotation from all sources (MP4 tkhd matrix, codec SEI, tags). All three paths cache the result as JPEG.

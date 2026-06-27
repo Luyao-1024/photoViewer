@@ -2,14 +2,19 @@ use chrono::Utc;
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
+use std::path::PathBuf;
 use tempfile::tempdir;
 
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
+    make_item_with_mime(uri, path, folder, "image/jpeg")
+}
+
+fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
         path: path.into(),
         folder_path: folder.into(),
-        mime_type: "image/jpeg".into(),
+        mime_type: mime_type.into(),
         width: Some(100),
         height: Some(100),
         taken_at: Some(Utc::now()),
@@ -63,4 +68,62 @@ fn trashed_items_excluded_from_albums() {
     albums::refresh(&pool).unwrap();
     let list = albums::list(&pool).unwrap();
     assert_eq!(list.len(), 0);
+}
+
+#[test]
+fn list_with_favorites_includes_type_virtual_albums() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime(
+            "file:///Videos/photo-in-video-dir.jpg",
+            "/Videos/photo-in-video-dir.jpg",
+            "/Videos",
+            "image/jpeg",
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime(
+            "file:///Pictures/video-in-picture-dir.mp4",
+            "/Pictures/video-in-picture-dir.mp4",
+            "/Pictures",
+            "video/mp4",
+        ),
+    )
+    .unwrap();
+
+    albums::refresh(&pool).unwrap();
+    let list = albums::list_with_favorites(&pool).unwrap();
+
+    let images = list
+        .iter()
+        .find(|album| album.folder_path == PathBuf::from(albums::IMAGES_ALBUM_PATH))
+        .expect("images virtual album should exist");
+    let videos = list
+        .iter()
+        .find(|album| album.folder_path == PathBuf::from(albums::VIDEOS_ALBUM_PATH))
+        .expect("videos virtual album should exist");
+
+    assert!(images.is_virtual);
+    assert!(videos.is_virtual);
+    assert_eq!(
+        images.photo_count, 1,
+        "image album filters by type, not path"
+    );
+    assert_eq!(
+        videos.photo_count, 1,
+        "video album filters by type, not path"
+    );
+    assert_eq!(
+        images.cover_uri.as_deref(),
+        Some("file:///Videos/photo-in-video-dir.jpg")
+    );
+    assert_eq!(
+        videos.cover_uri.as_deref(),
+        Some("file:///Pictures/video-in-picture-dir.mp4")
+    );
 }

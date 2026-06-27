@@ -16,7 +16,7 @@ fn home_dir() -> PathBuf {
 /// 3. Otherwise fall back to `~/Pictures`.
 pub fn pictures_dir() -> PathBuf {
     // 1) Try the XDG user-dirs.dirs file.
-    if let Some(p) = read_user_dirs_pictures() {
+    if let Some(p) = read_user_dirs_key("XDG_PICTURES_DIR") {
         return p;
     }
 
@@ -34,6 +34,38 @@ pub fn pictures_dir() -> PathBuf {
     home_path.join("Pictures")
 }
 
+/// Returns the locale-aware user Videos directory.
+///
+/// Resolution order mirrors [`pictures_dir`]:
+/// 1. Parse `~/.config/user-dirs.dirs` for `XDG_VIDEOS_DIR`.
+/// 2. If `LANG` or `LC_ALL` starts with `zh`, fall back to `~/视频`.
+/// 3. Otherwise fall back to `~/Videos`.
+pub fn videos_dir() -> PathBuf {
+    if let Some(p) = read_user_dirs_key("XDG_VIDEOS_DIR") {
+        return p;
+    }
+
+    let home_path = home_dir();
+    if is_chinese_locale() {
+        let zh = home_path.join("视频");
+        if zh.exists() {
+            return zh;
+        }
+    }
+
+    home_path.join("Videos")
+}
+
+pub fn media_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for root in [pictures_dir(), videos_dir()] {
+        if !roots.iter().any(|existing| existing == &root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
 /// Returns true if `LANG` or `LC_ALL` starts with `zh`.
 fn is_chinese_locale() -> bool {
     for var in ["LC_ALL", "LANG"] {
@@ -48,26 +80,27 @@ fn is_chinese_locale() -> bool {
     false
 }
 
-/// Read `~/.config/user-dirs.dirs` and return the parsed `XDG_PICTURES_DIR`
+/// Read `~/.config/user-dirs.dirs` and return the parsed XDG user dir key
 /// with `$HOME` substitution. Returns `None` if the file is missing or the
 /// key is absent.
-fn read_user_dirs_pictures() -> Option<PathBuf> {
+fn read_user_dirs_key(key: &str) -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let home_path = PathBuf::from(&home);
     let file = home_path.join(".config").join("user-dirs.dirs");
     let content = std::fs::read_to_string(&file).ok()?;
-    parse_user_dirs_pictures(&content, &home_path)
+    parse_user_dirs_key(&content, &home_path, key)
 }
 
-/// Parse the contents of a `user-dirs.dirs` file and return the
-/// `XDG_PICTURES_DIR` value with `$HOME` substituted.
-fn parse_user_dirs_pictures(content: &str, home: &std::path::Path) -> Option<PathBuf> {
+/// Parse the contents of a `user-dirs.dirs` file and return the requested
+/// value with `$HOME` substituted.
+fn parse_user_dirs_key(content: &str, home: &std::path::Path, key: &str) -> Option<PathBuf> {
+    let prefix = format!("{key}=");
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("XDG_PICTURES_DIR=") {
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
             let raw = rest.trim().trim_matches('"');
             if raw.is_empty() || raw == "$HOME" {
                 return Some(home.to_path_buf());

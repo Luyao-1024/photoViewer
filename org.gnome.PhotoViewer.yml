@@ -23,6 +23,45 @@ cleanup:
   - /share/doc
 
 modules:
+  # ffmpeg 提供共享库（供 ffmpegthumbnailer 链接）+ ffprobe 二进制（供视频属性
+  # 元数据提取）。默认内置 h264/hevc/vp9/av1 解码器，足够缩略图与探测；顶层
+  # cleanup 会在所有模块构建完成后才清理 /include，故 ffmpegthumbnailer 仍能
+  # 链接到 libav* 头文件。
+  # 版本锁定 6.1.x：ffmpegthumbnailer 2.2.3 仍用 7.0 之前的 AVFrame 字段
+  # (interlaced_frame/key_frame) 与 av_stream_get_side_data 旧签名，7.x/8.x 下
+  # 编译失败。
+  - name: ffmpeg
+    config-opts:
+      - --enable-shared
+      - --disable-static
+      - --enable-pic
+      - --disable-doc
+      - --disable-debug
+      - --disable-programs
+      - --enable-ffprobe
+      - --disable-avdevice
+      - --disable-network
+      - --enable-gpl
+      - --enable-version3
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-6.1.6.tar.xz
+        sha256: d4fcb164028dd3beee5d92c0ac72e46aac6973c75ea12dc14de07bf8f407370a
+
+  # ffmpegthumbnailer 生成视频封面帧，正确扩展 limited→full 色彩范围。
+  # 依赖上面的 ffmpeg 库 + GNOME SDK 的 libpng/libjpeg/glib。
+  - name: ffmpegthumbnailer
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/app
+      - -DENABLE_GIO=ON
+      - -DENABLE_THUMBNAILER=OFF
+    sources:
+      - type: archive
+        url: https://github.com/dirkvdb/ffmpegthumbnailer/archive/refs/tags/2.2.3.tar.gz
+        sha256: 8c9b9057c6cc8bce9d11701af224c8139c940f734c439a595525e073b09d19b8
+
   - name: photo-viewer
     buildsystem: simple
     build-options:

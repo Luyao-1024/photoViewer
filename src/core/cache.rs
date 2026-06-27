@@ -2,6 +2,23 @@
 use crate::core::error::Result;
 use std::path::Path;
 
+/// 计算目录的总大小（字节）。
+pub fn dir_size(cache_dir: &Path) -> u64 {
+    if !cache_dir.exists() {
+        return 0;
+    }
+    let mut total = 0u64;
+    for entry in walkdir::WalkDir::new(cache_dir).into_iter().flatten() {
+        let p = entry.path();
+        if p.is_file() {
+            if let Ok(meta) = std::fs::metadata(p) {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 pub fn enforce_size_limit(cache_dir: &Path, max_bytes: u64) -> Result<usize> {
     if !cache_dir.exists() {
         return Ok(0);

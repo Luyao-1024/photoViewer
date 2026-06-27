@@ -5,6 +5,8 @@ use exif::{Field, In, Tag, Value};
 use gdk_pixbuf::{Pixbuf, PixbufRotation};
 
 use crate::core::error::{AppError, Result};
+use crate::core::media::mime_from_extension;
+use crate::core::metadata::extract_heic_exif_tiff;
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const EXIF_PREFIX: &[u8] = b"Exif\0\0";
@@ -85,6 +87,23 @@ fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     let data = std::fs::read(path)?;
     if is_png(&data) {
         let Some(tiff) = find_png_exif_chunk(&data)? else {
+            return Ok(None);
+        };
+        return exif::Reader::new()
+            .read_raw(tiff)
+            .map(Some)
+            .map_err(|e| AppError::Exif(e.to_string()));
+    }
+
+    // HEIC/HEIF needs a dedicated path: kamadak-exif's `read_from_container`
+    // *can* parse the ISOBMFF container, but caps the Exif item at
+    // `MAX_EXIF_SIZE = 65535`. Camera phones (iPhone, many Androids) embed a
+    // high-resolution JPEG thumbnail inside the Exif item, pushing it to several
+    // hundred KB, so kamadak-exif rejects those files with "Exif data too large"
+    // and EXIF silently comes back empty. We parse the container ourselves
+    // (no size cap) and hand the raw TIFF block to `Reader::read_raw`.
+    if mime_from_extension(path) == Some("image/heic") {
+        let Some(tiff) = extract_heic_exif_tiff(&data) else {
             return Ok(None);
         };
         return exif::Reader::new()

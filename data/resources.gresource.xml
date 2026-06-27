@@ -3,7 +3,6 @@
   <gresource prefix="/org/gnome/PhotoViewer">
     <file>ui/window.ui</file>
     <file>ui/photos-page.ui</file>
-    <file>ui/albums-page.ui</file>
     <file>ui/album-detail-page.ui</file>
     <file>ui/media-grid.ui</file>
     <file>ui/mode-selector.ui</file>

@@ -80,9 +80,12 @@ pub fn build_app() -> adw::Application {
                     nav.push(&photos);
 
                     // Store DB pool + loader on the window so the sidebar can
-                    // construct AlbumsPage/TrashPage on demand, then wire
+                    // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
                     window.set_resources(pool, loader, media_list.clone());
+                    // Now that the pool is available, populate the album rows
+                    // nested under the sidebar's Albums group header.
+                    window.populate_album_rows();
                     window.connect_sidebar(&nav);
 
                     // Consumer: GTK 主线程独占 media_list 写权限，所以 spawn_local
@@ -145,10 +148,11 @@ async fn initialize() -> anyhow::Result<(
         .clamp(4, 8);
     thumbnail_loader.spawn_workers(workers);
 
-    // 启动后台扫描 + 聚合 albums
-    // 优先使用 XDG user-dirs.dirs，否则按 locale 回退（zh_CN -> ~/图片，否则 ~/Pictures）。
+    // 启动后台扫描 + 聚合 albums。图片目录和视频目录都作为媒体根扫描；
+    // 二者可以混放图片/视频，`media_roots()` 会去重。
     let pictures = crate::config::pictures_dir();
-    crate::core::bootstrap::scan_and_aggregate(&pool, std::slice::from_ref(&pictures)).await?;
+    let media_roots = crate::config::media_roots();
+    crate::core::bootstrap::scan_and_aggregate(&pool, &media_roots).await?;
 
     // 回收站对账：扫描系统回收站，把"原路径在相册目录下、确实已被删"的图片补进 DB
     //（标 trashed）。这样被外部（文件管理器）删除、或历史 DB 行丢失的图片也能在
@@ -176,7 +180,7 @@ async fn initialize() -> anyhow::Result<(
         })??;
     }
 
-    // 启动文件监听（M5-T5+）：监听 ~/Pictures 的后续变更并增量 upsert。
+    // 启动文件监听（M5-T5+）：监听媒体根的后续变更并增量 upsert。
     // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
     // 消费者；消费者按 uri 在共享的 `media_list` 上做 splice/append/remove。
     //
@@ -184,7 +188,7 @@ async fn initialize() -> anyhow::Result<(
     // 必须单独监听才能实时感知（见 notify_watcher 的防抖对账）。
     let (notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
     let trash_roots = crate::core::trash::trash_roots();
-    let mut watch_paths = vec![pictures.clone()];
+    let mut watch_paths = media_roots.clone();
     watch_paths.extend(trash_roots.iter().filter(|r| r.exists()).cloned());
     let _watcher = crate::core::notify_watcher::start_watching(
         pool.clone(),

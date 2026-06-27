@@ -1,8 +1,11 @@
 //! Image metadata extraction: dimensions, EXIF DateTimeOriginal, MIME type.
 use crate::core::error::{AppError, Result};
+use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use chrono::{DateTime, TimeZone, Utc};
 use gdk_pixbuf;
+use serde_json::Value;
 use std::path::Path;
+use std::process::Command;
 
 /// Curated, strongly-typed camera/EXIF summary for the details panel.
 /// `from_exif` returns `None` when no curated field is present, so the UI can
@@ -182,6 +185,23 @@ pub struct GpsDms {
     pub north_or_east: bool,
 }
 
+/// Curated video metadata summary for the details panel (duration, codec, fps,
+/// bitrate, container, device). Populated by `ffprobe`; the UI omits `None`
+/// fields. Like `ExifSummary`, the core stays free of i18n — the UI formats and
+/// translates these values.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VideoSummary {
+    pub duration_secs: Option<f64>,
+    pub codec: Option<String>,
+    pub fps: Option<f64>,
+    pub bitrate: Option<u64>,
+    pub container: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub make: Option<String>,
+    pub model: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RawMetadata {
     pub width: Option<u32>,
@@ -189,22 +209,39 @@ pub struct RawMetadata {
     pub taken_at: Option<DateTime<Utc>>,
     pub mime_type: String,
     pub camera: Option<ExifSummary>,
+    pub video: Option<VideoSummary>,
 }
 
 /// Extract metadata from a file at `path`.
 pub fn extract(path: &Path) -> Result<RawMetadata> {
-    let mime_type = mime_from_extension(path);
-    if mime_type.is_empty() {
+    let Some(mime_type) = mime_from_extension(path).map(str::to_string) else {
         return Err(AppError::Decode(format!(
             "unknown extension: {}",
             path.display()
         )));
-    }
+    };
 
     let mut meta = RawMetadata {
         mime_type,
         ..Default::default()
     };
+
+    if media_kind_from_mime(&meta.mime_type) == Some(MediaKind::Video) {
+        tracing::info!(
+            "metadata::extract path={} mime={} video=true",
+            path.display(),
+            meta.mime_type
+        );
+        // 用 ffprobe 提取视频元数据：分辨率、录制时间、时长、编码、帧率、码率、
+        // 容器、拍摄设备。失败时仅保留 mime_type（详情面板仍显示名称/类型/大小）。
+        if let Some((summary, recorded)) = probe_video(path) {
+            meta.width = summary.width;
+            meta.height = summary.height;
+            meta.taken_at = recorded;
+            meta.video = Some(summary);
+        }
+        return Ok(meta);
+    }
 
     // 1. Read file header to get dimensions (gdk-pixbuf handles JPEG/PNG/WebP,
     //    with image::image_dimensions as a fallback that does not upscale).
@@ -247,7 +284,7 @@ fn read_exif(path: &Path) -> Result<exif::Exif> {
     // and EXIF silently comes back empty. We parse the container ourselves
     // (no size cap) and hand the raw TIFF block to `Reader::read_raw`. See
     // `extract_heic_exif_tiff`.
-    if mime_from_extension(path) == "image/heic" {
+    if mime_from_extension(path) == Some("image/heic") {
         tracing::info!("read_exif: HEIC path detected, parsing ISOBMFF...");
         let data = std::fs::read(path)?;
         let tiff = extract_heic_exif_tiff(&data)
@@ -387,7 +424,7 @@ fn gps_dms(exif: &exif::Exif, tag: exif::Tag) -> Option<(u32, u32, f64)> {
 /// Extract the raw TIFF block of the first `Exif` item in a HEIC/HEIF file,
 /// or `None` if the file has no such item. Returns enough for
 /// `exif::Reader::read_raw` regardless of item size (no 64 KB cap).
-fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
+pub fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
     // Walk top-level boxes to the `meta` box.
     let mut off = 0usize;
     while let Some((size, typ, hdr)) = box_header(data, off) {
@@ -684,17 +721,153 @@ fn parse_exif_datetime(s: &str) -> Option<DateTime<Utc>> {
     Some(local_dt.with_timezone(&Utc))
 }
 
-fn mime_from_extension(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => match ext.to_ascii_lowercase().as_str() {
-            "jpg" | "jpeg" => "image/jpeg".into(),
-            "png" => "image/png".into(),
-            "webp" => "image/webp".into(),
-            "heic" | "heif" => "image/heic".into(),
-            _ => String::new(),
-        },
-        None => String::new(),
+/// 调用 `ffprobe` 提取视频元数据（JSON），返回 (摘要, 录制时间)。
+/// ffprobe 不可用或解析失败时返回 `None`，调用方退化为仅含 mime_type 的元数据。
+fn probe_video(path: &Path) -> Option<(VideoSummary, Option<DateTime<Utc>>)> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        tracing::warn!(
+            "probe_video: ffprobe 失败 {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return None;
     }
+    let val: Value = serde_json::from_slice(&out.stdout).ok()?;
+    let summary = parse_video_probe(&val);
+    let recorded = video_creation_time(&val);
+    Some((summary, recorded))
+}
+
+/// 从 ffprobe JSON 解析出展示用的 [`VideoSummary`]。
+fn parse_video_probe(val: &Value) -> VideoSummary {
+    let vstream = val
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            arr.iter()
+                .find(|st| st.get("codec_type").and_then(Value::as_str) == Some("video"))
+        });
+    let fmt = val.get("format");
+
+    let mut s = VideoSummary::default();
+    if let Some(vs) = vstream {
+        s.width = ju64(Some(vs), "width").map(|n| n as u32);
+        s.height = ju64(Some(vs), "height").map(|n| n as u32);
+        s.codec = video_codec_label(vs);
+        s.fps = jstr(Some(vs), "avg_frame_rate")
+            .and_then(parse_fps)
+            .or_else(|| jstr(Some(vs), "r_frame_rate").and_then(parse_fps));
+        s.bitrate = ju64(Some(vs), "bit_rate");
+    }
+    if let Some(f) = fmt {
+        s.duration_secs = jf64(Some(f), "duration");
+        s.container = jstr(Some(f), "format_long_name").map(str::to_string);
+        s.bitrate = s.bitrate.or_else(|| ju64(Some(f), "bit_rate"));
+        let tags = f.get("tags");
+        s.make = tag_str(tags, "com.apple.quicktime.make").or_else(|| tag_str(tags, "make"));
+        s.model = tag_str(tags, "com.apple.quicktime.model").or_else(|| tag_str(tags, "model"));
+    }
+    s
+}
+
+/// 友好编码标签：把 ffprobe 的 `codec_name`（h264/hevc/…）映射为常见名，并附带
+/// profile（如 "HEVC (Main 10)"）。未知编码原样返回。
+fn video_codec_label(vs: &Value) -> Option<String> {
+    let name = vs.get("codec_name").and_then(Value::as_str)?;
+    let friendly = match name {
+        "h264" => "H.264",
+        "hevc" => "HEVC",
+        "vp8" => "VP8",
+        "vp9" => "VP9",
+        "av1" => "AV1",
+        "mpeg4" => "MPEG-4",
+        "mpeg2video" => "MPEG-2",
+        "mpeg1video" => "MPEG-1",
+        "wmv1" | "wmv2" | "wmv3" => "WMV",
+        _ => name,
+    };
+    let profile = vs
+        .get("profile")
+        .and_then(Value::as_str)
+        .filter(|p| !p.is_empty());
+    match profile {
+        Some(p) if !friendly.contains(p) => Some(format!("{friendly} ({p})")),
+        _ => Some(friendly.to_string()),
+    }
+}
+
+/// 解析 ffprobe 的帧率分数 "30000/1001" → 29.97，或纯数字 "30" → 30.0。
+fn parse_fps(s: &str) -> Option<f64> {
+    match s.split_once('/') {
+        Some((num, den)) => {
+            let n: f64 = num.trim().parse().ok()?;
+            let d: f64 = den.trim().parse().ok()?;
+            if d == 0.0 {
+                None
+            } else {
+                Some(n / d)
+            }
+        }
+        None => s.trim().parse::<f64>().ok(),
+    }
+}
+
+/// 从容器 tags 读取录制时间（creation_time），解析为 UTC。
+fn video_creation_time(val: &Value) -> Option<DateTime<Utc>> {
+    let tags = val.get("format").and_then(|f| f.get("tags"))?;
+    let raw = tags
+        .get("creation_time")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            tags.get("com.apple.quicktime.creation_date")
+                .and_then(Value::as_str)
+        })?;
+    // ffprobe 输出 ISO 8601（带时区，如 "2024-01-01T12:00:00.000000Z"）。
+    DateTime::parse_from_rfc3339(raw.trim())
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// JSON 对象中取字符串字段。
+fn jstr<'a>(obj: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    obj.and_then(|o| o.get(key))?.as_str()
+}
+
+/// JSON 对象中取无符号整数（ffprobe 常把数值写成字符串）。
+fn ju64(obj: Option<&Value>, key: &str) -> Option<u64> {
+    let v = obj.and_then(|o| o.get(key))?;
+    v.as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .or_else(|| v.as_u64())
+        .or_else(|| v.as_f64().map(|f| f as u64))
+}
+
+/// JSON 对象中取浮点数。
+fn jf64(obj: Option<&Value>, key: &str) -> Option<f64> {
+    let v = obj.and_then(|o| o.get(key))?;
+    v.as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| v.as_f64())
+}
+
+/// 从 tags 对象取非空字符串字段。
+fn tag_str(tags: Option<&Value>, key: &str) -> Option<String> {
+    tags.and_then(|t| t.get(key))
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -893,6 +1066,45 @@ mod tests {
         assert!(
             exif_datetime(&exif).is_some(),
             "DateTimeOriginal should be present"
+        );
+    }
+
+    /// Manual verification of `ffprobe`-based video metadata extraction.
+    /// Ignored by default; needs `ffprobe` on PATH and a real video:
+    ///   VIDEO_TEST_FILE=/path/to/clip.mp4 \
+    ///     cargo test --lib core::metadata::tests::video_metadata_extracted -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn video_metadata_extracted() {
+        let path = match std::env::var("VIDEO_TEST_FILE") {
+            Ok(p) => std::path::PathBuf::from(p),
+            Err(_) => {
+                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
+                return;
+            }
+        };
+        let meta = extract(&path).expect("extract should succeed on a video");
+        assert_eq!(
+            media_kind_from_mime(&meta.mime_type),
+            Some(MediaKind::Video),
+            "mime should be video"
+        );
+        let v = meta.video.expect("VideoSummary should be populated");
+        assert!(v.width.unwrap_or(0) > 0, "width should be parsed");
+        assert!(v.height.unwrap_or(0) > 0, "height should be parsed");
+        assert!(v.codec.is_some(), "codec should be parsed");
+        assert!(
+            v.duration_secs.unwrap_or(0.0) > 0.0,
+            "duration should be parsed"
+        );
+        println!(
+            "video meta: {:?}x{:?} {:?} {:.1}s fps={:?} container={:?}",
+            v.width,
+            v.height,
+            v.codec,
+            v.duration_secs.unwrap_or(0.0),
+            v.fps,
+            v.container
         );
     }
 

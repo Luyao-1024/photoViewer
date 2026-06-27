@@ -34,6 +34,9 @@ chrono = { version = "0.4", features = ["serde"] }
 blake3 = "1"
 walkdir = "2"
 lru = "0.12"
+gstreamer = "0.22"
+gstreamer-app = "0.22"
+gstreamer-video = "0.22"
 
 [build-dependencies]
 glib-build-tools = "0.19"

@@ -1,6 +1,6 @@
 //! SQLite 连接池与迁移管理
 use crate::core::error::{AppError, Result};
-use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::media::{media_kind_from_mime, MediaItem, MediaKind, NewMediaItem};
 use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -104,19 +104,26 @@ fn optional_ts(ts: Option<i64>, col: usize) -> rusqlite::Result<Option<DateTime<
     ts.map(|value| required_ts(value, col)).transpose()
 }
 
+pub fn media_kind_db_value(mime_type: &str) -> &'static str {
+    media_kind_from_mime(mime_type)
+        .unwrap_or(MediaKind::Image)
+        .as_db_value()
+}
+
 /// 插入新项，返回自增 id
 pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
-            (uri, path, folder_path, mime_type, width, height,
+            (uri, path, folder_path, mime_type, media_kind, width, height,
              taken_at, file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch())",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())",
         rusqlite::params![
             item.uri,
             item.path.to_string_lossy(),
             item.folder_path.to_string_lossy(),
             item.mime_type,
+            media_kind_db_value(&item.mime_type),
             item.width,
             item.height,
             item.taken_at.map(ts),
@@ -240,6 +247,15 @@ pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
         rusqlite::params![path.to_string_lossy(), uri],
     )?;
     Ok(changed)
+}
+
+/// 清空所有媒体记录。返回删除的记录数。
+///
+/// 用于重置数据库，不会删除原始文件。
+pub fn clear_all_media(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count = conn.execute("DELETE FROM media_items", [])?;
+    Ok(count)
 }
 
 /// 标记为已删除（不立即物理删除）

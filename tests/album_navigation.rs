@@ -1,4 +1,8 @@
-//! Regression coverage for album tile activation and the album detail view.
+//! Regression coverage for the album detail view and viewer push.
+//!
+//! Albums are opened directly from the sidebar now (see `sidebar_navigation`),
+//! so this builds an `AlbumDetailPage` the same way the sidebar does — with a
+//! pre-filtered media list — and checks the day-grouped grid + viewer wiring.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,7 +17,7 @@ use libadwaita::prelude::*;
 use photo_viewer::core::albums::Album;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
-use photo_viewer::ui::{AlbumDetailPage, AlbumsPage, MediaGrid, ViewerPage};
+use photo_viewer::ui::{AlbumDetailPage, MediaGrid, ViewerPage};
 
 fn item(id: i64, folder: &str, file: &str) -> MediaItem {
     MediaItem {
@@ -38,19 +42,16 @@ fn item(id: i64, folder: &str, file: &str) -> MediaItem {
     }
 }
 
-fn album(folder: &str, count: i64) -> Album {
-    Album {
-        folder_path: PathBuf::from(folder),
-        name: folder.into(),
-        cover_uri: None,
-        photo_count: count,
-        last_modified: chrono::Utc.with_ymd_and_hms(2025, 3, 1, 12, 0, 0).unwrap(),
-        is_virtual: false,
+fn boxed(items: &[MediaItem]) -> gtk::gio::ListStore {
+    let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for it in items {
+        store.append(&glib::BoxedAnyObject::new(it.clone()));
     }
+    store
 }
 
 #[test]
-fn album_tile_pushes_day_grouped_detail_page() {
+fn album_detail_pushes_day_grouped_grid_and_viewer() {
     gtk::init().expect("GTK init failed");
 
     let tmp = tempfile::tempdir().unwrap();
@@ -61,55 +62,37 @@ fn album_tile_pushes_day_grouped_detail_page() {
     ));
     let nav = adw::NavigationView::new();
 
-    let albums = vec![album("/tmp/Camera", 2)];
-    let media = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    for item in [
+    let album = Album {
+        folder_path: PathBuf::from("/tmp/Camera"),
+        name: "/tmp/Camera".into(),
+        cover_uri: None,
+        photo_count: 2,
+        last_modified: chrono::Utc.with_ymd_and_hms(2025, 3, 1, 12, 0, 0).unwrap(),
+        is_virtual: false,
+    };
+
+    // The sidebar builds this pre-filtered list via `filtered_items_for_album`;
+    // here we construct it directly to keep that helper crate-private.
+    let filtered = boxed(&[
+        item(1, "/tmp/Camera", "one.jpg"),
+        item(2, "/tmp/Camera", "two.jpg"),
+    ]);
+    let master = boxed(&[
         item(1, "/tmp/Camera", "one.jpg"),
         item(2, "/tmp/Camera", "two.jpg"),
         item(3, "/tmp/Other", "three.jpg"),
-    ] {
-        media.append(&glib::BoxedAnyObject::new(item));
-    }
-    let page = AlbumsPage::new(albums, loader.clone());
-    let album_header_classes: Vec<String> = page
-        .imp()
-        .header_bar
-        .get()
-        .css_classes()
-        .iter()
-        .map(|class| class.to_string())
-        .collect();
-    assert!(
-        album_header_classes
-            .iter()
-            .any(|class| class == "glass-header"),
-        "AlbumsPage header should carry glass-header, got {album_header_classes:?}",
-    );
+    ]);
 
-    page.set_nav_target(&nav, media, pool);
+    let page = AlbumDetailPage::new(album, filtered, master, pool, loader);
+    page.set_nav_target(&nav);
     nav.push(&page);
 
-    let child = page
-        .imp()
-        .flow_box
-        .get()
-        .child_at_index(0)
-        .expect("album tile exists");
-    page.imp()
-        .flow_box
-        .get()
-        .emit_by_name::<()>("child-activated", &[&child]);
-
-    let detail = nav
-        .visible_page()
-        .and_downcast::<AlbumDetailPage>()
-        .expect("activating an album should push AlbumDetailPage");
     assert_eq!(
-        detail.title().as_str(),
+        page.title().as_str(),
         "Camera",
-        "detail page title should identify the current album"
+        "detail page title should identify the current album",
     );
-    let detail_header_classes: Vec<String> = detail
+    let detail_header_classes: Vec<String> = page
         .imp()
         .header_bar
         .get()
@@ -124,8 +107,11 @@ fn album_tile_pushes_day_grouped_detail_page() {
         "AlbumDetailPage header should carry glass-header, got {detail_header_classes:?}",
     );
 
-    let grid = detail.imp().content_box.get().first_child();
-    let grid = grid
+    let grid = page
+        .imp()
+        .content_box
+        .get()
+        .first_child()
         .and_downcast::<MediaGrid>()
         .expect("album detail should reuse MediaGrid");
     assert_eq!(grid.mode(), photo_viewer::core::section_model::GroupBy::Day);

@@ -1,14 +1,12 @@
 //! 本地文件系统扫描后端
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
-use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::media::{is_supported_media_path, MediaItem, NewMediaItem};
 use crate::core::metadata;
 use chrono::Utc;
 use std::io::Read;
 use std::path::Path;
 use walkdir::WalkDir;
-
-const SUPPORTED_EXT: &[&str] = &["jpg", "jpeg", "png", "webp", "heic", "heif"];
 
 fn stream_file_hash(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
@@ -22,14 +20,6 @@ fn stream_file_hash(path: &Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_hex().to_string())
-}
-
-/// `path` 是否为支持的图片扩展名（大小写不敏感）。
-fn is_supported_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| SUPPORTED_EXT.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
 }
 
 /// 文件的索引时间信号：created 优先，失败回退 modified。
@@ -55,7 +45,7 @@ impl LocalBackend {
         &self.pool
     }
 
-    /// 递归扫描目录，返回所有支持的图片项（**不做跳过**，逐个全量提取 + 全文件
+    /// 递归扫描目录，返回所有支持的媒体项（**不做跳过**，逐个全量提取 + 全文件
     /// 哈希）。供需要完整 `NewMediaItem` 列表的场景（测试、相册预处理）使用。
     /// 启动扫描请用 [`Self::scan_and_upsert_dir`]，它会跳过未改动文件以避免
     /// 重复哈希。
@@ -63,7 +53,7 @@ impl LocalBackend {
         let mut items = Vec::new();
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
             let path = entry.path();
-            if !path.is_file() || !is_supported_image(path) {
+            if !path.is_file() || !is_supported_media_path(path) {
                 continue;
             }
             match self.process_file(path) {
@@ -75,7 +65,7 @@ impl LocalBackend {
         Ok(items)
     }
 
-    /// 启动扫描入口：遍历 `root`，对每张图片 upsert，但**先用 `(uri, file_mtime,
+    /// 启动扫描入口：遍历 `root`，对每个媒体文件 upsert，但**先用 `(uri, file_mtime,
     /// file_size)` 查库短路**——未改动的文件直接跳过，不读全文件做 blake3、不重提
     /// EXIF。返回实际（重新）索引的文件数。
     ///
@@ -85,7 +75,7 @@ impl LocalBackend {
         let mut indexed = 0usize;
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
             let path = entry.path();
-            if !path.is_file() || !is_supported_image(path) {
+            if !path.is_file() || !is_supported_media_path(path) {
                 continue;
             }
 
@@ -192,9 +182,9 @@ impl LocalBackend {
         if !path.is_file() {
             return Ok(None);
         }
-        let item = self
-            .process_file(path)?
-            .ok_or_else(|| AppError::Decode(format!("not an image: {}", path.display())))?;
+        let item = self.process_file(path)?.ok_or_else(|| {
+            AppError::Decode(format!("not a supported media: {}", path.display()))
+        })?;
         self.upsert(&item).map(Some)
     }
 
@@ -224,15 +214,16 @@ impl LocalBackend {
         if let Some(id) = existing {
             conn.execute(
                 "UPDATE media_items
-                 SET path=?2, folder_path=?3, mime_type=?4, width=?5,
-                     height=?6, taken_at=?7, file_mtime=?8, file_size=?9,
-                     blake3_hash=?10, trashed_at=NULL, indexed_at=unixepoch()
+                 SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5, width=?6,
+                     height=?7, taken_at=?8, file_mtime=?9, file_size=?10,
+                     blake3_hash=?11, trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
                     id,
                     item.path.to_string_lossy(),
                     item.folder_path.to_string_lossy(),
                     item.mime_type,
+                    db::media_kind_db_value(&item.mime_type),
                     item.width,
                     item.height,
                     item.taken_at.map(|t| t.timestamp()),

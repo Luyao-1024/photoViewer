@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     path            TEXT    NOT NULL,
     folder_path     TEXT    NOT NULL,
     mime_type       TEXT    NOT NULL,
+    media_kind      TEXT    NOT NULL DEFAULT 'image',
     width           INTEGER,
     height          INTEGER,
     taken_at        INTEGER,
@@ -29,6 +30,10 @@ CREATE INDEX IF NOT EXISTS idx_media_favorite
     ON media_items(is_favorite)
     WHERE trashed_at IS NULL;
 
+CREATE INDEX IF NOT EXISTS idx_media_kind
+    ON media_items(media_kind)
+    WHERE trashed_at IS NULL;
+
 -- albums 物化视图
 CREATE TABLE IF NOT EXISTS albums (
     folder_path     TEXT PRIMARY KEY,
@@ -36,6 +41,15 @@ CREATE TABLE IF NOT EXISTS albums (
     cover_uri       TEXT,
     photo_count     INTEGER NOT NULL DEFAULT 0,
     last_modified   INTEGER NOT NULL
+);
+
+-- album_order 持久化用户在侧栏中拖动重排相册得到的顺序。
+-- 单独成表而非加列到 `albums`：`albums` 在每次扫描 / `albums::refresh` 时被
+-- DELETE + 重新 INSERT，独立表才不会被这轮重建清掉。键是 `folder_path`
+-- （对虚拟相册则是其魔法路径），因此虚拟相册同样可被拖动排序。
+CREATE TABLE IF NOT EXISTS album_order (
+    folder_path     TEXT PRIMARY KEY,
+    sort_order      INTEGER NOT NULL
 );
 
 -- edits 非破坏性编辑记录

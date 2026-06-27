@@ -26,12 +26,12 @@ use crate::core::{
     db::{self, DbPool},
     trash,
 };
-use crate::ui::album_detail_page::refresh_albums_page_in_nav;
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use crate::ui::window::refresh_albums_sidebar;
 
 mod imp {
     use super::*;
@@ -56,6 +56,10 @@ mod imp {
         /// adjustment value changes because tile bounds and newly-visible
         /// thumbnail brightness state settle asynchronously.
         pub contrast_update_pending: Cell<bool>,
+        /// Debounces photo activation while NavigationView is pushing the
+        /// viewer. Without this, rapid repeated clicks can stack viewer pages
+        /// or race with viewer-level back handling during the transition.
+        pub viewer_open_pending: Cell<bool>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -84,6 +88,7 @@ mod imp {
                 grids: RefCell::new(Vec::new()),
                 selected_indices: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
+                viewer_open_pending: Cell::new(false),
                 header_bar: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
@@ -714,7 +719,7 @@ impl PhotosPage {
                 this.remove_media_by_ids(&removed);
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_page_in_nav(&nav);
+                    refresh_albums_sidebar(&nav);
                 }
             }
         });
@@ -743,7 +748,7 @@ impl PhotosPage {
             if let Some(this) = weak.upgrade() {
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_page_in_nav(&nav);
+                    refresh_albums_sidebar(&nav);
                 }
             }
         });
@@ -765,6 +770,28 @@ impl PhotosPage {
     }
 
     fn open_viewer(&self, global_index: u32) {
+        if self.imp().viewer_open_pending.get() {
+            tracing::debug!(
+                "PhotosPage: ignoring duplicate viewer activation while push is pending"
+            );
+            return;
+        }
+
+        let nav = match self.imp().nav_view.borrow().as_ref() {
+            Some(n) => n.clone(),
+            None => return,
+        };
+        let self_page: adw::NavigationPage = self.clone().upcast();
+        if nav
+            .visible_page()
+            .is_some_and(|visible| visible != self_page)
+        {
+            tracing::debug!(
+                "PhotosPage: ignoring viewer activation because PhotosPage is not visible"
+            );
+            return;
+        }
+
         // Opening a viewer implicitly cancels any active multi-select — the
         // user is moving to single-photo mode. Otherwise stale selection
         // would persist after popping back, and a shift-click in the
@@ -773,10 +800,6 @@ impl PhotosPage {
 
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
-            None => return,
-        };
-        let nav = match self.imp().nav_view.borrow().as_ref() {
-            Some(n) => n.clone(),
             None => return,
         };
         let displayed_indices = self
@@ -879,7 +902,7 @@ impl PhotosPage {
         let nav_for_refresh = nav.downgrade();
         viewer.connect_favorite_state_changed(move |_, _| {
             if let Some(nav) = nav_for_refresh.upgrade() {
-                refresh_albums_page_in_nav(&nav);
+                refresh_albums_sidebar(&nav);
             }
         });
 
@@ -923,9 +946,17 @@ impl PhotosPage {
             }
         });
 
-        // Push the new viewer. Subsequent tile-clicks push a *new*
-        // viewer; the previous one is reclaimed by the NavigationView
-        // when the user pops back, so we don't need to track it here.
+        self.imp().viewer_open_pending.set(true);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
+            if let Some(this) = weak.upgrade() {
+                this.imp().viewer_open_pending.set(false);
+            }
+        });
+
+        // Push the new viewer. While the transition settles, duplicate
+        // activations are ignored so rapid double-clicks cannot stack viewer
+        // pages or immediately trip viewer-level navigation.
         nav.push(&viewer);
     }
 }
@@ -938,4 +969,57 @@ fn media_item_for_index(
     let boxed = obj.downcast::<glib::BoxedAnyObject>().ok()?;
     let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
     Some(item)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+    use std::path::PathBuf;
+
+    fn sample_item(id: i64, name: &str) -> crate::core::media::MediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
+        crate::core::media::MediaItem {
+            id,
+            uri: format!("file:///tmp/{name}"),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/png".into(),
+            width: Some(100),
+            height: Some(100),
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 100,
+            blake3_hash: format!("hash-{id}"),
+            trashed_at: None,
+        }
+    }
+
+    #[gtk::test]
+    fn repeated_photo_activation_pushes_only_one_viewer_while_pending() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+
+        let nav = adw::NavigationView::new();
+        let page = PhotosPage::new(media_list, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
+
+        page.open_viewer(0);
+        page.open_viewer(0);
+
+        assert_eq!(
+            nav.navigation_stack().n_items(),
+            2,
+            "back-to-back photo activations must not stack duplicate viewer pages"
+        );
+        assert!(
+            nav.visible_page().and_downcast::<ViewerPage>().is_some(),
+            "the single pushed page should be a ViewerPage"
+        );
+    }
 }
