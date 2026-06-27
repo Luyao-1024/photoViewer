@@ -23,6 +23,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Albums and trash flows | [`docs/modules/albums-trash.md`](docs/modules/albums-trash.md) |
 | Editor operations and save paths | [`docs/modules/editor.md`](docs/modules/editor.md) |
 | DB, scanner, filesystem watcher, thumbnails | [`docs/modules/storage.md`](docs/modules/storage.md) |
+| Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
 | Liquid Glass and shared UI material classes | [`docs/modules/ui-liquid-glass.md`](docs/modules/ui-liquid-glass.md) |
 | Historical milestone plans/specs | [`docs/superpowers/`](docs/superpowers/) |
 

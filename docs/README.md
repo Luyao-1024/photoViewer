@@ -19,6 +19,7 @@ Project documentation is organized by functional module. Use this page for human
 | [`modules/albums-trash.md`](modules/albums-trash.md) | Albums, album detail, trash, restore/delete flows |
 | [`modules/editor.md`](modules/editor.md) | Edit operation pipeline, destructive rotate, save behavior |
 | [`modules/storage.md`](modules/storage.md) | SQLite, media model, scanner, watcher, thumbnails |
+| [`modules/ui-design.md`](modules/ui-design.md) | Screen-by-screen UI design reference and shared interaction intent |
 | [`modules/ui-liquid-glass.md`](modules/ui-liquid-glass.md) | Liquid Glass CSS split, reusable classes, visual verification |
 
 ## Historical Design Material
