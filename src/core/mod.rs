@@ -7,6 +7,7 @@ pub mod db;
 pub mod edit;
 pub mod error;
 pub mod i18n;
+pub mod log_targets;
 pub mod media;
 pub mod media_change_notifier;
 pub mod metadata;

@@ -164,7 +164,7 @@ fn handle_event(
                 std::thread::sleep(Duration::from_millis(50));
                 match backend.upsert_from_path(path) {
                     Ok(Some(item)) => {
-                        tracing::debug!("增量 upsert 成功: {}", path.display());
+                        tracing::debug!(target: crate::core::log_targets::STORAGE, "增量 upsert 成功: {}", path.display());
                         // albums 物化视图同步刷新（与 on_change 时机一致）。
                         if let Err(e) = albums::refresh(backend.pool()) {
                             tracing::warn!("albums::refresh after upsert failed: {}", e);
@@ -186,7 +186,7 @@ fn handle_event(
                 let uri = format!("file://{}", path.display());
                 match backend.delete_path(path) {
                     Ok(changed) if changed > 0 => {
-                        tracing::debug!("增量删除成功: {}", path.display());
+                        tracing::debug!(target: crate::core::log_targets::STORAGE, "增量删除成功: {}", path.display());
                         if let Err(e) = albums::refresh(backend.pool()) {
                             tracing::warn!("albums::refresh after delete failed: {}", e);
                         }
@@ -206,7 +206,7 @@ fn handle_event(
                     std::thread::sleep(Duration::from_millis(50));
                     match backend.upsert_from_path(path) {
                         Ok(Some(item)) => {
-                            tracing::debug!("rename upsert 成功: {}", path.display());
+                            tracing::debug!(target: crate::core::log_targets::STORAGE, "rename upsert 成功: {}", path.display());
                             if let Err(e) = albums::refresh(backend.pool()) {
                                 tracing::warn!("albums::refresh after rename upsert failed: {}", e);
                             }

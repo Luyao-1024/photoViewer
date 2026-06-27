@@ -666,7 +666,7 @@ impl EditorPanel {
             self.fire_crop_overlay_update();
         }
         self.update_reset_button();
-        tracing::info!("ROTATE_TRACE editor_memory_rotate delta={}", delta);
+        tracing::debug!(target: crate::core::log_targets::EDITOR, "ROTATE_TRACE editor_memory_rotate delta={}", delta);
         self.schedule_preview_update();
     }
 

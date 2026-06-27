@@ -227,7 +227,8 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
     };
 
     if media_kind_from_mime(&meta.mime_type) == Some(MediaKind::Video) {
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::METADATA,
             "metadata::extract path={} mime={} video=true",
             path.display(),
             meta.mime_type
@@ -262,7 +263,8 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
         meta.camera = ExifSummary::from_exif(&exif);
     }
 
-    tracing::info!(
+    tracing::debug!(
+        target: crate::core::log_targets::METADATA,
         "metadata::extract path={} mime={} dims={:?}x{:?} taken_at={:?} camera_some={}",
         path.display(),
         meta.mime_type,
@@ -285,16 +287,16 @@ fn read_exif(path: &Path) -> Result<exif::Exif> {
     // (no size cap) and hand the raw TIFF block to `Reader::read_raw`. See
     // `extract_heic_exif_tiff`.
     if mime_from_extension(path) == Some("image/heic") {
-        tracing::info!("read_exif: HEIC path detected, parsing ISOBMFF...");
+        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC path detected, parsing ISOBMFF...");
         let data = std::fs::read(path)?;
         let tiff = extract_heic_exif_tiff(&data)
             .ok_or_else(|| AppError::Exif("no Exif item in HEIC".into()))?;
-        tracing::info!("read_exif: HEIC tiff extracted, {} bytes", tiff.len());
+        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC tiff extracted, {} bytes", tiff.len());
         let exif = exif::Reader::new()
             .read_raw(tiff)
             .map_err(|e| AppError::Exif(e.to_string()))?;
         let field_count = exif.fields().count();
-        tracing::info!("read_exif: HEIC parsed OK, {} EXIF fields", field_count);
+        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC parsed OK, {} EXIF fields", field_count);
         return Ok(exif);
     }
 
@@ -303,7 +305,8 @@ fn read_exif(path: &Path) -> Result<exif::Exif> {
     let exif = exif::Reader::new()
         .read_from_container(&mut bufreader)
         .map_err(|e| AppError::Exif(e.to_string()))?;
-    tracing::info!(
+    tracing::debug!(
+        target: crate::core::log_targets::METADATA,
         "read_exif: standard path OK, {} fields",
         exif.fields().count()
     );

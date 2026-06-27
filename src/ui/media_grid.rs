@@ -250,6 +250,7 @@ impl MediaGrid {
                 return;
             };
             tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "VIEWER_DEBUG grid model_changed mode={:?} position={} removed={} added={} list_len={}",
                 this.mode(),
                 position,
@@ -489,6 +490,7 @@ impl MediaGrid {
         let keys = self.collect_visible_cache_keys();
         if !keys.is_empty() {
             tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "VIEWER_DEBUG reprioritize_visible count={} scroll_y={}",
                 keys.len(),
                 self.imp().scroller.get().vadjustment().value()
@@ -742,7 +744,8 @@ impl MediaGrid {
                 let is_multi = this.is_multi_select_mode();
                 let displayed_indices = this.displayed_indices();
                 let displayed_pos = displayed_indices.iter().position(|index| *index == gi);
-                tracing::info!(
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
                     "VIEWER_TRACE grid_activate mode={:?} section={} section_child_index={} global_index={} displayed_pos={:?} displayed_len={} displayed_first={:?} displayed_last={:?} item_id={} item_name={} item_uri={} multi_select={}",
                     this.mode(),
                     section_label_for_activation,
@@ -814,6 +817,7 @@ impl MediaGrid {
                         1,
                     );
                     tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
                         "VIEWER_DEBUG context_menu mode={:?} section={} selected={:?} multi_select={}",
                         this.mode(),
                         section_label_for_ctx,
@@ -1016,6 +1020,7 @@ impl MediaGrid {
         *self.imp().displayed_items.borrow_mut() = displayed_items;
 
         tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
             "MediaGrid::rebuild mode={:?} sections={} photos={} spec.pixel_size={}",
             mode,
             section_count,
@@ -1334,7 +1339,8 @@ fn build_photo_picture(
                 tile.set_cache_key(cache_key.clone());
             }
 
-            tracing::info!(
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "THUMB_TRACE grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
                 current_item.id,
                 item_name,
@@ -1357,6 +1363,7 @@ fn build_photo_picture(
                 match rx.await {
                     Ok(loaded) => {
                         tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
                             "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
                             item_name,
                             item_uri,
@@ -1374,6 +1381,7 @@ fn build_photo_picture(
                     }
                     Err(_) => {
                         tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
                             "VIEWER_DEBUG thumb dropped→灰底占位 item_name={} uri={}",
                             item_name,
                             item_uri

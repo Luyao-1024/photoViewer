@@ -827,6 +827,7 @@ impl PhotosPage {
     fn open_viewer(&self, global_index: u32) {
         if self.imp().viewer_open_pending.get() {
             tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "PhotosPage: ignoring duplicate viewer activation while push is pending"
             );
             return;
@@ -842,6 +843,7 @@ impl PhotosPage {
             .is_some_and(|visible| visible != self_page)
         {
             tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "PhotosPage: ignoring viewer activation because PhotosPage is not visible"
             );
             return;
@@ -879,7 +881,8 @@ impl PhotosPage {
         })
         .collect::<Vec<_>>();
         if let Some(item) = media_item_for_index(&media_list, global_index) {
-            tracing::info!(
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "VIEWER_TRACE photos_open_viewer global_index={} list_len={} displayed_pos={:?} displayed_len={} displayed_first={:?} displayed_last={:?} around={:?} item_id={} item_name={} item_uri={} sort_time={}",
                 global_index,
                 media_list.n_items(),
@@ -894,7 +897,8 @@ impl PhotosPage {
                 item.sort_datetime()
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "VIEWER_TRACE photos_open_viewer missing_item global_index={} list_len={} displayed_pos={:?} displayed_len={}",
                 global_index,
                 media_list.n_items(),
@@ -907,6 +911,7 @@ impl PhotosPage {
             let label = viewer_debug_label.clone();
             move |nav| {
                 tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
                     "VIEWER_DEBUG nav visible_page_notify label={} visible={:?}",
                     label,
                     nav.visible_page().map(|page| page.title())
@@ -917,6 +922,7 @@ impl PhotosPage {
             let label = viewer_debug_label.clone();
             move |nav| {
                 tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
                     "VIEWER_DEBUG nav pushed label={} visible={:?}",
                     label,
                     nav.visible_page().map(|page| page.title())
@@ -927,6 +933,7 @@ impl PhotosPage {
             let label = viewer_debug_label.clone();
             move |nav, page| {
                 tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
                     "VIEWER_DEBUG nav popped label={} popped_page={} visible_after={:?}",
                     label,
                     page.title(),
@@ -962,17 +969,20 @@ impl PhotosPage {
         let nav_weak = nav.downgrade();
         viewer.connect_navigation(move |delta: NavDelta| {
             tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
                 "VIEWER_DEBUG photos_page navigation_callback delta={}",
                 delta
             );
             if delta == NAV_POP {
                 if let Some(n) = nav_weak.upgrade() {
                     tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
                         "VIEWER_DEBUG photos_page executing nav.pop visible_before={:?}",
                         n.visible_page().map(|page| page.title())
                     );
                     n.pop();
                     tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
                         "VIEWER_DEBUG photos_page after nav.pop visible_after={:?}",
                         n.visible_page().map(|page| page.title())
                     );
@@ -983,6 +993,7 @@ impl PhotosPage {
                 let cur = v.current_index();
                 let next = (cur as i32 + delta).max(0) as u32;
                 tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
                     "VIEWER_DEBUG photos_page arrow_nav cur={} delta={} next={}",
                     cur,
                     delta,

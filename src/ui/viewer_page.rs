@@ -333,6 +333,7 @@ impl ViewerPage {
     /// construction (mirrors `PhotosPage::set_nav_target`).
     pub fn set_edit_target(&self, nav: &adw::NavigationView, pool: DbPool) {
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG set_edit_target index={} nav_visible={:?}",
             self.imp().current_index.get(),
             nav.visible_page().map(|page| page.title())
@@ -363,6 +364,7 @@ impl ViewerPage {
 
     fn fire_nav(&self, delta: NavDelta) {
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={}",
             delta,
             self.imp().current_index.get(),
@@ -956,7 +958,8 @@ impl ViewerPage {
         let list_len = self.list_n_items().unwrap_or(0);
 
         let in_window = end > start && current >= start && current < end;
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_refresh current={} list_len={} existing_window=[{}, {}) in_window={} current_item={}",
             current,
             list_len,
@@ -987,7 +990,8 @@ impl ViewerPage {
         }
         let (start, end) =
             compute_initial_thumb_window_for_len(current, n_items, THUMB_DEFAULT_WINDOW_LEN);
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_initial_window current={} n_items={} target_len={} computed_window=[{}, {}) current_item={}",
             current,
             n_items,
@@ -1024,7 +1028,8 @@ impl ViewerPage {
 
         let current = imp.current_index.get();
         imp.thumb_pending_extend.set(Some(direction));
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_extend direction={} old_window=[{}, {}) new_window=[{}, {}) current={} items_len={} list_len={}",
             direction,
             start,
@@ -1074,7 +1079,8 @@ impl ViewerPage {
     fn rebuild_thumb_strip(&self, start: u32, end: u32, current: u32) {
         let imp = self.imp();
         let strip = imp.thumb_strip.get();
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_rebuild start={} end={} current={} current_offset={:?} list_len={} current_item={}",
             start,
             end,
@@ -1128,7 +1134,8 @@ impl ViewerPage {
         let item_mtime = fs_mtime.unwrap_or_else(|| std::time::SystemTime::from(item.file_mtime));
         let cache_key =
             ThumbnailLoader::cache_key_for(&item.uri, ThumbnailSize::Small, Some(item_mtime));
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_button idx={} is_current={} item_id={} item_name={} item_uri={} media_item_mtime={} request_mtime={:?} fs_mtime={:?} cache_key={:?}",
             idx,
             idx == current,
@@ -1241,7 +1248,8 @@ impl ViewerPage {
         hadj.set_value(target);
         imp.thumb_programmatic_scroll.set(false);
         self.apply_thumb_strip_transform(visual_transform);
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE thumb_scroll current={} start={} button_x={} content_x={} button_w={} page_size={} upper={} content_width={} target={} residual={} transform={}",
             current,
             start,
@@ -1443,6 +1451,7 @@ impl ViewerPage {
             let before = split_view.shows_sidebar();
             let next = !split_view.shows_sidebar();
             tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "VIEWER_DEBUG details_btn clicked index={} before_revealed={} next_revealed={}",
                 this.imp().current_index.get(),
                 before,
@@ -1452,6 +1461,7 @@ impl ViewerPage {
             if next {
                 if let Some(item) = this.current_media_item() {
                     tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
                         "VIEWER_DEBUG details_btn loading_details index={} name={}",
                         this.imp().current_index.get(),
                         item.display_name()
@@ -1466,12 +1476,14 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else { return };
             let split_view = this.imp().details_split_view.get();
             tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "VIEWER_DEBUG details_close_btn clicked index={} before_revealed={}",
                 this.imp().current_index.get(),
                 split_view.shows_sidebar()
             );
             this.set_details_revealed(false, "details_close_btn");
             tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "VIEWER_DEBUG details_close_btn after set_reveal_child(false) revealed={}",
                 split_view.shows_sidebar()
             );
@@ -1480,6 +1492,7 @@ impl ViewerPage {
             glib::idle_add_local_once(move || {
                 if let Some(this) = weak_after.upgrade() {
                     tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
                         "VIEWER_DEBUG details_close_btn idle_after revealed={} mapped={} visible={} root_is_some={}",
                         this.imp().details_split_view.get().shows_sidebar(),
                         this.is_mapped(),
@@ -1488,7 +1501,7 @@ impl ViewerPage {
                     );
                     this.log_nav_state("details_close_btn idle_after");
                 } else {
-                    tracing::debug!("VIEWER_DEBUG details_close_btn idle_after viewer_dropped");
+                    tracing::debug!(target: crate::core::log_targets::VIEWER, "VIEWER_DEBUG details_close_btn idle_after viewer_dropped");
                 }
             });
         });
@@ -1517,6 +1530,7 @@ impl ViewerPage {
     fn set_details_revealed(&self, revealed: bool, reason: &str) {
         let split_view = self.imp().details_split_view.get();
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG set_details_revealed reason={} index={} from={} to={} can_pop_before={}",
             reason,
             self.imp().current_index.get(),
@@ -1542,13 +1556,14 @@ impl ViewerPage {
             let weak = self.downgrade();
             glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
                 let Some(this) = weak.upgrade() else {
-                    tracing::debug!("VIEWER_DEBUG restore_can_pop viewer_dropped");
+                    tracing::debug!(target: crate::core::log_targets::VIEWER, "VIEWER_DEBUG restore_can_pop viewer_dropped");
                     return;
                 };
                 if !this.imp().details_split_view.get().shows_sidebar() {
                     this.set_details_sidebar_child_visible(false);
                     this.set_can_pop(true);
                     tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
                         "VIEWER_DEBUG restore_can_pop restored index={} can_pop={} visible={:?}",
                         this.imp().current_index.get(),
                         this.can_pop(),
@@ -1561,6 +1576,7 @@ impl ViewerPage {
                     );
                 } else {
                     tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
                         "VIEWER_DEBUG restore_can_pop skipped_details_open index={} can_pop={}",
                         this.imp().current_index.get(),
                         this.can_pop()
@@ -1570,6 +1586,7 @@ impl ViewerPage {
         }
 
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG set_details_revealed done reason={} index={} revealed={} can_pop_after={}",
             reason,
             self.imp().current_index.get(),
@@ -1599,6 +1616,7 @@ impl ViewerPage {
         self.connect_unmap(move |_| {
             if let Some(this) = weak.upgrade() {
                 tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
                     "VIEWER_DEBUG viewer unmap index={} title={} details_revealed={}",
                     this.imp().current_index.get(),
                     this.title(),
@@ -1612,6 +1630,7 @@ impl ViewerPage {
         self.connect_unrealize(move |_| {
             if let Some(this) = weak.upgrade() {
                 tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
                     "VIEWER_DEBUG viewer unrealize index={} title={} details_revealed={}",
                     this.imp().current_index.get(),
                     this.title(),
@@ -1625,6 +1644,7 @@ impl ViewerPage {
     fn log_nav_state(&self, label: &str) {
         if let Some(nav) = self.imp().nav_view.borrow().as_ref() {
             tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "VIEWER_DEBUG nav_state label=\"{}\" visible={:?} viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
                 label,
                 nav.visible_page().map(|page| page.title()),
@@ -1635,6 +1655,7 @@ impl ViewerPage {
             );
         } else {
             tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "VIEWER_DEBUG nav_state label=\"{}\" nav_view=None viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
                 label,
                 self.title(),
@@ -1660,6 +1681,7 @@ impl ViewerPage {
     /// multiple times.
     pub fn show_at(&self, index: u32) {
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG show_at requested_index={} current_before={} details_revealed={}",
             index,
             self.imp().current_index.get(),
@@ -1681,7 +1703,8 @@ impl ViewerPage {
         };
         self.set_title(item.display_name());
         self.sync_favorite_state(item.id);
-        tracing::info!(
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE viewer_show_at index={} list_len={} item_id={} item_name={} item_uri={} sort_time={}",
             index,
             self.list_n_items().unwrap_or(0),
@@ -1691,6 +1714,7 @@ impl ViewerPage {
             item.sort_datetime()
         );
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG show_at resolved index={} item_id={} title={} uri={} media_path={} details_revealed={}",
             index,
             item.id,
@@ -1710,6 +1734,7 @@ impl ViewerPage {
         self.show_image_stage();
         let path = strip_file_uri(&item.uri);
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG viewer decode_start index={} item_id={} item_name={} source_uri={} decode_path={}",
             index,
             item.id,
@@ -1768,6 +1793,7 @@ impl ViewerPage {
             if let (Some(picture), Some(spinner)) = (picture_weak.upgrade(), spinner_weak.upgrade())
             {
                 tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
                     "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
                     token,
                     decode_item_name,
@@ -1907,6 +1933,7 @@ impl ViewerPage {
 
     fn update_details(&self, item: &MediaItem) {
         tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG update_details index={} name={} path={}",
             self.imp().current_index.get(),
             item.display_name(),
@@ -1989,7 +2016,8 @@ impl ViewerPage {
             let meta = metadata::extract(&path).ok();
             let summary = meta.as_ref().and_then(|m| m.camera.clone());
             let taken_at = meta.as_ref().and_then(|m| m.taken_at);
-            tracing::info!(
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "load_camera_details spawn_blocking path={} summary_some={} taken_at_some={}",
                 path_dbg,
                 summary.is_some(),
@@ -2222,7 +2250,8 @@ impl ViewerPage {
         gio::spawn_blocking(move || {
             let meta = metadata::extract(&path).ok();
             let summary = meta.as_ref().and_then(|m| m.video.clone());
-            tracing::info!(
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
                 "load_video_details spawn_blocking path={} summary_some={}",
                 path_dbg,
                 summary.is_some(),

@@ -226,6 +226,7 @@ impl AlbumDetailPage {
             media_list.append(&glib::BoxedAnyObject::new(item));
         }
         tracing::debug!(
+            target: crate::core::log_targets::ALBUMS,
             "AlbumDetailPage: refreshed virtual album media list, n_items={}",
             media_list.n_items()
         );
