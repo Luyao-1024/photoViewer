@@ -6,3 +6,6 @@
 
 # Editor config
 /.vscode/
+
+# Log files
+*.log
