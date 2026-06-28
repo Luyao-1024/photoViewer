@@ -1428,7 +1428,9 @@ mod tests {
         let mut labels = Vec::new();
         collect_labels(&page, &mut labels);
         assert!(
-            labels.iter().any(|label| label == "透明度"),
+            labels
+                .iter()
+                .any(|label| label == &tr("setting.liquid_glass_transparency")),
             "settings page should expose the generic transparency label, got {labels:?}"
         );
         for mark in [

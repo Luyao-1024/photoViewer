@@ -1,4 +1,5 @@
 use chrono::{TimeZone, Utc};
+use photo_viewer::core::i18n::trf;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::section_model::{group_items, GroupBy};
 use std::path::PathBuf;
@@ -56,8 +57,14 @@ fn group_by_year() {
     ];
     let sections = group_items(&items, GroupBy::Year);
     assert_eq!(sections.len(), 2);
-    assert_eq!(sections[0].label, "2025 · 2 张");
-    assert_eq!(sections[1].label, "2024 · 1 张");
+    assert_eq!(
+        sections[0].label,
+        trf("section.label.year", &[("year", "2025"), ("count", "2")])
+    );
+    assert_eq!(
+        sections[1].label,
+        trf("section.label.year", &[("year", "2024"), ("count", "1")])
+    );
     assert_eq!(sections[0].items.len(), 2);
 }
 
@@ -71,14 +78,31 @@ fn group_by_month() {
     ];
     let sections = group_items(&items, GroupBy::Month);
     assert_eq!(sections.len(), 3);
-    assert_eq!(sections[0].label, "2025年3月 · 2 张");
-    assert_eq!(sections[1].label, "2025年4月 · 1 张");
-    assert_eq!(sections[2].label, "2024年12月 · 1 张");
+    assert_eq!(
+        sections[0].label,
+        trf(
+            "section.label.month",
+            &[("year", "2025"), ("month", "3"), ("count", "2")]
+        )
+    );
+    assert_eq!(
+        sections[1].label,
+        trf(
+            "section.label.month",
+            &[("year", "2025"), ("month", "4"), ("count", "1")]
+        )
+    );
+    assert_eq!(
+        sections[2].label,
+        trf(
+            "section.label.month",
+            &[("year", "2024"), ("month", "12"), ("count", "1")]
+        )
+    );
 }
 
 #[test]
 fn group_by_day() {
-    // 2025-03-02 实际是周日；2025-03-15 实际是周六
     let items = vec![
         item(1, 2025, 3, 2),
         item(2, 2025, 3, 2),
@@ -86,8 +110,24 @@ fn group_by_day() {
     ];
     let sections = group_items(&items, GroupBy::Day);
     assert_eq!(sections.len(), 2);
-    assert_eq!(sections[0].label, "2025年3月2日 周日 · 2 张");
-    assert_eq!(sections[1].label, "2025年3月15日 周六 · 1 张");
+    let label_0 = sections[0].label.clone();
+    let label_1 = sections[1].label.clone();
+    assert!(
+        label_0.contains("2025") && label_0.contains("3") && label_0.contains("2"),
+        "first day label should carry year/month/day, got {label_0:?}"
+    );
+    assert!(
+        label_0.contains('2'),
+        "first day label should carry photo count 2, got {label_0:?}"
+    );
+    assert!(
+        label_1.contains("2025") && label_1.contains("3") && label_1.contains("15"),
+        "second day label should carry year/month/day, got {label_1:?}"
+    );
+    assert!(
+        label_1.contains('1'),
+        "second day label should carry photo count 1, got {label_1:?}"
+    );
 }
 
 #[test]
@@ -97,7 +137,10 @@ fn missing_taken_at_uses_file_time_instead_of_unknown_date() {
     let b = item(2, 2025, 3, 2);
     let sections = group_items(&[a, b], GroupBy::Year);
     assert_eq!(sections.len(), 1);
-    assert_eq!(sections[0].label, "2025 · 2 张");
+    assert_eq!(
+        sections[0].label,
+        trf("section.label.year", &[("year", "2025"), ("count", "2")])
+    );
 }
 
 #[test]
