@@ -19,12 +19,14 @@ use crate::config::config_dir;
 
 const SETTINGS_FILE: &str = "settings.json";
 const LIQUID_GLASS_KEY: &str = "liquid_glass";
+const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
 
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
 const DEFAULT_LIQUID_GLASS: bool = true;
+const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 
@@ -54,6 +56,22 @@ fn read_liquid_glass_at(path: &Path) -> bool {
 
 fn write_liquid_glass_at(path: &Path, enabled: bool) -> Result<(), String> {
     write_bool_at(path, LIQUID_GLASS_KEY, enabled)
+}
+
+fn read_liquid_glass_transparency_at(path: &Path) -> f64 {
+    let obj = read_object_at(path);
+    obj.get(LIQUID_GLASS_TRANSPARENCY_KEY)
+        .and_then(|v| v.as_f64())
+        .map(clamp_liquid_glass_transparency)
+        .unwrap_or(DEFAULT_LIQUID_GLASS_TRANSPARENCY)
+}
+
+fn write_liquid_glass_transparency_at(path: &Path, transparency: f64) -> Result<(), String> {
+    write_f64_at(
+        path,
+        LIQUID_GLASS_TRANSPARENCY_KEY,
+        clamp_liquid_glass_transparency(transparency),
+    )
 }
 
 fn write_bool_at(path: &Path, key: &str, enabled: bool) -> Result<(), String> {
@@ -136,6 +154,14 @@ fn clamp_video_volume(volume: f64) -> f64 {
     }
 }
 
+fn clamp_liquid_glass_transparency(transparency: f64) -> f64 {
+    if transparency.is_finite() {
+        transparency.clamp(0.0, 1.0)
+    } else {
+        DEFAULT_LIQUID_GLASS_TRANSPARENCY
+    }
+}
+
 /// Current Liquid Glass preference, resolved from `settings.json`.
 /// Defaults to enabled when the file or key is absent.
 pub fn liquid_glass_enabled() -> bool {
@@ -146,6 +172,16 @@ pub fn liquid_glass_enabled() -> bool {
 /// other keys already present. Returns an error string on IO/serialize failure.
 pub fn set_liquid_glass(enabled: bool) -> Result<(), String> {
     write_liquid_glass_at(&settings_path(), enabled)
+}
+
+/// Shared transparency for every glass material. `0.0` is opaque, `1.0` transparent.
+pub fn liquid_glass_transparency() -> f64 {
+    read_liquid_glass_transparency_at(&settings_path())
+}
+
+/// Persist the shared glass material transparency.
+pub fn set_liquid_glass_transparency(transparency: f64) -> Result<(), String> {
+    write_liquid_glass_transparency_at(&settings_path(), transparency)
 }
 
 /// Whether newly opened videos start muted. Defaults to muted on startup.
@@ -286,6 +322,45 @@ mod tests {
             read_video_volume_at(&path),
             1.0,
             "missing video_volume should default to full volume"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn liquid_glass_transparency_defaults_to_opaque() {
+        let path = tmp_path("glass-transparency-default");
+        cleanup(&path);
+
+        assert_eq!(
+            read_liquid_glass_transparency_at(&path),
+            0.0,
+            "missing liquid_glass_transparency should default to fully opaque"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn liquid_glass_transparency_round_trip_clamps_and_preserves_keys() {
+        let path = tmp_path("glass-transparency-roundtrip");
+        cleanup(&path);
+        std::fs::write(&path, "{\"liquid_glass\": false}").unwrap();
+
+        write_liquid_glass_transparency_at(&path, 0.62).unwrap();
+        assert_eq!(read_liquid_glass_transparency_at(&path), 0.62);
+
+        write_liquid_glass_transparency_at(&path, -0.2).unwrap();
+        assert_eq!(read_liquid_glass_transparency_at(&path), 0.0);
+
+        write_liquid_glass_transparency_at(&path, 1.6).unwrap();
+        assert_eq!(read_liquid_glass_transparency_at(&path), 1.0);
+
+        let obj = read_object_at(&path);
+        assert_eq!(
+            obj.get(LIQUID_GLASS_KEY).and_then(|v| v.as_bool()),
+            Some(false),
+            "writing glass transparency should preserve appearance prefs"
         );
 
         cleanup(&path);

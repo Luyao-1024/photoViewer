@@ -29,6 +29,8 @@ This module owns the shared UI material system for glass chrome, including the u
 
 `build_css(bool)` chooses the material block. `install()` applies the startup preference and `reapply(bool)` swaps the display-level provider when the setting changes.
 
+`liquid_glass_transparency` is shared by the material block. The Settings page exposes it as a 0-100 slider where 0 is fully opaque/strong glass and 100 is fully transparent. `grid_css` applies the slider by CSS property before registering the provider: material `background` alpha can reach 0, while `border*` and `box-shadow` alpha values keep a small visibility floor so buttons and other interactive chrome remain discoverable at 100. Text/icon color alpha is not scaled, and non-material base affordances (such as thumbnail selection checkmarks) stay stable. Liquid `backdrop-filter` blur/saturate/brightness values fade continuously toward `blur(0px) saturate(1) brightness(1)` as transparency increases, so high transparency does not keep a full-strength blur until it suddenly clears at 100. The filter is never set to `none`, preserving GTK's accepted filter syntax.
+
 ## Canonical Segmented Style
 
 The Year/Month/Day mode selector is the visual baseline. Its style has been extracted into reusable classes without changing the original core implementation:

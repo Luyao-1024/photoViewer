@@ -57,6 +57,11 @@ CSS class 实现，不要重新加入 `@media` / `@keyframes`。
   `thread_local!` 里（GTK 全在主线程）。
 - 偏好持久化在 `~/.config/photoViewer/settings.json` 的 `liquid_glass` 字段，由
   `src/core/prefs.rs` 读写，默认 `true`（opt-out）。
+- 同一设置页的透明度滑杆持久化为 `liquid_glass_transparency`，范围 0-100：0 是完整玻璃材质，
+  100 是背景完全透明。实现上只让 material `background` alpha 降到 0；`border*` 和
+  `box-shadow` 保留很小的可见下限，文字/图标颜色不随透明度缩放。液态
+  `backdrop-filter` 的 blur/saturate/brightness 会随透明度连续衰减，最终到
+  `blur(0px) saturate(1) brightness(1)`；不要改成 `none`。
 
 ## 分段玻璃控件：从年/月/日抽出的通用样式
 

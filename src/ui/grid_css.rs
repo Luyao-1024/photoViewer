@@ -1228,12 +1228,151 @@ const A11Y_CSS: &str = "";
 /// Assemble the full CSS string for the given glass mode. `true` → Liquid
 /// Glass (default), `false` → calmer classic frosted glass.
 fn build_css(liquid_glass: bool) -> String {
+    build_css_with_transparency(liquid_glass, 0.0)
+}
+
+fn build_css_with_transparency(liquid_glass: bool, transparency: f64) -> String {
     let material = if liquid_glass {
         LIQUID_GLASS_MATERIAL_CSS
     } else {
         PLAIN_GLASS_MATERIAL_CSS
     };
+    let material = scale_material_alpha(material, transparency);
     format!("{BASE_CSS}\n{material}\n{A11Y_CSS}")
+}
+
+fn scale_material_alpha(material: &str, transparency: f64) -> String {
+    let transparency = if transparency.is_finite() {
+        transparency.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if transparency <= f64::EPSILON {
+        return material.to_string();
+    }
+    let material_alpha = 1.0 - transparency;
+
+    let mut out = String::with_capacity(material.len());
+    let mut in_box_shadow = false;
+    for line in material.lines() {
+        let trimmed = line.trim_start();
+        let should_scale_background =
+            trimmed.starts_with("background:") || trimmed.starts_with("background-color:");
+        let should_scale_border = trimmed.starts_with("border:") || trimmed.starts_with("border-");
+        let should_scale_shadow = in_box_shadow || trimmed.starts_with("box-shadow:");
+
+        let scaled = if should_scale_background {
+            scale_alpha_calls(line, material_alpha, 0.0)
+        } else if should_scale_border || should_scale_shadow {
+            scale_alpha_calls(line, material_alpha, 0.10)
+        } else if trimmed.starts_with("backdrop-filter:") {
+            scale_backdrop_filter(line, material_alpha)
+        } else {
+            line.to_string()
+        };
+        out.push_str(&scaled);
+        out.push('\n');
+
+        if trimmed.starts_with("box-shadow:") {
+            in_box_shadow = true;
+        }
+        if in_box_shadow && trimmed.ends_with(';') {
+            in_box_shadow = false;
+        }
+    }
+    out
+}
+
+fn scale_alpha_calls(line: &str, material_alpha: f64, floor: f64) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("alpha(") {
+        out.push_str(&rest[..start]);
+        let alpha_start = start + "alpha(".len();
+        let Some(end_rel) = rest[alpha_start..].find(')') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let end = alpha_start + end_rel;
+        let call_inner = &rest[alpha_start..end];
+        if let Some((color, value)) = call_inner.rsplit_once(',') {
+            if let Ok(alpha) = value.trim().parse::<f64>() {
+                out.push_str("alpha(");
+                out.push_str(color);
+                out.push_str(", ");
+                out.push_str(&format_alpha(scale_alpha(alpha, material_alpha, floor)));
+                out.push(')');
+                rest = &rest[end + 1..];
+                continue;
+            }
+        }
+        out.push_str(&rest[start..=end]);
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn scale_alpha(alpha: f64, material_alpha: f64, floor: f64) -> f64 {
+    if alpha <= f64::EPSILON {
+        return 0.0;
+    }
+    let scaled = alpha * material_alpha;
+    let visible_floor = alpha.min(floor);
+    scaled.max(visible_floor)
+}
+
+fn scale_backdrop_filter(line: &str, material_alpha: f64) -> String {
+    let Some(blur) = parse_filter_number(line, "blur(", "px)") else {
+        return line.to_string();
+    };
+    let saturate = parse_filter_number(line, "saturate(", ")").unwrap_or(1.0);
+    let brightness = parse_filter_number(line, "brightness(", ")").unwrap_or(1.0);
+
+    let scaled_blur = blur * material_alpha;
+    let scaled_saturate = 1.0 + (saturate - 1.0) * material_alpha;
+    let scaled_brightness = 1.0 + (brightness - 1.0) * material_alpha;
+    let indent_len = line.len() - line.trim_start().len();
+
+    format!(
+        "{}backdrop-filter: blur({}px) saturate({}) brightness({});",
+        &line[..indent_len],
+        format_filter_number(scaled_blur),
+        format_filter_number(scaled_saturate),
+        format_filter_number(scaled_brightness),
+    )
+}
+
+fn parse_filter_number(line: &str, prefix: &str, suffix: &str) -> Option<f64> {
+    let start = line.find(prefix)? + prefix.len();
+    let rest = &line[start..];
+    let end = rest.find(suffix)?;
+    rest[..end].parse::<f64>().ok()
+}
+
+fn format_filter_number(value: f64) -> String {
+    if value.abs() <= f64::EPSILON {
+        return "0".to_string();
+    }
+    let mut s = format!("{:.3}", value);
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    s
+}
+
+fn format_alpha(alpha: f64) -> String {
+    let mut s = format!("{:.3}", alpha.clamp(0.0, 1.0));
+    while s.contains('.') && s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.push('0');
+    }
+    s
 }
 
 static CSS_INSTALLED: OnceLock<()> = OnceLock::new();
@@ -1303,7 +1442,10 @@ pub fn install() {
     // MediaGrid / TrashPage / AlbumDetailPage constructors do not accumulate
     // duplicate CssProviders on the default display.
     if CSS_INSTALLED.set(()).is_ok() {
-        register(&build_css(crate::core::prefs::liquid_glass_enabled()));
+        register(&build_css_with_transparency(
+            crate::core::prefs::liquid_glass_enabled(),
+            crate::core::prefs::liquid_glass_transparency(),
+        ));
     }
 }
 
@@ -1316,7 +1458,10 @@ pub fn reapply(liquid_glass: bool) {
     // Defensive installs from page constructors read the pref at runtime, so
     // mark install as already-done to keep them no-ops after a live reapply.
     let _ = CSS_INSTALLED.set(());
-    register(&build_css(liquid_glass));
+    register(&build_css_with_transparency(
+        liquid_glass,
+        crate::core::prefs::liquid_glass_transparency(),
+    ));
 }
 
 /// Move the keyboard cursor inside `flow` in the direction of `key`, focusing
@@ -1815,6 +1960,81 @@ mod tests {
                 "liquid mode missing shared button material signature {liquid_signature}",
             );
         }
+    }
+
+    #[test]
+    fn glass_transparency_scales_material_background_without_touching_base_css() {
+        let css = build_css_with_transparency(true, 0.5);
+
+        assert!(
+            css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.06);"),
+            "toolbar button background alpha should be halved at 50% transparency"
+        );
+        assert!(
+            css.contains("0 12px 32px alpha(black, 0.12)"),
+            "button shadow alpha should scale above its visibility floor"
+        );
+        assert!(
+            css.contains(".glass-menu > contents"),
+            "material surfaces should still be present"
+        );
+        assert!(
+            css.contains(".thumb-checkmark {\n  color: alpha(white, 0.92);"),
+            "base selection affordances should not be scaled with glass transparency"
+        );
+    }
+
+    #[test]
+    fn glass_transparency_hundred_keeps_interactive_edges_visible() {
+        let opaque = build_css_with_transparency(true, 0.0);
+        assert!(
+            opaque.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.12);"),
+            "0% transparency should keep the original fully opaque material"
+        );
+        assert!(
+            opaque.contains("backdrop-filter: blur(22px)"),
+            "0% transparency should keep liquid blur"
+        );
+
+        let transparent = build_css_with_transparency(true, 1.0);
+        assert!(
+            transparent.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.0);"),
+            "100% transparency should remove material fill"
+        );
+        assert!(
+            transparent.contains("border: 1px solid alpha(white, 0.1);"),
+            "100% transparency should keep a minimum button border"
+        );
+        assert!(
+            transparent.contains("0 12px 32px alpha(black, 0.1)"),
+            "100% transparency should keep a minimum button shadow"
+        );
+        assert!(
+            transparent.contains(".glass-alert-dialog .body {\n  color: alpha(white, 0.72);"),
+            "text color opacity should not be scaled by glass transparency"
+        );
+        assert!(
+            transparent.contains("backdrop-filter: blur(0px) saturate(1) brightness(1);"),
+            "100% transparency should neutralize liquid blur without using `none`"
+        );
+        assert!(
+            !transparent.contains("backdrop-filter: none"),
+            "GTK backdrop-filter should not be set to none"
+        );
+    }
+
+    #[test]
+    fn glass_transparency_fades_backdrop_filter_before_hundred() {
+        let css = build_css_with_transparency(true, 0.9);
+
+        assert!(
+            css.contains("backdrop-filter: blur(2.8px) saturate(1.022) brightness(1.006);"),
+            "90% transparency should fade the mode selector filter instead of keeping full blur"
+        );
+        assert!(
+            !css.contains("backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);"),
+            "high transparency should not keep the original full-strength glass-raised filter"
+        );
     }
 
     #[test]

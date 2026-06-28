@@ -691,6 +691,45 @@ impl MainWindow {
             }
         });
 
+        let transparency_label = gtk::Label::new(Some(&tr("setting.liquid_glass_transparency")));
+        transparency_label.set_halign(gtk::Align::Start);
+        transparency_label.set_hexpand(true);
+
+        let transparency_scale =
+            gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+        transparency_scale.set_hexpand(true);
+        transparency_scale.set_digits(0);
+        transparency_scale.set_value(prefs::liquid_glass_transparency() * 100.0);
+        for mark in (0..=100).step_by(10) {
+            let label = mark.to_string();
+            transparency_scale.add_mark(mark as f64, gtk::PositionType::Bottom, Some(&label));
+        }
+
+        let transparency_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        transparency_row.append(&transparency_label);
+        transparency_row.append(&transparency_scale);
+        content.append(&transparency_row);
+
+        let parent_for_transparency = parent.clone();
+        transparency_scale.connect_value_changed(move |scale| {
+            let transparency = scale.value() / 100.0;
+            match prefs::set_liquid_glass_transparency(transparency) {
+                Ok(()) => grid_css::reapply(prefs::liquid_glass_enabled()),
+                Err(err) => {
+                    show_settings_error_dialog(
+                        &parent_for_transparency,
+                        &trf(
+                            "setting.liquid_glass_transparency_save_failed",
+                            &[("error", &err)],
+                        ),
+                    );
+                }
+            }
+        });
+
         // ── Video playback: startup mute preference ───────────────────────
         // Volume itself is persisted from the GtkMediaStream while watching a
         // video; settings only controls whether newly opened videos start muted.
@@ -1171,6 +1210,17 @@ mod tests {
         }
     }
 
+    fn collect_scales(widget: &gtk::Widget, scales: &mut Vec<gtk::Scale>) {
+        if let Some(scale) = widget.downcast_ref::<gtk::Scale>() {
+            scales.push(scale.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            collect_scales(&current, scales);
+        }
+    }
+
     #[gtk::test]
     fn settings_page_exposes_video_default_mute_without_volume_control() {
         let _ = gtk::init();
@@ -1204,6 +1254,45 @@ mod tests {
                 .iter()
                 .any(|label| label == &tr("setting.video_volume")),
             "volume should be persisted from playback, not configured in settings"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_liquid_glass_transparency_slider() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowGlassTransparency")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+
+        let mut labels = Vec::new();
+        collect_labels(&page, &mut labels);
+        assert!(
+            labels.iter().any(|label| label == "透明度"),
+            "settings page should expose the generic transparency label, got {labels:?}"
+        );
+        for mark in [
+            "0", "10", "20", "30", "40", "50", "60", "70", "80", "90", "100",
+        ] {
+            assert!(
+                labels.iter().any(|label| label == mark),
+                "transparency scale should expose mark {mark}, got {labels:?}"
+            );
+        }
+
+        let mut scales = Vec::new();
+        collect_scales(&page, &mut scales);
+        assert!(
+            scales.iter().any(|scale| {
+                scale.adjustment().lower() == 0.0 && scale.adjustment().upper() == 100.0
+            }),
+            "settings page should expose a 0-100 transparency scale"
         );
     }
 }

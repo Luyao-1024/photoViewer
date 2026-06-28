@@ -173,6 +173,8 @@
     "setting.restart_failed": "Failed to save language: {error}",
     "setting.section.appearance": "Appearance",
     "setting.liquid_glass": "Liquid Glass effect",
+    "setting.liquid_glass_transparency": "Transparency",
+    "setting.liquid_glass_transparency_save_failed": "Failed to save transparency: {error}",
     "setting.liquid_glass_save_failed": "Failed to save the appearance setting: {error}",
     "setting.section.video": "Video Playback",
     "setting.video_default_muted": "Start videos muted",
