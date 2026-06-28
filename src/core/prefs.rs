@@ -33,8 +33,8 @@ const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
-const DEFAULT_UI_MEDIA_LIST_CAP: usize = 200;
-const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 200;
+const DEFAULT_UI_MEDIA_LIST_CAP: usize = 10000;
+const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 400;
 
 fn settings_path() -> std::path::PathBuf {
     config_dir().join(SETTINGS_FILE)
@@ -572,8 +572,8 @@ mod tests {
 
         assert_eq!(
             read_ui_media_list_cap_at(&path),
-            200,
-            "missing ui_media_list_cap should default to 200"
+            10000,
+            "missing ui_media_list_cap should default to 10000"
         );
 
         cleanup(&path);
@@ -605,8 +605,8 @@ mod tests {
 
         assert_eq!(
             read_max_rendered_grid_items_at(&path),
-            200,
-            "missing max_rendered_grid_items should default to 200"
+            400,
+            "missing max_rendered_grid_items should default to 400"
         );
 
         cleanup(&path);

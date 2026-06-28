@@ -255,8 +255,7 @@ impl LocalBackend {
                 let t = Instant::now();
                 match db::upsert_media_items_batch(&self.pool, &pending) {
                     Ok(upserted) => {
-                        SCAN_UPSORT_MS
-                            .fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        SCAN_UPSORT_MS.fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                         for m in upserted {
                             on_upserted(m);
                             indexed += 1;
@@ -276,8 +275,7 @@ impl LocalBackend {
             let t = Instant::now();
             match db::upsert_media_items_batch(&self.pool, &pending) {
                 Ok(upserted) => {
-                    SCAN_UPSORT_MS
-                        .fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    SCAN_UPSORT_MS.fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                     for m in upserted {
                         on_upserted(m);
                         indexed += 1;
@@ -322,7 +320,11 @@ impl LocalBackend {
     /// `file_meta` 由调用方提供（扫描热路径已为未改动短路 stat 过一次），避免在这里
     /// 重复 stat——此前生产者对每个文件 stat 多达 3 次（`is_file` + 短路 metadata + 这里），
     /// 合并后全程只 stat 1 次。
-    fn process_file(&self, path: &Path, file_meta: &std::fs::Metadata) -> Result<Option<NewMediaItem>> {
+    fn process_file(
+        &self,
+        path: &Path,
+        file_meta: &std::fs::Metadata,
+    ) -> Result<Option<NewMediaItem>> {
         let t_extract = Instant::now();
 
         // 按 MIME 路由：标准图片只读一次 256KB 头部，由 extract（dims+EXIF）与动图

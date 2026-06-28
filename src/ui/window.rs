@@ -571,8 +571,7 @@ impl MainWindow {
         let items = if album.is_virtual {
             filtered_items_for_album(&album, &master, &pool)
         } else {
-            crate::core::db::list_media_by_folder(&pool, &album.folder_path)
-                .unwrap_or_default()
+            crate::core::db::list_media_by_folder(&pool, &album.folder_path).unwrap_or_default()
         };
         let filtered = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         for item in items {

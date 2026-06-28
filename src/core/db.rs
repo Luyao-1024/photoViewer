@@ -74,6 +74,7 @@ fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
         .build(manager)
         .map_err(AppError::from)?;
     run_migrations(&pool)?;
+    ensure_thumbnail_generated_column(&pool)?;
     validate_media_schema(&pool)?;
     Ok(pool)
 }
@@ -317,6 +318,77 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
         .map_err(AppError::from)
 }
 
+/// 为现有 DB 补齐 `thumbnail_generated_at` 列（忽略已存在错误）。
+pub fn ensure_thumbnail_generated_column(pool: &DbPool) -> Result<()> {
+    let conn = pool.get()?;
+    let _ = conn.execute(
+        "ALTER TABLE media_items ADD COLUMN thumbnail_generated_at INTEGER",
+        [],
+    );
+    Ok(())
+}
+
+/// 非回收站媒体项总数。
+pub fn count_live_media(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+/// 已生成缩略图的媒体项总数。
+pub fn count_thumbnail_generated(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL AND thumbnail_generated_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+    Ok(count as usize)
+}
+
+/// 分页列出需要生成缩略图的非回收站项。
+/// 条件：`thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime`
+/// ——即从未生成、或文件 mtime 已变更（源文件被修改后过期）。
+pub fn list_media_needing_thumbnail(
+    pool: &DbPool,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL
+           AND (thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+/// 批量标记已生成缩略图的 media_items：写入 `thumbnail_generated_at = unixepoch()`。
+pub fn mark_thumbnails_generated(pool: &DbPool, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let conn = pool.get()?;
+    let mut stmt =
+        conn.prepare("UPDATE media_items SET thumbnail_generated_at = unixepoch() WHERE id = ?1")?;
+    for id in ids {
+        stmt.execute([*id])?;
+    }
+    Ok(())
+}
+
 /// 分页列出非回收站项，排序语义与 [`list_all_media`] 一致。
 pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
@@ -355,9 +427,8 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
 /// 不会重新出现在相册里。
 pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>> {
     let conn = pool.get()?;
-    let mut stmt = conn.prepare(
-        "SELECT uri, file_mtime, file_size FROM media_items WHERE trashed_at IS NULL",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT uri, file_mtime, file_size FROM media_items WHERE trashed_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -502,7 +573,10 @@ pub fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Re
 /// 按文件夹路径列出未删除的媒体，按 `file_mtime` 倒序。
 ///
 /// 用于相册详情页加载完整相册内容，不受 `UI_MEDIA_LIST_CAP` 限制。
-pub fn list_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Result<Vec<MediaItem>> {
+pub fn list_media_by_folder(
+    pool: &DbPool,
+    folder_path: &std::path::Path,
+) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let folder_str = folder_path.to_string_lossy().to_string();
     let mut stmt = conn.prepare(

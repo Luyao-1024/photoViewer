@@ -1452,7 +1452,13 @@ impl ViewerPage {
         // cache hit (no extra decode).
         let item_uri = item.uri.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(item_uri, ThumbnailSize::Small, Some(item_mtime), tx);
+        loader.request(
+            item_uri,
+            ThumbnailSize::Small,
+            Some(item_mtime),
+            tx,
+            crate::core::thumbnails::TIER_NORMAL,
+        );
 
         let pic_weak = picture.downgrade();
         let viewer_weak = self.downgrade();

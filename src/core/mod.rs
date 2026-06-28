@@ -16,6 +16,7 @@ pub mod notify_watcher;
 pub mod orientation;
 pub mod prefs;
 pub mod section_model;
+pub mod thumbnail_prewarm;
 pub mod thumbnails;
 pub mod trash;
 

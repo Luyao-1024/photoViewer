@@ -110,6 +110,9 @@ mod imp {
         /// sections, because `PhotosPage` is the only host and it shares one
         /// `ListStore` across the three sub-grids.
         pub selected: RefCell<HashSet<u32>>,
+        /// 当前渲染上限：初始 = `max_rendered_grid_items()`；
+        /// 滚动接近底部时自动增长（最多到 `ABSOLUTE_RENDERED_LIMIT`）。
+        pub rendered_limit: Cell<usize>,
         /// Whether batch mode is explicitly enabled.
         pub is_multi_select_mode: Cell<bool>,
         /// Callback fired whenever `selected` changes. Registered by the host
@@ -119,6 +122,10 @@ mod imp {
         /// 滚动触发「可见区提权」的去抖 SourceId（`Some` = 已挂起，合并突发滚动）。
         /// `SourceId` 非 `Copy`，故用 `RefCell` 而非 `Cell`。
         pub reprio_debounce: RefCell<Option<gtk::glib::SourceId>>,
+        /// Day 视图第一栏的统计标签（总数 / 缩略图进度）。rebuild 时重建 widget，
+        /// 定时器轮询更新文本。
+        pub stats_label: RefCell<Option<gtk::Label>>,
+        pub stats_refresh_source: RefCell<Option<gtk::glib::SourceId>>,
         /// Shared model changes can arrive in large bursts during first-start
         /// scanning. Rebuilding all sections for every `items-changed` signal
         /// makes the GTK main thread do O(n²) widget work. Coalesce those
@@ -146,9 +153,12 @@ mod imp {
                 on_query_favorite_state: std::cell::OnceCell::new(),
                 displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
+                rendered_limit: Cell::new(max_rendered_grid_items()),
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
                 reprio_debounce: RefCell::new(None),
+                stats_label: RefCell::new(None),
+                stats_refresh_source: RefCell::new(None),
                 rebuild_debounce: RefCell::new(None),
             }
         }
@@ -319,10 +329,12 @@ impl MediaGrid {
             *this.imp().media_list.borrow_mut() = Some(list.clone());
             if this.imp().active.get() {
                 if removed > 0 {
+                    // 有项被移除或全量替换 → 必须重建。
                     this.rebuild_immediately(list.clone());
-                } else {
-                    this.schedule_rebuild(list.clone());
                 }
+                // 单纯追加（removed == 0）：不重建。新项在 rendered_limit 之外，
+                // 待用户滚到底时由 try_expand_render_limit 触发单次重建统一拾取。
+                // 否则后台分页加载 500+ 页，每页触发一次全量重建，会持续闪烁 + 丢滚动位。
             } else {
                 this.imp().dirty_model.set(true);
             }
@@ -330,14 +342,16 @@ impl MediaGrid {
 
         // 滚动时去抖触发可见区提权（B6）：可见 tile 的请求提到队首，
         // 消除分页 rebuild / 快速滚动时的优先级倒置。
+        // 同时检测「接近底部」：若距底部 3 屏内，动态扩大渲染上限。
         let weak_scroll = obj.downgrade();
         obj.imp()
             .scroller
             .get()
             .vadjustment()
-            .connect_value_changed(move |_| {
+            .connect_value_changed(move |adj| {
                 if let Some(this) = weak_scroll.upgrade() {
                     this.schedule_reprioritize();
+                    this.try_expand_render_limit(adj);
                 }
             });
         obj
@@ -592,6 +606,30 @@ impl MediaGrid {
         *imp.reprio_debounce.borrow_mut() = Some(id);
     }
 
+    /// 如果滚动接近底部（距底部 3 屏内），动态扩大 `rendered_limit` 并触发 rebuild。
+    fn try_expand_render_limit(&self, adj: &gtk::Adjustment) {
+        const ABSOLUTE: usize = 2000;
+        let limit = self.imp().rendered_limit.get();
+        if limit >= ABSOLUTE {
+            return;
+        }
+        let near_bottom = adj.value() + adj.page_size() * 4.0 >= adj.upper();
+        if !near_bottom {
+            return;
+        }
+        let new_limit = (limit + 200).min(ABSOLUTE);
+        self.imp().rendered_limit.set(new_limit);
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "VIEWER_DEBUG expand_render_limit old={limit} new={new_limit} scroll_y={}",
+            adj.value()
+        );
+        // 触发 rebuild，让新 limit 生效
+        if let Some(list) = self.imp().media_list.borrow().as_ref().cloned() {
+            self.schedule_rebuild(list);
+        }
+    }
+
     /// Return the brightness class of the visible tile currently underneath
     /// `selector`, if a loaded tile overlaps it. `None` means there is no tile
     /// under the floating selector yet/anymore, so callers should keep the
@@ -705,6 +743,9 @@ impl MediaGrid {
 
         let spec = spec_for_mode(mode);
 
+        // 重建前保存滚动位置，避免因清空/重建子 widget 导致 adjustment.value 归零。
+        let saved_scroll = self.imp().scroller.get().vadjustment().value();
+
         let content = self.imp().content.get();
         // Clear any previously built sections.
         while let Some(child) = content.first_child() {
@@ -716,7 +757,7 @@ impl MediaGrid {
         let extract_started = std::time::Instant::now();
         let mut items = extract_items(&media_list);
         let extract_elapsed = extract_started.elapsed();
-        let max_items = max_rendered_grid_items();
+        let max_items = self.imp().rendered_limit.get();
         if items.len() > max_items {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
@@ -734,6 +775,9 @@ impl MediaGrid {
         let mut section_count = 0u32;
         let mut photo_count = 0u32;
         let mut displayed_items = Vec::new();
+        // Day 视图第一组头部下方插入统计栏
+        let stats_emitted = std::cell::Cell::new(false);
+        let total_media = crate::core::db::count_live_media(&loader.pool()).unwrap_or(0);
         for section in sections {
             if section.items.is_empty() {
                 continue;
@@ -750,6 +794,29 @@ impl MediaGrid {
                 .css_classes(["heading"])
                 .build();
             content.append(&header);
+
+            // Day 视图：第一组 header 下方插入库统计栏
+            if mode == GroupBy::Day && !stats_emitted.replace(true) {
+                let generated = loader.generated_count();
+                let stats_text = if loader.is_prewarm_active() && generated < total_media {
+                    format!(
+                        "📸 {} 张 · 缩略图 {}/{}",
+                        total_media, generated, total_media
+                    )
+                } else {
+                    format!("📸 {} 张", total_media)
+                };
+                let stats_label = gtk::Label::builder()
+                    .label(&stats_text)
+                    .halign(gtk::Align::Start)
+                    .margin_start(12)
+                    .margin_bottom(10)
+                    .xalign(0.0)
+                    .css_classes(["caption"])
+                    .build();
+                content.append(&stats_label);
+                *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
+            }
 
             // FlowBox of square thumbnails. `homogeneous` makes every cell the
             // same size; with each picture's `set_size_request(target)` the
@@ -1109,6 +1176,22 @@ impl MediaGrid {
             section_count += 1;
         }
         *self.imp().displayed_items.borrow_mut() = displayed_items;
+
+        // 重建后恢复滚动位置：用 idle 回调等下一帧 layout 完成后再设值，
+        // 否则 adj.upper 仍为零，会被 clamp 吞掉。
+        if saved_scroll > 0.0 {
+            let weak = self.downgrade();
+            gtk::glib::idle_add_local_once(move || {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let adj = this.imp().scroller.get().vadjustment();
+                let restored = saved_scroll.min(adj.upper() - adj.page_size());
+                if restored >= 0.0 {
+                    adj.set_value(restored);
+                }
+            });
+        }
 
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
@@ -1623,7 +1706,13 @@ fn build_photo_picture(
             );
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            loader.request(item_uri.clone(), size, Some(item_mtime), tx);
+            loader.request(
+                item_uri.clone(),
+                size,
+                Some(item_mtime),
+                tx,
+                crate::core::thumbnails::TIER_NORMAL,
+            );
             let tile_weak = tile_weak.clone();
             let on_background_changed = on_background_changed.clone();
             let item_name = item_name.clone();

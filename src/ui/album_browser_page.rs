@@ -207,7 +207,13 @@ fn build_album_cover(album: &Album, loader: Arc<ThumbnailLoader>) -> SquareTile 
             requested.set(true);
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            loader.request(cover_uri.clone(), ALBUM_TILE_SIZE, Some(mtime), tx);
+            loader.request(
+                cover_uri.clone(),
+                ALBUM_TILE_SIZE,
+                Some(mtime),
+                tx,
+                crate::core::thumbnails::TIER_NORMAL,
+            );
             let tile_weak = tile_weak.clone();
             let placeholder = placeholder.clone();
             glib::spawn_future_local(async move {

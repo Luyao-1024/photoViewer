@@ -382,7 +382,13 @@ fn build_trash_tile(item: MediaItem, loader: Arc<ThumbnailLoader>) -> SquareTile
     let item = trash_thumbnail_item(item);
     let mtime = std::time::SystemTime::from(item.file_mtime);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    loader.request(item.uri, TRASH_THUMB_SIZE, Some(mtime), tx);
+    loader.request(
+        item.uri,
+        TRASH_THUMB_SIZE,
+        Some(mtime),
+        tx,
+        crate::core::thumbnails::TIER_NORMAL,
+    );
     let tile_weak = tile.downgrade();
     gtk::glib::spawn_future_local(async move {
         if let Ok(loaded) = rx.await {

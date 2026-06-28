@@ -102,7 +102,8 @@ fn find_xmp_payload_range(bytes: &[u8]) -> Option<std::ops::Range<usize>> {
             || (0xD0..=0xD7).contains(&marker) // RSTn
             || marker == 0xD9 // EOI
             || marker == 0xDA // SOS：之后是熵编码数据
-            || (0xC0..=0xCF).contains(&marker) // SOFn / DHT / DAC：帧/表段，XMP 必在其前
+            || (0xC0..=0xCF).contains(&marker)
+        // SOFn / DHT / DAC：帧/表段，XMP 必在其前
         {
             return None;
         }
@@ -136,9 +137,7 @@ pub fn detect(path: &Path) -> Option<MotionPhotoInfo> {
     let file = std::fs::File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     let mut head = Vec::new();
-    file.take(HEAD_SCAN_CAP)
-        .read_to_end(&mut head)
-        .ok()?;
+    file.take(HEAD_SCAN_CAP).read_to_end(&mut head).ok()?;
     detect_in_head(path, &head, file_len)
 }
 

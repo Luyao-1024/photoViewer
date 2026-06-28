@@ -1,6 +1,6 @@
 use gtk4::prelude::TextureExt;
 use photo_viewer::core::db;
-use photo_viewer::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use photo_viewer::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_NORMAL};
 use std::sync::Once;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
@@ -44,6 +44,7 @@ fn generate_and_cache() {
         ThumbnailSize::Small,
         None,
         tx,
+        TIER_NORMAL,
     );
 
     let loaded = runtime.block_on(async { rx.await.unwrap() });
@@ -87,6 +88,7 @@ fn cache_hit_avoids_regenerate() {
         ThumbnailSize::Medium,
         None,
         tx1,
+        TIER_NORMAL,
     );
     let _ = runtime.block_on(rx1);
 
@@ -109,6 +111,7 @@ fn cache_hit_avoids_regenerate() {
         ThumbnailSize::Medium,
         None,
         tx2,
+        TIER_NORMAL,
     );
     let _ = runtime.block_on(rx2);
 
@@ -140,11 +143,17 @@ fn memory_cache_keeps_thumbnail_sizes_separate() {
     let uri = format!("file://{}", src.display());
 
     let (tx_small, rx_small) = tokio::sync::oneshot::channel();
-    loader.request(uri.clone(), ThumbnailSize::Small, None, tx_small);
+    loader.request(
+        uri.clone(),
+        ThumbnailSize::Small,
+        None,
+        tx_small,
+        TIER_NORMAL,
+    );
     let small = runtime.block_on(async { rx_small.await.unwrap() });
 
     let (tx_large, rx_large) = tokio::sync::oneshot::channel();
-    loader.request(uri, ThumbnailSize::Large, None, tx_large);
+    loader.request(uri, ThumbnailSize::Large, None, tx_large, TIER_NORMAL);
     let large = runtime.block_on(async { rx_large.await.unwrap() });
 
     drop(_guard);
@@ -191,7 +200,7 @@ fn duplicate_requests_are_coalesced_and_never_dropped() {
     let mut rxs = Vec::with_capacity(N);
     for _ in 0..N {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request(uri.clone(), ThumbnailSize::Small, None, tx);
+        loader.request(uri.clone(), ThumbnailSize::Small, None, tx, TIER_NORMAL);
         rxs.push(rx);
     }
 
@@ -234,9 +243,9 @@ fn prioritize_keys_serves_boosted_before_normal() {
 
     // 不起 worker：两条 NORMAL 先入队（A 先、B 后）。
     let (txa, rxa) = tokio::sync::oneshot::channel();
-    loader.request(uri_a, ThumbnailSize::Small, None, txa);
+    loader.request(uri_a, ThumbnailSize::Small, None, txa, TIER_NORMAL);
     let (txb, rxb) = tokio::sync::oneshot::channel();
-    loader.request(uri_b, ThumbnailSize::Small, None, txb);
+    loader.request(uri_b, ThumbnailSize::Small, None, txb, TIER_NORMAL);
 
     // 提权 B（模拟可见）。此时两者都还在排队 → B 升 BOOST。
     loader.prioritize_keys(&[key_b]);

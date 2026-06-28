@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS media_items (
     blake3_hash     TEXT    NOT NULL,
     is_favorite     INTEGER NOT NULL DEFAULT 0,
     trashed_at      INTEGER,
-    indexed_at      INTEGER NOT NULL
+    indexed_at      INTEGER NOT NULL,
+    thumbnail_generated_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_taken_at

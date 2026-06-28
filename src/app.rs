@@ -4,7 +4,7 @@ use crate::core::error::Result as CoreResult;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::ui::apply_to_media_list::{trim_to_cap, ui_media_list_cap};
+use crate::ui::apply_to_media_list::ui_media_list_cap;
 use crate::ui::{MainWindow, PhotosPage};
 use gtk4 as gtk;
 use gtk4::glib;
@@ -265,6 +265,7 @@ async fn initialize() -> anyhow::Result<(
         notifier.clone(),
         list.clone(),
         INITIAL_MEDIA_PAGE_SIZE,
+        thumbnail_loader.clone(),
     );
 
     // change_rx 交给 activate 处的消费者：那里能拿到 MainWindow，TrashChanged 时
@@ -314,9 +315,6 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
     }
-    if list.n_items() as usize >= ui_media_list_cap() {
-        return;
-    }
 
     // During startup the consumer loop may have already appended an item
     // (via a file-system Upserted event) that also appears in this DB page.
@@ -333,68 +331,71 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     let additions: Vec<glib::BoxedAnyObject> = items
         .into_iter()
         .filter(|item| !existing.contains(&item.uri))
-        .take(ui_media_list_cap().saturating_sub(list.n_items() as usize))
         .map(glib::BoxedAnyObject::new)
         .collect();
     if !additions.is_empty() {
         list.splice(list.n_items(), 0, &additions);
-        trim_to_cap(list);
     }
 }
 
-fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_offset: u32) {
-    glib::MainContext::default().spawn_local(async move {
-        let mut offset = start_offset;
-        loop {
-            let pool_for_page = pool.clone();
-            let result = gtk::gio::spawn_blocking(move || {
-                crate::core::db::list_media_page(&pool_for_page, offset, BACKGROUND_MEDIA_PAGE_SIZE)
-            })
-            .await;
-            let items = match result {
-                Ok(Ok(items)) => items,
-                Ok(Err(e)) => {
-                    tracing::error!("background media page load failed: {}", e);
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!("background media page load join failed: {:?}", e);
-                    return;
-                }
-            };
-            if items.is_empty() {
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "STARTUP_MEDIA_LIST_FINAL list_len={} cap={} reason=no_more_pages offset={}",
-                    list.n_items(),
-                    ui_media_list_cap(),
-                    offset
-                );
-                return;
+async fn load_remaining_media_pages(
+    pool: DbPool,
+    list: gtk::gio::ListStore,
+    start_offset: u32,
+) -> Vec<String> {
+    let mut offset = start_offset;
+    loop {
+        let pool_for_page = pool.clone();
+        let result = gtk::gio::spawn_blocking(move || {
+            crate::core::db::list_media_page(&pool_for_page, offset, BACKGROUND_MEDIA_PAGE_SIZE)
+        })
+        .await;
+        let items = match result {
+            Ok(Ok(items)) => items,
+            Ok(Err(e)) => {
+                tracing::error!("background media page load failed: {}", e);
+                break;
             }
-            let count = items.len() as u32;
-            append_media_items(&list, items);
-            if list.n_items() as usize >= ui_media_list_cap() {
-                tracing::info!(
-                    target: crate::core::log_targets::BROWSING,
-                    "BACKGROUND_MEDIA_LOAD reached_ui_cap cap={}",
-                    ui_media_list_cap()
-                );
-                return;
+            Err(e) => {
+                tracing::error!("background media page load join failed: {:?}", e);
+                break;
             }
-            if count < BACKGROUND_MEDIA_PAGE_SIZE {
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "STARTUP_MEDIA_LIST_FINAL list_len={} cap={} reason=short_page offset={}",
-                    list.n_items(),
-                    ui_media_list_cap(),
-                    offset
-                );
-                return;
-            }
-            offset += count;
+        };
+        if items.is_empty() {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "STARTUP_MEDIA_LIST_FINAL list_len={} reason=no_more_pages offset={}",
+                list.n_items(),
+                offset
+            );
+            break;
         }
-    });
+        let count = items.len() as u32;
+        append_media_items(&list, items);
+        if count < BACKGROUND_MEDIA_PAGE_SIZE {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "STARTUP_MEDIA_LIST_FINAL list_len={} reason=short_page offset={}",
+                list.n_items(),
+                offset
+            );
+            break;
+        }
+        offset += count;
+    }
+
+    // 收集前 N 条 URI 供预热视口优先
+    collect_list_uris(&list, 400)
+}
+
+fn collect_list_uris(list: &gtk::gio::ListStore, limit: usize) -> Vec<String> {
+    (0..list.n_items().min(limit as u32))
+        .filter_map(|i| {
+            list.item(i)
+                .and_downcast::<glib::BoxedAnyObject>()
+                .map(|obj| obj.borrow::<MediaItem>().uri.clone())
+        })
+        .collect()
 }
 
 fn start_background_startup_work(
@@ -404,6 +405,7 @@ fn start_background_startup_work(
     notifier: crate::core::media_change_notifier::MediaChangeNotifier,
     list: gtk::gio::ListStore,
     remaining_offset: u32,
+    loader: Arc<ThumbnailLoader>,
 ) {
     glib::MainContext::default().spawn_local(async move {
         if let Err(e) = crate::core::bootstrap::scan_and_aggregate_with_notifier(
@@ -437,6 +439,11 @@ fn start_background_startup_work(
             Err(e) => tracing::warn!("回收站对账 join 失败: {e:?}"),
         }
 
-        load_remaining_media_pages(pool, list, remaining_offset);
+        let _viewport_uris =
+            load_remaining_media_pages(pool.clone(), list.clone(), remaining_offset).await;
+
+        // 扫描 + 回收站对账 + 全库分页完毕后，启动后台缩略图预热（拉模型：
+        // worker 空闲时自己从 DB 取下一张未缓存的缩略图生成，视口请求仍优先）。
+        crate::core::thumbnail_prewarm::start_background_prewarm(&loader);
     });
 }

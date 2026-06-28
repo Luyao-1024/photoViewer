@@ -24,6 +24,7 @@ use std::io::BufWriter;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 use tokio::sync::oneshot;
@@ -78,8 +79,10 @@ pub struct LoadedThumb {
 
 // ── 优先级队列 ──────────────────────────────────────────────────────────────
 /// 优先级档：`BOOST`（可见，值小）先于 `NORMAL` 被 worker 取走。
-const TIER_BOOST: u8 = 0;
-const TIER_NORMAL: u8 = 1;
+pub const TIER_BOOST: u8 = 0;
+pub const TIER_NORMAL: u8 = 1;
+/// 后台预热拉取项以此 tier 标记，仅在 worker 从 DB 拉取时使用。
+const TIER_BACKGROUND: u8 = 2;
 
 /// 队列里的一条工作项。
 ///
@@ -95,6 +98,8 @@ struct PriItem {
     uri: String,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
+    /// DB `media_items.id`（BACKGROUND 拉取时携带，供批量更新缩略图状态）。
+    media_id: i64,
 }
 
 impl PriItem {
@@ -166,17 +171,26 @@ struct LoaderState {
     in_flight: HashMap<String, Vec<oneshot::Sender<LoadedThumb>>>,
 }
 
+/// 后台预热拉取状态：worker 在队列为空时据此从 DB 拉取下一个需生成的项。
+struct BackgroundPullState {
+    enabled: AtomicBool,
+    offset: Mutex<u32>,
+}
+
 /// 缩略图加载器单例
 ///
 /// 内部用优先级队列把请求分发给一组 worker；worker 在 tokio 阻塞线程上
 /// 完成 CPU/IO 密集的解码/编码后通过 oneshot 归还 `LoadedThumb`。request 端
 /// 做在途去重，保证同一 (uri, size) 只生成一次、且永不丢请求；可见 tile 可经
 /// `prioritize_keys` 提前。
+/// 队列空时 worker 自动从 DB 拉取下一张未缓存的缩略图生成（拉模型），
+/// 不会一次性灌入队列。
 pub struct ThumbnailLoader {
     pool: DbPool,
     cache_dir: PathBuf,
     queue: SharedQueue,
     state: Arc<Mutex<LoaderState>>,
+    background_pull: Arc<BackgroundPullState>,
 }
 
 /// 内存 LRU 容量。Large 档单张 texture 可达数 MB；过大的常驻缓存会在大图库滚动
@@ -187,6 +201,17 @@ impl ThumbnailLoader {
     /// 工作项队列容量。配合在途去重后，这里只存「彼此不同且未缓存」的项；
     /// 取一个充裕的值，使得在加入视口级虚拟化之前，单库数万张也能容纳。
     pub const QUEUE_CAPACITY: usize = 8192;
+
+    /// 队列中当前排队项数（不含已在途/正在 worker 中生成的）。
+    pub fn queue_len(&self) -> usize {
+        let (lock, _) = &*self.queue;
+        lock.lock().map(|q| q.queued.len()).unwrap_or(0)
+    }
+
+    /// 在途（正在生成或等待 worker）项数。
+    pub fn in_flight_len(&self) -> usize {
+        self.state.lock().map(|s| s.in_flight.len()).unwrap_or(0)
+    }
 
     /// 构造加载器（不自动启动 worker；调用 `spawn_workers` 启动）
     pub fn new(pool: DbPool, cache_dir: PathBuf) -> Self {
@@ -220,7 +245,40 @@ impl ThumbnailLoader {
             cache_dir,
             queue,
             state,
+            background_pull: Arc::new(BackgroundPullState {
+                enabled: AtomicBool::new(false),
+                offset: Mutex::new(0),
+            }),
         }
+    }
+
+    /// 数据库连接池引用（用于查询媒体总数等）。
+    pub fn pool(&self) -> &DbPool {
+        &self.pool
+    }
+
+    /// DB 中已生成缩略图的媒体项总数。
+    pub fn generated_count(&self) -> usize {
+        crate::core::db::count_thumbnail_generated(&self.pool).unwrap_or(0)
+    }
+
+    /// 后台预热是否仍在进行（标志位未关）。
+    pub fn is_prewarm_active(&self) -> bool {
+        self.background_pull.enabled.load(AtomicOrdering::Relaxed)
+    }
+
+    /// 启动后台预热拉取：设置标志，worker 在队列空时自动从 DB 拉取下一张
+    /// 未缓存的缩略图生成。幂等——多次调用与一次等效。
+    pub fn start_background_prewarm(&self) {
+        self.background_pull
+            .enabled
+            .store(true, AtomicOrdering::Relaxed);
+        if let Ok(mut off) = self.background_pull.offset.lock() {
+            *off = 0;
+        }
+        // 唤醒可能在 cvar 上阻塞的 worker，让它们转入 background pull
+        let (_, cvar) = &*self.queue;
+        cvar.notify_all();
     }
 
     /// 启动 n 个 worker 消费请求
@@ -233,8 +291,9 @@ impl ThumbnailLoader {
             let cache_dir = self.cache_dir.clone();
             let queue = self.queue.clone();
             let state = self.state.clone();
+            let bg = self.background_pull.clone();
             tokio::task::spawn_blocking(move || {
-                worker_loop(queue, pool, cache_dir, state);
+                worker_loop(queue, pool, cache_dir, state, bg);
             });
         }
     }
@@ -245,12 +304,15 @@ impl ThumbnailLoader {
     /// 因为队列满而被静默丢弃**：
     ///   1. mem-cache 命中 → 立刻同步回送；
     ///   2. 已有在途生成 → 把 reply 挂到该在途请求的等待者列表（不入队）；
-    ///   3. 否则登记一条在途项并以 `NORMAL` 优先级入队。
+    ///   3. 否则登记一条在途项并以指定 `tier` 优先级入队。
     ///
     /// `mtime`：若调用方已知源文件 mtime（如 `MediaItem.file_mtime`），传入可
     /// **跳过主线程 stat**（B5：mtime 已在扫描/notify 时入库，无需每次请求再 stat）；
     /// 传 `None` 则现场 stat 兜底。只有当队列里**已塞满彼此不同的**未缓存工作项
     /// （远超库规模才会发生）时，第 3 步才会失败；此时回滚在途项，调用方收到 `Err`。
+    ///
+    /// `tier`：`TIER_BOOST`（可见/视口优先）、`TIER_NORMAL`（默认）、
+    /// `TIER_BACKGROUND`（全局预热，不入 mem_cache，受 worker 限流）。
     ///
     /// 锁序：`state{drop}` → `queue{drop}` →（回滚）`state{drop}`。两锁从不嵌套，无死锁。
     pub fn request(
@@ -259,6 +321,7 @@ impl ThumbnailLoader {
         size: ThumbnailSize,
         mtime: Option<SystemTime>,
         reply: oneshot::Sender<LoadedThumb>,
+        tier: u8,
     ) {
         let Some(cache_key) = cache_key_str(&uri, size, mtime) else {
             // 源文件不存在 / 无法 stat：无法去重，按"生成失败"处理。
@@ -320,19 +383,20 @@ impl ThumbnailLoader {
                 q.queued.insert(
                     cache_key.clone(),
                     QueuedEntry {
-                        tier: TIER_NORMAL,
+                        tier,
                         uri: uri.clone(),
                         size,
                         mtime,
                     },
                 );
                 q.heap.push(Reverse(PriItem {
-                    tier: TIER_NORMAL,
+                    tier,
                     seq,
                     cache_key: cache_key.clone(),
                     uri: uri.clone(),
                     size,
                     mtime,
+                    media_id: 0,
                 }));
                 true
             }
@@ -393,6 +457,7 @@ impl ThumbnailLoader {
                 uri,
                 size,
                 mtime,
+                media_id: 0,
             }));
             changed = true;
         }
@@ -445,40 +510,49 @@ impl Drop for ThumbnailLoader {
     }
 }
 
+/// 每积攒多少条 BACKGROUND 生成的项就批量刷新一次 DB。
+const BACKGROUND_DB_FLUSH_INTERVAL: usize = 100;
+
 fn worker_loop(
     queue: SharedQueue,
-    _pool: DbPool,
+    pool: DbPool,
     cache_dir: PathBuf,
     state: Arc<Mutex<LoaderState>>,
+    bg: Arc<BackgroundPullState>,
 ) {
-    while let Some(req) = next_request(&queue) {
-        // request 端已保证此 cache_key 此前既不在 mem_cache 也不在 in_flight，
-        // 所以这里直接生成即可。生成期间，同 key 的后续 request 会挂到
-        // in_flight 等待者列表上，由下面的广播一并唤醒。
+    let mut flush_ids: Vec<i64> = Vec::with_capacity(BACKGROUND_DB_FLUSH_INTERVAL);
+    while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
+                // BACKGROUND 拉取项：记录 DB id 待批量刷新。
+                if req.tier >= TIER_BACKGROUND && req.media_id != 0 {
+                    flush_ids.push(req.media_id);
+                }
                 debug!(
-                    "THUMB_TRACE worker_generated uri={} size={:?} cache_key={} texture={}x{}",
+                    "THUMB_TRACE worker_generated uri={} size={:?} tier={} media_id={} cache_key={} texture={}x{}",
                     req.uri,
                     req.size,
+                    req.tier,
+                    req.media_id,
                     req.cache_key,
                     pb.width(),
                     pb.height()
                 );
-                // 亮度判定下沉到 worker：直接就地采样 pixbuf 像素，主线程零回读。
                 let is_light = pixbuf_is_light(&pb);
                 let texture = Texture::for_pixbuf(&pb);
                 let loaded = LoadedThumb {
                     texture: texture.clone(),
                     is_light,
                 };
-                // 写入 mem_cache，并把结果广播给所有等待者。
+                let is_bg = req.tier >= TIER_BACKGROUND;
                 let waiters = {
                     let mut st = match state.lock() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    st.mem_cache.put(req.cache_key.clone(), loaded.clone());
+                    if !is_bg {
+                        st.mem_cache.put(req.cache_key.clone(), loaded.clone());
+                    }
                     st.in_flight.remove(&req.cache_key).unwrap_or_default()
                 };
                 for w in waiters {
@@ -486,41 +560,108 @@ fn worker_loop(
                 }
             }
             Err(e) => {
-                drop_in_flight(&state, &req.cache_key);
+                if req.tier < TIER_BACKGROUND {
+                    drop_in_flight(&state, &req.cache_key);
+                }
                 warn!("缩略图生成失败 {}: {}", req.uri, e);
             }
+        }
+        // 批量刷 DB
+        if flush_ids.len() >= BACKGROUND_DB_FLUSH_INTERVAL {
+            if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &flush_ids) {
+                warn!("批量更新缩略图状态失败: {}", e);
+            }
+            flush_ids.clear();
+        }
+    }
+    // worker 退出前尾量 flush
+    if !flush_ids.is_empty() {
+        if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &flush_ids) {
+            warn!("批量更新缩略图状态失败(退出): {}", e);
         }
     }
 }
 
-/// 阻塞取下一个**有效**工作项：空则 `cvar` 等待，被关闭返回 `None`。
-///
-/// 弹出时校验堆项的 tier 是否仍等于 `queued_tiers[key]`：不等说明该 key 已被
-/// 提权（旧 NORMAL 项过期）或已被处理/取消 → 丢弃继续弹。命中则从 `queued_tiers`
-/// 移除该 key（使该 key 的所有过期堆项在后续弹出时一并失效）。
-fn next_request(queue: &SharedQueue) -> Option<PriItem> {
+/// 取下一个工作项：优先队列（网格请求），队列空时从 DB 拉取下一个需生成的项。
+fn next_request_or_pull(
+    queue: &SharedQueue,
+    pool: &DbPool,
+    bg: &Arc<BackgroundPullState>,
+) -> Option<PriItem> {
     let (lock, cvar) = &**queue;
     loop {
+        // 1) 优先从队列弹（BOOST/NORMAL，网格可见请求）
         let mut q = lock.lock().ok()?;
-        // 空且未关：等
-        while q.heap.is_empty() && !q.closed {
-            q = cvar.wait(q).ok()?;
-        }
-        // 弹到有效项即返回；过期项就地丢弃继续弹；弹空了回外层重等。
         loop {
             if q.closed {
                 return None;
             }
-            let Some(Reverse(item)) = q.heap.pop() else {
-                break; // 堆又空了 → 回外层 while 等待
-            };
-            if q.queued.get(&item.cache_key).map(|e| e.tier) == Some(item.tier) {
-                q.queued.remove(&item.cache_key);
+            if let Some(Reverse(item)) = q.heap.pop() {
+                if q.queued.get(&item.cache_key).map(|e| e.tier) == Some(item.tier) {
+                    q.queued.remove(&item.cache_key);
+                    return Some(item);
+                }
+                continue; // 过期项
+            }
+            break; // 堆空
+        }
+        drop(q);
+
+        // 2) 队列空，从 DB 拉取一条需要生成缩略图的项
+        if bg.enabled.load(AtomicOrdering::Relaxed) {
+            if let Some(item) = pull_next_needing_thumbnail(pool, bg) {
                 return Some(item);
             }
-            // 过期项（tier 已被提权 / key 已处理），丢弃继续
         }
+
+        // 3) 无可做，阻塞等待。
+        let q = lock.lock().ok()?;
+        if q.closed {
+            return None;
+        }
+        if !q.heap.is_empty() {
+            continue;
+        }
+        let wait_dur = if bg.enabled.load(AtomicOrdering::Relaxed) {
+            std::time::Duration::from_millis(500)
+        } else {
+            std::time::Duration::from_secs(30)
+        };
+        let (q2, _timed_out) = cvar.wait_timeout(q, wait_dur).ok()?;
+        drop(q2);
     }
+}
+
+/// 从 DB 拉取一条 `thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime`
+/// 的项（即从未生成或文件变更后过期），交 worker 直接生成。
+///
+/// 已缓存（`thumbnail_generated_at >= file_mtime`）的项由 DB 查询自动过滤，
+/// 不再需要磁盘 stat。拉取到末尾返回 `None`；下次超时重试时会因为已缓存项增加
+/// 而自然收敛。
+fn pull_next_needing_thumbnail(pool: &DbPool, bg: &BackgroundPullState) -> Option<PriItem> {
+    let mut off = bg.offset.lock().ok()?;
+    let page = crate::core::db::list_media_needing_thumbnail(pool, *off, 1).ok()?;
+    if page.is_empty() {
+        // 当前偏移后无更多需生成的项。重置偏移以便重扫（有新文件加入时能发现）。
+        *off = 0;
+        return None;
+    }
+    let item = &page[0];
+    *off += 1;
+    drop(off);
+
+    let mtime = Some(std::time::SystemTime::from(item.file_mtime));
+    let cache_key = cache_key_str(&item.uri, ThumbnailSize::Medium, mtime)
+        .unwrap_or_else(|| format!("bg:{}", item.uri));
+    Some(PriItem {
+        tier: TIER_BACKGROUND,
+        seq: 0,
+        cache_key,
+        uri: item.uri.clone(),
+        size: ThumbnailSize::Medium,
+        mtime,
+        media_id: item.id,
+    })
 }
 
 /// 生成失败时移除在途项，让等待者的 `rx` 收到 `Err` 而非永久挂起。
@@ -1239,6 +1380,7 @@ mod tests {
             ThumbnailSize::Small,
             None,
             tx,
+            TIER_NORMAL,
         );
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1377,6 +1519,7 @@ mod tests {
             uri: "u".into(),
             size: ThumbnailSize::Small,
             mtime: None,
+            media_id: 0,
         };
         // BOOST(tier0) < NORMAL(tier1)
         assert!(mk(TIER_BOOST, 100) < mk(TIER_NORMAL, 1));
@@ -1396,6 +1539,7 @@ mod tests {
                 uri: k.into(),
                 size: ThumbnailSize::Small,
                 mtime: None,
+                media_id: 0,
             })
         };
         let mut heap = BinaryHeap::new();

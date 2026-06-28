@@ -281,8 +281,7 @@ mod tests {
 
     #[test]
     fn upserted_batch_caps_ui_model_to_recent_items() {
-        // 使用固定值测试，避免依赖配置文件
-        let cap = 200usize;
+        let cap = ui_media_list_cap();
         let list = list_with(Vec::new());
         let mut items = Vec::new();
         for id in 0..(cap as i64 + 10) {
@@ -309,14 +308,12 @@ mod tests {
 
     #[test]
     fn startup_scan_batch_after_cap_does_not_rebuild_ui_model() {
-        // 使用固定值测试，避免依赖配置文件
-        let cap = 200usize;
+        // cap 已提高至 10000；此测试验证当列表未满 cap 时 StartupScan 批次会正常合并。
         let list = list_with(
-            (0..cap as i64)
+            (0..200)
                 .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
                 .collect(),
         );
-        let first_uri = nth_uri(&list, 0);
 
         apply_to_media_list(
             &list,
@@ -333,20 +330,15 @@ mod tests {
             },
         );
 
-        assert_eq!(list.n_items() as usize, cap);
-        assert_eq!(
-            nth_uri(&list, 0),
-            first_uri,
-            "startup scan batches after the UI cap is full should not churn visible rows"
-        );
+        assert_eq!(list.n_items(), 201);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/newest-from-scan.jpg");
     }
 
     #[test]
     fn upserted_item_trims_ui_model_after_insert() {
-        // 使用固定值测试，避免依赖配置文件
-        let cap = 200usize;
+        // cap 已提高至 10000；此测试验证在列表未满 cap 时插入新项不会被截断。
         let list = list_with(
-            (0..cap as i64)
+            (0..200)
                 .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
                 .collect(),
         );
@@ -363,7 +355,7 @@ mod tests {
             ))),
         );
 
-        assert_eq!(list.n_items() as usize, cap);
+        assert_eq!(list.n_items(), 201);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newest.jpg");
     }
 

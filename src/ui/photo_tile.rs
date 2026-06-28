@@ -109,6 +109,7 @@ impl PhotoTile {
             thumb_size,
             Some(std::time::SystemTime::from(item.file_mtime)),
             tx,
+            crate::core::thumbnails::TIER_NORMAL,
         );
 
         let this_weak = self.downgrade();
