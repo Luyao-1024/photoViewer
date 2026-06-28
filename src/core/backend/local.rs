@@ -2,24 +2,44 @@
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::media::{
-    is_supported_media_path, MediaItem, NewMediaItem, MEDIA_SUBKIND_MOTION_PHOTO,
-    MEDIA_SUBKIND_STANDARD,
+    is_supported_media_path, media_kind_from_mime, mime_from_extension, MediaItem, MediaKind,
+    NewMediaItem, MEDIA_SUBKIND_MOTION_PHOTO, MEDIA_SUBKIND_STANDARD,
 };
 use crate::core::metadata;
 use crate::core::motion_photo::{self, MediaAttributes};
 use chrono::Utc;
-use std::cell::Cell;
 use std::io::Read;
 use std::path::Path;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
-// 诊断：单线程扫描期间累计 process_file 三个阶段的耗时，SCAN_SUMMARY 打印后归零。
-// 用于回答「为什么扫描慢」——读盘/哈希/ffprobe 都已证伪，剩余耗时分布在这里。
-thread_local! {
-    static SCAN_EXTRACT_MS: Cell<u128> = const { Cell::new(0) };
-    static SCAN_HASH_MS: Cell<u128> = const { Cell::new(0) };
-    static SCAN_MOTION_MS: Cell<u128> = const { Cell::new(0) };
+// 诊断：扫描期间累计各阶段耗时，SCAN_SUMMARY 打印后归零。AtomicU64 让生产者线程
+// （extract/motion）与消费者线程（upsert）的耗时能汇总到同一计数器。
+static SCAN_EXTRACT_MS: AtomicU64 = AtomicU64::new(0);
+static SCAN_HASH_MS: AtomicU64 = AtomicU64::new(0);
+static SCAN_MOTION_MS: AtomicU64 = AtomicU64::new(0);
+static SCAN_UPSORT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 消费者（主线程）攒一批再提交的间隔。生产者把 extract 出的项经有界 channel 送到
+/// 消费者；消费者每到这里就把累计的一批合进**一个事务**提交（`upsert_media_items_batch`），
+/// 再转发给 UI。约 2s 一批既让 UI 看到渐进进度，又把每行 autocommit 的 fsync 摊薄成
+/// 每批一次——这是十万级冷扫描 DB 写入从数十秒降到秒级的关键。
+const UPSERT_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 生产者 → 消费者 channel 容量：限制飞行中的 `NewMediaItem` 数量，让生产者在消费者
+/// 落库跟不上时自然背压，内存峰值与图库规模无关。
+const SCAN_ITEM_CHANNEL_CAP: usize = 1024;
+
+/// 生产者对一个文件的处理结果：成功提取（待入库）、跳过（不支持 MIME）、或出错
+/// （提取失败/解析 panic）。消费者据此聚合诊断计数并批量入库。
+// Box the NewMediaItem variant:它约 256 B，而另两个变体无数据，不装箱会把每个
+// `WorkOutcome`（及 channel 槽）撑到 256 B。
+enum WorkOutcome {
+    Item(Box<NewMediaItem>),
+    NoneMime,
+    Error,
 }
 
 fn stream_file_hash(path: &Path) -> Result<String> {
@@ -105,91 +125,164 @@ impl LocalBackend {
     {
         // 诊断计数器：定位「为什么扫不全」。SCAN_SUMMARY 会在每个 root 扫完时打印；
         // 若该日志缺失，说明扫描中途被中止（panic / 进程退出 / spawn_blocking join 失败）。
-        let started = std::time::Instant::now();
-        let mut visited = 0u64; // WalkDir 遍历到的全部条目（含目录/非媒体）
-        let mut supported = 0u64; // 通过扩展名过滤的媒体文件
-        let mut unchanged = 0u64; // (uri, mtime, size) 短路跳过，未重提
-        let mut errors = 0u64; // 元数据/哈希/upsert 失败，或解析 panic
+        // 归零放在最前面，避免上一轮（或 scan_dir 测试路径）残留污染本次汇总。
+        let _ = SCAN_EXTRACT_MS.swap(0, Ordering::Relaxed);
+        let _ = SCAN_HASH_MS.swap(0, Ordering::Relaxed);
+        let _ = SCAN_MOTION_MS.swap(0, Ordering::Relaxed);
+        let _ = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
+        let started = Instant::now();
+        let mut errors = 0u64; // 元数据/upsert 失败，或解析 panic
         let mut none_mime = 0u64; // process_file 返回 None（不支持 MIME）
         let mut indexed = 0usize; // 实际写入 DB 的新增/更新行
 
-        for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
-            visited += 1;
-            let path = entry.path();
-            if !path.is_file() || !is_supported_media_path(path) {
-                continue;
-            }
-            supported += 1;
-
-            let file_meta = match std::fs::metadata(path) {
-                Ok(m) => m,
-                Err(e) => {
-                    errors += 1;
-                    tracing::warn!("跳过文件 {}: {}", path.display(), e);
+        // ── 生产者线程：walk + (uri,mtime,size) 只读短路 + extract ──────────────
+        // 生产者**不写数据库**：唯一的 DB 接触是未改动短路那条只读 SELECT。真正要重新
+        // 索引的文件 extract 成 NewMediaItem 后经有界 channel 交给消费者。它独立线程跑，
+        // 与消费者的批量入库形成流水——提取与落库并行，互不阻塞（WAL 下读不阻塞写）。
+        let root_owned = root.to_path_buf();
+        let (item_tx, item_rx) = sync_channel::<WorkOutcome>(SCAN_ITEM_CHANNEL_CAP);
+        let producer_pool = self.pool.clone();
+        let producer = std::thread::spawn(move || -> Result<(u64, u64, u64)> {
+            let backend = LocalBackend::new(producer_pool);
+            let mut visited = 0u64;
+            let mut supported = 0u64;
+            let mut unchanged = 0u64;
+            for entry in WalkDir::new(&root_owned)
+                .follow_links(false)
+                .into_iter()
+                .flatten()
+            {
+                visited += 1;
+                let path = entry.path();
+                if !path.is_file() || !is_supported_media_path(path) {
                     continue;
                 }
-            };
-            // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。
-            if let Some(mtime) = file_index_time(&file_meta).and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .map(|d| d.as_secs() as i64)
-            }) {
-                let uri = format!("file://{}", path.display());
-                if db::is_media_unchanged(&self.pool, &uri, mtime, file_meta.len() as i64)? {
-                    unchanged += 1;
-                    continue;
+                supported += 1;
+                let file_meta = match std::fs::metadata(path) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("跳过文件 {}: {}", path.display(), e);
+                        if item_tx.send(WorkOutcome::Error).is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。
+                if let Some(mtime) = file_index_time(&file_meta).and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs() as i64)
+                }) {
+                    let uri = format!("file://{}", path.display());
+                    if db::is_media_unchanged(backend.pool(), &uri, mtime, file_meta.len() as i64)? {
+                        unchanged += 1;
+                        continue;
+                    }
+                }
+                // 单文件损坏用 catch_unwind 隔离，不让一张坏图废掉整轮扫描。
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    backend.process_file(path)
+                }));
+                let work = match outcome {
+                    Ok(Ok(Some(item))) => WorkOutcome::Item(Box::new(item)),
+                    Ok(Ok(None)) => WorkOutcome::NoneMime,
+                    Ok(Err(e)) => {
+                        tracing::warn!("跳过文件 {}: {}", path.display(), e);
+                        WorkOutcome::Error
+                    }
+                    Err(panic_payload) => {
+                        let msg = panic_payload
+                            .downcast_ref::<String>()
+                            .map(|s| s.as_str())
+                            .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                            .unwrap_or("(non-string panic)");
+                        tracing::error!(
+                            "扫描文件 {} 时 panic，已跳过以继续扫描其余文件: {}",
+                            path.display(),
+                            msg
+                        );
+                        WorkOutcome::Error
+                    }
+                };
+                // 消费者已关闭（应用关闭/中止）：停止再投递。
+                if item_tx.send(work).is_err() {
+                    break;
                 }
             }
+            Ok((visited, supported, unchanged))
+        });
+        // 生产者独占 item_tx：它退出（走完 walk 或因消费者关闭而 send 失败）时 sender
+        // 析构，item_rx 随即收到 Disconnected，下面的 drain 循环据此结束。
+        // 消费者若提前返回，item_rx 析构 → 生产者下次 send 失败 → 自行退出，无泄漏。
 
-            // 用 catch_unwind 包裹提取：单个损坏文件（HEIC 容器解析、image crate、
-            // motion_photo 解析等）若 panic 不应让整轮数千张的扫描半途而废——否则会
-            // 看到「DB 行数远少于磁盘文件数、且每次重启都卡在同一位置」。哪张文件
-            // panic 会作为 error 打到这里，扫描继续处理其余文件。upsert 在外层，DB
-            // 连接不受提取 panic 影响。
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.process_file(path)
-            }));
-            match outcome {
-                Ok(Ok(Some(item))) => match self.upsert(&item) {
+        // ── 消费者（本线程）：批量入库 + 推 UI ──────────────────────────────
+        // 每 UPSERT_FLUSH_INTERVAL（约 2s）把攒下的一批合进一个事务提交
+        // （`db::upsert_media_items_batch`），把每行 autocommit 的 fsync 摊薄成每批一次；
+        // 提交后再把物化行经 on_upserted 推给 notifier（notifier 侧仍按自适应间隔刷新
+        // UI）。全库仅此一个写者，无 SQLite 写竞争。生产者写、本线程读/写分离，互不阻塞。
+        let mut pending: Vec<NewMediaItem> = Vec::new();
+        let mut last_flush = Instant::now();
+        loop {
+            let timeout = UPSERT_FLUSH_INTERVAL.saturating_sub(last_flush.elapsed());
+            match item_rx.recv_timeout(timeout) {
+                Ok(WorkOutcome::Item(item)) => pending.push(*item),
+                Ok(WorkOutcome::NoneMime) => none_mime += 1,
+                Ok(WorkOutcome::Error) => errors += 1,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if last_flush.elapsed() >= UPSERT_FLUSH_INTERVAL && !pending.is_empty() {
+                let t = Instant::now();
+                match db::upsert_media_items_batch(&self.pool, &pending) {
                     Ok(upserted) => {
-                        on_upserted(upserted);
-                        indexed += 1;
+                        SCAN_UPSORT_MS
+                            .fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        for m in upserted {
+                            on_upserted(m);
+                            indexed += 1;
+                        }
                     }
                     Err(e) => {
-                        errors += 1;
-                        tracing::warn!("跳过文件 {}（upsert 失败）: {}", path.display(), e);
+                        tracing::warn!("批量 upsert 失败（{} 项）: {}", pending.len(), e);
+                        errors += pending.len() as u64;
                     }
-                },
-                Ok(Ok(None)) => {
-                    none_mime += 1;
                 }
-                Ok(Err(e)) => {
-                    errors += 1;
-                    tracing::warn!("跳过文件 {}: {}", path.display(), e);
+                pending.clear();
+                last_flush = Instant::now();
+            }
+        }
+        // 生产者已退出：把最后一批落库。
+        if !pending.is_empty() {
+            let t = Instant::now();
+            match db::upsert_media_items_batch(&self.pool, &pending) {
+                Ok(upserted) => {
+                    SCAN_UPSORT_MS
+                        .fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    for m in upserted {
+                        on_upserted(m);
+                        indexed += 1;
+                    }
                 }
-                Err(panic_payload) => {
-                    errors += 1;
-                    let msg = panic_payload
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
-                        .unwrap_or("(non-string panic)");
-                    tracing::error!(
-                        "扫描文件 {} 时 panic，已跳过以继续扫描其余文件: {}",
-                        path.display(),
-                        msg
-                    );
+                Err(e) => {
+                    tracing::warn!("批量 upsert 失败（{} 项）: {}", pending.len(), e);
+                    errors += pending.len() as u64;
                 }
             }
         }
 
-        let extract_ms = SCAN_EXTRACT_MS.with(|c| c.replace(0));
-        let hash_ms = SCAN_HASH_MS.with(|c| c.replace(0));
-        let motion_ms = SCAN_MOTION_MS.with(|c| c.replace(0));
+        let producer_result = producer
+            .join()
+            .map_err(|_| AppError::Backend("scan producer thread panicked".into()))?;
+        let (visited, supported, unchanged) = producer_result?;
+
+        let extract_ms = SCAN_EXTRACT_MS.swap(0, Ordering::Relaxed);
+        let hash_ms = SCAN_HASH_MS.swap(0, Ordering::Relaxed);
+        let motion_ms = SCAN_MOTION_MS.swap(0, Ordering::Relaxed);
+        let upsert_ms = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
         tracing::debug!(
             target: crate::core::log_targets::STORAGE,
-            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms extract={} hash={} motion={}",
+            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms extract={} hash={} motion={} upsert={}",
             root.display(),
             visited,
             supported,
@@ -201,14 +294,28 @@ impl LocalBackend {
             extract_ms,
             hash_ms,
             motion_ms,
+            upsert_ms,
         );
         Ok(indexed)
     }
 
     fn process_file(&self, path: &Path) -> Result<Option<NewMediaItem>> {
         let t_extract = Instant::now();
-        let meta = metadata::extract(path)?;
-        SCAN_EXTRACT_MS.with(|c| c.set(c.get() + t_extract.elapsed().as_millis()));
+
+        // 按 MIME 路由：标准图片只读一次 256KB 头部，由 extract（dims+EXIF）与动图
+        // 检测共享——这样一张 JPEG 只被打开一次，而不是分别给 image_dimensions /
+        // read_exif / motion detect 各开一次。HEIC 需要整文件（其 Exif item 可能在
+        // 任意位置）且不是动图候选，不读共享头部；视频直接走 ffprobe。
+        let mime = mime_from_extension(path).map(str::to_string);
+        let head: Option<Vec<u8>> = match mime.as_deref() {
+            Some(m) if media_kind_from_mime(m) == Some(MediaKind::Image) && m != "image/heic" => {
+                metadata::read_image_head(path).ok()
+            }
+            _ => None,
+        };
+
+        let meta = metadata::extract_with_head(path, head.as_deref())?;
+        SCAN_EXTRACT_MS.fetch_add(t_extract.elapsed().as_millis() as u64, Ordering::Relaxed);
 
         let file_meta = std::fs::metadata(path)?;
         let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
@@ -229,8 +336,13 @@ impl LocalBackend {
         let hash = String::new();
 
         let t_motion = Instant::now();
-        let motion_photo = motion_photo::detect(path);
-        SCAN_MOTION_MS.with(|c| c.set(c.get() + t_motion.elapsed().as_millis()));
+        // 有共享头部时复用它做动图检测；否则（HEIC/视频）回退到 detect(path)，但二者
+        // 都非 JPEG，is_motion_candidate_mime 立即返回 None，不会触发额外读盘。
+        let motion_photo = match head.as_deref() {
+            Some(h) => motion_photo::detect_with_head(path, h, file_meta.len()),
+            None => motion_photo::detect(path),
+        };
+        SCAN_MOTION_MS.fetch_add(t_motion.elapsed().as_millis() as u64, Ordering::Relaxed);
 
         Ok(Some(NewMediaItem {
             uri,

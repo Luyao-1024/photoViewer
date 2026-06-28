@@ -4,6 +4,7 @@ use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use chrono::{DateTime, TimeZone, Utc};
 use gdk_pixbuf;
 use serde_json::Value;
+use std::io::Read;
 use std::path::Path;
 use std::process::Command;
 
@@ -212,8 +213,43 @@ pub struct RawMetadata {
     pub video: Option<VideoSummary>,
 }
 
+/// Largest prefix of an image file the scan hot path ever pre-reads. It covers
+/// JPEG's SOF marker (after one or two ≤64 KiB APP1 segments) plus the 128 KiB
+/// motion-photo XMP scan, so a single read can feed dimensions + EXIF + motion
+/// detection. Pathological files that need more fall back to a full read.
+pub const IMAGE_HEAD_CAP: u64 = 256 * 1024;
+
+/// Read up to [`IMAGE_HEAD_CAP`] bytes from the start of `path`. The scan passes
+/// this buffer to [`extract_with_head`] and motion-photo detection so a standard
+/// image is opened once instead of 2–3 times.
+pub fn read_image_head(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    file.take(IMAGE_HEAD_CAP).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
 /// Extract metadata from a file at `path`.
+///
+/// Convenience wrapper for callers that don't have a pre-read head; equivalent
+/// to [`extract_with_head`] with `head = None`.
 pub fn extract(path: &Path) -> Result<RawMetadata> {
+    extract_with_head(path, None)
+}
+
+/// Extract metadata, optionally reusing a head buffer already read by the
+/// caller.
+///
+/// `head` lets the scan hot path pass the one 256 KiB read it already did (and
+/// shares with motion-photo detection) so a standard image is parsed from that
+/// buffer instead of being opened a second and third time for `image_dimensions`
+/// / `read_exif`. `None` makes this read what it needs itself — the historical
+/// behaviour for non-scan callers (incremental watcher, trash reconciliation,
+/// UI single-file reads, tests).
+///
+/// HEIC ignores `head`: its EXIF item can live anywhere in the file, so it needs
+/// the whole file (read once) and is not a motion-photo candidate.
+pub fn extract_with_head(path: &Path, head: Option<&[u8]>) -> Result<RawMetadata> {
     let Some(mime_type) = mime_from_extension(path).map(str::to_string) else {
         return Err(AppError::Decode(format!(
             "unknown extension: {}",
@@ -244,50 +280,44 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
         return Ok(meta);
     }
 
-    // HEIC/HEIF fast path: read the file ONCE and derive both dimensions and
-    // EXIF from the ISOBMFF container bytes. This dodges two costly things the
-    // generic branch below would do for HEIC:
-    //   - `image::image_dimensions` fails (the `image` crate has no heif
-    //     feature) → falls back to `Pixbuf::from_file`, a *full libheif decode*
-    //     (~100+ ms/file; a prebuilt C library, so --release does not help) just
-    //     to learn width/height. The dimensions actually live in the `ispe`
-    //     property — a few bytes, no decode needed.
-    //   - `read_exif` would then `std::fs::read` the whole file a SECOND time.
-    // For a few hundred phone HEICs this was ~110s of a ~120s scan-extract.
-    let heic_bytes: Option<Vec<u8>> = if meta.mime_type == "image/heic" {
-        std::fs::read(path).ok()
+    if meta.mime_type == "image/heic" {
+        // HEIC fast path: read the file ONCE (whole — its Exif item can be
+        // anywhere) and derive both dimensions and EXIF from the ISOBMFF bytes.
+        // This avoids the generic branch's two costly HEIC mistakes:
+        //   - `image::image_dimensions` fails (no heif feature) → falls back to
+        //     `Pixbuf::from_file`, a full libheif decode (~100+ ms/file; a
+        //     prebuilt C library, so --release does not help) just for width/
+        //     height. The dimensions live in the `ispe` property — a few bytes.
+        //   - `read_exif` would `std::fs::read` the whole file a SECOND time.
+        // `head` is intentionally not used here: 256 KiB is not enough.
+        let bytes = std::fs::read(path).ok();
+        if let Some(data) = &bytes {
+            if let Some((w, h)) = extract_heic_dims(data) {
+                meta.width = Some(w);
+                meta.height = Some(h);
+            } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
+                // No `ispe` (rare/malformed): last-resort decode so we still
+                // record a dimension rather than none.
+                meta.width = Some(buf.width() as u32);
+                meta.height = Some(buf.height() as u32);
+            }
+            if let Ok(exif) = read_heic_exif_from_bytes(data) {
+                meta.taken_at = exif_datetime(&exif);
+                meta.camera = ExifSummary::from_exif(&exif);
+            }
+        }
     } else {
-        None
-    };
-
-    // 1. Dimensions.
-    if let Some(data) = &heic_bytes {
-        if let Some((w, h)) = extract_heic_dims(data) {
+        // Standard image: dimensions + EXIF from the shared head when present,
+        // falling back to a path read if the head is too short (pathological
+        // JPEG whose SOF sits past 256 KiB, or an EXIF APP1 beyond the head).
+        if let Some((w, h)) = dims_from(path, head) {
             meta.width = Some(w);
             meta.height = Some(h);
-        } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
-            // No `ispe` (rare/malformed): last-resort decode so we still record
-            // a dimension rather than none.
-            meta.width = Some(buf.width() as u32);
-            meta.height = Some(buf.height() as u32);
         }
-    } else if let Ok(dim) = image::image_dimensions(path) {
-        meta.width = Some(dim.0);
-        meta.height = Some(dim.1);
-    } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
-        meta.width = Some(buf.width() as u32);
-        meta.height = Some(buf.height() as u32);
-    }
-
-    // 2. EXIF DateTimeOriginal + a curated camera summary. HEIC reuses the
-    //    already-read bytes; everything else streams via `read_exif`.
-    let exif_result = match &heic_bytes {
-        Some(data) => read_heic_exif_from_bytes(data),
-        None => read_exif(path),
-    };
-    if let Ok(exif) = exif_result {
-        meta.taken_at = exif_datetime(&exif);
-        meta.camera = ExifSummary::from_exif(&exif);
+        if let Ok(exif) = exif_from(path, head) {
+            meta.taken_at = exif_datetime(&exif);
+            meta.camera = ExifSummary::from_exif(&exif);
+        }
     }
 
     tracing::debug!(
@@ -302,6 +332,44 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
     );
 
     Ok(meta)
+}
+
+/// Dimensions for a standard image: from the shared head when available, then a
+/// streaming `image_dimensions(path)` read, then a last-resort pixbuf decode.
+fn dims_from(path: &Path, head: Option<&[u8]>) -> Option<(u32, u32)> {
+    if let Some(h) = head {
+        if let Some(d) = image_dims_from_cursor(h) {
+            return Some(d);
+        }
+    }
+    image::image_dimensions(path)
+        .ok()
+        .or_else(|| pixbuf_dims(path))
+}
+
+/// EXIF for a standard image: parsed from the shared head when present, else a
+/// streaming `read_exif(path)` read.
+fn exif_from(path: &Path, head: Option<&[u8]>) -> Result<exif::Exif> {
+    if let Some(h) = head {
+        if let Ok(exif) = exif::Reader::new().read_from_container(&mut std::io::Cursor::new(h)) {
+            return Ok(exif);
+        }
+    }
+    read_exif(path)
+}
+
+fn image_dims_from_cursor(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
+fn pixbuf_dims(path: &Path) -> Option<(u32, u32)> {
+    gdk_pixbuf::Pixbuf::from_file(path)
+        .ok()
+        .map(|buf| (buf.width() as u32, buf.height() as u32))
 }
 
 fn read_exif(path: &Path) -> Result<exif::Exif> {

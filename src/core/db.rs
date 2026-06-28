@@ -184,6 +184,92 @@ pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
     Ok(conn.last_insert_rowid())
 }
 
+/// 批量 upsert：把 `items` 全部写进**同一个事务**后一次性提交。
+///
+/// 这是冷扫描（十万级文件）的关键：autocommit 下每行 INSERT 各自 fsync 一次，
+/// 数万次 fsync 就是数十秒；放进一个事务则整批只付一次提交开销，把 DB 写入从
+/// 「秒级每万行」降到「毫秒级每万行」。逐项按 uri 冲突 → UPDATE（并清 trashed_at，
+/// 与单行 [`crate::core::backend::local::LocalBackend::upsert`] 同口径），其余
+/// INSERT。返回每个成功写入行的完整物化视图（顺序与输入一致）；单行出错只跳过该行、
+/// 计入返回外的差异，不影响同批其余行的提交。
+pub fn upsert_media_items_batch(pool: &DbPool, items: &[NewMediaItem]) -> Result<Vec<MediaItem>> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM media_items WHERE uri = ?1",
+                [&item.uri],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let id = if let Some(id) = existing {
+            tx.execute(
+                "UPDATE media_items
+                 SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
+                     media_subkind=?6, media_attributes=?7, width=?8, height=?9,
+                     video_duration_secs=?10, taken_at=?11, file_mtime=?12,
+                     file_size=?13, blake3_hash=?14,
+                     trashed_at=NULL, indexed_at=unixepoch()
+                 WHERE id=?1",
+                rusqlite::params![
+                    id,
+                    item.path.to_string_lossy(),
+                    item.folder_path.to_string_lossy(),
+                    item.mime_type,
+                    media_kind_db_value(&item.mime_type),
+                    item.media_subkind,
+                    item.media_attributes,
+                    item.width,
+                    item.height,
+                    item.video_duration_secs,
+                    item.taken_at.map(ts),
+                    ts(item.file_mtime),
+                    item.file_size as i64,
+                    item.blake3_hash,
+                ],
+            )?;
+            id
+        } else {
+            tx.execute(
+                "INSERT INTO media_items
+                    (uri, path, folder_path, mime_type, media_kind, media_subkind,
+                     media_attributes, width, height, video_duration_secs, taken_at,
+                     file_mtime, file_size, blake3_hash, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())",
+                rusqlite::params![
+                    item.uri,
+                    item.path.to_string_lossy(),
+                    item.folder_path.to_string_lossy(),
+                    item.mime_type,
+                    media_kind_db_value(&item.mime_type),
+                    item.media_subkind,
+                    item.media_attributes,
+                    item.width,
+                    item.height,
+                    item.video_duration_secs,
+                    item.taken_at.map(ts),
+                    ts(item.file_mtime),
+                    item.file_size as i64,
+                    item.blake3_hash,
+                ],
+            )?;
+            tx.last_insert_rowid()
+        };
+        out.push(tx.query_row(
+            "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items WHERE id = ?1",
+            [id],
+            row_to_media_item,
+        )?);
+    }
+    tx.commit()?;
+    Ok(out)
+}
+
 /// 根据 id 查询
 pub fn get_media_item(pool: &DbPool, id: i64) -> Result<MediaItem> {
     let conn = pool.get()?;

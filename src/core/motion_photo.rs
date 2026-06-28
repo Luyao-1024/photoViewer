@@ -139,7 +139,25 @@ pub fn detect(path: &Path) -> Option<MotionPhotoInfo> {
     file.take(HEAD_SCAN_CAP)
         .read_to_end(&mut head)
         .ok()?;
-    let xmp = find_xmp_payload_range(&head)?;
+    detect_in_head(path, &head, file_len)
+}
+
+/// 与 [`detect`] 相同，但复用调用方已读好的头部（扫描热路径把一次 256KB 读取同时
+/// 喂给 dims + EXIF + 动图检测）。`head` 只需覆盖 JPEG 元数据段，按段结构扫描，遇
+/// SOFn/SOS 即止——行为与 [`detect`] 的 128KB 上限一致。非 JPEG 文件不触碰文件、直接
+/// 返回 `None`。
+pub fn detect_with_head(path: &Path, head: &[u8], file_len: u64) -> Option<MotionPhotoInfo> {
+    if !is_motion_candidate_mime(path) {
+        return None;
+    }
+    detect_in_head(path, head, file_len)
+}
+
+/// Shared body of [`detect`] / [`detect_with_head`]: locate the XMP APP1 segment
+/// in `head`, check for a motion marker, then parse the offset and verify the
+/// trailing MP4 with one 8-byte read.
+fn detect_in_head(path: &Path, head: &[u8], file_len: u64) -> Option<MotionPhotoInfo> {
+    let xmp = find_xmp_payload_range(head)?;
     let xmp_bytes = &head[xmp];
     if !contains_motion_marker(xmp_bytes) {
         return None;
