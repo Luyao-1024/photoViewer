@@ -169,7 +169,7 @@
     "setting.page.title": "Settings",
     "setting.section.language": "Language",
     "setting.section.language_description": "Choose the interface language for the app.",
-    "setting.lang.zh": "Chinese (Simplified)",
+    "setting.lang.zh": "中文",
     "setting.lang.en": "English",
     "setting.locale.saved": "Language setting saved",
     "setting.locale.failed": "Save language failed",
