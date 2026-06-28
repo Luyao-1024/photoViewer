@@ -31,11 +31,16 @@ Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded. The scanner and database still contain/import the full library, but
 `apply_to_media_list::UI_MEDIA_LIST_CAP` limits the live `gio::ListStore` used
-by browsing/viewer UI, and `MediaGrid` caps rendered tile widgets per rebuild.
-Do not let GTK model or FlowBox children grow with the full on-disk library;
-doing so drives GB-level memory use and blocks the main thread before the app is
-usable. A future virtualized grid or explicit pagination can replace these
-safety caps.
+by browsing/viewer UI to the newest 30 media rows, and `MediaGrid` caps
+rendered tile widgets per rebuild to the same order of magnitude. `PhotosPage`
+also initializes only the visible Day grid as active; Year/Month grids defer
+their FlowBox/tile construction until the user switches to them. Startup scan
+batches stop mutating the GTK model once that cap is filled, so the full scanner
+can continue indexing the database without repeatedly rebuilding visible tiles.
+Do not let GTK model, hidden views, or FlowBox children grow with the full
+on-disk library; doing so drives GB-level memory use and blocks the main thread
+before the app is usable. A future virtualized grid or explicit pagination can
+replace these safety caps.
 
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 

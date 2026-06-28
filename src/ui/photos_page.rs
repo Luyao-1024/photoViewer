@@ -218,7 +218,7 @@ impl PhotosPage {
         };
 
         // Three independent MediaGrid instances — one per grouping mode.
-        let year_grid = MediaGrid::new(
+        let year_grid = MediaGrid::new_with_initial_active(
             media_list.clone(),
             GroupBy::Year,
             loader.clone(),
@@ -229,8 +229,9 @@ impl PhotosPage {
             on_favorite.clone(),
             on_query_favorite_state.clone(),
             true,
+            false,
         );
-        let month_grid = MediaGrid::new(
+        let month_grid = MediaGrid::new_with_initial_active(
             media_list.clone(),
             GroupBy::Month,
             loader.clone(),
@@ -241,8 +242,9 @@ impl PhotosPage {
             on_favorite.clone(),
             on_query_favorite_state.clone(),
             true,
+            false,
         );
-        let day_grid = MediaGrid::new(
+        let day_grid = MediaGrid::new_with_initial_active(
             media_list,
             GroupBy::Day,
             loader,
@@ -252,6 +254,7 @@ impl PhotosPage {
             on_move_to_trash,
             on_favorite,
             on_query_favorite_state,
+            true,
             true,
         );
 

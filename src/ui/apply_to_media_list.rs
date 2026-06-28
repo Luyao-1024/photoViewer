@@ -5,7 +5,7 @@
 //! data source backing the three `MediaGrid` instances on `PhotosPage`.
 
 use crate::core::media::MediaItem;
-use crate::core::media_change_notifier::MediaChangeEvent;
+use crate::core::media_change_notifier::{MediaChangeEvent, MediaChangeSource};
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -15,7 +15,7 @@ use gtk4::prelude::*;
 /// The database and scanner still index the full library. This cap limits the
 /// live `gio::ListStore` that drives grid rebuilds and viewer navigation so a
 /// very large library does not grow the process memory without bound.
-pub const UI_MEDIA_LIST_CAP: usize = 1_000;
+pub const UI_MEDIA_LIST_CAP: usize = 30;
 
 /// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
 /// `db::list_all_media`: photo sort time descending, then id descending.
@@ -26,8 +26,8 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) 
         MediaChangeEvent::Upserted(item) => {
             apply_upserted_item(list, item);
         }
-        MediaChangeEvent::UpsertedBatch { items, .. } => {
-            apply_upserted_batch(list, items);
+        MediaChangeEvent::UpsertedBatch { source, items } => {
+            apply_upserted_batch(list, source, items);
         }
         MediaChangeEvent::Removed { uri } => {
             for i in 0..list.n_items() {
@@ -65,8 +65,21 @@ fn apply_upserted_item(list: &gtk::gio::ListStore, item: MediaItem) {
     trim_to_cap(list);
 }
 
-fn apply_upserted_batch(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
+fn apply_upserted_batch(
+    list: &gtk::gio::ListStore,
+    source: MediaChangeSource,
+    items: Vec<MediaItem>,
+) {
     if items.is_empty() {
+        return;
+    }
+    if source == MediaChangeSource::StartupScan && list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "UI_LIST_BATCH_MERGE skipped_startup_after_cap incoming_len={} list_len={}",
+            items.len(),
+            list.n_items()
+        );
         return;
     }
 
@@ -277,6 +290,38 @@ mod tests {
         );
 
         assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+    }
+
+    #[test]
+    fn startup_scan_batch_after_cap_does_not_rebuild_ui_model() {
+        let list = list_with(
+            (0..UI_MEDIA_LIST_CAP as i64)
+                .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
+                .collect(),
+        );
+        let first_uri = nth_uri(&list, 0);
+
+        apply_to_media_list(
+            &list,
+            MediaChangeEvent::UpsertedBatch {
+                source: crate::core::media_change_notifier::MediaChangeSource::StartupScan,
+                items: vec![item_at(
+                    10_000,
+                    "file:///tmp/newest-from-scan.jpg",
+                    2026,
+                    6,
+                    26,
+                    12,
+                )],
+            },
+        );
+
+        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+        assert_eq!(
+            nth_uri(&list, 0),
+            first_uri,
+            "startup scan batches after the UI cap is full should not churn visible rows"
+        );
     }
 
     #[test]

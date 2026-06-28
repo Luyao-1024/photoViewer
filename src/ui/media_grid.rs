@@ -67,7 +67,7 @@ use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
-const MAX_RENDERED_GRID_ITEMS: usize = 1_000;
+const MAX_RENDERED_GRID_ITEMS: usize = 30;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
@@ -201,7 +201,7 @@ fn spec_for_mode(mode: GroupBy) -> ViewSpec {
         },
         GroupBy::Day => ViewSpec {
             pixel_size: 270,
-            thumb_size: ThumbnailSize::Large,
+            thumb_size: ThumbnailSize::Medium,
             mode,
         },
     }
@@ -223,8 +223,37 @@ impl MediaGrid {
         on_query_favorite_state: Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>,
         enable_context_menu: bool,
     ) -> Self {
+        Self::new_with_initial_active(
+            media_list,
+            mode,
+            loader,
+            on_activate,
+            on_background_changed,
+            on_add_to_album,
+            on_move_to_trash,
+            on_set_favorite,
+            on_query_favorite_state,
+            enable_context_menu,
+            true,
+        )
+    }
+
+    pub fn new_with_initial_active(
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        on_activate: Rc<dyn Fn(u32)>,
+        on_background_changed: Rc<dyn Fn()>,
+        on_add_to_album: Rc<dyn Fn(Vec<u32>)>,
+        on_move_to_trash: Rc<dyn Fn(Vec<u32>)>,
+        on_set_favorite: Rc<dyn Fn(Vec<u32>, bool)>,
+        on_query_favorite_state: Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>,
+        enable_context_menu: bool,
+        initial_active: bool,
+    ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
+        obj.imp().active.set(initial_active);
         obj.imp()
             .loader
             .set(loader)
@@ -264,7 +293,11 @@ impl MediaGrid {
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
 
         crate::ui::grid_css::install();
-        obj.rebuild(media_list.clone(), mode);
+        if initial_active {
+            obj.rebuild(media_list.clone(), mode);
+        } else {
+            obj.imp().dirty_model.set(true);
+        }
         let weak = obj.downgrade();
         media_list.connect_items_changed(move |list, position, removed, added| {
             let Some(this) = weak.upgrade() else {
@@ -316,7 +349,7 @@ impl MediaGrid {
         self.imp().active.set(active);
         if active && self.imp().dirty_model.replace(false) {
             if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
-                self.schedule_rebuild(media_list);
+                self.rebuild_immediately(media_list);
             }
         }
     }
@@ -1772,6 +1805,45 @@ mod tests {
             tile_count(&grid),
             1,
             "MediaGrid must drop stale thumbnails when the shared ListStore changes"
+        );
+    }
+
+    #[gtk::test]
+    fn inactive_grid_defers_initial_tile_build_until_activated() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+
+        let grid = MediaGrid::new_with_initial_active(
+            media_list,
+            GroupBy::Month,
+            loader,
+            Rc::new(|_| {}),
+            Rc::new(|| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_, _| {}),
+            Rc::new(|_| FavoriteMenuState::default()),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            tile_count(&grid),
+            0,
+            "inactive grids should not build hidden FlowBox tiles at startup"
+        );
+
+        grid.set_active(true);
+
+        assert_eq!(
+            tile_count(&grid),
+            2,
+            "activating a dirty grid should build tiles from the current model"
         );
     }
 

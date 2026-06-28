@@ -181,7 +181,7 @@ pub struct ThumbnailLoader {
 
 /// 内存 LRU 容量。Large 档单张 texture 可达数 MB；过大的常驻缓存会在大图库滚动
 /// 时把进程推到 GB 级内存。磁盘缓存仍保留 2GB 上限，内存只保留近期视口附近。
-const MEM_CACHE_CAP: usize = 96;
+const MEM_CACHE_CAP: usize = 16;
 
 impl ThumbnailLoader {
     /// 工作项队列容量。配合在途去重后，这里只存「彼此不同且未缓存」的项；
