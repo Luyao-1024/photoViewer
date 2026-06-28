@@ -244,12 +244,34 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
         return Ok(meta);
     }
 
-    // 1. Read file header to get dimensions (gdk-pixbuf handles JPEG/PNG/WebP,
-    //    with image::image_dimensions as a fallback that does not upscale).
-    //    HEIC/HEIF may fail here when libheif isn't available via gdk-pixbuf
-    //    loaders (e.g. outside Flatpak); dimension failure is non-fatal — we
-    //    still want EXIF and other metadata.
-    if let Ok(dim) = image::image_dimensions(path) {
+    // HEIC/HEIF fast path: read the file ONCE and derive both dimensions and
+    // EXIF from the ISOBMFF container bytes. This dodges two costly things the
+    // generic branch below would do for HEIC:
+    //   - `image::image_dimensions` fails (the `image` crate has no heif
+    //     feature) → falls back to `Pixbuf::from_file`, a *full libheif decode*
+    //     (~100+ ms/file; a prebuilt C library, so --release does not help) just
+    //     to learn width/height. The dimensions actually live in the `ispe`
+    //     property — a few bytes, no decode needed.
+    //   - `read_exif` would then `std::fs::read` the whole file a SECOND time.
+    // For a few hundred phone HEICs this was ~110s of a ~120s scan-extract.
+    let heic_bytes: Option<Vec<u8>> = if meta.mime_type == "image/heic" {
+        std::fs::read(path).ok()
+    } else {
+        None
+    };
+
+    // 1. Dimensions.
+    if let Some(data) = &heic_bytes {
+        if let Some((w, h)) = extract_heic_dims(data) {
+            meta.width = Some(w);
+            meta.height = Some(h);
+        } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
+            // No `ispe` (rare/malformed): last-resort decode so we still record
+            // a dimension rather than none.
+            meta.width = Some(buf.width() as u32);
+            meta.height = Some(buf.height() as u32);
+        }
+    } else if let Ok(dim) = image::image_dimensions(path) {
         meta.width = Some(dim.0);
         meta.height = Some(dim.1);
     } else if let Ok(buf) = gdk_pixbuf::Pixbuf::from_file(path) {
@@ -257,8 +279,13 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
         meta.height = Some(buf.height() as u32);
     }
 
-    // 2. Try to read EXIF DateTimeOriginal + a curated camera summary.
-    if let Ok(exif) = read_exif(path) {
+    // 2. EXIF DateTimeOriginal + a curated camera summary. HEIC reuses the
+    //    already-read bytes; everything else streams via `read_exif`.
+    let exif_result = match &heic_bytes {
+        Some(data) => read_heic_exif_from_bytes(data),
+        None => read_exif(path),
+    };
+    if let Ok(exif) = exif_result {
         meta.taken_at = exif_datetime(&exif);
         meta.camera = ExifSummary::from_exif(&exif);
     }
@@ -278,39 +305,28 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
 }
 
 fn read_exif(path: &Path) -> Result<exif::Exif> {
-    // HEIC/HEIF needs a dedicated path: kamadak-exif's `read_from_container`
-    // *can* parse the ISOBMFF container, but caps the Exif item at
-    // `MAX_EXIF_SIZE = 65535`. Camera phones (iPhone, many Androids) embed a
-    // high-resolution JPEG thumbnail inside the Exif item, pushing it to several
-    // hundred KB, so kamadak-exif rejects those files with "Exif data too large"
-    // and EXIF silently comes back empty. We parse the container ourselves
-    // (no size cap) and hand the raw TIFF block to `Reader::read_raw`. See
-    // `extract_heic_exif_tiff`.
-    if mime_from_extension(path) == Some("image/heic") {
-        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC path detected, parsing ISOBMFF...");
-        let data = std::fs::read(path)?;
-        let tiff = extract_heic_exif_tiff(&data)
-            .ok_or_else(|| AppError::Exif("no Exif item in HEIC".into()))?;
-        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC tiff extracted, {} bytes", tiff.len());
-        let exif = exif::Reader::new()
-            .read_raw(tiff)
-            .map_err(|e| AppError::Exif(e.to_string()))?;
-        let field_count = exif.fields().count();
-        tracing::debug!(target: crate::core::log_targets::METADATA, "read_exif: HEIC parsed OK, {} EXIF fields", field_count);
-        return Ok(exif);
-    }
-
+    // Standard (non-HEIC) path: stream the file and let kamadak-exif find the
+    // EXIF segment. HEIC is handled in `extract` via `read_heic_exif_from_bytes`
+    // — it parses the ISOBMFF container itself (bypassing kamadak-exif's 64 KB
+    // Exif-item cap, which phone HEICs with embedded thumbnails exceed) and
+    // reuses the bytes already read for dimensions, so the file is read once.
     let file = std::fs::File::open(path)?;
     let mut bufreader = std::io::BufReader::new(&file);
     let exif = exif::Reader::new()
         .read_from_container(&mut bufreader)
         .map_err(|e| AppError::Exif(e.to_string()))?;
-    tracing::debug!(
-        target: crate::core::log_targets::METADATA,
-        "read_exif: standard path OK, {} fields",
-        exif.fields().count()
-    );
     Ok(exif)
+}
+
+/// Parse the EXIF block of a HEIC/HEIF file from already-read bytes (no extra
+/// I/O). `extract` calls this so the single `std::fs::read` feeds both
+/// dimensions (`extract_heic_dims`) and EXIF.
+fn read_heic_exif_from_bytes(data: &[u8]) -> Result<exif::Exif> {
+    let tiff = extract_heic_exif_tiff(data)
+        .ok_or_else(|| AppError::Exif("no Exif item in HEIC".into()))?;
+    exif::Reader::new()
+        .read_raw(tiff)
+        .map_err(|e| AppError::Exif(e.to_string()))
 }
 
 // ── EXIF value helpers ──────────────────────────────────────────────────────
@@ -424,21 +440,134 @@ fn gps_dms(exif: &exif::Exif, tag: exif::Tag) -> Option<(u32, u32, f64)> {
 // an `"Exif\0\0"` prefix, as Apple writes it); we strip the leading
 // `4 + tiff_header_offset` bytes and return the raw TIFF for `read_raw`.
 
-/// Extract the raw TIFF block of the first `Exif` item in a HEIC/HEIF file,
-/// or `None` if the file has no such item. Returns enough for
-/// `exif::Reader::read_raw` regardless of item size (no 64 KB cap).
-pub fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
-    // Walk top-level boxes to the `meta` box.
+/// Body of the top-level `meta` box, with the box header stripped (so it begins
+/// at the FullBox version+flags). Shared by EXIF and dimension extraction.
+fn find_meta_body(data: &[u8]) -> Option<&[u8]> {
     let mut off = 0usize;
     while let Some((size, typ, hdr)) = box_header(data, off) {
         if &typ == b"meta" {
-            let body = data.get(off + hdr..off + size)?;
-            return parse_meta(body, data);
+            return data.get(off + hdr..off + size);
         }
         off = match size {
             0 => break, // box extends to EOF
             _ => off.checked_add(size)?,
         };
+    }
+    None
+}
+
+/// Extract the raw TIFF block of the first `Exif` item in a HEIC/HEIF file,
+/// or `None` if the file has no such item. Returns enough for
+/// `exif::Reader::read_raw` regardless of item size (no 64 KB cap).
+pub fn extract_heic_exif_tiff(data: &[u8]) -> Option<Vec<u8>> {
+    let body = find_meta_body(data)?;
+    parse_meta(body, data)
+}
+
+/// Primary-image dimensions of a HEIC/HEIF from the ISOBMFF `ispe` property,
+/// **without decoding the image**. Walks `meta` → `pitm` (primary item id) →
+/// `iprp` → (`ipco` property list, `ipma` associations) and returns the
+/// `(width, height)` of the primary item's `ispe`. Returns `None` if the
+/// container lacks/omits it, so callers can fall back to a decode.
+pub fn extract_heic_dims(data: &[u8]) -> Option<(u32, u32)> {
+    let body = find_meta_body(data)?;
+    let mut cur = Cur::new(body.get(4..)?); // skip meta FullBox version+flags
+    let mut primary_id: Option<u32> = None;
+    let mut ipco: Option<&[u8]> = None;
+    let mut ipma: Option<&[u8]> = None;
+    while cur.remaining() >= 8 {
+        let child = cur.box_at_start()?;
+        let typ: [u8; 4] = child.get(4..8)?.try_into().ok()?;
+        match &typ {
+            b"pitm" => primary_id = parse_pitm(child),
+            b"iprp" => {
+                // iprp holds ipco (property list) + ipma (associations).
+                let mut p = Cur::new(child.get(8..)?); // skip iprp box header
+                while p.remaining() >= 8 {
+                    let prop = p.box_at_start()?;
+                    let pt: [u8; 4] = prop.get(4..8)?.try_into().ok()?;
+                    match &pt {
+                        b"ipco" => ipco = Some(prop),
+                        b"ipma" => ipma = Some(prop),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let primary = primary_id?;
+    // ipco properties are 1-based in ipma; store 0-based and subtract.
+    let props = parse_ipco_properties(ipco?)?;
+    let indices = parse_ipma_for_item(ipma?, primary)?;
+    for idx in indices {
+        let Some(prop_idx) = usize::try_from(idx).ok().and_then(|i| i.checked_sub(1)) else {
+            continue; // index 0 means "no property"
+        };
+        if let Some(prop) = props.get(prop_idx) {
+            // ispe FullBox: 8 hdr + 4 version/flags + u32 width + u32 height.
+            if prop.len() >= 20 && &prop[4..8] == b"ispe" {
+                let w = u32_at(prop, 12)?;
+                let h = u32_at(prop, 16)?;
+                return Some((w, h));
+            }
+        }
+    }
+    None
+}
+
+/// Primary item id from a `pitm` box (whole box incl. header).
+fn parse_pitm(boxb: &[u8]) -> Option<u32> {
+    let mut e = Cur::new(boxb.get(8..)?); // skip box header
+    let (version, _) = e.fullbox()?;
+    if version == 0 {
+        Some(u32::from(e.u16()?))
+    } else {
+        e.u32()
+    }
+}
+
+/// Property boxes listed in an `ipco` box, in file order. `ipma` references
+/// them 1-based. Each returned slice is the whole property box incl. its header.
+fn parse_ipco_properties(boxb: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut cur = Cur::new(boxb.get(8..)?); // skip ipco box header
+    let mut props = Vec::new();
+    while cur.remaining() >= 8 {
+        props.push(cur.box_at_start()?);
+    }
+    Some(props)
+}
+
+/// 1-based property indices associated with `want_id` in an `ipma` box.
+fn parse_ipma_for_item(boxb: &[u8], want_id: u32) -> Option<Vec<u32>> {
+    let mut cur = Cur::new(boxb.get(8..)?); // skip box header
+    let (version, flags) = cur.fullbox()?;
+    let entry_count = cur.u32()? as usize;
+    for _ in 0..entry_count {
+        let item_id = if version < 1 {
+            u32::from(cur.u16()?)
+        } else {
+            cur.u32()?
+        };
+        let assoc_count = cur.take(1)?[0] as usize;
+        let want = item_id == want_id;
+        let mut indices = Vec::new();
+        for _ in 0..assoc_count {
+            let idx = if flags & 1 != 0 {
+                // 1 essential bit + 15-bit property index.
+                (cur.u16()? & 0x7fff) as u32
+            } else {
+                // 1 essential bit + 7-bit property index.
+                (cur.take(1)?[0] & 0x7f) as u32
+            };
+            if want {
+                indices.push(idx);
+            }
+        }
+        if want {
+            return Some(indices);
+        }
     }
     None
 }
@@ -1070,6 +1199,94 @@ mod tests {
             exif_datetime(&exif).is_some(),
             "DateTimeOriginal should be present"
         );
+    }
+
+    #[test]
+    fn heic_dims_read_from_ispe_without_decode() {
+        // Minimal ISOBMFF: a leading ftyp, then meta{ pitm(primary=1),
+        // iprp{ ipco[ ispe(1280,720) ], ipma(1 -> property 1) } }. No image
+        // data, no decode — proves extract_heic_dims walks the property boxes.
+        fn box_with(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let size = (8 + body.len()) as u32;
+            let mut b = Vec::with_capacity(8 + body.len());
+            b.extend_from_slice(&size.to_be_bytes());
+            b.extend_from_slice(typ);
+            b.extend_from_slice(body);
+            b
+        }
+        // ispe FullBox: version/flags(0) + u32 width + u32 height.
+        let mut ispe = Vec::new();
+        ispe.extend_from_slice(&0u32.to_be_bytes());
+        ispe.extend_from_slice(&1280u32.to_be_bytes());
+        ispe.extend_from_slice(&720u32.to_be_bytes());
+        let ispe_box = box_with(b"ispe", &ispe);
+        let ipco = box_with(b"ipco", &ispe_box);
+        // ipma: fullbox(v0, flags=0) + entry_count=1 + item_id=1 + assoc_count=1
+        // + assoc=1 (essential=0, 7-bit index=1, since flags bit0 == 0).
+        let mut ipma_body = Vec::new();
+        ipma_body.extend_from_slice(&0u32.to_be_bytes()); // version+flags
+        ipma_body.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+        ipma_body.extend_from_slice(&1u16.to_be_bytes()); // item_id
+        ipma_body.push(1); // assoc_count
+        ipma_body.push(1); // assoc: essential=0, index=1
+        let ipma = box_with(b"ipma", &ipma_body);
+        let mut iprp_body = Vec::new();
+        iprp_body.extend_from_slice(&ipco);
+        iprp_body.extend_from_slice(&ipma);
+        let iprp = box_with(b"iprp", &iprp_body);
+        let mut pitm_body = Vec::new();
+        pitm_body.extend_from_slice(&0u32.to_be_bytes()); // version+flags
+        pitm_body.extend_from_slice(&1u16.to_be_bytes()); // item_id
+        let pitm = box_with(b"pitm", &pitm_body);
+        let mut meta_body = Vec::new();
+        meta_body.extend_from_slice(&0u32.to_be_bytes()); // meta fullbox version+flags
+        meta_body.extend_from_slice(&pitm);
+        meta_body.extend_from_slice(&iprp);
+        let meta = box_with(b"meta", &meta_body);
+        let ftyp = box_with(b"ftyp", b"\0\0\0\0mif1\0\0\0\0");
+        let mut file = Vec::new();
+        file.extend_from_slice(&ftyp);
+        file.extend_from_slice(&meta);
+
+        assert_eq!(extract_heic_dims(&file), Some((1280, 720)));
+    }
+
+    #[test]
+    fn heic_dims_none_when_ispe_absent() {
+        // meta with pitm + iprp{ ipco[hvc1], ipma } but NO ispe: returns None so
+        // the caller can fall back to a decode instead of emitting wrong dims.
+        fn box_with(typ: &[u8; 4], body: &[u8]) -> Vec<u8> {
+            let size = (8 + body.len()) as u32;
+            let mut b = Vec::with_capacity(8 + body.len());
+            b.extend_from_slice(&size.to_be_bytes());
+            b.extend_from_slice(typ);
+            b.extend_from_slice(body);
+            b
+        }
+        let hvc1 = box_with(b"hvc1", &[0u8; 4]);
+        let ipco = box_with(b"ipco", &hvc1);
+        let mut ipma_body = Vec::new();
+        ipma_body.extend_from_slice(&0u32.to_be_bytes());
+        ipma_body.extend_from_slice(&1u32.to_be_bytes());
+        ipma_body.extend_from_slice(&1u16.to_be_bytes());
+        ipma_body.push(1);
+        ipma_body.push(1);
+        let ipma = box_with(b"ipma", &ipma_body);
+        let mut iprp_body = Vec::new();
+        iprp_body.extend_from_slice(&ipco);
+        iprp_body.extend_from_slice(&ipma);
+        let iprp = box_with(b"iprp", &iprp_body);
+        let mut pitm_body = Vec::new();
+        pitm_body.extend_from_slice(&0u32.to_be_bytes());
+        pitm_body.extend_from_slice(&1u16.to_be_bytes());
+        let pitm = box_with(b"pitm", &pitm_body);
+        let mut meta_body = Vec::new();
+        meta_body.extend_from_slice(&0u32.to_be_bytes());
+        meta_body.extend_from_slice(&pitm);
+        meta_body.extend_from_slice(&iprp);
+        let meta = box_with(b"meta", &meta_body);
+
+        assert_eq!(extract_heic_dims(&meta), None);
     }
 
     /// Manual verification of `ffprobe`-based video metadata extraction.
