@@ -90,10 +90,12 @@ fn mode_selector_integration_suite() {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: chrono::Utc::now(),
         file_size: 100,
         blake3_hash: "hash".into(),
+        is_favorite: false,
         trashed_at: None,
     }));
     let tmp = tempfile::tempdir().unwrap();
@@ -148,10 +150,12 @@ fn mode_selector_integration_suite() {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: chrono::Utc::now(),
         file_size: 100,
         blake3_hash: "hash2".into(),
+        is_favorite: false,
         trashed_at: None,
     }));
     assert_eq!(

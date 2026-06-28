@@ -53,7 +53,7 @@ pub fn is_supported_media_path(path: &Path) -> bool {
 }
 
 /// 单张媒体项的完整元数据
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MediaItem {
     pub id: i64,
     pub uri: String,
@@ -64,10 +64,12 @@ pub struct MediaItem {
     pub media_attributes: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub video_duration_secs: Option<f64>,
     pub taken_at: Option<DateTime<Utc>>,
     pub file_mtime: DateTime<Utc>,
     pub file_size: u64,
     pub blake3_hash: String,
+    pub is_favorite: bool,
     pub trashed_at: Option<DateTime<Utc>>,
 }
 
@@ -111,6 +113,7 @@ pub struct NewMediaItem {
     pub media_attributes: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub video_duration_secs: Option<f64>,
     pub taken_at: Option<DateTime<Utc>>,
     pub file_mtime: DateTime<Utc>,
     pub file_size: u64,
@@ -128,6 +131,7 @@ impl From<&MediaItem> for NewMediaItem {
             media_attributes: item.media_attributes.clone(),
             width: item.width,
             height: item.height,
+            video_duration_secs: item.video_duration_secs,
             taken_at: item.taken_at,
             file_mtime: item.file_mtime,
             file_size: item.file_size,
@@ -151,10 +155,12 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(1920),
             height: Some(1080),
+            video_duration_secs: None,
             taken_at: Some(Utc::now()),
             file_mtime: Utc::now(),
             file_size: 123_456,
             blake3_hash: "abc123".into(),
+            is_favorite: false,
             trashed_at: None,
         }
     }

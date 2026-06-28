@@ -26,6 +26,7 @@ fn make_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: Some(mtime),
         file_mtime: mtime,
         file_size: 1000,

@@ -228,10 +228,12 @@ fn assert_viewer_video_mode_disables_editing() {
         media_attributes: "{}".into(),
         width: None,
         height: None,
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: now,
         file_size: 8,
         blake3_hash: "hash".into(),
+        is_favorite: false,
         trashed_at: None,
     };
 
@@ -278,10 +280,12 @@ fn assert_viewer_motion_photo_mode_shows_play_button() {
         media_attributes: attrs,
         width: None,
         height: None,
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: now,
         file_size: 8,
         blake3_hash: "hash".into(),
+        is_favorite: false,
         trashed_at: None,
     };
 

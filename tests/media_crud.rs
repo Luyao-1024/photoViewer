@@ -19,6 +19,7 @@ fn sample_new_item() -> NewMediaItem {
         media_attributes: "{}".into(),
         width: Some(1920),
         height: Some(1080),
+        video_duration_secs: None,
         taken_at: Some(now),
         file_mtime: now,
         file_size: 100_000,
@@ -36,6 +37,27 @@ fn insert_and_get() {
     assert_eq!(item.uri, "file:///test/IMG_001.jpg");
     assert_eq!(item.width, Some(1920));
     assert_eq!(item.blake3_hash, "hash001");
+}
+
+#[test]
+fn insert_and_get_persists_video_duration_and_favorite_state() {
+    let pool = fresh_pool();
+    let mut item = sample_new_item();
+    item.uri = "file:///test/clip.mp4".into();
+    item.path = "/test/clip.mp4".into();
+    item.mime_type = "video/mp4".into();
+    item.width = Some(3840);
+    item.height = Some(2160);
+    item.video_duration_secs = Some(83.25);
+    item.blake3_hash = "video-hash".into();
+
+    let id = db::insert_media_item(&pool, &item).unwrap();
+    db::set_media_favorite(&pool, id, true).unwrap();
+
+    let persisted = db::get_media_item(&pool, id).unwrap();
+    assert!(persisted.is_video());
+    assert_eq!(persisted.video_duration_secs, Some(83.25));
+    assert!(persisted.is_favorite);
 }
 
 #[test]

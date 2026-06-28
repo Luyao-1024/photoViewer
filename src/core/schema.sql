@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     media_attributes TEXT   NOT NULL DEFAULT '{}',
     width           INTEGER,
     height          INTEGER,
+    video_duration_secs REAL,
     taken_at        INTEGER,
     file_mtime      INTEGER NOT NULL,
     file_size       INTEGER NOT NULL,

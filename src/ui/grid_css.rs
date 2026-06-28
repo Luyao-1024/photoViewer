@@ -437,6 +437,21 @@ box.mode-selector.on-light-background box.mode-dot,
   padding: 5px;
 }
 
+.thumb-video-duration {
+  color: white;
+  background: alpha(black, 0.50);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-weight: 700;
+  font-size: 10pt;
+  text-shadow: 0 1px 2px alpha(black, 0.75);
+}
+
+.thumb-favorite-badge {
+  color: white;
+  -gtk-icon-shadow: 0 1px 3px alpha(black, 0.72);
+}
+
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {

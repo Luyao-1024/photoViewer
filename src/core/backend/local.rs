@@ -163,6 +163,7 @@ impl LocalBackend {
                 .unwrap_or_else(MediaAttributes::standard_json),
             width: meta.width,
             height: meta.height,
+            video_duration_secs: meta.video.and_then(|v| v.duration_secs),
             taken_at: meta.taken_at,
             file_mtime: file_time_utc,
             file_size: file_meta.len(),
@@ -204,6 +205,7 @@ impl LocalBackend {
                 .unwrap_or_else(MediaAttributes::standard_json),
             width: meta.width,
             height: meta.height,
+            video_duration_secs: meta.video.and_then(|v| v.duration_secs),
             taken_at: meta.taken_at,
             file_mtime: file_time_utc,
             file_size: file_meta.len(),
@@ -256,7 +258,8 @@ impl LocalBackend {
                 "UPDATE media_items
                  SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
                      media_subkind=?6, media_attributes=?7, width=?8, height=?9,
-                     taken_at=?10, file_mtime=?11, file_size=?12, blake3_hash=?13,
+                     video_duration_secs=?10, taken_at=?11, file_mtime=?12,
+                     file_size=?13, blake3_hash=?14,
                      trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
@@ -269,6 +272,7 @@ impl LocalBackend {
                     item.media_attributes,
                     item.width,
                     item.height,
+                    item.video_duration_secs,
                     item.taken_at.map(|t| t.timestamp()),
                     item.file_mtime.timestamp(),
                     item.file_size as i64,
@@ -324,6 +328,7 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(64),
             height: Some(48),
+            video_duration_secs: None,
             taken_at: None,
             file_mtime: Utc::now(),
             file_size: std::fs::metadata(&path).unwrap().len(),

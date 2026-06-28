@@ -6,19 +6,40 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::Type;
 use rusqlite::OptionalExtension;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
+const REQUIRED_MEDIA_ITEM_COLUMNS: &[&str] = &[
+    "id",
+    "uri",
+    "path",
+    "folder_path",
+    "mime_type",
+    "media_kind",
+    "media_subkind",
+    "media_attributes",
+    "width",
+    "height",
+    "video_duration_secs",
+    "taken_at",
+    "file_mtime",
+    "file_size",
+    "blake3_hash",
+    "is_favorite",
+    "trashed_at",
+    "indexed_at",
+];
 
 /// 初始化数据库连接池；如不存在则创建并运行迁移。
 ///
 /// 若打开或迁移失败（DB 文件损坏 / 迁移 SQL 因不兼容报错），
 /// 删除 `.db` / `.db-wal` / `.db-shm` 后重新创建一次。应用尚未对外
-/// 发布，允许通过删库换取自愈。注意：本函数**不**主动比对列名/类型，
-/// 不会因"字段看上去不一致"就误删库——只有 SQLite 自身真正失败才会触发。
+/// 发布，允许通过删库换取自愈。默认只做「必要列」一致性校验：若缺关键列，
+/// 则触发重建。
 pub fn init_pool(path: &Path) -> Result<DbPool> {
     match try_open_and_migrate(path) {
         Ok(pool) => Ok(pool),
@@ -53,6 +74,7 @@ fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
         .build(manager)
         .map_err(AppError::from)?;
     run_migrations(&pool)?;
+    validate_media_schema(&pool)?;
     Ok(pool)
 }
 
@@ -79,6 +101,29 @@ fn remove_db_files(path: &Path) -> Result<()> {
 pub fn run_migrations(pool: &DbPool) -> Result<()> {
     let conn = pool.get()?;
     conn.execute_batch(SCHEMA_SQL)?;
+    Ok(())
+}
+
+fn validate_media_schema(pool: &DbPool) -> Result<()> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare("PRAGMA table_info(media_items)")?;
+    let existing: HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<HashSet<String>>>()?;
+
+    let mut missing = Vec::new();
+    for col in REQUIRED_MEDIA_ITEM_COLUMNS {
+        if !existing.contains(*col) {
+            missing.push(*col);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(AppError::Backend(format!(
+            "database schema mismatch: media_items missing required columns: {}",
+            missing.join(", ")
+        )));
+    }
+
     Ok(())
 }
 
@@ -116,9 +161,9 @@ pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
     conn.execute(
         "INSERT INTO media_items
             (uri, path, folder_path, mime_type, media_kind, media_subkind,
-             media_attributes, width, height, taken_at, file_mtime, file_size,
-             blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, unixepoch())",
+             media_attributes, width, height, video_duration_secs, taken_at,
+             file_mtime, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())",
         rusqlite::params![
             item.uri,
             item.path.to_string_lossy(),
@@ -129,6 +174,7 @@ pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
             item.media_attributes,
             item.width,
             item.height,
+            item.video_duration_secs,
             item.taken_at.map(ts),
             ts(item.file_mtime),
             item.file_size as i64,
@@ -143,8 +189,8 @@ pub fn get_media_item(pool: &DbPool, id: i64) -> Result<MediaItem> {
     let conn = pool.get()?;
     let item = conn.query_row(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                media_attributes, width, height, taken_at, file_mtime,
-                file_size, blake3_hash, trashed_at
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items WHERE id = ?1",
         [id],
         row_to_media_item,
@@ -158,8 +204,8 @@ pub fn get_media_item_by_uri(pool: &DbPool, uri: &str) -> Result<Option<MediaIte
     let item = conn
         .query_row(
             "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                    media_attributes, width, height, taken_at, file_mtime,
-                    file_size, blake3_hash, trashed_at
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
              FROM media_items WHERE uri = ?1",
             [uri],
             row_to_media_item,
@@ -174,8 +220,8 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                media_attributes, width, height, taken_at, file_mtime,
-                file_size, blake3_hash, trashed_at
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
          WHERE trashed_at IS NULL
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
@@ -190,8 +236,8 @@ pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<Med
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                media_attributes, width, height, taken_at, file_mtime,
-                file_size, blake3_hash, trashed_at
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
          WHERE trashed_at IS NULL
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
@@ -325,8 +371,8 @@ pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                media_attributes, width, height, taken_at, file_mtime,
-                file_size, blake3_hash, trashed_at
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
          WHERE trashed_at IS NOT NULL
          ORDER BY trashed_at DESC",
@@ -382,9 +428,9 @@ pub fn list_favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
 }
 
 fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
-    let taken_at: Option<i64> = row.get(9)?;
-    let file_mtime: i64 = row.get(10)?;
-    let trashed_at: Option<i64> = row.get(13)?;
+    let taken_at: Option<i64> = row.get(10)?;
+    let file_mtime: i64 = row.get(11)?;
+    let trashed_at: Option<i64> = row.get(15)?;
 
     Ok(MediaItem {
         id: row.get(0)?,
@@ -396,10 +442,12 @@ fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
         media_attributes: row.get(6)?,
         width: row.get(7)?,
         height: row.get(8)?,
-        taken_at: optional_ts(taken_at, 9)?,
-        file_mtime: required_ts(file_mtime, 10)?,
-        file_size: row.get::<_, i64>(11)? as u64,
-        blake3_hash: row.get(12)?,
-        trashed_at: optional_ts(trashed_at, 13)?,
+        video_duration_secs: row.get(9)?,
+        taken_at: optional_ts(taken_at, 10)?,
+        file_mtime: required_ts(file_mtime, 11)?,
+        file_size: row.get::<_, i64>(12)? as u64,
+        blake3_hash: row.get(13)?,
+        is_favorite: row.get::<_, i64>(14)? == 1,
+        trashed_at: optional_ts(trashed_at, 15)?,
     })
 }

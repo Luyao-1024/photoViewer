@@ -318,10 +318,12 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(100),
             height: Some(100),
+            video_duration_secs: None,
             taken_at: Some(dt),
             file_mtime: dt,
             file_size: 100,
             blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
             trashed_at: None,
         }
     }

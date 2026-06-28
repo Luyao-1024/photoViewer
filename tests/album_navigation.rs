@@ -30,6 +30,7 @@ fn item(id: i64, folder: &str, file: &str) -> MediaItem {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: Some(
             chrono::Utc
                 .with_ymd_and_hms(2025, 3, id as u32, 12, 0, 0)
@@ -40,6 +41,7 @@ fn item(id: i64, folder: &str, file: &str) -> MediaItem {
             .unwrap(),
         file_size: 100,
         blake3_hash: format!("hash-{id}"),
+        is_favorite: false,
         trashed_at: None,
     }
 }

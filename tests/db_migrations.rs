@@ -57,6 +57,7 @@ fn media_items_has_media_kind_column_and_upsert_populates_it() {
             media_attributes: "{}".into(),
             width: None,
             height: None,
+            video_duration_secs: Some(12.5),
             taken_at: None,
             file_mtime: Utc::now(),
             file_size: 10,
@@ -98,6 +99,27 @@ fn media_items_has_subkind_and_attributes_columns() {
     assert!(
         columns.iter().any(|c| c == "media_attributes"),
         "media_items should persist extensible media attributes"
+    );
+}
+
+#[test]
+fn media_items_has_video_duration_column() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let pool = db::init_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(media_items)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+
+    assert!(
+        columns.iter().any(|c| c == "video_duration_secs"),
+        "media_items should persist video duration; got {columns:?}"
     );
 }
 
@@ -159,6 +181,57 @@ fn init_pool_regenerates_when_migration_fails() {
         .query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 0, "legacy row should be wiped after regeneration");
+}
+
+#[test]
+fn init_pool_regenerates_when_required_column_missing() {
+    // 旧库可能有 media_items，但只少了 `video_duration_secs` 这种新版本新增列。
+    // 迁移 SQL 自身不报错，若不做列校验就会“晚到”在查询阶段炸掉。
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE media_items (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                uri                 TEXT    UNIQUE NOT NULL,
+                path                TEXT    NOT NULL,
+                folder_path         TEXT    NOT NULL,
+                mime_type           TEXT    NOT NULL,
+                media_kind          TEXT    NOT NULL DEFAULT 'image',
+                media_subkind        TEXT    NOT NULL DEFAULT 'standard',
+                media_attributes     TEXT    NOT NULL DEFAULT '{}',
+                width               INTEGER,
+                height              INTEGER,
+                taken_at            INTEGER,
+                file_mtime          INTEGER NOT NULL,
+                file_size           INTEGER NOT NULL,
+                blake3_hash         TEXT    NOT NULL,
+                is_favorite         INTEGER NOT NULL DEFAULT 0,
+                trashed_at          INTEGER,
+                indexed_at          INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO media_items (uri, path, folder_path, mime_type, file_mtime, file_size, blake3_hash, indexed_at)
+             VALUES ('legacy', '/tmp/legacy.jpg', '/', 'image/jpeg', 0, 0, 'h', 0)",
+            [],
+        )
+        .unwrap();
+    }
+
+    let pool =
+        db::init_pool(&db_path).expect("init_pool should regenerate for missing required columns");
+    let conn = pool.get().unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "legacy rows should be removed when schema columns are missing"
+    );
 }
 
 #[test]

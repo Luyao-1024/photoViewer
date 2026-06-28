@@ -15,10 +15,12 @@ fn item(id: i64, year: i32, month: u32, day: u32) -> MediaItem {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: Some(dt),
         file_mtime: dt,
         file_size: 1000,
         blake3_hash: format!("h{id}"),
+        is_favorite: false,
         trashed_at: None,
     }
 }
@@ -35,10 +37,12 @@ fn item_without_taken_at(id: i64, year: i32, month: u32, day: u32) -> MediaItem 
         media_attributes: "{}".into(),
         width: None,
         height: None,
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: file_time,
         file_size: 0,
         blake3_hash: format!("hash-{id}"),
+        is_favorite: false,
         trashed_at: None,
     }
 }

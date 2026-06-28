@@ -24,6 +24,7 @@ fn make_new_item(path: PathBuf, folder: PathBuf, hash: &str) -> NewMediaItem {
         media_attributes: "{}".into(),
         width: Some(64),
         height: Some(48),
+        video_duration_secs: None,
         taken_at: Some(Utc::now()),
         file_mtime: Utc::now(),
         file_size: 1_024,

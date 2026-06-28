@@ -165,6 +165,7 @@ gtk::glib::wrapper! {
 struct ViewSpec {
     pixel_size: i32,
     thumb_size: ThumbnailSize,
+    mode: GroupBy,
 }
 
 fn spec_for_mode(mode: GroupBy) -> ViewSpec {
@@ -175,14 +176,17 @@ fn spec_for_mode(mode: GroupBy) -> ViewSpec {
         GroupBy::Year => ViewSpec {
             pixel_size: 90,
             thumb_size: ThumbnailSize::Small,
+            mode,
         },
         GroupBy::Month => ViewSpec {
             pixel_size: 180,
             thumb_size: ThumbnailSize::Medium,
+            mode,
         },
         GroupBy::Day => ViewSpec {
             pixel_size: 270,
             thumb_size: ThumbnailSize::Large,
+            mode,
         },
     }
 }
@@ -1059,6 +1063,8 @@ pub mod square_tile {
             /// 仅在选中时可见。见 grid_css 的 .thumb-checkmark 规则。
             pub checkmark: RefCell<Option<gtk::Image>>,
             pub motion_badge: RefCell<Option<gtk::Image>>,
+            pub duration_badge: RefCell<Option<gtk::Label>>,
+            pub favorite_badge: RefCell<Option<gtk::Image>>,
             pub target: Cell<i32>,
             pub background_is_light: Cell<Option<bool>>,
             /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
@@ -1071,6 +1077,8 @@ pub mod square_tile {
                     picture: RefCell::new(None),
                     checkmark: RefCell::new(None),
                     motion_badge: RefCell::new(None),
+                    duration_badge: RefCell::new(None),
+                    favorite_badge: RefCell::new(None),
                     target: Cell::new(90),
                     background_is_light: Cell::new(None),
                     cache_key: RefCell::new(None),
@@ -1121,6 +1129,24 @@ pub mod square_tile {
                 motion_badge.add_css_class("thumb-motion-badge");
                 motion_badge.set_parent(&*obj);
                 *self.motion_badge.borrow_mut() = Some(motion_badge);
+
+                let duration_badge = gtk::Label::builder()
+                    .visible(false)
+                    .halign(gtk::Align::Start)
+                    .valign(gtk::Align::End)
+                    .build();
+                duration_badge.add_css_class("thumb-video-duration");
+                duration_badge.set_parent(&*obj);
+                *self.duration_badge.borrow_mut() = Some(duration_badge);
+
+                let favorite_badge = gtk::Image::builder()
+                    .icon_name("emblem-favorite-symbolic")
+                    .pixel_size(20)
+                    .visible(false)
+                    .build();
+                favorite_badge.add_css_class("thumb-favorite-badge");
+                favorite_badge.set_parent(&*obj);
+                *self.favorite_badge.borrow_mut() = Some(favorite_badge);
             }
 
             fn dispose(&self) {
@@ -1132,6 +1158,12 @@ pub mod square_tile {
                 }
                 if let Some(b) = self.motion_badge.borrow_mut().take() {
                     b.unparent();
+                }
+                if let Some(d) = self.duration_badge.borrow_mut().take() {
+                    d.unparent();
+                }
+                if let Some(f) = self.favorite_badge.borrow_mut().take() {
+                    f.unparent();
                 }
             }
         }
@@ -1178,7 +1210,26 @@ pub mod square_tile {
                     let bw = bw.clamp(1, width);
                     let bh = bh.clamp(1, height);
                     let margin = 7;
-                    b.size_allocate(&gtk::Allocation::new(margin, margin, bw, bh), -1);
+                    let y = (height - bh - margin).max(0);
+                    b.size_allocate(&gtk::Allocation::new(margin, y, bw, bh), -1);
+                }
+                if let Some(d) = self.duration_badge.borrow().as_ref() {
+                    let (_, dw, _, _) = d.measure(gtk::Orientation::Horizontal, -1);
+                    let (_, dh, _, _) = d.measure(gtk::Orientation::Vertical, -1);
+                    let dw = dw.clamp(1, width);
+                    let dh = dh.clamp(1, height);
+                    let margin = 7;
+                    let y = (height - dh - margin).max(0);
+                    d.size_allocate(&gtk::Allocation::new(margin, y, dw, dh), -1);
+                }
+                if let Some(f) = self.favorite_badge.borrow().as_ref() {
+                    let (_, fw, _, _) = f.measure(gtk::Orientation::Horizontal, -1);
+                    let (_, fh, _, _) = f.measure(gtk::Orientation::Vertical, -1);
+                    let fw = fw.clamp(1, width);
+                    let fh = fh.clamp(1, height);
+                    let margin = 7;
+                    let x = (width - fw - margin).max(0);
+                    f.size_allocate(&gtk::Allocation::new(x, margin, fw, fh), -1);
                 }
             }
         }
@@ -1237,6 +1288,19 @@ pub mod square_tile {
 
         pub fn set_motion_badge_visible(&self, visible: bool) {
             if let Some(badge) = self.imp().motion_badge.borrow().as_ref() {
+                badge.set_visible(visible);
+            }
+        }
+
+        pub fn set_video_duration(&self, label: Option<&str>) {
+            if let Some(badge) = self.imp().duration_badge.borrow().as_ref() {
+                badge.set_label(label.unwrap_or(""));
+                badge.set_visible(label.is_some());
+            }
+        }
+
+        pub fn set_favorite_badge_visible(&self, visible: bool) {
+            if let Some(badge) = self.imp().favorite_badge.borrow().as_ref() {
                 badge.set_visible(visible);
             }
         }
@@ -1319,6 +1383,39 @@ pub mod square_tile {
             tile.set_motion_badge_visible(true);
             assert!(badge.is_visible());
         }
+
+        #[gtk::test]
+        fn square_tile_has_duration_and_favorite_badges() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            let duration = tile
+                .imp()
+                .duration_badge
+                .borrow()
+                .as_ref()
+                .expect("SquareTile should construct its duration badge")
+                .clone();
+            assert!(duration.has_css_class("thumb-video-duration"));
+            assert!(!duration.is_visible());
+
+            tile.set_video_duration(Some("01:23"));
+            assert!(duration.is_visible());
+            assert_eq!(duration.label(), "01:23");
+
+            let favorite = tile
+                .imp()
+                .favorite_badge
+                .borrow()
+                .as_ref()
+                .expect("SquareTile should construct its favorite badge")
+                .clone();
+            assert!(favorite.has_css_class("thumb-favorite-badge"));
+            assert!(!favorite.is_visible());
+
+            tile.set_favorite_badge_visible(true);
+            assert!(favorite.is_visible());
+        }
     }
 }
 
@@ -1341,7 +1438,16 @@ fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
-    tile.set_motion_badge_visible(item.is_motion_photo());
+    let is_day = spec.mode == GroupBy::Day;
+    tile.set_motion_badge_visible(is_day && item.is_motion_photo());
+    if is_day && item.is_video() {
+        let duration = item
+            .video_duration_secs
+            .and_then(format_tile_duration)
+            .unwrap_or_else(|| "--:--".to_string());
+        tile.set_video_duration(Some(&duration));
+    }
+    tile.set_favorite_badge_visible(is_day && item.is_favorite);
 
     let fallback_item = item.clone();
     let size = spec.thumb_size;
@@ -1454,6 +1560,21 @@ fn build_photo_picture(
     tile
 }
 
+fn format_tile_duration(secs: f64) -> Option<String> {
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    let total = secs.round() as u64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    Some(if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
+    })
+}
+
 fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
     std::fs::metadata(&item.path)
         .and_then(|metadata| metadata.modified())
@@ -1521,10 +1642,12 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(100),
             height: Some(100),
+            video_duration_secs: None,
             taken_at: Some(dt),
             file_mtime: dt,
             file_size: 100,
             blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
             trashed_at: None,
         }
     }
@@ -1588,5 +1711,12 @@ mod tests {
         let mtime = thumbnail_request_mtime(&item);
 
         assert!(mtime > std::time::SystemTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn tile_duration_formats_minutes_and_hours() {
+        assert_eq!(format_tile_duration(83.2).as_deref(), Some("01:23"));
+        assert_eq!(format_tile_duration(3_661.0).as_deref(), Some("1:01:01"));
+        assert_eq!(format_tile_duration(f64::NAN), None);
     }
 }

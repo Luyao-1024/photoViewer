@@ -1,5 +1,6 @@
 //! AdwApplication lifecycle management
 use crate::core::db::DbPool;
+use crate::core::error::Result as CoreResult;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
@@ -8,6 +9,7 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -137,11 +139,10 @@ async fn initialize() -> anyhow::Result<(
     DbPool,
     tokio::sync::mpsc::UnboundedReceiver<crate::core::media_change_notifier::MediaChangeEvent>,
 )> {
-    use crate::core::db;
-
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
-    let pool = init_pool(&data_dir.join("photos.db"))?;
+    let db_path = data_dir.join("photos.db");
+    let (pool, items) = initialize_db_once_with_retry(db_path.clone()).await?;
 
     // 缩略图加载器单例（M2-T1）
     let thumbnail_loader = Arc::new(ThumbnailLoader::new(
@@ -179,7 +180,6 @@ async fn initialize() -> anyhow::Result<(
 
     // 首屏只加载一页（200 张），让窗口尽快可操作；启动扫描、回收站对账和
     // 剩余 DB 分页都在后台继续。
-    let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     append_media_items(&list, items);
     start_background_startup_work(
@@ -194,6 +194,44 @@ async fn initialize() -> anyhow::Result<(
     // change_rx 交给 activate 处的消费者：那里能拿到 MainWindow，TrashChanged 时
     // 可以刷新可见的回收站页面（相册列表的 Upserted/Removed 也由它应用到 media_list）。
     Ok((list, thumbnail_loader, pool, change_rx))
+}
+
+fn initialize_db_once_blocking(path: PathBuf) -> CoreResult<(DbPool, Vec<MediaItem>)> {
+    let pool = init_pool(&path)?;
+    let items = crate::core::db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
+    Ok((pool, items))
+}
+
+async fn initialize_db_once_with_retry(path: PathBuf) -> anyhow::Result<(DbPool, Vec<MediaItem>)> {
+    let first = match gtk::gio::spawn_blocking({
+        let path = path.clone();
+        move || initialize_db_once_blocking(path)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return Err(anyhow::anyhow!("spawn_blocking join error: {:?}", e)),
+    };
+
+    if let Ok(data) = first {
+        Ok(data)
+    } else {
+        tracing::warn!(
+            "first DB init/query attempt failed at {}: {} ; retrying once after cleanup path",
+            path.display(),
+            first.as_ref().err().unwrap()
+        );
+        let second = match gtk::gio::spawn_blocking({
+            let path = path.clone();
+            move || initialize_db_once_blocking(path)
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => return Err(anyhow::anyhow!("spawn_blocking join error: {:?}", e)),
+        };
+        second.map_err(anyhow::Error::from)
+    }
 }
 
 fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {

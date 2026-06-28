@@ -122,6 +122,9 @@ Design intent:
   tile sizing. Day view is the densest layout and needs separate visual checks.
 - Photo and video tiles should feel like one collection. Video-specific marks
   should be lightweight and must not change tile dimensions.
+- In Day view, favorited media uses a white heart at the tile's top-right.
+  Dynamic photos use a bottom-left playback glyph; ordinary videos use a
+  bottom-left duration badge from persisted metadata.
 - Tile hover, selection, and focus states should be visible but restrained.
   Avoid large opaque overlays that obscure thumbnail content.
 - Selection is shown primarily by a translucent-white checkmark

@@ -19,6 +19,7 @@ fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> 
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: Some(Utc::now()),
         file_mtime: Utc::now(),
         file_size: 1000,

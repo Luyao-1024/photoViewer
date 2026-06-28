@@ -99,10 +99,12 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(64),
             height: Some(48),
+            video_duration_secs: None,
             taken_at: None,
             file_mtime: dt,
             file_size: 1,
             blake3_hash: "h".into(),
+            is_favorite: false,
             trashed_at: None,
         }
     }

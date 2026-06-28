@@ -19,6 +19,7 @@ use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
 use crate::core::i18n::tr;
+use crate::core::media::MediaItem;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{
@@ -809,7 +810,7 @@ impl PhotosPage {
         }
 
         let weak = self.downgrade();
-        let ids_for_worker = ids;
+        let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let _ = gtk::gio::spawn_blocking(move || {
                 for id in ids_for_worker {
@@ -820,12 +821,30 @@ impl PhotosPage {
             .await;
 
             if let Some(this) = weak.upgrade() {
+                this.update_media_favorite_flags(&ids, is_favorite);
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
                     refresh_albums_sidebar(&nav);
                 }
             }
         });
+    }
+
+    fn update_media_favorite_flags(&self, ids: &[i64], is_favorite: bool) {
+        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let ids: HashSet<i64> = ids.iter().copied().collect();
+        for i in 0..list.n_items() {
+            let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let mut item = obj.borrow::<MediaItem>().clone();
+            if ids.contains(&item.id) {
+                item.is_favorite = is_favorite;
+                list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+            }
+        }
     }
 
     /// Clear selection across all three sub-grids and hide the toolbar.
@@ -1068,10 +1087,12 @@ mod tests {
             media_attributes: "{}".into(),
             width: Some(100),
             height: Some(100),
+            video_duration_secs: None,
             taken_at: Some(dt),
             file_mtime: dt,
             file_size: 100,
             blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
             trashed_at: None,
         }
     }

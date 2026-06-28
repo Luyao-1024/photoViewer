@@ -41,6 +41,7 @@ fn insert_test_item(
         media_attributes: "{}".into(),
         width: Some(64),
         height: Some(48),
+        video_duration_secs: None,
         taken_at: Some(Utc::now()),
         file_mtime: Utc::now(),
         file_size: 1000,

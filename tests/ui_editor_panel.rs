@@ -31,10 +31,12 @@ fn make_media() -> MediaItem {
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: chrono::Utc::now(),
         file_size: 100,
         blake3_hash: "hash".into(),
+        is_favorite: false,
         trashed_at: None,
     }
 }
@@ -50,10 +52,12 @@ fn make_media_for_path(path: std::path::PathBuf) -> MediaItem {
         media_attributes: "{}".into(),
         width: Some(64),
         height: Some(48),
+        video_duration_secs: None,
         taken_at: None,
         file_mtime: chrono::Utc::now(),
         file_size: 100,
         blake3_hash: "hash".into(),
+        is_favorite: false,
         trashed_at: None,
     }
 }

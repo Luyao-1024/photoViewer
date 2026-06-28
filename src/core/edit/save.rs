@@ -56,6 +56,7 @@ pub fn save_as_copy(
         media_attributes: "{}".into(),
         width: Some(rendered.width()),
         height: Some(rendered.height()),
+        video_duration_secs: None,
         taken_at: source.taken_at,
         file_mtime: Utc::now(),
         file_size: std::fs::metadata(&new_path).map(|m| m.len()).unwrap_or(0),
@@ -118,9 +119,9 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
     conn.execute(
         "INSERT INTO media_items
             (uri, path, folder_path, mime_type, media_kind, media_subkind,
-             media_attributes, width, height, taken_at, file_mtime, file_size,
-             blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, unixepoch())
+             media_attributes, width, height, video_duration_secs, taken_at,
+             file_mtime, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())
          ON CONFLICT(uri) DO UPDATE SET
              path=excluded.path,
              folder_path=excluded.folder_path,
@@ -130,6 +131,7 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
              media_attributes=excluded.media_attributes,
              width=excluded.width,
              height=excluded.height,
+             video_duration_secs=excluded.video_duration_secs,
              taken_at=excluded.taken_at,
              file_mtime=excluded.file_mtime,
              file_size=excluded.file_size,
@@ -146,6 +148,7 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
             item.media_attributes,
             item.width,
             item.height,
+            item.video_duration_secs,
             item.taken_at.map(|t| t.timestamp()),
             item.file_mtime.timestamp(),
             item.file_size as i64,
