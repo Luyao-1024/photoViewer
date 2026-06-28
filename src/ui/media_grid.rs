@@ -130,7 +130,7 @@ mod imp {
                 scroller: TemplateChild::default(),
                 mode: Cell::default(),
                 enable_context_menu: Cell::new(false),
-                active: Cell::new(false),
+                active: Cell::new(true),
                 dirty_model: Cell::new(false),
                 media_list: RefCell::new(None),
                 loader: std::cell::OnceCell::new(),
@@ -281,7 +281,11 @@ impl MediaGrid {
             );
             *this.imp().media_list.borrow_mut() = Some(list.clone());
             if this.imp().active.get() {
-                this.schedule_rebuild(list.clone());
+                if removed > 0 {
+                    this.rebuild_immediately(list.clone());
+                } else {
+                    this.schedule_rebuild(list.clone());
+                }
             } else {
                 this.imp().dirty_model.set(true);
             }
@@ -1099,6 +1103,14 @@ impl MediaGrid {
             this.rebuild(media_list, this.mode());
         });
         *self.imp().rebuild_debounce.borrow_mut() = Some(source);
+    }
+
+    fn rebuild_immediately(&self, media_list: gtk::gio::ListStore) {
+        if let Some(source) = self.imp().rebuild_debounce.borrow_mut().take() {
+            source.remove();
+        }
+        self.clear_selection();
+        self.rebuild(media_list, self.mode());
     }
 }
 

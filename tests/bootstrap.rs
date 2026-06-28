@@ -7,7 +7,9 @@ use common::*;
 use photo_viewer::core::albums;
 use photo_viewer::core::bootstrap;
 use photo_viewer::core::db;
-use photo_viewer::core::media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
+use photo_viewer::core::media_change_notifier::{
+    MediaChangeEvent, MediaChangeNotifier, MediaChangeSource,
+};
 
 #[test]
 fn scan_and_aggregate_includes_chinese_subfolder_as_album() {
@@ -52,9 +54,11 @@ fn scan_and_aggregate_with_notifier_emits_upserted_items() {
     });
 
     match rx.try_recv() {
-        Ok(MediaChangeEvent::Upserted(item)) => {
-            assert_eq!(item.display_name(), "visible.png");
+        Ok(MediaChangeEvent::UpsertedBatch { source, items }) => {
+            assert_eq!(source, MediaChangeSource::StartupScan);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].display_name(), "visible.png");
         }
-        other => panic!("expected startup scan to emit Upserted, got {other:?}"),
+        other => panic!("expected startup scan to emit UpsertedBatch, got {other:?}"),
     }
 }

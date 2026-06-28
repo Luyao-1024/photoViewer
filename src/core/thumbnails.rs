@@ -27,7 +27,7 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 use tokio::sync::oneshot;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 缩略图尺寸档位
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -179,9 +179,9 @@ pub struct ThumbnailLoader {
     state: Arc<Mutex<LoaderState>>,
 }
 
-/// 内存 LRU 容量。Large 档单张 texture ~3MB（1024×683×4），512 条最坏 ~1.5GB；
-/// 滚动回看时命中内存比走磁盘重解码更顺滑。按机器内存酌情调。
-const MEM_CACHE_CAP: usize = 512;
+/// 内存 LRU 容量。Large 档单张 texture 可达数 MB；过大的常驻缓存会在大图库滚动
+/// 时把进程推到 GB 级内存。磁盘缓存仍保留 2GB 上限，内存只保留近期视口附近。
+const MEM_CACHE_CAP: usize = 96;
 
 impl ThumbnailLoader {
     /// 工作项队列容量。配合在途去重后，这里只存「彼此不同且未缓存」的项；
@@ -265,7 +265,7 @@ impl ThumbnailLoader {
             warn!("缩略图请求无法计算缓存键（源文件缺失?）: {}", uri);
             return; // reply 被 drop → 调用方 rx 收到 Err
         };
-        info!(
+        debug!(
             "THUMB_TRACE request uri={} size={:?} supplied_mtime={:?} cache_key={}",
             uri, size, mtime, cache_key
         );
@@ -276,7 +276,7 @@ impl ThumbnailLoader {
         };
         // 1) 内存命中
         if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
-            info!(
+            debug!(
                 "THUMB_TRACE mem_cache_hit uri={} size={:?} cache_key={}",
                 uri, size, cache_key
             );
@@ -286,7 +286,7 @@ impl ThumbnailLoader {
         }
         // 2) 已在途 → 挂载等待者，不再入队
         if let Some(waiters) = st.in_flight.get_mut(&cache_key) {
-            info!(
+            debug!(
                 "THUMB_TRACE in_flight_join uri={} size={:?} cache_key={} waiters_before={}",
                 uri,
                 size,
@@ -338,7 +338,7 @@ impl ThumbnailLoader {
             }
         };
         if enqueued {
-            info!(
+            debug!(
                 "THUMB_TRACE enqueued uri={} size={:?} cache_key={}",
                 uri, size, cache_key
             );
@@ -457,7 +457,7 @@ fn worker_loop(
         // in_flight 等待者列表上，由下面的广播一并唤醒。
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
-                info!(
+                debug!(
                     "THUMB_TRACE worker_generated uri={} size={:?} cache_key={} texture={}x{}",
                     req.uri,
                     req.size,
@@ -1061,7 +1061,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
     let orientation_value = orientation::read_orientation(src_path).ok();
     let pb = orientation::load_oriented_pixbuf(src_path)
         .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
-    info!(
+    debug!(
         "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={}",
         src_path.display(),
         orientation_value,

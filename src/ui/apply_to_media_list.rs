@@ -10,6 +10,13 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 
+/// Upper bound for media items kept in the GTK-facing model.
+///
+/// The database and scanner still index the full library. This cap limits the
+/// live `gio::ListStore` that drives grid rebuilds and viewer navigation so a
+/// very large library does not grow the process memory without bound.
+pub const UI_MEDIA_LIST_CAP: usize = 1_000;
+
 /// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
 /// `db::list_all_media`: photo sort time descending, then id descending.
 /// The function is panic-free: any unexpected type mismatch in a list item is
@@ -55,6 +62,7 @@ fn apply_upserted_item(list: &gtk::gio::ListStore, item: MediaItem) {
         }
     }
     insert_sorted(list, item);
+    trim_to_cap(list);
 }
 
 fn apply_upserted_batch(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
@@ -86,6 +94,10 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
             .then_with(|| b.id.cmp(&a.id))
     });
 
+    if merged.len() > UI_MEDIA_LIST_CAP {
+        merged.truncate(UI_MEDIA_LIST_CAP);
+    }
+
     let additions: Vec<glib::BoxedAnyObject> =
         merged.into_iter().map(glib::BoxedAnyObject::new).collect();
     list.splice(0, list.n_items(), &additions);
@@ -110,7 +122,16 @@ fn should_sort_before(candidate: &MediaItem, existing: &MediaItem) -> bool {
 
 fn insert_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
     let pos = sorted_insert_position(list, &item);
+    if pos as usize >= UI_MEDIA_LIST_CAP {
+        return;
+    }
     list.insert(pos, &glib::BoxedAnyObject::new(item));
+}
+
+pub(crate) fn trim_to_cap(list: &gtk::gio::ListStore) {
+    while list.n_items() as usize > UI_MEDIA_LIST_CAP {
+        list.remove(list.n_items() - 1);
+    }
 }
 
 fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
@@ -230,6 +251,49 @@ mod tests {
         assert_eq!(nth_uri(&list, 2), "file:///tmp/middle.jpg");
         let boxed = list.item(0).and_downcast::<glib::BoxedAnyObject>().unwrap();
         assert_eq!(boxed.borrow::<MediaItem>().blake3_hash, "updated");
+    }
+
+    #[test]
+    fn upserted_batch_caps_ui_model_to_recent_items() {
+        let list = list_with(Vec::new());
+        let mut items = Vec::new();
+        for id in 0..(UI_MEDIA_LIST_CAP as i64 + 10) {
+            items.push(item_at(
+                id,
+                &format!("file:///tmp/{id}.jpg"),
+                2026,
+                6,
+                25,
+                12,
+            ));
+        }
+
+        apply_to_media_list(
+            &list,
+            MediaChangeEvent::UpsertedBatch {
+                source: crate::core::media_change_notifier::MediaChangeSource::StartupScan,
+                items,
+            },
+        );
+
+        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+    }
+
+    #[test]
+    fn upserted_item_trims_ui_model_after_insert() {
+        let list = list_with(
+            (0..UI_MEDIA_LIST_CAP as i64)
+                .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
+                .collect(),
+        );
+
+        apply_to_media_list(
+            &list,
+            MediaChangeEvent::Upserted(item_at(10_000, "file:///tmp/newest.jpg", 2026, 6, 26, 12)),
+        );
+
+        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/newest.jpg");
     }
 
     #[test]

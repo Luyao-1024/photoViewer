@@ -4,6 +4,7 @@ use crate::core::error::Result as CoreResult;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::apply_to_media_list::{trim_to_cap, UI_MEDIA_LIST_CAP};
 use crate::ui::{MainWindow, PhotosPage};
 use gtk4 as gtk;
 use gtk4::glib;
@@ -306,6 +307,9 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
     }
+    if list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+        return;
+    }
 
     // During startup the consumer loop may have already appended an item
     // (via a file-system Upserted event) that also appears in this DB page.
@@ -322,10 +326,12 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     let additions: Vec<glib::BoxedAnyObject> = items
         .into_iter()
         .filter(|item| !existing.contains(&item.uri))
+        .take(UI_MEDIA_LIST_CAP.saturating_sub(list.n_items() as usize))
         .map(glib::BoxedAnyObject::new)
         .collect();
     if !additions.is_empty() {
         list.splice(list.n_items(), 0, &additions);
+        trim_to_cap(list);
     }
 }
 
@@ -354,6 +360,14 @@ fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_off
             }
             let count = items.len() as u32;
             append_media_items(&list, items);
+            if list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "BACKGROUND_MEDIA_LOAD reached_ui_cap cap={}",
+                    UI_MEDIA_LIST_CAP
+                );
+                return;
+            }
             if count < BACKGROUND_MEDIA_PAGE_SIZE {
                 return;
             }

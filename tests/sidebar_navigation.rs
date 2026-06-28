@@ -260,12 +260,11 @@ fn sidebar_navigation_suite() {
         visible_flag(window.imp().album_rows.borrow()[0].upcast_ref()),
         "album rows should reappear when expanded",
     );
+
+    assert_more_albums_row_opens_album_browser_page();
 }
 
-#[test]
-fn sidebar_more_albums_row_opens_album_browser_page() {
-    gtk::init().expect("GTK init failed");
-
+fn assert_more_albums_row_opens_album_browser_page() {
     let app = adw::Application::builder()
         .application_id("org.gnome.PhotoViewer.TestMoreAlbums")
         .build();
@@ -337,8 +336,7 @@ fn sidebar_more_albums_row_opens_album_browser_page() {
         .filter(|row| visible_flag(row.upcast_ref()))
         .count();
     assert_eq!(
-        visible_album_rows,
-        MAX_VISIBLE_ALBUMS_IN_SIDEBAR,
+        visible_album_rows, MAX_VISIBLE_ALBUMS_IN_SIDEBAR,
         "exactly 15 album rows should be visible in sidebar when expanded",
     );
 

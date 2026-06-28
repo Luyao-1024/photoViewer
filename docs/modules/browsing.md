@@ -28,7 +28,14 @@ Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_
 
 `MediaGrid::spec_for_mode` owns per-view tile sizing. Section headers are separate GTK labels because the thumbnail grid cannot span a full-width header row by itself.
 
-For very large libraries, `MediaGrid` intentionally caps the number of rendered tile widgets per grid rebuild. The shared `media_list` and scanner still contain/import the full library, but the GTK `FlowBox` layer must not attempt to instantiate tens of thousands of children during startup; doing so blocks the main thread before the app is usable. A future virtualized grid or explicit pagination can replace this safety cap.
+For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
+bounded. The scanner and database still contain/import the full library, but
+`apply_to_media_list::UI_MEDIA_LIST_CAP` limits the live `gio::ListStore` used
+by browsing/viewer UI, and `MediaGrid` caps rendered tile widgets per rebuild.
+Do not let GTK model or FlowBox children grow with the full on-disk library;
+doing so drives GB-level memory use and blocks the main thread before the app is
+usable. A future virtualized grid or explicit pagination can replace these
+safety caps.
 
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 
