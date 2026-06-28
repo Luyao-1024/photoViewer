@@ -220,9 +220,13 @@ impl LocalBackend {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| Path::new("/").to_path_buf());
 
-        let t_hash = Instant::now();
-        let hash = stream_file_hash(path)?;
-        SCAN_HASH_MS.with(|c| c.set(c.get() + t_hash.elapsed().as_millis()));
+        // Content hash is intentionally NOT computed at scan time: nothing ever
+        // matches rows by blake3_hash (the unchanged-check keys on uri+mtime+size,
+        // and moves/copies work via known item ids), so a full-file blake3 was
+        // ~7s of pure waste on the scan hot path for ~3200 files. The column is
+        // left empty; the only former reader (motion_video_cache_path) now keys
+        // on the item id. Re-enable here if content-based dedup becomes a feature.
+        let hash = String::new();
 
         let t_motion = Instant::now();
         let motion_photo = motion_photo::detect(path);
@@ -466,8 +470,10 @@ mod tests {
             .upsert_from_path(&path)
             .unwrap()
             .expect("first upsert must yield Some");
-        // Re-write the file with different (still-valid) image content to
-        // change the blake3 hash while preserving EXIF-decodable bytes.
+        // Re-write the file with different (still-valid) image content so the
+        // second upsert reflects it. blake3_hash is no longer computed at scan
+        // time (always empty), so assert on the decoded dimensions, which change
+        // 64x48 -> 32x32.
         write_distinct_jpeg_in(&path, 32, 32, [255, 0, 0]);
         let second = backend
             .upsert_from_path(&path)
@@ -475,8 +481,8 @@ mod tests {
             .expect("second upsert must yield Some");
         assert_eq!(first.id, second.id, "upsert must reuse the same id");
         assert_ne!(
-            first.blake3_hash, second.blake3_hash,
-            "second upsert must reflect new content"
+            first.width, second.width,
+            "second upsert must reflect new content (dimensions changed)"
         );
     }
 

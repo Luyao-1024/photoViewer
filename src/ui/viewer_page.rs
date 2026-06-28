@@ -160,8 +160,9 @@ fn persist_video_volume_from_stream(stream: &impl IsA<gtk::MediaStream>) {
 }
 
 fn motion_video_cache_path(item: &MediaItem) -> PathBuf {
-    let hash_prefix = item.blake3_hash.get(..16).unwrap_or(&item.blake3_hash);
-    std::env::temp_dir().join(format!("photo-viewer-motion-{}-{hash_prefix}.mp4", item.id))
+    // Key on the db id only: it's already unique per motion photo, and
+    // blake3_hash is no longer computed at scan time.
+    std::env::temp_dir().join(format!("photo-viewer-motion-{}.mp4", item.id))
 }
 
 mod imp {
