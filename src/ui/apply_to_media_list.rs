@@ -24,7 +24,7 @@ pub const UI_MEDIA_LIST_CAP: usize = 30;
 pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) {
     match event {
         MediaChangeEvent::Upserted(item) => {
-            apply_upserted_item(list, item);
+            apply_upserted_item(list, *item);
         }
         MediaChangeEvent::UpsertedBatch { source, items } => {
             apply_upserted_batch(list, source, items);
@@ -214,7 +214,7 @@ mod tests {
         let list = list_with(vec![item_at(1, "file:///tmp/a.jpg", 2026, 6, 25, 12)]);
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12)),
+            MediaChangeEvent::Upserted(Box::new(item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12))),
         );
         assert_eq!(list.n_items(), 2);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/a.jpg");
@@ -230,7 +230,14 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(item_at(3, "file:///tmp/middle.jpg", 2026, 6, 24, 12)),
+            MediaChangeEvent::Upserted(Box::new(item_at(
+                3,
+                "file:///tmp/middle.jpg",
+                2026,
+                6,
+                24,
+                12,
+            ))),
         );
 
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newer.jpg");
@@ -334,7 +341,14 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(item_at(10_000, "file:///tmp/newest.jpg", 2026, 6, 26, 12)),
+            MediaChangeEvent::Upserted(Box::new(item_at(
+                10_000,
+                "file:///tmp/newest.jpg",
+                2026,
+                6,
+                26,
+                12,
+            ))),
         );
 
         assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
@@ -350,7 +364,7 @@ mod tests {
         ]);
         let mut updated = item(2, "file:///tmp/b.jpg");
         updated.blake3_hash = "new-hash".into();
-        apply_to_media_list(&list, MediaChangeEvent::Upserted(updated));
+        apply_to_media_list(&list, MediaChangeEvent::Upserted(Box::new(updated)));
         assert_eq!(list.n_items(), 3, "upsert must not change list length");
         assert_eq!(nth_uri(&list, 1), "file:///tmp/b.jpg");
         // Sanity: the new blake3 hash actually took effect.
@@ -368,7 +382,7 @@ mod tests {
         let mut updated = item_at(3, "file:///tmp/c.jpg", 2026, 6, 26, 12);
         updated.blake3_hash = "new-hash".into();
 
-        apply_to_media_list(&list, MediaChangeEvent::Upserted(updated));
+        apply_to_media_list(&list, MediaChangeEvent::Upserted(Box::new(updated)));
 
         assert_eq!(list.n_items(), 3);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/c.jpg");

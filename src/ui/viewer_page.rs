@@ -1189,7 +1189,7 @@ impl ViewerPage {
         let persisted_volume = prefs::video_volume();
         self.imp().video.get().set_media_stream(Some(&stream));
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
-        stream.connect_volume_notify(|stream| persist_video_volume_from_stream(stream));
+        stream.connect_volume_notify(persist_video_volume_from_stream);
         stream.set_playing(true);
         let stream_weak = stream.downgrade();
         glib::idle_add_local_once(move || {
@@ -1215,7 +1215,7 @@ impl ViewerPage {
         let persisted_volume = prefs::video_volume();
         self.imp().video.get().set_media_stream(Some(&stream));
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
-        stream.connect_volume_notify(|stream| persist_video_volume_from_stream(stream));
+        stream.connect_volume_notify(persist_video_volume_from_stream);
 
         let weak = self.downgrade();
         stream.connect_ended_notify(move |stream| {

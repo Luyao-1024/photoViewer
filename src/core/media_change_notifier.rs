@@ -23,7 +23,7 @@ pub enum MediaChangeSource {
 pub enum MediaChangeEvent {
     /// A new item was inserted, or an existing item was updated.
     /// Consumers match by `uri`: existing → splice-replace; absent → append.
-    Upserted(MediaItem),
+    Upserted(Box<MediaItem>),
     /// Multiple inserts/updates from a bulk source such as the first startup
     /// filesystem scan. Consumers should apply this as one list mutation so
     /// expensive UI model observers rebuild once per batch instead of once per
@@ -61,7 +61,7 @@ impl MediaChangeNotifier {
     /// Notify that `item` was inserted or updated. The current GTK-thread
     /// consumer will splice it into the shared list.
     pub fn upserted(&self, item: MediaItem) {
-        if let Err(e) = self.tx.send(MediaChangeEvent::Upserted(item)) {
+        if let Err(e) = self.tx.send(MediaChangeEvent::Upserted(Box::new(item))) {
             tracing::warn!("MediaChangeNotifier::upserted send failed: {e}");
         }
     }
@@ -94,6 +94,17 @@ impl MediaChangeNotifier {
         }
     }
 }
+
+/// Compile-time guard: if `MediaChangeEvent` ever grows back above the
+/// `clippy::large_enum_variant` threshold, this fails to compile and CI's
+/// `cargo clippy --all-targets -- -D warnings` step will reject the build.
+const _: () = {
+    assert!(
+        std::mem::size_of::<MediaChangeEvent>() < 256,
+        "MediaChangeEvent grew past 256 bytes; restore the `Box<MediaItem>` \
+         indirection on the `Upserted` variant to avoid large_enum_variant lint"
+    );
+};
 
 #[cfg(test)]
 mod tests {
@@ -178,5 +189,26 @@ mod tests {
         // Should not panic; only emits a tracing::warn.
         notifier.upserted(sample_item("file:///tmp/a.jpg"));
         notifier.removed("file:///tmp/a.jpg".into());
+    }
+
+    /// Regression guard: `MediaChangeEvent::Upserted` carries a `Box<MediaItem>`
+    /// to keep the enum small enough to avoid `clippy::large_enum_variant`
+    /// (the variant is 256+ bytes once the inner payload is a `MediaItem`).
+    /// The destructure pattern below fails to compile if the inner field is
+    /// ever changed back to a bare `MediaItem`; combined with the static
+    /// `size_of` assertion at the bottom of the file, this test pins the
+    /// boxed layout against the CI `clippy -D warnings` step.
+    #[test]
+    fn upserted_variant_keeps_media_item_boxed() {
+        let (notifier, mut rx) = MediaChangeNotifier::new();
+        notifier.upserted(sample_item("file:///tmp/box.jpg"));
+
+        match rx.try_recv() {
+            Ok(MediaChangeEvent::Upserted(boxed)) => {
+                let inner: &MediaItem = &boxed;
+                assert_eq!(inner.uri, "file:///tmp/box.jpg");
+            }
+            other => panic!("expected Upserted(Box<MediaItem>), got {other:?}"),
+        }
     }
 }

@@ -82,11 +82,11 @@ impl LocalBackend {
     /// 与 [`Self::scan_and_upsert_dir`] 相同，但每个实际 upsert 的项目都会传给
     /// `on_upserted`。用于启动后台扫描把新增/变更项增量推给 UI，同时仍保留
     /// `(uri, file_mtime, file_size)` 未改动短路。
-    pub fn scan_and_upsert_dir_notify<F>(&self, root: &Path, mut on_upserted: F) -> Result<usize>
+    pub fn scan_and_upsert_dir_notify<F>(&self, root: &Path, on_upserted: F) -> Result<usize>
     where
         F: FnMut(MediaItem),
     {
-        self.scan_and_upsert_dir_with(root, |item| on_upserted(item))
+        self.scan_and_upsert_dir_with(root, on_upserted)
     }
 
     fn scan_and_upsert_dir_with<F>(&self, root: &Path, mut on_upserted: F) -> Result<usize>

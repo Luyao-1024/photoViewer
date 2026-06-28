@@ -9,6 +9,23 @@ use crate::core::media::MediaItem;
 
 #[derive(Debug, Clone)]
 pub enum GridRow {
-    Header { label: String },
-    Photo { item: MediaItem, global_index: u32 },
+    Header {
+        label: String,
+    },
+    Photo {
+        item: Box<MediaItem>,
+        global_index: u32,
+    },
 }
+
+/// Compile-time guard: if `GridRow::Photo` ever drops the `Box<MediaItem>`
+/// indirection, this fails to compile and CI's
+/// `cargo clippy --all-targets -- -D warnings` step will reject the build
+/// for `clippy::large_enum_variant`.
+const _: () = {
+    assert!(
+        std::mem::size_of::<GridRow>() < 256,
+        "GridRow grew past 256 bytes; restore the `Box<MediaItem>` indirection \
+         on the `Photo` variant to avoid large_enum_variant lint"
+    );
+};
