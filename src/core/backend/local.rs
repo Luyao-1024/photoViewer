@@ -87,10 +87,15 @@ impl LocalBackend {
         let mut items = Vec::new();
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
             let path = entry.path();
-            if !path.is_file() || !is_supported_media_path(path) {
+            // 一次 stat 既判 is_file 又喂给 process_file（复用，不再在 process_file 内重复 stat）。
+            let file_meta = match std::fs::metadata(path) {
+                Ok(m) if m.is_file() => m,
+                _ => continue,
+            };
+            if !is_supported_media_path(path) {
                 continue;
             }
-            match self.process_file(path) {
+            match self.process_file(path, &file_meta) {
                 Ok(Some(item)) => items.push(item),
                 Ok(None) => {} // 不支持的 MIME
                 Err(e) => tracing::warn!("跳过文件 {}: {}", path.display(), e),
@@ -163,12 +168,11 @@ impl LocalBackend {
             {
                 visited += 1;
                 let path = entry.path();
-                if !path.is_file() || !is_supported_media_path(path) {
-                    continue;
-                }
-                supported += 1;
+                // 一次 stat 既判 is_file 又供未改动短路与 process_file 复用：此前每个文件
+                // stat 达 3 次（is_file + 这里 + process_file 内），合并为 1 次。
                 let file_meta = match std::fs::metadata(path) {
-                    Ok(m) => m,
+                    Ok(m) if m.is_file() => m,
+                    Ok(_) => continue, // 目录等非普通文件
                     Err(e) => {
                         tracing::warn!("跳过文件 {}: {}", path.display(), e);
                         if item_tx.send(WorkOutcome::Error).is_err() {
@@ -177,6 +181,10 @@ impl LocalBackend {
                         continue;
                     }
                 };
+                if !is_supported_media_path(path) {
+                    continue;
+                }
+                supported += 1;
                 // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。查主线程
                 // 预载的快照，纯内存比较——扫描线程完全不碰数据库，也不与消费者的写事
                 // 务争 WAL。
@@ -193,7 +201,7 @@ impl LocalBackend {
                 }
                 // 单文件损坏用 catch_unwind 隔离，不让一张坏图废掉整轮扫描。
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    backend.process_file(path)
+                    backend.process_file(path, &file_meta)
                 }));
                 let work = match outcome {
                     Ok(Ok(Some(item))) => WorkOutcome::Item(Box::new(item)),
@@ -311,7 +319,10 @@ impl LocalBackend {
         Ok(indexed)
     }
 
-    fn process_file(&self, path: &Path) -> Result<Option<NewMediaItem>> {
+    /// `file_meta` 由调用方提供（扫描热路径已为未改动短路 stat 过一次），避免在这里
+    /// 重复 stat——此前生产者对每个文件 stat 多达 3 次（`is_file` + 短路 metadata + 这里），
+    /// 合并后全程只 stat 1 次。
+    fn process_file(&self, path: &Path, file_meta: &std::fs::Metadata) -> Result<Option<NewMediaItem>> {
         let t_extract = Instant::now();
 
         // 按 MIME 路由：标准图片只读一次 256KB 头部，由 extract（dims+EXIF）与动图
@@ -329,8 +340,7 @@ impl LocalBackend {
         let meta = metadata::extract_with_head(path, head.as_deref())?;
         SCAN_EXTRACT_MS.fetch_add(t_extract.elapsed().as_millis() as u64, Ordering::Relaxed);
 
-        let file_meta = std::fs::metadata(path)?;
-        let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
+        let file_time = file_index_time(file_meta).unwrap_or_else(std::time::SystemTime::now);
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
 
         let uri = format!("file://{}", path.display());
@@ -429,10 +439,12 @@ impl LocalBackend {
     ///   - upsert 成功时返回 `Ok(Some(MediaItem))`，调用方可以直接转发给
     ///     `MediaChangeNotifier` 而无需再次查询 DB。
     pub fn upsert_from_path(&self, path: &Path) -> Result<Option<MediaItem>> {
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let item = self.process_file(path)?.ok_or_else(|| {
+        // 一次 stat 既判 is_file 又喂给 process_file，避免重复 stat。
+        let file_meta = match std::fs::metadata(path) {
+            Ok(m) if m.is_file() => m,
+            _ => return Ok(None),
+        };
+        let item = self.process_file(path, &file_meta)?.ok_or_else(|| {
             AppError::Decode(format!("not a supported media: {}", path.display()))
         })?;
         self.upsert(&item).map(Some)
