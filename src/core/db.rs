@@ -6,7 +6,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::Type;
 use rusqlite::OptionalExtension;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -341,34 +341,35 @@ pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// 启动扫描的快速短路：给定 `uri` + 文件侧 `(file_mtime 秒, file_size)`，
-/// 若已存在完全一致的行，说明文件自上次索引后未改动，其 blake3 哈希与
-/// 元数据仍然有效——调用方据此跳过昂贵的全文件哈希与 EXIF 提取。
+/// 一次性载入所有「已索引且非回收站」行的 `(uri → (file_mtime 秒, file_size))` 快照，
+/// 供启动扫描做未改动短路。
 ///
-/// 走 `uri` 的 UNIQUE 索引，单次 O(log n)，10 万级图库也不会成为瓶颈。
+/// 替代逐文件 `SELECT`：扫描线程据此在内存里按 uri 查表，命中且 `(mtime, size)` 完全
+/// 一致即视为未改动——逐文件零 DB 往返，也不与消费者的写事务争 WAL（此前十万级图库
+/// 扫描的 ~20s 读写竞争主要来源就是这条逐行只读查询并发了消费者的批量写）。一次顺序
+/// 扫描全表即可，内存开销与行数线性（约 ~140 B/行），本轮扫描结束即丢弃。
 ///
-/// 注意：被标记为回收站（`trashed_at IS NOT NULL`）的行**不算**"未改动"。
-/// 回收站行意味着文件本该不在原路径；若启动扫描又能看到它，说明它被外部
-/// （文件管理器）从系统回收站还原了，必须重新 upsert 以清掉 `trashed_at`，
-/// 否则还原后的图片不会重新出现在相册里。
-pub fn is_media_unchanged(
-    pool: &DbPool,
-    uri: &str,
-    file_mtime: i64,
-    file_size: i64,
-) -> Result<bool> {
+/// 注意：被标记为回收站（`trashed_at IS NOT NULL`）的行**不**入快照，因此对它们不会
+/// 短路。回收站行意味着文件本该不在原路径；若启动扫描又能看到它，说明它被外部（文件
+/// 管理器）从系统回收站还原了，必须重新 upsert 以清掉 `trashed_at`，否则还原后的图片
+/// 不会重新出现在相册里。
+pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>> {
     let conn = pool.get()?;
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM media_items
-             WHERE uri = ?1 AND file_mtime = ?2 AND file_size = ?3
-               AND trashed_at IS NULL
-             LIMIT 1",
-            rusqlite::params![uri, file_mtime, file_size],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(existing.is_some())
+    let mut stmt = conn.prepare(
+        "SELECT uri, file_mtime, file_size FROM media_items WHERE trashed_at IS NULL",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?),
+        ))
+    })?;
+    let mut map: HashMap<String, (i64, i64)> = HashMap::new();
+    for row in rows {
+        let (uri, mtime_size) = row?;
+        map.insert(uri, mtime_size);
+    }
+    Ok(map)
 }
 
 /// 删除指定本地路径对应的媒体行。返回受影响行数。

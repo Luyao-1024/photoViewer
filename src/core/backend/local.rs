@@ -135,10 +135,19 @@ impl LocalBackend {
         let mut none_mime = 0u64; // process_file 返回 None（不支持 MIME）
         let mut indexed = 0usize; // 实际写入 DB 的新增/更新行
 
-        // ── 生产者线程：walk + (uri,mtime,size) 只读短路 + extract ──────────────
-        // 生产者**不写数据库**：唯一的 DB 接触是未改动短路那条只读 SELECT。真正要重新
-        // 索引的文件 extract 成 NewMediaItem 后经有界 channel 交给消费者。它独立线程跑，
-        // 与消费者的批量入库形成流水——提取与落库并行，互不阻塞（WAL 下读不阻塞写）。
+        // ── 一次性载入未改动快照（主线程，起生产者之前） ─────────────────────
+        // 把「已索引且非回收站」行的 (uri → (mtime, size)) 全量读进 HashMap。扫描线程据此
+        // 在内存里做未改动短路——逐文件零 DB 往返，也不再与消费者的写事务争 WAL（此前十
+        // 万级图库 ~20s 的读写竞争主要来源就是这条逐行 SELECT 并发了批量写）。快照仅本
+        // 轮扫描用，生产者退出即弃。
+        let snap_t = Instant::now();
+        let unchanged_index = db::load_unchanged_index(&self.pool)?;
+        let snap_ms = snap_t.elapsed().as_millis() as u64;
+
+        // ── 生产者线程：walk + (uri,mtime,size) 内存短路 + extract ──────────────
+        // 生产者**完全不碰数据库**：未改动短路查主线程预载的 HashMap（纯内存比较），真正
+        // 要重新索引的文件 extract 成 NewMediaItem 后经有界 channel 交给消费者。它独立线程
+        // 跑，与消费者的批量入库形成流水——提取与落库并行，互不阻塞。
         let root_owned = root.to_path_buf();
         let (item_tx, item_rx) = sync_channel::<WorkOutcome>(SCAN_ITEM_CHANNEL_CAP);
         let producer_pool = self.pool.clone();
@@ -168,14 +177,16 @@ impl LocalBackend {
                         continue;
                     }
                 };
-                // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。
+                // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。查主线程
+                // 预载的快照，纯内存比较——扫描线程完全不碰数据库，也不与消费者的写事
+                // 务争 WAL。
+                let uri = format!("file://{}", path.display());
                 if let Some(mtime) = file_index_time(&file_meta).and_then(|t| {
                     t.duration_since(std::time::UNIX_EPOCH)
                         .ok()
                         .map(|d| d.as_secs() as i64)
                 }) {
-                    let uri = format!("file://{}", path.display());
-                    if db::is_media_unchanged(backend.pool(), &uri, mtime, file_meta.len() as i64)? {
+                    if unchanged_index.get(uri.as_str()) == Some(&(mtime, file_meta.len() as i64)) {
                         unchanged += 1;
                         continue;
                     }
@@ -282,7 +293,7 @@ impl LocalBackend {
         let upsert_ms = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
         tracing::debug!(
             target: crate::core::log_targets::STORAGE,
-            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms extract={} hash={} motion={} upsert={}",
+            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms snapshot={} extract={} hash={} motion={} upsert={}",
             root.display(),
             visited,
             supported,
@@ -291,6 +302,7 @@ impl LocalBackend {
             none_mime,
             indexed,
             started.elapsed().as_millis(),
+            snap_ms,
             extract_ms,
             hash_ms,
             motion_ms,
@@ -711,8 +723,8 @@ mod tests {
     }
 
     /// 启动扫描路径：文件在应用关闭期间被外部还原。即便 mtime/size 与索引时
-    /// 完全一致，`is_media_unchanged` 也不能对 trashed 行短路——否则扫描会跳过
-    /// 它，`trashed_at` 永远清不掉。
+    /// 完全一致，未改动短路也不能对 trashed 行命中——否则扫描会跳过它，
+    /// `trashed_at` 永远清不掉。
     #[test]
     fn scan_reindexes_restored_file_clearing_trashed_at() {
         let dir = tempfile::tempdir().unwrap();
