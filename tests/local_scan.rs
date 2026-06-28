@@ -28,9 +28,8 @@ fn scan_finds_jpeg_png() {
         "应识别 4 张图片（JPEG×3 + PNG×1），忽略 .txt"
     );
 
-    // 验证每项都有 hash 和 mime
+    // 验证每项的 mime（blake3_hash 已不在扫描时计算，恒为空字符串）
     for item in &items {
-        assert!(!item.blake3_hash.is_empty());
         assert!(item.mime_type.starts_with("image/"));
     }
 }
