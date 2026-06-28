@@ -71,7 +71,10 @@ impl MediaChangeNotifier {
         if items.is_empty() {
             return;
         }
-        if let Err(e) = self.tx.send(MediaChangeEvent::UpsertedBatch { source, items }) {
+        if let Err(e) = self
+            .tx
+            .send(MediaChangeEvent::UpsertedBatch { source, items })
+        {
             tracing::warn!("MediaChangeNotifier::upserted_batch send failed: {e}");
         }
     }
@@ -144,7 +147,10 @@ mod tests {
         notifier.upserted_batch(MediaChangeSource::StartupScan, items.clone());
 
         match rx.try_recv() {
-            Ok(MediaChangeEvent::UpsertedBatch { source, items: received }) => {
+            Ok(MediaChangeEvent::UpsertedBatch {
+                source,
+                items: received,
+            }) => {
                 assert_eq!(source, MediaChangeSource::StartupScan);
                 assert_eq!(received.len(), 2);
                 assert_eq!(received[0].uri, items[0].uri);

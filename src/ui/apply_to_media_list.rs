@@ -68,7 +68,10 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     let mut by_uri = std::collections::HashMap::with_capacity(list.n_items() as usize);
     for i in 0..list.n_items() {
         if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-            by_uri.insert(obj.borrow::<MediaItem>().uri.clone(), (*obj.borrow::<MediaItem>()).clone());
+            by_uri.insert(
+                obj.borrow::<MediaItem>().uri.clone(),
+                (*obj.borrow::<MediaItem>()).clone(),
+            );
         }
     }
 

@@ -2,6 +2,7 @@
 use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use glib::subclass::types::ObjectSubclassIsExt;
@@ -20,9 +21,12 @@ use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::prefs;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::album_browser_page::AlbumBrowserPage;
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::grid_css;
 use crate::ui::TrashPage;
+
+const MAX_VISIBLE_ALBUMS_IN_SIDEBAR: usize = 15;
 
 /// What a sidebar row navigates to. The `Gtk.ListBox` row at index `i` maps to
 /// `targets[i]` (kept in lock-step by [`MainWindow::populate_sidebar`] and
@@ -34,6 +38,7 @@ pub enum SidebarTarget {
     Photos,
     AlbumsHeader,
     Album(Album),
+    AllAlbums,
     Trash,
 }
 
@@ -67,11 +72,15 @@ mod imp {
         /// The album rows nested under the "Albums" group header — kept so the
         /// collapse toggle and the live refresh can hide/rebuild them precisely.
         pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
+        /// Row that opens the all-albums browser.
+        pub more_albums_row: RefCell<Option<gtk::ListBoxRow>>,
         /// The disclosure arrow on the Albums header; swapped between
         /// `pan-down-symbolic` (expanded) and `pan-end-symbolic` (collapsed).
         pub albums_arrow: RefCell<Option<gtk::Image>>,
         /// Whether the Albums group is currently expanded.
         pub albums_expanded: Cell<bool>,
+        /// Whether there are albums beyond `MAX_VISIBLE_ALBUMS_IN_SIDEBAR`.
+        pub has_more_albums: Cell<bool>,
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
@@ -198,6 +207,9 @@ impl MainWindow {
         for row in &old_rows {
             list.remove(row);
         }
+        if let Some(old_more_row) = self.imp().more_albums_row.borrow_mut().take() {
+            list.remove(&old_more_row);
+        }
 
         // Keep `targets` in lock-step: after removal it should read
         // [Photos, AlbumsHeader, Trash]. The albums occupied the
@@ -214,21 +226,37 @@ impl MainWindow {
 
         let albums = list_with_favorites(&pool).unwrap_or_default();
         let album_count = albums.len();
+        let preview_count = album_count.min(MAX_VISIBLE_ALBUMS_IN_SIDEBAR);
+        let show_more_row = album_count > MAX_VISIBLE_ALBUMS_IN_SIDEBAR;
         let expanded = self.imp().albums_expanded.get();
 
         // Insert album rows starting at index 2 (after Photos + header),
         // pushing Trash back down so the order is preserved.
-        for (pos, album) in (2_i32..).zip(albums.iter()) {
+        for (visible_pos, album) in albums.iter().take(preview_count).enumerate() {
+            let pos = visible_pos + 2;
             let row = build_album_row(album);
             row.set_visible(expanded);
             self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
-            list.insert(&row, pos);
+            list.insert(&row, pos as i32);
             self.imp().album_rows.borrow_mut().push(row);
             self.imp()
                 .targets
                 .borrow_mut()
-                .insert(pos as usize, SidebarTarget::Album(album.clone()));
+                .insert(pos, SidebarTarget::Album(album.clone()));
         }
+
+        if show_more_row {
+            let more_row = build_more_albums_row(&tr("sidebar.albums_more"));
+            more_row.set_visible(expanded);
+            let more_pos = 2 + preview_count;
+            list.insert(&more_row, more_pos as i32);
+            *self.imp().more_albums_row.borrow_mut() = Some(more_row);
+            self.imp()
+                .targets
+                .borrow_mut()
+                .insert(more_pos, SidebarTarget::AllAlbums);
+        }
+        self.imp().has_more_albums.set(show_more_row);
 
         self.reselect_active_album_row();
         tracing::info!(
@@ -253,6 +281,9 @@ impl MainWindow {
             .position(|t| matches!(t, SidebarTarget::Album(a) if a.folder_path == active));
         if let Some(i) = idx {
             if let Some(row) = list.row_at_index(i as i32) {
+                if !row.is_visible() {
+                    return;
+                }
                 self.imp().selecting_programmatically.set(true);
                 list.select_row(Some(&row));
                 self.imp().selecting_programmatically.set(false);
@@ -273,16 +304,32 @@ impl MainWindow {
                 Some("pan-end-symbolic")
             });
         }
-        for row in self.imp().album_rows.borrow().iter() {
+        let rows = self.imp().album_rows.borrow();
+        for row in rows.iter() {
             row.set_visible(expanded);
+        }
+        if let Some(more_row) = self.imp().more_albums_row.borrow().as_ref() {
+            let has_more = self.imp().has_more_albums.get();
+            more_row.set_visible(expanded && has_more);
         }
     }
 
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
-    /// stay live after favorites/trash changes. Preserves the collapse state
-    /// and re-selects the album row whose detail page is on top of the stack.
+    /// stay live after favorites/trash changes.
+    ///
+    /// Only the first `MAX_VISIBLE_ALBUMS_IN_SIDEBAR` albums remain in the
+    /// sidebar; if all-albums view is currently visible, refresh that page too.
     pub fn refresh_album_rows(&self) {
         self.rebuild_album_rows();
+        if let Some(page) = self
+            .imp()
+            .nav_view
+            .get()
+            .visible_page()
+            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
+        {
+            page.refresh();
+        }
     }
 
     /// Persist a drag-to-reorder: move the album at `source_path` so it lands
@@ -428,6 +475,7 @@ impl MainWindow {
     /// identity (`targets[index]`), not a hardcoded index:
     ///   - Photos → pop back to the root Photos page.
     ///   - An album row → push that album's `AlbumDetailPage` directly.
+    ///   - More → open the all-albums browser page (all rows in overlay layer).
     ///   - Trash → push the `TrashPage`.
     ///
     /// The Albums header is non-selectable, so it never lands here; its collapse
@@ -468,6 +516,10 @@ impl MainWindow {
                         pop_to_photos_root(&nav_view);
                     }
                     SidebarTarget::AlbumsHeader => {}
+                    SidebarTarget::AllAlbums => {
+                        *window.imp().active_album.borrow_mut() = None;
+                        window.open_all_albums_page(&nav_view);
+                    }
                     SidebarTarget::Album(album) => {
                         *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
                         window.open_album(&nav_view, album);
@@ -486,7 +538,7 @@ impl MainWindow {
         }));
     }
 
-    fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
+    pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
         // Already viewing this album → no-op (avoids rebuilding/pushing a
         // duplicate detail page on a re-select).
         let already_visible = nav_view
@@ -521,6 +573,38 @@ impl MainWindow {
         }
         let page = AlbumDetailPage::new(album, filtered, master, pool, loader);
         page.set_nav_target(nav_view);
+        nav_view.push(&page);
+    }
+
+    fn open_all_albums_page(&self, nav_view: &adw::NavigationView) {
+        if nav_view
+            .visible_page()
+            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
+            .is_some()
+        {
+            return;
+        }
+
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().clone() else {
+            return;
+        };
+
+        pop_to_photos_root(nav_view);
+
+        let weak = self.downgrade();
+        let nav_copy = nav_view.clone();
+        let page = AlbumBrowserPage::new(
+            pool,
+            loader,
+            Rc::new(move |album| {
+                if let Some(window) = weak.upgrade() {
+                    window.open_album(&nav_copy, album);
+                }
+            }),
+        );
         nav_view.push(&page);
     }
 
@@ -780,8 +864,7 @@ impl MainWindow {
             .active(prefs::auto_play_motion_photo())
             .build();
 
-        let auto_play_motion_label =
-            gtk::Label::new(Some(&tr("setting.auto_play_motion_photo")));
+        let auto_play_motion_label = gtk::Label::new(Some(&tr("setting.auto_play_motion_photo")));
         auto_play_motion_label.set_halign(gtk::Align::Start);
         auto_play_motion_label.set_hexpand(true);
 
@@ -1217,6 +1300,32 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
     box_.append(&icon);
     box_.append(&name);
     box_.append(&count);
+    row.set_child(Some(&box_));
+    row
+}
+
+fn build_more_albums_row(label: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.add_css_class("glass-sidebar-row");
+    row.add_css_class("glass-sidebar-subrow");
+    row.add_css_class("glass-sidebar-more");
+
+    let icon = gtk::Image::from_icon_name("view-more-symbolic");
+    icon.add_css_class("glass-sidebar-icon");
+
+    let lbl = gtk::Label::builder()
+        .label(label)
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .css_classes(["glass-sidebar-label"])
+        .build();
+
+    let box_ = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .build();
+    box_.append(&icon);
+    box_.append(&lbl);
     row.set_child(Some(&box_));
     row
 }

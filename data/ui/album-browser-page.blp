@@ -1,0 +1,35 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $AlbumBrowserPage : Adw.NavigationPage {
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+      css-classes: ["glass-header"];
+    }
+
+    Gtk.ScrolledWindow scrolled {
+      vexpand: true;
+      hexpand: true;
+
+      child: Gtk.Viewport viewport {
+        scroll-to-focus: true;
+
+        child: Gtk.FlowBox flow_box {
+          homogeneous: true;
+          selection-mode: none;
+          column-spacing: 2;
+          row-spacing: 2;
+          margin-start: 8;
+          margin-end: 8;
+          margin-top: 8;
+          margin-bottom: 8;
+          max-children-per-line: 100;
+          css-classes: ["thumb-grid", "album-browser-flow"];
+        };
+      };
+    }
+  };
+}
