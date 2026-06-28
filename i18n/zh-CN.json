@@ -181,6 +181,8 @@
     "setting.liquid_glass_transparency_save_failed": "保存透明度失败：{error}",
     "setting.liquid_glass_save_failed": "保存外观设置失败：{error}",
     "setting.section.video": "视频播放",
+    "setting.auto_play_motion_photo": "动态图片自动播放",
+    "setting.auto_play_motion_photo_save_failed": "保存动态图片自动播放设置失败：{error}",
     "setting.video_default_muted": "启动时默认静音",
     "setting.video_default_muted_save_failed": "保存视频播放设置失败：{error}",
     "setting.save_failed": "保存失败",

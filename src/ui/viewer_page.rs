@@ -2025,6 +2025,9 @@ impl ViewerPage {
         }
         self.show_image_stage();
         self.set_motion_play_button_for_item(&item);
+        if prefs::auto_play_motion_photo() && item.is_motion_photo() {
+            self.play_current_motion_photo();
+        }
         let path = strip_file_uri(&item.uri);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,

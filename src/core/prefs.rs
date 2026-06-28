@@ -22,6 +22,7 @@ const LIQUID_GLASS_KEY: &str = "liquid_glass";
 const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
+const AUTO_PLAY_MOTION_PHOTO_KEY: &str = "auto_play_motion_photo";
 
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
@@ -29,6 +30,7 @@ const DEFAULT_LIQUID_GLASS: bool = true;
 const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
+const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
 
 fn settings_path() -> std::path::PathBuf {
     config_dir().join(SETTINGS_FILE)
@@ -142,6 +144,17 @@ fn read_effective_video_volume_at(path: &Path) -> f64 {
     }
 }
 
+fn read_auto_play_motion_photo_at(path: &Path) -> bool {
+    let obj = read_object_at(path);
+    obj.get(AUTO_PLAY_MOTION_PHOTO_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(DEFAULT_AUTO_PLAY_MOTION_PHOTO)
+}
+
+fn write_auto_play_motion_photo_at(path: &Path, enabled: bool) -> Result<(), String> {
+    write_bool_at(path, AUTO_PLAY_MOTION_PHOTO_KEY, enabled)
+}
+
 fn write_video_volume_at(path: &Path, volume: f64) -> Result<(), String> {
     write_f64_at(path, VIDEO_VOLUME_KEY, clamp_video_volume(volume))
 }
@@ -202,6 +215,16 @@ pub fn video_volume() -> f64 {
 /// Persist the current video volume, clamped to `[0.0, 1.0]`.
 pub fn set_video_volume(volume: f64) -> Result<(), String> {
     write_video_volume_at(&settings_path(), volume)
+}
+
+/// Whether motion photos should auto-play their embedded video in the viewer.
+pub fn auto_play_motion_photo() -> bool {
+    read_auto_play_motion_photo_at(&settings_path())
+}
+
+/// Persist the motion-photo auto-play preference.
+pub fn set_auto_play_motion_photo(enabled: bool) -> Result<(), String> {
+    write_auto_play_motion_photo_at(&settings_path(), enabled)
 }
 
 #[cfg(test)]
@@ -444,6 +467,41 @@ mod tests {
 
         write_video_volume_at(&path, -0.2).unwrap();
         assert_eq!(read_video_volume_at(&path), 0.0);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn motion_photo_auto_play_defaults_to_disabled() {
+        let path = tmp_path("motion-auto-play-default");
+        cleanup(&path);
+
+        assert!(
+            !read_auto_play_motion_photo_at(&path),
+            "missing auto_play_motion_photo should default to false"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn motion_photo_auto_play_round_trip_and_preserves_keys() {
+        let path = tmp_path("motion-auto-play-roundtrip");
+        cleanup(&path);
+        std::fs::write(&path, "{\"video_default_muted\": false}").unwrap();
+
+        write_auto_play_motion_photo_at(&path, true).unwrap();
+        assert!(read_auto_play_motion_photo_at(&path));
+
+        write_auto_play_motion_photo_at(&path, false).unwrap();
+        assert!(!read_auto_play_motion_photo_at(&path));
+
+        let obj = read_object_at(&path);
+        assert_eq!(
+            obj.get(VIDEO_DEFAULT_MUTED_KEY).and_then(|v| v.as_bool()),
+            Some(false),
+            "writing motion-photo setting should preserve existing video prefs"
+        );
 
         cleanup(&path);
     }

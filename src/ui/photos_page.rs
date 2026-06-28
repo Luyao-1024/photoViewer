@@ -993,10 +993,14 @@ impl PhotosPage {
 
         viewer.show_at(global_index);
 
+        let weak = self.downgrade();
         let nav_for_refresh = nav.downgrade();
-        viewer.connect_favorite_state_changed(move |_, _| {
+        viewer.connect_favorite_state_changed(move |item_id, target_state| {
             if let Some(nav) = nav_for_refresh.upgrade() {
                 refresh_albums_sidebar(&nav);
+            }
+            if let Some(this) = weak.upgrade() {
+                this.update_media_favorite_flags(&[item_id], target_state);
             }
         });
 

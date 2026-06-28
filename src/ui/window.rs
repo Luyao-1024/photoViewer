@@ -767,6 +767,37 @@ impl MainWindow {
             }
         });
 
+        let auto_play_motion_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(prefs::auto_play_motion_photo())
+            .build();
+
+        let auto_play_motion_label =
+            gtk::Label::new(Some(&tr("setting.auto_play_motion_photo")));
+        auto_play_motion_label.set_halign(gtk::Align::Start);
+        auto_play_motion_label.set_hexpand(true);
+
+        let auto_play_motion_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        auto_play_motion_row.append(&auto_play_motion_label);
+        auto_play_motion_row.append(&auto_play_motion_switch);
+        content.append(&auto_play_motion_row);
+
+        let parent_for_auto_play = parent.clone();
+        auto_play_motion_switch.connect_notify_local(Some("active"), move |sw, _pspec| {
+            if let Err(err) = prefs::set_auto_play_motion_photo(sw.is_active()) {
+                show_settings_error_dialog(
+                    &parent_for_auto_play,
+                    &trf(
+                        "setting.auto_play_motion_photo_save_failed",
+                        &[("error", &err)],
+                    ),
+                );
+            }
+        });
+
         // ── Storage: Clear Cache ────────────────────────────────────────────
         // Show current storage usage with action rows matching the project's
         // Adw.PreferencesGroup + Adw.ActionRow design pattern.
@@ -1247,7 +1278,13 @@ mod tests {
             labels
                 .iter()
                 .any(|label| label == &tr("setting.video_default_muted")),
-            "settings page should expose only the default mute setting, got {labels:?}"
+            "settings page should expose the default mute setting, got {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == &tr("setting.auto_play_motion_photo")),
+            "settings page should expose the motion-photo auto-play setting, got {labels:?}"
         );
         assert!(
             !labels
