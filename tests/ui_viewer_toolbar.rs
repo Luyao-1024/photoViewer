@@ -135,6 +135,10 @@ fn viewer_toolbar_uses_glass_classes() {
         !imp.video.get().is_visible(),
         "video widget should start hidden until a video media item is shown",
     );
+    assert!(
+        !imp.video.get().is_autoplay(),
+        "Gtk.Video autoplay must stay disabled so audio prefs apply before playback starts",
+    );
 
     let prev_parent = imp
         .prev_btn

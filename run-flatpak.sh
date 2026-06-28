@@ -45,6 +45,7 @@ flatpak run \
 
 echo "==> run photo-viewer in app sandbox..."
 exec flatpak run \
+    --socket=pulseaudio \
     --filesystem="$PROJECT_DIR" \
     --filesystem=home \
     --command="$PROJECT_DIR/$TARGET_DIR/debug/photo-viewer" \

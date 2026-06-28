@@ -23,6 +23,12 @@ Original image decode must apply orientation metadata before creating the displa
 
 Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. The image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
 
+Flatpak builds and Flatpak-based development runs must include `--socket=pulseaudio`. GTK/GStreamer can still render video without that sandbox permission, but audio output is unavailable, which presents as silent video playback even though the viewer code is playing the media stream.
+
+When a video stream is created, the viewer applies the persisted video audio preferences before playback starts: `video_default_muted` controls whether newly opened videos start muted (default `true`), and `video_volume` restores the last stream volume. The settings page exposes only the default-mute switch; volume changes are persisted from the media stream itself, not from a separate settings slider.
+
+Keep `Gtk.Video` template autoplay disabled. `show_video_stage` attaches the `GtkMediaFile`, applies the saved mute/volume state, then starts playback explicitly; this ordering prevents `Gtk.Video`'s built-in controls/autoplay setup from overriding audio preferences at stream bind time. Volume changes reported while the stream is muted are ignored for persistence so a default-muted startup does not overwrite the last audible volume with `0.0`.
+
 ## Thumbnail Strip
 
 The thumbnail strip should initialize centered on the active image. If centering only happens after user interaction, the adjustment is being applied before the widget has a final allocation; schedule the centering after layout or after the thumbnail model is populated.

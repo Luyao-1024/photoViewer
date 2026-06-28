@@ -10,6 +10,7 @@ finish-args:
   - --share=ipc
   - --socket=wayland
   - --socket=fallback-x11
+  - --socket=pulseaudio
   - --device=dri
   - --filesystem=home
   - --filesystem=xdg-run/gvfsd

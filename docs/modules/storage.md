@@ -32,6 +32,10 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 `media_items.media_kind` is the persisted media discriminator (`image` / `video`), derived from MIME at insert/update time. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
 
+## Preferences
+
+User preferences are stored as JSON in `settings.json` under `config_dir()`. The file is a preserved-key object: writing one preference must keep unrelated keys intact. Current keys include `liquid_glass`, `video_default_muted` (default `true`), and `video_volume` (clamped `0.0..=1.0`, default `1.0`). Disabling `video_default_muted` also recovers `video_volume` to `1.0` when an earlier muted stream left a stale `0.0`, so "start unmuted" does not still produce silence; existing config files with `video_default_muted=false` and `video_volume=0.0` are treated the same way on read.
+
 ## Metadata Extraction (`metadata.rs`)
 
 `extract()` reads dimensions (via `image::image_dimensions`, falling back to gdk-pixbuf) and EXIF (DateTimeOriginal + readable fields) via kamadak-exif.

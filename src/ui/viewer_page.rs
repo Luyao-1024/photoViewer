@@ -14,6 +14,7 @@ use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::orientation;
+use crate::core::prefs;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
@@ -133,6 +134,24 @@ fn next_index_after_deleted_item(deleted_index: u32, remaining_len: u32) -> Opti
         None
     } else {
         Some(deleted_index.min(remaining_len - 1))
+    }
+}
+
+fn apply_video_audio_preferences_to_stream(
+    stream: &impl IsA<gtk::MediaStream>,
+    muted: bool,
+    volume: f64,
+) {
+    stream.set_muted(muted);
+    stream.set_volume(volume.clamp(0.0, 1.0));
+}
+
+fn persist_video_volume_from_stream(stream: &impl IsA<gtk::MediaStream>) {
+    if stream.is_muted() {
+        return;
+    }
+    if let Err(err) = prefs::set_video_volume(stream.volume()) {
+        tracing::warn!("ViewerPage: failed to persist video volume: {err}");
     }
 }
 
@@ -942,8 +961,18 @@ impl ViewerPage {
 
         let stream = gtk::MediaFile::for_filename(&item.path);
         stream.set_loop(false);
-        stream.set_playing(true);
+        let default_muted = prefs::video_default_muted();
+        let persisted_volume = prefs::video_volume();
         self.imp().video.get().set_media_stream(Some(&stream));
+        apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
+        stream.connect_volume_notify(|stream| persist_video_volume_from_stream(stream));
+        stream.set_playing(true);
+        let stream_weak = stream.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(stream) = stream_weak.upgrade() {
+                apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
+            }
+        });
     }
 
     /// Rebuild or update the filmstrip for the current index. Called from
@@ -3367,5 +3396,19 @@ mod tests {
 
         assert_eq!(find_media_index_by_id(&list, 20), Some(1));
         assert_eq!(find_media_index_by_id(&list, 30), None);
+    }
+
+    #[gtk::test]
+    fn video_audio_preferences_are_applied_to_media_stream() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.mp4");
+        std::fs::write(&path, b"fake mp4").unwrap();
+        let stream = gtk::MediaFile::for_filename(&path);
+
+        apply_video_audio_preferences_to_stream(&stream, true, 0.42);
+
+        assert!(stream.is_muted(), "video should respect default muted pref");
+        assert_eq!(stream.volume(), 0.42);
     }
 }

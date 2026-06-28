@@ -691,6 +691,43 @@ impl MainWindow {
             }
         });
 
+        // ── Video playback: startup mute preference ───────────────────────
+        // Volume itself is persisted from the GtkMediaStream while watching a
+        // video; settings only controls whether newly opened videos start muted.
+        let video_title = gtk::Label::new(Some(&tr("setting.section.video")));
+        video_title.set_xalign(0.0);
+        content.append(&video_title);
+
+        let muted_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(prefs::video_default_muted())
+            .build();
+
+        let muted_label = gtk::Label::new(Some(&tr("setting.video_default_muted")));
+        muted_label.set_halign(gtk::Align::Start);
+        muted_label.set_hexpand(true);
+
+        let muted_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        muted_row.append(&muted_label);
+        muted_row.append(&muted_switch);
+        content.append(&muted_row);
+
+        let parent_for_muted = parent.clone();
+        muted_switch.connect_notify_local(Some("active"), move |sw, _pspec| {
+            if let Err(err) = prefs::set_video_default_muted(sw.is_active()) {
+                show_settings_error_dialog(
+                    &parent_for_muted,
+                    &trf(
+                        "setting.video_default_muted_save_failed",
+                        &[("error", &err)],
+                    ),
+                );
+            }
+        });
+
         // ── Storage: Clear Cache ────────────────────────────────────────────
         // Show current storage usage with action rows matching the project's
         // Adw.PreferencesGroup + Adw.ActionRow design pattern.
@@ -1116,5 +1153,57 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
         .and_downcast::<MainWindow>()
     {
         window.refresh_album_rows();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect_labels(widget: &gtk::Widget, labels: &mut Vec<String>) {
+        if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+            labels.push(label.label().to_string());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            collect_labels(&current, labels);
+        }
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_video_default_mute_without_volume_control() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowSettings")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+
+        let mut labels = Vec::new();
+        collect_labels(&page.upcast::<gtk::Widget>(), &mut labels);
+
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == &tr("setting.section.video")),
+            "settings page should contain the video playback section, got {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == &tr("setting.video_default_muted")),
+            "settings page should expose only the default mute setting, got {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label == &tr("setting.video_volume")),
+            "volume should be persisted from playback, not configured in settings"
+        );
     }
 }

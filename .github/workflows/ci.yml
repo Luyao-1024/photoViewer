@@ -29,7 +29,10 @@ jobs:
             libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev libheif-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-            blueprint-compiler xvfb
+            python3-pip xvfb
+
+      - name: Install blueprint-compiler (pip)
+        run: pip install blueprint-compiler
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
