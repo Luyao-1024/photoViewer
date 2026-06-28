@@ -41,6 +41,9 @@ fn wait_for_uri(
             Ok(event) => {
                 let matches = match &event {
                     MediaChangeEvent::Upserted(item) => item.uri == uri,
+                    MediaChangeEvent::UpsertedBatch { items, .. } => {
+                        items.iter().any(|item| item.uri == uri)
+                    }
                     MediaChangeEvent::Removed { uri: u } => u == uri,
                     MediaChangeEvent::TrashChanged => false,
                 };

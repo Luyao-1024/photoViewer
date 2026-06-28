@@ -8,12 +8,30 @@
 use crate::core::media::MediaItem;
 use tokio::sync::mpsc;
 
+/// Origin of a media change batch. Consumers use this to choose refresh
+/// urgency: user-visible edits should update immediately, while startup scan
+/// batches must be throttled to keep the UI responsive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaChangeSource {
+    StartupScan,
+    UserInteractive,
+    Watcher,
+}
+
 /// Media change event emitted by the watcher, consumed by the UI.
 #[derive(Debug, Clone)]
 pub enum MediaChangeEvent {
     /// A new item was inserted, or an existing item was updated.
     /// Consumers match by `uri`: existing → splice-replace; absent → append.
     Upserted(MediaItem),
+    /// Multiple inserts/updates from a bulk source such as the first startup
+    /// filesystem scan. Consumers should apply this as one list mutation so
+    /// expensive UI model observers rebuild once per batch instead of once per
+    /// file.
+    UpsertedBatch {
+        source: MediaChangeSource,
+        items: Vec<MediaItem>,
+    },
     /// An item was removed. Consumer matches by `uri`.
     Removed { uri: String },
     /// The system trash changed (external restore / empty / delete-from-trash, or
@@ -45,6 +63,16 @@ impl MediaChangeNotifier {
     pub fn upserted(&self, item: MediaItem) {
         if let Err(e) = self.tx.send(MediaChangeEvent::Upserted(item)) {
             tracing::warn!("MediaChangeNotifier::upserted send failed: {e}");
+        }
+    }
+
+    /// Notify that multiple items were inserted or updated.
+    pub fn upserted_batch(&self, source: MediaChangeSource, items: Vec<MediaItem>) {
+        if items.is_empty() {
+            return;
+        }
+        if let Err(e) = self.tx.send(MediaChangeEvent::UpsertedBatch { source, items }) {
+            tracing::warn!("MediaChangeNotifier::upserted_batch send failed: {e}");
         }
     }
 
@@ -103,6 +131,26 @@ mod tests {
                 assert_eq!(received.uri, item.uri);
             }
             other => panic!("expected Upserted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notifier_upserted_batch_sends_event_to_receiver() {
+        let (notifier, mut rx) = MediaChangeNotifier::new();
+        let items = vec![
+            sample_item("file:///tmp/a.jpg"),
+            sample_item("file:///tmp/b.jpg"),
+        ];
+        notifier.upserted_batch(MediaChangeSource::StartupScan, items.clone());
+
+        match rx.try_recv() {
+            Ok(MediaChangeEvent::UpsertedBatch { source, items: received }) => {
+                assert_eq!(source, MediaChangeSource::StartupScan);
+                assert_eq!(received.len(), 2);
+                assert_eq!(received[0].uri, items[0].uri);
+                assert_eq!(received[1].uri, items[1].uri);
+            }
+            other => panic!("expected UpsertedBatch, got {other:?}"),
         }
     }
 

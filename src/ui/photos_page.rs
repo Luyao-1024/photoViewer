@@ -340,10 +340,12 @@ impl PhotosPage {
             let weak = obj.downgrade();
             stack.connect_notify_local(Some("visible-child"), move |_, _| {
                 if let Some(this) = weak.upgrade() {
+                    this.sync_active_grid_rebuilds();
                     this.schedule_mode_selector_contrast_update();
                 }
             });
         }
+        obj.sync_active_grid_rebuilds();
         obj.schedule_mode_selector_contrast_update();
 
         // Wire the batch toolbar buttons. For selected items:
@@ -630,6 +632,14 @@ impl PhotosPage {
         let stack = self.imp().view_stack.get();
         let visible = stack.visible_child()?;
         visible.downcast::<MediaGrid>().ok()
+    }
+
+    fn sync_active_grid_rebuilds(&self) {
+        let current = self.current_grid();
+        for grid in self.imp().grids.borrow().iter() {
+            let active = current.as_ref().is_some_and(|visible| visible == grid);
+            grid.set_active(active);
+        }
     }
 
     fn select_all_in_current_mode(&self) {

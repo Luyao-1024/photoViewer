@@ -187,6 +187,7 @@ impl MainWindow {
     }
 
     fn rebuild_album_rows(&self) {
+        let started = std::time::Instant::now();
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
@@ -212,6 +213,7 @@ impl MainWindow {
         }
 
         let albums = list_with_favorites(&pool).unwrap_or_default();
+        let album_count = albums.len();
         let expanded = self.imp().albums_expanded.get();
 
         // Insert album rows starting at index 2 (after Photos + header),
@@ -229,6 +231,12 @@ impl MainWindow {
         }
 
         self.reselect_active_album_row();
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_ALBUM_REBUILD rows={} elapsed_ms={}",
+            album_count,
+            started.elapsed().as_millis()
+        );
     }
 
     fn reselect_active_album_row(&self) {

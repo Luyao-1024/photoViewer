@@ -17,22 +17,10 @@ use gtk4::prelude::*;
 pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) {
     match event {
         MediaChangeEvent::Upserted(item) => {
-            let uri = item.uri.clone();
-            for i in 0..list.n_items() {
-                if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-                    let existing = obj.borrow::<MediaItem>();
-                    if existing.uri == uri {
-                        if same_sort_position(&existing, &item) {
-                            list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
-                        } else {
-                            list.remove(i);
-                            insert_sorted(list, item);
-                        }
-                        return;
-                    }
-                }
-            }
-            insert_sorted(list, item);
+            apply_upserted_item(list, item);
+        }
+        MediaChangeEvent::UpsertedBatch { items, .. } => {
+            apply_upserted_batch(list, items);
         }
         MediaChangeEvent::Removed { uri } => {
             for i in 0..list.n_items() {
@@ -48,6 +36,64 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) 
         // 此 arm 仅为穷尽匹配；正常调用方在分发前已把 TrashChanged 单独处理。
         MediaChangeEvent::TrashChanged => {}
     }
+}
+
+fn apply_upserted_item(list: &gtk::gio::ListStore, item: MediaItem) {
+    let uri = item.uri.clone();
+    for i in 0..list.n_items() {
+        if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
+            let existing = obj.borrow::<MediaItem>();
+            if existing.uri == uri {
+                if same_sort_position(&existing, &item) {
+                    list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+                } else {
+                    list.remove(i);
+                    insert_sorted(list, item);
+                }
+                return;
+            }
+        }
+    }
+    insert_sorted(list, item);
+}
+
+fn apply_upserted_batch(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
+    if items.is_empty() {
+        return;
+    }
+
+    let started = std::time::Instant::now();
+    let incoming_len = items.len();
+    let list_len_before = list.n_items();
+    let mut by_uri = std::collections::HashMap::with_capacity(list.n_items() as usize);
+    for i in 0..list.n_items() {
+        if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
+            by_uri.insert(obj.borrow::<MediaItem>().uri.clone(), (*obj.borrow::<MediaItem>()).clone());
+        }
+    }
+
+    for item in items {
+        by_uri.insert(item.uri.clone(), item);
+    }
+
+    let mut merged: Vec<MediaItem> = by_uri.into_values().collect();
+    merged.sort_by(|a, b| {
+        b.sort_datetime()
+            .cmp(&a.sort_datetime())
+            .then_with(|| b.id.cmp(&a.id))
+    });
+
+    let additions: Vec<glib::BoxedAnyObject> =
+        merged.into_iter().map(glib::BoxedAnyObject::new).collect();
+    list.splice(0, list.n_items(), &additions);
+    tracing::info!(
+        target: crate::core::log_targets::BROWSING,
+        "UI_LIST_BATCH_MERGE incoming_len={} list_len_before={} list_len_after={} elapsed_ms={}",
+        incoming_len,
+        list_len_before,
+        list.n_items(),
+        started.elapsed().as_millis()
+    );
 }
 
 fn same_sort_position(a: &MediaItem, b: &MediaItem) -> bool {
@@ -153,6 +199,34 @@ mod tests {
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newer.jpg");
         assert_eq!(nth_uri(&list, 1), "file:///tmp/middle.jpg");
         assert_eq!(nth_uri(&list, 2), "file:///tmp/older.jpg");
+    }
+
+    #[test]
+    fn upserted_batch_merges_replaces_and_sorts_with_one_splice() {
+        let list = list_with(vec![
+            item_at(1, "file:///tmp/newer.jpg", 2026, 6, 25, 12),
+            item_at(2, "file:///tmp/older.jpg", 2026, 6, 23, 12),
+        ]);
+        let mut updated = item_at(2, "file:///tmp/older.jpg", 2026, 6, 26, 12);
+        updated.blake3_hash = "updated".into();
+
+        apply_to_media_list(
+            &list,
+            MediaChangeEvent::UpsertedBatch {
+                source: crate::core::media_change_notifier::MediaChangeSource::UserInteractive,
+                items: vec![
+                    item_at(3, "file:///tmp/middle.jpg", 2026, 6, 24, 12),
+                    updated,
+                ],
+            },
+        );
+
+        assert_eq!(list.n_items(), 3);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/older.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/newer.jpg");
+        assert_eq!(nth_uri(&list, 2), "file:///tmp/middle.jpg");
+        let boxed = list.item(0).and_downcast::<glib::BoxedAnyObject>().unwrap();
+        assert_eq!(boxed.borrow::<MediaItem>().blake3_hash, "updated");
     }
 
     #[test]

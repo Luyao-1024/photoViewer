@@ -13,8 +13,42 @@
 # sandbox, not the SDK sandbox. GNOME 50's gdk-pixbuf/glycin image loaders fail
 # when nested under the generic SDK app-id, which makes thumbnails stay white.
 #
-# Use `CLEAN=1 ./run-flatpak.sh` to remove target/flatpak-debug before running.
+# Default behavior is quiet: no additional application logs are printed.
+#
+# Logging options:
+#   --log-domain <module[=level]>       Enable one specific log target (repeatable).
+#   -l <module[=level]>                 Alias for --log-domain.
+#   --log-domains <d1,d2[=level],...>   Enable multiple targets.
+#   -L <comma list>                     Alias for --log-domains.
+#   --log-all                           Enable trace logging for all targets.
+#   -a                                  Alias for --log-all.
+#   --clean                             Remove target/flatpak-debug before running.
+#   -c                                  Alias for --clean.
+#   --no-audio                          Start without pulseaudio socket binding.
+#
+# The legacy env var CLEAN=1 is still supported for clean rebuilds.
 set -euo pipefail
+
+usage() {
+    cat <<'USAGE'
+Usage: ./run-flatpak.sh [--clean|-c] [--log-domain|-l <module[=level]> ...] [--log-domains|-L <comma list>] [--log-all|-a] [--no-audio]
+
+Options:
+  --clean, -c                     Remove target/flatpak-debug before build
+  --log-domain, -l <target>       Set one rust log domain (repeatable)
+  --log-domains, -L <list>        Set multiple domains as comma-separated list
+  --log-all, -a                   Print all logs at trace level
+  --no-audio                       Start app without pulseaudio socket binding
+  -h, --help                      Show this help
+
+Examples:
+  ./run-flatpak.sh
+  ./run-flatpak.sh -l photo_viewer=debug
+  ./run-flatpak.sh -l photo_viewer=trace -l photos_page=debug
+  ./run-flatpak.sh -L photo_viewer,photos_page=trace
+  ./run-flatpak.sh -a
+USAGE
+}
 
 cd "$(dirname "$0")"
 
@@ -22,10 +56,146 @@ PROJECT_DIR="$(pwd)"
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/photoViewer"
 CARGO_HOME_DIR="$CACHE_ROOT/cargo-home"
 TARGET_DIR="target/flatpak-debug"
+FLATPAK_APP_ID="org.gnome.PhotoViewer"
+RUN_WITH_AUDIO=1
 
 mkdir -p "$CARGO_HOME_DIR"
 
-if [ -n "${CLEAN:-}" ]; then
+CLEAN_FLAG="${CLEAN:-}"
+PRINT_ALL_LOGS=0
+RUST_LOG_DOMAINS=()
+
+while (( "$#" )); do
+    case "$1" in
+        --no-audio)
+            RUN_WITH_AUDIO=0
+            shift
+            ;;
+        -c)
+            CLEAN_FLAG=1
+            shift
+            ;;
+        --clean)
+            CLEAN_FLAG=1
+            shift
+            ;;
+        -l)
+            if (( $# < 2 )); then
+                echo "Missing argument for -l/--log-domain" >&2
+                exit 1
+            fi
+            RUST_LOG_DOMAINS+=("$2")
+            shift 2
+            ;;
+        --log-domain)
+            if (( $# < 2 )); then
+                echo "Missing argument for --log-domain" >&2
+                exit 1
+            fi
+            RUST_LOG_DOMAINS+=("$2")
+            shift 2
+            ;;
+        -L)
+            if (( $# < 2 )); then
+                echo "Missing argument for -L/--log-domains" >&2
+                exit 1
+            fi
+            IFS=',' read -r -a parsed <<< "$2"
+            for domain in "${parsed[@]}"; do
+                if [[ -n "$domain" ]]; then
+                    RUST_LOG_DOMAINS+=("$domain")
+                fi
+            done
+            shift 2
+            ;;
+        --log-domains)
+            if (( $# < 2 )); then
+                echo "Missing argument for --log-domains" >&2
+                exit 1
+            fi
+            IFS=',' read -r -a parsed <<< "$2"
+            for domain in "${parsed[@]}"; do
+                if [[ -n "$domain" ]]; then
+                    RUST_LOG_DOMAINS+=("$domain")
+                fi
+            done
+            shift 2
+            ;;
+        --log-all)
+            PRINT_ALL_LOGS=1
+            shift
+            ;;
+        -a)
+            PRINT_ALL_LOGS=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+build_log_targets() {
+    if (( PRINT_ALL_LOGS )); then
+        echo "trace"
+        return
+    fi
+
+    if (( ${#RUST_LOG_DOMAINS[@]} == 0 )); then
+        echo ""
+        return
+    fi
+
+    local normalized=()
+    local domain
+    for domain in "${RUST_LOG_DOMAINS[@]}"; do
+        if [[ "$domain" == *=* ]]; then
+            normalized+=("$domain")
+        else
+            normalized+=("$domain=debug")
+        fi
+    done
+
+    local joined="${normalized[0]}"
+    for domain in "${normalized[@]:1}"; do
+        joined+=",$domain"
+    done
+
+    echo "$joined"
+}
+
+RUST_LOG_VALUE="$(build_log_targets)"
+
+fix_flatpak_pulse_socket() {
+    if (( RUN_WITH_AUDIO == 0 )); then
+        return
+    fi
+
+    local runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    local flatpak_pulse_path="$runtime_dir/.flatpak/$FLATPAK_APP_ID/xdg-run/pulse"
+
+    if [ ! -e "$flatpak_pulse_path" ]; then
+        return
+    fi
+
+    if [ -L "$flatpak_pulse_path" ]; then
+        local link_target
+        link_target="$(readlink "$flatpak_pulse_path" 2>/dev/null || true)"
+        if [ "$link_target" != "../../flatpak/pulse" ]; then
+            rm -f "$flatpak_pulse_path"
+        fi
+    else
+        rm -rf "$flatpak_pulse_path"
+    fi
+}
+
+if [ -n "$CLEAN_FLAG" ]; then
     echo "==> clean rebuild requested; removing $TARGET_DIR..."
     rm -rf "$TARGET_DIR"
 fi
@@ -44,9 +214,22 @@ flatpak run \
     -lc 'cd "$PROJECT_DIR" && cargo build --locked'
 
 echo "==> run photo-viewer in app sandbox..."
-exec flatpak run \
-    --socket=pulseaudio \
-    --filesystem="$PROJECT_DIR" \
-    --filesystem=home \
-    --command="$PROJECT_DIR/$TARGET_DIR/debug/photo-viewer" \
-    org.gnome.PhotoViewer
+fix_flatpak_pulse_socket
+
+RUN_CMD=(
+    flatpak run
+)
+
+if (( RUN_WITH_AUDIO == 1 )); then
+    RUN_CMD+=(--socket=pulseaudio)
+fi
+
+RUN_CMD+=(
+    --env=RUST_LOG="$RUST_LOG_VALUE"
+    --filesystem="$PROJECT_DIR"
+    --filesystem=home
+    --command="$PROJECT_DIR/$TARGET_DIR/debug/photo-viewer"
+    "$FLATPAK_APP_ID"
+)
+
+exec "${RUN_CMD[@]}"

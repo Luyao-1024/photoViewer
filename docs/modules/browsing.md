@@ -28,6 +28,8 @@ Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_
 
 `MediaGrid::spec_for_mode` owns per-view tile sizing. Section headers are separate GTK labels because the thumbnail grid cannot span a full-width header row by itself.
 
+For very large libraries, `MediaGrid` intentionally caps the number of rendered tile widgets per grid rebuild. The shared `media_list` and scanner still contain/import the full library, but the GTK `FlowBox` layer must not attempt to instantiate tens of thousands of children during startup; doing so blocks the main thread before the app is usable. A future virtualized grid or explicit pagination can replace this safety cap.
+
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 
 Multi-select selection state is owned by each section `GtkFlowBox` (`selection-mode = Multiple`); `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".

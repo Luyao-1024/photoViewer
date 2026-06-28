@@ -51,6 +51,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gtk4 as gtk;
 use gtk4::gdk;
@@ -65,6 +66,8 @@ use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
+
+const MAX_RENDERED_GRID_ITEMS: usize = 1_000;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
@@ -85,6 +88,9 @@ mod imp {
         pub scroller: TemplateChild<gtk::ScrolledWindow>,
         pub mode: Cell<GroupBy>,
         pub enable_context_menu: Cell<bool>,
+        pub active: Cell<bool>,
+        pub dirty_model: Cell<bool>,
+        pub media_list: RefCell<Option<gio::ListStore>>,
         pub loader: std::cell::OnceCell<Arc<ThumbnailLoader>>,
         pub on_activate: std::cell::OnceCell<Rc<dyn Fn(u32)>>,
         pub on_background_changed: std::cell::OnceCell<Rc<dyn Fn()>>,
@@ -109,6 +115,12 @@ mod imp {
         /// 滚动触发「可见区提权」的去抖 SourceId（`Some` = 已挂起，合并突发滚动）。
         /// `SourceId` 非 `Copy`，故用 `RefCell` 而非 `Cell`。
         pub reprio_debounce: RefCell<Option<gtk::glib::SourceId>>,
+        /// Shared model changes can arrive in large bursts during first-start
+        /// scanning. Rebuilding all sections for every `items-changed` signal
+        /// makes the GTK main thread do O(n²) widget work. Coalesce those
+        /// bursts and rebuild once after the model has had a short quiet
+        /// window.
+        pub rebuild_debounce: RefCell<Option<gtk::glib::SourceId>>,
     }
 
     impl Default for MediaGrid {
@@ -118,6 +130,9 @@ mod imp {
                 scroller: TemplateChild::default(),
                 mode: Cell::default(),
                 enable_context_menu: Cell::new(false),
+                active: Cell::new(false),
+                dirty_model: Cell::new(false),
+                media_list: RefCell::new(None),
                 loader: std::cell::OnceCell::new(),
                 on_activate: std::cell::OnceCell::new(),
                 on_background_changed: std::cell::OnceCell::new(),
@@ -130,6 +145,7 @@ mod imp {
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
                 reprio_debounce: RefCell::new(None),
+                rebuild_debounce: RefCell::new(None),
             }
         }
     }
@@ -245,6 +261,7 @@ impl MediaGrid {
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp().enable_context_menu.set(enable_context_menu);
+        *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
 
         crate::ui::grid_css::install();
         obj.rebuild(media_list.clone(), mode);
@@ -262,8 +279,12 @@ impl MediaGrid {
                 added,
                 list.n_items()
             );
-            this.clear_selection();
-            this.rebuild(list.clone(), this.mode());
+            *this.imp().media_list.borrow_mut() = Some(list.clone());
+            if this.imp().active.get() {
+                this.schedule_rebuild(list.clone());
+            } else {
+                this.imp().dirty_model.set(true);
+            }
         });
 
         // 滚动时去抖触发可见区提权（B6）：可见 tile 的请求提到队首，
@@ -283,7 +304,17 @@ impl MediaGrid {
 
     pub fn set_mode(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
         self.imp().mode.set(mode);
+        *self.imp().media_list.borrow_mut() = Some(media_list.clone());
         self.rebuild(media_list, mode);
+    }
+
+    pub fn set_active(&self, active: bool) {
+        self.imp().active.set(active);
+        if active && self.imp().dirty_model.replace(false) {
+            if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
+                self.schedule_rebuild(media_list);
+            }
+        }
     }
 
     pub fn mode(&self) -> GroupBy {
@@ -591,6 +622,8 @@ impl MediaGrid {
 
     /// Tear down the current sections and rebuild them for `mode`.
     fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
+        let rebuild_started = std::time::Instant::now();
+        let source_len = media_list.n_items();
         let loader = self
             .imp()
             .loader
@@ -639,7 +672,19 @@ impl MediaGrid {
         self.imp().displayed_items.borrow_mut().clear();
 
         // Extract MediaItems + a uri→global-index lookup from the store.
-        let items = extract_items(&media_list);
+        let extract_started = std::time::Instant::now();
+        let mut items = extract_items(&media_list);
+        let extract_elapsed = extract_started.elapsed();
+        if items.len() > MAX_RENDERED_GRID_ITEMS {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "MediaGrid::rebuild limiting rendered items mode={:?} total={} rendered={}",
+                mode,
+                items.len(),
+                MAX_RENDERED_GRID_ITEMS
+            );
+            items.truncate(MAX_RENDERED_GRID_ITEMS);
+        }
         let uri_to_index = uri_index_map(&media_list);
 
         // Group by year/month/day, then emit header + FlowBox per section.
@@ -1025,15 +1070,35 @@ impl MediaGrid {
 
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "MediaGrid::rebuild mode={:?} sections={} photos={} spec.pixel_size={}",
+            "MediaGrid::rebuild mode={:?} source_len={} sections={} photos={} spec.pixel_size={} extract_ms={} total_ms={}",
             mode,
+            source_len,
             section_count,
             photo_count,
-            spec.pixel_size
+            spec.pixel_size,
+            extract_elapsed.as_millis(),
+            rebuild_started.elapsed().as_millis()
         );
 
         // rebuild 后调度一次可见区提权（去抖）：让当前可见 tile 先于屏幕外的被生成。
         self.schedule_reprioritize();
+    }
+
+    fn schedule_rebuild(&self, media_list: gtk::gio::ListStore) {
+        if self.imp().rebuild_debounce.borrow().is_some() {
+            return;
+        }
+
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local_once(Duration::from_millis(750), move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().rebuild_debounce.borrow_mut().take();
+            this.clear_selection();
+            this.rebuild(media_list, this.mode());
+        });
+        *self.imp().rebuild_debounce.borrow_mut() = Some(source);
     }
 }
 
