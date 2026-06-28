@@ -31,10 +31,13 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: ./run-flatpak.sh [--clean|-c] [--log-domain|-l <module[=level]> ...] [--log-domains|-L <comma list>] [--log-all|-a] [--no-audio]
+Usage: ./run-flatpak.sh [--clean|-c] [--release|-r] [--log-domain|-l <module[=level]> ...] [--log-domains|-L <comma list>] [--log-all|-a] [--no-audio]
 
 Options:
   --clean, -c                     Remove target/flatpak-debug before build
+  --release, -r                   Build and run optimized (release) instead of debug.
+                                  The extract-heavy scan is CPU-bound, so debug is
+                                  ~8x slower; release is the realistic experience.
   --log-domain, -l <target>       Set one rust log domain (repeatable)
   --log-domains, -L <list>        Set multiple domains as comma-separated list
   --log-all, -a                   Print all logs at trace level
@@ -43,6 +46,7 @@ Options:
 
 Examples:
   ./run-flatpak.sh
+  ./run-flatpak.sh -r                       # optimized build (recommended for perf checks)
   ./run-flatpak.sh -l photo_viewer=debug
   ./run-flatpak.sh -l photo_viewer=trace -l photos_page=debug
   ./run-flatpak.sh -L photo_viewer,photos_page=trace
@@ -58,6 +62,7 @@ CARGO_HOME_DIR="$CACHE_ROOT/cargo-home"
 TARGET_DIR="target/flatpak-debug"
 FLATPAK_APP_ID="org.gnome.PhotoViewer"
 RUN_WITH_AUDIO=1
+RELEASE_BUILD=0
 
 mkdir -p "$CARGO_HOME_DIR"
 
@@ -77,6 +82,14 @@ while (( "$#" )); do
             ;;
         --clean)
             CLEAN_FLAG=1
+            shift
+            ;;
+        -r)
+            RELEASE_BUILD=1
+            shift
+            ;;
+        --release)
+            RELEASE_BUILD=1
             shift
             ;;
         -l)
@@ -141,6 +154,17 @@ while (( "$#" )); do
     esac
 done
 
+# Resolve the cargo profile once: it drives both the build flag and the binary
+# path under $TARGET_DIR (debug/ vs release/). Both profiles coexist under the
+# same target root, so toggling does not force a full recompile of the other.
+if (( RELEASE_BUILD )); then
+    CARGO_PROFILE="release"
+    CARGO_RELEASE_FLAG="--release"
+else
+    CARGO_PROFILE="debug"
+    CARGO_RELEASE_FLAG=""
+fi
+
 build_log_targets() {
     if (( PRINT_ALL_LOGS )); then
         echo "trace"
@@ -200,7 +224,7 @@ if [ -n "$CLEAN_FLAG" ]; then
     rm -rf "$TARGET_DIR"
 fi
 
-echo "==> cargo build in GNOME 50 SDK sandbox..."
+echo "==> cargo build ($CARGO_PROFILE) in GNOME 50 SDK sandbox..."
 flatpak run \
     --devel \
     --share=network \
@@ -209,9 +233,10 @@ flatpak run \
     --env=PROJECT_DIR="$PROJECT_DIR" \
     --env=CARGO_HOME="$CARGO_HOME_DIR" \
     --env=CARGO_TARGET_DIR="$TARGET_DIR" \
+    --env=CARGO_RELEASE_FLAG="$CARGO_RELEASE_FLAG" \
     --env=PATH="/usr/lib/sdk/rust-stable/bin:/app/bin:/usr/bin" \
     --command=sh org.gnome.Sdk//50 \
-    -lc 'cd "$PROJECT_DIR" && cargo build --locked'
+    -lc 'cd "$PROJECT_DIR" && cargo build --locked $CARGO_RELEASE_FLAG'
 
 echo "==> run photo-viewer in app sandbox..."
 fix_flatpak_pulse_socket
@@ -228,7 +253,7 @@ RUN_CMD+=(
     --env=RUST_LOG="$RUST_LOG_VALUE"
     --filesystem="$PROJECT_DIR"
     --filesystem=home
-    --command="$PROJECT_DIR/$TARGET_DIR/debug/photo-viewer"
+    --command="$PROJECT_DIR/$TARGET_DIR/$CARGO_PROFILE/photo-viewer"
     "$FLATPAK_APP_ID"
 )
 
