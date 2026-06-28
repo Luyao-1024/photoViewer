@@ -8,9 +8,19 @@ use crate::core::media::{
 use crate::core::metadata;
 use crate::core::motion_photo::{self, MediaAttributes};
 use chrono::Utc;
+use std::cell::Cell;
 use std::io::Read;
 use std::path::Path;
+use std::time::Instant;
 use walkdir::WalkDir;
+
+// 诊断：单线程扫描期间累计 process_file 三个阶段的耗时，SCAN_SUMMARY 打印后归零。
+// 用于回答「为什么扫描慢」——读盘/哈希/ffprobe 都已证伪，剩余耗时分布在这里。
+thread_local! {
+    static SCAN_EXTRACT_MS: Cell<u128> = const { Cell::new(0) };
+    static SCAN_HASH_MS: Cell<u128> = const { Cell::new(0) };
+    static SCAN_MOTION_MS: Cell<u128> = const { Cell::new(0) };
+}
 
 fn stream_file_hash(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
@@ -93,16 +103,28 @@ impl LocalBackend {
     where
         F: FnMut(MediaItem),
     {
-        let mut indexed = 0usize;
+        // 诊断计数器：定位「为什么扫不全」。SCAN_SUMMARY 会在每个 root 扫完时打印；
+        // 若该日志缺失，说明扫描中途被中止（panic / 进程退出 / spawn_blocking join 失败）。
+        let started = std::time::Instant::now();
+        let mut visited = 0u64; // WalkDir 遍历到的全部条目（含目录/非媒体）
+        let mut supported = 0u64; // 通过扩展名过滤的媒体文件
+        let mut unchanged = 0u64; // (uri, mtime, size) 短路跳过，未重提
+        let mut errors = 0u64; // 元数据/哈希/upsert 失败，或解析 panic
+        let mut none_mime = 0u64; // process_file 返回 None（不支持 MIME）
+        let mut indexed = 0usize; // 实际写入 DB 的新增/更新行
+
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
+            visited += 1;
             let path = entry.path();
             if !path.is_file() || !is_supported_media_path(path) {
                 continue;
             }
+            supported += 1;
 
             let file_meta = match std::fs::metadata(path) {
                 Ok(m) => m,
                 Err(e) => {
+                    errors += 1;
                     tracing::warn!("跳过文件 {}: {}", path.display(), e);
                     continue;
                 }
@@ -115,25 +137,78 @@ impl LocalBackend {
             }) {
                 let uri = format!("file://{}", path.display());
                 if db::is_media_unchanged(&self.pool, &uri, mtime, file_meta.len() as i64)? {
+                    unchanged += 1;
                     continue;
                 }
             }
 
-            match self.process_file(path) {
-                Ok(Some(item)) => {
-                    let upserted = self.upsert(&item)?;
-                    on_upserted(upserted);
-                    indexed += 1;
+            // 用 catch_unwind 包裹提取：单个损坏文件（HEIC 容器解析、image crate、
+            // motion_photo 解析等）若 panic 不应让整轮数千张的扫描半途而废——否则会
+            // 看到「DB 行数远少于磁盘文件数、且每次重启都卡在同一位置」。哪张文件
+            // panic 会作为 error 打到这里，扫描继续处理其余文件。upsert 在外层，DB
+            // 连接不受提取 panic 影响。
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.process_file(path)
+            }));
+            match outcome {
+                Ok(Ok(Some(item))) => match self.upsert(&item) {
+                    Ok(upserted) => {
+                        on_upserted(upserted);
+                        indexed += 1;
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        tracing::warn!("跳过文件 {}（upsert 失败）: {}", path.display(), e);
+                    }
+                },
+                Ok(Ok(None)) => {
+                    none_mime += 1;
                 }
-                Ok(None) => {} // 不支持的 MIME
-                Err(e) => tracing::warn!("跳过文件 {}: {}", path.display(), e),
+                Ok(Err(e)) => {
+                    errors += 1;
+                    tracing::warn!("跳过文件 {}: {}", path.display(), e);
+                }
+                Err(panic_payload) => {
+                    errors += 1;
+                    let msg = panic_payload
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| panic_payload.downcast_ref::<&'static str>().copied())
+                        .unwrap_or("(non-string panic)");
+                    tracing::error!(
+                        "扫描文件 {} 时 panic，已跳过以继续扫描其余文件: {}",
+                        path.display(),
+                        msg
+                    );
+                }
             }
         }
+
+        let extract_ms = SCAN_EXTRACT_MS.with(|c| c.replace(0));
+        let hash_ms = SCAN_HASH_MS.with(|c| c.replace(0));
+        let motion_ms = SCAN_MOTION_MS.with(|c| c.replace(0));
+        tracing::debug!(
+            target: crate::core::log_targets::STORAGE,
+            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms extract={} hash={} motion={}",
+            root.display(),
+            visited,
+            supported,
+            unchanged,
+            errors,
+            none_mime,
+            indexed,
+            started.elapsed().as_millis(),
+            extract_ms,
+            hash_ms,
+            motion_ms,
+        );
         Ok(indexed)
     }
 
     fn process_file(&self, path: &Path) -> Result<Option<NewMediaItem>> {
+        let t_extract = Instant::now();
         let meta = metadata::extract(path)?;
+        SCAN_EXTRACT_MS.with(|c| c.set(c.get() + t_extract.elapsed().as_millis()));
 
         let file_meta = std::fs::metadata(path)?;
         let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
@@ -145,8 +220,13 @@ impl LocalBackend {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| Path::new("/").to_path_buf());
 
+        let t_hash = Instant::now();
         let hash = stream_file_hash(path)?;
+        SCAN_HASH_MS.with(|c| c.set(c.get() + t_hash.elapsed().as_millis()));
+
+        let t_motion = Instant::now();
         let motion_photo = motion_photo::detect(path);
+        SCAN_MOTION_MS.with(|c| c.set(c.get() + t_motion.elapsed().as_millis()));
 
         Ok(Some(NewMediaItem {
             uri,
@@ -421,17 +501,32 @@ mod tests {
     }
 
     fn append_micro_video_tail(path: &std::path::Path, video_len: usize) {
-        let mut bytes = std::fs::read(path).unwrap();
+        let bytes = std::fs::read(path).unwrap();
         let xmp = format!(
             r#"<x:xmpmeta><rdf:Description GCamera:MicroVideo="1" GCamera:MicroVideoOffset="{video_len}" GCamera:MicroVideoPresentationTimestampUs="123456"/></x:xmpmeta>"#
         );
-        bytes.extend_from_slice(xmp.as_bytes());
+        // 把 XMP 包进标准 APP1 段插到 SOI 之后（与真实 Google MicroVideo 一致），而不是
+        // 把裸 XMP 追加到 JPEG 末尾——后者不是合法的 JPEG 段结构，detect 的段定位会漏掉。
+        const XMP_APP1_SIG: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+        let payload_len = XMP_APP1_SIG.len() + xmp.len();
+        let seg_len = u16::try_from(payload_len + 2).unwrap();
+        let mut seg = Vec::with_capacity(4 + payload_len);
+        seg.extend_from_slice(&[0xFF, 0xE1]);
+        seg.extend_from_slice(&seg_len.to_be_bytes());
+        seg.extend_from_slice(XMP_APP1_SIG);
+        seg.extend_from_slice(xmp.as_bytes());
+
+        let mut out = Vec::with_capacity(bytes.len() + seg.len() + video_len);
+        out.extend_from_slice(&bytes[..2]); // SOI
+        out.extend_from_slice(&seg); // APP1 XMP（紧跟 SOI）
+        out.extend_from_slice(&bytes[2..]); // 原 JPEG 余下部分（含 EOI）
+
         let mut video = vec![0_u8; video_len];
         video[0..4].copy_from_slice(&(24_u32.to_be_bytes()));
         video[4..8].copy_from_slice(b"ftyp");
         video[8..12].copy_from_slice(b"mp42");
-        bytes.extend_from_slice(&video);
-        std::fs::write(path, bytes).unwrap();
+        out.extend_from_slice(&video);
+        std::fs::write(path, out).unwrap();
     }
 
     #[test]

@@ -1,11 +1,26 @@
 use photo_viewer::core::motion_photo::{detect, MotionPhotoFormat};
 
+/// Adobe XMP APP1 载荷签名（真实 Google 动图把 XMP 放在标准 APP1 段里）。
+const XMP_APP1_SIG: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+
 fn fake_mp4(len: usize) -> Vec<u8> {
     let mut bytes = vec![0_u8; len.max(32)];
     bytes[0..4].copy_from_slice(&(24_u32.to_be_bytes()));
     bytes[4..8].copy_from_slice(b"ftyp");
     bytes[8..12].copy_from_slice(b"mp42");
     bytes
+}
+
+/// 构造一个标准 XMP APP1 段：`FF E1` + 长度(含自身 2 字节) + 签名 + XMP 报文。
+fn app1_xmp_segment(xmp: &[u8]) -> Vec<u8> {
+    let payload_len = XMP_APP1_SIG.len() + xmp.len();
+    let seg_len = u16::try_from(payload_len + 2).unwrap();
+    let mut seg = Vec::with_capacity(4 + payload_len);
+    seg.extend_from_slice(&[0xFF, 0xE1]);
+    seg.extend_from_slice(&seg_len.to_be_bytes());
+    seg.extend_from_slice(XMP_APP1_SIG);
+    seg.extend_from_slice(xmp);
+    seg
 }
 
 #[test]
@@ -23,7 +38,7 @@ fn detects_google_micro_video_offset_from_file_tail() {
     "#;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"\xff\xd8");
-    bytes.extend_from_slice(xmp);
+    bytes.extend_from_slice(&app1_xmp_segment(xmp));
     bytes.extend_from_slice(b"\xff\xd9");
     let video_offset = bytes.len() as u64;
     bytes.extend_from_slice(&video);
@@ -65,7 +80,7 @@ fn detects_google_motion_photo_container_after_gain_map() {
     "#;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"\xff\xd8");
-    bytes.extend_from_slice(xmp);
+    bytes.extend_from_slice(&app1_xmp_segment(xmp));
     bytes.extend_from_slice(b"\xff\xd9");
     let gain_map_offset = bytes.len() as u64;
     bytes.extend_from_slice(&gain_map);
