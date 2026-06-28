@@ -37,6 +37,8 @@ fn insert_test_item(
         path: path_str.into(),
         folder_path: dir.to_path_buf(),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(64),
         height: Some(48),
         taken_at: Some(Utc::now()),

@@ -20,6 +20,8 @@ fn make_new_item(path: PathBuf, folder: PathBuf, hash: &str) -> NewMediaItem {
         path,
         folder_path: folder,
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(64),
         height: Some(48),
         taken_at: Some(Utc::now()),

@@ -430,6 +430,13 @@ box.mode-selector.on-light-background box.mode-dot,
   border-radius: 10px;
 }
 
+.thumb-motion-badge {
+  color: alpha(white, 0.95);
+  background: alpha(black, 0.42);
+  border-radius: 999px;
+  padding: 5px;
+}
+
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {

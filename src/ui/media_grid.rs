@@ -1058,6 +1058,7 @@ pub mod square_tile {
             /// 通过 CSS（flowboxchild:selected .thumb-checkmark）控制显隐，
             /// 仅在选中时可见。见 grid_css 的 .thumb-checkmark 规则。
             pub checkmark: RefCell<Option<gtk::Image>>,
+            pub motion_badge: RefCell<Option<gtk::Image>>,
             pub target: Cell<i32>,
             pub background_is_light: Cell<Option<bool>>,
             /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
@@ -1069,6 +1070,7 @@ pub mod square_tile {
                 Self {
                     picture: RefCell::new(None),
                     checkmark: RefCell::new(None),
+                    motion_badge: RefCell::new(None),
                     target: Cell::new(90),
                     background_is_light: Cell::new(None),
                     cache_key: RefCell::new(None),
@@ -1110,6 +1112,15 @@ pub mod square_tile {
                 checkmark.add_css_class("thumb-checkmark");
                 checkmark.set_parent(&*obj);
                 *self.checkmark.borrow_mut() = Some(checkmark);
+
+                let motion_badge = gtk::Image::builder()
+                    .icon_name("media-playback-start-symbolic")
+                    .pixel_size(18)
+                    .visible(false)
+                    .build();
+                motion_badge.add_css_class("thumb-motion-badge");
+                motion_badge.set_parent(&*obj);
+                *self.motion_badge.borrow_mut() = Some(motion_badge);
             }
 
             fn dispose(&self) {
@@ -1118,6 +1129,9 @@ pub mod square_tile {
                 }
                 if let Some(c) = self.checkmark.borrow_mut().take() {
                     c.unparent();
+                }
+                if let Some(b) = self.motion_badge.borrow_mut().take() {
+                    b.unparent();
                 }
             }
         }
@@ -1157,6 +1171,14 @@ pub mod square_tile {
                     let x = (width - cw - margin).max(0);
                     let y = (height - ch - margin).max(0);
                     c.size_allocate(&gtk::Allocation::new(x, y, cw, ch), -1);
+                }
+                if let Some(b) = self.motion_badge.borrow().as_ref() {
+                    let (_, bw, _, _) = b.measure(gtk::Orientation::Horizontal, -1);
+                    let (_, bh, _, _) = b.measure(gtk::Orientation::Vertical, -1);
+                    let bw = bw.clamp(1, width);
+                    let bh = bh.clamp(1, height);
+                    let margin = 7;
+                    b.size_allocate(&gtk::Allocation::new(margin, margin, bw, bh), -1);
                 }
             }
         }
@@ -1211,6 +1233,12 @@ pub mod square_tile {
 
         pub fn cache_key(&self) -> Option<String> {
             self.imp().cache_key.borrow().clone()
+        }
+
+        pub fn set_motion_badge_visible(&self, visible: bool) {
+            if let Some(badge) = self.imp().motion_badge.borrow().as_ref() {
+                badge.set_visible(visible);
+            }
         }
     }
 
@@ -1272,6 +1300,25 @@ pub mod square_tile {
             // and drawn above the picture.
             assert!(checkmark.parent().is_some());
         }
+
+        #[gtk::test]
+        fn square_tile_has_motion_badge_for_dynamic_photos() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+
+            let badge = tile
+                .imp()
+                .motion_badge
+                .borrow()
+                .as_ref()
+                .expect("SquareTile should construct its motion badge")
+                .clone();
+            assert!(badge.has_css_class("thumb-motion-badge"));
+            assert!(!badge.is_visible());
+
+            tile.set_motion_badge_visible(true);
+            assert!(badge.is_visible());
+        }
     }
 }
 
@@ -1294,6 +1341,7 @@ fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
+    tile.set_motion_badge_visible(item.is_motion_photo());
 
     let fallback_item = item.clone();
     let size = spec.thumb_size;
@@ -1469,6 +1517,8 @@ mod tests {
             path: PathBuf::from(format!("/tmp/{name}")),
             folder_path: PathBuf::from("/tmp"),
             mime_type: "image/png".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: Some(100),
             height: Some(100),
             taken_at: Some(dt),

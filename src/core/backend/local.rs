@@ -1,8 +1,12 @@
 //! 本地文件系统扫描后端
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
-use crate::core::media::{is_supported_media_path, MediaItem, NewMediaItem};
+use crate::core::media::{
+    is_supported_media_path, MediaItem, NewMediaItem, MEDIA_SUBKIND_MOTION_PHOTO,
+    MEDIA_SUBKIND_STANDARD,
+};
 use crate::core::metadata;
+use crate::core::motion_photo::{self, MediaAttributes};
 use chrono::Utc;
 use std::io::Read;
 use std::path::Path;
@@ -72,6 +76,23 @@ impl LocalBackend {
     /// 这把「每次启动对整个图库重复哈希」（1.8GB → 数秒）降到「逐文件 stat + 一次
     /// 索引查询」（毫秒级），除非文件真的新增/改动。
     pub fn scan_and_upsert_dir(&self, root: &Path) -> Result<usize> {
+        self.scan_and_upsert_dir_with(root, |_| {})
+    }
+
+    /// 与 [`Self::scan_and_upsert_dir`] 相同，但每个实际 upsert 的项目都会传给
+    /// `on_upserted`。用于启动后台扫描把新增/变更项增量推给 UI，同时仍保留
+    /// `(uri, file_mtime, file_size)` 未改动短路。
+    pub fn scan_and_upsert_dir_notify<F>(&self, root: &Path, mut on_upserted: F) -> Result<usize>
+    where
+        F: FnMut(MediaItem),
+    {
+        self.scan_and_upsert_dir_with(root, |item| on_upserted(item))
+    }
+
+    fn scan_and_upsert_dir_with<F>(&self, root: &Path, mut on_upserted: F) -> Result<usize>
+    where
+        F: FnMut(MediaItem),
+    {
         let mut indexed = 0usize;
         for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
             let path = entry.path();
@@ -100,7 +121,8 @@ impl LocalBackend {
 
             match self.process_file(path) {
                 Ok(Some(item)) => {
-                    self.upsert(&item)?;
+                    let upserted = self.upsert(&item)?;
+                    on_upserted(upserted);
                     indexed += 1;
                 }
                 Ok(None) => {} // 不支持的 MIME
@@ -124,12 +146,21 @@ impl LocalBackend {
             .unwrap_or_else(|| Path::new("/").to_path_buf());
 
         let hash = stream_file_hash(path)?;
+        let motion_photo = motion_photo::detect(path);
 
         Ok(Some(NewMediaItem {
             uri,
             path: path.to_path_buf(),
             folder_path: folder,
             mime_type: meta.mime_type,
+            media_subkind: if motion_photo.is_some() {
+                MEDIA_SUBKIND_MOTION_PHOTO.into()
+            } else {
+                MEDIA_SUBKIND_STANDARD.into()
+            },
+            media_attributes: motion_photo
+                .map(MediaAttributes::motion_photo_json)
+                .unwrap_or_else(MediaAttributes::standard_json),
             width: meta.width,
             height: meta.height,
             taken_at: meta.taken_at,
@@ -157,11 +188,20 @@ impl LocalBackend {
         let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
         let hash = stream_file_hash(source)?;
+        let motion_photo = motion_photo::detect(source);
         Ok(NewMediaItem {
             uri: uri.to_string(),
             path: path.to_path_buf(),
             folder_path: folder.to_path_buf(),
             mime_type: meta.mime_type,
+            media_subkind: if motion_photo.is_some() {
+                MEDIA_SUBKIND_MOTION_PHOTO.into()
+            } else {
+                MEDIA_SUBKIND_STANDARD.into()
+            },
+            media_attributes: motion_photo
+                .map(MediaAttributes::motion_photo_json)
+                .unwrap_or_else(MediaAttributes::standard_json),
             width: meta.width,
             height: meta.height,
             taken_at: meta.taken_at,
@@ -214,9 +254,10 @@ impl LocalBackend {
         if let Some(id) = existing {
             conn.execute(
                 "UPDATE media_items
-                 SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5, width=?6,
-                     height=?7, taken_at=?8, file_mtime=?9, file_size=?10,
-                     blake3_hash=?11, trashed_at=NULL, indexed_at=unixepoch()
+                 SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
+                     media_subkind=?6, media_attributes=?7, width=?8, height=?9,
+                     taken_at=?10, file_mtime=?11, file_size=?12, blake3_hash=?13,
+                     trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
                     id,
@@ -224,6 +265,8 @@ impl LocalBackend {
                     item.folder_path.to_string_lossy(),
                     item.mime_type,
                     db::media_kind_db_value(&item.mime_type),
+                    item.media_subkind,
+                    item.media_attributes,
                     item.width,
                     item.height,
                     item.taken_at.map(|t| t.timestamp()),
@@ -277,6 +320,8 @@ mod tests {
             path: path.clone(),
             folder_path: dir.path().to_path_buf(),
             mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: Some(64),
             height: Some(48),
             taken_at: None,
@@ -368,6 +413,42 @@ mod tests {
         use image::{ImageBuffer, Rgb};
         let img = ImageBuffer::<Rgb<u8>, _>::from_fn(w, h, |_, _| Rgb(color));
         img.save(path).unwrap();
+    }
+
+    fn append_micro_video_tail(path: &std::path::Path, video_len: usize) {
+        let mut bytes = std::fs::read(path).unwrap();
+        let xmp = format!(
+            r#"<x:xmpmeta><rdf:Description GCamera:MicroVideo="1" GCamera:MicroVideoOffset="{video_len}" GCamera:MicroVideoPresentationTimestampUs="123456"/></x:xmpmeta>"#
+        );
+        bytes.extend_from_slice(xmp.as_bytes());
+        let mut video = vec![0_u8; video_len];
+        video[0..4].copy_from_slice(&(24_u32.to_be_bytes()));
+        video[4..8].copy_from_slice(b"ftyp");
+        video[8..12].copy_from_slice(b"mp42");
+        bytes.extend_from_slice(&video);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn upsert_from_path_persists_motion_photo_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_plain_jpeg_in(dir.path(), "motion.jpg");
+        append_micro_video_tail(&path, 96);
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool);
+
+        let item = backend
+            .upsert_from_path(&path)
+            .unwrap()
+            .expect("motion photo jpeg should be indexed");
+
+        assert_eq!(item.media_subkind, MEDIA_SUBKIND_MOTION_PHOTO);
+        let attrs = motion_photo::MediaAttributes::from_json(&item.media_attributes);
+        let info = attrs
+            .motion_photo
+            .expect("motion photo attributes should be persisted");
+        assert_eq!(info.video_length, 96);
+        assert_eq!(info.presentation_timestamp_us, Some(123_456));
     }
 
     /// 文件监听器看到被外部还原的文件重新出现在原路径 → `upsert_from_path`。

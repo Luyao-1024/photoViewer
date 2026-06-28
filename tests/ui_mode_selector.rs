@@ -86,6 +86,8 @@ fn mode_selector_integration_suite() {
         path: "/tmp/one.jpg".into(),
         folder_path: "/tmp".into(),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
         taken_at: None,
@@ -112,6 +114,55 @@ fn mode_selector_integration_suite() {
         page.imp().view_stack.get().visible_child_name().as_deref(),
         Some("day"),
         "PhotosPage should show the Day grid by default when media exists"
+    );
+
+    // --- Test 5: an initially empty PhotosPage must leave the empty state when
+    // startup/background scanning appends the first media item. This is the
+    // startup path after the app only loads a small first DB page: an empty DB
+    // snapshot should not permanently pin the ViewStack to the no-photos child.
+    let empty_then_filled: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let tmp_empty = tempfile::tempdir().unwrap();
+    let pool_empty = photo_viewer::core::db::init_pool(&tmp_empty.path().join("test.db")).unwrap();
+    let loader_empty = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
+        pool_empty.clone(),
+        tmp_empty.path().join("thumbs"),
+    ));
+    let empty_page = PhotosPage::new(empty_then_filled.clone(), loader_empty);
+    assert_eq!(
+        empty_page
+            .imp()
+            .view_stack
+            .get()
+            .visible_child_name()
+            .as_deref(),
+        None,
+        "initially empty page should show the untitled empty-state child"
+    );
+    empty_then_filled.append(&glib::BoxedAnyObject::new(MediaItem {
+        id: 2,
+        uri: "file:///tmp/two.jpg".into(),
+        path: "/tmp/two.jpg".into(),
+        folder_path: "/tmp".into(),
+        mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
+        width: Some(100),
+        height: Some(100),
+        taken_at: None,
+        file_mtime: chrono::Utc::now(),
+        file_size: 100,
+        blake3_hash: "hash2".into(),
+        trashed_at: None,
+    }));
+    assert_eq!(
+        empty_page
+            .imp()
+            .view_stack
+            .get()
+            .visible_child_name()
+            .as_deref(),
+        Some("day"),
+        "PhotosPage should switch from empty state to Day when media arrives"
     );
 
     // --- Structural checks (validation plan §集成测试 items 1, 2, 5) ---

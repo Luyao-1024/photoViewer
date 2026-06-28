@@ -15,6 +15,8 @@ fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> 
         path: path.into(),
         folder_path: folder.into(),
         mime_type: mime_type.into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
         taken_at: Some(Utc::now()),

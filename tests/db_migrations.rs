@@ -53,6 +53,8 @@ fn media_items_has_media_kind_column_and_upsert_populates_it() {
             path: "/tmp/clip.mp4".into(),
             folder_path: "/tmp".into(),
             mime_type: "video/mp4".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: None,
             height: None,
             taken_at: None,
@@ -72,6 +74,31 @@ fn media_items_has_media_kind_column_and_upsert_populates_it() {
         )
         .unwrap();
     assert_eq!(media_kind, "video");
+}
+
+#[test]
+fn media_items_has_subkind_and_attributes_columns() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let pool = db::init_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(media_items)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+
+    assert!(
+        columns.iter().any(|c| c == "media_subkind"),
+        "media_items should persist secondary media classification"
+    );
+    assert!(
+        columns.iter().any(|c| c == "media_attributes"),
+        "media_items should persist extensible media attributes"
+    );
 }
 
 #[test]

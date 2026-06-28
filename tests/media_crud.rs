@@ -15,6 +15,8 @@ fn sample_new_item() -> NewMediaItem {
         path: "/test/IMG_001.jpg".into(),
         folder_path: "/test".into(),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(1920),
         height: Some(1080),
         taken_at: Some(now),

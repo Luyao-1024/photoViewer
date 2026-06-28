@@ -12,10 +12,24 @@ using Gtk 4.0;
 template $PhotoTile : Gtk.Box {
   orientation: vertical;
 
-  Gtk.Picture picture {
-    content-fit: cover;
-    hexpand: false;
-    vexpand: false;
-    css-classes: ["photo-tile-picture"];
+  Gtk.Overlay overlay {
+    Gtk.Picture picture {
+      content-fit: cover;
+      hexpand: false;
+      vexpand: false;
+      css-classes: ["photo-tile-picture"];
+    }
+
+    [overlay]
+    Gtk.Image motion_badge {
+      visible: false;
+      icon-name: "media-playback-start-symbolic";
+      pixel-size: 18;
+      halign: start;
+      valign: start;
+      margin-top: 7;
+      margin-start: 7;
+      css-classes: ["thumb-motion-badge"];
+    }
   }
 }

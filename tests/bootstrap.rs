@@ -7,6 +7,7 @@ use common::*;
 use photo_viewer::core::albums;
 use photo_viewer::core::bootstrap;
 use photo_viewer::core::db;
+use photo_viewer::core::media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
 
 #[test]
 fn scan_and_aggregate_includes_chinese_subfolder_as_album() {
@@ -34,4 +35,26 @@ fn scan_and_aggregate_includes_chinese_subfolder_as_album() {
         })
         .expect("截图 album should exist");
     assert_eq!(scr.photo_count, 1);
+}
+
+#[test]
+fn scan_and_aggregate_with_notifier_emits_upserted_items() {
+    let dir = tmp_dir();
+    write_plain_png(dir.path(), "visible.png");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let (notifier, mut rx) = MediaChangeNotifier::new();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        bootstrap::scan_and_aggregate_with_notifier(&pool, &[dir.path().to_path_buf()], notifier)
+            .await
+            .unwrap();
+    });
+
+    match rx.try_recv() {
+        Ok(MediaChangeEvent::Upserted(item)) => {
+            assert_eq!(item.display_name(), "visible.png");
+        }
+        other => panic!("expected startup scan to emit Upserted, got {other:?}"),
+    }
 }

@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS media_items (
     folder_path     TEXT    NOT NULL,
     mime_type       TEXT    NOT NULL,
     media_kind      TEXT    NOT NULL DEFAULT 'image',
+    media_subkind   TEXT    NOT NULL DEFAULT 'standard',
+    media_attributes TEXT   NOT NULL DEFAULT '{}',
     width           INTEGER,
     height          INTEGER,
     taken_at        INTEGER,
@@ -32,6 +34,10 @@ CREATE INDEX IF NOT EXISTS idx_media_favorite
 
 CREATE INDEX IF NOT EXISTS idx_media_kind
     ON media_items(media_kind)
+    WHERE trashed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_media_subkind
+    ON media_items(media_subkind)
     WHERE trashed_at IS NULL;
 
 -- albums 物化视图

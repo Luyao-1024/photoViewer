@@ -11,8 +11,8 @@ use libadwaita as adw;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-const INITIAL_MEDIA_PAGE_SIZE: u32 = 1_000;
-const BACKGROUND_MEDIA_PAGE_SIZE: u32 = 2_000;
+const INITIAL_MEDIA_PAGE_SIZE: u32 = 200;
+const BACKGROUND_MEDIA_PAGE_SIZE: u32 = 200;
 
 fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO.get_or_init(|| {
@@ -156,37 +156,8 @@ async fn initialize() -> anyhow::Result<(
         .clamp(4, 8);
     thumbnail_loader.spawn_workers(workers);
 
-    // 启动后台扫描 + 聚合 albums。图片目录和视频目录都作为媒体根扫描；
-    // 二者可以混放图片/视频，`media_roots()` 会去重。
     let pictures = crate::config::pictures_dir();
     let media_roots = crate::config::media_roots();
-    crate::core::bootstrap::scan_and_aggregate(&pool, &media_roots).await?;
-
-    // 回收站对账：扫描系统回收站，把"原路径在相册目录下、确实已被删"的图片补进 DB
-    //（标 trashed）。这样被外部（文件管理器）删除、或历史 DB 行丢失的图片也能在
-    // 回收站视图出现。必须在加载首屏 grid 前完成：补进来的都是 trashed 行，不会
-    // 进 live grid，但会进 list_trashed_media。详见 trash::reconcile_trash。
-    {
-        let pool_for_trash = pool.clone();
-        let pictures_for_trash = pictures.clone();
-        tokio::task::spawn_blocking(move || -> crate::core::error::Result<()> {
-            match crate::core::trash::reconcile_trash(&pool_for_trash, &pictures_for_trash) {
-                Ok(stats) => tracing::info!(
-                    "回收站对账完成：新增 {}、标记 {}、清理 {}、跳过 {}",
-                    stats.inserted,
-                    stats.marked,
-                    stats.pruned,
-                    stats.skipped
-                ),
-                Err(e) => tracing::warn!("回收站对账失败: {e}"),
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| {
-            crate::core::error::AppError::Backend(format!("reconcile_trash join error: {e}"))
-        })??;
-    }
 
     // 启动文件监听（M5-T5+）：监听媒体根的后续变更并增量 upsert。
     // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
@@ -203,14 +174,22 @@ async fn initialize() -> anyhow::Result<(
         watch_paths,
         trash_roots,
         pictures.clone(),
-        notifier,
+        notifier.clone(),
     );
 
-    // 首屏先加载一页，剩余数据稍后分批追加，避免大图库启动时一次性构造所有 GTK 对象。
+    // 首屏只加载一页（200 张），让窗口尽快可操作；启动扫描、回收站对账和
+    // 剩余 DB 分页都在后台继续。
     let items = db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     append_media_items(&list, items);
-    load_remaining_media_pages(pool.clone(), list.clone(), INITIAL_MEDIA_PAGE_SIZE);
+    start_background_startup_work(
+        pool.clone(),
+        media_roots,
+        pictures,
+        notifier.clone(),
+        list.clone(),
+        INITIAL_MEDIA_PAGE_SIZE,
+    );
 
     // change_rx 交给 activate 处的消费者：那里能拿到 MainWindow，TrashChanged 时
     // 可以刷新可见的回收站页面（相册列表的 Upserted/Removed 也由它应用到 media_list）。
@@ -274,5 +253,49 @@ fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_off
             }
             offset += count;
         }
+    });
+}
+
+fn start_background_startup_work(
+    pool: DbPool,
+    media_roots: Vec<std::path::PathBuf>,
+    pictures: std::path::PathBuf,
+    notifier: crate::core::media_change_notifier::MediaChangeNotifier,
+    list: gtk::gio::ListStore,
+    remaining_offset: u32,
+) {
+    glib::MainContext::default().spawn_local(async move {
+        if let Err(e) = crate::core::bootstrap::scan_and_aggregate_with_notifier(
+            &pool,
+            &media_roots,
+            notifier.clone(),
+        )
+        .await
+        {
+            tracing::error!("后台扫描失败: {}", e);
+        }
+
+        let pool_for_trash = pool.clone();
+        let pictures_for_trash = pictures.clone();
+        match gtk::gio::spawn_blocking(move || {
+            crate::core::trash::reconcile_trash(&pool_for_trash, &pictures_for_trash)
+        })
+        .await
+        {
+            Ok(Ok(stats)) => {
+                tracing::info!(
+                    "回收站对账完成：新增 {}、标记 {}、清理 {}、跳过 {}",
+                    stats.inserted,
+                    stats.marked,
+                    stats.pruned,
+                    stats.skipped
+                );
+                notifier.trash_changed();
+            }
+            Ok(Err(e)) => tracing::warn!("回收站对账失败: {e}"),
+            Err(e) => tracing::warn!("回收站对账 join 失败: {e:?}"),
+        }
+
+        load_remaining_media_pages(pool, list, remaining_offset);
     });
 }

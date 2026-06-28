@@ -23,6 +23,8 @@ Original image decode must apply orientation metadata before creating the displa
 
 Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. The image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
 
+Dynamic photos (`media_subkind=motion_photo`) open as images first. The still `GtkPicture` remains the default stage and a top-left play button starts the persisted embedded video range. Playback extracts that byte range to a temporary MP4, reuses the same `GtkVideo` layer, and switches back to the still image when the stream reports `ended`. Dynamic photos remain editable as still images; only normal `video/*` items disable editing.
+
 Flatpak builds and Flatpak-based development runs must include `--socket=pulseaudio`. GTK/GStreamer can still render video without that sandbox permission, but audio output is unavailable, which presents as silent video playback even though the viewer code is playing the media stream.
 
 When a video stream is created, the viewer applies the persisted video audio preferences before playback starts: `video_default_muted` controls whether newly opened videos start muted (default `true`), and `video_volume` restores the last stream volume. The settings page exposes only the default-mute switch; volume changes are persisted from the media stream itself, not from a separate settings slider.
@@ -43,7 +45,9 @@ For videos, play/pause and seeking are handled by the `GtkVideo`'s own built-in 
 
 ## Navigation Buttons
 
-Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair in the bottom-right corner over the photo. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original image more than necessary.
+Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
+
+Image zoom controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, zoom-in. At identity zoom, show only the zoom-in button; reveal zoom-out and reset only once the image is enlarged. Zoom state is viewer-local and resets when switching media, opening the editor, or using the reset button; videos remain view-only and do not show the image zoom controls.
 
 ## Header Toolbar
 

@@ -14,6 +14,8 @@ fn make_item(uri: &str, path: PathBuf, folder: PathBuf) -> NewMediaItem {
         path,
         folder_path: folder,
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
         taken_at: Some(Utc::now()),

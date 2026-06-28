@@ -11,6 +11,7 @@ pub mod log_targets;
 pub mod media;
 pub mod media_change_notifier;
 pub mod metadata;
+pub mod motion_photo;
 pub mod notify_watcher;
 pub mod orientation;
 pub mod prefs;

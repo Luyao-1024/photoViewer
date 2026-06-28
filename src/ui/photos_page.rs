@@ -165,6 +165,7 @@ impl PhotosPage {
 
         // Snapshot the initial size before `media_list` is moved into MediaGrid.
         let is_empty = media_list.n_items() == 0;
+        let media_list_for_empty_state = media_list.clone();
 
         let on_activate: Rc<dyn Fn(u32)> = {
             let weak = obj.downgrade();
@@ -312,6 +313,23 @@ impl PhotosPage {
             stack.set_visible_child(&empty_page);
         } else {
             stack.set_visible_child_name("day");
+        }
+        {
+            let stack = stack.clone();
+            let empty_page = empty_page.clone();
+            media_list_for_empty_state.connect_items_changed(move |list, _, _, _| {
+                if list.n_items() == 0 {
+                    stack.set_visible_child(&empty_page);
+                    return;
+                }
+                let showing_empty = stack
+                    .visible_child()
+                    .as_ref()
+                    .is_some_and(|child| child == empty_page.upcast_ref::<gtk::Widget>());
+                if showing_empty {
+                    stack.set_visible_child_name("day");
+                }
+            });
         }
 
         // Wire the ModeSelector to our view_stack (it drives the visible
@@ -1046,6 +1064,8 @@ mod tests {
             path: PathBuf::from(format!("/tmp/{name}")),
             folder_path: PathBuf::from("/tmp"),
             mime_type: "image/png".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: Some(100),
             height: Some(100),
             taken_at: Some(dt),

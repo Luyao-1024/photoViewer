@@ -13,6 +13,7 @@ use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
+use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
@@ -68,6 +69,9 @@ const THUMB_WINDOW_MAX: u32 = 40;
 const THUMB_CENTER_RETRY_FRAMES: u8 = 8;
 const CROP_HANDLE_RADIUS: f64 = 14.0;
 const CROP_MIN_SOURCE_SIZE: u32 = 24;
+const MIN_VIEWER_ZOOM: f64 = 1.0;
+const MAX_VIEWER_ZOOM: f64 = 8.0;
+const VIEWER_ZOOM_STEP: f64 = 1.25;
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -155,6 +159,11 @@ fn persist_video_volume_from_stream(stream: &impl IsA<gtk::MediaStream>) {
     }
 }
 
+fn motion_video_cache_path(item: &MediaItem) -> PathBuf {
+    let hash_prefix = item.blake3_hash.get(..16).unwrap_or(&item.blake3_hash);
+    std::env::temp_dir().join(format!("photo-viewer-motion-{}-{hash_prefix}.mp4", item.id))
+}
+
 mod imp {
     use super::*;
 
@@ -167,6 +176,15 @@ mod imp {
         pub current_token: Cell<u64>,
         /// Cumulative zoom scale (1.0 = identity). GestureZoom multiplies into it.
         pub zoom_scale: Cell<f64>,
+        /// Viewer image pan offset in allocated widget pixels.
+        pub zoom_pan_x: Cell<f64>,
+        pub zoom_pan_y: Cell<f64>,
+        /// Pan offset captured at the start of the current drag gesture.
+        pub zoom_drag_origin_x: Cell<f64>,
+        pub zoom_drag_origin_y: Cell<f64>,
+        /// Zoom captured at pinch begin; GestureZoom scale values are relative
+        /// to that begin point, not incremental deltas.
+        pub zoom_gesture_origin_scale: Cell<f64>,
         /// Callback registered by the host (PhotosPage) for keyboard navigation.
         pub nav_cb: RefCell<Option<NavCallback>>,
         /// Callback fired after this viewer successfully moves an item to trash.
@@ -245,7 +263,11 @@ mod imp {
         #[template_child]
         pub video: TemplateChild<gtk::Video>,
         #[template_child]
+        pub motion_play_btn: TemplateChild<gtk::Button>,
+        #[template_child]
         pub crop_overlay: TemplateChild<gtk::DrawingArea>,
+        #[template_child]
+        pub image_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub spinner: TemplateChild<gtk::Spinner>,
         #[template_child]
@@ -268,6 +290,12 @@ mod imp {
         pub prev_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub next_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_out_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_reset_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_in_btn: TemplateChild<gtk::Button>,
     }
 
     #[glib::object_subclass]
@@ -312,7 +340,10 @@ impl ViewerPage {
         obj.set_title(&tr("page.viewer.title"));
         *obj.imp().media_list.borrow_mut() = Some(media_list);
         obj.imp().current_index.set(index);
+        obj.imp().zoom_scale.set(MIN_VIEWER_ZOOM);
+        obj.imp().zoom_gesture_origin_scale.set(MIN_VIEWER_ZOOM);
         obj.apply_i18n();
+        obj.setup_zoom_controls();
         obj.setup_gesture();
         obj.setup_keyboard();
         obj.setup_edit_button();
@@ -322,6 +353,7 @@ impl ViewerPage {
         obj.setup_details_panel();
         obj.setup_favorite_button();
         obj.setup_nav_buttons();
+        obj.setup_motion_play_button();
         obj.setup_thumb_strip_listener();
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
@@ -345,6 +377,18 @@ impl ViewerPage {
         imp.details_title
             .get()
             .set_label(&tr("viewer.details.title"));
+        imp.zoom_in_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_in")));
+        imp.zoom_out_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_out")));
+        imp.zoom_reset_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_reset")));
+        imp.motion_play_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.play_motion_photo")));
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an
@@ -439,8 +483,11 @@ impl ViewerPage {
 
     /// Reveal the editor side-panel and lock navigation gestures.
     fn start_editing(&self) {
+        self.reset_viewer_zoom();
         self.imp().is_editing.set(true);
         self.set_overlay_navigation_visible(false);
+        self.set_zoom_controls_visible(false);
+        self.imp().motion_play_btn.get().set_visible(false);
         self.set_editor_sidebar_child_visible(true);
         self.imp().editor_split_view.get().set_show_sidebar(true);
         self.set_can_pop(false);
@@ -452,6 +499,10 @@ impl ViewerPage {
         let imp = self.imp();
         imp.is_editing.set(false);
         self.set_overlay_navigation_visible(true);
+        self.set_zoom_controls_visible(imp.picture.get().is_visible());
+        if let Some(item) = self.current_media_item() {
+            self.set_motion_play_button_for_item(&item);
+        }
         imp.editor_split_view.get().set_show_sidebar(false);
         self.set_crop_overlay(CropOverlayUpdate {
             active: false,
@@ -923,6 +974,175 @@ impl ViewerPage {
         });
     }
 
+    fn setup_motion_play_button(&self) {
+        let weak = self.downgrade();
+        self.imp().motion_play_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.play_current_motion_photo();
+            }
+        });
+    }
+
+    fn set_motion_play_button_for_item(&self, item: &MediaItem) {
+        self.imp().motion_play_btn.get().set_visible(
+            item.is_motion_photo() && !item.is_video() && !self.imp().is_editing.get(),
+        );
+    }
+
+    fn restore_image_after_motion_video(&self, token: u64) {
+        if self.imp().current_token.get() != token {
+            return;
+        }
+        self.stop_video_playback();
+        self.imp().video.get().set_visible(false);
+        self.imp().picture.get().set_visible(true);
+        self.imp().edit_btn.get().set_sensitive(true);
+        self.set_zoom_controls_visible(!self.imp().is_editing.get());
+        if let Some(item) = self.current_media_item() {
+            self.set_motion_play_button_for_item(&item);
+        }
+    }
+
+    fn play_current_motion_photo(&self) {
+        let Some(item) = self.current_media_item() else {
+            return;
+        };
+        let attrs = MediaAttributes::from_json(&item.media_attributes);
+        let Some(info) = attrs.motion_photo else {
+            self.imp().motion_play_btn.get().set_visible(false);
+            return;
+        };
+
+        let token = self.imp().current_token.get();
+        let source = item.path.clone();
+        let dest = motion_video_cache_path(&item);
+        self.imp().spinner.get().set_visible(true);
+        self.imp().motion_play_btn.get().set_visible(false);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        gio::spawn_blocking(move || {
+            let result = motion_photo::extract_video_to(&source, &info, &dest)
+                .map(|()| dest)
+                .map_err(|err| err.to_string());
+            let _ = tx.send(result);
+        });
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let video_path = match rx.await {
+                Ok(Ok(path)) => path,
+                Ok(Err(err)) => {
+                    tracing::warn!("ViewerPage: failed to extract motion photo video: {err}");
+                    if let Some(this) = weak.upgrade() {
+                        this.imp().spinner.get().set_visible(false);
+                        if let Some(item) = this.current_media_item() {
+                            this.set_motion_play_button_for_item(&item);
+                        }
+                    }
+                    return;
+                }
+                Err(_) => return,
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
+            }
+            this.show_motion_video_stage(video_path, token);
+        });
+    }
+
+    fn setup_zoom_controls(&self) {
+        let imp = self.imp();
+
+        let weak = self.downgrade();
+        imp.zoom_in_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.step_viewer_zoom(1);
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.zoom_out_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.step_viewer_zoom(-1);
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.zoom_reset_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.reset_viewer_zoom();
+            }
+        });
+
+        self.update_zoom_buttons();
+    }
+
+    fn step_viewer_zoom(&self, direction: i32) {
+        let next = step_zoom(self.imp().zoom_scale.get(), direction);
+        self.set_viewer_zoom(
+            next,
+            self.imp().zoom_pan_x.get(),
+            self.imp().zoom_pan_y.get(),
+        );
+    }
+
+    fn reset_viewer_zoom(&self) {
+        self.set_viewer_zoom(MIN_VIEWER_ZOOM, 0.0, 0.0);
+    }
+
+    fn set_viewer_zoom(&self, scale: f64, pan_x: f64, pan_y: f64) {
+        let picture = self.imp().picture.get();
+        let scale = scale.clamp(MIN_VIEWER_ZOOM, MAX_VIEWER_ZOOM);
+        let (pan_x, pan_y) = clamp_zoom_pan(
+            scale,
+            pan_x,
+            pan_y,
+            picture.allocated_width() as f64,
+            picture.allocated_height() as f64,
+        );
+        self.imp().zoom_scale.set(scale);
+        self.imp().zoom_pan_x.set(pan_x);
+        self.imp().zoom_pan_y.set(pan_y);
+        self.update_zoom_transform();
+        self.update_zoom_buttons();
+    }
+
+    #[cfg(test)]
+    fn set_viewer_zoom_for_tests(&self, scale: f64, pan_x: f64, pan_y: f64) {
+        self.set_viewer_zoom(scale, pan_x, pan_y);
+    }
+
+    fn update_zoom_transform(&self) {
+        let imp = self.imp();
+        let scale = imp.zoom_scale.get();
+        let pan_x = imp.zoom_pan_x.get();
+        let pan_y = imp.zoom_pan_y.get();
+        if let Some(provider) = imp.zoom_provider.borrow().as_ref() {
+            provider.load_from_data(&format!(
+                "picture.viewer-image-frame {{ transform: translate({pan_x}px, {pan_y}px) scale({scale}); }}"
+            ));
+        }
+        imp.picture.get().queue_draw();
+    }
+
+    fn set_zoom_controls_visible(&self, visible: bool) {
+        if let Some(parent) = self.imp().zoom_in_btn.get().parent() {
+            parent.set_visible(visible);
+        }
+        self.update_zoom_buttons();
+    }
+
+    fn update_zoom_buttons(&self) {
+        let imp = self.imp();
+        let zoomed = imp.zoom_scale.get() > MIN_VIEWER_ZOOM;
+        imp.zoom_in_btn.get().set_visible(true);
+        imp.zoom_out_btn.get().set_visible(zoomed);
+        imp.zoom_reset_btn.get().set_visible(zoomed);
+    }
+
     fn stop_video_playback(&self) {
         // Pause the in-flight stream so audio/playback does not continue behind
         // an image, then detach it. The GtkVideo keeps its own built-in
@@ -941,16 +1161,20 @@ impl ViewerPage {
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(true);
+        self.set_zoom_controls_visible(!self.imp().is_editing.get());
     }
 
     fn show_video_stage(&self, item: &MediaItem) {
         self.stop_video_playback();
+        self.reset_viewer_zoom();
+        self.imp().motion_play_btn.get().set_visible(false);
         self.imp()
             .picture
             .get()
             .set_paintable(None::<&gdk::Paintable>);
         self.imp().picture.get().set_visible(false);
         self.imp().video.get().set_visible(true);
+        self.set_zoom_controls_visible(false);
         self.imp().spinner.get().set_visible(false);
         self.imp().edit_btn.get().set_sensitive(false);
         self.set_crop_overlay(CropOverlayUpdate {
@@ -966,6 +1190,43 @@ impl ViewerPage {
         self.imp().video.get().set_media_stream(Some(&stream));
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
         stream.connect_volume_notify(|stream| persist_video_volume_from_stream(stream));
+        stream.set_playing(true);
+        let stream_weak = stream.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(stream) = stream_weak.upgrade() {
+                apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
+            }
+        });
+    }
+
+    fn show_motion_video_stage(&self, video_path: PathBuf, token: u64) {
+        self.stop_video_playback();
+        self.reset_viewer_zoom();
+        self.imp().picture.get().set_visible(false);
+        self.imp().video.get().set_visible(true);
+        self.imp().motion_play_btn.get().set_visible(false);
+        self.set_zoom_controls_visible(false);
+        self.imp().spinner.get().set_visible(false);
+        self.imp().edit_btn.get().set_sensitive(false);
+
+        let stream = gtk::MediaFile::for_filename(&video_path);
+        stream.set_loop(false);
+        let default_muted = prefs::video_default_muted();
+        let persisted_volume = prefs::video_volume();
+        self.imp().video.get().set_media_stream(Some(&stream));
+        apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
+        stream.connect_volume_notify(|stream| persist_video_volume_from_stream(stream));
+
+        let weak = self.downgrade();
+        stream.connect_ended_notify(move |stream| {
+            if !stream.is_ended() {
+                return;
+            }
+            if let Some(this) = weak.upgrade() {
+                this.restore_image_after_motion_video(token);
+            }
+        });
+
         stream.set_playing(true);
         let stream_weak = stream.downgrade();
         glib::idle_add_local_once(move || {
@@ -1718,6 +1979,7 @@ impl ViewerPage {
         );
         self.imp().current_index.set(index);
         self.imp().spinner.get().set_visible(true);
+        self.reset_viewer_zoom();
 
         // Bump token so a stale response from a previous show_at() doesn't
         // overwrite the current picture.
@@ -1757,10 +2019,12 @@ impl ViewerPage {
         }
         if item.is_video() {
             self.refresh_thumb_strip();
+            self.imp().motion_play_btn.get().set_visible(false);
             self.show_video_stage(&item);
             return;
         }
         self.show_image_stage();
+        self.set_motion_play_button_for_item(&item);
         let path = strip_file_uri(&item.uri);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
@@ -1894,23 +2158,56 @@ impl ViewerPage {
 
         let gesture = gtk::GestureZoom::new();
         let weak = self.downgrade();
-        gesture.connect_scale_changed(move |_, scale| {
+        gesture.connect_begin(move |_, _| {
             if let Some(this) = weak.upgrade() {
-                let prev = this.imp().zoom_scale.get();
-                let next = (prev * scale).clamp(0.25, 8.0);
-                this.imp().zoom_scale.set(next);
-
-                // GtkPicture has no first-class `set_transform` API; we
-                // express the accumulated scale via the shared stylesheet.
-                // The picture re-paints on the next frame.
-                let picture = this.imp().picture.get();
-                if let Some(provider) = this.imp().zoom_provider.borrow().as_ref() {
-                    provider.load_from_data(&format!("picture {{ transform: scale({}); }}", next));
-                }
-                picture.queue_draw();
+                this.imp()
+                    .zoom_gesture_origin_scale
+                    .set(this.imp().zoom_scale.get());
             }
         });
-        self.imp().picture.get().add_controller(gesture);
+        let weak = self.downgrade();
+        gesture.connect_scale_changed(move |_, scale| {
+            if let Some(this) = weak.upgrade() {
+                let next =
+                    pinch_zoom_from_origin(this.imp().zoom_gesture_origin_scale.get(), scale);
+                this.set_viewer_zoom(
+                    next,
+                    this.imp().zoom_pan_x.get(),
+                    this.imp().zoom_pan_y.get(),
+                );
+            }
+        });
+        self.imp().image_overlay.get().add_controller(gesture);
+
+        let drag = gtk::GestureDrag::new();
+        let weak = self.downgrade();
+        drag.connect_drag_begin(move |_, _, _| {
+            if let Some(this) = weak.upgrade() {
+                this.imp()
+                    .zoom_drag_origin_x
+                    .set(this.imp().zoom_pan_x.get());
+                this.imp()
+                    .zoom_drag_origin_y
+                    .set(this.imp().zoom_pan_y.get());
+            }
+        });
+        let weak = self.downgrade();
+        drag.connect_drag_update(move |_, dx, dy| {
+            if let Some(this) = weak.upgrade() {
+                if this.imp().is_editing.get()
+                    || this.imp().crop_overlay_active.get()
+                    || this.imp().zoom_scale.get() <= MIN_VIEWER_ZOOM
+                {
+                    return;
+                }
+                this.set_viewer_zoom(
+                    this.imp().zoom_scale.get(),
+                    this.imp().zoom_drag_origin_x.get() + dx,
+                    this.imp().zoom_drag_origin_y.get() + dy,
+                );
+            }
+        });
+        self.imp().image_overlay.get().add_controller(drag);
     }
 
     fn setup_keyboard(&self) {
@@ -2422,6 +2719,35 @@ fn format_bitrate(bps: u64) -> Option<String> {
     } else {
         format!("{} kbps", bps / 1000)
     })
+}
+
+fn step_zoom(current: f64, direction: i32) -> f64 {
+    let factor = if direction >= 0 {
+        VIEWER_ZOOM_STEP
+    } else {
+        1.0 / VIEWER_ZOOM_STEP
+    };
+    (current * factor).clamp(MIN_VIEWER_ZOOM, MAX_VIEWER_ZOOM)
+}
+
+fn pinch_zoom_from_origin(origin_scale: f64, gesture_scale: f64) -> f64 {
+    (origin_scale * gesture_scale).clamp(MIN_VIEWER_ZOOM, MAX_VIEWER_ZOOM)
+}
+
+fn clamp_zoom_pan(
+    scale: f64,
+    pan_x: f64,
+    pan_y: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> (f64, f64) {
+    if scale <= MIN_VIEWER_ZOOM || viewport_width <= 0.0 || viewport_height <= 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let max_x = viewport_width * (scale - 1.0) / 2.0;
+    let max_y = viewport_height * (scale - 1.0) / 2.0;
+    (pan_x.clamp(-max_x, max_x), pan_y.clamp(-max_y, max_y))
 }
 
 /// Pure calculation: scroll adjustment value plus a visual-only residual that
@@ -3217,6 +3543,129 @@ mod tests {
         );
     }
 
+    #[test]
+    fn zoom_step_clamps_to_viewer_limits() {
+        assert_eq!(step_zoom(1.0, 1), 1.25);
+        assert_eq!(step_zoom(1.25, -1), 1.0);
+        assert_eq!(step_zoom(7.9, 1), MAX_VIEWER_ZOOM);
+        assert_eq!(step_zoom(MIN_VIEWER_ZOOM, -1), MIN_VIEWER_ZOOM);
+    }
+
+    #[test]
+    fn pinch_zoom_uses_gesture_origin_instead_of_compounding_updates() {
+        assert_eq!(pinch_zoom_from_origin(2.0, 1.1), 2.2);
+        assert_eq!(
+            pinch_zoom_from_origin(2.0, 1.2),
+            2.4,
+            "a second pinch update should still use the gesture origin, not compound 2.2 * 1.2"
+        );
+    }
+
+    #[test]
+    fn zoom_pan_is_clamped_and_resets_at_identity() {
+        assert_eq!(
+            clamp_zoom_pan(1.0, 120.0, -80.0, 1000.0, 700.0),
+            (0.0, 0.0),
+            "identity zoom should never keep a drag offset"
+        );
+        assert_eq!(
+            clamp_zoom_pan(2.0, 800.0, -500.0, 1000.0, 700.0),
+            (500.0, -350.0),
+            "zoomed images should pan only across the extra visible area"
+        );
+    }
+
+    #[gtk::test]
+    fn zoom_controls_live_in_top_right_with_reset_out_decrease_increase_order() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let imp = viewer.imp();
+
+        let zoom_parent = imp
+            .zoom_in_btn
+            .get()
+            .parent()
+            .expect("zoom buttons should live inside a control container");
+        assert!(
+            zoom_parent
+                .css_classes()
+                .iter()
+                .any(|class| class == "viewer-zoom-controls"),
+            "zoom buttons need a distinct overlay container so they do not disturb prev/next layout"
+        );
+        assert_eq!(
+            zoom_parent.halign(),
+            gtk::Align::End,
+            "zoom controls should sit at the image area's top-right edge"
+        );
+        assert_eq!(
+            zoom_parent.valign(),
+            gtk::Align::Start,
+            "zoom controls should sit at the image area's top-right edge"
+        );
+
+        assert_eq!(
+            zoom_parent.first_child(),
+            Some(imp.zoom_reset_btn.get().upcast::<gtk::Widget>()),
+            "zoom controls should start with reset"
+        );
+        assert_eq!(
+            imp.zoom_reset_btn.get().next_sibling(),
+            Some(imp.zoom_out_btn.get().upcast::<gtk::Widget>()),
+            "zoom-out should follow reset"
+        );
+        assert_eq!(
+            imp.zoom_out_btn.get().next_sibling(),
+            Some(imp.zoom_in_btn.get().upcast::<gtk::Widget>()),
+            "zoom-in should follow zoom-out"
+        );
+
+        for (name, button) in [
+            ("zoom_in_btn", imp.zoom_in_btn.get()),
+            ("zoom_out_btn", imp.zoom_out_btn.get()),
+            ("zoom_reset_btn", imp.zoom_reset_btn.get()),
+        ] {
+            assert!(
+                button
+                    .css_classes()
+                    .iter()
+                    .any(|class| class == "glass-toolbar-button"),
+                "{name} should reuse the existing viewer glass button treatment"
+            );
+        }
+
+        assert_eq!(
+            imp.zoom_reset_btn.get().icon_name().as_deref(),
+            Some("zoom-fit-best-symbolic"),
+            "reset should use the fit-to-view icon"
+        );
+        assert!(imp.zoom_in_btn.get().is_visible());
+        assert!(!imp.zoom_out_btn.get().is_visible());
+        assert!(!imp.zoom_reset_btn.get().is_visible());
+
+        viewer.set_viewer_zoom_for_tests(1.25, 0.0, 0.0);
+        assert!(imp.zoom_in_btn.get().is_visible());
+        assert!(imp.zoom_out_btn.get().is_visible());
+        assert!(imp.zoom_reset_btn.get().is_visible());
+    }
+
+    #[gtk::test]
+    fn reset_zoom_restores_identity_state() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        viewer.set_viewer_zoom_for_tests(2.0, 100.0, -50.0);
+        viewer.imp().zoom_reset_btn.get().emit_clicked();
+
+        assert_eq!(viewer.imp().zoom_scale.get(), 1.0);
+        assert_eq!(viewer.imp().zoom_pan_x.get(), 0.0);
+        assert_eq!(viewer.imp().zoom_pan_y.get(), 0.0);
+    }
+
     fn sample_media_item() -> MediaItem {
         MediaItem {
             id: 1,
@@ -3224,6 +3673,8 @@ mod tests {
             path: PathBuf::from("/tmp/sample.jpg"),
             folder_path: PathBuf::from("/tmp"),
             mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: Some(64),
             height: Some(48),
             taken_at: None,

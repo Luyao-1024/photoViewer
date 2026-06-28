@@ -78,6 +78,8 @@ mod tests {
             path: PathBuf::from(uri.trim_start_matches("file://")),
             folder_path: PathBuf::from("/tmp"),
             mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
             width: Some(64),
             height: Some(48),
             taken_at: None,

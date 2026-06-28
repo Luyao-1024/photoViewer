@@ -16,6 +16,9 @@ impl MediaKind {
     }
 }
 
+pub const MEDIA_SUBKIND_STANDARD: &str = "standard";
+pub const MEDIA_SUBKIND_MOTION_PHOTO: &str = "motion_photo";
+
 pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "heic", "heif"];
 pub const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "webm", "mkv", "avi"];
 
@@ -57,6 +60,8 @@ pub struct MediaItem {
     pub path: PathBuf,
     pub folder_path: PathBuf,
     pub mime_type: String,
+    pub media_subkind: String,
+    pub media_attributes: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub taken_at: Option<DateTime<Utc>>,
@@ -79,6 +84,10 @@ impl MediaItem {
         self.media_kind() == Some(MediaKind::Video)
     }
 
+    pub fn is_motion_photo(&self) -> bool {
+        self.media_subkind == MEDIA_SUBKIND_MOTION_PHOTO
+    }
+
     pub fn display_name(&self) -> &str {
         self.path
             .file_name()
@@ -98,6 +107,8 @@ pub struct NewMediaItem {
     pub path: PathBuf,
     pub folder_path: PathBuf,
     pub mime_type: String,
+    pub media_subkind: String,
+    pub media_attributes: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub taken_at: Option<DateTime<Utc>>,
@@ -113,6 +124,8 @@ impl From<&MediaItem> for NewMediaItem {
             path: item.path.clone(),
             folder_path: item.folder_path.clone(),
             mime_type: item.mime_type.clone(),
+            media_subkind: item.media_subkind.clone(),
+            media_attributes: item.media_attributes.clone(),
             width: item.width,
             height: item.height,
             taken_at: item.taken_at,
@@ -134,6 +147,8 @@ mod tests {
             path: PathBuf::from("/tmp/IMG_001.jpg"),
             folder_path: PathBuf::from("/tmp"),
             mime_type: "image/jpeg".into(),
+            media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+            media_attributes: "{}".into(),
             width: Some(1920),
             height: Some(1080),
             taken_at: Some(Utc::now()),

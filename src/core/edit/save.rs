@@ -17,7 +17,7 @@ use image::ImageReader;
 use crate::core::db::{self, DbPool};
 use crate::core::edit::{apply_all, EditRegistry, EditState};
 use crate::core::error::Result;
-use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use crate::core::orientation;
 
 /// 保存为副本：渲染到 `{原名}_edited_{毫秒时间戳}.{ext}`，插入新 DB 行。
@@ -52,6 +52,8 @@ pub fn save_as_copy(
         path: new_path.clone(),
         folder_path: source.folder_path.clone(),
         mime_type: source.mime_type.clone(),
+        media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+        media_attributes: "{}".into(),
         width: Some(rendered.width()),
         height: Some(rendered.height()),
         taken_at: source.taken_at,
@@ -115,14 +117,17 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
-            (uri, path, folder_path, mime_type, media_kind, width, height,
-             taken_at, file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch())
+            (uri, path, folder_path, mime_type, media_kind, media_subkind,
+             media_attributes, width, height, taken_at, file_mtime, file_size,
+             blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, unixepoch())
          ON CONFLICT(uri) DO UPDATE SET
              path=excluded.path,
              folder_path=excluded.folder_path,
              mime_type=excluded.mime_type,
              media_kind=excluded.media_kind,
+             media_subkind=excluded.media_subkind,
+             media_attributes=excluded.media_attributes,
              width=excluded.width,
              height=excluded.height,
              taken_at=excluded.taken_at,
@@ -137,6 +142,8 @@ fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<Media
             item.folder_path.to_string_lossy(),
             item.mime_type,
             db::media_kind_db_value(&item.mime_type),
+            item.media_subkind,
+            item.media_attributes,
             item.width,
             item.height,
             item.taken_at.map(|t| t.timestamp()),

@@ -30,7 +30,7 @@ Live photos and trashed photos are separated with `trashed_at IS NULL` query/ind
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
-`media_items.media_kind` is the persisted media discriminator (`image` / `video`), derived from MIME at insert/update time. `image/*` items use the photo decode/editor paths; `video/*` items use viewer playback and are not editable. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
+`media_items.media_kind` is the persisted primary media discriminator (`image` / `video`), derived from MIME at insert/update time. `media_items.media_subkind` is the secondary classification (`standard`, `motion_photo`, later HDR/depth/burst-style variants), and `media_items.media_attributes` is JSON for subkind-specific details. Dynamic photos remain `media_kind='image'` and set `media_subkind='motion_photo'`; their embedded video offsets/lengths live under the JSON `motion_photo` object. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
 
 ## Preferences
 
@@ -39,6 +39,12 @@ User preferences are stored as JSON in `settings.json` under `config_dir()`. The
 ## Metadata Extraction (`metadata.rs`)
 
 `extract()` reads dimensions (via `image::image_dimensions`, falling back to gdk-pixbuf) and EXIF (DateTimeOriginal + readable fields) via kamadak-exif.
+
+**Motion photo structure is parsed by `motion_photo.rs`, not by UI code.** The scanner detects supported dynamic JPEG formats and persists the result in `media_subkind` / `media_attributes`. Current strategies are:
+- Google/Xiaomi-style `GCamera:MicroVideoOffset`, where the XMP offset is the embedded MP4 length counted backward from EOF.
+- Google Motion Photo `Container:Directory`, where appended items list a primary JPEG, optional GainMap JPEG, and `video/mp4` MotionPhoto item lengths in order.
+
+Invalid or out-of-bounds motion metadata is ignored and the file remains a standard image. Viewer playback extracts only the persisted video byte range to a temporary MP4 and falls back to still-image display on failure.
 
 **Video metadata comes from `ffprobe`.** For `video/*` items, `extract()` shells out to `ffprobe -print_format json -show_format -show_streams` (parsed with `serde_json::Value`, no `serde` derive) and fills `width`/`height`/`taken_at` (so videos sort and group by time like photos) plus a `VideoSummary` (duration, codec + profile, fps, bitrate, container, make/model). The rich fields are not persisted (no schema columns) and are re-fetched at view time by the details panel, exactly like the EXIF camera summary. If `ffprobe` is missing or fails, the video branch returns only `mime_type` — non-fatal; the panel still shows name/type/size.
 
@@ -53,6 +59,8 @@ The local backend scans filesystem paths and inserts/updates media rows. Startup
 - Duplicate paths.
 - Deletions and trash transitions.
 - UI change notification timing.
+
+Startup must not wait for the full filesystem scan before showing Photos. `app::initialize` loads only the first 200 live DB rows for the initial grid, then runs startup scanning, trash reconciliation, and remaining DB pagination in background work. The startup scan uses `LocalBackend::scan_and_upsert_dir_notify`, preserving the `(uri, file_mtime, file_size)` unchanged-file short-circuit while sending each actually upserted live `MediaItem` through `MediaChangeNotifier::upserted` so the existing GTK consumer can merge it into the shared `media_list`.
 
 **Watcher must not hard-delete trashed rows.** When the app moves a photo to trash, `gio::File::trash()` relocates the file out of the watched directory, so the watcher sees the original path disappear. `db::delete_media_by_path` therefore filters with `AND trashed_at IS NULL`: a row the app has flagged via `mark_trashed` is preserved even though its original path is gone, so `list_trashed_media` keeps returning it for the Trash page. Removing that clause reintroduces "trash page shows nothing after deleting to trash."
 

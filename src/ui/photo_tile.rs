@@ -31,6 +31,8 @@ mod imp {
     pub struct PhotoTile {
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
+        #[template_child]
+        pub motion_badge: TemplateChild<gtk::Image>,
         pub item: RefCell<Option<MediaItem>>,
         pub current_token: RefCell<u64>,
     }
@@ -89,6 +91,10 @@ impl PhotoTile {
         let pic = self.imp().picture.get();
         pic.set_size_request(pixel_size, pixel_size);
         pic.set_can_shrink(false);
+        self.imp()
+            .motion_badge
+            .get()
+            .set_visible(item.is_motion_photo());
         self.set_placeholder();
 
         let token = {
@@ -149,5 +155,18 @@ mod tests {
 
         assert!(tile.has_css_class("thumb-tile"));
         assert!(tile.imp().picture.get().has_css_class("photo-tile-picture"));
+    }
+
+    #[gtk::test]
+    fn photo_tile_template_loads_motion_badge_child() {
+        let _ = gtk::init();
+        let tile = PhotoTile::new();
+
+        assert!(tile
+            .imp()
+            .motion_badge
+            .get()
+            .has_css_class("thumb-motion-badge"));
+        assert!(!tile.imp().motion_badge.get().is_visible());
     }
 }

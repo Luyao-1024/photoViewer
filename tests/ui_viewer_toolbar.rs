@@ -11,6 +11,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
 use photo_viewer::core::media::MediaItem;
+use photo_viewer::core::motion_photo::{MediaAttributes, MotionPhotoFormat, MotionPhotoInfo};
 use photo_viewer::ui::ViewerPage;
 
 fn css_classes_vec<W: gtk::prelude::WidgetExt>(w: &W) -> Vec<String> {
@@ -71,6 +72,18 @@ fn viewer_toolbar_uses_glass_classes() {
             "{name} should carry glass-toolbar-button, got {classes:?}",
         );
     }
+
+    let motion_play_classes = css_classes_vec(&imp.motion_play_btn.get());
+    assert!(
+        motion_play_classes
+            .iter()
+            .any(|c| c == "viewer-motion-play-button"),
+        "motion_play_btn should carry viewer-motion-play-button, got {motion_play_classes:?}",
+    );
+    assert!(
+        !imp.motion_play_btn.get().is_visible(),
+        "motion_play_btn should be hidden until the current item is a motion photo"
+    );
 
     // edit_btn is icon-only (document-edit-symbolic), never a text label.
     let edit_label: Option<String> = imp.edit_btn.get().label().map(|s| s.to_string());
@@ -150,6 +163,11 @@ fn viewer_toolbar_uses_glass_classes() {
         prev_parent_classes.iter().any(|c| c == "viewer-overlay-nav"),
         "prev/next buttons should live in the image overlay nav container, got {prev_parent_classes:?}",
     );
+    assert_eq!(
+        prev_parent.margin_bottom(),
+        34,
+        "prev/next overlay nav should sit just above GtkVideo's built-in controls"
+    );
     for (name, classes) in [
         ("prev_btn", css_classes_vec(&imp.prev_btn.get())),
         ("next_btn", css_classes_vec(&imp.next_btn.get())),
@@ -191,6 +209,7 @@ fn viewer_toolbar_uses_glass_classes() {
         "favorite_btn should not carry favorite-active after remove_css_class, got {after_remove_classes:?}",
     );
 
+    assert_viewer_motion_photo_mode_shows_play_button();
     assert_viewer_video_mode_disables_editing();
 }
 
@@ -205,6 +224,8 @@ fn assert_viewer_video_mode_disables_editing() {
         path: video_path.clone(),
         folder_path: video_path.parent().unwrap_or(dir.path()).to_path_buf(),
         mime_type: "video/mp4".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: None,
         height: None,
         taken_at: None,
@@ -231,5 +252,46 @@ fn assert_viewer_video_mode_disables_editing() {
     assert!(
         !imp.edit_btn.get().is_sensitive(),
         "video media should not be editable"
+    );
+}
+
+fn assert_viewer_motion_photo_mode_shows_play_button() {
+    let dir = tempfile::tempdir().unwrap();
+    let image_path = dir.path().join("motion.jpg");
+    std::fs::write(&image_path, b"fake jpeg").unwrap();
+    let now = chrono::Utc::now();
+    let attrs = MediaAttributes::motion_photo_json(MotionPhotoInfo {
+        format: MotionPhotoFormat::GoogleMicroVideo,
+        video_offset: 10,
+        video_length: 20,
+        presentation_timestamp_us: Some(123),
+        gain_map_offset: None,
+        gain_map_length: None,
+    });
+    let item = MediaItem {
+        id: 1,
+        uri: format!("file://{}", image_path.display()),
+        path: image_path.clone(),
+        folder_path: image_path.parent().unwrap_or(dir.path()).to_path_buf(),
+        mime_type: "image/jpeg".into(),
+        media_subkind: "motion_photo".into(),
+        media_attributes: attrs,
+        width: None,
+        height: None,
+        taken_at: None,
+        file_mtime: now,
+        file_size: 8,
+        blake3_hash: "hash".into(),
+        trashed_at: None,
+    };
+
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
+    media_list.append(&gtk::glib::BoxedAnyObject::new(item));
+    let page = ViewerPage::new(media_list, 0);
+    page.show_at(0);
+
+    assert!(
+        page.imp().motion_play_btn.get().is_visible(),
+        "motion photos should expose a viewer play button"
     );
 }

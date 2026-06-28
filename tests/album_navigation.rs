@@ -26,6 +26,8 @@ fn item(id: i64, folder: &str, file: &str) -> MediaItem {
         path: PathBuf::from(folder).join(file),
         folder_path: PathBuf::from(folder),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
         taken_at: Some(

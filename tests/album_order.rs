@@ -22,6 +22,8 @@ fn make_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
         path: path.into(),
         folder_path: folder.into(),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
         taken_at: Some(mtime),
