@@ -1,25 +1,23 @@
 use photo_viewer::core::trash;
-use tempfile::Builder;
+use tempfile::{Builder, TempDir};
 
 /// 选取 gio 可支持的真实文件系统路径（拒绝 tmpfs）。
-fn scratch_dir() -> std::path::PathBuf {
+/// 返回 `TempDir` 守卫；测试结束时自动清理，panic 时也不例外。
+fn scratch_dir() -> TempDir {
     let base = std::env::var_os("TMPDIR_REAL")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
         .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"));
-    let tmp = Builder::new()
+    Builder::new()
         .prefix("photo-viewer-trash-")
         .tempdir_in(base)
-        .expect("create scratch dir");
-    let path = tmp.keep();
-    // tmpdir dropped; we manually clean up at end of each test.
-    path
+        .expect("create scratch dir")
 }
 
 #[test]
 fn move_and_restore_file() {
     let dir = scratch_dir();
-    let src = dir.join("test.jpg");
+    let src = dir.path().join("test.jpg");
     std::fs::write(&src, b"fake jpeg data").unwrap();
     let uri = format!("file://{}", src.display());
 
@@ -32,14 +30,12 @@ fn move_and_restore_file() {
     // 还原
     trash::restore_from_trash(&uri).unwrap();
     assert!(src.exists());
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn permanent_delete() {
     let dir = scratch_dir();
-    let src = dir.join("perm.jpg");
+    let src = dir.path().join("perm.jpg");
     std::fs::write(&src, b"x").unwrap();
     let uri = format!("file://{}", src.display());
 
@@ -57,14 +53,12 @@ fn permanent_delete() {
 
     // 本次 move_to_trash 对应的实际文件应已从 trash/files 中删除。
     assert!(!trashed_path.exists());
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn trashed_file_uri_resolves_original_uri_to_actual_trash_file() {
     let parent = scratch_dir();
-    let original_dir = parent.join("original");
+    let original_dir = parent.path().join("original");
     std::fs::create_dir_all(&original_dir).unwrap();
     let original = original_dir.join("visible.jpg");
     let uri = format!("file://{}", original.display());
@@ -91,10 +85,6 @@ fn trashed_file_uri_resolves_original_uri_to_actual_trash_file() {
 
     let resolved = trash::trashed_file_uri(&uri).unwrap();
     assert_eq!(resolved, format!("file://{}", actual_file.display()));
-
-    let _ = std::fs::remove_file(&actual_file);
-    let _ = std::fs::remove_file(&actual_info);
-    let _ = std::fs::remove_dir_all(&parent);
 }
 
 /// 两个不同目录下同名文件同时存在于 trash（gio 在 basename 冲突时把第二个
@@ -110,8 +100,8 @@ fn trashed_file_uri_resolves_original_uri_to_actual_trash_file() {
 #[test]
 fn basename_collision_restore_one_keeps_other() {
     let parent = scratch_dir();
-    let dir_a = parent.join("a");
-    let dir_b = parent.join("b");
+    let dir_a = parent.path().join("a");
+    let dir_b = parent.path().join("b");
     std::fs::create_dir_all(&dir_a).unwrap();
     std::fs::create_dir_all(&dir_b).unwrap();
     let file_a = dir_a.join("dup.jpg");
@@ -183,11 +173,10 @@ fn basename_collision_restore_one_keeps_other() {
         b_info.exists()
     );
 
-    // 清理
+    // 清理 trash 中手动创建的条目（scratch_dir 由 TempDir 自动清理）
     let _ = std::fs::remove_file(&b_files);
     let _ = std::fs::remove_file(&b_info);
     let _ = std::fs::remove_file(&file_a);
-    let _ = std::fs::remove_dir_all(&parent);
 }
 
 /// gio/gvfs 把回收站文件落在 HOST `~/.local/share/Trash`，`.trashinfo` 的
@@ -221,7 +210,7 @@ fn trashed_file_uri_resolves_percent_encoded_path_with_gio_dot_zero_suffix() {
 
     // 原路径含非 ASCII 目录"图片"，放在独立 scratch 下避免污染真实图库。
     let parent = scratch_dir();
-    let original_dir = parent.join("图片");
+    let original_dir = parent.path().join("图片");
     std::fs::create_dir_all(&original_dir).unwrap();
     let original = original_dir.join("probe.heic");
     let uri = format!("file://{}", original.display());
@@ -245,8 +234,4 @@ fn trashed_file_uri_resolves_percent_encoded_path_with_gio_dot_zero_suffix() {
         format!("file://{}", actual_file.display()),
         "must resolve to gio's actual trashed file (percent-decoded Path= + .0 suffix in host trash)"
     );
-
-    let _ = std::fs::remove_file(&actual_file);
-    let _ = std::fs::remove_file(&actual_info);
-    let _ = std::fs::remove_dir_all(&parent);
 }

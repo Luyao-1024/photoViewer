@@ -6,12 +6,12 @@ use photo_viewer::core::backend::local::LocalBackend;
 use photo_viewer::core::db;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::trash;
-use tempfile::Builder;
+use tempfile::{Builder, TempDir};
 
 /// `move_to_trash` goes through gio, which refuses to operate on tmpfs.
-/// Returns a path on a real filesystem where we can stage the file before
-/// trashing (same trick as `trash_flow.rs`).
-fn real_fs_scratch() -> std::path::PathBuf {
+/// Returns a `TempDir` on a real filesystem; the caller holds it so the
+/// directory is cleaned up automatically when the guard is dropped.
+fn real_fs_scratch() -> TempDir {
     let base = std::env::var_os("TMPDIR_REAL")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
@@ -20,7 +20,6 @@ fn real_fs_scratch() -> std::path::PathBuf {
         .prefix("photo-viewer-e2e-")
         .tempdir_in(base)
         .expect("create scratch dir")
-        .keep()
 }
 
 #[test]
@@ -84,7 +83,7 @@ fn full_flow_scan_albums_trash() {
 
     // gio 需要真实文件系统路径：复制到 scratch 目录再 trash
     let scratch = real_fs_scratch();
-    let real_src = scratch.join("img1.jpg");
+    let real_src = scratch.path().join("img1.jpg");
     std::fs::copy(&cam_img1.path, &real_src).unwrap();
     let real_uri = format!("file://{}", real_src.display());
 
@@ -247,7 +246,7 @@ fn end_to_end_move_then_trash_then_album_count_consistent() {
 
     // gio trashing needs a real fs path; copy to scratch and trash
     let scratch = real_fs_scratch();
-    let real_src = scratch.join("img2.jpg");
+    let real_src = scratch.path().join("img2.jpg");
     std::fs::copy(&img2.path, &real_src).unwrap();
     let real_uri = format!("file://{}", real_src.display());
     trash::move_to_trash(&real_uri).expect("move to trash should succeed");
