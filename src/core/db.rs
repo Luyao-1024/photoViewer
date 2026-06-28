@@ -412,6 +412,25 @@ pub fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Re
     Ok(())
 }
 
+/// 按文件夹路径列出未删除的媒体，按 `file_mtime` 倒序。
+///
+/// 用于相册详情页加载完整相册内容，不受 `UI_MEDIA_LIST_CAP` 限制。
+pub fn list_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let folder_str = folder_path.to_string_lossy().to_string();
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND folder_path = ?1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
+    )?;
+    let rows = stmt.query_map([folder_str], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
 /// 列出所有未删除的收藏媒体 ID，按 `file_mtime` 倒序。
 pub fn list_favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
     let conn = pool.get()?;

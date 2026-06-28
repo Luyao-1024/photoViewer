@@ -4,7 +4,7 @@ use crate::core::error::Result as CoreResult;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::ui::apply_to_media_list::{trim_to_cap, UI_MEDIA_LIST_CAP};
+use crate::ui::apply_to_media_list::{trim_to_cap, ui_media_list_cap};
 use crate::ui::{MainWindow, PhotosPage};
 use gtk4 as gtk;
 use gtk4::glib;
@@ -251,6 +251,13 @@ async fn initialize() -> anyhow::Result<(
     // 剩余 DB 分页都在后台继续。
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     append_media_items(&list, items);
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "STARTUP_INITIAL_PAGE list_len={} cap={} page_size={}",
+        list.n_items(),
+        ui_media_list_cap(),
+        INITIAL_MEDIA_PAGE_SIZE
+    );
     start_background_startup_work(
         pool.clone(),
         media_roots,
@@ -307,7 +314,7 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
     }
-    if list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+    if list.n_items() as usize >= ui_media_list_cap() {
         return;
     }
 
@@ -326,7 +333,7 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     let additions: Vec<glib::BoxedAnyObject> = items
         .into_iter()
         .filter(|item| !existing.contains(&item.uri))
-        .take(UI_MEDIA_LIST_CAP.saturating_sub(list.n_items() as usize))
+        .take(ui_media_list_cap().saturating_sub(list.n_items() as usize))
         .map(glib::BoxedAnyObject::new)
         .collect();
     if !additions.is_empty() {
@@ -356,19 +363,33 @@ fn load_remaining_media_pages(pool: DbPool, list: gtk::gio::ListStore, start_off
                 }
             };
             if items.is_empty() {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "STARTUP_MEDIA_LIST_FINAL list_len={} cap={} reason=no_more_pages offset={}",
+                    list.n_items(),
+                    ui_media_list_cap(),
+                    offset
+                );
                 return;
             }
             let count = items.len() as u32;
             append_media_items(&list, items);
-            if list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+            if list.n_items() as usize >= ui_media_list_cap() {
                 tracing::info!(
                     target: crate::core::log_targets::BROWSING,
                     "BACKGROUND_MEDIA_LOAD reached_ui_cap cap={}",
-                    UI_MEDIA_LIST_CAP
+                    ui_media_list_cap()
                 );
                 return;
             }
             if count < BACKGROUND_MEDIA_PAGE_SIZE {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "STARTUP_MEDIA_LIST_FINAL list_len={} cap={} reason=short_page offset={}",
+                    list.n_items(),
+                    ui_media_list_cap(),
+                    offset
+                );
                 return;
             }
             offset += count;

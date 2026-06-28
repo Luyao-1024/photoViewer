@@ -62,12 +62,16 @@ use gtk4::subclass::prelude::*;
 
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
+use crate::core::prefs;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
-const MAX_RENDERED_GRID_ITEMS: usize = 30;
+/// Get the current max rendered grid items from preferences.
+fn max_rendered_grid_items() -> usize {
+    prefs::max_rendered_grid_items()
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
@@ -712,15 +716,16 @@ impl MediaGrid {
         let extract_started = std::time::Instant::now();
         let mut items = extract_items(&media_list);
         let extract_elapsed = extract_started.elapsed();
-        if items.len() > MAX_RENDERED_GRID_ITEMS {
+        let max_items = max_rendered_grid_items();
+        if items.len() > max_items {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "MediaGrid::rebuild limiting rendered items mode={:?} total={} rendered={}",
                 mode,
                 items.len(),
-                MAX_RENDERED_GRID_ITEMS
+                max_items
             );
-            items.truncate(MAX_RENDERED_GRID_ITEMS);
+            items.truncate(max_items);
         }
         let uri_to_index = uri_index_map(&media_list);
 

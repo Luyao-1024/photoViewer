@@ -30,8 +30,8 @@ Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded. The scanner and database still contain/import the full library, but
-`apply_to_media_list::UI_MEDIA_LIST_CAP` limits the live `gio::ListStore` used
-by browsing/viewer UI to the newest 30 media rows, and `MediaGrid` caps
+`apply_to_media_list::ui_media_list_cap()` (configurable via `settings.json`, default 200) limits the live `gio::ListStore` used
+by browsing/viewer UI to the newest media rows, and `MediaGrid::max_rendered_grid_items()` (configurable via `settings.json`, default 200) caps
 rendered tile widgets per rebuild to the same order of magnitude. `PhotosPage`
 also initializes only the visible Day grid as active; Year/Month grids defer
 their FlowBox/tile construction until the user switches to them. Startup scan

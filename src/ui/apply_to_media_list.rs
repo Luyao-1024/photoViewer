@@ -6,6 +6,7 @@
 
 use crate::core::media::MediaItem;
 use crate::core::media_change_notifier::{MediaChangeEvent, MediaChangeSource};
+use crate::core::prefs;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -15,7 +16,12 @@ use gtk4::prelude::*;
 /// The database and scanner still index the full library. This cap limits the
 /// live `gio::ListStore` that drives grid rebuilds and viewer navigation so a
 /// very large library does not grow the process memory without bound.
-pub const UI_MEDIA_LIST_CAP: usize = 30;
+pub const DEFAULT_UI_MEDIA_LIST_CAP: usize = 200;
+
+/// Get the current UI media list cap from preferences.
+pub fn ui_media_list_cap() -> usize {
+    prefs::ui_media_list_cap()
+}
 
 /// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
 /// `db::list_all_media`: photo sort time descending, then id descending.
@@ -73,7 +79,7 @@ fn apply_upserted_batch(
     if items.is_empty() {
         return;
     }
-    if source == MediaChangeSource::StartupScan && list.n_items() as usize >= UI_MEDIA_LIST_CAP {
+    if source == MediaChangeSource::StartupScan && list.n_items() as usize >= ui_media_list_cap() {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "UI_LIST_BATCH_MERGE skipped_startup_after_cap incoming_len={} list_len={}",
@@ -107,8 +113,8 @@ fn apply_upserted_batch(
             .then_with(|| b.id.cmp(&a.id))
     });
 
-    if merged.len() > UI_MEDIA_LIST_CAP {
-        merged.truncate(UI_MEDIA_LIST_CAP);
+    if merged.len() > ui_media_list_cap() {
+        merged.truncate(ui_media_list_cap());
     }
 
     let additions: Vec<glib::BoxedAnyObject> =
@@ -135,14 +141,14 @@ fn should_sort_before(candidate: &MediaItem, existing: &MediaItem) -> bool {
 
 fn insert_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
     let pos = sorted_insert_position(list, &item);
-    if pos as usize >= UI_MEDIA_LIST_CAP {
+    if pos as usize >= ui_media_list_cap() {
         return;
     }
     list.insert(pos, &glib::BoxedAnyObject::new(item));
 }
 
 pub(crate) fn trim_to_cap(list: &gtk::gio::ListStore) {
-    while list.n_items() as usize > UI_MEDIA_LIST_CAP {
+    while list.n_items() as usize > ui_media_list_cap() {
         list.remove(list.n_items() - 1);
     }
 }
@@ -275,9 +281,11 @@ mod tests {
 
     #[test]
     fn upserted_batch_caps_ui_model_to_recent_items() {
+        // 使用固定值测试，避免依赖配置文件
+        let cap = 200usize;
         let list = list_with(Vec::new());
         let mut items = Vec::new();
-        for id in 0..(UI_MEDIA_LIST_CAP as i64 + 10) {
+        for id in 0..(cap as i64 + 10) {
             items.push(item_at(
                 id,
                 &format!("file:///tmp/{id}.jpg"),
@@ -296,13 +304,15 @@ mod tests {
             },
         );
 
-        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+        assert_eq!(list.n_items() as usize, cap);
     }
 
     #[test]
     fn startup_scan_batch_after_cap_does_not_rebuild_ui_model() {
+        // 使用固定值测试，避免依赖配置文件
+        let cap = 200usize;
         let list = list_with(
-            (0..UI_MEDIA_LIST_CAP as i64)
+            (0..cap as i64)
                 .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
                 .collect(),
         );
@@ -323,7 +333,7 @@ mod tests {
             },
         );
 
-        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+        assert_eq!(list.n_items() as usize, cap);
         assert_eq!(
             nth_uri(&list, 0),
             first_uri,
@@ -333,8 +343,10 @@ mod tests {
 
     #[test]
     fn upserted_item_trims_ui_model_after_insert() {
+        // 使用固定值测试，避免依赖配置文件
+        let cap = 200usize;
         let list = list_with(
-            (0..UI_MEDIA_LIST_CAP as i64)
+            (0..cap as i64)
                 .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
                 .collect(),
         );
@@ -351,7 +363,7 @@ mod tests {
             ))),
         );
 
-        assert_eq!(list.n_items() as usize, UI_MEDIA_LIST_CAP);
+        assert_eq!(list.n_items() as usize, cap);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newest.jpg");
     }
 
