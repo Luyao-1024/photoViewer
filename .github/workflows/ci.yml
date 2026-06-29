@@ -29,6 +29,7 @@ jobs:
             libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev libheif-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            ffmpeg ffmpegthumbnailer \
             python3-pip xvfb
 
       - name: Install blueprint-compiler (pip)
