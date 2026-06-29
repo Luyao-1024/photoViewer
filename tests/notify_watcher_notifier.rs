@@ -1,8 +1,7 @@
 //! End-to-end event emission tests for `notify_watcher` + `MediaChangeNotifier`.
 //!
-//! All tests in this file depend on `notify`'s inotify/fsevent behavior, so
-//! they are `#[ignore]` by default. Run locally with
-//! `cargo test --test notify_watcher_notifier -- --ignored`.
+//! All tests in this file depend on `notify`'s inotify/fsevent behavior and
+//! run in the default test suite to cover watcher event delivery.
 mod common;
 use common::*;
 use photo_viewer::core::db;
@@ -12,21 +11,45 @@ use photo_viewer::core::notify_watcher;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+struct WatcherHarness {
+    rt: Option<tokio::runtime::Runtime>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for WatcherHarness {
+    fn drop(&mut self) {
+        self.handle.abort();
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_timeout(Duration::from_millis(100));
+        }
+    }
+}
+
 /// Spin up a watcher in `root` and return the receiver.
 fn spawn_watcher(
     root: std::path::PathBuf,
 ) -> (
     photo_viewer::core::db::DbPool,
     tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
-    tokio::task::JoinHandle<()>,
+    WatcherHarness,
 ) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let pool = db::init_pool(&root.join("test.db")).unwrap();
     let (notifier, rx) = MediaChangeNotifier::new();
-    let h =
-        notify_watcher::start_watching(pool.clone(), vec![root.clone()], vec![], root, notifier);
+    let h = {
+        let _guard = rt.enter();
+        notify_watcher::start_watching(pool.clone(), vec![root.clone()], vec![], root, notifier)
+    };
     // Give the watcher a moment to call `watcher.watch(...)`.
     std::thread::sleep(Duration::from_millis(300));
-    (pool, rx, h)
+    (
+        pool,
+        rx,
+        WatcherHarness {
+            rt: Some(rt),
+            handle: h,
+        },
+    )
 }
 
 /// Drain `rx` until we see an event whose uri matches `uri`, or the deadline
@@ -63,11 +86,10 @@ fn wait_for_uri(
 }
 
 #[test]
-#[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_emits_upserted_for_new_file() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let (_pool, mut rx, _h) = spawn_watcher(root.clone());
+    let (_pool, mut rx, _watcher) = spawn_watcher(root.clone());
 
     let path = write_plain_jpeg(&root, "watched.jpg");
     let uri = format!("file://{}", path.display());
@@ -80,11 +102,10 @@ fn watcher_emits_upserted_for_new_file() {
 }
 
 #[test]
-#[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_emits_removed_for_deleted_file() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let (_pool, mut rx, _h) = spawn_watcher(root.clone());
+    let (_pool, mut rx, _watcher) = spawn_watcher(root.clone());
 
     let path = write_plain_jpeg(&root, "doomed.jpg");
     let uri = format!("file://{}", path.display());
@@ -103,11 +124,10 @@ fn watcher_emits_removed_for_deleted_file() {
 }
 
 #[test]
-#[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_emits_upserted_for_modified_file() {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
-    let (_pool, mut rx, _h) = spawn_watcher(root.clone());
+    let (_pool, mut rx, _watcher) = spawn_watcher(root.clone());
 
     let path = write_plain_jpeg(&root, "modified.jpg");
     let uri = format!("file://{}", path.display());

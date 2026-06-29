@@ -1,8 +1,7 @@
 //! Verify `start_watching` emits `DomainEvent`s on the notifier.
 //!
-//! This test depends on `notify`'s inotify/fsevent behavior, so it's
-//! `#[ignore]` by default. Run locally with
-//! `cargo test --test notify_watcher_callback -- --ignored`.
+//! This test depends on `notify`'s inotify/fsevent behavior and runs in the
+//! default test suite to cover watcher-to-domain-event delivery.
 mod common;
 use common::*;
 use photo_viewer::core::db;
@@ -13,21 +12,24 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 #[test]
-#[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_emits_upserted_after_successful_upsert() {
     let dir = tempdir().unwrap();
     let shots = dir.path().join("截图");
     std::fs::create_dir(&shots).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let (notifier, mut rx) = MediaChangeNotifier::new();
-    let _h = notify_watcher::start_watching(
-        pool.clone(),
-        vec![dir.path().to_path_buf()],
-        vec![],
-        dir.path().to_path_buf(),
-        notifier,
-    );
+    let watcher = {
+        let _guard = rt.enter();
+        notify_watcher::start_watching(
+            pool.clone(),
+            vec![dir.path().to_path_buf()],
+            vec![],
+            dir.path().to_path_buf(),
+            notifier,
+        )
+    };
 
     write_plain_png(&shots, "new.png");
 
@@ -43,4 +45,6 @@ fn watcher_emits_upserted_after_successful_upsert() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(received, "watcher should have emitted an Upserted event");
+    watcher.abort();
+    rt.shutdown_timeout(Duration::from_millis(100));
 }

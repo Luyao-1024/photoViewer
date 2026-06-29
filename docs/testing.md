@@ -16,6 +16,9 @@ Run `cargo test --test ux_click_flows` before pushing/uploading a branch with UI
 ## Test Layout
 
 - `tests/common/mod.rs`: shared test fixtures and helpers.
+- `tests/fixtures/media/`: checked-in real media fixtures used by default
+  tests, including phone HEIC/video coverage that must not be hidden behind
+  `#[ignore]`.
 - `tests/e2e_*`: user-flow level coverage.
 - `tests/ux_*`: GTK signal-level UX flows that simulate user clicks/activations.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.

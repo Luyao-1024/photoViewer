@@ -954,12 +954,7 @@ fn extract_video_frame(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
 /// 原样塞进 RGB 导致缩略图发灰、低饱和。输出 PNG（无损，避免二次 JPEG 压缩），
 /// 解码后在左下角叠加播放图标。
 fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
-    // 临时输出文件：复用 PID + 路径哈希命名（PID 惯例见 prefs.rs），落在系统 tmp。
-    let tmp = std::env::temp_dir().join(format!(
-        "pvthumb-{}-{}.png",
-        std::process::id(),
-        blake3::hash(path.to_string_lossy().as_bytes()).to_hex()
-    ));
+    let tmp = ffmpeg_thumbnail_temp_path(path, max_dim);
 
     let out = Command::new("ffmpegthumbnailer")
         .args([
@@ -998,6 +993,15 @@ fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbu
         pb.height()
     );
     Ok(pb)
+}
+
+fn ffmpeg_thumbnail_temp_path(path: &Path, max_dim: u32) -> std::path::PathBuf {
+    let key = format!("{}:{max_dim}", path.to_string_lossy());
+    std::env::temp_dir().join(format!(
+        "pvthumb-{}-{}.png",
+        std::process::id(),
+        blake3::hash(key.as_bytes()).to_hex()
+    ))
 }
 
 /// GStreamer fallback：`uridecodebin → videoflip(auto) → videoconvert → appsink`，
@@ -1708,18 +1712,22 @@ mod tests {
         );
     }
 
-    /// 视频帧提取端到端测试（需要真实视频文件）。
-    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib extract_video_frame_from_file -- --ignored --nocapture
     #[test]
-    #[ignore]
+    fn ffmpeg_thumbnail_temp_path_includes_requested_size() {
+        let path = std::path::Path::new("/tmp/video.mp4");
+
+        assert_ne!(
+            ffmpeg_thumbnail_temp_path(path, 256),
+            ffmpeg_thumbnail_temp_path(path, 1024),
+            "parallel video thumbnail requests for different buckets must not share one temp output"
+        );
+    }
+
+    /// 视频帧提取端到端测试。默认使用仓库内真实视频；设置
+    /// `VIDEO_TEST_FILE` 可覆盖为其他视频。
+    #[test]
     fn extract_video_frame_from_file() {
-        let path = match std::env::var("VIDEO_TEST_FILE") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
-                return;
-            }
-        };
+        let path = video_fixture_path();
         let result = extract_video_frame(&path, 256);
         match result {
             Ok(pb) => {
@@ -1732,18 +1740,11 @@ mod tests {
         }
     }
 
-    /// 保存视频帧到文件以便对比。
-    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib save_video_frame -- --ignored --nocapture
+    /// 保存视频帧到文件以便对比。默认使用仓库内真实视频；设置
+    /// `VIDEO_TEST_FILE` 可覆盖为其他视频。
     #[test]
-    #[ignore]
     fn save_video_frame() {
-        let path = match std::env::var("VIDEO_TEST_FILE") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
-                return;
-            }
-        };
+        let path = video_fixture_path();
         let result = extract_video_frame(&path, 1024);
         match result {
             Ok(pb) => {
@@ -1758,20 +1759,25 @@ mod tests {
         }
     }
 
-    /// 测试从 MP4 文件读取旋转信息。
-    /// 运行: VIDEO_TEST_FILE=/path/to/video.mp4 cargo test --lib read_video_rotation_from_mp4 -- --ignored --nocapture
+    /// 测试从 MP4 文件读取旋转信息。默认使用仓库内真实视频；设置
+    /// `VIDEO_TEST_FILE` 可覆盖为其他视频。
     #[test]
-    #[ignore]
     fn read_video_rotation_from_mp4() {
-        let path = match std::env::var("VIDEO_TEST_FILE") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
-                return;
-            }
-        };
+        let path = video_fixture_path();
         let rotation = read_video_rotation(&path);
         eprintln!("视频旋转: {} rotation={}", path.display(), rotation);
         assert!(rotation == 0 || rotation == 90 || rotation == 180 || rotation == 270);
+    }
+
+    fn video_fixture_path() -> std::path::PathBuf {
+        std::env::var("VIDEO_TEST_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join("fixtures")
+                    .join("media")
+                    .join("real_phone_video.mp4")
+            })
     }
 }

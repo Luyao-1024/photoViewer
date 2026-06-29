@@ -1,7 +1,7 @@
 //! M5-T5: 文件监听集成测试
 //!
-//! 这些测试依赖 `notify` 的 inotify/fsevent 行为，在 CI/沙箱中可能不可靠，
-//! 因此默认 `#[ignore]`。本地运行：`cargo test --test notify_watcher -- --ignored`。
+//! 这些测试依赖 `notify` 的 inotify/fsevent 行为，必须在默认测试集中运行，
+//! 以覆盖文件监听端到端行为。
 //!
 //! 测试聚焦三件事：
 //!   1. `upsert_from_path` 在已有/新文件上行为正确；
@@ -80,22 +80,25 @@ fn upsert_from_path_skips_unsupported_extension() {
 }
 
 #[test]
-#[ignore = "depends on inotify/fsevent; may be flaky in CI sandboxes"]
 fn watcher_picks_up_new_file() {
     // 端到端：启动 watcher，丢一个文件进去，等待 upsert 出现在 DB 中。
     use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
+    let rt = tokio::runtime::Runtime::new().unwrap();
 
     let pool = db::init_pool(&dir.path().join("watch.db")).unwrap();
     let (notifier, _rx) = MediaChangeNotifier::new();
-    let _watcher = photo_viewer::core::notify_watcher::start_watching(
-        pool.clone(),
-        vec![root.clone()],
-        vec![],
-        root.clone(),
-        notifier,
-    );
+    let watcher = {
+        let _guard = rt.enter();
+        photo_viewer::core::notify_watcher::start_watching(
+            pool.clone(),
+            vec![root.clone()],
+            vec![],
+            root.clone(),
+            notifier,
+        )
+    };
 
     // 给 watcher 一点时间完成 setup
     std::thread::sleep(Duration::from_millis(300));
@@ -113,4 +116,6 @@ fn watcher_picks_up_new_file() {
         }
     }
     assert!(found, "watcher 应当在 5s 内拾取新文件");
+    watcher.abort();
+    rt.shutdown_timeout(Duration::from_millis(100));
 }

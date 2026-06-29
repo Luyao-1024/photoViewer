@@ -1247,24 +1247,20 @@ mod tests {
             .is_some());
     }
 
-    /// Manual verification against a real phone HEIC. Ignored by default.
-    /// Point it at any HEIC on your machine, e.g. an iPhone/Android export:
-    ///   HEIC_TEST_FILE=/path/to/IMG.heic \
-    ///     cargo test --lib core::metadata::tests::real_heic_exif_recovers -- --ignored --nocapture
+    /// Verifies the real HEIC path against a checked-in phone export. Set
+    /// `HEIC_TEST_FILE` to run the same assertion against another HEIC.
     #[test]
-    #[ignore]
     fn real_heic_exif_recovers() {
-        let path = match std::env::var("HEIC_TEST_FILE") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                eprintln!("set HEIC_TEST_FILE to a .heic path; skipping");
-                return;
-            }
-        };
-        let exif = read_exif(&path).expect("read_exif should succeed on real HEIC");
-        // The old path returned Err here; now DateTimeOriginal must parse:
+        let path = std::env::var("HEIC_TEST_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| media_fixture_path("real_phone.heic"));
+        let meta = extract(&path).expect("extract should succeed on real HEIC");
+        assert_eq!(
+            meta.mime_type, "image/heic",
+            "fixture should exercise the HEIC metadata path"
+        );
         assert!(
-            exif_datetime(&exif).is_some(),
+            meta.taken_at.is_some(),
             "DateTimeOriginal should be present"
         );
     }
@@ -1357,20 +1353,13 @@ mod tests {
         assert_eq!(extract_heic_dims(&meta), None);
     }
 
-    /// Manual verification of `ffprobe`-based video metadata extraction.
-    /// Ignored by default; needs `ffprobe` on PATH and a real video:
-    ///   VIDEO_TEST_FILE=/path/to/clip.mp4 \
-    ///     cargo test --lib core::metadata::tests::video_metadata_extracted -- --ignored --nocapture
+    /// Verifies `ffprobe`-based video metadata extraction against a checked-in
+    /// phone video. Set `VIDEO_TEST_FILE` to run against another clip.
     #[test]
-    #[ignore]
     fn video_metadata_extracted() {
-        let path = match std::env::var("VIDEO_TEST_FILE") {
-            Ok(p) => std::path::PathBuf::from(p),
-            Err(_) => {
-                eprintln!("set VIDEO_TEST_FILE to a video file path; skipping");
-                return;
-            }
-        };
+        let path = std::env::var("VIDEO_TEST_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| media_fixture_path("real_phone_video.mp4"));
         let meta = extract(&path).expect("extract should succeed on a video");
         assert_eq!(
             media_kind_from_mime(&meta.mime_type),
@@ -1394,6 +1383,14 @@ mod tests {
             v.fps,
             v.container
         );
+    }
+
+    fn media_fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("media")
+            .join(name)
     }
 
     #[test]

@@ -15,7 +15,9 @@
 //! ```
 //!
 //! 在代码中使用：
-//! ```ignore
+//! ```no_run
+//! use photo_viewer::core::log_targets;
+//!
 //! tracing::debug!(target: log_targets::VIEWER, "message");
 //! ```
 
