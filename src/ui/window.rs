@@ -1,5 +1,6 @@
 //! Main window: sidebar + content area
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use crate::config;
 use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
+use crate::core::media::MediaItem;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
@@ -221,6 +223,7 @@ impl MainWindow {
             let row = build_album_row(&album);
             row.set_visible(true);
             self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
+            self.attach_album_context_menu(&row, album.clone());
             album_list.append(&row);
             self.imp().album_rows.borrow_mut().push(row);
             self.imp().album_targets.borrow_mut().push(album);
@@ -393,6 +396,58 @@ impl MainWindow {
             true
         });
         row.add_controller(drop);
+    }
+
+    fn attach_album_context_menu(&self, row: &gtk::ListBoxRow, album: Album) {
+        let weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_pressed(move |_gesture, n_press, x, y| {
+            if n_press != 1 {
+                return;
+            }
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+
+            let manage_album = album.clone();
+            let delete_album = album.clone();
+            let nav_view = window.imp().nav_view.get();
+            let popover = build_album_context_menu(
+                &album,
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @weak nav_view,
+                    @weak row,
+                    @strong manage_album => move || {
+                        *window.imp().active_album.borrow_mut() =
+                            Some(manage_album.folder_path.clone());
+                        window.imp().selecting_programmatically.set(true);
+                        window.imp().album_list.get().select_row(Some(&row));
+                        window.imp().selecting_programmatically.set(false);
+                        window.imp().sidebar_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
+                        window.open_album(&nav_view, manage_album.clone());
+                    }
+                ))),
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @strong delete_album => move || {
+                        window.confirm_delete_album(delete_album.clone());
+                    }
+                ))),
+                None,
+            );
+            popover.set_parent(&row);
+            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+        });
+        row.add_controller(gesture);
     }
 
     /// Accessor for the content area's NavigationView (used by later tasks).
@@ -569,6 +624,78 @@ impl MainWindow {
         let page = AlbumDetailPage::new(album, filtered, master, pool, loader);
         page.set_nav_target(nav_view);
         nav_view.push(&page);
+    }
+
+    fn confirm_delete_album(&self, album: Album) {
+        if album.is_virtual {
+            return;
+        }
+
+        let dialog = adw::AlertDialog::builder()
+            .heading("删除相册")
+            .body(format!(
+                "相册“{}”中的媒体将移到系统回收站。",
+                album.display_name()
+            ))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", "取消");
+        dialog.add_response("delete", "删除");
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("delete"), move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.delete_albums_to_trash_ui(vec![album.clone()]);
+            }
+        });
+
+        dialog.present(self);
+    }
+
+    fn delete_albums_to_trash_ui(&self, albums: Vec<Album>) {
+        if albums.is_empty() {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+
+        let deleted_paths: Vec<PathBuf> = albums
+            .iter()
+            .map(|album| album.folder_path.clone())
+            .collect();
+        match crate::core::album_ops::delete_albums_to_trash(&pool, &albums) {
+            Ok(mutation) => {
+                if let Some(media_list) = self.imp().media_list.borrow().as_ref() {
+                    remove_uris_from_media_list(media_list, &mutation.removed_uris);
+                }
+                self.refresh_album_rows();
+
+                let active_deleted = self
+                    .imp()
+                    .active_album
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|active| deleted_paths.iter().any(|path| path == active));
+                if active_deleted {
+                    *self.imp().active_album.borrow_mut() = None;
+                    self.imp().album_list.get().unselect_all();
+                    self.imp().trash_list.get().unselect_all();
+                    self.imp().selecting_programmatically.set(true);
+                    if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
+                        self.imp().sidebar_list.get().select_row(Some(&row));
+                    }
+                    self.imp().selecting_programmatically.set(false);
+                    pop_to_photos_root(&self.imp().nav_view.get());
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to delete album to trash: {err}");
+            }
+        }
     }
 
     fn show_trash_page(&self, nav_view: &adw::NavigationView) {
@@ -1353,6 +1480,75 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
     row
 }
 
+pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Popover {
+    build_album_context_menu(album, None, None, None)
+}
+
+fn build_album_context_menu(
+    album: &Album,
+    on_manage: Option<Box<dyn Fn() + 'static>>,
+    on_delete: Option<Box<dyn Fn() + 'static>>,
+    on_select: Option<Box<dyn Fn() + 'static>>,
+) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("glass-menu");
+
+    let menu = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["glass-menu-list"])
+        .build();
+
+    let manage_btn = gtk::Button::builder()
+        .label("管理相册")
+        .css_classes(["glass-menu-item"])
+        .build();
+    if let Some(on_manage) = on_manage {
+        let popover_weak = popover.downgrade();
+        manage_btn.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+            on_manage();
+        });
+    }
+    menu.append(&manage_btn);
+
+    if let Some(on_select) = on_select {
+        let multi_btn = gtk::Button::builder()
+            .label("多选相册")
+            .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
+            .build();
+        let popover_weak = popover.downgrade();
+        multi_btn.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+            on_select();
+        });
+        menu.append(&multi_btn);
+    }
+
+    if !album.is_virtual {
+        let delete_btn = gtk::Button::builder()
+            .label("删除相册")
+            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
+            .build();
+        if let Some(on_delete) = on_delete {
+            let popover_weak = popover.downgrade();
+            delete_btn.connect_clicked(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.popdown();
+                }
+                on_delete();
+            });
+        }
+        menu.append(&delete_btn);
+    }
+
+    popover.set_child(Some(&menu));
+    popover
+}
+
 /// Find the `MainWindow` that owns `nav` and refresh its sidebar album rows.
 /// Replaces the old "refresh the AlbumsPage grid" hook — the grid page is gone;
 /// the albums now live directly in the sidebar, so a favorite/trash change must
@@ -1363,6 +1559,26 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
         .and_downcast::<MainWindow>()
     {
         window.refresh_album_rows();
+    }
+}
+
+fn remove_uris_from_media_list(media_list: &gtk::gio::ListStore, removed_uris: &[String]) {
+    if removed_uris.is_empty() {
+        return;
+    }
+
+    let removed: HashSet<&str> = removed_uris.iter().map(String::as_str).collect();
+    let mut index = 0;
+    while index < media_list.n_items() {
+        let should_remove = media_list
+            .item(index)
+            .and_downcast::<glib::BoxedAnyObject>()
+            .is_some_and(|boxed| removed.contains(boxed.borrow::<MediaItem>().uri.as_str()));
+        if should_remove {
+            media_list.remove(index);
+        } else {
+            index += 1;
+        }
     }
 }
 
