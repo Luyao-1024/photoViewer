@@ -30,6 +30,20 @@ fn visible_flag(w: &gtk::Widget) -> bool {
     w.property::<bool>("visible")
 }
 
+fn has_css_class(widget: &gtk::Widget, class_name: &str) -> bool {
+    widget.css_classes().iter().any(|class| class == class_name)
+}
+
+fn direct_children(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+    let mut children = Vec::new();
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        children.push(current.clone());
+        child = current.next_sibling();
+    }
+    children
+}
+
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
@@ -147,6 +161,48 @@ fn sidebar_navigation_suite() {
         assert!(
             trash_classes.iter().any(|c| c == "glass-sidebar-row"),
             "Trash row should carry glass-sidebar-row, got {trash_classes:?}",
+        );
+
+        let surface = top_sidebar
+            .parent()
+            .expect("sidebar list should be inside sidebar surface");
+        let footer = window
+            .imp()
+            .settings_button
+            .get()
+            .parent()
+            .expect("settings button should live in sidebar footer");
+        let children = direct_children(&surface);
+        assert!(
+            children.len() >= 5,
+            "sidebar surface should include top list, album scroll, trash list, spacer, and footer",
+        );
+        assert_eq!(
+            children[0],
+            top_sidebar.clone().upcast::<gtk::Widget>(),
+            "sidebar surface child 0 should be the top navigation list",
+        );
+        assert_eq!(
+            children[1],
+            window.imp().album_scroll.get().upcast::<gtk::Widget>(),
+            "sidebar surface child 1 should be the album scroll region",
+        );
+        assert_eq!(
+            children[2],
+            trash_list.clone().upcast::<gtk::Widget>(),
+            "sidebar surface child 2 should be the stable Trash list",
+        );
+        assert!(
+            has_css_class(&children[3], "glass-sidebar-spacer"),
+            "sidebar surface child 3 should be the flexible footer spacer",
+        );
+        assert!(
+            children[3].property::<bool>("vexpand"),
+            "sidebar spacer should expand to pin Settings to the bottom",
+        );
+        assert_eq!(
+            children[4], footer,
+            "sidebar surface child 4 should be the settings footer",
         );
     }
 

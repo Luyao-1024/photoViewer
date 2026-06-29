@@ -45,6 +45,11 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
           selection-mode: single;
         }
 
+        Gtk.Box sidebar_spacer {
+          css-classes: ["glass-sidebar-spacer"];
+          vexpand: true;
+        }
+
         Gtk.Box {
           css-classes: ["glass-sidebar-footer"];
           margin-start: 8;
