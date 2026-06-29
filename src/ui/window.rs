@@ -82,6 +82,11 @@ mod imp {
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
+        /// Whether the sidebar album list is in batch-selection mode.
+        pub album_selection_mode: Cell<bool>,
+        /// Real album folder paths selected for batch delete. Virtual albums
+        /// are deliberately excluded because they are saved views, not folders.
+        pub selected_album_paths: RefCell<HashSet<PathBuf>>,
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
@@ -92,6 +97,12 @@ mod imp {
         pub trash_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub album_selection_bar: TemplateChild<gtk::ActionBar>,
+        #[template_child]
+        pub album_selection_cancel_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub album_selection_delete_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub album_list: TemplateChild<gtk::ListBox>,
         #[template_child]
@@ -282,6 +293,77 @@ impl MainWindow {
         self.rebuild_album_rows();
     }
 
+    pub fn enter_album_selection_mode(&self) {
+        self.imp().album_selection_mode.set(true);
+        self.imp()
+            .album_list
+            .get()
+            .set_selection_mode(gtk::SelectionMode::Multiple);
+        self.imp().album_list.get().unselect_all();
+        self.imp().selected_album_paths.borrow_mut().clear();
+        self.imp().album_selection_bar.get().set_revealed(true);
+        self.update_album_selection_actions();
+    }
+
+    fn exit_album_selection_mode(&self) {
+        self.imp().album_selection_mode.set(false);
+        self.imp().album_list.get().unselect_all();
+        self.imp()
+            .album_list
+            .get()
+            .set_selection_mode(gtk::SelectionMode::Single);
+        self.imp().selected_album_paths.borrow_mut().clear();
+        self.imp().album_selection_bar.get().set_revealed(false);
+        self.update_album_selection_actions();
+    }
+
+    pub fn selected_album_delete_count(&self) -> usize {
+        self.imp().selected_album_paths.borrow().len()
+    }
+
+    fn sync_selected_album_paths(&self) {
+        let album_list = self.imp().album_list.get();
+        let targets = self.imp().album_targets.borrow().clone();
+        let mut selected = HashSet::new();
+        let mut virtual_rows = Vec::new();
+
+        for row in album_list.selected_rows() {
+            let Some(album) = targets.get(row.index() as usize) else {
+                continue;
+            };
+            if album.is_virtual {
+                virtual_rows.push(row);
+            } else {
+                selected.insert(album.folder_path.clone());
+            }
+        }
+
+        for row in virtual_rows {
+            album_list.unselect_row(&row);
+        }
+
+        *self.imp().selected_album_paths.borrow_mut() = selected;
+        self.update_album_selection_actions();
+    }
+
+    fn update_album_selection_actions(&self) {
+        self.imp()
+            .album_selection_delete_btn
+            .get()
+            .set_sensitive(self.selected_album_delete_count() > 0);
+    }
+
+    fn selected_real_albums(&self) -> Vec<Album> {
+        let selected = self.imp().selected_album_paths.borrow().clone();
+        self.imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .filter(|album| !album.is_virtual && selected.contains(&album.folder_path))
+            .cloned()
+            .collect()
+    }
+
     /// Persist a drag-to-reorder: move the album at `source_path` so it lands
     /// just before (`drop_after = false`) or just after (`drop_after = true`)
     /// the album at `target_path`, then rebuild the rows so the sidebar matches.
@@ -417,6 +499,7 @@ impl MainWindow {
 
             let manage_album = album.clone();
             let delete_album = album.clone();
+            let select_album = album.clone();
             let nav_view = window.imp().nav_view.get();
             let popover = build_album_context_menu(
                 &album,
@@ -441,7 +524,16 @@ impl MainWindow {
                         window.confirm_delete_album(delete_album.clone());
                     }
                 ))),
-                None,
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @weak row,
+                    @strong select_album => move || {
+                        window.enter_album_selection_mode();
+                        if !select_album.is_virtual {
+                            window.imp().album_list.get().select_row(Some(&row));
+                        }
+                    }
+                ))),
             );
             popover.set_parent(&row);
             popover.connect_closed(|popover| {
@@ -555,6 +647,10 @@ impl MainWindow {
 
         album_list.connect_row_selected(
             glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                if window.imp().album_selection_mode.get() {
+                    window.sync_selected_album_paths();
+                    return;
+                }
                 let Some(row) = row else {
                     return;
                 };
@@ -579,6 +675,28 @@ impl MainWindow {
         settings_btn.connect_clicked(glib::clone!(@weak self as window => move |_| {
             window.show_settings_dialog();
         }));
+
+        self.imp()
+            .album_selection_cancel_btn
+            .set_label(&tr("common.cancel"));
+        self.imp()
+            .album_selection_delete_btn
+            .set_label(&tr("album.selection.delete_selected"));
+        self.imp()
+            .album_selection_delete_btn
+            .get()
+            .set_sensitive(false);
+
+        self.imp().album_selection_cancel_btn.connect_clicked(
+            glib::clone!(@weak self as window => move |_| {
+                window.exit_album_selection_mode();
+            }),
+        );
+        self.imp().album_selection_delete_btn.connect_clicked(
+            glib::clone!(@weak self as window => move |_| {
+                window.confirm_delete_selected_albums();
+            }),
+        );
     }
 
     pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
@@ -653,6 +771,35 @@ impl MainWindow {
         dialog.connect_response(Some("delete"), move |_, _| {
             if let Some(window) = weak.upgrade() {
                 window.delete_albums_to_trash_ui(vec![album.clone()]);
+            }
+        });
+
+        dialog.present(self);
+    }
+
+    fn confirm_delete_selected_albums(&self) {
+        let selected = self.selected_real_albums();
+        if selected.is_empty() {
+            return;
+        }
+
+        let count = selected.len().to_string();
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("album.selection.confirm_title"))
+            .body(trf("album.selection.confirm_body", &[("count", &count)]))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", &tr("common.cancel"));
+        dialog.add_response("delete", &tr("album.delete.confirm_action"));
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("delete"), move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.delete_albums_to_trash_ui(selected.clone());
+                window.exit_album_selection_mode();
             }
         });
 

@@ -39,6 +39,22 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
           }
         }
 
+        Gtk.ActionBar album_selection_bar {
+          revealed: false;
+
+          [start]
+          Gtk.Button album_selection_cancel_btn {
+            label: "";
+            css-classes: ["glass-toolbar-button"];
+          }
+
+          [end]
+          Gtk.Button album_selection_delete_btn {
+            label: "";
+            css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+          }
+        }
+
         Gtk.ListBox trash_list {
           css-classes: ["glass-sidebar"];
           hexpand: true;
