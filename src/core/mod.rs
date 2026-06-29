@@ -6,6 +6,7 @@ pub mod cache;
 pub mod db;
 pub mod edit;
 pub mod error;
+pub mod events;
 pub mod i18n;
 pub mod identity;
 pub mod log_targets;
@@ -31,6 +32,7 @@ pub use edit::{
     CropRect, EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation,
 };
 pub use error::{AppError, Result};
+pub use events::{ChangeSource, DomainEvent, DomainEventSender, MediaFields};
 pub use identity::MediaId;
 pub use media::{MediaItem, NewMediaItem};
 pub use media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
