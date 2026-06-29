@@ -283,6 +283,13 @@ Design intent:
 - Settings should not become a general-purpose page for operational actions
   such as scan, restore, or album management unless the information architecture
   is revisited.
+- Thumbnail generation speed belongs in Settings as a quiet storage/runtime
+  preference. It should stay a simple three-option control for slow, normal, and
+  fast background generation rather than exposing raw worker counts.
+- Settings that cannot apply live should show the shared restart-required
+  confirmation after a successful save. Choosing yes relaunches the current
+  executable and quits the current process; choosing no leaves the setting saved
+  for the next manual restart.
 
 When adding settings, prefer clear row labels and standard controls over custom
 compact chrome.

@@ -58,6 +58,47 @@ pub struct RuntimeConfig {
     pub notify_file_settle_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbnailGenerationSpeed {
+    Slow,
+    Normal,
+    Fast,
+}
+
+impl ThumbnailGenerationSpeed {
+    pub fn worker_count(self) -> usize {
+        match self {
+            Self::Slow => 1,
+            Self::Normal => 2,
+            Self::Fast => 4,
+        }
+    }
+
+    pub fn selected_index(self) -> u32 {
+        match self {
+            Self::Slow => 0,
+            Self::Normal => 1,
+            Self::Fast => 2,
+        }
+    }
+
+    pub fn from_selected_index(index: u32) -> Self {
+        match index {
+            0 => Self::Slow,
+            1 => Self::Normal,
+            _ => Self::Fast,
+        }
+    }
+
+    pub fn from_worker_count(count: usize) -> Self {
+        match count {
+            0 | 1 => Self::Slow,
+            2 => Self::Normal,
+            _ => Self::Fast,
+        }
+    }
+}
+
 fn runtime_config_path() -> std::path::PathBuf {
     config_dir().join(RUNTIME_CONFIG_FILE)
 }
@@ -185,6 +226,18 @@ pub fn thumbnail_worker_count() -> usize {
     load().thumbnail_worker_count
 }
 
+pub fn thumbnail_generation_speed() -> ThumbnailGenerationSpeed {
+    ThumbnailGenerationSpeed::from_worker_count(thumbnail_worker_count())
+}
+
+pub fn set_thumbnail_generation_speed(speed: ThumbnailGenerationSpeed) -> Result<(), String> {
+    write_usize_at(
+        &runtime_config_path(),
+        THUMBNAIL_WORKER_COUNT_KEY,
+        speed.worker_count(),
+    )
+}
+
 pub fn thumbnail_queue_capacity() -> usize {
     load().thumbnail_queue_capacity
 }
@@ -214,10 +267,18 @@ pub fn notify_file_settle_ms() -> u64 {
 }
 
 fn default_thumbnail_worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(4, 8)
+    ThumbnailGenerationSpeed::Fast.worker_count()
+}
+
+fn write_usize_at(path: &Path, key: &str, value: usize) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut object = read_object_at(path);
+    object.insert(key.to_string(), Value::from(value.max(1)));
+    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn read_u32(obj: &Map<String, Value>, key: &str, default: u32) -> u32 {
@@ -376,6 +437,53 @@ mod tests {
         assert_eq!(config.thumbnail_idle_wait_ms, 1);
         assert_eq!(config.notify_trash_debounce_ms, 1);
         assert_eq!(config.notify_file_settle_ms, 1);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn thumbnail_generation_speed_maps_to_worker_counts() {
+        assert_eq!(ThumbnailGenerationSpeed::Slow.worker_count(), 1);
+        assert_eq!(ThumbnailGenerationSpeed::Normal.worker_count(), 2);
+        assert_eq!(ThumbnailGenerationSpeed::Fast.worker_count(), 4);
+        assert_eq!(
+            ThumbnailGenerationSpeed::from_worker_count(1),
+            ThumbnailGenerationSpeed::Slow
+        );
+        assert_eq!(
+            ThumbnailGenerationSpeed::from_worker_count(2),
+            ThumbnailGenerationSpeed::Normal
+        );
+        assert_eq!(
+            ThumbnailGenerationSpeed::from_worker_count(4),
+            ThumbnailGenerationSpeed::Fast
+        );
+    }
+
+    #[test]
+    fn writing_thumbnail_generation_speed_preserves_runtime_keys() {
+        let path = tmp_path("thumbnail-speed");
+        cleanup(&path);
+        std::fs::write(
+            &path,
+            r#"{
+              "initial_media_page_size": 300,
+              "thumbnail_queue_capacity": 4096
+            }"#,
+        )
+        .unwrap();
+
+        write_usize_at(
+            &path,
+            THUMBNAIL_WORKER_COUNT_KEY,
+            ThumbnailGenerationSpeed::Normal.worker_count(),
+        )
+        .unwrap();
+
+        let config = read_runtime_config_at(&path);
+        assert_eq!(config.thumbnail_worker_count, 2);
+        assert_eq!(config.initial_media_page_size, 300);
+        assert_eq!(config.thumbnail_queue_capacity, 4096);
 
         cleanup(&path);
     }

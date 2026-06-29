@@ -1,7 +1,9 @@
 //! Main window: sidebar + content area
 use std::cell::{Cell, RefCell};
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,8 +21,8 @@ use crate::config;
 use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
-use crate::core::prefs;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::core::{prefs, runtime_config};
 use crate::ui::album_browser_page::AlbumBrowserPage;
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::grid_css;
@@ -723,7 +725,7 @@ impl MainWindow {
 
         btn_zh.connect_clicked(move |_| match persist_locale("zh-CN") {
             Ok(()) => {
-                show_settings_restart_dialog(&parent_for_zh, true, None);
+                show_restart_required_dialog(&parent_for_zh);
                 btn_zh_ref.set_sensitive(false);
                 btn_en_ref.set_sensitive(true);
             }
@@ -734,7 +736,7 @@ impl MainWindow {
 
         btn_en.connect_clicked(move |_| match persist_locale("en") {
             Ok(()) => {
-                show_settings_restart_dialog(&parent_for_en, true, None);
+                show_restart_required_dialog(&parent_for_en);
                 btn_zh_ref2.set_sensitive(true);
                 btn_en_ref2.set_sensitive(false);
             }
@@ -902,6 +904,38 @@ impl MainWindow {
         storage_group.set_title(&tr("setting.section.storage"));
         storage_group.set_description(Some(&tr("setting.section.storage_description")));
         content.append(&storage_group);
+
+        let slow_label = tr("setting.thumbnail_generation_speed.slow");
+        let normal_label = tr("setting.thumbnail_generation_speed.normal");
+        let fast_label = tr("setting.thumbnail_generation_speed.fast");
+        let speed_dropdown =
+            gtk::DropDown::from_strings(&[&slow_label, &normal_label, &fast_label]);
+        speed_dropdown.set_valign(gtk::Align::Center);
+        speed_dropdown.set_selected(runtime_config::thumbnail_generation_speed().selected_index());
+
+        let speed_row = adw::ActionRow::new();
+        speed_row.set_title(&tr("setting.thumbnail_generation_speed"));
+        speed_row.set_subtitle(&tr("setting.thumbnail_generation_speed_description"));
+        speed_row.set_activatable(false);
+        speed_row.add_suffix(&speed_dropdown);
+        storage_group.add(&speed_row);
+
+        let parent_for_speed = parent.clone();
+        speed_dropdown.connect_selected_notify(move |dropdown| {
+            let speed =
+                runtime_config::ThumbnailGenerationSpeed::from_selected_index(dropdown.selected());
+            if let Err(err) = runtime_config::set_thumbnail_generation_speed(speed) {
+                show_settings_error_dialog(
+                    &parent_for_speed,
+                    &trf(
+                        "setting.thumbnail_generation_speed_save_failed",
+                        &[("error", &err)],
+                    ),
+                );
+            } else {
+                show_restart_required_dialog(&parent_for_speed);
+            }
+        });
 
         // Show current storage usage
         let cache_dir = config::cache_dir();
@@ -1075,6 +1109,60 @@ fn build_about_label() -> gtk::Label {
         .halign(gtk::Align::Center)
         .css_classes(["settings-about-text"])
         .build()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartSpec {
+    program: PathBuf,
+    args: Vec<OsString>,
+}
+
+fn restart_spec_from(program: PathBuf, args: Vec<OsString>) -> RestartSpec {
+    RestartSpec { program, args }
+}
+
+fn current_restart_spec() -> Result<RestartSpec, String> {
+    let program = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args = std::env::args_os().skip(1).collect();
+    Ok(restart_spec_from(program, args))
+}
+
+fn restart_application() -> Result<(), String> {
+    let spec = current_restart_spec()?;
+    Command::new("sh")
+        .arg("-c")
+        .arg("sleep 0.2; exec \"$@\"")
+        .arg("photo-viewer-restart")
+        .arg(&spec.program)
+        .args(&spec.args)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    gtk::Application::default().quit();
+    Ok(())
+}
+
+fn show_restart_required_dialog(parent: &gtk::Widget) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("setting.restart_required_title"))
+        .body(tr("setting.restart_required_body"))
+        .build();
+    dialog.add_css_class("glass-alert-dialog");
+    dialog.add_response("later", &tr("button.no"));
+    dialog.add_response("restart", &tr("button.yes"));
+    dialog.set_default_response(Some("restart"));
+    dialog.set_close_response("later");
+
+    let parent_for_error = parent.clone();
+    dialog.connect_response(Some("restart"), move |_, _| {
+        if let Err(err) = restart_application() {
+            show_settings_error_dialog(
+                &parent_for_error,
+                &trf("setting.restart_now_failed", &[("error", &err)]),
+            );
+        }
+    });
+
+    dialog.present(parent);
 }
 
 fn show_settings_restart_dialog(parent: &gtk::Widget, success: bool, error: Option<String>) {
@@ -1375,6 +1463,39 @@ mod tests {
         }
     }
 
+    fn collect_dropdowns(widget: &gtk::Widget, dropdowns: &mut Vec<gtk::DropDown>) {
+        if let Some(dropdown) = widget.downcast_ref::<gtk::DropDown>() {
+            dropdowns.push(dropdown.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            collect_dropdowns(&current, dropdowns);
+        }
+    }
+
+    fn collect_preference_titles(widget: &gtk::Widget, titles: &mut Vec<String>) {
+        if let Some(row) = widget.downcast_ref::<adw::PreferencesRow>() {
+            titles.push(row.title().to_string());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            collect_preference_titles(&current, titles);
+        }
+    }
+
+    #[test]
+    fn restart_spec_uses_current_executable_and_preserves_args() {
+        let exe = PathBuf::from("/tmp/photo-viewer");
+        let args = vec!["--profile".into(), "debug".into()];
+
+        let spec = restart_spec_from(exe.clone(), args.clone());
+
+        assert_eq!(spec.program, exe);
+        assert_eq!(spec.args, args);
+    }
+
     #[gtk::test]
     fn settings_page_exposes_video_default_mute_without_volume_control() {
         let _ = gtk::init();
@@ -1455,6 +1576,39 @@ mod tests {
                 scale.adjustment().lower() == 0.0 && scale.adjustment().upper() == 100.0
             }),
             "settings page should expose a 0-100 transparency scale"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_thumbnail_generation_speed_selector() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowThumbnailSpeed")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+
+        let mut titles = Vec::new();
+        collect_preference_titles(&page, &mut titles);
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.thumbnail_generation_speed")),
+            "settings page should expose thumbnail generation speed, got {titles:?}"
+        );
+
+        let mut dropdowns = Vec::new();
+        collect_dropdowns(&page, &mut dropdowns);
+        assert!(
+            dropdowns
+                .iter()
+                .any(|dropdown| dropdown.model().is_some_and(|model| model.n_items() == 3)),
+            "settings page should expose a three-option thumbnail speed dropdown"
         );
     }
 }
