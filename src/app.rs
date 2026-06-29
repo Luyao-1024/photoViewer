@@ -98,16 +98,19 @@ pub fn build_app() -> adw::Application {
                     gtk::glib::MainContext::default().spawn_local(async move {
                         let mut rx = change_rx;
                         while let Some(event) = rx.recv().await {
+                            let domain_event =
+                                crate::core::events::DomainEvent::from_media_change(&event);
                             use crate::core::media_change_notifier::{
                                 MediaChangeEvent, MediaChangeSource,
                             };
-                            match event {
-                                MediaChangeEvent::TrashChanged => {
+                            match domain_event {
+                                crate::core::events::DomainEvent::TrashChanged { .. } => {
                                     if let Some(window) = window_for_consumer.upgrade() {
                                         window.refresh_visible_trash_page();
                                     }
                                 }
-                                other => {
+                                _ => {
+                                    let other = event;
                                     let is_startup_scan_batch = matches!(
                                         &other,
                                         MediaChangeEvent::UpsertedBatch {
