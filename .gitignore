@@ -10,6 +10,9 @@
 # Log directory
 /log/
 
+# Local agent worktrees
+/.worktrees/
+
 # Playwright
 node_modules/
 /test-results/
