@@ -13,7 +13,7 @@ use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
-use crate::core::albums::{list_with_favorites, Album};
+use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{tr, trf};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
@@ -23,6 +23,7 @@ const ALBUM_CARD_PX: i32 = 270;
 const ALBUM_TILE_SIZE: ThumbnailSize = ThumbnailSize::Large;
 
 type AlbumOpenCallback = Rc<dyn Fn(Album)>;
+type AlbumOrderChangedCallback = Rc<dyn Fn()>;
 
 mod imp {
     use super::*;
@@ -34,6 +35,7 @@ mod imp {
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub on_album_open: RefCell<Option<AlbumOpenCallback>>,
+        pub on_order_changed: RefCell<Option<AlbumOrderChangedCallback>>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
         #[template_child]
@@ -76,11 +78,24 @@ impl AlbumBrowserPage {
         loader: Arc<ThumbnailLoader>,
         on_album_open: Rc<dyn Fn(Album)>,
     ) -> Self {
+        Self::with_order_changed(pool, loader, on_album_open, None)
+    }
+
+    /// Build an album browser page with an optional callback fired after drag
+    /// sorting persists a new order. The main window uses this to keep the
+    /// sidebar album rows in sync while the full album page is open.
+    pub fn with_order_changed(
+        pool: DbPool,
+        loader: Arc<ThumbnailLoader>,
+        on_album_open: Rc<dyn Fn(Album)>,
+        on_order_changed: Option<Rc<dyn Fn()>>,
+    ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.set_title(&tr("page.albums.title"));
         *obj.imp().pool.borrow_mut() = Some(pool);
         *obj.imp().loader.borrow_mut() = Some(loader);
         *obj.imp().on_album_open.borrow_mut() = Some(on_album_open);
+        *obj.imp().on_order_changed.borrow_mut() = on_order_changed;
         obj.refresh();
         obj
     }
@@ -114,13 +129,135 @@ impl AlbumBrowserPage {
         }
         *self.imp().albums.borrow_mut() = albums.clone();
         for album in albums {
-            flow_box.append(&build_album_card(album, loader.clone(), on_open.clone()));
+            let folder_path = album.folder_path.to_string_lossy().into_owned();
+            let card = build_album_card(album, loader.clone(), on_open.clone());
+            self.attach_album_dnd(&card, folder_path);
+            flow_box.append(&card);
         }
     }
 
     /// Number of albums currently rendered in this page.
     pub fn album_count(&self) -> usize {
         self.imp().albums.borrow().len()
+    }
+
+    /// Persist a drag-to-reorder from this page, then refresh this page's cards.
+    pub fn reorder_album(&self, source_path: &str, target_path: &str, drop_after: bool) {
+        if source_path == target_path {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+
+        let mut order: Vec<String> = self
+            .imp()
+            .albums
+            .borrow()
+            .iter()
+            .map(|album| album.folder_path.to_string_lossy().into_owned())
+            .filter(|path| path != source_path)
+            .collect();
+
+        let insert_at = match order.iter().position(|path| path == target_path) {
+            Some(idx) => {
+                if drop_after {
+                    (idx + 1).min(order.len())
+                } else {
+                    idx
+                }
+            }
+            None => order.len(),
+        };
+        order.insert(insert_at, source_path.to_string());
+
+        if let Err(err) = set_album_order(&pool, &order) {
+            tracing::warn!("failed to persist album browser order: {err}");
+            return;
+        }
+
+        if let Some(callback) = self.imp().on_order_changed.borrow().as_ref() {
+            callback();
+        }
+        self.refresh();
+    }
+
+    /// Current rendered album order.
+    pub fn album_folder_paths(&self) -> Vec<String> {
+        self.imp()
+            .albums
+            .borrow()
+            .iter()
+            .map(|album| album.folder_path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// Wire drag sorting onto one album card. The string payload is the source
+    /// album's `folder_path`; dropping onto another card inserts before or after
+    /// that target based on the vertical half under the pointer.
+    fn attach_album_dnd(&self, card: &gtk::Widget, folder_path: String) {
+        let drag = gtk::DragSource::new();
+        drag.set_actions(gtk::gdk::DragAction::MOVE);
+        let value = glib::Value::from(folder_path.as_str());
+        drag.set_content(Some(&gtk::gdk::ContentProvider::for_value(&value)));
+
+        let drag_card = card.downgrade();
+        drag.connect_drag_begin(move |_, _| {
+            if let Some(card) = drag_card.upgrade() {
+                card.add_css_class("album-browser-card-dragging");
+            }
+        });
+        let drag_card = card.downgrade();
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(card) = drag_card.upgrade() {
+                card.remove_css_class("album-browser-card-dragging");
+            }
+        });
+        card.add_controller(drag);
+
+        let drop = gtk::DropTarget::new(glib::Type::STRING, gtk::gdk::DragAction::MOVE);
+        let motion_card = card.downgrade();
+        drop.connect_motion(move |_target, _x, y| {
+            if let Some(card) = motion_card.upgrade() {
+                let half = card.height().max(1) as f64 / 2.0;
+                card.remove_css_class("album-browser-card-drop-before");
+                card.remove_css_class("album-browser-card-drop-after");
+                card.add_css_class(if y > half {
+                    "album-browser-card-drop-after"
+                } else {
+                    "album-browser-card-drop-before"
+                });
+            }
+            gtk::gdk::DragAction::MOVE
+        });
+        let leave_card = card.downgrade();
+        drop.connect_leave(move |_target| {
+            if let Some(card) = leave_card.upgrade() {
+                card.remove_css_class("album-browser-card-drop-before");
+                card.remove_css_class("album-browser-card-drop-after");
+            }
+        });
+
+        let page = self.downgrade();
+        let drop_card = card.downgrade();
+        let target_path = folder_path;
+        drop.connect_drop(move |_target, value, _x, y| {
+            let Some(page) = page.upgrade() else {
+                return false;
+            };
+            let Some(card) = drop_card.upgrade() else {
+                return false;
+            };
+            card.remove_css_class("album-browser-card-drop-before");
+            card.remove_css_class("album-browser-card-drop-after");
+            let Ok(source_path) = value.get::<String>() else {
+                return false;
+            };
+            let half = card.height().max(1) as f64 / 2.0;
+            page.reorder_album(&source_path, &target_path, y > half);
+            true
+        });
+        card.add_controller(drop);
     }
 }
 

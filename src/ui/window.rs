@@ -611,7 +611,8 @@ impl MainWindow {
 
         let weak = self.downgrade();
         let nav_copy = nav_view.clone();
-        let page = AlbumBrowserPage::new(
+        let window_for_order = self.downgrade();
+        let page = AlbumBrowserPage::with_order_changed(
             pool,
             loader,
             Rc::new(move |album| {
@@ -619,6 +620,11 @@ impl MainWindow {
                     window.open_album(&nav_copy, album);
                 }
             }),
+            Some(Rc::new(move || {
+                if let Some(window) = window_for_order.upgrade() {
+                    window.rebuild_album_rows();
+                }
+            })),
         );
         nav_view.push(&page);
     }

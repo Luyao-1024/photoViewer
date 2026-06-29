@@ -47,6 +47,7 @@ fn ux_click_flow_suite() {
     sidebar_clicks_drive_top_level_navigation();
     album_picker_clicks_album_row_and_copy_move();
     album_pages_clicks_open_album_and_viewer();
+    album_browser_reorder_persists_full_album_order();
     trash_page_clicks_selection_cancel_restore_and_delete();
 }
 
@@ -430,6 +431,44 @@ fn album_pages_clicks_open_album_and_viewer() {
             .and_downcast::<ViewerPage>()
             .is_some(),
         "activating an AlbumDetail tile should open the viewer"
+    );
+}
+
+fn album_browser_reorder_persists_full_album_order() {
+    let fixture = build_photos_page_with_nav();
+    let browser = AlbumBrowserPage::new(
+        fixture.pool.clone(),
+        fixture.loader.clone(),
+        Rc::new(|_| {}),
+    );
+
+    let before: Vec<String> = albums::list_with_favorites(&fixture.pool)
+        .unwrap()
+        .into_iter()
+        .map(|album| album.folder_path.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        before.len() >= 4,
+        "fixture should include virtual albums plus at least one folder album"
+    );
+
+    let source = before[3].clone();
+    let target = before[0].clone();
+    browser.reorder_album(&source, &target, false);
+
+    let after: Vec<String> = albums::list_with_favorites(&fixture.pool)
+        .unwrap()
+        .into_iter()
+        .map(|album| album.folder_path.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        after[0], source,
+        "dragging an album browser card above the first card should persist it first"
+    );
+    assert_eq!(
+        browser.album_folder_paths()[0],
+        source,
+        "AlbumBrowserPage should refresh into the persisted order"
     );
 }
 
