@@ -84,6 +84,31 @@ impl MediaRepository {
             items,
         })
     }
+
+    pub fn favorite_state(&self, ids: &[MediaId]) -> Result<FavoriteSummary> {
+        let mut summary = FavoriteSummary::default();
+        for id in ids {
+            match db::is_media_favorite(&self.pool, id.get()) {
+                Ok(true) => summary.has_favorite = true,
+                Ok(false) => summary.has_unfavorite = true,
+                Err(_) => summary.has_unfavorite = true,
+            }
+            if summary.has_favorite && summary.has_unfavorite {
+                break;
+            }
+        }
+        Ok(summary)
+    }
+
+    pub fn set_favorite(&self, ids: &[MediaId], is_favorite: bool) -> Result<MediaMutation> {
+        let mut mutation = MediaMutation::default();
+        for id in ids {
+            db::set_media_favorite(&self.pool, id.get(), is_favorite)?;
+            mutation.changed_ids.push(*id);
+            mutation.changed_items.push(db::get_media_item(&self.pool, id.get())?);
+        }
+        Ok(mutation)
+    }
 }
 
 fn page_vec(items: Vec<MediaItem>, start: u32, limit: u32) -> Vec<MediaItem> {
