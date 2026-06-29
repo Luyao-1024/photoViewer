@@ -638,7 +638,10 @@ mod tests {
                         .unwrap_or(default_thumbnail_worker_count()),
                 )
             });
-        assert_eq!(speed, ThumbnailGenerationSpeed::Normal);
+        // 期望值随机器核数而变（2 核机器上 from_worker_count(2) 是 Fastest），
+        // 故对照 from_worker_count(2) 本身——此测试验证的是「缺 tier 键 → 走
+        // worker_count 回退」的接线，而非某个固定档位。
+        assert_eq!(speed, ThumbnailGenerationSpeed::from_worker_count(2));
         cleanup(&path);
     }
 
