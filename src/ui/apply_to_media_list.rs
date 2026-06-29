@@ -6,21 +6,14 @@
 
 use crate::core::media::MediaItem;
 use crate::core::media_change_notifier::{MediaChangeEvent, MediaChangeSource};
-use crate::core::prefs;
+use crate::core::runtime_config;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 
-/// Upper bound for media items kept in the GTK-facing model.
-///
-/// The database and scanner still index the full library. This cap limits the
-/// live `gio::ListStore` that drives grid rebuilds and viewer navigation so a
-/// very large library does not grow the process memory without bound.
-pub const DEFAULT_UI_MEDIA_LIST_CAP: usize = 1500;
-
-/// Get the current UI media list cap from preferences.
+/// Get the current UI media list cap from runtime configuration.
 pub fn ui_media_list_cap() -> usize {
-    prefs::ui_media_list_cap()
+    runtime_config::ui_media_list_cap()
 }
 
 /// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
@@ -308,9 +301,11 @@ mod tests {
 
     #[test]
     fn startup_scan_batch_after_cap_does_not_rebuild_ui_model() {
-        // cap 已提高至 10000；此测试验证当列表未满 cap 时 StartupScan 批次会正常合并。
+        // 此测试验证当列表未满 cap 时 StartupScan 批次会正常合并。
+        let cap = ui_media_list_cap();
+        let initial_len = cap.saturating_sub(1).min(200);
         let list = list_with(
-            (0..200)
+            (0..initial_len as i64)
                 .map(|id| item_at(id, &format!("file:///tmp/{id}.jpg"), 2026, 6, 24, 12))
                 .collect(),
         );
@@ -330,7 +325,7 @@ mod tests {
             },
         );
 
-        assert_eq!(list.n_items(), 201);
+        assert_eq!(list.n_items() as usize, initial_len + 1);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newest-from-scan.jpg");
     }
 

@@ -18,16 +18,13 @@ use crate::core::backend::local::LocalBackend;
 use crate::core::db::DbPool;
 use crate::core::media::is_supported_media_path;
 use crate::core::media_change_notifier::MediaChangeNotifier;
+use crate::core::runtime_config;
 use crate::core::trash;
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-
-/// 回收站事件防抖静默期：gio/gvfs 一次操作（尤其"清空"）会产生大量事件，合并成
-/// 一次对账 + 一次刷新。
-const TRASH_DEBOUNCE: Duration = Duration::from_millis(400);
 
 /// 启动后台文件监听，返回一个 `JoinHandle`。
 ///
@@ -79,9 +76,11 @@ fn run_watcher_loop(
     while let Ok(evt) = rx.recv() {
         dispatch_event(&backend, evt, &notifier, &trash_roots, &mut trash_dirty);
 
-        // 排空本轮事件突发；静默 TRASH_DEBOUNCE（或通道关闭）后，若有回收站事件则
+        // 排空本轮事件突发；静默配置的防抖时间（或通道关闭）后，若有回收站事件则
         // 对账 + 通知。
-        while let Ok(e) = rx.recv_timeout(TRASH_DEBOUNCE) {
+        while let Ok(e) = rx.recv_timeout(Duration::from_millis(
+            runtime_config::notify_trash_debounce_ms(),
+        )) {
             dispatch_event(&backend, e, &notifier, &trash_roots, &mut trash_dirty);
         }
         flush_trash_reconcile(&pool, &pictures_root, &notifier, &mut trash_dirty);
@@ -161,7 +160,9 @@ fn handle_event(
                 if !path.is_file() {
                     continue;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(
+                    runtime_config::notify_file_settle_ms(),
+                ));
                 match backend.upsert_from_path(path) {
                     Ok(Some(item)) => {
                         tracing::debug!(target: crate::core::log_targets::STORAGE, "增量 upsert 成功: {}", path.display());
@@ -203,7 +204,9 @@ fn handle_event(
                     continue;
                 }
                 if path.is_file() {
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(Duration::from_millis(
+                        runtime_config::notify_file_settle_ms(),
+                    ));
                     match backend.upsert_from_path(path) {
                         Ok(Some(item)) => {
                             tracing::debug!(target: crate::core::log_targets::STORAGE, "rename upsert 成功: {}", path.display());
