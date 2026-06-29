@@ -200,6 +200,7 @@ fn context_menu_uses_glass_menu_classes() {
     collect_button_labels(popover.upcast_ref(), &mut labels);
     let mut buttons = Vec::new();
     collect_buttons(popover.upcast_ref(), &mut buttons);
+    let manage_button = button_with_label(&buttons, &tr("album.context.manage"));
 
     assert!(
         labels
@@ -222,4 +223,5 @@ fn context_menu_uses_glass_menu_classes() {
         "virtual album menu should not create a delete button, got {:?}",
         button_labels(&buttons)
     );
+    assert_button_has_class(&manage_button, "glass-menu-item");
 }
