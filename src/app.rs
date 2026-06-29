@@ -84,7 +84,6 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
-                    let pool_for_consumer = pool.clone();
                     window.set_resources(pool, loader, media_list.clone());
                     // Now that the pool is available, populate the album rows
                     // nested under the sidebar's Albums group header.
@@ -153,36 +152,10 @@ pub fn build_app() -> adw::Application {
                                             );
                                         }
                                     } else {
-                                        let pool_for_albums = pool_for_consumer.clone();
-                                        let window_for_albums = window_for_consumer.clone();
-                                        let event_label_for_albums = event_label.clone();
-                                        gtk::glib::MainContext::default().spawn_local(async move {
-                                            let refresh_started = std::time::Instant::now();
-                                            let result = gtk::gio::spawn_blocking(move || {
-                                                crate::core::albums::refresh(&pool_for_albums)
-                                            })
-                                            .await;
-                                            match result {
-                                                Ok(Ok(())) => {
-                                                    if let Some(window) = window_for_albums.upgrade()
-                                                    {
-                                                        window.refresh_album_rows();
-                                                    }
-                                                    tracing::info!(
-                                                        target: crate::core::log_targets::BROWSING,
-                                                        "STARTUP_ALBUM_REFRESH after_event={} elapsed_ms={}",
-                                                        event_label_for_albums,
-                                                        refresh_started.elapsed().as_millis()
-                                                    );
-                                                }
-                                                Ok(Err(err)) => tracing::warn!(
-                                                    "startup albums refresh failed: {err}"
-                                                ),
-                                                Err(err) => tracing::warn!(
-                                                    "startup albums refresh join failed: {err:?}"
-                                                ),
-                                            }
-                                        });
+                                        tracing::debug!(
+                                            target: crate::core::log_targets::BROWSING,
+                                            "startup scan batch applied; album refresh deferred"
+                                        );
                                     }
                                 }
                             }
