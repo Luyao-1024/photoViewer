@@ -65,8 +65,8 @@ fn repository_favorite_summary_batches_ids() {
 fn repository_set_favorite_returns_changed_items() {
     let dir = common::tmp_dir();
     let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-set-fav.db")).unwrap();
-    let inserted = photo_viewer::core::db::upsert_media_items_batch(&pool, &[item("a", 10)])
-        .unwrap();
+    let inserted =
+        photo_viewer::core::db::upsert_media_items_batch(&pool, &[item("a", 10)]).unwrap();
 
     let repo = MediaRepository::new(pool);
     let mutation = repo.set_favorite(&[inserted[0].id.into()], true).unwrap();
@@ -82,9 +82,7 @@ fn repository_upsert_batch_returns_changed_items() {
     let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-upsert.db")).unwrap();
     let repo = MediaRepository::new(pool);
 
-    let mutation = repo
-        .upsert_batch(&[item("a", 10), item("b", 20)])
-        .unwrap();
+    let mutation = repo.upsert_batch(&[item("a", 10), item("b", 20)]).unwrap();
 
     assert_eq!(mutation.changed_ids.len(), 2);
     assert_eq!(mutation.changed_items.len(), 2);

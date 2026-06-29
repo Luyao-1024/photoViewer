@@ -70,9 +70,12 @@ impl MediaRepository {
             MediaQuery::AlbumFolder(path) => {
                 page_vec(db::list_media_by_folder(&self.pool, path)?, start, limit)
             }
-            MediaQuery::Favorites => {
-                page_by_ids(&self.pool, db::list_favorite_media_ids(&self.pool)?, start, limit)?
-            }
+            MediaQuery::Favorites => page_by_ids(
+                &self.pool,
+                db::list_favorite_media_ids(&self.pool)?,
+                start,
+                limit,
+            )?,
             MediaQuery::Images => page_vec(media_kind_items(&self.pool, "image")?, start, limit),
             MediaQuery::Videos => page_vec(media_kind_items(&self.pool, "video")?, start, limit),
         };
@@ -105,7 +108,9 @@ impl MediaRepository {
         for id in ids {
             db::set_media_favorite(&self.pool, id.get(), is_favorite)?;
             mutation.changed_ids.push(*id);
-            mutation.changed_items.push(db::get_media_item(&self.pool, id.get())?);
+            mutation
+                .changed_items
+                .push(db::get_media_item(&self.pool, id.get())?);
         }
         Ok(mutation)
     }
@@ -155,8 +160,7 @@ fn media_kind_items(pool: &DbPool, media_kind: &str) -> Result<Vec<MediaItem>> {
     Ok(db::list_media_page(pool, 0, u32::MAX)?
         .into_iter()
         .filter(|item| {
-            (media_kind == "image" && item.is_image())
-                || (media_kind == "video" && item.is_video())
+            (media_kind == "image" && item.is_image()) || (media_kind == "video" && item.is_video())
         })
         .collect())
 }

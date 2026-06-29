@@ -81,9 +81,7 @@ impl DomainEvent {
 impl From<crate::core::media_change_notifier::MediaChangeSource> for ChangeSource {
     fn from(source: crate::core::media_change_notifier::MediaChangeSource) -> Self {
         match source {
-            crate::core::media_change_notifier::MediaChangeSource::StartupScan => {
-                Self::StartupScan
-            }
+            crate::core::media_change_notifier::MediaChangeSource::StartupScan => Self::StartupScan,
             crate::core::media_change_notifier::MediaChangeSource::UserInteractive => {
                 Self::UserInteractive
             }

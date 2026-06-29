@@ -18,16 +18,13 @@ use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
-use crate::core::identity::MediaId;
 use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::core::{
-    albums,
-    db::DbPool,
-};
+use crate::core::{albums, db::DbPool};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
@@ -394,10 +391,10 @@ impl PhotosPage {
             let popover_for_fav = popover.clone();
             favorite_item.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
-                let ids = this.selected_ids_vec();
-                if !ids.is_empty() {
-                    this.set_favorite_for_ids(ids, true);
-                }
+                    let ids = this.selected_ids_vec();
+                    if !ids.is_empty() {
+                        this.set_favorite_for_ids(ids, true);
+                    }
                 }
                 popover_for_fav.popdown();
             });
@@ -406,10 +403,10 @@ impl PhotosPage {
             let popover_for_unfav = popover.clone();
             unfavorite_item.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
-                let ids = this.selected_ids_vec();
-                if !ids.is_empty() {
-                    this.set_favorite_for_ids(ids, false);
-                }
+                    let ids = this.selected_ids_vec();
+                    if !ids.is_empty() {
+                        this.set_favorite_for_ids(ids, false);
+                    }
                 }
                 popover_for_unfav.popdown();
             });
@@ -545,13 +542,7 @@ impl PhotosPage {
         }
 
         let state = if has_any {
-            let ids: Vec<MediaId> = self
-                .imp()
-                .selected_ids
-                .borrow()
-                .iter()
-                .copied()
-                .collect();
+            let ids: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
             self.favorite_state_for_ids(&ids)
         } else {
             FavoriteMenuState::default()
@@ -599,13 +590,7 @@ impl PhotosPage {
     }
 
     fn selected_ids_vec(&self) -> Vec<MediaId> {
-        let mut selected: Vec<MediaId> = self
-            .imp()
-            .selected_ids
-            .borrow()
-            .iter()
-            .copied()
-            .collect();
+        let mut selected: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
         selected.sort_unstable();
         selected
     }
