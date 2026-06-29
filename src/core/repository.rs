@@ -1,7 +1,7 @@
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
-use crate::core::media::MediaItem;
+use crate::core::media::{MediaItem, NewMediaItem};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +119,19 @@ impl MediaRepository {
             mutation.removed_uris.push(item.uri);
         }
         Ok(mutation)
+    }
+
+    pub fn upsert_batch(&self, items: &[NewMediaItem]) -> Result<MediaMutation> {
+        let changed_items = db::upsert_media_items_batch(&self.pool, items)?;
+        let changed_ids = changed_items
+            .iter()
+            .map(|item| MediaId::from(item.id))
+            .collect();
+        Ok(MediaMutation {
+            changed_ids,
+            changed_items,
+            removed_uris: Vec::new(),
+        })
     }
 }
 

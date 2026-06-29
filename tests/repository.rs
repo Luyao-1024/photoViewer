@@ -75,3 +75,19 @@ fn repository_set_favorite_returns_changed_items() {
     assert_eq!(mutation.changed_items.len(), 1);
     assert!(mutation.changed_items[0].is_favorite);
 }
+
+#[test]
+fn repository_upsert_batch_returns_changed_items() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-upsert.db")).unwrap();
+    let repo = MediaRepository::new(pool);
+
+    let mutation = repo
+        .upsert_batch(&[item("a", 10), item("b", 20)])
+        .unwrap();
+
+    assert_eq!(mutation.changed_ids.len(), 2);
+    assert_eq!(mutation.changed_items.len(), 2);
+    assert_eq!(mutation.changed_items[0].uri, "file:///tmp/a.jpg");
+    assert_eq!(mutation.changed_items[1].uri, "file:///tmp/b.jpg");
+}
