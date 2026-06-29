@@ -7,6 +7,7 @@ pub mod db;
 pub mod edit;
 pub mod error;
 pub mod i18n;
+pub mod identity;
 pub mod log_targets;
 pub mod media;
 pub mod media_change_notifier;
@@ -29,6 +30,7 @@ pub use edit::{
     CropRect, EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation,
 };
 pub use error::{AppError, Result};
+pub use identity::MediaId;
 pub use media::{MediaItem, NewMediaItem};
 pub use media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
 pub use metadata::{extract as extract_metadata, RawMetadata};
