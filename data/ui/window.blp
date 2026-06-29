@@ -27,7 +27,6 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
         Gtk.ScrolledWindow album_scroll {
           css-classes: ["glass-sidebar-album-scroll"];
           hexpand: true;
-          vexpand: true;
           min-content-height: 120;
           max-content-height: 420;
           hscrollbar-policy: never;
@@ -38,6 +37,12 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
             hexpand: true;
             selection-mode: single;
           }
+        }
+
+        Gtk.ListBox trash_list {
+          css-classes: ["glass-sidebar"];
+          hexpand: true;
+          selection-mode: single;
         }
 
         Gtk.Box {

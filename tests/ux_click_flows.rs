@@ -261,6 +261,17 @@ fn sidebar_clicks_drive_top_level_navigation() {
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
+    let trash_list = window.imp().trash_list.get();
+    assert_eq!(
+        sidebar.observe_children().n_items(),
+        2,
+        "top sidebar list should contain Photos and Albums header",
+    );
+    assert_eq!(
+        trash_list.observe_children().n_items(),
+        1,
+        "trash list should contain one stable Trash row",
+    );
     let header = sidebar.row_at_index(1).expect("Albums header row exists");
     assert!(visible_flag(window.imp().album_scroll.get().upcast_ref()));
     release_click_on_widget(header.upcast_ref());
@@ -274,9 +285,8 @@ fn sidebar_clicks_drive_top_level_navigation() {
         "clicking the Albums header again should expand the album scroll region"
     );
 
-    let n_items = sidebar.observe_children().n_items() as i32;
-    let trash_row = sidebar.row_at_index(n_items - 1).expect("Trash row exists");
-    sidebar.select_row(Some(&trash_row));
+    let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
+    trash_list.select_row(Some(&trash_row));
     assert!(
         nav.visible_page().and_downcast::<TrashPage>().is_some(),
         "selecting the Trash sidebar row should show TrashPage"

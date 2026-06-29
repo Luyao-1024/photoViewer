@@ -26,10 +26,10 @@ use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::grid_css;
 use crate::ui::TrashPage;
 
-/// What a sidebar row navigates to. The `Gtk.ListBox` row at index `i` maps to
-/// `targets[i]` (kept in lock-step by [`MainWindow::populate_sidebar`] and
-/// the static sidebar skeleton). The albums group is a non-selectable header
-/// that only collapses/expands the dedicated album list.
+/// What a sidebar row navigates to. The top list uses `targets[index]`, while
+/// the stable bottom Trash list uses `trash_targets[index]`. The albums group
+/// is a non-selectable header that only collapses/expands the dedicated album
+/// list.
 #[derive(Clone, Debug)]
 pub enum SidebarTarget {
     Photos,
@@ -64,6 +64,8 @@ mod imp {
         /// Index→target mirror of the sidebar ListBox, so the `row-selected`
         /// handler can dispatch by identity rather than a hardcoded index.
         pub targets: RefCell<Vec<SidebarTarget>>,
+        /// Index→target mirror of the bottom Trash ListBox.
+        pub trash_targets: RefCell<Vec<SidebarTarget>>,
         /// Index→album mirror of the dedicated album ListBox.
         pub album_targets: RefCell<Vec<Album>>,
         /// The album rows nested under the "Albums" group header — kept so the
@@ -83,6 +85,8 @@ mod imp {
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub trash_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
@@ -143,7 +147,9 @@ impl MainWindow {
             .set_title(&tr("window.sidebar"));
         self.imp().albums_expanded.set(true);
         let list = self.imp().sidebar_list.get();
+        let trash_list = self.imp().trash_list.get();
         let mut targets = Vec::new();
+        let mut trash_targets = Vec::new();
 
         let photos_row = build_nav_row(&tr("sidebar.photos"), "view-grid-symbolic");
         list.append(&photos_row);
@@ -168,14 +174,15 @@ impl MainWindow {
         targets.push(SidebarTarget::AlbumsHeader);
 
         let trash_row = build_nav_row(&tr("sidebar.trash"), "user-trash-symbolic");
-        list.append(&trash_row);
-        targets.push(SidebarTarget::Trash);
+        trash_list.append(&trash_row);
+        trash_targets.push(SidebarTarget::Trash);
 
         self.imp()
             .settings_button
             .set_tooltip_text(Some(&tr("sidebar.settings")));
 
         *self.imp().targets.borrow_mut() = targets;
+        *self.imp().trash_targets.borrow_mut() = trash_targets;
 
         // Highlight Photos as the default root view. Done before
         // connect_sidebar wires row-selected, so this never triggers navigation.
@@ -233,9 +240,6 @@ impl MainWindow {
             Some(path) => path,
             None => return,
         };
-        if !self.imp().album_scroll.is_visible() {
-            return;
-        }
         let album_list = self.imp().album_list.get();
         let idx = self
             .imp()
@@ -424,6 +428,7 @@ impl MainWindow {
     /// missing the closures silently no-op.
     pub fn connect_sidebar(&self, nav_view: &adw::NavigationView) {
         let list = self.imp().sidebar_list.get();
+        let trash_list = self.imp().trash_list.get();
         let album_list = self.imp().album_list.get();
         let gesture = gtk::GestureSwipe::new();
         gesture.connect_swipe(
@@ -454,14 +459,35 @@ impl MainWindow {
                     SidebarTarget::Photos => {
                         *window.imp().active_album.borrow_mut() = None;
                         window.imp().album_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
                     }
                     SidebarTarget::AlbumsHeader => {}
-                    SidebarTarget::Trash => {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.imp().album_list.get().unselect_all();
-                        window.show_trash_page(&nav_view);
-                    }
+                    SidebarTarget::Trash => {}
+                }
+            }),
+        );
+
+        trash_list.connect_row_selected(
+            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                let Some(row) = row else {
+                    return;
+                };
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
+                let target = {
+                    let targets = window.imp().trash_targets.borrow();
+                    let Some(target) = targets.get(row.index() as usize).cloned() else {
+                        return;
+                    };
+                    target
+                };
+                if let SidebarTarget::Trash = target {
+                    *window.imp().active_album.borrow_mut() = None;
+                    window.imp().sidebar_list.get().unselect_all();
+                    window.imp().album_list.get().unselect_all();
+                    window.show_trash_page(&nav_view);
                 }
             }),
         );
@@ -483,6 +509,7 @@ impl MainWindow {
                 };
                 *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
                 window.imp().sidebar_list.get().unselect_all();
+                window.imp().trash_list.get().unselect_all();
                 window.open_album(&nav_view, album);
             }),
         );

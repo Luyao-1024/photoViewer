@@ -89,19 +89,29 @@ fn sidebar_navigation_suite() {
             "sidebar page should carry glass-sidebar-page, got {page_classes:?}",
         );
 
-        let sidebar = window.imp().sidebar_list.get();
-        let list_classes: Vec<String> = sidebar
+        let top_sidebar = window.imp().sidebar_list.get();
+        let trash_list = window.imp().trash_list.get();
+        let list_classes: Vec<String> = top_sidebar
             .css_classes()
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let sidebar_bg_classes: Vec<String> = sidebar
+        let trash_list_classes: Vec<String> = trash_list
+            .css_classes()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let sidebar_bg_classes: Vec<String> = top_sidebar
             .parent()
             .map(|p| p.css_classes().iter().map(|s| s.to_string()).collect())
             .unwrap_or_default();
         assert!(
             list_classes.iter().any(|c| c == "glass-sidebar"),
-            "sidebar list should carry glass-sidebar, got {list_classes:?}",
+            "top sidebar list should carry glass-sidebar, got {list_classes:?}",
+        );
+        assert!(
+            trash_list_classes.iter().any(|c| c == "glass-sidebar"),
+            "trash sidebar list should carry glass-sidebar, got {trash_list_classes:?}",
         );
         assert!(
             sidebar_bg_classes.iter().any(|c| c == "glass-base"),
@@ -114,10 +124,10 @@ fn sidebar_navigation_suite() {
             "sidebar surface should own the shared sidebar background, got {sidebar_bg_classes:?}",
         );
 
-        let n_items = sidebar.observe_children().n_items();
+        let n_items = top_sidebar.observe_children().n_items();
         assert!(n_items > 0, "sidebar should have rows");
         for idx in 0..n_items {
-            let row = sidebar
+            let row = top_sidebar
                 .row_at_index(idx as i32)
                 .expect("row exists in sidebar");
             let classes: Vec<String> = row.css_classes().iter().map(|s| s.to_string()).collect();
@@ -126,6 +136,18 @@ fn sidebar_navigation_suite() {
                 "row {idx} should carry glass-sidebar-row, got {classes:?}",
             );
         }
+        let trash_row = trash_list
+            .row_at_index(0)
+            .expect("Trash row should exist in trash list");
+        let trash_classes: Vec<String> = trash_row
+            .css_classes()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            trash_classes.iter().any(|c| c == "glass-sidebar-row"),
+            "Trash row should carry glass-sidebar-row, got {trash_classes:?}",
+        );
     }
 
     let tmp = tempfile::tempdir().unwrap();
@@ -149,6 +171,7 @@ fn sidebar_navigation_suite() {
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
+    let trash_list = window.imp().trash_list.get();
     let settings_btn = window.imp().settings_button.get();
     let settings_btn_classes: Vec<String> = settings_btn
         .css_classes()
@@ -166,6 +189,21 @@ fn sidebar_navigation_suite() {
             .iter()
             .any(|c| c == "sidebar-settings-button"),
         "settings button should include sidebar-settings-button, got {settings_btn_classes:?}",
+    );
+
+    assert_eq!(
+        sidebar.observe_children().n_items(),
+        2,
+        "top sidebar list should contain Photos and Albums header only",
+    );
+    assert_eq!(
+        trash_list.observe_children().n_items(),
+        1,
+        "trash list should contain the stable Trash row",
+    );
+    assert!(
+        !window.imp().album_scroll.property::<bool>("vexpand"),
+        "album scroll should be bounded by max-content-height instead of expanding",
     );
 
     // Row 1 is the Albums group header — non-selectable (it only collapses).
@@ -220,11 +258,10 @@ fn sidebar_navigation_suite() {
         "selecting Photos should return to the Photos root page",
     );
 
-    // Trash is the last list row. Selecting it pushes the Trash page on top of
-    // the Photos root.
-    let n_items = sidebar.observe_children().n_items() as i32;
-    let trash_row = sidebar.row_at_index(n_items - 1).expect("Trash row exists");
-    sidebar.select_row(Some(&trash_row));
+    // Trash is in its own stable bottom nav list. Selecting it pushes the Trash
+    // page on top of the Photos root.
+    let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
+    trash_list.select_row(Some(&trash_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
         Some(tr("page.trash.title").as_str()),
@@ -244,6 +281,7 @@ fn sidebar_navigation_suite() {
     );
 
     assert_album_sidebar_scroll_region_contains_all_albums();
+    assert_collapsed_album_refresh_restores_active_selection_after_expand();
 }
 
 fn assert_album_sidebar_scroll_region_contains_all_albums() {
@@ -283,8 +321,8 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
 
     assert_eq!(
         window.imp().targets.borrow().len(),
-        3,
-        "main sidebar targets should contain only Photos, AlbumsHeader, and Trash",
+        2,
+        "top sidebar targets should contain only Photos and AlbumsHeader",
     );
     assert_eq!(
         window.imp().album_rows.borrow().len(),
@@ -297,17 +335,101 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
     );
 
     let sidebar = window.imp().sidebar_list.get();
+    let trash_list = window.imp().trash_list.get();
     assert_eq!(
         sidebar.observe_children().n_items(),
-        3,
-        "main sidebar list should contain only Photos, Albums header, and Trash",
+        2,
+        "top sidebar list should contain only Photos and Albums header",
     );
-    let trash_row = sidebar.row_at_index(2).expect("Trash row remains stable");
-    sidebar.select_row(Some(&trash_row));
+    assert_eq!(
+        trash_list.observe_children().n_items(),
+        1,
+        "trash list should contain one stable Trash row",
+    );
+    let trash_row = trash_list
+        .row_at_index(0)
+        .expect("Trash row remains stable");
+    trash_list.select_row(Some(&trash_row));
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
         Some(tr("page.trash.title").as_str()),
         "Trash should remain a stable main sidebar row",
+    );
+}
+
+fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
+    let app = adw::Application::builder()
+        .application_id("org.gnome.PhotoViewer.TestCollapsedAlbumRefresh")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+    let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let nav = window.nav_view();
+
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let photos = PhotosPage::new(media_list.clone(), loader.clone());
+    photos.set_nav_target(&nav);
+    photos.set_db_pool(pool.clone());
+    nav.push(&photos);
+
+    window.set_resources(pool.clone(), loader, media_list);
+
+    let folder = "/tmp/album-active";
+    db::insert_media_item(
+        &pool,
+        &make_item(
+            "file:///tmp/album-active/cover.jpg",
+            "/tmp/album-active/cover.jpg",
+            folder,
+        ),
+    )
+    .unwrap();
+    albums::refresh(&pool).unwrap();
+    window.populate_album_rows();
+    window.connect_sidebar(&nav);
+
+    let album_list = window.imp().album_list.get();
+    let target_idx = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .position(|album| album.folder_path == std::path::Path::new(folder))
+        .expect("folder album should be rendered");
+    let row = album_list
+        .row_at_index(target_idx as i32)
+        .expect("target album row should exist");
+    album_list.select_row(Some(&row));
+    assert!(
+        nav.visible_page()
+            .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
+            .is_some(),
+        "selecting the target album should open AlbumDetailPage",
+    );
+
+    window.toggle_albums_expanded();
+    window.refresh_album_rows();
+    assert!(
+        !visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "album section should stay collapsed after refresh",
+    );
+    window.toggle_albums_expanded();
+
+    let selected = album_list
+        .selected_row()
+        .expect("expanded list should restore active album selection");
+    assert_eq!(
+        selected.index(),
+        target_idx as i32,
+        "restored selection should point at the active album after collapsed refresh",
     );
 }
 

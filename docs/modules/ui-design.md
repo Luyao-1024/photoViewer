@@ -52,7 +52,9 @@ Design intent:
 
 - The sidebar is a stable left rail with glass material. It must not shrink or
   expand when viewer pages, side panels, or album pages are pushed.
-- Top-level rows are Photos, Albums group header, and Trash.
+- The visual sidebar order is Photos, Albums group header, scrollable album
+  list, Trash, and Settings. Photos and Albums live in the top navigation list;
+  Trash lives in its own stable bottom navigation list below the album scroll.
 - Settings is exposed as a fixed gear button at the sidebar footer and opens a
   popup dialog (rather than a navigation row/page).
 - The sidebar uses a single material owner: `.glass-sidebar-surface.glass-base`
@@ -62,8 +64,9 @@ Design intent:
   create a visible color break at the settings button.
 - The Albums header is a collapsible group control. Album rows appear in a
   dedicated bounded scroll region directly under it, including virtual albums
-  such as Favorites, Photos, and Videos. The main sidebar list itself remains
-  limited to Photos, Albums, and Trash.
+  such as Favorites, Photos, and Videos. The top sidebar list itself remains
+  limited to Photos and Albums so Trash does not get pushed below or above the
+  album group.
 - Album rows use indentation, icons, and right-aligned counts to communicate
   hierarchy without adding extra panels.
 - Drag-to-reorder album rows should feel like a subtle in-place list operation:
