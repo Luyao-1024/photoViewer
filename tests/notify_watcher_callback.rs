@@ -1,4 +1,4 @@
-//! Verify `start_watching` emits `MediaChangeEvent`s on the notifier.
+//! Verify `start_watching` emits `DomainEvent`s on the notifier.
 //!
 //! This test depends on `notify`'s inotify/fsevent behavior, so it's
 //! `#[ignore]` by default. Run locally with
@@ -6,7 +6,8 @@
 mod common;
 use common::*;
 use photo_viewer::core::db;
-use photo_viewer::core::media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
+use photo_viewer::core::events::DomainEvent;
+use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
 use photo_viewer::core::notify_watcher;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -34,8 +35,8 @@ fn watcher_emits_upserted_after_successful_upsert() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut received = false;
     while Instant::now() < deadline {
-        if let Ok(MediaChangeEvent::Upserted(item)) = rx.try_recv() {
-            assert!(item.path.ends_with("new.png"));
+        if let Ok(DomainEvent::MediaUpserted { items, .. }) = rx.try_recv() {
+            assert!(items.iter().any(|item| item.path.ends_with("new.png")));
             received = true;
             break;
         }

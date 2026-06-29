@@ -369,10 +369,22 @@ box.mode-selector.on-light-background box.mode-dot,
   opacity: 0.4;
 }
 .glass-sidebar-row-drop-above {
-  box-shadow: inset 0 2px 0 var(--accent-bg-color);
+  box-shadow: inset 0 2px 0 @accent_bg_color;
 }
 .glass-sidebar-row-drop-below {
-  box-shadow: inset 0 -2px 0 var(--accent-bg-color);
+  box-shadow: inset 0 -2px 0 @accent_bg_color;
+}
+
+/* Album browser card drag sorting. These indicators sit on the card itself,
+   so they work regardless of how FlowBox wraps cards across columns. */
+.album-browser-card-dragging {
+  opacity: 0.45;
+}
+.album-browser-card-drop-before {
+  box-shadow: inset 0 3px 0 @accent_bg_color;
+}
+.album-browser-card-drop-after {
+  box-shadow: inset 0 -3px 0 @accent_bg_color;
 }
 
 /* viewer-stage — image content area; subtle radial wash that frames

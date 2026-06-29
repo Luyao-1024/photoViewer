@@ -342,13 +342,24 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
 /// 已生成缩略图的媒体项总数。
 pub fn count_thumbnail_generated(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL AND thumbnail_generated_at IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+             WHERE trashed_at IS NULL
+               AND thumbnail_generated_at IS NOT NULL
+               AND thumbnail_generated_at >= file_mtime",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(count as usize)
+}
+
+pub fn set_thumbnail_generated_at_for_tests(pool: &DbPool, id: i64, timestamp: i64) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute(
+        "UPDATE media_items SET thumbnail_generated_at = ?1 WHERE id = ?2",
+        rusqlite::params![timestamp, id],
+    )?;
+    Ok(())
 }
 
 /// 分页列出需要生成缩略图的非回收站项。
@@ -404,6 +415,59 @@ pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<Med
     let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
+}
+
+/// Return the neighbor of a live media item in the canonical live sort order.
+///
+/// `delta` follows viewer cursor semantics: `1` moves to the next row in the
+/// descending live-media order, `-1` moves to the previous row.
+pub fn live_media_neighbor(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    if delta == 0 {
+        return Ok(None);
+    }
+
+    let conn = pool.get()?;
+    let total = count_live_media(pool)?;
+    let Some(current_index) = conn
+        .query_row(
+            "SELECT row_index
+             FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                        ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+                      ) - 1 AS row_index
+               FROM media_items
+               WHERE trashed_at IS NULL
+             )
+             WHERE id = ?1",
+            [current_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    let target_index = current_index + i64::from(delta);
+    if target_index < 0 || target_index >= total as i64 {
+        return Ok(None);
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT 1 OFFSET ?1",
+    )?;
+    let item = stmt.query_row([target_index], row_to_media_item)?;
+    Ok(Some((target_index as u32, total as u32, item)))
 }
 
 /// 删除单行

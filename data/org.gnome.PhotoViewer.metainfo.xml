@@ -27,6 +27,14 @@
   </categories>
 
   <releases>
+    <release version="0.5.1" date="2026-06-29">
+      <description>
+        <p>
+          Fixes virtual scrolling at the end of large photo libraries so the
+          final page loads placeholders and thumbnails correctly.
+        </p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-06-24">
       <description>
         <p>

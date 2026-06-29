@@ -25,6 +25,13 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 
 Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album counts derived from media rows so scanner/database state remains the source of truth.
 
+Album rows are a derived projection over media rows. New refresh paths should
+route through `core::refresh::RefreshCoordinator` so album rebuilds are
+single-flight and repeated startup/watch events coalesce. UI pages should avoid
+adding new direct `albums::refresh` calls; trash and favorite mutations should
+go through `MediaRepository` so DB updates, filesystem side effects, and derived
+album refreshes stay behind one core boundary.
+
 Albums are shown under a collapsible "Albums" group header. The sidebar keeps
 at most 15 visible album rows to avoid vertical overflow; if there are more
 albums,
@@ -37,6 +44,8 @@ and the favorites album (on favorite-toggle refresh). A favorite/trash change
 refreshes the sidebar counts via `window::refresh_albums_sidebar`.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
+
+`AlbumBrowserPage` uses the same persistent ordering for the full album grid shown by the "More" row. Each album card is a drag source/drop target with the same `folder_path` payload; dropping on the upper/lower half inserts before/after that card, writes the complete order through `albums::set_album_order`, refreshes the page, and notifies `MainWindow` to rebuild the sidebar rows.
 
 The Albums page also has virtual logical albums:
 

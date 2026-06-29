@@ -6,7 +6,8 @@
 mod common;
 use common::*;
 use photo_viewer::core::db;
-use photo_viewer::core::media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
+use photo_viewer::core::events::DomainEvent;
+use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
 use photo_viewer::core::notify_watcher;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -16,7 +17,7 @@ fn spawn_watcher(
     root: std::path::PathBuf,
 ) -> (
     photo_viewer::core::db::DbPool,
-    tokio::sync::mpsc::UnboundedReceiver<MediaChangeEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
     tokio::task::JoinHandle<()>,
 ) {
     let pool = db::init_pool(&root.join("test.db")).unwrap();
@@ -31,21 +32,24 @@ fn spawn_watcher(
 /// Drain `rx` until we see an event whose uri matches `uri`, or the deadline
 /// passes. Returns the event on success.
 fn wait_for_uri(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<MediaChangeEvent>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
     uri: &str,
     timeout: Duration,
-) -> Option<MediaChangeEvent> {
+) -> Option<DomainEvent> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match rx.try_recv() {
             Ok(event) => {
                 let matches = match &event {
-                    MediaChangeEvent::Upserted(item) => item.uri == uri,
-                    MediaChangeEvent::UpsertedBatch { items, .. } => {
+                    DomainEvent::MediaUpserted { items, .. }
+                    | DomainEvent::MediaUpdated { items, .. } => {
                         items.iter().any(|item| item.uri == uri)
                     }
-                    MediaChangeEvent::Removed { uri: u } => u == uri,
-                    MediaChangeEvent::TrashChanged => false,
+                    DomainEvent::MediaRemoved { uris, .. } => uris.iter().any(|u| u == uri),
+                    DomainEvent::TrashChanged { .. }
+                    | DomainEvent::AlbumsDirty { .. }
+                    | DomainEvent::ThumbnailStatsDirty
+                    | DomainEvent::LiveCountDirty => false,
                 };
                 if matches {
                     return Some(event);
@@ -70,7 +74,7 @@ fn watcher_emits_upserted_for_new_file() {
 
     let event = wait_for_uri(&mut rx, &uri, Duration::from_secs(5));
     assert!(
-        matches!(event, Some(MediaChangeEvent::Upserted(_))),
+        matches!(event, Some(DomainEvent::MediaUpserted { .. })),
         "expected Upserted for {uri}, got {event:?}"
     );
 }
@@ -93,7 +97,7 @@ fn watcher_emits_removed_for_deleted_file() {
     std::fs::remove_file(&path).unwrap();
     let event = wait_for_uri(&mut rx, &uri, Duration::from_secs(5));
     assert!(
-        matches!(event, Some(MediaChangeEvent::Removed { .. })),
+        matches!(event, Some(DomainEvent::MediaRemoved { .. })),
         "expected Removed for {uri}, got {event:?}"
     );
 }
@@ -125,8 +129,12 @@ fn watcher_emits_upserted_for_modified_file() {
     let mut upsert_count = 0;
     while Instant::now() < deadline {
         match rx.try_recv() {
-            Ok(MediaChangeEvent::Upserted(item)) if item.uri == uri => upsert_count += 1,
-            Ok(MediaChangeEvent::Removed { uri: u }) if u == uri => {
+            Ok(DomainEvent::MediaUpserted { items, .. })
+                if items.iter().any(|item| item.uri == uri) =>
+            {
+                upsert_count += 1
+            }
+            Ok(DomainEvent::MediaRemoved { uris, .. }) if uris.iter().any(|u| u == &uri) => {
                 // Some backends emit Removed+Upserted on modify (delete-then-reinsert);
                 // we only assert on the Upserted count below, so swallow the Removed
                 // pair member here.

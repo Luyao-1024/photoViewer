@@ -4,6 +4,14 @@
 
 The viewer module covers the full media view, top overlay toolbar, left/right navigation, bottom thumbnail strip, video progress, details panel, and editor entry points.
 
+Viewer entry points are migrating to stable media identity. New call paths
+should open a viewer with a `MediaQuery` plus `MediaId` and an initial visible
+window, not with a long-lived "global index". `ViewerPage::new_for_query`
+stores that query and id; left/right navigation uses
+`MediaRepository::neighbor()` to find adjacent media, then syncs the local
+viewer window by id. The current `ListStore` index remains an internal render
+cursor only.
+
 ## Key Files
 
 | File | Role |

@@ -3,7 +3,8 @@ use crate::core::albums;
 use crate::core::backend::local::LocalBackend;
 use crate::core::db::DbPool;
 use crate::core::error::{AppError, Result};
-use crate::core::media_change_notifier::{MediaChangeNotifier, MediaChangeSource};
+use crate::core::events::ChangeSource;
+use crate::core::media_change_notifier::MediaChangeNotifier;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -99,10 +100,7 @@ fn scan_and_aggregate_with_notifier_blocking(
                         total_scanned,
                         notify_interval(total_scanned).as_secs()
                     );
-                    notifier.upserted_batch(
-                        MediaChangeSource::StartupScan,
-                        std::mem::take(&mut batch),
-                    );
+                    notifier.upserted_batch(ChangeSource::StartupScan, std::mem::take(&mut batch));
                     sent_first_batch = true;
                     last_notify = Instant::now();
                 }
@@ -115,7 +113,7 @@ fn scan_and_aggregate_with_notifier_blocking(
             batch.len(),
             indexed
         );
-        notifier.upserted_batch(MediaChangeSource::StartupScan, std::mem::take(&mut batch));
+        notifier.upserted_batch(ChangeSource::StartupScan, std::mem::take(&mut batch));
         tracing::info!("扫描完成 {}: {} 张新增/更新", root.display(), indexed);
     }
     albums::refresh(&pool)

@@ -12,6 +12,9 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::Album;
 use crate::core::db::DbPool;
+use crate::core::identity::MediaId;
+use crate::core::media::MediaItem;
+use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
@@ -88,11 +91,18 @@ impl AlbumDetailPage {
             empty.set_vexpand(true);
             obj.imp().content_box.get().append(&empty);
         } else {
-            let on_activate: Rc<dyn Fn(u32)> = {
+            let on_activate: Rc<dyn Fn(MediaId)> = {
                 let weak = obj.downgrade();
-                Rc::new(move |global_index| {
+                Rc::new(move |media_id| {
                     if let Some(this) = weak.upgrade() {
-                        this.open_viewer(global_index);
+                        let Some(media_list) = this.imp().media_list.borrow().as_ref().cloned()
+                        else {
+                            return;
+                        };
+                        let Some(index) = index_for_media_id(&media_list, media_id) else {
+                            return;
+                        };
+                        this.open_viewer(media_id, index);
                     }
                 })
             };
@@ -131,7 +141,7 @@ impl AlbumDetailPage {
             .map(|album| album.folder_path.clone())
     }
 
-    fn open_viewer(&self, global_index: u32) {
+    fn open_viewer(&self, media_id: MediaId, global_index: u32) {
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
@@ -141,7 +151,14 @@ impl AlbumDetailPage {
             None => return,
         };
 
-        let viewer = ViewerPage::new(media_list, global_index);
+        let query = self
+            .imp()
+            .album
+            .borrow()
+            .as_ref()
+            .map(|album| MediaQuery::AlbumFolder(album.folder_path.clone()))
+            .unwrap_or(MediaQuery::LiveAll);
+        let viewer = ViewerPage::new_for_query(query, media_id, media_list);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool.clone());
             let is_favorite_album = self
@@ -294,6 +311,21 @@ fn remove_media_item_by_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
         }
     }
     false
+}
+
+fn index_for_media_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
+    for index in 0..list.n_items() {
+        let Some(obj) = list.item(index) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<MediaItem>().id == media_id.get() {
+            return Some(index);
+        }
+    }
+    None
 }
 
 impl Default for AlbumDetailPage {

@@ -19,14 +19,12 @@ use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
 use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
+use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::core::{
-    albums,
-    db::{self, DbPool},
-    trash,
-};
+use crate::core::{albums, db::DbPool};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
@@ -51,7 +49,7 @@ mod imp {
         /// Global indices currently selected, in insertion order. Maintained
         /// by listening to each grid's `selection-changed` callback; not
         /// authoritative on its own — the per-grid `selected` set is.
-        pub selected_indices: RefCell<HashSet<u32>>,
+        pub selected_ids: RefCell<HashSet<MediaId>>,
         /// Coalesces ModeSelector contrast refreshes while scrolling. A final
         /// color decision can require one or more GTK frames after the scroll
         /// adjustment value changes because tile bounds and newly-visible
@@ -75,6 +73,7 @@ mod imp {
         pub favorite_btn: TemplateChild<gtk::Button>,
         /// 收藏/取消收藏弹层菜单项（在 new 里建好并 set_parent 到 favorite_btn；
         /// refresh_selection_ui 按选中集状态切换 sensitive）。
+        pub favorite_popover: RefCell<Option<gtk::Popover>>,
         pub favorite_item_btn: RefCell<Option<gtk::Button>>,
         pub unfavorite_item_btn: RefCell<Option<gtk::Button>>,
         #[template_child]
@@ -89,7 +88,7 @@ mod imp {
                 nav_view: RefCell::new(None),
                 pool: RefCell::new(None),
                 grids: RefCell::new(Vec::new()),
-                selected_indices: RefCell::new(HashSet::new()),
+                selected_ids: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 header_bar: TemplateChild::default(),
@@ -98,6 +97,7 @@ mod imp {
                 select_all_btn: TemplateChild::default(),
                 add_to_album_btn: TemplateChild::default(),
                 favorite_btn: TemplateChild::default(),
+                favorite_popover: RefCell::new(None),
                 favorite_item_btn: RefCell::new(None),
                 unfavorite_item_btn: RefCell::new(None),
                 delete_to_trash_btn: TemplateChild::default(),
@@ -120,7 +120,13 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for PhotosPage {}
+    impl ObjectImpl for PhotosPage {
+        fn dispose(&self) {
+            if let Some(popover) = self.favorite_popover.borrow_mut().take() {
+                popover.unparent();
+            }
+        }
+    }
     impl WidgetImpl for PhotosPage {}
     impl NavigationPageImpl for PhotosPage {}
 }
@@ -168,11 +174,11 @@ impl PhotosPage {
         let is_empty = media_list.n_items() == 0;
         let media_list_for_empty_state = media_list.clone();
 
-        let on_activate: Rc<dyn Fn(u32)> = {
+        let on_activate: Rc<dyn Fn(MediaId)> = {
             let weak = obj.downgrade();
-            Rc::new(move |global_index| {
+            Rc::new(move |media_id| {
                 if let Some(this) = weak.upgrade() {
-                    this.open_viewer(global_index);
+                    this.open_viewer(media_id);
                 }
             })
         };
@@ -184,35 +190,35 @@ impl PhotosPage {
                 }
             })
         };
-        let on_add_to_album: Rc<dyn Fn(Vec<u32>)> = {
+        let on_add_to_album: Rc<dyn Fn(Vec<MediaId>)> = {
             let weak = obj.downgrade();
-            Rc::new(move |indices| {
+            Rc::new(move |ids| {
                 if let Some(this) = weak.upgrade() {
-                    this.open_album_picker_for_indices(indices);
+                    this.open_album_picker_for_ids(ids);
                 }
             })
         };
-        let on_move_to_trash: Rc<dyn Fn(Vec<u32>)> = {
+        let on_move_to_trash: Rc<dyn Fn(Vec<MediaId>)> = {
             let weak = obj.downgrade();
-            Rc::new(move |indices| {
+            Rc::new(move |ids| {
                 if let Some(this) = weak.upgrade() {
-                    this.delete_to_trash_for_indices(indices);
+                    this.delete_to_trash_for_ids(ids);
                 }
             })
         };
-        let on_favorite: Rc<dyn Fn(Vec<u32>, bool)> = {
+        let on_favorite: Rc<dyn Fn(Vec<MediaId>, bool)> = {
             let weak = obj.downgrade();
-            Rc::new(move |indices, is_favorite| {
+            Rc::new(move |ids, is_favorite| {
                 if let Some(this) = weak.upgrade() {
-                    this.set_favorite_for_indices(indices, is_favorite);
+                    this.set_favorite_for_ids(ids, is_favorite);
                 }
             })
         };
         let on_query_favorite_state = {
             let weak = obj.downgrade();
-            Rc::new(move |indices: Vec<u32>| {
+            Rc::new(move |ids: Vec<MediaId>| {
                 weak.upgrade()
-                    .map(|this| this.favorite_state_for_indices(&indices))
+                    .map(|this| this.favorite_state_for_ids(&ids))
                     .unwrap_or_default()
             })
         };
@@ -252,7 +258,7 @@ impl PhotosPage {
         );
 
         // Wire selection-changed: each grid fires when its own `selected` set
-        // changes. We collect the union into PhotosPage's `selected_indices`
+        // changes. We collect the union into PhotosPage's `selected_ids`
         // and toggle the "Add to Album" button visibility. We use the union
         // (rather than per-grid bookkeeping) so the toolbar reflects the total
         // selected across year/month/day — important because only one mode
@@ -393,9 +399,9 @@ impl PhotosPage {
             let popover_for_fav = popover.clone();
             favorite_item.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    let indices = this.selected_indices_vec();
-                    if !indices.is_empty() {
-                        this.set_favorite_for_indices(indices, true);
+                    let ids = this.selected_ids_vec();
+                    if !ids.is_empty() {
+                        this.set_favorite_for_ids(ids, true);
                     }
                 }
                 popover_for_fav.popdown();
@@ -405,9 +411,9 @@ impl PhotosPage {
             let popover_for_unfav = popover.clone();
             unfavorite_item.connect_clicked(move |_| {
                 if let Some(this) = weak.upgrade() {
-                    let indices = this.selected_indices_vec();
-                    if !indices.is_empty() {
-                        this.set_favorite_for_indices(indices, false);
+                    let ids = this.selected_ids_vec();
+                    if !ids.is_empty() {
+                        this.set_favorite_for_ids(ids, false);
                     }
                 }
                 popover_for_unfav.popdown();
@@ -418,6 +424,7 @@ impl PhotosPage {
 
             // Anchor the popover to the heart button.
             popover.set_parent(&obj.imp().favorite_btn.get());
+            *obj.imp().favorite_popover.borrow_mut() = Some(popover.clone());
             *obj.imp().favorite_item_btn.borrow_mut() = Some(favorite_item);
             *obj.imp().unfavorite_item_btn.borrow_mut() = Some(unfavorite_item);
 
@@ -430,17 +437,17 @@ impl PhotosPage {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
-                let indices = this.selected_indices_vec();
-                if indices.is_empty() {
+                let ids = this.selected_ids_vec();
+                if ids.is_empty() {
                     return;
                 }
-                let state = this.favorite_state_for_indices(&indices);
+                let state = this.favorite_state_for_ids(&ids);
                 if state.can_favorite && state.can_unfavorite {
                     popover_for_trigger.popup();
                 } else if state.can_favorite {
-                    this.set_favorite_for_indices(indices, true);
+                    this.set_favorite_for_ids(ids, true);
                 } else if state.can_unfavorite {
-                    this.set_favorite_for_indices(indices, false);
+                    this.set_favorite_for_ids(ids, false);
                 }
             });
         }
@@ -453,11 +460,11 @@ impl PhotosPage {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
-                let indices = this.selected_indices_vec();
-                if indices.is_empty() {
+                let ids = this.selected_ids_vec();
+                if ids.is_empty() {
                     return;
                 }
-                let count = indices.len();
+                let count = ids.len();
                 let body = if count == 1 {
                     tr("trash.confirm_body_one")
                 } else {
@@ -475,11 +482,11 @@ impl PhotosPage {
                 dialog.set_close_response("cancel");
 
                 let weak2 = this.downgrade();
-                let indices2 = indices;
+                let ids2 = ids;
                 dialog.connect_response(None, move |_, response| {
                     if response == "trash" {
                         if let Some(this) = weak2.upgrade() {
-                            this.delete_to_trash_for_indices(indices2.clone());
+                            this.delete_to_trash_for_ids(ids2.clone());
                         }
                     }
                 });
@@ -506,19 +513,19 @@ impl PhotosPage {
         self.imp().media_list.borrow()
     }
 
-    /// Rebuild the union of selected indices from each visible grid, then
+    /// Rebuild the union of selected media ids from each visible grid, then
     /// show / hide the "Add to Album" button. Cheap (HashSet union) so it's
     /// fine to call on every `selection-changed` tick.
     fn refresh_selection_ui(&self) {
-        let mut union: HashSet<u32> = HashSet::new();
+        let mut union: HashSet<MediaId> = HashSet::new();
         for grid in self.imp().grids.borrow().iter() {
-            union.extend(grid.selected_indices());
+            union.extend(grid.selected_ids());
         }
         let has_any = !union.is_empty();
         let all_displayed_selected = self
             .current_grid()
             .is_some_and(|grid| grid.is_all_displayed_selected());
-        *self.imp().selected_indices.borrow_mut() = union;
+        *self.imp().selected_ids.borrow_mut() = union;
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);
         self.imp().delete_to_trash_btn.get().set_visible(has_any);
@@ -544,14 +551,8 @@ impl PhotosPage {
         }
 
         let state = if has_any {
-            let indices: Vec<u32> = self
-                .imp()
-                .selected_indices
-                .borrow()
-                .iter()
-                .copied()
-                .collect();
-            self.favorite_state_for_indices(&indices)
+            let ids: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
+            self.favorite_state_for_ids(&ids)
         } else {
             FavoriteMenuState::default()
         };
@@ -580,46 +581,25 @@ impl PhotosPage {
         }
     }
 
-    fn favorite_state_for_indices(&self, indices: &[u32]) -> FavoriteMenuState {
+    fn favorite_state_for_ids(&self, ids: &[MediaId]) -> FavoriteMenuState {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return FavoriteMenuState::default();
         };
-        let ids = self.media_ids_for_indices(indices);
         if ids.is_empty() {
             return FavoriteMenuState::default();
         }
 
-        let mut has_favorite = false;
-        let mut has_unfavorite = false;
-        for id in ids {
-            match db::is_media_favorite(&pool, id) {
-                Ok(is_favorite) => {
-                    if is_favorite {
-                        has_favorite = true;
-                    } else {
-                        has_unfavorite = true;
-                    }
-                }
-                Err(_) => {
-                    has_unfavorite = true;
-                }
-            }
-        }
+        let repo = crate::core::repository::MediaRepository::new(pool);
+        let summary = repo.favorite_state(ids).unwrap_or_default();
 
         FavoriteMenuState {
-            can_favorite: has_unfavorite,
-            can_unfavorite: has_favorite,
+            can_favorite: summary.has_unfavorite,
+            can_unfavorite: summary.has_favorite,
         }
     }
 
-    fn selected_indices_vec(&self) -> Vec<u32> {
-        let mut selected: Vec<u32> = self
-            .imp()
-            .selected_indices
-            .borrow()
-            .iter()
-            .copied()
-            .collect();
+    fn selected_ids_vec(&self) -> Vec<MediaId> {
+        let mut selected: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
         selected.sort_unstable();
         selected
     }
@@ -649,11 +629,11 @@ impl PhotosPage {
     }
 
     fn open_album_picker_for_current_selection(&self) {
-        let indices = self.selected_indices_vec();
-        if indices.is_empty() {
+        let ids = self.selected_ids_vec();
+        if ids.is_empty() {
             return;
         }
-        self.open_album_picker_for_indices(indices);
+        self.open_album_picker_for_ids(ids);
     }
 
     fn update_mode_selector_contrast(&self) {
@@ -700,44 +680,18 @@ impl PhotosPage {
         });
     }
 
-    fn media_ids_for_indices(&self, indices: &[u32]) -> Vec<i64> {
-        let media_list = self.imp().media_list.borrow();
-        let list = match media_list.as_ref() {
-            Some(list) => list,
-            None => return Vec::new(),
-        };
-        let mut ids = Vec::new();
-        let mut seen = HashSet::new();
-        for &gi in indices {
-            if gi >= list.n_items() {
-                continue;
-            }
-            let Some(obj) = list.item(gi) else {
-                continue;
-            };
-            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            let id = boxed.borrow::<crate::core::media::MediaItem>().id;
-            if seen.insert(id) {
-                ids.push(id);
-            }
-        }
-        ids
-    }
-
-    fn open_album_picker_for_indices(&self, indices: Vec<u32>) {
+    fn open_album_picker_for_ids(&self, ids: Vec<MediaId>) {
         let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
             return;
         };
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
-        let ids = self.media_ids_for_indices(&indices);
         if ids.is_empty() {
             return;
         }
-        album_picker::AlbumPickerDialog::present(&nav, pool, ids);
+        let raw_ids: Vec<i64> = ids.into_iter().map(MediaId::get).collect();
+        album_picker::AlbumPickerDialog::present(&nav, pool, raw_ids);
     }
 
     fn remove_media_by_ids(&self, ids: &[i64]) {
@@ -766,11 +720,10 @@ impl PhotosPage {
         }
     }
 
-    fn delete_to_trash_for_indices(&self, indices: Vec<u32>) {
+    fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
-        let ids = self.media_ids_for_indices(&indices);
         if ids.is_empty() {
             return;
         }
@@ -779,19 +732,14 @@ impl PhotosPage {
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let removed = gtk::gio::spawn_blocking(move || {
-                let mut removed = Vec::new();
-                for id in ids_for_worker {
-                    let Ok(item) = db::get_media_item(&pool, id) else {
-                        continue;
-                    };
-                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
-                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
-                    if trash::move_to_trash_marked(&pool, item.id, &item.uri).is_ok() {
-                        removed.push(item.id);
-                    }
-                }
+                let repo = crate::core::repository::MediaRepository::new(pool.clone());
+                let mutation = repo.move_to_trash(&ids_for_worker).unwrap_or_default();
                 let _ = albums::refresh(&pool);
-                removed
+                mutation
+                    .changed_ids
+                    .into_iter()
+                    .map(MediaId::get)
+                    .collect::<Vec<_>>()
             })
             .await
             .unwrap_or_default();
@@ -806,11 +754,10 @@ impl PhotosPage {
         });
     }
 
-    fn set_favorite_for_indices(&self, indices: Vec<u32>, is_favorite: bool) {
+    fn set_favorite_for_ids(&self, ids: Vec<MediaId>, is_favorite: bool) {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
-        let ids = self.media_ids_for_indices(&indices);
         if ids.is_empty() {
             return;
         }
@@ -819,15 +766,15 @@ impl PhotosPage {
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let _ = gtk::gio::spawn_blocking(move || {
-                for id in ids_for_worker {
-                    let _ = db::set_media_favorite(&pool, id, is_favorite);
-                }
+                let repo = crate::core::repository::MediaRepository::new(pool.clone());
+                let _ = repo.set_favorite(&ids_for_worker, is_favorite);
                 let _ = albums::refresh(&pool);
             })
             .await;
 
             if let Some(this) = weak.upgrade() {
-                this.update_media_favorite_flags(&ids, is_favorite);
+                let raw_ids: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+                this.update_media_favorite_flags(&raw_ids, is_favorite);
                 this.clear_selection();
                 if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
                     refresh_albums_sidebar(&nav);
@@ -860,14 +807,14 @@ impl PhotosPage {
         for grid in self.imp().grids.borrow().iter() {
             grid.clear_selection();
         }
-        *self.imp().selected_indices.borrow_mut() = HashSet::new();
+        *self.imp().selected_ids.borrow_mut() = HashSet::new();
         self.imp().select_all_btn.get().set_visible(false);
         self.imp().add_to_album_btn.get().set_visible(false);
         self.imp().favorite_btn.get().set_visible(false);
         self.imp().delete_to_trash_btn.get().set_visible(false);
     }
 
-    fn open_viewer(&self, global_index: u32) {
+    fn open_viewer(&self, media_id: MediaId) {
         if self.imp().viewer_open_pending.get() {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
@@ -901,6 +848,14 @@ impl PhotosPage {
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
+        };
+        let Some(global_index) = index_for_media_id(&media_list, media_id) else {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "PhotosPage: ignoring viewer activation for media_id={} because it is not in the current window",
+                media_id.get()
+            );
+            return;
         };
         let displayed_indices = self
             .current_grid()
@@ -949,7 +904,7 @@ impl PhotosPage {
                 displayed_indices.len()
             );
         }
-        let viewer_debug_label = format!("viewer-open-index-{global_index}");
+        let viewer_debug_label = format!("viewer-open-id-{}", media_id.get());
         nav.connect_visible_page_notify({
             let label = viewer_debug_label.clone();
             move |nav| {
@@ -985,7 +940,7 @@ impl PhotosPage {
             }
         });
 
-        let viewer = ViewerPage::new(media_list, global_index);
+        let viewer = ViewerPage::new_for_query(MediaQuery::LiveAll, media_id, media_list);
 
         // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
@@ -1079,6 +1034,21 @@ fn media_item_for_index(
     Some(item)
 }
 
+fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
+    for index in 0..media_list.n_items() {
+        let Some(obj) = media_list.item(index) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<crate::core::media::MediaItem>().id == media_id.get() {
+            return Some(index);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1111,7 +1081,7 @@ mod tests {
     fn repeated_photo_activation_pushes_only_one_viewer_while_pending() {
         let _ = gtk::init();
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
         let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
         let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
@@ -1121,8 +1091,8 @@ mod tests {
         page.set_nav_target(&nav);
         nav.push(&page);
 
-        page.open_viewer(0);
-        page.open_viewer(0);
+        page.open_viewer(MediaId::from(1));
+        page.open_viewer(MediaId::from(1));
 
         assert_eq!(
             nav.navigation_stack().n_items(),

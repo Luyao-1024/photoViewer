@@ -573,7 +573,14 @@ impl MainWindow {
         let items = if album.is_virtual {
             filtered_items_for_album(&album, &master, &pool)
         } else {
-            crate::core::db::list_media_by_folder(&pool, &album.folder_path).unwrap_or_default()
+            crate::core::repository::MediaRepository::new(pool.clone())
+                .page(
+                    crate::core::repository::MediaQuery::AlbumFolder(album.folder_path.clone()),
+                    0,
+                    u32::MAX,
+                )
+                .map(|page| page.items)
+                .unwrap_or_default()
         };
         let filtered = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         for item in items {
@@ -604,7 +611,8 @@ impl MainWindow {
 
         let weak = self.downgrade();
         let nav_copy = nav_view.clone();
-        let page = AlbumBrowserPage::new(
+        let window_for_order = self.downgrade();
+        let page = AlbumBrowserPage::with_order_changed(
             pool,
             loader,
             Rc::new(move |album| {
@@ -612,6 +620,11 @@ impl MainWindow {
                     window.open_album(&nav_copy, album);
                 }
             }),
+            Some(Rc::new(move || {
+                if let Some(window) = window_for_order.upgrade() {
+                    window.rebuild_album_rows();
+                }
+            })),
         );
         nav_view.push(&page);
     }

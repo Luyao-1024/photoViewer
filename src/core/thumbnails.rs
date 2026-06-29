@@ -157,6 +157,8 @@ struct QueueState {
 /// 队列 + 唤醒条件变量。worker（spawn_blocking OS 线程）在 `cvar` 上阻塞等待，
 /// 故用 **std `Condvar`**（不是 tokio 的——它需要 reactor，而 worker 不 `.await`）。
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
+type StatsDirtyCallback = Arc<dyn Fn() + Send + Sync>;
+type SharedStatsDirtyCallback = Arc<Mutex<Option<StatsDirtyCallback>>>;
 
 /// 加载器的可变缓存状态，用单一 Mutex 保护。
 ///
@@ -195,6 +197,7 @@ pub struct ThumbnailLoader {
     queue: SharedQueue,
     state: Arc<Mutex<LoaderState>>,
     background_pull: Arc<BackgroundPullState>,
+    stats_dirty_callback: SharedStatsDirtyCallback,
 }
 
 impl ThumbnailLoader {
@@ -248,6 +251,7 @@ impl ThumbnailLoader {
                 enabled: AtomicBool::new(false),
                 offset: Mutex::new(0),
             }),
+            stats_dirty_callback: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -259,6 +263,12 @@ impl ThumbnailLoader {
     /// DB 中已生成缩略图的媒体项总数。
     pub fn generated_count(&self) -> usize {
         crate::core::db::count_thumbnail_generated(&self.pool).unwrap_or(0)
+    }
+
+    pub fn set_stats_dirty_callback(&self, callback: StatsDirtyCallback) {
+        if let Ok(mut slot) = self.stats_dirty_callback.lock() {
+            *slot = Some(callback);
+        }
     }
 
     /// 后台预热是否仍在进行（标志位未关）。
@@ -291,8 +301,9 @@ impl ThumbnailLoader {
             let queue = self.queue.clone();
             let state = self.state.clone();
             let bg = self.background_pull.clone();
+            let stats_dirty_callback = self.stats_dirty_callback.clone();
             tokio::task::spawn_blocking(move || {
-                worker_loop(queue, pool, cache_dir, state, bg);
+                worker_loop(queue, pool, cache_dir, state, bg, stats_dirty_callback);
             });
         }
     }
@@ -559,6 +570,7 @@ fn worker_loop(
     cache_dir: PathBuf,
     state: Arc<Mutex<LoaderState>>,
     bg: Arc<BackgroundPullState>,
+    stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
         let queue_wait_ms = req.enqueued_at.elapsed().as_millis();
@@ -614,6 +626,10 @@ fn worker_loop(
                 if let Some(media_id) = generated_media_id {
                     if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
                         warn!("更新缩略图状态失败: {}", e);
+                    } else if let Ok(callback) = stats_dirty_callback.lock() {
+                        if let Some(callback) = callback.as_ref() {
+                            callback();
+                        }
                     }
                 }
             }

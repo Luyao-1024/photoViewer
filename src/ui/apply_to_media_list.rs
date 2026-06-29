@@ -1,11 +1,11 @@
-//! Apply a `MediaChangeEvent` to the shared `gio::ListStore`.
+//! Apply a `DomainEvent` to the shared `gio::ListStore`.
 //!
 //! Kept as a tiny free function in its own module so it can be tested
 //! headlessly (no GTK window required). The list store is the single
 //! data source backing the three `MediaGrid` instances on `PhotosPage`.
 
+use crate::core::events::{ChangeSource, DomainEvent};
 use crate::core::media::MediaItem;
-use crate::core::media_change_notifier::{MediaChangeEvent, MediaChangeSource};
 use crate::core::runtime_config;
 use gtk4 as gtk;
 use gtk4::glib;
@@ -16,63 +16,46 @@ pub fn ui_media_list_cap() -> usize {
     runtime_config::ui_media_list_cap()
 }
 
-/// Apply a `MediaChangeEvent` to `list`, keeping the same global ordering as
+/// Apply a `DomainEvent` to `list`, keeping the same global ordering as
 /// `db::list_all_media`: photo sort time descending, then id descending.
 /// The function is panic-free: any unexpected type mismatch in a list item is
 /// silently skipped.
-pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) {
+pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
     match event {
-        MediaChangeEvent::Upserted(item) => {
-            apply_upserted_item(list, *item);
+        DomainEvent::MediaUpserted { source, items } => {
+            apply_upserted_batch(list, *source, items.clone());
         }
-        MediaChangeEvent::UpsertedBatch { source, items } => {
-            apply_upserted_batch(list, source, items);
+        DomainEvent::MediaUpdated { items, .. } => {
+            apply_upserted_batch(list, ChangeSource::UserInteractive, items.clone());
         }
-        MediaChangeEvent::Removed { uri } => {
-            for i in 0..list.n_items() {
-                if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-                    if obj.borrow::<MediaItem>().uri == uri {
-                        list.remove(i);
-                        return;
-                    }
-                }
+        DomainEvent::MediaRemoved { uris, .. } => {
+            for uri in uris {
+                remove_by_uri(list, uri);
             }
         }
-        // TrashChanged 不影响 live 相册列表（回收站视图自己监听该事件刷新）。
-        // 此 arm 仅为穷尽匹配；正常调用方在分发前已把 TrashChanged 单独处理。
-        MediaChangeEvent::TrashChanged => {}
+        DomainEvent::TrashChanged { .. }
+        | DomainEvent::AlbumsDirty { .. }
+        | DomainEvent::ThumbnailStatsDirty
+        | DomainEvent::LiveCountDirty => {}
     }
 }
 
-fn apply_upserted_item(list: &gtk::gio::ListStore, item: MediaItem) {
-    let uri = item.uri.clone();
+fn remove_by_uri(list: &gtk::gio::ListStore, uri: &str) {
     for i in 0..list.n_items() {
         if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-            let existing = obj.borrow::<MediaItem>();
-            if existing.uri == uri {
-                if same_sort_position(&existing, &item) {
-                    list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
-                } else {
-                    list.remove(i);
-                    insert_sorted(list, item);
-                }
+            if obj.borrow::<MediaItem>().uri == uri {
+                list.remove(i);
                 return;
             }
         }
     }
-    insert_sorted(list, item);
-    trim_to_cap(list);
 }
 
-fn apply_upserted_batch(
-    list: &gtk::gio::ListStore,
-    source: MediaChangeSource,
-    items: Vec<MediaItem>,
-) {
+fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
     }
-    if source == MediaChangeSource::StartupScan && list.n_items() as usize >= ui_media_list_cap() {
+    if source == ChangeSource::StartupScan && list.n_items() as usize >= ui_media_list_cap() {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "UI_LIST_BATCH_MERGE skipped_startup_after_cap incoming_len={} list_len={}",
@@ -121,41 +104,6 @@ fn apply_upserted_batch(
         list.n_items(),
         started.elapsed().as_millis()
     );
-}
-
-fn same_sort_position(a: &MediaItem, b: &MediaItem) -> bool {
-    a.sort_datetime() == b.sort_datetime() && a.id == b.id
-}
-
-fn should_sort_before(candidate: &MediaItem, existing: &MediaItem) -> bool {
-    candidate.sort_datetime() > existing.sort_datetime()
-        || (candidate.sort_datetime() == existing.sort_datetime() && candidate.id > existing.id)
-}
-
-fn insert_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
-    let pos = sorted_insert_position(list, &item);
-    if pos as usize >= ui_media_list_cap() {
-        return;
-    }
-    list.insert(pos, &glib::BoxedAnyObject::new(item));
-}
-
-pub(crate) fn trim_to_cap(list: &gtk::gio::ListStore) {
-    while list.n_items() as usize > ui_media_list_cap() {
-        list.remove(list.n_items() - 1);
-    }
-}
-
-fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
-    for i in 0..list.n_items() {
-        let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
-            continue;
-        };
-        if should_sort_before(item, &obj.borrow::<MediaItem>()) {
-            return i;
-        }
-    }
-    list.n_items()
 }
 
 #[cfg(test)]
@@ -213,7 +161,10 @@ mod tests {
         let list = list_with(vec![item_at(1, "file:///tmp/a.jpg", 2026, 6, 25, 12)]);
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(Box::new(item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12))),
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![item_at(2, "file:///tmp/b.jpg", 2026, 6, 24, 12)],
+            },
         );
         assert_eq!(list.n_items(), 2);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/a.jpg");
@@ -229,14 +180,10 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(Box::new(item_at(
-                3,
-                "file:///tmp/middle.jpg",
-                2026,
-                6,
-                24,
-                12,
-            ))),
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![item_at(3, "file:///tmp/middle.jpg", 2026, 6, 24, 12)],
+            },
         );
 
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newer.jpg");
@@ -255,8 +202,8 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::UpsertedBatch {
-                source: crate::core::media_change_notifier::MediaChangeSource::UserInteractive,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::UserInteractive,
                 items: vec![
                     item_at(3, "file:///tmp/middle.jpg", 2026, 6, 24, 12),
                     updated,
@@ -290,8 +237,8 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::UpsertedBatch {
-                source: crate::core::media_change_notifier::MediaChangeSource::StartupScan,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::StartupScan,
                 items,
             },
         );
@@ -312,8 +259,8 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::UpsertedBatch {
-                source: crate::core::media_change_notifier::MediaChangeSource::StartupScan,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::StartupScan,
                 items: vec![item_at(
                     10_000,
                     "file:///tmp/newest-from-scan.jpg",
@@ -340,14 +287,10 @@ mod tests {
 
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Upserted(Box::new(item_at(
-                10_000,
-                "file:///tmp/newest.jpg",
-                2026,
-                6,
-                26,
-                12,
-            ))),
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![item_at(10_000, "file:///tmp/newest.jpg", 2026, 6, 26, 12)],
+            },
         );
 
         assert_eq!(list.n_items(), 201);
@@ -363,7 +306,13 @@ mod tests {
         ]);
         let mut updated = item(2, "file:///tmp/b.jpg");
         updated.blake3_hash = "new-hash".into();
-        apply_to_media_list(&list, MediaChangeEvent::Upserted(Box::new(updated)));
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![updated],
+            },
+        );
         assert_eq!(list.n_items(), 3, "upsert must not change list length");
         assert_eq!(nth_uri(&list, 1), "file:///tmp/b.jpg");
         // Sanity: the new blake3 hash actually took effect.
@@ -381,7 +330,13 @@ mod tests {
         let mut updated = item_at(3, "file:///tmp/c.jpg", 2026, 6, 26, 12);
         updated.blake3_hash = "new-hash".into();
 
-        apply_to_media_list(&list, MediaChangeEvent::Upserted(Box::new(updated)));
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![updated],
+            },
+        );
 
         assert_eq!(list.n_items(), 3);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/c.jpg");
@@ -399,8 +354,10 @@ mod tests {
         ]);
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Removed {
-                uri: "file:///tmp/b.jpg".into(),
+            &DomainEvent::MediaRemoved {
+                source: ChangeSource::FilesystemWatcher,
+                ids: Vec::new(),
+                uris: vec!["file:///tmp/b.jpg".into()],
             },
         );
         assert_eq!(list.n_items(), 1);
@@ -412,8 +369,10 @@ mod tests {
         let list = list_with(vec![item(1, "file:///tmp/a.jpg")]);
         apply_to_media_list(
             &list,
-            MediaChangeEvent::Removed {
-                uri: "file:///tmp/missing.jpg".into(),
+            &DomainEvent::MediaRemoved {
+                source: ChangeSource::FilesystemWatcher,
+                ids: Vec::new(),
+                uris: vec!["file:///tmp/missing.jpg".into()],
             },
         );
         assert_eq!(list.n_items(), 1);

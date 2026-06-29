@@ -58,12 +58,26 @@ model, hidden views, or FlowBox children grow with the full on-disk library;
 doing so drives GB-level memory use and blocks the main thread before the app
 is usable.
 
+Browsing identity is migrating from list indexes to stable `MediaId` values.
+`MediaGrid` activation and multi-select callbacks must pass media ids across
+widget/page boundaries; indexes are local to the current visible window only.
+The `ui::models::media_window_model::MediaWindowModel` is the intended owner of
+visible-window state (`MediaQuery`, total count, window start, generation, and
+the GTK `ListStore` projection). Batch actions, selection state, viewer
+activation, and cross-async work should use `MediaId`; indexes are render-local
+only.
+
 Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
 `GtkFlowBox` can map most or all children in the current virtual page even when
 they are far below the visible area. The scan requests and priority-boosts
 tiles intersecting the viewport plus one viewport of overscan, which keeps
 visible thumbnails ahead of off-screen work while still making near-scroll
 content warm quickly.
+
+The Day grid's library statistics label reads `MediaRepository::library_stats()`.
+It should display the repository projection (`LibraryStats`) and not calculate
+thumbnail progress from `ThumbnailLoader` internals; stale thumbnail markers
+are filtered at the DB projection layer.
 
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 

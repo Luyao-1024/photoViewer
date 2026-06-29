@@ -12,6 +12,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -84,7 +85,7 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
-                    let pool_for_consumer = pool.clone();
+                    let pool_for_refresh = pool.clone();
                     window.set_resources(pool, loader, media_list.clone());
                     // Now that the pool is available, populate the album rows
                     // nested under the sidebar's Albums group header.
@@ -96,39 +97,75 @@ pub fn build_app() -> adw::Application {
                     // TrashChanged → 刷新当前可见的回收站页面（文件管理器改了回收站
                     // 后无需切换页面即可看到）。
                     let window_for_consumer = window.downgrade();
+                    let album_refresh = crate::core::refresh::RefreshCoordinator::new(
+                        pool_for_refresh,
+                        Rc::new({
+                            let window = window.downgrade();
+                            move || {
+                                if let Some(window) = window.upgrade() {
+                                    window.refresh_album_rows();
+                                }
+                            }
+                        }),
+                    );
                     gtk::glib::MainContext::default().spawn_local(async move {
                         let mut rx = change_rx;
                         while let Some(event) = rx.recv().await {
-                            use crate::core::media_change_notifier::{
-                                MediaChangeEvent, MediaChangeSource,
-                            };
-                            match event {
-                                MediaChangeEvent::TrashChanged => {
+                            match &event {
+                                crate::core::events::DomainEvent::TrashChanged { .. } => {
                                     if let Some(window) = window_for_consumer.upgrade() {
                                         window.refresh_visible_trash_page();
                                     }
+                                    album_refresh.mark_albums_dirty_async();
                                 }
-                                other => {
+                                _ => {
                                     let is_startup_scan_batch = matches!(
-                                        &other,
-                                        MediaChangeEvent::UpsertedBatch {
-                                            source: MediaChangeSource::StartupScan,
+                                        &event,
+                                        crate::core::events::DomainEvent::MediaUpserted {
+                                            source: crate::core::events::ChangeSource::StartupScan,
                                             ..
                                         }
                                     );
-                                    let event_label = match &other {
-                                        MediaChangeEvent::Upserted(_) => "upserted".to_string(),
-                                        MediaChangeEvent::UpsertedBatch { source, items } => {
-                                            format!("upserted_batch({source:?}, {})", items.len())
+                                    let event_label = match &event {
+                                        crate::core::events::DomainEvent::MediaUpserted {
+                                            source,
+                                            items,
+                                        } => {
+                                            format!("media_upserted({source:?}, {})", items.len())
                                         }
-                                        MediaChangeEvent::Removed { .. } => "removed".to_string(),
-                                        MediaChangeEvent::TrashChanged => "trash_changed".to_string(),
+                                        crate::core::events::DomainEvent::MediaRemoved {
+                                            uris,
+                                            ..
+                                        } => {
+                                            format!("media_removed({})", uris.len())
+                                        }
+                                        crate::core::events::DomainEvent::MediaUpdated {
+                                            source,
+                                            items,
+                                            ..
+                                        } => {
+                                            format!("media_updated({source:?}, {})", items.len())
+                                        }
+                                        crate::core::events::DomainEvent::TrashChanged { .. } => {
+                                            "trash_changed".to_string()
+                                        }
+                                        crate::core::events::DomainEvent::AlbumsDirty {
+                                            source,
+                                        } => {
+                                            format!("albums_dirty({source:?})")
+                                        }
+                                        crate::core::events::DomainEvent::ThumbnailStatsDirty => {
+                                            "thumbnail_stats_dirty".to_string()
+                                        }
+                                        crate::core::events::DomainEvent::LiveCountDirty => {
+                                            "live_count_dirty".to_string()
+                                        }
                                     };
                                     let list_len_before = media_list.n_items();
                                     let apply_started = std::time::Instant::now();
                                     crate::ui::apply_to_media_list::apply_to_media_list(
                                         &media_list,
-                                        other,
+                                        &event,
                                     );
                                     tracing::info!(
                                         target: crate::core::log_targets::BROWSING,
@@ -142,47 +179,12 @@ pub fn build_app() -> adw::Application {
                                     // 此处同步刷新侧栏相册行，使新增/删除的相册
                                     // 及照片计数即时反映到 UI。
                                     if !is_startup_scan_batch {
-                                        if let Some(window) = window_for_consumer.upgrade() {
-                                            let album_started = std::time::Instant::now();
-                                            window.refresh_album_rows();
-                                            tracing::info!(
-                                                target: crate::core::log_targets::BROWSING,
-                                                "UI_ALBUM_REFRESH after_event={} elapsed_ms={}",
-                                                event_label,
-                                                album_started.elapsed().as_millis()
-                                            );
-                                        }
+                                        album_refresh.mark_albums_dirty_async();
                                     } else {
-                                        let pool_for_albums = pool_for_consumer.clone();
-                                        let window_for_albums = window_for_consumer.clone();
-                                        let event_label_for_albums = event_label.clone();
-                                        gtk::glib::MainContext::default().spawn_local(async move {
-                                            let refresh_started = std::time::Instant::now();
-                                            let result = gtk::gio::spawn_blocking(move || {
-                                                crate::core::albums::refresh(&pool_for_albums)
-                                            })
-                                            .await;
-                                            match result {
-                                                Ok(Ok(())) => {
-                                                    if let Some(window) = window_for_albums.upgrade()
-                                                    {
-                                                        window.refresh_album_rows();
-                                                    }
-                                                    tracing::info!(
-                                                        target: crate::core::log_targets::BROWSING,
-                                                        "STARTUP_ALBUM_REFRESH after_event={} elapsed_ms={}",
-                                                        event_label_for_albums,
-                                                        refresh_started.elapsed().as_millis()
-                                                    );
-                                                }
-                                                Ok(Err(err)) => tracing::warn!(
-                                                    "startup albums refresh failed: {err}"
-                                                ),
-                                                Err(err) => tracing::warn!(
-                                                    "startup albums refresh join failed: {err:?}"
-                                                ),
-                                            }
-                                        });
+                                        tracing::debug!(
+                                            target: crate::core::log_targets::BROWSING,
+                                            "startup scan batch applied; album refresh deferred"
+                                        );
                                     }
                                 }
                             }
@@ -205,7 +207,7 @@ async fn initialize() -> anyhow::Result<(
     gtk::gio::ListStore,
     Arc<ThumbnailLoader>,
     DbPool,
-    tokio::sync::mpsc::UnboundedReceiver<crate::core::media_change_notifier::MediaChangeEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
 )> {
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
@@ -273,7 +275,9 @@ fn initialize_db_once_blocking(
     page_size: u32,
 ) -> CoreResult<(DbPool, Vec<MediaItem>)> {
     let pool = init_pool(&path)?;
-    let items = crate::core::db::list_media_page(&pool, 0, page_size)?;
+    let items = crate::core::repository::MediaRepository::new(pool.clone())
+        .page(crate::core::repository::MediaQuery::LiveAll, 0, page_size)?
+        .items;
     Ok((pool, items))
 }
 

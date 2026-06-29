@@ -12,6 +12,7 @@ pub mod grid_row;
 pub mod media_grid;
 pub mod media_list;
 pub mod mode_selector;
+pub mod models;
 pub mod photo_tile;
 pub mod photos_page;
 pub mod section_header;
