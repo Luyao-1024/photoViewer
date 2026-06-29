@@ -12,6 +12,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -84,6 +85,7 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
+                    let pool_for_refresh = pool.clone();
                     window.set_resources(pool, loader, media_list.clone());
                     // Now that the pool is available, populate the album rows
                     // nested under the sidebar's Albums group header.
@@ -95,6 +97,17 @@ pub fn build_app() -> adw::Application {
                     // TrashChanged → 刷新当前可见的回收站页面（文件管理器改了回收站
                     // 后无需切换页面即可看到）。
                     let window_for_consumer = window.downgrade();
+                    let album_refresh = crate::core::refresh::RefreshCoordinator::new(
+                        pool_for_refresh,
+                        Rc::new({
+                            let window = window.downgrade();
+                            move || {
+                                if let Some(window) = window.upgrade() {
+                                    window.refresh_album_rows();
+                                }
+                            }
+                        }),
+                    );
                     gtk::glib::MainContext::default().spawn_local(async move {
                         let mut rx = change_rx;
                         while let Some(event) = rx.recv().await {
@@ -108,6 +121,7 @@ pub fn build_app() -> adw::Application {
                                     if let Some(window) = window_for_consumer.upgrade() {
                                         window.refresh_visible_trash_page();
                                     }
+                                    album_refresh.mark_albums_dirty_async();
                                 }
                                 _ => {
                                     let other = event;
@@ -144,16 +158,7 @@ pub fn build_app() -> adw::Application {
                                     // 此处同步刷新侧栏相册行，使新增/删除的相册
                                     // 及照片计数即时反映到 UI。
                                     if !is_startup_scan_batch {
-                                        if let Some(window) = window_for_consumer.upgrade() {
-                                            let album_started = std::time::Instant::now();
-                                            window.refresh_album_rows();
-                                            tracing::info!(
-                                                target: crate::core::log_targets::BROWSING,
-                                                "UI_ALBUM_REFRESH after_event={} elapsed_ms={}",
-                                                event_label,
-                                                album_started.elapsed().as_millis()
-                                            );
-                                        }
+                                        album_refresh.mark_albums_dirty_async();
                                     } else {
                                         tracing::debug!(
                                             target: crate::core::log_targets::BROWSING,
