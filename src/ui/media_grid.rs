@@ -327,8 +327,13 @@ fn virtual_page_start_for_offset(
         return None;
     }
 
+    let max_start = total.saturating_sub(page_size);
+    if desired_offset >= max_start {
+        return Some(max_start);
+    }
+
     let centered = desired_offset.saturating_sub(page_size / 2);
-    Some(centered.min(total.saturating_sub(page_size)))
+    Some(centered.min(max_start))
 }
 
 fn estimated_virtual_columns(viewport_width: f64, spec: ViewSpec) -> u32 {
@@ -2642,6 +2647,20 @@ mod tests {
             virtual_page_start_for_offset(99_900, 99_000, 1_000, 100_000, 500),
             Some(99_500),
             "near the end should clamp to the last full page"
+        );
+    }
+
+    #[test]
+    fn virtual_scroll_absolute_end_targets_last_page() {
+        assert_eq!(
+            virtual_page_start_for_offset(99_500, 0, 500, 100_000, 500),
+            Some(99_500),
+            "dragging to the absolute end must load the final page, not a centered window above bottom spacer"
+        );
+        assert_eq!(
+            virtual_page_start_for_offset(99_593, 0, 500, 100_093, 500),
+            Some(99_593),
+            "non-page-aligned library totals must still land on the final partial boundary"
         );
     }
 
