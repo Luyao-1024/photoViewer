@@ -16,7 +16,7 @@ use gtk4::prelude::*;
 /// The database and scanner still index the full library. This cap limits the
 /// live `gio::ListStore` that drives grid rebuilds and viewer navigation so a
 /// very large library does not grow the process memory without bound.
-pub const DEFAULT_UI_MEDIA_LIST_CAP: usize = 200;
+pub const DEFAULT_UI_MEDIA_LIST_CAP: usize = 1500;
 
 /// Get the current UI media list cap from preferences.
 pub fn ui_media_list_cap() -> usize {

@@ -14,8 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-const INITIAL_MEDIA_PAGE_SIZE: u32 = 200;
-const BACKGROUND_MEDIA_PAGE_SIZE: u32 = 200;
+const INITIAL_MEDIA_PAGE_SIZE: u32 = 500;
 
 fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO.get_or_init(|| {
@@ -247,8 +246,8 @@ async fn initialize() -> anyhow::Result<(
         notifier.clone(),
     );
 
-    // 首屏只加载一页（200 张），让窗口尽快可操作；启动扫描、回收站对账和
-    // 剩余 DB 分页都在后台继续。
+    // 首屏只加载一页，让窗口尽快可操作；之后由照片网格按全库滚动比例
+    // 从 DB 换入当前窗口，避免启动时把超大图库全部灌进 GTK 模型。
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     append_media_items(&list, items);
     tracing::debug!(
@@ -338,73 +337,13 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
     }
 }
 
-async fn load_remaining_media_pages(
-    pool: DbPool,
-    list: gtk::gio::ListStore,
-    start_offset: u32,
-) -> Vec<String> {
-    let mut offset = start_offset;
-    loop {
-        let pool_for_page = pool.clone();
-        let result = gtk::gio::spawn_blocking(move || {
-            crate::core::db::list_media_page(&pool_for_page, offset, BACKGROUND_MEDIA_PAGE_SIZE)
-        })
-        .await;
-        let items = match result {
-            Ok(Ok(items)) => items,
-            Ok(Err(e)) => {
-                tracing::error!("background media page load failed: {}", e);
-                break;
-            }
-            Err(e) => {
-                tracing::error!("background media page load join failed: {:?}", e);
-                break;
-            }
-        };
-        if items.is_empty() {
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "STARTUP_MEDIA_LIST_FINAL list_len={} reason=no_more_pages offset={}",
-                list.n_items(),
-                offset
-            );
-            break;
-        }
-        let count = items.len() as u32;
-        append_media_items(&list, items);
-        if count < BACKGROUND_MEDIA_PAGE_SIZE {
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "STARTUP_MEDIA_LIST_FINAL list_len={} reason=short_page offset={}",
-                list.n_items(),
-                offset
-            );
-            break;
-        }
-        offset += count;
-    }
-
-    // 收集前 N 条 URI 供预热视口优先
-    collect_list_uris(&list, 400)
-}
-
-fn collect_list_uris(list: &gtk::gio::ListStore, limit: usize) -> Vec<String> {
-    (0..list.n_items().min(limit as u32))
-        .filter_map(|i| {
-            list.item(i)
-                .and_downcast::<glib::BoxedAnyObject>()
-                .map(|obj| obj.borrow::<MediaItem>().uri.clone())
-        })
-        .collect()
-}
-
 fn start_background_startup_work(
     pool: DbPool,
     media_roots: Vec<std::path::PathBuf>,
     pictures: std::path::PathBuf,
     notifier: crate::core::media_change_notifier::MediaChangeNotifier,
-    list: gtk::gio::ListStore,
-    remaining_offset: u32,
+    _list: gtk::gio::ListStore,
+    _remaining_offset: u32,
     loader: Arc<ThumbnailLoader>,
 ) {
     glib::MainContext::default().spawn_local(async move {
@@ -439,11 +378,8 @@ fn start_background_startup_work(
             Err(e) => tracing::warn!("回收站对账 join 失败: {e:?}"),
         }
 
-        let _viewport_uris =
-            load_remaining_media_pages(pool.clone(), list.clone(), remaining_offset).await;
-
-        // 扫描 + 回收站对账 + 全库分页完毕后，启动后台缩略图预热（拉模型：
-        // worker 空闲时自己从 DB 取下一张未缓存的缩略图生成，视口请求仍优先）。
+        // 扫描 + 回收站对账完毕后即可启动后台缩略图预热。剩余 DB 分页可能在
+        // 大图库里很慢；预热是拉模型且 worker 总是先处理视口队列，不需要等分页。
         crate::core::thumbnail_prewarm::start_background_prewarm(&loader);
     });
 }

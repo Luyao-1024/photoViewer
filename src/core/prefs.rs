@@ -33,8 +33,8 @@ const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
-const DEFAULT_UI_MEDIA_LIST_CAP: usize = 10000;
-const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 400;
+const DEFAULT_UI_MEDIA_LIST_CAP: usize = 1500;
+const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 800;
 
 fn settings_path() -> std::path::PathBuf {
     config_dir().join(SETTINGS_FILE)
@@ -566,14 +566,14 @@ mod tests {
     }
 
     #[test]
-    fn ui_media_list_cap_defaults_to_200() {
+    fn ui_media_list_cap_defaults_to_virtual_window_size() {
         let path = tmp_path("ui-media-cap-default");
         cleanup(&path);
 
         assert_eq!(
             read_ui_media_list_cap_at(&path),
-            10000,
-            "missing ui_media_list_cap should default to 10000"
+            1500,
+            "missing ui_media_list_cap should default to 1500"
         );
 
         cleanup(&path);
@@ -599,14 +599,14 @@ mod tests {
     }
 
     #[test]
-    fn max_rendered_grid_items_defaults_to_200() {
+    fn max_rendered_grid_items_defaults_to_virtual_render_limit() {
         let path = tmp_path("max-grid-items-default");
         cleanup(&path);
 
         assert_eq!(
             read_max_rendered_grid_items_at(&path),
-            400,
-            "missing max_rendered_grid_items should default to 400"
+            800,
+            "missing max_rendered_grid_items should default to 800"
         );
 
         cleanup(&path);

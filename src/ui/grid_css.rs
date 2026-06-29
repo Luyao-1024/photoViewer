@@ -452,10 +452,23 @@ box.mode-selector.on-light-background box.mode-dot,
   -gtk-icon-shadow: 0 1px 3px alpha(black, 0.72);
 }
 
+.library-stats {
+  border-radius: 999px;
+  padding: 7px 14px;
+  color: alpha(white, 0.88);
+  font-size: 10pt;
+  font-weight: 600;
+}
+
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {
   background-color: alpha(white, 0.05);
+}
+
+.thumb-placeholder {
+  background-color: alpha(white, 0.08);
+  box-shadow: inset 0 0 0 1px alpha(white, 0.10);
 }
 
 /* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────

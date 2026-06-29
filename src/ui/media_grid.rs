@@ -73,6 +73,15 @@ fn max_rendered_grid_items() -> usize {
     prefs::max_rendered_grid_items()
 }
 
+fn library_stats_text(total_media: usize, generated: usize) -> String {
+    format!(
+        "媒体 {} 项 · 缩略图 {}/{}",
+        total_media,
+        generated.min(total_media),
+        total_media
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
     pub can_favorite: bool,
@@ -113,6 +122,16 @@ mod imp {
         /// 当前渲染上限：初始 = `max_rendered_grid_items()`；
         /// 滚动接近底部时自动增长（最多到 `ABSOLUTE_RENDERED_LIMIT`）。
         pub rendered_limit: Cell<usize>,
+        /// 当前 GTK 模型窗口对应全库排序中的起始 offset。
+        pub virtual_window_start: Cell<u32>,
+        /// DB 中 live media 的总数，用于虚拟 spacer 和滚动条比例。
+        pub virtual_total: Cell<u32>,
+        /// 防止滚动事件在上一次 DB page 尚未返回时重复发起加载。
+        pub virtual_page_loading: Cell<bool>,
+        /// 每次虚拟窗口 DB 请求递增；旧请求返回后若 generation 过期则丢弃。
+        pub virtual_page_generation: Cell<u64>,
+        /// 替换窗口后按全库比例恢复滚动条位置。
+        pub pending_scroll_ratio: Cell<Option<f64>>,
         /// Whether batch mode is explicitly enabled.
         pub is_multi_select_mode: Cell<bool>,
         /// Callback fired whenever `selected` changes. Registered by the host
@@ -153,7 +172,12 @@ mod imp {
                 on_query_favorite_state: std::cell::OnceCell::new(),
                 displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
-                rendered_limit: Cell::new(max_rendered_grid_items()),
+                rendered_limit: Cell::new(max_rendered_grid_items().min(VIRTUAL_RENDER_LIMIT)),
+                virtual_window_start: Cell::new(0),
+                virtual_total: Cell::new(0),
+                virtual_page_loading: Cell::new(false),
+                virtual_page_generation: Cell::new(0),
+                pending_scroll_ratio: Cell::new(None),
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
                 reprio_debounce: RefCell::new(None),
@@ -198,6 +222,14 @@ struct ViewSpec {
     mode: GroupBy,
 }
 
+const VIRTUAL_TILE_GAP: i32 = 2;
+const VIRTUAL_PAGE_SIZE: u32 = 500;
+const VIRTUAL_RENDER_LIMIT: usize = 800;
+const VIRTUAL_ABSOLUTE_RENDER_LIMIT: usize = 1_200;
+const VIRTUAL_PREFETCH_LOW_NUM: u32 = 1;
+const VIRTUAL_PREFETCH_HIGH_NUM: u32 = 4;
+const VIRTUAL_PREFETCH_DEN: u32 = 5;
+
 fn spec_for_mode(mode: GroupBy) -> ViewSpec {
     // On-screen tile size per view (CSS px). Year shows the most photos so it
     // gets the smallest tiles; Day shows the fewest so it gets the largest.
@@ -219,6 +251,109 @@ fn spec_for_mode(mode: GroupBy) -> ViewSpec {
             mode,
         },
     }
+}
+
+fn virtual_offset_for_ratio(ratio: f64, total: u32, page_size: u32) -> u32 {
+    if total == 0 {
+        return 0;
+    }
+    let max_start = total.saturating_sub(page_size);
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((total as f64 * ratio).floor() as u32).min(max_start)
+}
+
+fn virtual_page_start_for_offset(
+    desired_offset: u32,
+    current_start: u32,
+    current_len: u32,
+    total: u32,
+    page_size: u32,
+) -> Option<u32> {
+    if total == 0 || current_len == 0 || current_len >= total {
+        return None;
+    }
+    let low =
+        current_start + current_len.saturating_mul(VIRTUAL_PREFETCH_LOW_NUM) / VIRTUAL_PREFETCH_DEN;
+    let high = current_start
+        + current_len.saturating_mul(VIRTUAL_PREFETCH_HIGH_NUM) / VIRTUAL_PREFETCH_DEN;
+    if desired_offset >= low && desired_offset <= high {
+        return None;
+    }
+
+    let centered = desired_offset.saturating_sub(page_size / 2);
+    Some(centered.min(total.saturating_sub(page_size)))
+}
+
+fn estimated_virtual_columns(viewport_width: f64, spec: ViewSpec) -> u32 {
+    let tile = (spec.pixel_size + VIRTUAL_TILE_GAP).max(1) as f64;
+    (viewport_width / tile).floor().max(1.0) as u32
+}
+
+fn virtual_spacer_height(
+    unloaded_items: u32,
+    columns: u32,
+    _viewport_width: f64,
+    spec: ViewSpec,
+) -> i32 {
+    if unloaded_items == 0 {
+        return 0;
+    }
+    let rows = unloaded_items.div_ceil(columns.max(1));
+    let row_height = (spec.pixel_size + VIRTUAL_TILE_GAP).max(1) as u32;
+    rows.saturating_mul(row_height).min(i32::MAX as u32) as i32
+}
+
+fn virtual_spacer(height: i32) -> gtk::Box {
+    let spacer = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .can_focus(false)
+        .build();
+    spacer.set_size_request(-1, height.max(0));
+    spacer
+}
+
+fn virtual_window_item_count(start: u32, total: u32, page_size: u32) -> u32 {
+    if start >= total {
+        0
+    } else {
+        total.saturating_sub(start).min(page_size)
+    }
+}
+
+fn scroll_ratio_from_adjustment_value(value: f64, upper: f64, page_size: f64) -> f64 {
+    let scrollable = (upper - page_size).max(0.0);
+    if scrollable > 0.0 {
+        (value / scrollable).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn build_virtual_placeholder_flow(spec: ViewSpec, count: u32) -> gtk::FlowBox {
+    let flow = gtk::FlowBox::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .homogeneous(true)
+        .column_spacing(8)
+        .row_spacing(8)
+        .max_children_per_line(100)
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+    flow.add_css_class("thumb-grid");
+    flow.add_css_class("virtual-placeholder-grid");
+
+    for _ in 0..count {
+        let tile = SquareTile::new();
+        tile.set_target(spec.pixel_size);
+        tile.add_css_class("thumb-loading");
+        tile.add_css_class("thumb-placeholder");
+        flow.append(&tile);
+    }
+
+    flow
 }
 
 impl MediaGrid {
@@ -351,6 +486,7 @@ impl MediaGrid {
             .connect_value_changed(move |adj| {
                 if let Some(this) = weak_scroll.upgrade() {
                     this.schedule_reprioritize();
+                    this.try_load_virtual_page(adj);
                     this.try_expand_render_limit(adj);
                 }
             });
@@ -608,7 +744,7 @@ impl MediaGrid {
 
     /// 如果滚动接近底部（距底部 3 屏内），动态扩大 `rendered_limit` 并触发 rebuild。
     fn try_expand_render_limit(&self, adj: &gtk::Adjustment) {
-        const ABSOLUTE: usize = 2000;
+        const ABSOLUTE: usize = VIRTUAL_ABSOLUTE_RENDER_LIMIT;
         let limit = self.imp().rendered_limit.get();
         if limit >= ABSOLUTE {
             return;
@@ -628,6 +764,94 @@ impl MediaGrid {
         if let Some(list) = self.imp().media_list.borrow().as_ref().cloned() {
             self.schedule_rebuild(list);
         }
+    }
+
+    fn try_load_virtual_page(&self, adj: &gtk::Adjustment) {
+        let total = self.imp().virtual_total.get();
+        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let current_len = list.n_items();
+        if total <= current_len || current_len == 0 {
+            return;
+        }
+        let ratio = scroll_ratio_from_adjustment_value(adj.value(), adj.upper(), adj.page_size());
+        let desired_offset = virtual_offset_for_ratio(ratio, total, VIRTUAL_PAGE_SIZE);
+        let current_start = self.imp().virtual_window_start.get();
+        let Some(target_start) = virtual_page_start_for_offset(
+            desired_offset,
+            current_start,
+            current_len,
+            total,
+            VIRTUAL_PAGE_SIZE,
+        ) else {
+            return;
+        };
+        if target_start == current_start {
+            return;
+        }
+
+        let Some(loader) = self.imp().loader.get().cloned() else {
+            return;
+        };
+        let generation = self.imp().virtual_page_generation.get().saturating_add(1);
+        self.imp().virtual_page_generation.set(generation);
+        self.imp().virtual_window_start.set(target_start);
+        self.imp().virtual_page_loading.set(true);
+        self.imp().pending_scroll_ratio.set(Some(ratio));
+        self.rebuild_immediately(list.clone());
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "VIRTUAL_SCROLL load_page generation={generation} ratio={ratio:.4} desired_offset={desired_offset} current_start={current_start} current_len={current_len} target_start={target_start} total={total}"
+        );
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let pool = loader.pool().clone();
+            let result = gtk::gio::spawn_blocking(move || {
+                crate::core::db::list_media_page(&pool, target_start, VIRTUAL_PAGE_SIZE)
+            })
+            .await;
+            let items = match result {
+                Ok(Ok(items)) => items,
+                Ok(Err(err)) => {
+                    tracing::warn!("virtual media page load failed: {err}");
+                    Vec::new()
+                }
+                Err(err) => {
+                    tracing::warn!("virtual media page load join failed: {err:?}");
+                    Vec::new()
+                }
+            };
+
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().virtual_page_generation.get() != generation {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "VIRTUAL_SCROLL stale_page generation={} current_generation={}",
+                    generation,
+                    this.imp().virtual_page_generation.get()
+                );
+                return;
+            }
+            this.imp().virtual_page_loading.set(false);
+            if items.is_empty() {
+                let list = this.imp().media_list.borrow().as_ref().cloned();
+                if let Some(list) = list {
+                    this.rebuild_immediately(list);
+                }
+                return;
+            }
+            this.imp().virtual_window_start.set(target_start);
+            let additions: Vec<glib::BoxedAnyObject> =
+                items.into_iter().map(glib::BoxedAnyObject::new).collect();
+            let list = this.imp().media_list.borrow().as_ref().cloned();
+            if let Some(list) = list {
+                list.splice(0, list.n_items(), &additions);
+            }
+        });
     }
 
     /// Return the brightness class of the visible tile currently underneath
@@ -747,6 +971,10 @@ impl MediaGrid {
         let saved_scroll = self.imp().scroller.get().vadjustment().value();
 
         let content = self.imp().content.get();
+        if let Some(source) = self.imp().stats_refresh_source.borrow_mut().take() {
+            source.remove();
+        }
+        self.imp().stats_label.borrow_mut().take();
         // Clear any previously built sections.
         while let Some(child) = content.first_child() {
             content.remove(&child);
@@ -769,122 +997,184 @@ impl MediaGrid {
             items.truncate(max_items);
         }
         let uri_to_index = uri_index_map(&media_list);
+        let total_media_count = crate::core::db::count_live_media(loader.pool())
+            .unwrap_or(items.len())
+            .max(items.len()) as u32;
+        self.imp().virtual_total.set(total_media_count);
+        let is_loading_virtual_window = self.imp().virtual_page_loading.get();
+        let loading_placeholder_count = if is_loading_virtual_window {
+            virtual_window_item_count(
+                self.imp().virtual_window_start.get(),
+                total_media_count,
+                VIRTUAL_PAGE_SIZE,
+            )
+        } else {
+            0
+        };
+        let effective_window_len = if loading_placeholder_count > 0 {
+            loading_placeholder_count
+        } else {
+            items.len() as u32
+        };
+        let window_start = self
+            .imp()
+            .virtual_window_start
+            .get()
+            .min(total_media_count.saturating_sub(effective_window_len));
+        self.imp().virtual_window_start.set(window_start);
+        let viewport_width = self.imp().scroller.get().allocated_width().max(1) as f64;
+        let virtual_columns = estimated_virtual_columns(viewport_width.max(1000.0), spec);
+        let top_spacer_height =
+            virtual_spacer_height(window_start, virtual_columns, viewport_width, spec);
+        if top_spacer_height > 0 {
+            content.append(&virtual_spacer(top_spacer_height));
+        }
 
         // Group by year/month/day, then emit header + FlowBox per section.
-        let sections = group_items(&items, mode);
         let mut section_count = 0u32;
         let mut photo_count = 0u32;
         let mut displayed_items = Vec::new();
         // Day 视图第一组头部下方插入统计栏
         let stats_emitted = std::cell::Cell::new(false);
-        let total_media = crate::core::db::count_live_media(&loader.pool()).unwrap_or(0);
-        for section in sections {
-            if section.items.is_empty() {
-                continue;
-            }
-
-            // Full-width section header.
-            let header = gtk::Label::builder()
-                .label(&section.label)
-                .halign(gtk::Align::Start)
-                .margin_start(12)
-                .margin_top(12)
-                .margin_bottom(6)
-                .xalign(0.0)
-                .css_classes(["heading"])
-                .build();
-            content.append(&header);
-
-            // Day 视图：第一组 header 下方插入库统计栏
+        let total_media = total_media_count as usize;
+        if loading_placeholder_count > 0 {
             if mode == GroupBy::Day && !stats_emitted.replace(true) {
                 let generated = loader.generated_count();
-                let stats_text = if loader.is_prewarm_active() && generated < total_media {
-                    format!(
-                        "📸 {} 张 · 缩略图 {}/{}",
-                        total_media, generated, total_media
-                    )
-                } else {
-                    format!("📸 {} 张", total_media)
-                };
                 let stats_label = gtk::Label::builder()
-                    .label(&stats_text)
-                    .halign(gtk::Align::Start)
-                    .margin_start(12)
-                    .margin_bottom(10)
-                    .xalign(0.0)
-                    .css_classes(["caption"])
+                    .label(&library_stats_text(total_media, generated))
+                    .halign(gtk::Align::Center)
+                    .hexpand(true)
+                    .margin_bottom(14)
+                    .xalign(0.5)
+                    .justify(gtk::Justification::Center)
+                    .css_classes(["library-stats", "glass-raised"])
                     .build();
                 content.append(&stats_label);
                 *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
+                self.start_stats_refresh(loader.clone(), total_media);
             }
 
-            // FlowBox of square thumbnails. `homogeneous` makes every cell the
-            // same size; with each picture's `set_size_request(target)` the
-            // cells become target×target squares. `column/row spacing` is the
-            // thin separator (≤3px); hover styling lives in grid_css.
-            //
-            // `selection_mode = Multiple` so the FlowBox itself tracks which
-            // children are visually highlighted. We mirror that into
-            // `imp.selected` for our own bookkeeping. The visual highlight
-            // reuses the default `flowboxchild:selected` style; the focus
-            // ring (driven by `:hover` / `:focus` in grid_css) is unchanged.
-            let flow = gtk::FlowBox::builder()
-                .orientation(gtk::Orientation::Horizontal)
-                .homogeneous(true)
-                .column_spacing(8)
-                .row_spacing(8)
-                .max_children_per_line(100)
-                .selection_mode(gtk::SelectionMode::Multiple)
-                .build();
-            flow.set_activate_on_single_click(true);
-            flow.add_css_class("thumb-grid");
-            // While arrow-keying between tiles, hide the `:hover` hint so the
-            // highlight follows the keyboard focus, not the resting pointer.
-            crate::ui::grid_css::attach_kbd_nav(&flow);
-
-            // Build tiles + remember each child's global index for activation.
-            let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
-            let mut activation_items: Vec<(i64, String, String)> =
-                Vec::with_capacity(section.items.len());
-            for item in &section.items {
-                let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
-                global_indices.push(gi);
-                activation_items.push((item.id, item.display_name().to_string(), item.uri.clone()));
-                let on_bg = self
-                    .imp()
-                    .on_background_changed
-                    .get()
-                    .expect("MediaGrid::rebuild called before new()")
-                    .clone();
-                let picture = build_photo_picture(
-                    spec,
-                    item.clone(),
-                    media_list.clone(),
-                    gi,
-                    loader.clone(),
-                    on_bg,
-                );
-                flow.append(&picture);
-                if let Some(flow_child) = flow
-                    .last_child()
-                    .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
-                {
-                    if gi != u32::MAX {
-                        displayed_items.push((flow_child.clone(), gi));
-                    }
+            content.append(&build_virtual_placeholder_flow(
+                spec,
+                loading_placeholder_count,
+            ));
+            section_count = 1;
+            photo_count = loading_placeholder_count;
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "VIRTUAL_SCROLL placeholder_window mode={:?} start={} count={} total={}",
+                mode,
+                window_start,
+                loading_placeholder_count,
+                total_media_count
+            );
+        } else {
+            let sections = group_items(&items, mode);
+            for section in sections {
+                if section.items.is_empty() {
+                    continue;
                 }
-                photo_count += 1;
-            }
 
-            // Activation: FlowBox child-activated → look up global index.
-            // Only explicit multi-select mode (entered via right-click “Multi-select”)
-            // toggles selection; otherwise the item opens in viewer.
-            let on_act = on_activate.clone();
-            let weak = self.downgrade();
-            let global_indices_for_activation = global_indices.clone();
-            let global_indices_for_context = global_indices;
-            let section_label_for_activation = section.label.clone();
-            flow.connect_child_activated(move |flow, child| {
+                // Full-width section header.
+                let header = gtk::Label::builder()
+                    .label(&section.label)
+                    .halign(gtk::Align::Start)
+                    .margin_start(12)
+                    .margin_top(12)
+                    .margin_bottom(6)
+                    .xalign(0.0)
+                    .css_classes(["heading"])
+                    .build();
+                content.append(&header);
+
+                // Day 视图：第一组 header 下方插入库统计栏
+                if mode == GroupBy::Day && !stats_emitted.replace(true) {
+                    let generated = loader.generated_count();
+                    let stats_label = gtk::Label::builder()
+                        .label(&library_stats_text(total_media, generated))
+                        .halign(gtk::Align::Center)
+                        .hexpand(true)
+                        .margin_bottom(14)
+                        .xalign(0.5)
+                        .justify(gtk::Justification::Center)
+                        .css_classes(["library-stats", "glass-raised"])
+                        .build();
+                    content.append(&stats_label);
+                    *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
+                    self.start_stats_refresh(loader.clone(), total_media);
+                }
+
+                // FlowBox of square thumbnails. `homogeneous` makes every cell the
+                // same size; with each picture's `set_size_request(target)` the
+                // cells become target×target squares. `column/row spacing` is the
+                // thin separator (≤3px); hover styling lives in grid_css.
+                //
+                // `selection_mode = Multiple` so the FlowBox itself tracks which
+                // children are visually highlighted. We mirror that into
+                // `imp.selected` for our own bookkeeping. The visual highlight
+                // reuses the default `flowboxchild:selected` style; the focus
+                // ring (driven by `:hover` / `:focus` in grid_css) is unchanged.
+                let flow = gtk::FlowBox::builder()
+                    .orientation(gtk::Orientation::Horizontal)
+                    .homogeneous(true)
+                    .column_spacing(8)
+                    .row_spacing(8)
+                    .max_children_per_line(100)
+                    .selection_mode(gtk::SelectionMode::Multiple)
+                    .build();
+                flow.set_activate_on_single_click(true);
+                flow.add_css_class("thumb-grid");
+                // While arrow-keying between tiles, hide the `:hover` hint so the
+                // highlight follows the keyboard focus, not the resting pointer.
+                crate::ui::grid_css::attach_kbd_nav(&flow);
+
+                // Build tiles + remember each child's global index for activation.
+                let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
+                let mut activation_items: Vec<(i64, String, String)> =
+                    Vec::with_capacity(section.items.len());
+                for item in &section.items {
+                    let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
+                    global_indices.push(gi);
+                    activation_items.push((
+                        item.id,
+                        item.display_name().to_string(),
+                        item.uri.clone(),
+                    ));
+                    let on_bg = self
+                        .imp()
+                        .on_background_changed
+                        .get()
+                        .expect("MediaGrid::rebuild called before new()")
+                        .clone();
+                    let picture = build_photo_picture(
+                        spec,
+                        item.clone(),
+                        media_list.clone(),
+                        gi,
+                        loader.clone(),
+                        on_bg,
+                    );
+                    flow.append(&picture);
+                    if let Some(flow_child) = flow
+                        .last_child()
+                        .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+                    {
+                        if gi != u32::MAX {
+                            displayed_items.push((flow_child.clone(), gi));
+                        }
+                    }
+                    photo_count += 1;
+                }
+
+                // Activation: FlowBox child-activated → look up global index.
+                // Only explicit multi-select mode (entered via right-click “Multi-select”)
+                // toggles selection; otherwise the item opens in viewer.
+                let on_act = on_activate.clone();
+                let weak = self.downgrade();
+                let global_indices_for_activation = global_indices.clone();
+                let global_indices_for_context = global_indices;
+                let section_label_for_activation = section.label.clone();
+                flow.connect_child_activated(move |flow, child| {
                 let idx = child.index();
                 if idx < 0 {
                     return;
@@ -926,20 +1216,20 @@ impl MediaGrid {
                 }
             });
 
-            if enable_context_menu {
-                let weak_for_context = self.downgrade();
-                let section_label_for_ctx = section.label.clone();
-                let global_indices_for_context = global_indices_for_context.clone();
-                let flow_for_ctx = flow.clone();
-                let on_add_to_album_ctx = on_add_to_album.clone();
-                let on_move_to_trash_ctx = on_move_to_trash.clone();
-                let on_set_favorite_ctx = on_set_favorite.clone();
-                let on_query_favorite_state_ctx = on_query_favorite_state.clone();
-                let gesture = gtk::GestureClick::new();
-                gesture.set_button(3);
-                gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+                if enable_context_menu {
+                    let weak_for_context = self.downgrade();
+                    let section_label_for_ctx = section.label.clone();
+                    let global_indices_for_context = global_indices_for_context.clone();
+                    let flow_for_ctx = flow.clone();
+                    let on_add_to_album_ctx = on_add_to_album.clone();
+                    let on_move_to_trash_ctx = on_move_to_trash.clone();
+                    let on_set_favorite_ctx = on_set_favorite.clone();
+                    let on_query_favorite_state_ctx = on_query_favorite_state.clone();
+                    let gesture = gtk::GestureClick::new();
+                    gesture.set_button(3);
+                    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
 
-                gesture.connect_released(move |gesture, _n_press, x, y| {
+                    gesture.connect_released(move |gesture, _n_press, x, y| {
                     if gesture.current_button() != 3 {
                         return;
                     }
@@ -1169,24 +1459,43 @@ impl MediaGrid {
                     popover.popup();
                 });
 
-                flow.add_controller(gesture);
-            }
+                    flow.add_controller(gesture);
+                }
 
-            content.append(&flow);
-            section_count += 1;
+                content.append(&flow);
+                section_count += 1;
+            }
+        }
+        let rendered_window_len = if loading_placeholder_count > 0 {
+            loading_placeholder_count
+        } else {
+            items.len() as u32
+        };
+        let loaded_end = window_start.saturating_add(rendered_window_len);
+        let bottom_unloaded = total_media_count.saturating_sub(loaded_end);
+        let bottom_spacer_height =
+            virtual_spacer_height(bottom_unloaded, virtual_columns, viewport_width, spec);
+        if bottom_spacer_height > 0 {
+            content.append(&virtual_spacer(bottom_spacer_height));
         }
         *self.imp().displayed_items.borrow_mut() = displayed_items;
 
         // 重建后恢复滚动位置：用 idle 回调等下一帧 layout 完成后再设值，
         // 否则 adj.upper 仍为零，会被 clamp 吞掉。
-        if saved_scroll > 0.0 {
+        let pending_ratio = self.imp().pending_scroll_ratio.take();
+        if pending_ratio.is_some() || saved_scroll > 0.0 {
             let weak = self.downgrade();
             gtk::glib::idle_add_local_once(move || {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
                 let adj = this.imp().scroller.get().vadjustment();
-                let restored = saved_scroll.min(adj.upper() - adj.page_size());
+                let restored = if let Some(ratio) = pending_ratio {
+                    let scrollable = (adj.upper() - adj.page_size()).max(0.0);
+                    scrollable * ratio.clamp(0.0, 1.0)
+                } else {
+                    saved_scroll.min(adj.upper() - adj.page_size())
+                };
                 if restored >= 0.0 {
                     adj.set_value(restored);
                 }
@@ -1207,6 +1516,31 @@ impl MediaGrid {
 
         // rebuild 后调度一次可见区提权（去抖）：让当前可见 tile 先于屏幕外的被生成。
         self.schedule_reprioritize();
+    }
+
+    fn start_stats_refresh(&self, loader: Arc<ThumbnailLoader>, total_media: usize) {
+        if total_media == 0 {
+            return;
+        }
+
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local(Duration::from_secs(1), move || {
+            let Some(this) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let generated = loader.generated_count();
+            if let Some(label) = this.imp().stats_label.borrow().as_ref() {
+                label.set_label(&library_stats_text(total_media, generated));
+            } else {
+                return glib::ControlFlow::Break;
+            }
+            if generated >= total_media {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+        *self.imp().stats_refresh_source.borrow_mut() = Some(source);
     }
 
     fn schedule_rebuild(&self, media_list: gtk::gio::ListStore) {
@@ -1856,6 +2190,28 @@ mod tests {
         }
     }
 
+    fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
+        crate::core::db::insert_media_item(
+            pool,
+            &crate::core::media::NewMediaItem {
+                uri: item.uri.clone(),
+                path: item.path.clone(),
+                folder_path: item.folder_path.clone(),
+                mime_type: item.mime_type.clone(),
+                media_subkind: item.media_subkind.clone(),
+                media_attributes: item.media_attributes.clone(),
+                width: item.width,
+                height: item.height,
+                video_duration_secs: item.video_duration_secs,
+                taken_at: item.taken_at,
+                file_mtime: item.file_mtime,
+                file_size: item.file_size,
+                blake3_hash: item.blake3_hash.clone(),
+            },
+        )
+        .unwrap()
+    }
+
     fn tile_count(grid: &MediaGrid) -> u32 {
         let content = grid.imp().content.get();
         let mut count = 0;
@@ -1941,6 +2297,51 @@ mod tests {
         );
     }
 
+    #[gtk::test]
+    fn day_grid_stats_show_thumbnail_progress_and_are_centered() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let one = sample_item(1, "one.png");
+        let two = sample_item(2, "two.png");
+        let generated_id = insert_sample_item(&pool, &one);
+        insert_sample_item(&pool, &two);
+        crate::core::db::mark_thumbnails_generated(&pool, &[generated_id]).unwrap();
+        media_list.append(&glib::BoxedAnyObject::new(one));
+        media_list.append(&glib::BoxedAnyObject::new(two));
+
+        let grid = MediaGrid::new(
+            media_list,
+            GroupBy::Day,
+            loader,
+            Rc::new(|_| {}),
+            Rc::new(|| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_| {}),
+            Rc::new(|_, _| {}),
+            Rc::new(|_| FavoriteMenuState::default()),
+            false,
+        );
+
+        let stats_label = grid
+            .imp()
+            .stats_label
+            .borrow()
+            .as_ref()
+            .expect("Day grid should render the library stats label")
+            .clone();
+        assert_eq!(stats_label.label(), "媒体 2 项 · 缩略图 1/2");
+        assert_eq!(stats_label.halign(), gtk::Align::Center);
+        assert_eq!(stats_label.xalign(), 0.5);
+        assert!(stats_label.has_css_class("library-stats"));
+        assert!(stats_label.has_css_class("glass-raised"));
+    }
+
     #[test]
     fn thumbnail_request_mtime_prefers_file_modified_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -1961,5 +2362,110 @@ mod tests {
         assert_eq!(format_tile_duration(83.2).as_deref(), Some("01:23"));
         assert_eq!(format_tile_duration(3_661.0).as_deref(), Some("1:01:01"));
         assert_eq!(format_tile_duration(f64::NAN), None);
+    }
+
+    #[test]
+    fn library_stats_text_clamps_generated_to_total() {
+        assert_eq!(library_stats_text(20, 7), "媒体 20 项 · 缩略图 7/20");
+        assert_eq!(library_stats_text(20, 99), "媒体 20 项 · 缩略图 20/20");
+    }
+
+    #[gtk::test]
+    fn virtual_placeholder_flow_renders_loading_tiles_immediately() {
+        let _ = gtk::init();
+        let spec = ViewSpec {
+            mode: GroupBy::Day,
+            pixel_size: 270,
+            thumb_size: ThumbnailSize::Large,
+        };
+        let flow = build_virtual_placeholder_flow(spec, 12);
+
+        assert!(flow.has_css_class("virtual-placeholder-grid"));
+        assert_eq!(flow.selection_mode(), gtk::SelectionMode::None);
+        let mut count = 0;
+        let mut child = flow.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            let tile = widget
+                .downcast::<gtk::FlowBoxChild>()
+                .ok()
+                .and_then(|child| child.child())
+                .and_then(|child| child.downcast::<SquareTile>().ok())
+                .expect("placeholder flow children should wrap SquareTile");
+            assert_eq!(tile.target(), 270);
+            assert!(tile.has_css_class("thumb-loading"));
+            assert!(tile.has_css_class("thumb-placeholder"));
+            count += 1;
+            child = next;
+        }
+        assert_eq!(count, 12);
+    }
+
+    #[test]
+    fn virtual_scroll_ratio_maps_to_full_library_offset() {
+        assert_eq!(virtual_offset_for_ratio(0.0, 100_000, 500), 0);
+        assert_eq!(virtual_offset_for_ratio(0.50, 100_000, 500), 50_000);
+        assert_eq!(virtual_offset_for_ratio(0.99, 100_000, 500), 99_000);
+        assert_eq!(virtual_offset_for_ratio(1.0, 100_000, 500), 99_500);
+    }
+
+    #[test]
+    fn virtual_scroll_prefetches_before_window_edge() {
+        assert_eq!(
+            virtual_page_start_for_offset(850, 0, 1_000, 100_000, 500),
+            Some(600),
+            "80%+ through the current window should prefetch ahead"
+        );
+        assert_eq!(
+            virtual_page_start_for_offset(550, 0, 1_000, 100_000, 500),
+            None,
+            "middle of current window should not reload"
+        );
+        assert_eq!(
+            virtual_page_start_for_offset(50_000, 0, 1_000, 100_000, 500),
+            Some(49_750),
+            "dragging the full-library scrollbar should jump near that global offset"
+        );
+        assert_eq!(
+            virtual_page_start_for_offset(99_900, 99_000, 1_000, 100_000, 500),
+            Some(99_500),
+            "near the end should clamp to the last full page"
+        );
+    }
+
+    #[test]
+    fn virtual_spacer_height_scales_with_unloaded_items() {
+        let spec = ViewSpec {
+            mode: GroupBy::Day,
+            pixel_size: 270,
+            thumb_size: ThumbnailSize::Large,
+        };
+        assert_eq!(virtual_spacer_height(0, 4, 1_000.0, spec), 0);
+        assert!(
+            virtual_spacer_height(1_000, 4, 1_000.0, spec)
+                > virtual_spacer_height(100, 4, 1_000.0, spec)
+        );
+    }
+
+    #[test]
+    fn virtual_loading_window_counts_placeholders_for_target_page() {
+        assert_eq!(virtual_window_item_count(0, 100_000, 500), 500);
+        assert_eq!(virtual_window_item_count(99_500, 100_000, 500), 500);
+        assert_eq!(virtual_window_item_count(99_800, 100_000, 500), 200);
+        assert_eq!(virtual_window_item_count(100_000, 100_000, 500), 0);
+    }
+
+    #[test]
+    fn scroll_ratio_tracks_latest_drag_value_while_page_is_loading() {
+        assert_eq!(scroll_ratio_from_adjustment_value(0.0, 1_000.0, 100.0), 0.0);
+        assert_eq!(
+            scroll_ratio_from_adjustment_value(450.0, 1_000.0, 100.0),
+            0.5
+        );
+        assert_eq!(
+            scroll_ratio_from_adjustment_value(2_000.0, 1_000.0, 100.0),
+            1.0
+        );
+        assert_eq!(scroll_ratio_from_adjustment_value(20.0, 100.0, 100.0), 0.0);
     }
 }

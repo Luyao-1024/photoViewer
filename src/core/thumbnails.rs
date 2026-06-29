@@ -510,9 +510,6 @@ impl Drop for ThumbnailLoader {
     }
 }
 
-/// 每积攒多少条 BACKGROUND 生成的项就批量刷新一次 DB。
-const BACKGROUND_DB_FLUSH_INTERVAL: usize = 100;
-
 fn worker_loop(
     queue: SharedQueue,
     pool: DbPool,
@@ -520,14 +517,12 @@ fn worker_loop(
     state: Arc<Mutex<LoaderState>>,
     bg: Arc<BackgroundPullState>,
 ) {
-    let mut flush_ids: Vec<i64> = Vec::with_capacity(BACKGROUND_DB_FLUSH_INTERVAL);
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
-                // BACKGROUND 拉取项：记录 DB id 待批量刷新。
-                if req.tier >= TIER_BACKGROUND && req.media_id != 0 {
-                    flush_ids.push(req.media_id);
-                }
+                // BACKGROUND 拉取项：生成成功后立刻标记，避免小图库反复拉取同一行。
+                let generated_media_id =
+                    (req.tier >= TIER_BACKGROUND && req.media_id != 0).then_some(req.media_id);
                 debug!(
                     "THUMB_TRACE worker_generated uri={} size={:?} tier={} media_id={} cache_key={} texture={}x{}",
                     req.uri,
@@ -558,6 +553,11 @@ fn worker_loop(
                 for w in waiters {
                     let _ = w.send(loaded.clone());
                 }
+                if let Some(media_id) = generated_media_id {
+                    if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
+                        warn!("更新缩略图状态失败: {}", e);
+                    }
+                }
             }
             Err(e) => {
                 if req.tier < TIER_BACKGROUND {
@@ -565,19 +565,6 @@ fn worker_loop(
                 }
                 warn!("缩略图生成失败 {}: {}", req.uri, e);
             }
-        }
-        // 批量刷 DB
-        if flush_ids.len() >= BACKGROUND_DB_FLUSH_INTERVAL {
-            if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &flush_ids) {
-                warn!("批量更新缩略图状态失败: {}", e);
-            }
-            flush_ids.clear();
-        }
-    }
-    // worker 退出前尾量 flush
-    if !flush_ids.is_empty() {
-        if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &flush_ids) {
-            warn!("批量更新缩略图状态失败(退出): {}", e);
         }
     }
 }

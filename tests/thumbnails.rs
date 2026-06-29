@@ -1,6 +1,7 @@
 use gtk4::prelude::TextureExt;
 use photo_viewer::core::db;
 use photo_viewer::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_NORMAL};
+use photo_viewer::core::LocalBackend;
 use std::sync::Once;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
@@ -161,6 +162,42 @@ fn memory_cache_keeps_thumbnail_sizes_separate() {
         large.texture.width() > small.texture.width(),
         "large thumbnail should not reuse the small thumbnail from memory cache"
     );
+}
+
+#[test]
+fn background_prewarm_marks_small_library_after_first_generation() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("prewarm-src.jpg");
+    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(2400, 1600, |_, _| {
+        image::Rgb([90, 120, 150])
+    });
+    img.save(&src).unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    backend
+        .upsert_from_path(&src)
+        .unwrap()
+        .expect("test image should be inserted");
+
+    let runtime = rt();
+    let _guard = runtime.enter();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    loader.spawn_workers(1);
+    loader.start_background_prewarm();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if loader.generated_count() == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background prewarm should mark a one-item library without waiting for 100 duplicate generations"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 /// Regression for the first-load "blank thumbnails" bug.
