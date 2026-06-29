@@ -209,6 +209,7 @@
     "setting.thumbnail_generation_speed.slow": "慢",
     "setting.thumbnail_generation_speed.normal": "一般",
     "setting.thumbnail_generation_speed.fast": "快",
+    "setting.thumbnail_generation_speed.fastest": "最快",
     "setting.thumbnail_generation_speed_save_failed": "保存缩略图生成速度失败：{error}",
     "setting.storage.thumbnails_size": "缩略图缓存：{size}",
     "setting.storage.database_size": "数据库：{size}",

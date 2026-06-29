@@ -1623,6 +1623,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
+ "cc",
  "chrono",
  "gdk-pixbuf",
  "glib",

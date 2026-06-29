@@ -180,6 +180,10 @@ struct LoaderState {
 struct BackgroundPullState {
     enabled: AtomicBool,
     offset: Mutex<u32>,
+    /// 预热缩略图尺寸（跟随当前视图模式，默认 Small）。
+    size: Mutex<ThumbnailSize>,
+    /// worker 数量：预热拉取一次取这么多条，一次性喂饱所有 worker。
+    worker_count: Mutex<usize>,
 }
 
 /// 缩略图加载器单例
@@ -250,6 +254,8 @@ impl ThumbnailLoader {
             background_pull: Arc::new(BackgroundPullState {
                 enabled: AtomicBool::new(false),
                 offset: Mutex::new(0),
+                size: Mutex::new(ThumbnailSize::Small),
+                worker_count: Mutex::new(1),
             }),
             stats_dirty_callback: Arc::new(Mutex::new(None)),
         }
@@ -290,10 +296,27 @@ impl ThumbnailLoader {
         cvar.notify_all();
     }
 
+    /// 设置后台预热的缩略图尺寸（跟随当前视图模式: Year→Small, Month→Medium, Day→Medium）。
+    /// 切换时重置 DB 拉取偏移，让新尺寸从头扫。
+    pub fn set_prewarm_thumbnail_size(&self, size: ThumbnailSize) {
+        if let Ok(mut s) = self.background_pull.size.lock() {
+            if *s == size {
+                return;
+            }
+            *s = size;
+        }
+        if let Ok(mut off) = self.background_pull.offset.lock() {
+            *off = 0;
+        }
+    }
+
     /// 启动 n 个 worker 消费请求
     pub fn spawn_workers(&self, n: usize) {
         if n == 0 {
             return;
+        }
+        if let Ok(mut wc) = self.background_pull.worker_count.lock() {
+            *wc = n;
         }
         for _ in 0..n {
             let pool = self.pool.clone();
@@ -652,7 +675,8 @@ fn worker_loop(
     }
 }
 
-/// 取下一个工作项：优先队列（网格请求），队列空时从 DB 拉取下一个需生成的项。
+/// 取下一个工作项：优先队列（网格请求），队列空时从 DB 批量拉取
+/// `worker_count` 条需生成的项一次性入队并唤醒所有 worker。
 fn next_request_or_pull(
     queue: &SharedQueue,
     pool: &DbPool,
@@ -677,9 +701,9 @@ fn next_request_or_pull(
         }
         drop(q);
 
-        // 2) 队列空，从 DB 拉取一条需要生成缩略图的项
+        // 2) 队列空，从 DB 批量拉取需生成的项
         if bg.enabled.load(AtomicOrdering::Relaxed) {
-            if let Some(item) = pull_next_needing_thumbnail(pool, bg) {
+            if let Some(item) = pull_batch_and_enqueue(pool, bg, queue) {
                 return Some(item);
             }
         }
@@ -702,37 +726,74 @@ fn next_request_or_pull(
     }
 }
 
-/// 从 DB 拉取一条 `thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime`
-/// 的项（即从未生成或文件变更后过期），交 worker 直接生成。
+/// 从 DB 批量拉取 `worker_count` 条需生成的项，全部入队并唤醒其他 worker，
+/// 返回一条给调用方自己处理（等价于调用方先从队里弹一条）。
 ///
 /// 已缓存（`thumbnail_generated_at >= file_mtime`）的项由 DB 查询自动过滤，
 /// 不再需要磁盘 stat。拉取到末尾返回 `None`；下次超时重试时会因为已缓存项增加
 /// 而自然收敛。
-fn pull_next_needing_thumbnail(pool: &DbPool, bg: &BackgroundPullState) -> Option<PriItem> {
+fn pull_batch_and_enqueue(
+    pool: &DbPool,
+    bg: &BackgroundPullState,
+    queue: &SharedQueue,
+) -> Option<PriItem> {
+    let batch_size = *bg.worker_count.lock().ok()? as u32;
     let mut off = bg.offset.lock().ok()?;
-    let page = crate::core::db::list_media_needing_thumbnail(pool, *off, 1).ok()?;
+    let page = crate::core::db::list_media_needing_thumbnail(pool, *off, batch_size).ok()?;
     if page.is_empty() {
-        // 当前偏移后无更多需生成的项。重置偏移以便重扫（有新文件加入时能发现）。
         *off = 0;
         return None;
     }
-    let item = &page[0];
-    *off += 1;
+    let count = page.len();
+    *off += count as u32;
     drop(off);
 
-    let mtime = Some(std::time::SystemTime::from(item.file_mtime));
-    let cache_key = cache_key_str(&item.uri, ThumbnailSize::Medium, mtime)
-        .unwrap_or_else(|| format!("bg:{}", item.uri));
-    Some(PriItem {
-        tier: TIER_BACKGROUND,
-        seq: 0,
-        cache_key,
-        uri: item.uri.clone(),
-        size: ThumbnailSize::Medium,
-        mtime,
-        enqueued_at: Instant::now(),
-        media_id: item.id,
-    })
+    let size = *bg.size.lock().ok()?;
+
+    // 全部转成 PriItem，批量入队
+    let items: Vec<PriItem> = page
+        .iter()
+        .map(|item| {
+            let mtime = Some(std::time::SystemTime::from(item.file_mtime));
+            let cache_key =
+                cache_key_str(&item.uri, size, mtime).unwrap_or_else(|| format!("bg:{}", item.uri));
+            PriItem {
+                tier: TIER_BACKGROUND,
+                seq: 0,
+                cache_key,
+                uri: item.uri.clone(),
+                size,
+                mtime,
+                enqueued_at: Instant::now(),
+                media_id: item.id,
+            }
+        })
+        .collect();
+
+    let first = items.first().cloned();
+
+    let (lock, cvar) = &**queue;
+    if let Ok(mut q) = lock.lock() {
+        // 跳过 items[0]：它由 `first` 直接返回给当前 worker 处理，
+        // 不再入队，否则另一个被唤醒的 worker 会从堆里再次弹出它、重复生成。
+        for item in items.iter().skip(1) {
+            q.queued.insert(
+                item.cache_key.clone(),
+                QueuedEntry {
+                    tier: TIER_BACKGROUND,
+                    uri: item.uri.clone(),
+                    size: item.size,
+                    mtime: item.mtime,
+                    enqueued_at: item.enqueued_at,
+                },
+            );
+            q.heap.push(Reverse(item.clone()));
+        }
+        // 唤醒所有 sleep 的 worker 来消费刚入队的项
+        cvar.notify_all();
+    }
+
+    first
 }
 
 /// 生成失败时移除在途项，让等待者的 `rx` 收到 `Err` 而非永久挂起。
@@ -1311,24 +1372,203 @@ fn overlay_play_icon(pb: &Pixbuf) -> Pixbuf {
     pb
 }
 
+// ── libjpeg IDCT 缩放解码（JPEG 快速路径）───────────────────────────────────────
+//
+// 系统 libjpeg.so 就是 libjpeg-turbo，支持在 jpeg_read_header 与
+// jpeg_start_decompress 之间设置 scale_num/scale_denom，让解码器只
+// 输出低频 DCT 系数对应的缩小图像（1/2, 1/4, 1/8），避免全分辨率解码后再缩放。
+// 例：48MP JPEG → 1/8 输出 1000×750 像素 → 再缩到 512px，约快 8×。
+
+extern "C" {
+    fn jpeg_shim_create() -> *mut std::ffi::c_void;
+    fn jpeg_shim_destroy(shim: *mut std::ffi::c_void);
+    fn jpeg_shim_decode_scaled(
+        shim: *mut std::ffi::c_void,
+        filename: *const std::ffi::c_char,
+        max_dim: std::ffi::c_int,
+        out_w: *mut std::ffi::c_int,
+        out_h: *mut std::ffi::c_int,
+        errmsg: *mut std::ffi::c_char,
+        errmsg_size: std::ffi::c_int,
+    ) -> std::ffi::c_int;
+    fn jpeg_shim_take_buffer(shim: *mut std::ffi::c_void, out_len: *mut usize) -> *mut u8;
+    fn jpeg_shim_free_buffer(ptr: *mut std::ffi::c_void);
+}
+
+/// 对 JPEG 文件利用 libjpeg-turbo 的 IDCT 缩放能力，解码时直接缩放到接近目标尺寸。
+///
+/// `orientation` 由调用方预算好（避免每次调用都重读 EXIF），在这里经
+/// [`orientation::apply_orientation_to_pixbuf`] 应用——与 gdk-pixbuf 路径走同一条
+/// EXIF 方向处理，单一实现、不会漂移。
+///
+/// 失败返回 `None`，调用方回退到 gdk-pixbuf。
+fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option<Pixbuf> {
+    let cpath = std::ffi::CString::new(src_path.to_string_lossy().as_bytes()).ok()?;
+
+    let shim = unsafe { jpeg_shim_create() };
+    if shim.is_null() {
+        return None;
+    }
+
+    let mut out_w: std::ffi::c_int = 0;
+    let mut out_h: std::ffi::c_int = 0;
+    let mut errbuf = vec![0u8; 256];
+    let rc = unsafe {
+        jpeg_shim_decode_scaled(
+            shim,
+            cpath.as_ptr(),
+            max_dim.max(1) as std::ffi::c_int,
+            &mut out_w,
+            &mut out_h,
+            errbuf.as_mut_ptr() as *mut std::ffi::c_char,
+            errbuf.len() as std::ffi::c_int,
+        )
+    };
+    if rc != 0 {
+        let msg = String::from_utf8_lossy(&errbuf);
+        warn!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_TIMING jpeg_shim_decode_failed path={} error={}",
+            src_path.display(),
+            msg.trim_end_matches('\0').trim()
+        );
+        unsafe {
+            jpeg_shim_destroy(shim);
+        }
+        return None;
+    }
+
+    // 取走 C 端 malloc 的解码缓冲区，拷贝进 Rust 拥有的 Vec，再用 C 的 free 释放。
+    // 这样 Rust 永远不通过自己的分配器去释放 C 的指针——不依赖两个分配器相同。
+    let mut buf_len: usize = 0;
+    let raw = unsafe { jpeg_shim_take_buffer(shim, &mut buf_len) };
+    unsafe {
+        jpeg_shim_destroy(shim);
+    }
+
+    if raw.is_null() || buf_len == 0 || out_w <= 0 || out_h <= 0 {
+        if !raw.is_null() {
+            unsafe {
+                jpeg_shim_free_buffer(raw as *mut std::ffi::c_void);
+            }
+        }
+        return None;
+    }
+
+    // SAFETY: `raw` 由 shim malloc，长度正好是 buf_len 字节（= w*h*3）。
+    // 立刻拷贝进 Rust Vec，随后用 jpeg_shim_free_buffer 释放 C 端内存。
+    let pixels: Vec<u8> = unsafe {
+        let slice = std::slice::from_raw_parts(raw, buf_len);
+        slice.to_vec()
+    };
+    unsafe {
+        jpeg_shim_free_buffer(raw as *mut std::ffi::c_void);
+    }
+
+    let (w, h) = (out_w as i32, out_h as i32);
+    let rowstride = w as usize * 3;
+    // 先用缩放后的 RGB 构造未旋转 pixbuf，再复用 gdk-pixbuf 的方向处理（单一实现）。
+    let unrotated = Pixbuf::from_mut_slice(
+        pixels.into_boxed_slice(),
+        gdk_pixbuf::Colorspace::Rgb,
+        false,
+        8,
+        w,
+        h,
+        rowstride as i32,
+    );
+    Some(orientation::apply_orientation_to_pixbuf(
+        &unrotated,
+        orientation,
+    ))
+}
+
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
 /// 返回内存里已缩放好的 pixbuf，让调用方直接做成 Texture，省掉读盘重解码。
+///
+/// JPEG 格式优先走 turbojpeg IDCT 缩放解码（快速路径），失败时回退到 gdk-pixbuf。
 fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
-    let orientation_value = orientation::read_orientation(src_path).ok();
-    let pb = orientation::load_oriented_pixbuf(src_path)
-        .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
-    debug!(
-        "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={}",
-        src_path.display(),
-        orientation_value,
-        pb.width(),
-        pb.height(),
-        max_dim
-    );
+    let t_start = Instant::now();
+    // 只读一次 EXIF 方向：日志和 turbojpeg 路径都复用这个值，避免对同一文件多次全量读 EXIF。
+    let orientation = orientation::read_orientation(src_path).unwrap_or(1);
+
+    // JPEG 快速路径：turbojpeg IDCT 缩放解码
+    let is_jpeg = mime_from_extension(src_path) == Some("image/jpeg");
+    let pb = if is_jpeg {
+        match decode_jpeg_scaled(src_path, max_dim, orientation) {
+            Some(pb) => {
+                let decode_ms = t_start.elapsed().as_millis();
+                debug!(
+                    "THUMB_TRACE turbojpeg_decode path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
+                    src_path.display(),
+                    orientation,
+                    pb.width(),
+                    pb.height(),
+                    max_dim,
+                    decode_ms
+                );
+                pb
+            }
+            None => {
+                // turbojpeg 失败（CMYK/渐进式/损坏），回退到 gdk-pixbuf
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING turbojpeg_fallback path={}",
+                    src_path.display()
+                );
+                let pb = orientation::load_oriented_pixbuf(src_path)
+                    .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
+                let decode_ms = t_start.elapsed().as_millis();
+                debug!(
+                    "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
+                    src_path.display(),
+                    orientation,
+                    pb.width(),
+                    pb.height(),
+                    max_dim,
+                    decode_ms
+                );
+                pb
+            }
+        }
+    } else {
+        let pb = orientation::load_oriented_pixbuf(src_path)
+            .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
+        let decode_ms = t_start.elapsed().as_millis();
+        debug!(
+            "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
+            src_path.display(),
+            orientation,
+            pb.width(),
+            pb.height(),
+            max_dim,
+            decode_ms
+        );
+        pb
+    };
+
+    let t_decoded = Instant::now();
+    let decode_ms = t_decoded.duration_since(t_start).as_millis();
     let scaled = scale_pixbuf_to_fit(&pb, max_dim);
+    let t_scaled = Instant::now();
+    let scale_ms = t_scaled.duration_since(t_decoded).as_millis();
     if pixbuf_has_transparency(&scaled) {
         let cache_path = cache_stem.with_extension("webp");
         save_pixbuf_as_webp(&scaled, &cache_path)?;
+        let t_saved = Instant::now();
+        let save_ms = t_saved.duration_since(t_scaled).as_millis();
+        info!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_TIMING phase_breakdown source={} size={}x{} target={} decode_ms={} scale_ms={} save_webp_ms={} total_ms={}",
+            src_path.display(),
+            pb.width(),
+            pb.height(),
+            max_dim,
+            decode_ms,
+            scale_ms,
+            save_ms,
+            t_saved.duration_since(t_start).as_millis()
+        );
         return Ok(scaled);
     }
 
@@ -1341,6 +1581,20 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
             e
         )
     })?;
+    let t_saved = Instant::now();
+    let save_ms = t_saved.duration_since(t_scaled).as_millis();
+    info!(
+        target: crate::core::log_targets::THUMBNAILS,
+        "THUMB_TIMING phase_breakdown source={} size={}x{} target={} decode_ms={} scale_ms={} save_jpg_ms={} total_ms={}",
+        src_path.display(),
+        pb.width(),
+        pb.height(),
+        max_dim,
+        decode_ms,
+        scale_ms,
+        save_ms,
+        t_saved.duration_since(t_start).as_millis()
+    );
     Ok(thumb)
 }
 
@@ -1779,5 +2033,393 @@ mod tests {
                     .join("media")
                     .join("real_phone_video.mp4")
             })
+    }
+
+    /// 缩略图生成性能分析：对模拟真实手机照片（12MP / 24MP / 48MP）的图像，
+    /// 分别测量各阶段耗时以判断瓶颈在 IO 还是 CPU。
+    ///
+    /// 输出到 stderr，用 `cargo test profile_generate_phases -- --nocapture` 查看。
+    #[test]
+    fn profile_generate_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let resolutions: &[(&str, u32, u32)] = &[
+            ("12MP", 4032, 3024),
+            ("24MP", 6048, 4032),
+            ("48MP", 8000, 6000),
+        ];
+
+        for (label, w, h) in resolutions {
+            let t_gen = Instant::now();
+
+            // 生成模拟 JPEG 源文件
+            let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(*w, *h, |x, y| {
+                let r = ((x.wrapping_mul(y).wrapping_add(x)) % 251) as u8;
+                let g = ((y.wrapping_mul(3).wrapping_add(x)) % 241) as u8;
+                let b = ((x.wrapping_add(y).wrapping_mul(2)) % 231) as u8;
+                image::Rgb([r, g, b])
+            }));
+            let src_path = dir.path().join(format!("test_{}x{}.jpg", w, h));
+            let mut buf = std::io::Cursor::new(Vec::new());
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92)
+                .write_image(img.as_bytes(), *w, *h, image::ExtendedColorType::Rgb8)
+                .unwrap();
+            std::fs::write(&src_path, buf.into_inner()).unwrap();
+            let src_mb = std::fs::metadata(&src_path).unwrap().len() as f64 / 1_048_576.0;
+            let t_gen_done = Instant::now();
+            let gen_file_ms = t_gen_done.duration_since(t_gen).as_millis();
+            eprintln!("{label} 生成测试文件 {w}x{h} {src_mb:.1}MB: {gen_file_ms}ms");
+
+            // 预热
+            let warmup_stem = cache_dir.join("warmup");
+            let _ = generate_via_pixbuf(&src_path, 512, &warmup_stem);
+
+            // ── 冷路径：完整生成（读源文件 → 解码 → 缩放 → 编码写缓存）──
+            let stem = cache_dir.join(format!("profile_{}x{}", w, h));
+            let _ = std::fs::remove_file(stem.with_extension("jpg"));
+            let _ = std::fs::remove_file(stem.with_extension("webp"));
+
+            // 阶段 1a: 纯 IO（读源文件到内存，不解码）
+            let t_io0 = Instant::now();
+            let raw_bytes = std::fs::read(&src_path).expect("should read source file");
+            let pure_read_ms = t_io0.elapsed().as_millis();
+            let pure_read_mbps =
+                (raw_bytes.len() as f64 / 1_048_576.0) / (pure_read_ms as f64 / 1000.0);
+            eprintln!(
+                "{label} 纯IO读 {:.1}MB: {pure_read_ms}ms ({pure_read_mbps:.0}MB/s)",
+                raw_bytes.len() as f64 / 1_048_576.0
+            );
+
+            // 阶段 1b: 读源文件 + gdk-pixbuf 解码
+            let t0 = Instant::now();
+            let pb = orientation::load_oriented_pixbuf(&src_path)
+                .expect("gdk-pixbuf should decode source");
+            let decode_ms = t0.elapsed().as_millis();
+            let jpeg_decode_cpu_ms = decode_ms.saturating_sub(pure_read_ms);
+            eprintln!(
+                "{label} 读+解码: {decode_ms}ms (其中IO≈{pure_read_ms}ms, JPEG解码≈{jpeg_decode_cpu_ms}ms)",
+            );
+
+            // 阶段 2: 缩放到目标尺寸
+            let t1 = Instant::now();
+            let scaled = scale_pixbuf_to_fit(&pb, 512);
+            let scale_ms = t1.elapsed().as_millis();
+
+            // 阶段 3: 编码 JPEG + 写入磁盘缓存
+            let t2 = Instant::now();
+            let cache_path = stem.with_extension("jpg");
+            let thumb = ensure_opaque(&scaled);
+            thumb
+                .savev(&cache_path, "jpeg", &[])
+                .expect("should save JPEG cache");
+            let save_ms = t2.elapsed().as_millis();
+
+            let total_ms = t0.elapsed().as_millis();
+            let src_size = std::fs::metadata(&src_path).unwrap().len();
+            let cache_size = std::fs::metadata(&cache_path).unwrap().len();
+            let read_mbps = (src_size as f64 / 1_048_576.0) / (decode_ms as f64 / 1000.0);
+            let write_mbps = (cache_size as f64 / 1_048_576.0) / (save_ms as f64 / 1000.0);
+
+            eprintln!(
+                "{label} [旧路径全分辨率] {w}x{h} src={src_mb:.1}MB → {tx}x{th}: \
+                 decode={decode_ms}ms ({read_mbps:.0}MB/s) \
+                 scale={scale_ms}ms \
+                 save={save_ms}ms ({write_mbps:.0}MB/s) \
+                 total={total_ms}ms",
+                tx = scaled.width(),
+                th = scaled.height()
+            );
+
+            // ── 新路径：generate_via_pixbuf（JPEG 走 turbojpeg IDCT 缩放）──
+            let stem_tj = cache_dir.join(format!("profile_tj_{}x{}", w, h));
+            let _ = std::fs::remove_file(stem_tj.with_extension("jpg"));
+            let _ = std::fs::remove_file(stem_tj.with_extension("webp"));
+            let t_tj = Instant::now();
+            let tj_thumb =
+                generate_via_pixbuf(&src_path, 512, &stem_tj).expect("turbojpeg 路径应成功");
+            let tj_ms = t_tj.elapsed().as_millis();
+            let speedup = total_ms as f64 / tj_ms.max(1) as f64;
+            eprintln!(
+                "{label} [新路径turbojpeg]  → {}x{}: total={}ms  (相对旧路径 {speedup:.1}×)",
+                tj_thumb.width(),
+                tj_thumb.height(),
+                tj_ms
+            );
+
+            // 阶段 4: 热路径（读磁盘缓存 → 解码）
+            let t3 = Instant::now();
+            let _cached = load_pixbuf_sync(&stem_tj.with_extension("jpg"))
+                .or_else(|_| load_pixbuf_sync(&stem_tj.with_extension("webp")))
+                .expect("should load cached thumb");
+            let cached_ms = t3.elapsed().as_millis();
+            eprintln!("{label} 热路径 cached_load={cached_ms}ms\n");
+        }
+    }
+
+    /// 回归：libjpeg IDCT 缩放解码路径必须可用，且输出尺寸正确。
+    /// 对一张 2400×1800 的 JPEG，目标 max_dim=512 时应选 1/4 缩放（600×450），
+    /// 再由 scale_pixbuf_to_fit 缩到 512px 长边。
+    #[test]
+    fn decode_jpeg_scaled_produces_valid_pixbuf() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (2400u32, 1800u32);
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            w,
+            h,
+            image::Rgb([200, 100, 50]),
+        ));
+        let src = dir.path().join("src.jpg");
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90)
+            .write_image(img.as_bytes(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(&src, buf.into_inner()).unwrap();
+
+        let pb = decode_jpeg_scaled(&src, 512, 1).expect("turbojpeg 路径应成功解码 JPEG");
+
+        // 1/4 缩放：2400/4=600, 1800/4=450（无 EXIF 方向，原图）
+        assert_eq!(pb.width(), 600, "1/4 IDCT 缩放后宽应为 600");
+        assert_eq!(pb.height(), 450, "1/4 IDCT 缩放后高应为 450");
+        assert!(!pb.has_alpha(), "JPEG 无 alpha");
+        assert_eq!(pb.n_channels(), 3, "应输出 RGB 3 通道");
+    }
+
+    /// 回归：turbojpeg 路径的方向处理走 `apply_orientation_to_pixbuf`，
+    /// orientation=6（90° 顺时针）应把 600×450 翻成 450×600。
+    #[test]
+    fn decode_jpeg_scaled_applies_orientation_6() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (2400u32, 1800u32);
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            w,
+            h,
+            image::Rgb([200, 100, 50]),
+        ));
+        let src = dir.path().join("src.jpg");
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 90)
+            .write_image(img.as_bytes(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(&src, buf.into_inner()).unwrap();
+
+        let pb = decode_jpeg_scaled(&src, 512, 6).expect("turbojpeg 路径应成功解码 JPEG");
+
+        // 1/4 缩放得 600×450，再经 orientation 6（90° CW）翻转为 450×600。
+        assert_eq!(pb.width(), 450, "orientation 6 后宽高应交换");
+        assert_eq!(pb.height(), 600, "orientation 6 后宽高应交换");
+    }
+
+    /// 端到端：JPEG 经 generate_via_pixbuf 走 turbojpeg 快速路径生成缩略图，
+    /// 尺寸应在 max_dim 内、长边正好为 max_dim，且缓存文件可被重新解码。
+    #[test]
+    fn jpeg_thumbnail_via_turbojpeg_fast_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (4032u32, 3024u32); // 12MP
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 231) as u8])
+        }));
+        let src = dir.path().join("12mp.jpg");
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92)
+            .write_image(img.as_bytes(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(&src, buf.into_inner()).unwrap();
+
+        let stem = dir.path().join("thumb");
+        let thumb =
+            generate_via_pixbuf(&src, 256, &stem).expect("JPEG 应走 turbojpeg 路径生成缩略图");
+
+        assert!(
+            thumb.width() <= 256 && thumb.height() <= 256,
+            "应在 max_dim 内"
+        );
+        assert_eq!(thumb.width().max(thumb.height()), 256, "长边应缩到 max_dim");
+
+        let jpeg = stem.with_extension("jpg");
+        assert!(jpeg.exists(), "应写出 JPEG 缓存");
+        let decoded = image::open(&jpeg).expect("缓存 JPEG 应可被重新解码");
+        assert!(decoded.width() <= 256 && decoded.height() <= 256);
+    }
+
+    /// 比较 turbojpeg 缩放解码 vs gdk-pixbuf 全分辨率解码的耗时。
+    /// 输出到 stderr，用 `cargo test jpeg_decode_bench -- --nocapture --ignored` 查看。
+    #[test]
+    #[ignore]
+    fn jpeg_decode_bench() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (8000u32, 6000u32); // 48MP
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 231) as u8])
+        }));
+        let src = dir.path().join("48mp.jpg");
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 92)
+            .write_image(img.as_bytes(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        std::fs::write(&src, buf.into_inner()).unwrap();
+
+        // turbojpeg IDCT 缩放解码
+        let t0 = Instant::now();
+        let tj_pb = decode_jpeg_scaled(&src, 512, 1).expect("turbojpeg 应成功");
+        let tj_ms = t0.elapsed().as_millis();
+
+        // gdk-pixbuf 全分辨率解码
+        let t1 = Instant::now();
+        let gp_pb = orientation::load_oriented_pixbuf(&src).expect("gdk-pixbuf 应成功");
+        let gp_ms = t1.elapsed().as_millis();
+
+        let speedup = gp_ms as f64 / tj_ms.max(1) as f64;
+        eprintln!(
+            "48MP 解码对比: turbojpeg(1/8缩放)={}ms → {}x{}, gdk-pixbuf(全分辨率)={}ms → {}x{}, 提速 {speedup:.1}×",
+            tj_ms, tj_pb.width(), tj_pb.height(),
+            gp_ms, gp_pb.width(), gp_pb.height()
+        );
+    }
+
+    /// 真实库基准：扫描 `~/图片`（或 `PICTURES_BENCH_DIR` 覆盖）取最大的若干 JPEG，
+    /// 分别用 turbojpeg 快速路径与旧的全分辨率路径生成 Medium(512) 缩略图，
+    /// 汇总总耗时与平均提速。输出到 stderr，用
+    /// `cargo test real_library_thumbnail_bench --lib --release -- --nocapture --ignored` 查看。
+    #[test]
+    #[ignore]
+    fn real_library_thumbnail_bench() {
+        use std::path::PathBuf;
+
+        let lib_dir: PathBuf = std::env::var("PICTURES_BENCH_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("图片")
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from("/dev/null"))
+            });
+
+        // 首选 $HOME/图片
+        let home_pictures = std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("图片"))
+            .filter(|p| p.is_dir());
+        let scan_root = home_pictures.unwrap_or(lib_dir);
+
+        if !scan_root.is_dir() {
+            eprintln!("跳过：找不到图片库目录 {}", scan_root.display());
+            return;
+        }
+
+        // 收集 JPEG，按文件大小降序，取最大的 30 张
+        let mut files: Vec<(PathBuf, u64)> = Vec::new();
+        for entry in walkdir::WalkDir::new(&scan_root)
+            .max_depth(4)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let is_jpeg = path
+                .extension()
+                .and_then(|x| x.to_str())
+                .map(|x| x.eq_ignore_ascii_case("jpg") || x.eq_ignore_ascii_case("jpeg"))
+                .unwrap_or(false);
+            if !is_jpeg {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                files.push((path.to_path_buf(), meta.len()));
+            }
+        }
+        files.sort_unstable_by_key(|&(_, size)| std::cmp::Reverse(size));
+        let sample: Vec<&PathBuf> = files.iter().take(30).map(|(p, _)| p).collect();
+        if sample.is_empty() {
+            eprintln!("跳过：{} 下未找到 JPEG", scan_root.display());
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        eprintln!(
+            "真实库基准：{} 中最大的 {} 张 JPEG（共 {} 个 JPEG）",
+            scan_root.display(),
+            sample.len(),
+            files.len()
+        );
+
+        // 旧路径：全分辨率解码 → 缩放 → 存盘
+        let mut old_total = 0u128;
+        let mut old_pixels = 0u64;
+        for (i, src) in sample.iter().enumerate() {
+            let stem = tmp.path().join(format!("old_{i}"));
+            let t0 = Instant::now();
+            let pb = orientation::load_oriented_pixbuf(src).expect("decode");
+            let scaled = scale_pixbuf_to_fit(&pb, 512);
+            let thumb = ensure_opaque(&scaled);
+            thumb
+                .savev(stem.with_extension("jpg"), "jpeg", &[])
+                .unwrap();
+            let ms = t0.elapsed().as_millis();
+            old_total += ms;
+            old_pixels += (pb.width() as u64) * (pb.height() as u64);
+            if i < 3 {
+                eprintln!(
+                    "  旧[#{i}] {} → {}x{} {}ms",
+                    src.display(),
+                    pb.width(),
+                    pb.height(),
+                    ms
+                );
+            }
+        }
+
+        // 新路径：turbojpeg IDCT 缩放（生产路径 generate_via_pixbuf）
+        let mut new_total = 0u128;
+        let mut new_pixels = 0u64;
+        for (i, src) in sample.iter().enumerate() {
+            let stem = tmp.path().join(format!("new_{i}"));
+            let t0 = Instant::now();
+            let ori = orientation::read_orientation(src).unwrap_or(1);
+            let tj_pb = decode_jpeg_scaled(src, 512, ori).expect("turbojpeg decode");
+            new_pixels += (tj_pb.width() as u64) * (tj_pb.height() as u64);
+            let scaled = scale_pixbuf_to_fit(&tj_pb, 512);
+            let thumb = ensure_opaque(&scaled);
+            thumb
+                .savev(stem.with_extension("jpg"), "jpeg", &[])
+                .unwrap();
+            let ms = t0.elapsed().as_millis();
+            new_total += ms;
+            if i < 3 {
+                eprintln!(
+                    "  新[#{i}] {} → {}x{} {}ms",
+                    src.display(),
+                    tj_pb.width(),
+                    tj_pb.height(),
+                    ms
+                );
+            }
+        }
+
+        let n = sample.len() as f64;
+        let old_avg = old_total as f64 / n;
+        let new_avg = new_total as f64 / n;
+        let speedup = old_total as f64 / new_total.max(1) as f64;
+        let old_mem_mb = old_pixels as f64 * 3.0 / 1_048_576.0;
+        let new_mem_mb = new_pixels as f64 * 3.0 / 1_048_576.0;
+        eprintln!(
+            "\n汇总（{} 张，每张 Medium/512 缩略图）：\n  旧路径(全分辨率解码) 总 {}ms, 均 {:.0}ms/张, 解码像素总量 {:.0}MP ({:.0}MB)\n  新路径(turbojpeg缩放) 总 {}ms, 均 {:.0}ms/张, 解码像素总量 {:.0}MP ({:.0}MB)\n  提速 {speedup:.2}×, 解码像素缩减 {:.0}×, 内存占用从 {:.0}MB → {:.0}MB",
+            sample.len(),
+            old_total,
+            old_avg,
+            old_pixels as f64 / 1_000_000.0,
+            old_mem_mb,
+            new_total,
+            new_avg,
+            new_pixels as f64 / 1_000_000.0,
+            new_mem_mb,
+            old_pixels as f64 / new_pixels.max(1) as f64,
+            old_mem_mb,
+            new_mem_mb,
+        );
     }
 }

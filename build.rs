@@ -28,6 +28,12 @@ fn compile_blueprint(src: &str, dst: &str) {
 }
 
 fn main() {
+    // 0. Compile C shim for libjpeg IDCT scaling (uses system libjpeg-turbo)
+    cc::Build::new()
+        .file("src/core/jpeg_scale_shim.c")
+        .compile("jpeg_scale_shim");
+    println!("cargo:rustc-link-lib=jpeg");
+
     // 1. Compile Blueprint → .ui
     let blueprint_files = [
         "data/ui/window.blp",
