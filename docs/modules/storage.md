@@ -29,6 +29,11 @@ Startup initialization now also validates that `media_items` still has the requi
 
 Live photos and trashed photos are separated with `trashed_at IS NULL` query/index behavior. Keep this distinction intact when changing media queries.
 
+The live media page query sorts by `COALESCE(taken_at, file_mtime) DESC, id DESC`
+and must use the partial expression index `idx_media_live_sort`. Without that
+index, large libraries can fall back to a full live-row scan plus a temporary
+sort for every virtual page request.
+
 ## Media Model
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.

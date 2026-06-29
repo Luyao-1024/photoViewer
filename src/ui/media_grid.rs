@@ -128,10 +128,22 @@ mod imp {
         pub virtual_total: Cell<u32>,
         /// 防止滚动事件在上一次 DB page 尚未返回时重复发起加载。
         pub virtual_page_loading: Cell<bool>,
+        /// Whether a blocking DB page query is currently running.
+        pub virtual_query_in_flight: Cell<bool>,
+        /// Latest target requested while a DB page query is already running.
+        pub pending_virtual_page_start: Cell<Option<u32>>,
+        pub pending_virtual_page_ratio: Cell<Option<f64>>,
         /// 每次虚拟窗口 DB 请求递增；旧请求返回后若 generation 过期则丢弃。
         pub virtual_page_generation: Cell<u64>,
         /// 替换窗口后按全库比例恢复滚动条位置。
         pub pending_scroll_ratio: Cell<Option<f64>>,
+        /// Programmatic scroll restoration after rebuild should not be treated
+        /// as a user drag that requests another DB page.
+        pub restoring_scroll: Cell<bool>,
+        /// `ListStore::splice` used by virtual paging emits `items-changed`;
+        /// suppress the generic removal rebuild and rebuild exactly once after
+        /// the page is applied.
+        pub applying_virtual_page: Cell<bool>,
         /// Whether batch mode is explicitly enabled.
         pub is_multi_select_mode: Cell<bool>,
         /// Callback fired whenever `selected` changes. Registered by the host
@@ -178,8 +190,13 @@ mod imp {
                 virtual_window_start: Cell::new(0),
                 virtual_total: Cell::new(0),
                 virtual_page_loading: Cell::new(false),
+                virtual_query_in_flight: Cell::new(false),
+                pending_virtual_page_start: Cell::new(None),
+                pending_virtual_page_ratio: Cell::new(None),
                 virtual_page_generation: Cell::new(0),
                 pending_scroll_ratio: Cell::new(None),
+                restoring_scroll: Cell::new(false),
+                applying_virtual_page: Cell::new(false),
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: std::cell::OnceCell::new(),
                 reprio_debounce: RefCell::new(None),
@@ -332,6 +349,30 @@ fn scroll_ratio_from_adjustment_value(value: f64, upper: f64, page_size: f64) ->
     }
 }
 
+fn should_consider_virtual_page_load(restoring_scroll: bool, total: u32, current_len: u32) -> bool {
+    !restoring_scroll && total > current_len && current_len > 0
+}
+
+fn replace_pending_virtual_page(
+    pending_start: &std::cell::Cell<Option<u32>>,
+    pending_ratio: &std::cell::Cell<Option<f64>>,
+    target_start: u32,
+    ratio: f64,
+) {
+    pending_start.set(Some(target_start));
+    pending_ratio.set(Some(ratio));
+}
+
+fn tile_intersects_request_window(
+    tile_y: f32,
+    tile_h: f32,
+    page_h: f32,
+    overscan_pages: f32,
+) -> bool {
+    let overscan = page_h.max(0.0) * overscan_pages.max(0.0);
+    tile_y < page_h + overscan && tile_y + tile_h > -overscan
+}
+
 fn build_virtual_placeholder_flow(spec: ViewSpec, count: u32) -> gtk::FlowBox {
     let flow = gtk::FlowBox::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -462,6 +503,9 @@ impl MediaGrid {
             );
             *this.imp().media_list.borrow_mut() = Some(list.clone());
             if this.imp().active.get() {
+                if this.imp().applying_virtual_page.get() {
+                    return;
+                }
                 if removed > 0 {
                     // 有项被移除或全量替换 → 必须重建。
                     this.rebuild_immediately(list.clone());
@@ -485,10 +529,21 @@ impl MediaGrid {
             .connect_value_changed(move |adj| {
                 if let Some(this) = weak_scroll.upgrade() {
                     this.schedule_reprioritize();
-                    this.try_load_virtual_page(adj);
-                    this.try_expand_render_limit(adj);
+                    if !this.imp().restoring_scroll.get() {
+                        this.try_load_virtual_page(adj);
+                        this.try_expand_render_limit(adj);
+                    }
                 }
             });
+        let weak_map = obj.downgrade();
+        obj.connect_map(move |_| {
+            let weak_map = weak_map.clone();
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(this) = weak_map.upgrade() {
+                    this.reprioritize_visible();
+                }
+            });
+        });
         obj
     }
 
@@ -673,6 +728,7 @@ impl MediaGrid {
     fn collect_visible_cache_keys(&self) -> Vec<String> {
         let scroller = self.imp().scroller.get();
         let page_h = scroller.vadjustment().page_size() as f32;
+        const THUMB_REQUEST_OVERSCAN_PAGES: f32 = 1.0;
         let mut keys = Vec::new();
         let content = self.imp().content.get();
         let mut section = content.first_child();
@@ -687,11 +743,18 @@ impl MediaGrid {
                     {
                         if let Some(b) = tile.compute_bounds(&scroller) {
                             // 越过可见下沿：后续 tile 更靠下，整体结束。
-                            if b.y() >= page_h {
+                            if b.y() >= page_h * (1.0 + THUMB_REQUEST_OVERSCAN_PAGES) {
                                 return keys;
                             }
-                            // 与可见区 [0, page_h] 有交集即视为可见。
-                            if b.y() + b.height() > 0.0 {
+                            // 与视口 + overscan 有交集即请求/提权；FlowBox 会 map
+                            // 整个 page，不能把 map 当作真实可见性。
+                            if tile_intersects_request_window(
+                                b.y(),
+                                b.height(),
+                                page_h,
+                                THUMB_REQUEST_OVERSCAN_PAGES,
+                            ) {
+                                tile.request_thumbnail();
                                 if let Some(k) = tile.cache_key() {
                                     keys.push(k);
                                 }
@@ -776,7 +839,8 @@ impl MediaGrid {
             return;
         };
         let current_len = list.n_items();
-        if total <= current_len || current_len == 0 {
+        if !should_consider_virtual_page_load(self.imp().restoring_scroll.get(), total, current_len)
+        {
             return;
         }
         let virtual_page_size = runtime_config::virtual_media_page_size();
@@ -805,26 +869,83 @@ impl MediaGrid {
         self.imp().virtual_page_loading.set(true);
         self.imp().pending_scroll_ratio.set(Some(ratio));
         self.rebuild_immediately(list.clone());
+
+        if self.imp().virtual_query_in_flight.get() {
+            replace_pending_virtual_page(
+                &self.imp().pending_virtual_page_start,
+                &self.imp().pending_virtual_page_ratio,
+                target_start,
+                ratio,
+            );
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "VIRTUAL_SCROLL coalesce_page generation={generation} ratio={ratio:.4} desired_offset={desired_offset} current_start={current_start} current_len={current_len} target_start={target_start} total={total}"
+            );
+            return;
+        }
+
+        self.imp().virtual_query_in_flight.set(true);
+        self.spawn_virtual_page_query(loader, target_start, virtual_page_size, generation);
+    }
+
+    fn spawn_virtual_page_query(
+        &self,
+        loader: Arc<ThumbnailLoader>,
+        target_start: u32,
+        virtual_page_size: u32,
+        generation: u64,
+    ) {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "VIRTUAL_SCROLL load_page generation={generation} ratio={ratio:.4} desired_offset={desired_offset} current_start={current_start} current_len={current_len} target_start={target_start} total={total}"
+            "VIRTUAL_SCROLL load_page generation={generation} target_start={target_start} page_size={virtual_page_size}"
         );
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let pool = loader.pool().clone();
+            let page_started = std::time::Instant::now();
             let result = gtk::gio::spawn_blocking(move || {
-                crate::core::db::list_media_page(&pool, target_start, virtual_page_size)
+                let db_started = std::time::Instant::now();
+                let result =
+                    crate::core::db::list_media_page(&pool, target_start, virtual_page_size);
+                (result, db_started.elapsed())
             })
             .await;
             let items = match result {
-                Ok(Ok(items)) => items,
-                Ok(Err(err)) => {
-                    tracing::warn!("virtual media page load failed: {err}");
+                Ok((Ok(items), db_elapsed)) => {
+                    tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
+                        "VIRTUAL_TIMING db_page_loaded generation={} target_start={} limit={} rows={} db_ms={} await_ms={}",
+                        generation,
+                        target_start,
+                        virtual_page_size,
+                        items.len(),
+                        db_elapsed.as_millis(),
+                        page_started.elapsed().as_millis()
+                    );
+                    items
+                }
+                Ok((Err(err), db_elapsed)) => {
+                    tracing::warn!(
+                        target: crate::core::log_targets::BROWSING,
+                        "VIRTUAL_TIMING db_page_failed generation={} target_start={} limit={} db_ms={} await_ms={} error={err}",
+                        generation,
+                        target_start,
+                        virtual_page_size,
+                        db_elapsed.as_millis(),
+                        page_started.elapsed().as_millis()
+                    );
                     Vec::new()
                 }
                 Err(err) => {
-                    tracing::warn!("virtual media page load join failed: {err:?}");
+                    tracing::warn!(
+                        target: crate::core::log_targets::BROWSING,
+                        "VIRTUAL_TIMING db_page_join_failed generation={} target_start={} limit={} await_ms={} error={err:?}",
+                        generation,
+                        target_start,
+                        virtual_page_size,
+                        page_started.elapsed().as_millis()
+                    );
                     Vec::new()
                 }
             };
@@ -839,6 +960,10 @@ impl MediaGrid {
                     generation,
                     this.imp().virtual_page_generation.get()
                 );
+                if this.start_pending_virtual_page_query(loader.clone()) {
+                    return;
+                }
+                this.imp().virtual_query_in_flight.set(false);
                 return;
             }
             this.imp().virtual_page_loading.set(false);
@@ -847,16 +972,51 @@ impl MediaGrid {
                 if let Some(list) = list {
                     this.rebuild_immediately(list);
                 }
+                this.imp().virtual_query_in_flight.set(false);
                 return;
             }
             this.imp().virtual_window_start.set(target_start);
+            let apply_started = std::time::Instant::now();
             let additions: Vec<glib::BoxedAnyObject> =
                 items.into_iter().map(glib::BoxedAnyObject::new).collect();
             let list = this.imp().media_list.borrow().as_ref().cloned();
             if let Some(list) = list {
+                let old_len = list.n_items();
+                let new_len = additions.len();
+                this.imp().applying_virtual_page.set(true);
                 list.splice(0, list.n_items(), &additions);
+                this.imp().applying_virtual_page.set(false);
+                this.rebuild_immediately(list);
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "VIRTUAL_TIMING page_applied generation={} target_start={} old_len={} new_len={} apply_rebuild_ms={}",
+                    generation,
+                    target_start,
+                    old_len,
+                    new_len,
+                    apply_started.elapsed().as_millis()
+                );
             }
+            this.imp().virtual_query_in_flight.set(false);
         });
+    }
+
+    fn start_pending_virtual_page_query(&self, loader: Arc<ThumbnailLoader>) -> bool {
+        let Some(target_start) = self.imp().pending_virtual_page_start.take() else {
+            return false;
+        };
+        if let Some(ratio) = self.imp().pending_virtual_page_ratio.take() {
+            self.imp().pending_scroll_ratio.set(Some(ratio));
+        }
+        let generation = self.imp().virtual_page_generation.get();
+        self.imp().virtual_query_in_flight.set(true);
+        self.spawn_virtual_page_query(
+            loader,
+            target_start,
+            runtime_config::virtual_media_page_size(),
+            generation,
+        );
+        true
     }
 
     /// Return the brightness class of the visible tile currently underneath
@@ -1046,7 +1206,7 @@ impl MediaGrid {
             if mode == GroupBy::Day && !stats_emitted.replace(true) {
                 let generated = loader.generated_count();
                 let stats_label = gtk::Label::builder()
-                    .label(&library_stats_text(total_media, generated))
+                    .label(library_stats_text(total_media, generated))
                     .halign(gtk::Align::Center)
                     .hexpand(true)
                     .margin_bottom(14)
@@ -1096,7 +1256,7 @@ impl MediaGrid {
                 if mode == GroupBy::Day && !stats_emitted.replace(true) {
                     let generated = loader.generated_count();
                     let stats_label = gtk::Label::builder()
-                        .label(&library_stats_text(total_media, generated))
+                        .label(library_stats_text(total_media, generated))
                         .halign(gtk::Align::Center)
                         .hexpand(true)
                         .margin_bottom(14)
@@ -1502,7 +1662,9 @@ impl MediaGrid {
                     saved_scroll.min(adj.upper() - adj.page_size())
                 };
                 if restored >= 0.0 {
+                    this.imp().restoring_scroll.set(true);
                     adj.set_value(restored);
+                    this.imp().restoring_scroll.set(false);
                 }
             });
         }
@@ -1519,8 +1681,13 @@ impl MediaGrid {
             rebuild_started.elapsed().as_millis()
         );
 
-        // rebuild 后调度一次可见区提权（去抖）：让当前可见 tile 先于屏幕外的被生成。
-        self.schedule_reprioritize();
+        // 下一帧 layout 完成后立即请求/提权视口附近缩略图；滚动期间仍走去抖路径。
+        let weak = self.downgrade();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.reprioritize_visible();
+            }
+        });
     }
 
     fn start_stats_refresh(&self, loader: Arc<ThumbnailLoader>, total_media: usize) {
@@ -1606,6 +1773,7 @@ pub mod square_tile {
             pub background_is_light: Cell<Option<bool>>,
             /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
             pub cache_key: RefCell<Option<String>>,
+            pub thumbnail_request: RefCell<Option<Rc<dyn Fn()>>>,
         }
 
         impl Default for SquareTile {
@@ -1619,6 +1787,7 @@ pub mod square_tile {
                     target: Cell::new(90),
                     background_is_light: Cell::new(None),
                     cache_key: RefCell::new(None),
+                    thumbnail_request: RefCell::new(None),
                 }
             }
         }
@@ -1823,6 +1992,16 @@ pub mod square_tile {
             self.imp().cache_key.borrow().clone()
         }
 
+        pub fn set_thumbnail_request(&self, request: Rc<dyn Fn()>) {
+            *self.imp().thumbnail_request.borrow_mut() = Some(request);
+        }
+
+        pub fn request_thumbnail(&self) {
+            if let Some(request) = self.imp().thumbnail_request.borrow().as_ref() {
+                request();
+            }
+        }
+
         pub fn set_motion_badge_visible(&self, visible: bool) {
             if let Some(badge) = self.imp().motion_badge.borrow().as_ref() {
                 badge.set_visible(visible);
@@ -1953,6 +2132,21 @@ pub mod square_tile {
             tile.set_favorite_badge_visible(true);
             assert!(favorite.is_visible());
         }
+
+        #[gtk::test]
+        fn square_tile_runs_registered_thumbnail_request() {
+            let _ = gtk::init();
+            let tile = SquareTile::new();
+            let called = Rc::new(std::cell::Cell::new(false));
+            let called_for_request = called.clone();
+
+            tile.set_thumbnail_request(Rc::new(move || {
+                called_for_request.set(true);
+            }));
+            tile.request_thumbnail();
+
+            assert!(called.get());
+        }
     }
 }
 
@@ -2001,14 +2195,9 @@ fn build_photo_picture(
     // 加载中骨架 shimmer；set_paintable 设入任意 paintable 时移除。
     tile.add_css_class("thumb-loading");
 
-    // 缩略图请求**推迟到 tile 被 map（即真正可见）时**才发出。
-    //
-    // 三个 grid（年/月/日）共享同一个 ListStore，但 ViewStack 同一时刻只
-    // map 可见的那个 grid；隐藏 grid 的 tile 不会 map，因此不会请求缩略图。
-    // 这就避免了「隐藏的年/月 grid 与可见的日 grid 抢 worker、并把日视图的
-    // 请求挤到队尾」导致的首屏空白。配合 ThumbnailLoader 的在途去重，可见
-    // tile 的请求既不会被丢、也优先被生成。`requested` 保证每个 tile 只请求
-    // 一次（重新 map 时走 mem_cache/disk 缓存，也不会重复生成）。
+    // 缩略图请求不由 `map` 触发：GtkFlowBox 会把当前虚拟 page 的大量 child
+    // 都 map 掉。请求闭包注册在 tile 上，由 MediaGrid 的视口扫描按
+    // viewport+overscan 触发，避免一次 page 500 个 tile 同时排队。
     let request_once: Rc<dyn Fn()> = Rc::new({
         let loader = loader.clone();
         let on_background_changed = on_background_changed.clone();
@@ -2026,19 +2215,22 @@ fn build_photo_picture(
             let item_uri = current_item.uri.clone();
             let item_mtime = thumbnail_request_mtime(&current_item);
             let cache_key = ThumbnailLoader::cache_key_for(&item_uri, size, Some(item_mtime));
+            let request_started = std::time::Instant::now();
             if let Some(tile) = tile_weak.upgrade() {
                 tile.set_cache_key(cache_key.clone());
             }
 
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "THUMB_TRACE grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
+                "THUMB_TIMING grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} queue_len={} in_flight={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
                 current_item.id,
                 item_name,
                 item_uri,
                 size,
                 target_px,
                 global_index,
+                loader.queue_len(),
+                loader.in_flight_len(),
                 current_item.file_mtime,
                 item_mtime,
                 cache_key
@@ -2050,7 +2242,7 @@ fn build_photo_picture(
                 size,
                 Some(item_mtime),
                 tx,
-                crate::core::thumbnails::TIER_NORMAL,
+                crate::core::thumbnails::TIER_BOOST,
             );
             let tile_weak = tile_weak.clone();
             let on_background_changed = on_background_changed.clone();
@@ -2061,9 +2253,10 @@ fn build_photo_picture(
                     Ok(loaded) => {
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
-                            "VIEWER_DEBUG thumb loaded item_name={} uri={} texture={}x{}",
+                            "THUMB_TIMING grid_loaded item_name={} uri={} elapsed_ms={} texture={}x{}",
                             item_name,
                             item_uri,
+                            request_started.elapsed().as_millis(),
                             loaded.texture.width(),
                             loaded.texture.height()
                         );
@@ -2079,9 +2272,10 @@ fn build_photo_picture(
                     Err(_) => {
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
-                            "VIEWER_DEBUG thumb dropped→灰底占位 item_name={} uri={}",
+                            "THUMB_TIMING grid_dropped_placeholder item_name={} uri={} elapsed_ms={}",
                             item_name,
-                            item_uri
+                            item_uri,
+                            request_started.elapsed().as_millis()
                         );
                         if let Some(t) = tile_weak.upgrade() {
                             t.set_paintable(Some(&gray_placeholder_texture()));
@@ -2092,14 +2286,7 @@ fn build_photo_picture(
         }
     });
 
-    // tile 被 map 时触发请求；若此刻已 map（防御性），立即触发。
-    {
-        let request_once = request_once.clone();
-        tile.connect_map(move |_| request_once());
-    }
-    if tile.is_mapped() {
-        request_once();
-    }
+    tile.set_thumbnail_request(request_once);
     tile
 }
 
@@ -2472,5 +2659,46 @@ mod tests {
             1.0
         );
         assert_eq!(scroll_ratio_from_adjustment_value(20.0, 100.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn programmatic_scroll_restore_does_not_request_virtual_page() {
+        assert!(
+            should_consider_virtual_page_load(false, 100_000, 500),
+            "user-driven scrolling in a virtualized library should still consider page loads"
+        );
+        assert!(
+            !should_consider_virtual_page_load(true, 100_000, 500),
+            "restoring scroll after a rebuild must not recursively request another virtual page"
+        );
+        assert!(
+            !should_consider_virtual_page_load(false, 500, 500),
+            "fully loaded small libraries do not need virtual page loads"
+        );
+        assert!(
+            !should_consider_virtual_page_load(false, 100_000, 0),
+            "an empty current window cannot be used to target a virtual page"
+        );
+    }
+
+    #[test]
+    fn coalesced_virtual_page_target_keeps_latest_drag_target() {
+        let pending_start = std::cell::Cell::new(None);
+        let pending_ratio = std::cell::Cell::new(None);
+
+        replace_pending_virtual_page(&pending_start, &pending_ratio, 20_000, 0.20);
+        replace_pending_virtual_page(&pending_start, &pending_ratio, 55_000, 0.55);
+
+        assert_eq!(pending_start.get(), Some(55_000));
+        assert_eq!(pending_ratio.get(), Some(0.55));
+    }
+
+    #[test]
+    fn thumbnail_request_window_includes_viewport_and_one_page_overscan() {
+        assert!(tile_intersects_request_window(0.0, 270.0, 900.0, 1.0));
+        assert!(tile_intersects_request_window(1_700.0, 270.0, 900.0, 1.0));
+        assert!(!tile_intersects_request_window(1_900.0, 270.0, 900.0, 1.0));
+        assert!(tile_intersects_request_window(-250.0, 270.0, 900.0, 1.0));
+        assert!(!tile_intersects_request_window(-1_200.0, 270.0, 900.0, 1.0));
     }
 }

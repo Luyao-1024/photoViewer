@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS media_items (
 
 CREATE INDEX IF NOT EXISTS idx_media_taken_at
     ON media_items(taken_at DESC) WHERE trashed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_live_sort
+    ON media_items(COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_folder
     ON media_items(folder_path)    WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_trashed

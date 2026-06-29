@@ -40,7 +40,13 @@ viewport inside blank spacer space. Top and bottom virtual spacer widgets
 approximate the height of unloaded rows, so the scrollbar thumb represents the
 full library rather than only the current page. Rapid drag retargets increment
 a virtual-page generation counter; stale DB page results are discarded rather
-than replacing a newer target window. `apply_to_media_list::ui_media_list_cap()`
+than replacing a newer target window. Only one virtual DB page query should be
+in flight per grid; additional drag targets are coalesced so the next query
+loads the latest target rather than every intermediate position. Programmatic
+scroll restoration after a virtual page rebuild must not request another DB
+page, and the `ListStore` splice that applies a virtual page must be rebuilt
+exactly once instead of also going through the generic removal rebuild path.
+`apply_to_media_list::ui_media_list_cap()`
 (configurable via `runtime.json`, default 1500) remains a safety cap for live
 change merges, and `MediaGrid::max_rendered_grid_items()` (configurable via
 `runtime.json`, default 800) caps tile widgets per rebuild. Runtime loading
@@ -51,6 +57,13 @@ FlowBox/tile construction until the user switches to them. Do not let GTK
 model, hidden views, or FlowBox children grow with the full on-disk library;
 doing so drives GB-level memory use and blocks the main thread before the app
 is usable.
+
+Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
+`GtkFlowBox` can map most or all children in the current virtual page even when
+they are far below the visible area. The scan requests and priority-boosts
+tiles intersecting the viewport plus one viewport of overscan, which keeps
+visible thumbnails ahead of off-screen work while still making near-scroll
+content warm quickly.
 
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 

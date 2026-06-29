@@ -124,6 +124,41 @@ fn media_items_has_video_duration_column() {
 }
 
 #[test]
+fn live_media_page_query_uses_sort_index_without_temp_btree() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let pool = db::init_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let plan: Vec<String> = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 500 OFFSET 50000",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    let plan_text = plan.join("\n");
+
+    assert!(
+        plan_text.contains("idx_media_live_sort"),
+        "live media paging should use the expression sort index; plan:\n{plan_text}"
+    );
+    assert!(
+        !plan_text.contains("USE TEMP B-TREE"),
+        "live media paging must not sort large libraries into a temp B-tree; plan:\n{plan_text}"
+    );
+}
+
+#[test]
 fn migrations_are_idempotent() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");

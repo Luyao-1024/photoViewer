@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
@@ -99,6 +99,7 @@ struct PriItem {
     uri: String,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
+    enqueued_at: Instant,
     /// DB `media_items.id`（BACKGROUND 拉取时携带，供批量更新缩略图状态）。
     media_id: i64,
 }
@@ -137,6 +138,7 @@ struct QueuedEntry {
     uri: String,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
+    enqueued_at: Instant,
 }
 
 /// 优先级队列的可变状态。
@@ -320,14 +322,25 @@ impl ThumbnailLoader {
         reply: oneshot::Sender<LoadedThumb>,
         tier: u8,
     ) {
+        let requested_at = Instant::now();
         let Some(cache_key) = cache_key_str(&uri, size, mtime) else {
             // 源文件不存在 / 无法 stat：无法去重，按"生成失败"处理。
-            warn!("缩略图请求无法计算缓存键（源文件缺失?）: {}", uri);
+            warn!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING request_cache_key_failed uri={} size={:?}",
+                uri,
+                size
+            );
             return; // reply 被 drop → 调用方 rx 收到 Err
         };
         debug!(
-            "THUMB_TRACE request uri={} size={:?} supplied_mtime={:?} cache_key={}",
-            uri, size, mtime, cache_key
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_TIMING request_start uri={} size={:?} tier={} supplied_mtime={:?} cache_key={}",
+            uri,
+            size,
+            tier,
+            mtime,
+            cache_key
         );
 
         let mut st = match self.state.lock() {
@@ -337,8 +350,13 @@ impl ThumbnailLoader {
         // 1) 内存命中
         if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
             debug!(
-                "THUMB_TRACE mem_cache_hit uri={} size={:?} cache_key={}",
-                uri, size, cache_key
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING mem_cache_hit uri={} size={:?} tier={} elapsed_ms={} cache_key={}",
+                uri,
+                size,
+                tier,
+                requested_at.elapsed().as_millis(),
+                cache_key
             );
             drop(st);
             let _ = reply.send(loaded);
@@ -347,9 +365,12 @@ impl ThumbnailLoader {
         // 2) 已在途 → 挂载等待者，不再入队
         if let Some(waiters) = st.in_flight.get_mut(&cache_key) {
             debug!(
-                "THUMB_TRACE in_flight_join uri={} size={:?} cache_key={} waiters_before={}",
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING in_flight_join uri={} size={:?} tier={} elapsed_ms={} cache_key={} waiters_before={}",
                 uri,
                 size,
+                tier,
+                requested_at.elapsed().as_millis(),
                 cache_key,
                 waiters.len()
             );
@@ -384,6 +405,7 @@ impl ThumbnailLoader {
                         uri: uri.clone(),
                         size,
                         mtime,
+                        enqueued_at: requested_at,
                     },
                 );
                 q.heap.push(Reverse(PriItem {
@@ -393,6 +415,7 @@ impl ThumbnailLoader {
                     uri: uri.clone(),
                     size,
                     mtime,
+                    enqueued_at: requested_at,
                     media_id: 0,
                 }));
                 true
@@ -400,8 +423,15 @@ impl ThumbnailLoader {
         };
         if enqueued {
             debug!(
-                "THUMB_TRACE enqueued uri={} size={:?} cache_key={}",
-                uri, size, cache_key
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING enqueued uri={} size={:?} tier={} elapsed_ms={} queue_len={} in_flight={} cache_key={}",
+                uri,
+                size,
+                tier,
+                requested_at.elapsed().as_millis(),
+                self.queue_len(),
+                self.in_flight_len(),
+                cache_key
             );
             cvar.notify_one();
         } else {
@@ -409,7 +439,16 @@ impl ThumbnailLoader {
             if let Ok(mut st) = self.state.lock() {
                 st.in_flight.remove(&cache_key); // drop reply → 调用方 rx.Err
             }
-            warn!("缩略图请求入队失败（队列已满于不同项）: {}", cache_key);
+            warn!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING enqueue_failed uri={} size={:?} tier={} elapsed_ms={} queue_capacity={} cache_key={}",
+                uri,
+                size,
+                tier,
+                requested_at.elapsed().as_millis(),
+                self.queue_capacity,
+                cache_key
+            );
         }
     }
 
@@ -442,6 +481,7 @@ impl ThumbnailLoader {
             let uri = entry.uri.clone();
             let size = entry.size;
             let mtime = entry.mtime;
+            let enqueued_at = entry.enqueued_at;
             if let Some(e) = q.queued.get_mut(key) {
                 e.tier = TIER_BOOST;
             }
@@ -454,12 +494,18 @@ impl ThumbnailLoader {
                 uri,
                 size,
                 mtime,
+                enqueued_at,
                 media_id: 0,
             }));
             changed = true;
         }
         drop(q);
         if changed {
+            debug!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_TIMING reprioritize changed=true requested_keys={}",
+                keys.len()
+            );
             cvar.notify_all();
         }
     }
@@ -515,17 +561,32 @@ fn worker_loop(
     bg: Arc<BackgroundPullState>,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
+        let queue_wait_ms = req.enqueued_at.elapsed().as_millis();
+        let worker_started = Instant::now();
+        debug!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_TIMING worker_start uri={} size={:?} tier={} media_id={} queue_wait_ms={} cache_key={}",
+            req.uri,
+            req.size,
+            req.tier,
+            req.media_id,
+            queue_wait_ms,
+            req.cache_key
+        );
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
                 // BACKGROUND 拉取项：生成成功后立刻标记，避免小图库反复拉取同一行。
                 let generated_media_id =
                     (req.tier >= TIER_BACKGROUND && req.media_id != 0).then_some(req.media_id);
                 debug!(
-                    "THUMB_TRACE worker_generated uri={} size={:?} tier={} media_id={} cache_key={} texture={}x{}",
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING worker_done uri={} size={:?} tier={} media_id={} queue_wait_ms={} worker_ms={} cache_key={} texture={}x{}",
                     req.uri,
                     req.size,
                     req.tier,
                     req.media_id,
+                    queue_wait_ms,
+                    worker_started.elapsed().as_millis(),
                     req.cache_key,
                     pb.width(),
                     pb.height()
@@ -560,7 +621,16 @@ fn worker_loop(
                 if req.tier < TIER_BACKGROUND {
                     drop_in_flight(&state, &req.cache_key);
                 }
-                warn!("缩略图生成失败 {}: {}", req.uri, e);
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING worker_failed uri={} size={:?} tier={} queue_wait_ms={} worker_ms={} error={}",
+                    req.uri,
+                    req.size,
+                    req.tier,
+                    queue_wait_ms,
+                    worker_started.elapsed().as_millis(),
+                    e
+                );
             }
         }
     }
@@ -644,6 +714,7 @@ fn pull_next_needing_thumbnail(pool: &DbPool, bg: &BackgroundPullState) -> Optio
         uri: item.uri.clone(),
         size: ThumbnailSize::Medium,
         mtime,
+        enqueued_at: Instant::now(),
         media_id: item.id,
     })
 }
@@ -697,6 +768,7 @@ fn generate(
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<Pixbuf> {
+    let started = Instant::now();
     let (src_path, mtime) = resolve_src(uri, mtime)?;
     let key = format!("thumb-v2:{}{:?}", src_path.display(), mtime);
     let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
@@ -714,10 +786,12 @@ fn generate(
             continue;
         }
         info!(
-            "VIEWER_DEBUG thumb disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_TIMING disk_cache_hit source_uri={} source_path={} size={:?} elapsed_ms={} cache_path={}",
             uri,
             src_path.display(),
             size,
+            started.elapsed().as_millis(),
             cache_path.display()
         );
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
@@ -738,17 +812,44 @@ fn generate(
                 thumb
                     .savev(&cache_path, "jpeg", &[])
                     .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
+                info!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING video_generated source_uri={} source_path={} size={:?} elapsed_ms={} cache_path={}",
+                    uri,
+                    src_path.display(),
+                    size,
+                    started.elapsed().as_millis(),
+                    cache_path.display()
+                );
                 return Ok(thumb);
             }
             Err(e) => {
-                warn!("视频帧提取失败，回退占位图 {}: {}", src_path.display(), e);
-                return generate_video_placeholder(size.max_dim(), &cache_stem);
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING video_extract_failed source_uri={} source_path={} size={:?} elapsed_ms={} error={}",
+                    uri,
+                    src_path.display(),
+                    size,
+                    started.elapsed().as_millis(),
+                    e
+                );
+                let placeholder = generate_video_placeholder(size.max_dim(), &cache_stem)?;
+                info!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_TIMING video_placeholder_generated source_uri={} source_path={} size={:?} elapsed_ms={}",
+                    uri,
+                    src_path.display(),
+                    size,
+                    started.elapsed().as_millis()
+                );
+                return Ok(placeholder);
             }
         }
     }
 
     info!(
-        "VIEWER_DEBUG thumb generate source_uri={} source_path={} size={:?} cache_stem={}",
+        target: crate::core::log_targets::THUMBNAILS,
+        "THUMB_TIMING image_generate_start source_uri={} source_path={} size={:?} cache_stem={}",
         uri,
         src_path.display(),
         size,
@@ -758,7 +859,17 @@ fn generate(
     // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
     // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
     // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
-    generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)
+    let pixbuf = generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)?;
+    info!(
+        target: crate::core::log_targets::THUMBNAILS,
+        "THUMB_TIMING image_generated source_uri={} source_path={} size={:?} elapsed_ms={} cache_stem={}",
+        uri,
+        src_path.display(),
+        size,
+        started.elapsed().as_millis(),
+        cache_stem.display()
+    );
+    Ok(pixbuf)
 }
 
 fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
@@ -1503,6 +1614,7 @@ mod tests {
             uri: "u".into(),
             size: ThumbnailSize::Small,
             mtime: None,
+            enqueued_at: Instant::now(),
             media_id: 0,
         };
         // BOOST(tier0) < NORMAL(tier1)
@@ -1523,6 +1635,7 @@ mod tests {
                 uri: k.into(),
                 size: ThumbnailSize::Small,
                 mtime: None,
+                enqueued_at: Instant::now(),
                 media_id: 0,
             })
         };
