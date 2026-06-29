@@ -29,7 +29,7 @@ use crate::core::{
 };
 use crate::ui::album_picker;
 use crate::ui::empty_states;
-use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
+use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 use crate::ui::window::refresh_albums_sidebar;
@@ -216,18 +216,21 @@ impl PhotosPage {
                     .unwrap_or_default()
             })
         };
+        let callbacks = MediaGridCallbacks {
+            on_activate,
+            on_background_changed,
+            on_add_to_album,
+            on_move_to_trash,
+            on_set_favorite: on_favorite,
+            on_query_favorite_state,
+        };
 
         // Three independent MediaGrid instances — one per grouping mode.
         let year_grid = MediaGrid::new_with_initial_active(
             media_list.clone(),
             GroupBy::Year,
             loader.clone(),
-            on_activate.clone(),
-            on_background_changed.clone(),
-            on_add_to_album.clone(),
-            on_move_to_trash.clone(),
-            on_favorite.clone(),
-            on_query_favorite_state.clone(),
+            callbacks.clone(),
             true,
             false,
         );
@@ -235,12 +238,7 @@ impl PhotosPage {
             media_list.clone(),
             GroupBy::Month,
             loader.clone(),
-            on_activate.clone(),
-            on_background_changed.clone(),
-            on_add_to_album.clone(),
-            on_move_to_trash.clone(),
-            on_favorite.clone(),
-            on_query_favorite_state.clone(),
+            callbacks.clone(),
             true,
             false,
         );
@@ -248,12 +246,7 @@ impl PhotosPage {
             media_list,
             GroupBy::Day,
             loader,
-            on_activate,
-            on_background_changed,
-            on_add_to_album,
-            on_move_to_trash,
-            on_favorite,
-            on_query_favorite_state,
+            callbacks,
             true,
             true,
         );

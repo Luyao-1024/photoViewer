@@ -22,7 +22,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::section_model::GroupBy;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
-use photo_viewer::ui::media_grid::{FavoriteMenuState, MediaGrid};
+use photo_viewer::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 
 /// Build a minimal `MediaItem` good enough to pass through grouping.
 fn sample_item(id: i64, name: &str) -> MediaItem {
@@ -69,12 +69,14 @@ fn media_grid_flowbox_uses_8px_gaps() {
         media_list,
         GroupBy::Year,
         loader,
-        Rc::new(|_| {}),
-        Rc::new(|| {}),
-        Rc::new(|_| {}),
-        Rc::new(|_| {}),
-        Rc::new(|_, _| {}),
-        Rc::new(|_| FavoriteMenuState::default()),
+        MediaGridCallbacks {
+            on_activate: Rc::new(|_| {}),
+            on_background_changed: Rc::new(|| {}),
+            on_add_to_album: Rc::new(|_| {}),
+            on_move_to_trash: Rc::new(|_| {}),
+            on_set_favorite: Rc::new(|_, _| {}),
+            on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+        },
         false,
     );
 

@@ -15,7 +15,7 @@ use crate::core::db::DbPool;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
-use crate::ui::media_grid::{FavoriteMenuState, MediaGrid};
+use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -101,12 +101,14 @@ impl AlbumDetailPage {
                 media_list,
                 GroupBy::Day,
                 loader,
-                on_activate,
-                on_background_changed,
-                Rc::new(|_| {}),
-                Rc::new(|_| {}),
-                Rc::new(|_, _| {}),
-                Rc::new(|_| FavoriteMenuState::default()),
+                MediaGridCallbacks {
+                    on_activate,
+                    on_background_changed,
+                    on_add_to_album: Rc::new(|_| {}),
+                    on_move_to_trash: Rc::new(|_| {}),
+                    on_set_favorite: Rc::new(|_, _| {}),
+                    on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                },
                 false,
             );
             obj.imp().content_box.get().append(&grid);

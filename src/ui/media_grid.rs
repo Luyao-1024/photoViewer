@@ -88,6 +88,22 @@ pub struct FavoriteMenuState {
     pub can_unfavorite: bool,
 }
 
+pub type ActivateCallback = Rc<dyn Fn(u32)>;
+pub type SimpleCallback = Rc<dyn Fn()>;
+pub type SelectionCallback = Rc<dyn Fn(Vec<u32>)>;
+pub type FavoriteCallback = Rc<dyn Fn(Vec<u32>, bool)>;
+pub type FavoriteStateCallback = Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>;
+
+#[derive(Clone)]
+pub struct MediaGridCallbacks {
+    pub on_activate: ActivateCallback,
+    pub on_background_changed: SimpleCallback,
+    pub on_add_to_album: SelectionCallback,
+    pub on_move_to_trash: SelectionCallback,
+    pub on_set_favorite: FavoriteCallback,
+    pub on_query_favorite_state: FavoriteStateCallback,
+}
+
 mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -105,12 +121,12 @@ mod imp {
         pub dirty_model: Cell<bool>,
         pub media_list: RefCell<Option<gio::ListStore>>,
         pub loader: std::cell::OnceCell<Arc<ThumbnailLoader>>,
-        pub on_activate: std::cell::OnceCell<Rc<dyn Fn(u32)>>,
-        pub on_background_changed: std::cell::OnceCell<Rc<dyn Fn()>>,
-        pub on_add_to_album: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>)>>,
-        pub on_move_to_trash: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>)>>,
-        pub on_set_favorite: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>, bool)>>,
-        pub on_query_favorite_state: std::cell::OnceCell<Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>>,
+        pub on_activate: std::cell::OnceCell<ActivateCallback>,
+        pub on_background_changed: std::cell::OnceCell<SimpleCallback>,
+        pub on_add_to_album: std::cell::OnceCell<SelectionCallback>,
+        pub on_move_to_trash: std::cell::OnceCell<SelectionCallback>,
+        pub on_set_favorite: std::cell::OnceCell<FavoriteCallback>,
+        pub on_query_favorite_state: std::cell::OnceCell<FavoriteStateCallback>,
         /// Flattened `(flow_child, global_index)` for every rendered tile in
         /// current mode.
         pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32)>>,
@@ -404,24 +420,14 @@ impl MediaGrid {
         media_list: gtk::gio::ListStore,
         mode: GroupBy,
         loader: Arc<ThumbnailLoader>,
-        on_activate: Rc<dyn Fn(u32)>,
-        on_background_changed: Rc<dyn Fn()>,
-        on_add_to_album: Rc<dyn Fn(Vec<u32>)>,
-        on_move_to_trash: Rc<dyn Fn(Vec<u32>)>,
-        on_set_favorite: Rc<dyn Fn(Vec<u32>, bool)>,
-        on_query_favorite_state: Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>,
+        callbacks: MediaGridCallbacks,
         enable_context_menu: bool,
     ) -> Self {
         Self::new_with_initial_active(
             media_list,
             mode,
             loader,
-            on_activate,
-            on_background_changed,
-            on_add_to_album,
-            on_move_to_trash,
-            on_set_favorite,
-            on_query_favorite_state,
+            callbacks,
             enable_context_menu,
             true,
         )
@@ -431,12 +437,7 @@ impl MediaGrid {
         media_list: gtk::gio::ListStore,
         mode: GroupBy,
         loader: Arc<ThumbnailLoader>,
-        on_activate: Rc<dyn Fn(u32)>,
-        on_background_changed: Rc<dyn Fn()>,
-        on_add_to_album: Rc<dyn Fn(Vec<u32>)>,
-        on_move_to_trash: Rc<dyn Fn(Vec<u32>)>,
-        on_set_favorite: Rc<dyn Fn(Vec<u32>, bool)>,
-        on_query_favorite_state: Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>,
+        callbacks: MediaGridCallbacks,
         enable_context_menu: bool,
         initial_active: bool,
     ) -> Self {
@@ -450,32 +451,32 @@ impl MediaGrid {
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_activate
-            .set(on_activate)
+            .set(callbacks.on_activate)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_background_changed
-            .set(on_background_changed)
+            .set(callbacks.on_background_changed)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_add_to_album
-            .set(on_add_to_album)
+            .set(callbacks.on_add_to_album)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_move_to_trash
-            .set(on_move_to_trash)
+            .set(callbacks.on_move_to_trash)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_set_favorite
-            .set(on_set_favorite)
+            .set(callbacks.on_set_favorite)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp()
             .on_query_favorite_state
-            .set(on_query_favorite_state)
+            .set(callbacks.on_query_favorite_state)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp().enable_context_menu.set(enable_context_menu);
@@ -2360,6 +2361,17 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::path::PathBuf;
 
+    fn noop_callbacks() -> MediaGridCallbacks {
+        MediaGridCallbacks {
+            on_activate: Rc::new(|_| {}),
+            on_background_changed: Rc::new(|| {}),
+            on_add_to_album: Rc::new(|_| {}),
+            on_move_to_trash: Rc::new(|_| {}),
+            on_set_favorite: Rc::new(|_, _| {}),
+            on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+        }
+    }
+
     fn sample_item(id: i64, name: &str) -> MediaItem {
         let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
         MediaItem {
@@ -2431,12 +2443,7 @@ mod tests {
             media_list.clone(),
             GroupBy::Day,
             loader,
-            Rc::new(|_| {}),
-            Rc::new(|| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_, _| {}),
-            Rc::new(|_| FavoriteMenuState::default()),
+            noop_callbacks(),
             false,
         );
         assert_eq!(tile_count(&grid), 2);
@@ -2464,12 +2471,7 @@ mod tests {
             media_list,
             GroupBy::Month,
             loader,
-            Rc::new(|_| {}),
-            Rc::new(|| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_, _| {}),
-            Rc::new(|_| FavoriteMenuState::default()),
+            noop_callbacks(),
             false,
             false,
         );
@@ -2507,18 +2509,7 @@ mod tests {
         media_list.append(&glib::BoxedAnyObject::new(one));
         media_list.append(&glib::BoxedAnyObject::new(two));
 
-        let grid = MediaGrid::new(
-            media_list,
-            GroupBy::Day,
-            loader,
-            Rc::new(|_| {}),
-            Rc::new(|| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_| {}),
-            Rc::new(|_, _| {}),
-            Rc::new(|_| FavoriteMenuState::default()),
-            false,
-        );
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
 
         let stats_label = grid
             .imp()
