@@ -18,6 +18,7 @@ use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
+use crate::core::identity::MediaId;
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::section_model::GroupBy;
@@ -168,11 +169,11 @@ impl PhotosPage {
         let is_empty = media_list.n_items() == 0;
         let media_list_for_empty_state = media_list.clone();
 
-        let on_activate: Rc<dyn Fn(u32)> = {
+        let on_activate: Rc<dyn Fn(MediaId)> = {
             let weak = obj.downgrade();
-            Rc::new(move |global_index| {
+            Rc::new(move |media_id| {
                 if let Some(this) = weak.upgrade() {
-                    this.open_viewer(global_index);
+                    this.open_viewer(media_id);
                 }
             })
         };
@@ -867,7 +868,7 @@ impl PhotosPage {
         self.imp().delete_to_trash_btn.get().set_visible(false);
     }
 
-    fn open_viewer(&self, global_index: u32) {
+    fn open_viewer(&self, media_id: MediaId) {
         if self.imp().viewer_open_pending.get() {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
@@ -901,6 +902,14 @@ impl PhotosPage {
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
+        };
+        let Some(global_index) = index_for_media_id(&media_list, media_id) else {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "PhotosPage: ignoring viewer activation for media_id={} because it is not in the current window",
+                media_id.get()
+            );
+            return;
         };
         let displayed_indices = self
             .current_grid()
@@ -949,7 +958,7 @@ impl PhotosPage {
                 displayed_indices.len()
             );
         }
-        let viewer_debug_label = format!("viewer-open-index-{global_index}");
+        let viewer_debug_label = format!("viewer-open-id-{}", media_id.get());
         nav.connect_visible_page_notify({
             let label = viewer_debug_label.clone();
             move |nav| {
@@ -1079,6 +1088,21 @@ fn media_item_for_index(
     Some(item)
 }
 
+fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
+    for index in 0..media_list.n_items() {
+        let Some(obj) = media_list.item(index) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<crate::core::media::MediaItem>().id == media_id.get() {
+            return Some(index);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1121,8 +1145,8 @@ mod tests {
         page.set_nav_target(&nav);
         nav.push(&page);
 
-        page.open_viewer(0);
-        page.open_viewer(0);
+        page.open_viewer(MediaId::from(1));
+        page.open_viewer(MediaId::from(1));
 
         assert_eq!(
             nav.navigation_stack().n_items(),

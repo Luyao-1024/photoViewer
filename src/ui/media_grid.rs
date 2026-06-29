@@ -61,6 +61,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::runtime_config;
 use crate::core::section_model::{group_items, GroupBy};
@@ -88,7 +89,7 @@ pub struct FavoriteMenuState {
     pub can_unfavorite: bool,
 }
 
-pub type ActivateCallback = Rc<dyn Fn(u32)>;
+pub type ActivateCallback = Rc<dyn Fn(MediaId)>;
 pub type SimpleCallback = Rc<dyn Fn()>;
 pub type SelectionCallback = Rc<dyn Fn(Vec<u32>)>;
 pub type FavoriteCallback = Rc<dyn Fn(Vec<u32>, bool)>;
@@ -414,8 +415,8 @@ fn build_virtual_placeholder_flow(spec: ViewSpec, count: u32) -> gtk::FlowBox {
 
 impl MediaGrid {
     /// Build a MediaGrid that immediately renders `(media_list, mode)`.
-    /// `on_activate` fires with the photo's global index in `media_list`
-    /// when the user activates a photo (click without modifier).
+    /// `on_activate` fires with the activated photo's stable media id when
+    /// the user activates a photo (click without modifier).
     pub fn new(
         media_list: gtk::gio::ListStore,
         mode: GroupBy,
@@ -1332,11 +1333,15 @@ impl MediaGrid {
                     photo_count += 1;
                 }
 
-                // Activation: FlowBox child-activated → look up global index.
+                // Activation: FlowBox child-activated → look up stable media id.
                 // Only explicit multi-select mode (entered via right-click “Multi-select”)
                 // toggles selection; otherwise the item opens in viewer.
                 let on_act = on_activate.clone();
                 let weak = self.downgrade();
+                let media_ids_for_activation: Vec<MediaId> = activation_items
+                    .iter()
+                    .map(|(id, _, _)| MediaId::from(*id))
+                    .collect();
                 let global_indices_for_activation = global_indices.clone();
                 let global_indices_for_context = global_indices;
                 let section_label_for_activation = section.label.clone();
@@ -1345,9 +1350,13 @@ impl MediaGrid {
                 if idx < 0 {
                     return;
                 }
-                let Some(&gi) = global_indices_for_activation.get(idx as usize) else {
+                let Some(&media_id) = media_ids_for_activation.get(idx as usize) else {
                     return;
                 };
+                let gi = global_indices_for_activation
+                    .get(idx as usize)
+                    .copied()
+                    .unwrap_or(u32::MAX);
                 let (item_id, item_name, item_uri) = activation_items
                     .get(idx as usize)
                     .map(|(id, name, uri)| (*id, name.as_str(), uri.as_str()))
@@ -1378,7 +1387,7 @@ impl MediaGrid {
                     // `flow` comes from the signal arg, no extra upgrade needed.
                     this.toggle_selection(gi, child, flow);
                 } else {
-                    on_act(gi);
+                    on_act(media_id);
                 }
             });
 
