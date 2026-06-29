@@ -4,6 +4,7 @@
 //! headlessly (no GTK window required). The list store is the single
 //! data source backing the three `MediaGrid` instances on `PhotosPage`.
 
+use crate::core::events::{ChangeSource, DomainEvent};
 use crate::core::media::MediaItem;
 use crate::core::media_change_notifier::{MediaChangeEvent, MediaChangeSource};
 use crate::core::runtime_config;
@@ -41,6 +42,33 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: MediaChangeEvent) 
         // TrashChanged 不影响 live 相册列表（回收站视图自己监听该事件刷新）。
         // 此 arm 仅为穷尽匹配；正常调用方在分发前已把 TrashChanged 单独处理。
         MediaChangeEvent::TrashChanged => {}
+    }
+}
+
+pub fn apply_domain_event_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
+    match event {
+        DomainEvent::MediaUpserted { source, items } => {
+            let source = match source {
+                ChangeSource::StartupScan => MediaChangeSource::StartupScan,
+                ChangeSource::UserInteractive => MediaChangeSource::UserInteractive,
+                ChangeSource::FilesystemWatcher
+                | ChangeSource::TrashReconcile
+                | ChangeSource::ThumbnailWorker => MediaChangeSource::Watcher,
+            };
+            apply_upserted_batch(list, source, items.clone());
+        }
+        DomainEvent::MediaUpdated { items, .. } => {
+            apply_upserted_batch(list, MediaChangeSource::UserInteractive, items.clone());
+        }
+        DomainEvent::MediaRemoved { uris, .. } => {
+            for uri in uris {
+                apply_to_media_list(list, MediaChangeEvent::Removed { uri: uri.clone() });
+            }
+        }
+        DomainEvent::TrashChanged { .. }
+        | DomainEvent::AlbumsDirty { .. }
+        | DomainEvent::ThumbnailStatsDirty
+        | DomainEvent::LiveCountDirty => {}
     }
 }
 

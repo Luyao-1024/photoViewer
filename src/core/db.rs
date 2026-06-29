@@ -342,13 +342,24 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
 /// 已生成缩略图的媒体项总数。
 pub fn count_thumbnail_generated(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL AND thumbnail_generated_at IS NOT NULL",
-            [],
-            |row| row.get(0),
-        )?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+             WHERE trashed_at IS NULL
+               AND thumbnail_generated_at IS NOT NULL
+               AND thumbnail_generated_at >= file_mtime",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(count as usize)
+}
+
+pub fn set_thumbnail_generated_at_for_tests(pool: &DbPool, id: i64, timestamp: i64) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute(
+        "UPDATE media_items SET thumbnail_generated_at = ?1 WHERE id = ?2",
+        rusqlite::params![timestamp, id],
+    )?;
+    Ok(())
 }
 
 /// 分页列出需要生成缩略图的非回收站项。

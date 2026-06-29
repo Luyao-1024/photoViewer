@@ -17,7 +17,7 @@ use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
 use crate::core::prefs;
-use crate::core::repository::MediaQuery;
+use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
@@ -175,6 +175,8 @@ mod imp {
     pub struct ViewerPage {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub current_index: Cell<u32>,
+        pub current_media_id: Cell<i64>,
+        pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
         /// Cumulative zoom scale (1.0 = identity). GestureZoom multiplies into it.
@@ -343,6 +345,16 @@ impl ViewerPage {
         obj.set_title(&tr("page.viewer.title"));
         *obj.imp().media_list.borrow_mut() = Some(media_list);
         obj.imp().current_index.set(index);
+        if let Some(item) = crate::ui::media_list::media_item_at(
+            obj.imp()
+                .media_list
+                .borrow()
+                .as_ref()
+                .expect("media_list just set"),
+            index,
+        ) {
+            obj.imp().current_media_id.set(item.id);
+        }
         obj.imp().zoom_scale.set(MIN_VIEWER_ZOOM);
         obj.imp().zoom_gesture_origin_scale.set(MIN_VIEWER_ZOOM);
         obj.apply_i18n();
@@ -364,12 +376,15 @@ impl ViewerPage {
     }
 
     pub fn new_for_query(
-        _query: MediaQuery,
+        query: MediaQuery,
         current_id: MediaId,
         initial_items: gtk::gio::ListStore,
     ) -> Self {
         let index = index_for_media_id(&initial_items, current_id).unwrap_or(0);
-        Self::new(initial_items, index)
+        let obj = Self::new(initial_items, index);
+        obj.imp().current_media_id.set(current_id.get());
+        *obj.imp().media_query.borrow_mut() = Some(query);
+        obj
     }
 
     fn apply_i18n(&self) {
@@ -449,6 +464,66 @@ impl ViewerPage {
         if let Some(cb) = cb {
             cb(delta);
         }
+    }
+
+    fn navigate_by_delta(&self, delta: NavDelta) {
+        if delta == NAV_POP {
+            self.fire_nav(delta);
+            return;
+        }
+
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            self.fire_nav(delta);
+            return;
+        };
+        let Some(query) = self.imp().media_query.borrow().clone() else {
+            self.fire_nav(delta);
+            return;
+        };
+        let current_id = self.imp().current_media_id.get();
+        if current_id == 0 {
+            self.fire_nav(delta);
+            return;
+        }
+
+        let weak = self.downgrade();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        gio::spawn_blocking(move || {
+            let repo = MediaRepository::new(pool);
+            let result = repo.neighbor(query, MediaId::from(current_id), delta);
+            let _ = tx.send(result);
+        });
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(Some(neighbor)) => {
+                    let index = this.ensure_media_item_in_window(neighbor.item);
+                    this.show_at(index);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!("ViewerPage: repository navigation failed: {err}");
+                    this.fire_nav(delta);
+                }
+            }
+        });
+    }
+
+    fn ensure_media_item_in_window(&self, item: MediaItem) -> u32 {
+        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return 0;
+        };
+        if let Some(index) = find_media_index_by_id(&list, item.id) {
+            return index;
+        }
+        let index = list.n_items();
+        list.append(&glib::BoxedAnyObject::new(item));
+        index
     }
 
     /// Wire the Edit button: configure the embedded `EditorPanel` for the
@@ -960,9 +1035,7 @@ impl ViewerPage {
         }
     }
 
-    /// Wire the `<` / `>` filmstrip navigation buttons. They delegate to
-    /// `fire_nav(±1)` so the host's navigation callback handles the actual
-    /// index advance, exactly like keyboard arrow keys.
+    /// Wire the `<` / `>` viewer navigation buttons.
     fn setup_nav_buttons(&self) {
         let imp = self.imp();
         imp.prev_btn
@@ -975,13 +1048,13 @@ impl ViewerPage {
         let weak = self.downgrade();
         imp.prev_btn.get().connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
-                this.fire_nav(-1);
+                this.navigate_by_delta(-1);
             }
         });
         let weak = self.downgrade();
         imp.next_btn.get().connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
-                this.fire_nav(1);
+                this.navigate_by_delta(1);
             }
         });
     }
@@ -1496,7 +1569,7 @@ impl ViewerPage {
             if let Some(this) = weak.upgrade() {
                 let delta = idx as i32 - this.current_index() as i32;
                 if delta != 0 {
-                    this.fire_nav(delta);
+                    this.navigate_by_delta(delta);
                 }
             }
         });
@@ -2010,6 +2083,7 @@ impl ViewerPage {
         let Some(item) = self.current_media_item() else {
             return;
         };
+        self.imp().current_media_id.set(item.id);
         self.set_title(item.display_name());
         self.sync_favorite_state(item.id);
         tracing::debug!(
@@ -2240,7 +2314,7 @@ impl ViewerPage {
                     if this.imp().is_editing.get() {
                         return glib::Propagation::Stop;
                     }
-                    this.fire_nav(1);
+                    this.navigate_by_delta(1);
                 }
                 glib::Propagation::Proceed
             }
@@ -2249,7 +2323,7 @@ impl ViewerPage {
                     if this.imp().is_editing.get() {
                         return glib::Propagation::Stop;
                     }
-                    this.fire_nav(-1);
+                    this.navigate_by_delta(-1);
                 }
                 glib::Propagation::Proceed
             }

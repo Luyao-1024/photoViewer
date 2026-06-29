@@ -54,44 +54,6 @@ pub enum DomainEvent {
     LiveCountDirty,
 }
 
-impl DomainEvent {
-    pub fn from_media_change(event: &crate::core::media_change_notifier::MediaChangeEvent) -> Self {
-        use crate::core::media_change_notifier::MediaChangeEvent;
-        match event {
-            MediaChangeEvent::Upserted(item) => Self::MediaUpserted {
-                source: ChangeSource::FilesystemWatcher,
-                items: vec![(**item).clone()],
-            },
-            MediaChangeEvent::UpsertedBatch { source, items } => Self::MediaUpserted {
-                source: (*source).into(),
-                items: items.clone(),
-            },
-            MediaChangeEvent::Removed { uri } => Self::MediaRemoved {
-                source: ChangeSource::FilesystemWatcher,
-                ids: Vec::new(),
-                uris: vec![uri.clone()],
-            },
-            MediaChangeEvent::TrashChanged => Self::TrashChanged {
-                source: ChangeSource::TrashReconcile,
-            },
-        }
-    }
-}
-
-impl From<crate::core::media_change_notifier::MediaChangeSource> for ChangeSource {
-    fn from(source: crate::core::media_change_notifier::MediaChangeSource) -> Self {
-        match source {
-            crate::core::media_change_notifier::MediaChangeSource::StartupScan => Self::StartupScan,
-            crate::core::media_change_notifier::MediaChangeSource::UserInteractive => {
-                Self::UserInteractive
-            }
-            crate::core::media_change_notifier::MediaChangeSource::Watcher => {
-                Self::FilesystemWatcher
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct DomainEventSender {
     tx: mpsc::UnboundedSender<DomainEvent>,

@@ -2,13 +2,13 @@
 //!
 //! 启动一个阻塞线程，监听指定路径下的文件变化（创建 / 修改 / 删除 / 重命名）。
 //! 当事件命中受支持的图片扩展名时，调用 [`LocalBackend::upsert_from_path`] 把最新
-//! 的元数据写回 SQLite，并通过 [`MediaChangeNotifier`] 把"哪个 MediaItem 变了"
-//! 推给 GTK 主线程的消费者（消费者负责把变更同步到 `media_list`）。
+//! 的元数据写回 SQLite，并通过 [`MediaChangeNotifier`] 发出 domain event
+//! 给 GTK 主线程消费者（消费者负责把变更同步到 `media_list`）。
 //!
 //! 除了相册目录，还会监听**系统回收站根**：外部（文件管理器）对回收站的操作
 //!（还原 / 清空 / 从回收站删除）只动回收站目录、不动相册目录，必须单独监听才能
 //! 实时感知。回收站事件经防抖合并后跑一次 [`trash::reconcile_trash`]，并广播
-//! [`MediaChangeEvent::TrashChanged`]，让可见的回收站页面实时刷新。
+//! [`crate::core::events::DomainEvent::TrashChanged`]，让可见的回收站页面实时刷新。
 //!
 //! 该模块与 [`crate::core::backend::scan_worker`] 互补：
 //!   - `scan_worker` 在启动时做全量扫描；
@@ -241,8 +241,8 @@ fn handle_event(
 mod tests {
     use super::*;
     use crate::core::db;
+    use crate::core::events::DomainEvent;
     use crate::core::media::NewMediaItem;
-    use crate::core::media_change_notifier::MediaChangeEvent;
     use chrono::Utc;
     use notify::{event::RemoveKind, Event};
 
@@ -288,7 +288,7 @@ mod tests {
 
         assert!(db::list_all_media(&pool).unwrap().is_empty());
         match rx.try_recv() {
-            Ok(MediaChangeEvent::Removed { uri: received }) => assert_eq!(received, uri),
+            Ok(DomainEvent::MediaRemoved { uris, .. }) => assert_eq!(uris, vec![uri]),
             other => panic!("expected Removed, got {other:?}"),
         }
     }
@@ -335,7 +335,7 @@ mod tests {
 
         assert!(db::list_all_media(&pool).unwrap().is_empty());
         match rx.try_recv() {
-            Ok(MediaChangeEvent::Removed { uri: received }) => assert_eq!(received, uri),
+            Ok(DomainEvent::MediaRemoved { uris, .. }) => assert_eq!(uris, vec![uri]),
             other => panic!("expected Removed for video, got {other:?}"),
         }
     }

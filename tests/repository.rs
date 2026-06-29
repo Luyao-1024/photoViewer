@@ -1,8 +1,9 @@
 mod common;
 
 use chrono::{TimeZone, Utc};
+use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::NewMediaItem;
-use photo_viewer::core::repository::{MediaQuery, MediaRepository};
+use photo_viewer::core::repository::{MediaNeighbor, MediaQuery, MediaRepository};
 
 fn item(id_name: &str, ts: i64) -> NewMediaItem {
     let path = std::path::PathBuf::from(format!("/tmp/{id_name}.jpg"));
@@ -88,4 +89,56 @@ fn repository_upsert_batch_returns_changed_items() {
     assert_eq!(mutation.changed_items.len(), 2);
     assert_eq!(mutation.changed_items[0].uri, "file:///tmp/a.jpg");
     assert_eq!(mutation.changed_items[1].uri, "file:///tmp/b.jpg");
+}
+
+#[test]
+fn repository_library_stats_counts_only_current_generated_thumbnails() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-stats.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("fresh", 30), item("stale", 20), item("missing", 10)],
+    )
+    .unwrap();
+    photo_viewer::core::db::mark_thumbnails_generated(&pool, &[inserted[0].id]).unwrap();
+    photo_viewer::core::db::set_thumbnail_generated_at_for_tests(&pool, inserted[1].id, 1).unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let stats = repo.library_stats().unwrap();
+
+    assert_eq!(stats.live_total, 3);
+    assert_eq!(stats.thumbnails_generated, 1);
+}
+
+#[test]
+fn repository_neighbor_returns_adjacent_media_for_live_query_order() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-neighbor.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("old", 10), item("middle", 20), item("new", 30)],
+    )
+    .unwrap();
+    let repo = MediaRepository::new(pool);
+
+    let neighbor = repo
+        .neighbor(MediaQuery::LiveAll, MediaId::from(inserted[1].id), 1)
+        .unwrap();
+
+    assert!(matches!(
+        neighbor,
+        Some(MediaNeighbor {
+            index: 2,
+            total: 3,
+            ..
+        })
+    ));
+    assert_eq!(neighbor.unwrap().item.uri, "file:///tmp/old.jpg");
+
+    let neighbor = repo
+        .neighbor(MediaQuery::LiveAll, MediaId::from(inserted[1].id), -1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(neighbor.index, 0);
+    assert_eq!(neighbor.item.uri, "file:///tmp/new.jpg");
 }

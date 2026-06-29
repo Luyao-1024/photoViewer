@@ -2,6 +2,7 @@ use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::refresh::LibraryStats;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,14 @@ pub struct MediaMutation {
     pub changed_ids: Vec<MediaId>,
     pub changed_items: Vec<MediaItem>,
     pub removed_uris: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MediaNeighbor {
+    pub query: MediaQuery,
+    pub index: u32,
+    pub total: u32,
+    pub item: MediaItem,
 }
 
 #[derive(Clone)]
@@ -86,6 +95,45 @@ impl MediaRepository {
             total,
             items,
         })
+    }
+
+    pub fn library_stats(&self) -> Result<LibraryStats> {
+        Ok(LibraryStats {
+            live_total: db::count_live_media(&self.pool)?,
+            thumbnails_generated: db::count_thumbnail_generated(&self.pool)?,
+        })
+    }
+
+    pub fn neighbor(
+        &self,
+        query: MediaQuery,
+        current_id: MediaId,
+        delta: i32,
+    ) -> Result<Option<MediaNeighbor>> {
+        if delta == 0 {
+            return Ok(None);
+        }
+
+        let page = self.page(query.clone(), 0, u32::MAX)?;
+        let Some(current_index) = page
+            .items
+            .iter()
+            .position(|item| item.id == current_id.get())
+        else {
+            return Ok(None);
+        };
+        let target_index = current_index as i64 + delta as i64;
+        if target_index < 0 || target_index >= page.items.len() as i64 {
+            return Ok(None);
+        }
+        let index = target_index as u32;
+        let item = page.items[index as usize].clone();
+        Ok(Some(MediaNeighbor {
+            query,
+            index,
+            total: page.total,
+            item,
+        }))
     }
 
     pub fn favorite_state(&self, ids: &[MediaId]) -> Result<FavoriteSummary> {

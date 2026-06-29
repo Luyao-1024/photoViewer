@@ -14,6 +14,7 @@ use crate::core::albums::Album;
 use crate::core::db::DbPool;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
+use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
@@ -101,7 +102,7 @@ impl AlbumDetailPage {
                         let Some(index) = index_for_media_id(&media_list, media_id) else {
                             return;
                         };
-                        this.open_viewer(index);
+                        this.open_viewer(media_id, index);
                     }
                 })
             };
@@ -140,7 +141,7 @@ impl AlbumDetailPage {
             .map(|album| album.folder_path.clone())
     }
 
-    fn open_viewer(&self, global_index: u32) {
+    fn open_viewer(&self, media_id: MediaId, global_index: u32) {
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
@@ -150,7 +151,14 @@ impl AlbumDetailPage {
             None => return,
         };
 
-        let viewer = ViewerPage::new(media_list, global_index);
+        let query = self
+            .imp()
+            .album
+            .borrow()
+            .as_ref()
+            .map(|album| MediaQuery::AlbumFolder(album.folder_path.clone()))
+            .unwrap_or(MediaQuery::LiveAll);
+        let viewer = ViewerPage::new_for_query(query, media_id, media_list);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool.clone());
             let is_favorite_album = self

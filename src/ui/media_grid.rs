@@ -63,6 +63,7 @@ use gtk4::subclass::prelude::*;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
+use crate::core::repository::MediaRepository;
 use crate::core::runtime_config;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
@@ -81,6 +82,18 @@ fn library_stats_text(total_media: usize, generated: usize) -> String {
         generated.min(total_media),
         total_media
     )
+}
+
+fn library_stats_for(
+    loader: &ThumbnailLoader,
+    fallback_total: usize,
+) -> crate::core::refresh::LibraryStats {
+    MediaRepository::new(loader.pool().clone())
+        .library_stats()
+        .unwrap_or(crate::core::refresh::LibraryStats {
+            live_total: fallback_total,
+            thumbnails_generated: 0,
+        })
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1203,9 +1216,12 @@ impl MediaGrid {
         let total_media = total_media_count as usize;
         if loading_placeholder_count > 0 {
             if mode == GroupBy::Day && !stats_emitted.replace(true) {
-                let generated = loader.generated_count();
+                let stats = library_stats_for(&loader, total_media);
                 let stats_label = gtk::Label::builder()
-                    .label(library_stats_text(total_media, generated))
+                    .label(library_stats_text(
+                        stats.live_total,
+                        stats.thumbnails_generated,
+                    ))
                     .halign(gtk::Align::Center)
                     .hexpand(true)
                     .margin_bottom(14)
@@ -1253,9 +1269,12 @@ impl MediaGrid {
 
                 // Day 视图：第一组 header 下方插入库统计栏
                 if mode == GroupBy::Day && !stats_emitted.replace(true) {
-                    let generated = loader.generated_count();
+                    let stats = library_stats_for(&loader, total_media);
                     let stats_label = gtk::Label::builder()
-                        .label(library_stats_text(total_media, generated))
+                        .label(library_stats_text(
+                            stats.live_total,
+                            stats.thumbnails_generated,
+                        ))
                         .halign(gtk::Align::Center)
                         .hexpand(true)
                         .margin_bottom(14)
@@ -1706,13 +1725,16 @@ impl MediaGrid {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let generated = loader.generated_count();
+            let stats = library_stats_for(&loader, total_media);
             if let Some(label) = this.imp().stats_label.borrow().as_ref() {
-                label.set_label(&library_stats_text(total_media, generated));
+                label.set_label(&library_stats_text(
+                    stats.live_total,
+                    stats.thumbnails_generated,
+                ));
             } else {
                 return glib::ControlFlow::Break;
             }
-            if generated >= total_media {
+            if stats.thumbnails_generated >= stats.live_total {
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue

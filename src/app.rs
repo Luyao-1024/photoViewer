@@ -111,12 +111,7 @@ pub fn build_app() -> adw::Application {
                     gtk::glib::MainContext::default().spawn_local(async move {
                         let mut rx = change_rx;
                         while let Some(event) = rx.recv().await {
-                            let domain_event =
-                                crate::core::events::DomainEvent::from_media_change(&event);
-                            use crate::core::media_change_notifier::{
-                                MediaChangeEvent, MediaChangeSource,
-                            };
-                            match domain_event {
+                            match &event {
                                 crate::core::events::DomainEvent::TrashChanged { .. } => {
                                     if let Some(window) = window_for_consumer.upgrade() {
                                         window.refresh_visible_trash_page();
@@ -124,27 +119,53 @@ pub fn build_app() -> adw::Application {
                                     album_refresh.mark_albums_dirty_async();
                                 }
                                 _ => {
-                                    let other = event;
                                     let is_startup_scan_batch = matches!(
-                                        &other,
-                                        MediaChangeEvent::UpsertedBatch {
-                                            source: MediaChangeSource::StartupScan,
+                                        &event,
+                                        crate::core::events::DomainEvent::MediaUpserted {
+                                            source: crate::core::events::ChangeSource::StartupScan,
                                             ..
                                         }
                                     );
-                                    let event_label = match &other {
-                                        MediaChangeEvent::Upserted(_) => "upserted".to_string(),
-                                        MediaChangeEvent::UpsertedBatch { source, items } => {
-                                            format!("upserted_batch({source:?}, {})", items.len())
+                                    let event_label = match &event {
+                                        crate::core::events::DomainEvent::MediaUpserted {
+                                            source,
+                                            items,
+                                        } => {
+                                            format!("media_upserted({source:?}, {})", items.len())
                                         }
-                                        MediaChangeEvent::Removed { .. } => "removed".to_string(),
-                                        MediaChangeEvent::TrashChanged => "trash_changed".to_string(),
+                                        crate::core::events::DomainEvent::MediaRemoved {
+                                            uris,
+                                            ..
+                                        } => {
+                                            format!("media_removed({})", uris.len())
+                                        }
+                                        crate::core::events::DomainEvent::MediaUpdated {
+                                            source,
+                                            items,
+                                            ..
+                                        } => {
+                                            format!("media_updated({source:?}, {})", items.len())
+                                        }
+                                        crate::core::events::DomainEvent::TrashChanged { .. } => {
+                                            "trash_changed".to_string()
+                                        }
+                                        crate::core::events::DomainEvent::AlbumsDirty {
+                                            source,
+                                        } => {
+                                            format!("albums_dirty({source:?})")
+                                        }
+                                        crate::core::events::DomainEvent::ThumbnailStatsDirty => {
+                                            "thumbnail_stats_dirty".to_string()
+                                        }
+                                        crate::core::events::DomainEvent::LiveCountDirty => {
+                                            "live_count_dirty".to_string()
+                                        }
                                     };
                                     let list_len_before = media_list.n_items();
                                     let apply_started = std::time::Instant::now();
-                                    crate::ui::apply_to_media_list::apply_to_media_list(
+                                    crate::ui::apply_to_media_list::apply_domain_event_to_media_list(
                                         &media_list,
-                                        other,
+                                        &event,
                                     );
                                     tracing::info!(
                                         target: crate::core::log_targets::BROWSING,
@@ -186,7 +207,7 @@ async fn initialize() -> anyhow::Result<(
     gtk::gio::ListStore,
     Arc<ThumbnailLoader>,
     DbPool,
-    tokio::sync::mpsc::UnboundedReceiver<crate::core::media_change_notifier::MediaChangeEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
 )> {
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;

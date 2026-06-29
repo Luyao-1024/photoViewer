@@ -157,6 +157,8 @@ struct QueueState {
 /// 队列 + 唤醒条件变量。worker（spawn_blocking OS 线程）在 `cvar` 上阻塞等待，
 /// 故用 **std `Condvar`**（不是 tokio 的——它需要 reactor，而 worker 不 `.await`）。
 type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
+type StatsDirtyCallback = Arc<dyn Fn() + Send + Sync>;
+type SharedStatsDirtyCallback = Arc<Mutex<Option<StatsDirtyCallback>>>;
 
 /// 加载器的可变缓存状态，用单一 Mutex 保护。
 ///
@@ -195,7 +197,7 @@ pub struct ThumbnailLoader {
     queue: SharedQueue,
     state: Arc<Mutex<LoaderState>>,
     background_pull: Arc<BackgroundPullState>,
-    stats_dirty_callback: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    stats_dirty_callback: SharedStatsDirtyCallback,
 }
 
 impl ThumbnailLoader {
@@ -263,7 +265,7 @@ impl ThumbnailLoader {
         crate::core::db::count_thumbnail_generated(&self.pool).unwrap_or(0)
     }
 
-    pub fn set_stats_dirty_callback(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+    pub fn set_stats_dirty_callback(&self, callback: StatsDirtyCallback) {
         if let Ok(mut slot) = self.stats_dirty_callback.lock() {
             *slot = Some(callback);
         }
@@ -568,7 +570,7 @@ fn worker_loop(
     cache_dir: PathBuf,
     state: Arc<Mutex<LoaderState>>,
     bg: Arc<BackgroundPullState>,
-    stats_dirty_callback: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
         let queue_wait_ms = req.enqueued_at.elapsed().as_millis();

@@ -6,11 +6,11 @@ The viewer module covers the full media view, top overlay toolbar, left/right na
 
 Viewer entry points are migrating to stable media identity. New call paths
 should open a viewer with a `MediaQuery` plus `MediaId` and an initial visible
-window, not with a long-lived "global index". During migration,
-`ViewerPage::new_for_query` resolves the id inside the current window and then
-uses the existing index-based internals; future navigation work should ask the
-repository for neighboring items when the viewer moves beyond the loaded
-window.
+window, not with a long-lived "global index". `ViewerPage::new_for_query`
+stores that query and id; left/right navigation uses
+`MediaRepository::neighbor()` to find adjacent media, then syncs the local
+viewer window by id. The current `ListStore` index remains an internal render
+cursor only.
 
 ## Key Files
 
