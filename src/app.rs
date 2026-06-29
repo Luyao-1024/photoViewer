@@ -3,6 +3,7 @@ use crate::core::db::DbPool;
 use crate::core::error::Result as CoreResult;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
+use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::apply_to_media_list::ui_media_list_cap;
 use crate::ui::{MainWindow, PhotosPage};
@@ -14,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 static TOKIO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-const INITIAL_MEDIA_PAGE_SIZE: u32 = 500;
 
 fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
     TOKIO.get_or_init(|| {
@@ -210,20 +210,16 @@ async fn initialize() -> anyhow::Result<(
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("photos.db");
-    let (pool, items) = initialize_db_once_with_retry(db_path.clone()).await?;
+    let initial_media_page_size = runtime_config::initial_media_page_size();
+    let (pool, items) =
+        initialize_db_once_with_retry(db_path.clone(), initial_media_page_size).await?;
 
     // 缩略图加载器单例（M2-T1）
     let thumbnail_loader = Arc::new(ThumbnailLoader::new(
         pool.clone(),
         crate::config::cache_dir(),
     ));
-    // worker 数随核数取（夹在 [4, 8]）：太少首屏填不满，太多与扫描/主线程争抢
-    // 且磁盘 IO 边际递减。解码是 CPU 密集突发，冷启动/滚动时才吃满。
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(4, 8);
-    thumbnail_loader.spawn_workers(workers);
+    thumbnail_loader.spawn_workers(runtime_config::thumbnail_worker_count());
 
     let pictures = crate::config::pictures_dir();
     let media_roots = crate::config::media_roots();
@@ -255,7 +251,7 @@ async fn initialize() -> anyhow::Result<(
         "STARTUP_INITIAL_PAGE list_len={} cap={} page_size={}",
         list.n_items(),
         ui_media_list_cap(),
-        INITIAL_MEDIA_PAGE_SIZE
+        initial_media_page_size
     );
     start_background_startup_work(
         pool.clone(),
@@ -263,7 +259,7 @@ async fn initialize() -> anyhow::Result<(
         pictures,
         notifier.clone(),
         list.clone(),
-        INITIAL_MEDIA_PAGE_SIZE,
+        initial_media_page_size,
         thumbnail_loader.clone(),
     );
 
@@ -272,16 +268,22 @@ async fn initialize() -> anyhow::Result<(
     Ok((list, thumbnail_loader, pool, change_rx))
 }
 
-fn initialize_db_once_blocking(path: PathBuf) -> CoreResult<(DbPool, Vec<MediaItem>)> {
+fn initialize_db_once_blocking(
+    path: PathBuf,
+    page_size: u32,
+) -> CoreResult<(DbPool, Vec<MediaItem>)> {
     let pool = init_pool(&path)?;
-    let items = crate::core::db::list_media_page(&pool, 0, INITIAL_MEDIA_PAGE_SIZE)?;
+    let items = crate::core::db::list_media_page(&pool, 0, page_size)?;
     Ok((pool, items))
 }
 
-async fn initialize_db_once_with_retry(path: PathBuf) -> anyhow::Result<(DbPool, Vec<MediaItem>)> {
+async fn initialize_db_once_with_retry(
+    path: PathBuf,
+    page_size: u32,
+) -> anyhow::Result<(DbPool, Vec<MediaItem>)> {
     let first = match gtk::gio::spawn_blocking({
         let path = path.clone();
-        move || initialize_db_once_blocking(path)
+        move || initialize_db_once_blocking(path, page_size)
     })
     .await
     {
@@ -299,7 +301,7 @@ async fn initialize_db_once_with_retry(path: PathBuf) -> anyhow::Result<(DbPool,
         );
         let second = match gtk::gio::spawn_blocking({
             let path = path.clone();
-            move || initialize_db_once_blocking(path)
+            move || initialize_db_once_blocking(path, page_size)
         })
         .await
         {

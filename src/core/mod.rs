@@ -15,6 +15,7 @@ pub mod motion_photo;
 pub mod notify_watcher;
 pub mod orientation;
 pub mod prefs;
+pub mod runtime_config;
 pub mod section_model;
 pub mod thumbnail_prewarm;
 pub mod thumbnails;

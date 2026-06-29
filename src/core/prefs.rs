@@ -23,8 +23,6 @@ const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
 const AUTO_PLAY_MOTION_PHOTO_KEY: &str = "auto_play_motion_photo";
-const UI_MEDIA_LIST_CAP_KEY: &str = "ui_media_list_cap";
-const MAX_RENDERED_GRID_ITEMS_KEY: &str = "max_rendered_grid_items";
 
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
@@ -33,8 +31,6 @@ const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
-const DEFAULT_UI_MEDIA_LIST_CAP: usize = 1500;
-const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 800;
 
 fn settings_path() -> std::path::PathBuf {
     config_dir().join(SETTINGS_FILE)
@@ -159,41 +155,6 @@ fn write_auto_play_motion_photo_at(path: &Path, enabled: bool) -> Result<(), Str
     write_bool_at(path, AUTO_PLAY_MOTION_PHOTO_KEY, enabled)
 }
 
-fn read_ui_media_list_cap_at(path: &Path) -> usize {
-    let obj = read_object_at(path);
-    obj.get(UI_MEDIA_LIST_CAP_KEY)
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(DEFAULT_UI_MEDIA_LIST_CAP)
-}
-
-fn write_ui_media_list_cap_at(path: &Path, cap: usize) -> Result<(), String> {
-    write_usize_at(path, UI_MEDIA_LIST_CAP_KEY, cap)
-}
-
-fn read_max_rendered_grid_items_at(path: &Path) -> usize {
-    let obj = read_object_at(path);
-    obj.get(MAX_RENDERED_GRID_ITEMS_KEY)
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(DEFAULT_MAX_RENDERED_GRID_ITEMS)
-}
-
-fn write_max_rendered_grid_items_at(path: &Path, cap: usize) -> Result<(), String> {
-    write_usize_at(path, MAX_RENDERED_GRID_ITEMS_KEY, cap)
-}
-
-fn write_usize_at(path: &Path, key: &str, value: usize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut object = read_object_at(path);
-    object.insert(key.to_string(), Value::from(value as u64));
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 fn write_video_volume_at(path: &Path, volume: f64) -> Result<(), String> {
     write_f64_at(path, VIDEO_VOLUME_KEY, clamp_video_volume(volume))
 }
@@ -264,26 +225,6 @@ pub fn auto_play_motion_photo() -> bool {
 /// Persist the motion-photo auto-play preference.
 pub fn set_auto_play_motion_photo(enabled: bool) -> Result<(), String> {
     write_auto_play_motion_photo_at(&settings_path(), enabled)
-}
-
-/// Maximum number of media items kept in the GTK-facing model.
-pub fn ui_media_list_cap() -> usize {
-    read_ui_media_list_cap_at(&settings_path())
-}
-
-/// Persist the UI media list cap.
-pub fn set_ui_media_list_cap(cap: usize) -> Result<(), String> {
-    write_ui_media_list_cap_at(&settings_path(), cap)
-}
-
-/// Maximum number of rendered grid items per rebuild.
-pub fn max_rendered_grid_items() -> usize {
-    read_max_rendered_grid_items_at(&settings_path())
-}
-
-/// Persist the maximum rendered grid items.
-pub fn set_max_rendered_grid_items(cap: usize) -> Result<(), String> {
-    write_max_rendered_grid_items_at(&settings_path(), cap)
 }
 
 #[cfg(test)]
@@ -560,72 +501,6 @@ mod tests {
             obj.get(VIDEO_DEFAULT_MUTED_KEY).and_then(|v| v.as_bool()),
             Some(false),
             "writing motion-photo setting should preserve existing video prefs"
-        );
-
-        cleanup(&path);
-    }
-
-    #[test]
-    fn ui_media_list_cap_defaults_to_virtual_window_size() {
-        let path = tmp_path("ui-media-cap-default");
-        cleanup(&path);
-
-        assert_eq!(
-            read_ui_media_list_cap_at(&path),
-            1500,
-            "missing ui_media_list_cap should default to 1500"
-        );
-
-        cleanup(&path);
-    }
-
-    #[test]
-    fn ui_media_list_cap_round_trip_and_preserves_keys() {
-        let path = tmp_path("ui-media-cap-roundtrip");
-        cleanup(&path);
-        std::fs::write(&path, "{\"liquid_glass\": false}").unwrap();
-
-        write_ui_media_list_cap_at(&path, 500).unwrap();
-        assert_eq!(read_ui_media_list_cap_at(&path), 500);
-
-        let obj = read_object_at(&path);
-        assert_eq!(
-            obj.get(LIQUID_GLASS_KEY).and_then(|v| v.as_bool()),
-            Some(false),
-            "writing ui_media_list_cap should preserve existing prefs"
-        );
-
-        cleanup(&path);
-    }
-
-    #[test]
-    fn max_rendered_grid_items_defaults_to_virtual_render_limit() {
-        let path = tmp_path("max-grid-items-default");
-        cleanup(&path);
-
-        assert_eq!(
-            read_max_rendered_grid_items_at(&path),
-            800,
-            "missing max_rendered_grid_items should default to 800"
-        );
-
-        cleanup(&path);
-    }
-
-    #[test]
-    fn max_rendered_grid_items_round_trip_and_preserves_keys() {
-        let path = tmp_path("max-grid-items-roundtrip");
-        cleanup(&path);
-        std::fs::write(&path, "{\"video_default_muted\": false}").unwrap();
-
-        write_max_rendered_grid_items_at(&path, 300).unwrap();
-        assert_eq!(read_max_rendered_grid_items_at(&path), 300);
-
-        let obj = read_object_at(&path);
-        assert_eq!(
-            obj.get(VIDEO_DEFAULT_MUTED_KEY).and_then(|v| v.as_bool()),
-            Some(false),
-            "writing max_rendered_grid_items should preserve existing prefs"
         );
 
         cleanup(&path);

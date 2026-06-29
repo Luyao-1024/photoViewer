@@ -30,19 +30,22 @@ Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded while the database remains the full source of truth. Startup loads the
-first 500 live rows; after that, `MediaGrid` treats the scroll position as a
-ratio across the full live-media count and swaps in a 500-row DB page around
-that global offset before the user reaches the end of the currently loaded
-window. While that DB page is loading, the grid immediately renders a
+first configured live page (`initial_media_page_size`, default 500); after
+that, `MediaGrid` treats the scroll position as a ratio across the full
+live-media count and swaps in a configured DB page (`virtual_media_page_size`,
+default 500) around that global offset before the user reaches the end of the
+currently loaded window. While that DB page is loading, the grid immediately renders a
 non-interactive skeleton FlowBox for the target window instead of leaving the
 viewport inside blank spacer space. Top and bottom virtual spacer widgets
 approximate the height of unloaded rows, so the scrollbar thumb represents the
 full library rather than only the current page. Rapid drag retargets increment
 a virtual-page generation counter; stale DB page results are discarded rather
 than replacing a newer target window. `apply_to_media_list::ui_media_list_cap()`
-(configurable via `settings.json`, default 1500) remains a safety cap for live
+(configurable via `runtime.json`, default 1500) remains a safety cap for live
 change merges, and `MediaGrid::max_rendered_grid_items()` (configurable via
-`settings.json`, default 800) caps tile widgets per rebuild. `PhotosPage` also
+`runtime.json`, default 800) caps tile widgets per rebuild. Runtime loading
+and sizing keys live in `src/core/runtime_config.rs`; user-facing preferences
+remain in `settings.json`. `PhotosPage` also
 initializes only the visible Day grid as active; Year/Month grids defer their
 FlowBox/tile construction until the user switches to them. Do not let GTK
 model, hidden views, or FlowBox children grow with the full on-disk library;

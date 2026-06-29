@@ -9,6 +9,7 @@
 use crate::core::db::DbPool;
 use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
 use crate::core::orientation;
+use crate::core::runtime_config;
 use gdk_pixbuf::Pixbuf;
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -188,20 +189,13 @@ struct BackgroundPullState {
 pub struct ThumbnailLoader {
     pool: DbPool,
     cache_dir: PathBuf,
+    queue_capacity: usize,
     queue: SharedQueue,
     state: Arc<Mutex<LoaderState>>,
     background_pull: Arc<BackgroundPullState>,
 }
 
-/// 内存 LRU 容量。Large 档单张 texture 可达数 MB；过大的常驻缓存会在大图库滚动
-/// 时把进程推到 GB 级内存。磁盘缓存仍保留 2GB 上限，内存只保留近期视口附近。
-const MEM_CACHE_CAP: usize = 16;
-
 impl ThumbnailLoader {
-    /// 工作项队列容量。配合在途去重后，这里只存「彼此不同且未缓存」的项；
-    /// 取一个充裕的值，使得在加入视口级虚拟化之前，单库数万张也能容纳。
-    pub const QUEUE_CAPACITY: usize = 8192;
-
     /// 队列中当前排队项数（不含已在途/正在 worker 中生成的）。
     pub fn queue_len(&self) -> usize {
         let (lock, _) = &*self.queue;
@@ -216,8 +210,9 @@ impl ThumbnailLoader {
     /// 构造加载器（不自动启动 worker；调用 `spawn_workers` 启动）
     pub fn new(pool: DbPool, cache_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&cache_dir).ok();
+        let runtime = runtime_config::load();
         let state = Arc::new(Mutex::new(LoaderState {
-            mem_cache: LruCache::new(NonZeroUsize::new(MEM_CACHE_CAP).unwrap()),
+            mem_cache: LruCache::new(NonZeroUsize::new(runtime.thumbnail_mem_cache_cap).unwrap()),
             in_flight: HashMap::new(),
         }));
         let queue = Arc::new((
@@ -229,20 +224,22 @@ impl ThumbnailLoader {
             }),
             Condvar::new(),
         ));
-        // 启动时按 mtime LRU 清理超限缓存（2GB 上限）。
+        // 启动时按 mtime LRU 清理超限缓存。
         // 用裸线程异步执行，避免在首绘前于主线程上 walkdir 整个缓存目录 +
         // 逐文件 stat + 全量排序（数千文件时是可观的启动延迟）。这里不需要
         // tokio 运行时上下文，所以用 std 线程，在测试中 `new()` 也能安全调用。
         let cleanup_dir = cache_dir.clone();
+        let disk_cache_bytes = runtime.thumbnail_disk_cache_bytes;
         std::thread::spawn(move || {
             let _ = crate::core::cache::enforce_size_limit(
                 &cleanup_dir.join("thumbnails"),
-                2 * 1024 * 1024 * 1024,
+                disk_cache_bytes,
             );
         });
         Self {
             pool,
             cache_dir,
+            queue_capacity: runtime.thumbnail_queue_capacity,
             queue,
             state,
             background_pull: Arc::new(BackgroundPullState {
@@ -375,7 +372,7 @@ impl ThumbnailLoader {
                     return;
                 }
             };
-            if q.queued.len() >= Self::QUEUE_CAPACITY {
+            if q.queued.len() >= self.queue_capacity {
                 false
             } else {
                 q.seq += 1;
@@ -610,9 +607,9 @@ fn next_request_or_pull(
             continue;
         }
         let wait_dur = if bg.enabled.load(AtomicOrdering::Relaxed) {
-            std::time::Duration::from_millis(500)
+            std::time::Duration::from_millis(runtime_config::thumbnail_prewarm_poll_ms())
         } else {
-            std::time::Duration::from_secs(30)
+            std::time::Duration::from_millis(runtime_config::thumbnail_idle_wait_ms())
         };
         let (q2, _timed_out) = cvar.wait_timeout(q, wait_dur).ok()?;
         drop(q2);

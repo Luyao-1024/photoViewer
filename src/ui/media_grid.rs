@@ -62,15 +62,15 @@ use gtk4::subclass::prelude::*;
 
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
-use crate::core::prefs;
+use crate::core::runtime_config;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
-/// Get the current max rendered grid items from preferences.
+/// Get the current max rendered grid items from runtime configuration.
 fn max_rendered_grid_items() -> usize {
-    prefs::max_rendered_grid_items()
+    runtime_config::max_rendered_grid_items()
 }
 
 fn library_stats_text(total_media: usize, generated: usize) -> String {
@@ -172,7 +172,9 @@ mod imp {
                 on_query_favorite_state: std::cell::OnceCell::new(),
                 displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
-                rendered_limit: Cell::new(max_rendered_grid_items().min(VIRTUAL_RENDER_LIMIT)),
+                rendered_limit: Cell::new(
+                    max_rendered_grid_items().min(runtime_config::grid_render_absolute_cap()),
+                ),
                 virtual_window_start: Cell::new(0),
                 virtual_total: Cell::new(0),
                 virtual_page_loading: Cell::new(false),
@@ -223,9 +225,6 @@ struct ViewSpec {
 }
 
 const VIRTUAL_TILE_GAP: i32 = 2;
-const VIRTUAL_PAGE_SIZE: u32 = 500;
-const VIRTUAL_RENDER_LIMIT: usize = 800;
-const VIRTUAL_ABSOLUTE_RENDER_LIMIT: usize = 1_200;
 const VIRTUAL_PREFETCH_LOW_NUM: u32 = 1;
 const VIRTUAL_PREFETCH_HIGH_NUM: u32 = 4;
 const VIRTUAL_PREFETCH_DEN: u32 = 5;
@@ -732,28 +731,33 @@ impl MediaGrid {
             return; // 已挂起，合并本次
         }
         let weak = self.downgrade();
-        let id = gtk::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
-            if let Some(this) = weak.upgrade() {
-                *this.imp().reprio_debounce.borrow_mut() = None;
-                this.reprioritize_visible();
-            }
-            gtk::glib::ControlFlow::Break
-        });
+        let id = gtk::glib::timeout_add_local(
+            std::time::Duration::from_millis(runtime_config::grid_reprioritize_debounce_ms()),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    *this.imp().reprio_debounce.borrow_mut() = None;
+                    this.reprioritize_visible();
+                }
+                gtk::glib::ControlFlow::Break
+            },
+        );
         *imp.reprio_debounce.borrow_mut() = Some(id);
     }
 
     /// 如果滚动接近底部（距底部 3 屏内），动态扩大 `rendered_limit` 并触发 rebuild。
     fn try_expand_render_limit(&self, adj: &gtk::Adjustment) {
-        const ABSOLUTE: usize = VIRTUAL_ABSOLUTE_RENDER_LIMIT;
+        let absolute = runtime_config::grid_render_absolute_cap();
         let limit = self.imp().rendered_limit.get();
-        if limit >= ABSOLUTE {
+        if limit >= absolute {
             return;
         }
         let near_bottom = adj.value() + adj.page_size() * 4.0 >= adj.upper();
         if !near_bottom {
             return;
         }
-        let new_limit = (limit + 200).min(ABSOLUTE);
+        let new_limit = limit
+            .saturating_add(runtime_config::grid_render_expand_step())
+            .min(absolute);
         self.imp().rendered_limit.set(new_limit);
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
@@ -775,15 +779,16 @@ impl MediaGrid {
         if total <= current_len || current_len == 0 {
             return;
         }
+        let virtual_page_size = runtime_config::virtual_media_page_size();
         let ratio = scroll_ratio_from_adjustment_value(adj.value(), adj.upper(), adj.page_size());
-        let desired_offset = virtual_offset_for_ratio(ratio, total, VIRTUAL_PAGE_SIZE);
+        let desired_offset = virtual_offset_for_ratio(ratio, total, virtual_page_size);
         let current_start = self.imp().virtual_window_start.get();
         let Some(target_start) = virtual_page_start_for_offset(
             desired_offset,
             current_start,
             current_len,
             total,
-            VIRTUAL_PAGE_SIZE,
+            virtual_page_size,
         ) else {
             return;
         };
@@ -809,7 +814,7 @@ impl MediaGrid {
         glib::spawn_future_local(async move {
             let pool = loader.pool().clone();
             let result = gtk::gio::spawn_blocking(move || {
-                crate::core::db::list_media_page(&pool, target_start, VIRTUAL_PAGE_SIZE)
+                crate::core::db::list_media_page(&pool, target_start, virtual_page_size)
             })
             .await;
             let items = match result {
@@ -1006,7 +1011,7 @@ impl MediaGrid {
             virtual_window_item_count(
                 self.imp().virtual_window_start.get(),
                 total_media_count,
-                VIRTUAL_PAGE_SIZE,
+                runtime_config::virtual_media_page_size(),
             )
         } else {
             0
