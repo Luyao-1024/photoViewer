@@ -282,8 +282,15 @@ box.mode-selector.on-light-background box.mode-dot,
 }
 
 .glass-sidebar {
-  padding: 12px;
+  padding: 3px 12px;
   border: 0;
+}
+
+/* The main sidebar list (Photos + Albums header) lives above the album
+   scroll region. Keep its bottom padding at 3 px so the gap to the first
+   album row matches the inter-row margin. */
+.glass-sidebar-main {
+  padding-bottom: 3px;
 }
 
 .glass-sidebar row {
@@ -305,7 +312,7 @@ box.mode-selector.on-light-background box.mode-dot,
 .glass-sidebar-row {
   min-height: 40px;
   border-radius: 12px;
-  margin-bottom: 6px;
+  margin-bottom: 3px;
   padding: 0 10px;
 }
 
@@ -331,6 +338,14 @@ box.mode-selector.on-light-background box.mode-dot,
   min-height: 36px;
 }
 
+/* The album list sits inside a ScrolledWindow nested below the Albums
+   group header. Zero out vertical padding so the first album row sits
+   close to the header and the last row sits close to the trash list. */
+.glass-sidebar-album-list {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 /* Leading symbolic icon — slightly muted so the label stays primary. */
 .glass-sidebar-icon {
   opacity: 0.72;
@@ -348,7 +363,7 @@ box.mode-selector.on-light-background box.mode-dot,
    hover/selected veil (it never claims the selection), and a muted arrow. */
 .glass-sidebar-section {
   min-height: 34px;
-  margin-top: 6px;
+  margin-top: 3px;
 }
 
 .glass-sidebar-section-label {

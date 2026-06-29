@@ -42,6 +42,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 - Any new glass surface must work in both Liquid Glass and plain translucent modes.
 - Viewer side panels must avoid hidden children participating in layout in a way that produces negative GTK allocation warnings.
 - The main navigation sidebar keeps a stable width so pushing viewer pages does not shrink it.
+- When a `GtkScrolledWindow` needs to size to content and scroll only when overflowing, use `propagate-natural-height: true` and omit `vexpand`. Default is `false`, which means the scrolled window reports 0 natural height to its parent — do not try to compensate with `vexpand` + `max-content-height` combos.
 
 ## Common Commands
 

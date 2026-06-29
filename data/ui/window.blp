@@ -19,51 +19,55 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
         css-classes: ["glass-sidebar-surface", "glass-base"];
 
         Gtk.ListBox sidebar_list {
-          css-classes: ["glass-sidebar"];
+          css-classes: ["glass-sidebar", "glass-sidebar-main"];
           hexpand: true;
           selection-mode: single;
         }
 
-        Gtk.ScrolledWindow album_scroll {
-          css-classes: ["glass-sidebar-album-scroll"];
-          hexpand: true;
-          min-content-height: 120;
-          max-content-height: 420;
-          hscrollbar-policy: never;
-          vscrollbar-policy: automatic;
+        Gtk.Box album_trash_wrapper {
+          orientation: vertical;
+          vexpand: true;
 
-          Gtk.ListBox album_list {
-            css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
+          Gtk.ScrolledWindow album_scroll {
+            css-classes: ["glass-sidebar-album-scroll"];
+            hexpand: true;
+            propagate-natural-height: true;
+            hscrollbar-policy: never;
+            vscrollbar-policy: automatic;
+
+            Gtk.ListBox album_list {
+              css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
+              hexpand: true;
+              selection-mode: single;
+            }
+          }
+
+          Gtk.ActionBar album_selection_bar {
+            revealed: false;
+
+            [start]
+            Gtk.Button album_selection_cancel_btn {
+              label: "";
+              css-classes: ["glass-toolbar-button"];
+            }
+
+            [end]
+            Gtk.Button album_selection_delete_btn {
+              label: "";
+              css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+            }
+          }
+
+          Gtk.ListBox trash_list {
+            css-classes: ["glass-sidebar"];
             hexpand: true;
             selection-mode: single;
           }
         }
 
-        Gtk.ActionBar album_selection_bar {
-          revealed: false;
-
-          [start]
-          Gtk.Button album_selection_cancel_btn {
-            label: "";
-            css-classes: ["glass-toolbar-button"];
-          }
-
-          [end]
-          Gtk.Button album_selection_delete_btn {
-            label: "";
-            css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
-          }
-        }
-
-        Gtk.ListBox trash_list {
-          css-classes: ["glass-sidebar"];
-          hexpand: true;
-          selection-mode: single;
-        }
-
         Gtk.Box sidebar_spacer {
           css-classes: ["glass-sidebar-spacer"];
-          vexpand: true;
+          vexpand: false;
         }
 
         Gtk.Box {

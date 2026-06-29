@@ -174,48 +174,55 @@ fn sidebar_navigation_suite() {
             .expect("settings button should live in sidebar footer");
         let children = direct_children(&surface);
         assert!(
-            children.len() >= 6,
-            "sidebar surface should include top list, album scroll, album selection bar, trash list, spacer, and footer",
+            children.len() >= 4,
+            "sidebar surface should include top list, album-trash wrapper, spacer, and footer",
         );
         assert_eq!(
             children[0],
             top_sidebar.clone().upcast::<gtk::Widget>(),
             "sidebar surface child 0 should be the top navigation list",
         );
-        assert_eq!(
-            children[1],
-            window.imp().album_scroll.get().upcast::<gtk::Widget>(),
-            "sidebar surface child 1 should be the album scroll region",
+        // The wrapper Box groups album_scroll + selection bar + trash_list.
+        let wrapper = &children[1];
+        let wrapper_children = direct_children(wrapper);
+        assert!(
+            wrapper_children.len() >= 3,
+            "wrapper should contain album scroll, selection bar, and trash list",
         );
         assert_eq!(
-            children[2],
+            wrapper_children[0],
+            window.imp().album_scroll.get().upcast::<gtk::Widget>(),
+            "wrapper child 0 should be the album scroll region",
+        );
+        assert_eq!(
+            wrapper_children[1],
             window
                 .imp()
                 .album_selection_bar
                 .get()
                 .upcast::<gtk::Widget>(),
-            "sidebar surface child 2 should be the album selection action bar",
+            "wrapper child 1 should be the album selection action bar",
         );
         assert!(
             !window.imp().album_selection_bar.get().is_revealed(),
             "album selection action bar should start hidden",
         );
         assert_eq!(
-            children[3],
+            wrapper_children[2],
             trash_list.clone().upcast::<gtk::Widget>(),
-            "sidebar surface child 3 should be the stable Trash list",
+            "wrapper child 2 should be the Trash list",
         );
         assert!(
-            has_css_class(&children[4], "glass-sidebar-spacer"),
-            "sidebar surface child 4 should be the flexible footer spacer",
+            has_css_class(&children[2], "glass-sidebar-spacer"),
+            "sidebar surface child 2 should be the flexible footer spacer",
         );
         assert!(
-            children[4].property::<bool>("vexpand"),
-            "sidebar spacer should expand to pin Settings to the bottom",
+            !children[2].property::<bool>("vexpand"),
+            "sidebar spacer should not expand since the wrapper already fills space",
         );
         assert_eq!(
-            children[5], footer,
-            "sidebar surface child 5 should be the settings footer",
+            children[3], footer,
+            "sidebar surface child 3 should be the settings footer",
         );
     }
 
@@ -272,7 +279,7 @@ fn sidebar_navigation_suite() {
     );
     assert!(
         !window.imp().album_scroll.property::<bool>("vexpand"),
-        "album scroll should be bounded by max-content-height instead of expanding",
+        "album scroll should not expand — it sizes to content, wrapper handles fill",
     );
 
     // Row 1 is the Albums group header — non-selectable (it only collapses).

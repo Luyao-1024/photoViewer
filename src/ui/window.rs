@@ -96,6 +96,10 @@ mod imp {
         #[template_child]
         pub trash_list: TemplateChild<gtk::ListBox>,
         #[template_child]
+        pub album_trash_wrapper: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub sidebar_spacer: TemplateChild<gtk::Box>,
+        #[template_child]
         pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
         pub album_selection_bar: TemplateChild<gtk::ActionBar>,
@@ -274,6 +278,9 @@ impl MainWindow {
     /// Collapse/expand the Albums group: swap the disclosure arrow and toggle
     /// the dedicated album scroll region. Rows remain mounted in `album_list`
     /// so their drag order and album target indices stay stable.
+    /// When expanded, the album-trash wrapper fills available space; the
+    /// scrolled window sizes to content (no vexpand). When collapsed, the
+    /// spacer expands so Settings stays pinned to the bottom.
     pub fn toggle_albums_expanded(&self) {
         let expanded = !self.imp().albums_expanded.get();
         self.imp().albums_expanded.set(expanded);
@@ -285,6 +292,8 @@ impl MainWindow {
             });
         }
         self.imp().album_scroll.set_visible(expanded);
+        self.imp().album_trash_wrapper.set_vexpand(expanded);
+        self.imp().sidebar_spacer.set_vexpand(!expanded);
     }
 
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
