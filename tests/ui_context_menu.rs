@@ -50,6 +50,47 @@ fn collect_button_labels(widget: &gtk::Widget, labels: &mut Vec<String>) {
     }
 }
 
+fn collect_buttons(widget: &gtk::Widget, buttons: &mut Vec<gtk::Button>) {
+    if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+        buttons.push(button.clone());
+    }
+
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        collect_buttons(&current, buttons);
+    }
+}
+
+fn button_with_label(buttons: &[gtk::Button], label: &str) -> gtk::Button {
+    buttons
+        .iter()
+        .find(|button| button.label().as_deref() == Some(label))
+        .unwrap_or_else(|| {
+            panic!(
+                "missing button {label}; got labels {:?}",
+                button_labels(buttons)
+            )
+        })
+        .clone()
+}
+
+fn button_labels(buttons: &[gtk::Button]) -> Vec<String> {
+    buttons
+        .iter()
+        .filter_map(|button| button.label().map(|label| label.to_string()))
+        .collect()
+}
+
+fn assert_button_has_class(button: &gtk::Button, class_name: &str) {
+    assert!(
+        button.css_classes().iter().any(|class| class == class_name),
+        "button {:?} should carry {class_name}, got {:?}",
+        button.label(),
+        button.css_classes()
+    );
+}
+
 #[test]
 fn context_menu_uses_glass_menu_classes() {
     gtk::init().expect("GTK init failed");
@@ -127,6 +168,10 @@ fn context_menu_uses_glass_menu_classes() {
     let popover = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(false));
     let mut labels = Vec::new();
     collect_button_labels(popover.upcast_ref(), &mut labels);
+    let mut buttons = Vec::new();
+    collect_buttons(popover.upcast_ref(), &mut buttons);
+    let manage_button = button_with_label(&buttons, &tr("album.context.manage"));
+    let delete_button = button_with_label(&buttons, &tr("album.context.delete"));
 
     assert!(
         popover.css_classes().iter().any(|c| c == "glass-menu"),
@@ -146,10 +191,15 @@ fn context_menu_uses_glass_menu_classes() {
         "real album menu should contain {}, got {labels:?}",
         tr("album.context.delete")
     );
+    assert_button_has_class(&manage_button, "glass-menu-item");
+    assert_button_has_class(&delete_button, "glass-menu-item");
+    assert_button_has_class(&delete_button, "glass-menu-item-danger");
 
     let popover = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(true));
     let mut labels = Vec::new();
     collect_button_labels(popover.upcast_ref(), &mut labels);
+    let mut buttons = Vec::new();
+    collect_buttons(popover.upcast_ref(), &mut buttons);
 
     assert!(
         labels
@@ -164,5 +214,12 @@ fn context_menu_uses_glass_menu_classes() {
             .any(|label| label == &tr("album.context.delete")),
         "virtual album menu should omit {}, got {labels:?}",
         tr("album.context.delete")
+    );
+    assert!(
+        buttons
+            .iter()
+            .all(|button| button.label().as_deref() != Some(&tr("album.context.delete"))),
+        "virtual album menu should not create a delete button, got {:?}",
+        button_labels(&buttons)
     );
 }

@@ -685,6 +685,7 @@ impl MainWindow {
                             media_list,
                             &result.deleted_paths,
                             &result.remaining_live_uris,
+                            &result.unknown_remaining_live_paths,
                         );
                     }
                     window.refresh_album_rows();
@@ -1590,6 +1591,7 @@ struct AlbumDeleteUiResult {
     deleted_paths: Vec<PathBuf>,
     remaining_live_uris: HashSet<String>,
     remaining_live_folder_paths: HashSet<PathBuf>,
+    unknown_remaining_live_paths: HashSet<PathBuf>,
 }
 
 fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDeleteUiResult {
@@ -1603,6 +1605,7 @@ fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDelet
 
     let mut remaining_live_uris = HashSet::new();
     let mut remaining_live_folder_paths = HashSet::new();
+    let mut unknown_remaining_live_paths = HashSet::new();
     for path in &deleted_paths {
         match crate::core::db::list_media_by_folder(&pool, path) {
             Ok(items) => {
@@ -1617,6 +1620,7 @@ fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDelet
                     path.display()
                 );
                 remaining_live_folder_paths.insert(path.clone());
+                unknown_remaining_live_paths.insert(path.clone());
             }
         }
     }
@@ -1626,6 +1630,7 @@ fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDelet
         deleted_paths,
         remaining_live_uris,
         remaining_live_folder_paths,
+        unknown_remaining_live_paths,
     }
 }
 
@@ -1633,6 +1638,7 @@ fn remove_deleted_album_media_from_media_list(
     media_list: &gtk::gio::ListStore,
     deleted_paths: &[PathBuf],
     remaining_live_uris: &HashSet<String>,
+    unknown_remaining_live_paths: &HashSet<PathBuf>,
 ) {
     if deleted_paths.is_empty() {
         return;
@@ -1647,6 +1653,7 @@ fn remove_deleted_album_media_from_media_list(
             .is_some_and(|boxed| {
                 let item = boxed.borrow::<MediaItem>();
                 deleted_paths.contains(&item.folder_path)
+                    && !unknown_remaining_live_paths.contains(&item.folder_path)
                     && !remaining_live_uris.contains(&item.uri)
             });
         if should_remove {
@@ -1755,9 +1762,33 @@ mod tests {
             &list,
             &[Path::new("/tmp/Camera").to_path_buf()],
             &HashSet::from([still_live.uri.clone()]),
+            &HashSet::new(),
         );
 
         assert_eq!(media_list_uris(&list), vec![still_live.uri, other.uri]);
+    }
+
+    #[test]
+    fn album_delete_pruning_preserves_unknown_remaining_live_folder_rows() {
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let unknown = media_item(1, "/tmp/Camera", "unknown.jpg");
+        let deleted = media_item(2, "/tmp/Trips", "deleted.jpg");
+        let other = media_item(3, "/tmp/Other", "keep.jpg");
+        list.append(&glib::BoxedAnyObject::new(unknown.clone()));
+        list.append(&glib::BoxedAnyObject::new(deleted.clone()));
+        list.append(&glib::BoxedAnyObject::new(other.clone()));
+
+        remove_deleted_album_media_from_media_list(
+            &list,
+            &[
+                Path::new("/tmp/Camera").to_path_buf(),
+                Path::new("/tmp/Trips").to_path_buf(),
+            ],
+            &HashSet::new(),
+            &HashSet::from([Path::new("/tmp/Camera").to_path_buf()]),
+        );
+
+        assert_eq!(media_list_uris(&list), vec![unknown.uri, other.uri]);
     }
 
     #[test]
