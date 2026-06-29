@@ -10,7 +10,7 @@
 //!   - Delete Permanently：批量永久删除
 //!
 //! 多选用 `GtkFlowBox::selected_children()` 收集被选中的子项索引，
-//! 这些索引对应 `db::list_trashed_media` 返回的顺序 — 因此可用作
+//! 这些索引对应 repository trash projection 返回的顺序 — 因此可用作
 //! `MediaItem.id` 的查找键。
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -23,10 +23,13 @@ use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 use libadwaita::subclass::prelude::*;
 
-use crate::core::albums;
-use crate::core::db::{self, DbPool};
+#[cfg(test)]
+use crate::core::db;
+use crate::core::db::DbPool;
 use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
+use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
 use crate::ui::empty_states;
@@ -36,39 +39,26 @@ const TRASH_TILE_PX: i32 = 270;
 const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
 
 fn restore_items(pool: &DbPool, ids: Vec<i64>) -> Vec<MediaItem> {
-    let mut restored_items = Vec::new();
-    for id in ids {
-        if let Ok(item) = db::get_media_item(pool, id) {
-            if trash::restore_from_trash(&item.uri).is_ok() && db::unmark_trashed(pool, id).is_ok()
-            {
-                let mut restored = item;
-                restored.trashed_at = None;
-                restored_items.push(restored);
-            }
-        }
-    }
-    let _ = albums::refresh(pool);
-    restored_items
+    let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
+    MediaRepository::new(pool.clone())
+        .restore_from_trash(&ids)
+        .map(|mutation| mutation.changed_items)
+        .unwrap_or_default()
 }
 
 fn delete_items_permanently(pool: &DbPool, ids: Vec<i64>) {
-    for id in ids {
-        if let Ok(item) = db::get_media_item(pool, id) {
-            let _ = trash::delete_permanently(&item.uri);
-            let _ = db::delete_media_item(pool, id);
-        }
-    }
-    let _ = albums::refresh(pool);
+    let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
+    let _ = MediaRepository::new(pool.clone()).delete_permanently(&ids);
 }
 
 fn empty_trash(pool: &DbPool) {
-    if let Ok(items) = db::list_trashed_media(pool) {
-        for item in items {
-            let _ = trash::delete_permanently(&item.uri);
-            let _ = db::delete_media_item(pool, item.id);
-        }
-    }
-    let _ = albums::refresh(pool);
+    let _ = MediaRepository::new(pool.clone()).empty_trash();
+}
+
+fn load_trash_items(pool: DbPool) -> crate::core::Result<Vec<MediaItem>> {
+    Ok(MediaRepository::new(pool)
+        .page(MediaQuery::Trash, 0, u32::MAX)?
+        .items)
 }
 
 mod imp {
@@ -293,7 +283,7 @@ impl TrashPage {
         let flow_weak = obj.downgrade();
         glib::spawn_future_local(async move {
             if let Ok(Ok(items)) =
-                gtk::gio::spawn_blocking(move || db::list_trashed_media(&pool_clone)).await
+                gtk::gio::spawn_blocking(move || load_trash_items(pool_clone)).await
             {
                 render_trash_items(&flow_weak, loader_clone, items);
             }
@@ -322,9 +312,7 @@ impl TrashPage {
         // 重新加载
         let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(Ok(items)) =
-                gtk::gio::spawn_blocking(move || db::list_trashed_media(&pool)).await
-            {
+            if let Ok(Ok(items)) = gtk::gio::spawn_blocking(move || load_trash_items(pool)).await {
                 if let Some(page) = page_weak.upgrade() {
                     render_trash_items_for_page(&page, &flow, loader, items);
                 }

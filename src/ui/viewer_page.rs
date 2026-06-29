@@ -9,7 +9,7 @@
 //! Note: items in the `gio::ListStore` are `BoxedAnyObject<MediaItem>` (see
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
 //! than `downcast::<MediaItem>()`.
-use crate::core::db::{self, DbPool};
+use crate::core::db::DbPool;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
@@ -960,7 +960,9 @@ impl ViewerPage {
             let (tx, rx) = tokio::sync::oneshot::channel();
             let token = this.imp().current_token.get();
             gio::spawn_blocking(move || {
-                let result = db::set_media_favorite(&pool, item_id, next_state);
+                let result = MediaRepository::new(pool)
+                    .set_favorite(&[MediaId::from(item_id)], next_state)
+                    .map(|_| ());
                 let _ = tx.send((result, next_state, token));
             });
 
@@ -1797,7 +1799,9 @@ impl ViewerPage {
         let token = self.imp().current_token.get();
         let (tx, rx) = tokio::sync::oneshot::channel();
         gio::spawn_blocking(move || {
-            let result = db::is_media_favorite(&pool, item_id);
+            let result = MediaRepository::new(pool)
+                .favorite_state(&[MediaId::from(item_id)])
+                .map(|summary| summary.has_favorite);
             let _ = tx.send((result, token));
         });
 

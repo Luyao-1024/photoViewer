@@ -35,8 +35,8 @@ boundary.
 Runtime change notifications use `core::events::DomainEvent` as the shared
 vocabulary and receiver payload. `MediaChangeNotifier` remains as the
 scanner/watcher producer facade, but its channel emits domain events directly.
-`MediaChangeEvent` is only a legacy UI diff adapter for code that still needs
-to mutate the bounded `gio::ListStore`.
+UI projections such as the bounded `gio::ListStore` consume those domain
+events through explicit adapters rather than through a second event vocabulary.
 
 Derived refresh work belongs in `core::refresh::RefreshCoordinator`. Album
 refreshes are single-flight with pending replay. Thumbnail/library statistics

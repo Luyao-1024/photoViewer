@@ -9,39 +9,6 @@ use crate::core::events::{ChangeSource, DomainEvent};
 use crate::core::media::MediaItem;
 use tokio::sync::mpsc;
 
-/// Origin of a media change batch. Consumers use this to choose refresh
-/// urgency: user-visible edits should update immediately, while startup scan
-/// batches must be throttled to keep the UI responsive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaChangeSource {
-    StartupScan,
-    UserInteractive,
-    Watcher,
-}
-
-/// Media change event emitted by the watcher, consumed by the UI.
-#[derive(Debug, Clone)]
-pub enum MediaChangeEvent {
-    /// A new item was inserted, or an existing item was updated.
-    /// Consumers match by `uri`: existing → splice-replace; absent → append.
-    Upserted(Box<MediaItem>),
-    /// Multiple inserts/updates from a bulk source such as the first startup
-    /// filesystem scan. Consumers should apply this as one list mutation so
-    /// expensive UI model observers rebuild once per batch instead of once per
-    /// file.
-    UpsertedBatch {
-        source: MediaChangeSource,
-        items: Vec<MediaItem>,
-    },
-    /// An item was removed. Consumer matches by `uri`.
-    Removed { uri: String },
-    /// The system trash changed (external restore / empty / delete-from-trash, or
-    /// the app's own trash op). The watcher has already re-run `reconcile_trash`
-    /// against the DB; consumers should refresh any visible Trash view so it
-    /// matches without a page switch.
-    TrashChanged,
-}
-
 /// Producer side of the media-change channel.
 ///
 /// Cheap to clone (wraps an `UnboundedSender`). Watcher keeps one clone
@@ -71,14 +38,11 @@ impl MediaChangeNotifier {
     }
 
     /// Notify that multiple items were inserted or updated.
-    pub fn upserted_batch(&self, source: MediaChangeSource, items: Vec<MediaItem>) {
+    pub fn upserted_batch(&self, source: ChangeSource, items: Vec<MediaItem>) {
         if items.is_empty() {
             return;
         }
-        if let Err(e) = self.tx.send(DomainEvent::MediaUpserted {
-            source: change_source_from_media(source),
-            items,
-        }) {
+        if let Err(e) = self.tx.send(DomainEvent::MediaUpserted { source, items }) {
             tracing::warn!("MediaChangeNotifier::upserted_batch send failed: {e}");
         }
     }
@@ -104,25 +68,6 @@ impl MediaChangeNotifier {
         }
     }
 }
-
-fn change_source_from_media(source: MediaChangeSource) -> ChangeSource {
-    match source {
-        MediaChangeSource::StartupScan => ChangeSource::StartupScan,
-        MediaChangeSource::UserInteractive => ChangeSource::UserInteractive,
-        MediaChangeSource::Watcher => ChangeSource::FilesystemWatcher,
-    }
-}
-
-/// Compile-time guard: if `MediaChangeEvent` ever grows back above the
-/// `clippy::large_enum_variant` threshold, this fails to compile and CI's
-/// `cargo clippy --all-targets -- -D warnings` step will reject the build.
-const _: () = {
-    assert!(
-        std::mem::size_of::<MediaChangeEvent>() < 256,
-        "MediaChangeEvent grew past 256 bytes; restore the `Box<MediaItem>` \
-         indirection on the `Upserted` variant to avoid large_enum_variant lint"
-    );
-};
 
 #[cfg(test)]
 mod tests {
@@ -174,7 +119,7 @@ mod tests {
             sample_item("file:///tmp/a.jpg"),
             sample_item("file:///tmp/b.jpg"),
         ];
-        notifier.upserted_batch(MediaChangeSource::StartupScan, items.clone());
+        notifier.upserted_batch(ChangeSource::StartupScan, items.clone());
 
         match rx.try_recv() {
             Ok(DomainEvent::MediaUpserted {
@@ -210,24 +155,5 @@ mod tests {
         // Should not panic; only emits a tracing::warn.
         notifier.upserted(sample_item("file:///tmp/a.jpg"));
         notifier.removed("file:///tmp/a.jpg".into());
-    }
-
-    /// Regression guard: `MediaChangeEvent::Upserted` carries a `Box<MediaItem>`
-    /// to keep the enum small enough to avoid `clippy::large_enum_variant`
-    /// (the variant is 256+ bytes once the inner payload is a `MediaItem`).
-    /// The destructure pattern below fails to compile if the inner field is
-    /// ever changed back to a bare `MediaItem`; combined with the static
-    /// `size_of` assertion at the bottom of the file, this test pins the
-    /// boxed layout against the CI `clippy -D warnings` step.
-    #[test]
-    fn upserted_variant_keeps_media_item_boxed() {
-        let event = MediaChangeEvent::Upserted(Box::new(sample_item("file:///tmp/box.jpg")));
-        match event {
-            MediaChangeEvent::Upserted(boxed) => {
-                let inner: &MediaItem = &boxed;
-                assert_eq!(inner.uri, "file:///tmp/box.jpg");
-            }
-            other => panic!("expected Upserted(Box<MediaItem>), got {other:?}"),
-        }
     }
 }

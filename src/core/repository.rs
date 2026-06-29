@@ -113,6 +113,16 @@ impl MediaRepository {
         if delta == 0 {
             return Ok(None);
         }
+        if query == MediaQuery::LiveAll {
+            return db::live_media_neighbor(&self.pool, current_id.get(), delta).map(|neighbor| {
+                neighbor.map(|(index, total, item)| MediaNeighbor {
+                    query,
+                    index,
+                    total,
+                    item,
+                })
+            });
+        }
 
         let page = self.page(query.clone(), 0, u32::MAX)?;
         let Some(current_index) = page
@@ -172,6 +182,44 @@ impl MediaRepository {
             mutation.removed_uris.push(item.uri);
         }
         Ok(mutation)
+    }
+
+    pub fn restore_from_trash(&self, ids: &[MediaId]) -> Result<MediaMutation> {
+        let mut mutation = MediaMutation::default();
+        for id in ids {
+            let item = db::get_media_item(&self.pool, id.get())?;
+            crate::core::trash::restore_from_trash(&item.uri)?;
+            db::unmark_trashed(&self.pool, id.get())?;
+            let mut restored = item;
+            restored.trashed_at = None;
+            mutation.changed_ids.push(*id);
+            mutation.changed_items.push(restored);
+        }
+        crate::core::albums::refresh(&self.pool)?;
+        Ok(mutation)
+    }
+
+    pub fn delete_permanently(&self, ids: &[MediaId]) -> Result<MediaMutation> {
+        let mut mutation = MediaMutation::default();
+        for id in ids {
+            let item = db::get_media_item(&self.pool, id.get())?;
+            if let Err(err) = crate::core::trash::delete_permanently(&item.uri) {
+                tracing::warn!("failed to delete trashed file for {}: {err}", item.uri);
+            }
+            db::delete_media_item(&self.pool, id.get())?;
+            mutation.changed_ids.push(*id);
+            mutation.removed_uris.push(item.uri);
+        }
+        crate::core::albums::refresh(&self.pool)?;
+        Ok(mutation)
+    }
+
+    pub fn empty_trash(&self) -> Result<MediaMutation> {
+        let ids = db::list_trashed_media(&self.pool)?
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        self.delete_permanently(&ids)
     }
 
     pub fn upsert_batch(&self, items: &[NewMediaItem]) -> Result<MediaMutation> {

@@ -63,9 +63,9 @@ Browsing identity is migrating from list indexes to stable `MediaId` values.
 widget/page boundaries; indexes are local to the current visible window only.
 The `ui::models::media_window_model::MediaWindowModel` is the intended owner of
 visible-window state (`MediaQuery`, total count, window start, generation, and
-the GTK `ListStore` projection). Existing transitional adapters may still
-resolve `MediaId` back to a current-window index for older viewer APIs, but new
-batch actions, selection state, and cross-async work should use `MediaId`.
+the GTK `ListStore` projection). Batch actions, selection state, viewer
+activation, and cross-async work should use `MediaId`; indexes are render-local
+only.
 
 Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
 `GtkFlowBox` can map most or all children in the current virtual page even when

@@ -163,7 +163,7 @@ pub fn build_app() -> adw::Application {
                                     };
                                     let list_len_before = media_list.n_items();
                                     let apply_started = std::time::Instant::now();
-                                    crate::ui::apply_to_media_list::apply_domain_event_to_media_list(
+                                    crate::ui::apply_to_media_list::apply_to_media_list(
                                         &media_list,
                                         &event,
                                     );
@@ -275,7 +275,9 @@ fn initialize_db_once_blocking(
     page_size: u32,
 ) -> CoreResult<(DbPool, Vec<MediaItem>)> {
     let pool = init_pool(&path)?;
-    let items = crate::core::db::list_media_page(&pool, 0, page_size)?;
+    let items = crate::core::repository::MediaRepository::new(pool.clone())
+        .page(crate::core::repository::MediaQuery::LiveAll, 0, page_size)?
+        .items;
     Ok((pool, items))
 }
 

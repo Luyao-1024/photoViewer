@@ -63,7 +63,7 @@ use gtk4::subclass::prelude::*;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
-use crate::core::repository::MediaRepository;
+use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
@@ -918,8 +918,9 @@ impl MediaGrid {
             let page_started = std::time::Instant::now();
             let result = gtk::gio::spawn_blocking(move || {
                 let db_started = std::time::Instant::now();
-                let result =
-                    crate::core::db::list_media_page(&pool, target_start, virtual_page_size);
+                let result = MediaRepository::new(pool)
+                    .page(MediaQuery::LiveAll, target_start, virtual_page_size)
+                    .map(|page| page.items);
                 (result, db_started.elapsed())
             })
             .await;
@@ -1174,9 +1175,10 @@ impl MediaGrid {
             items.truncate(max_items);
         }
         let uri_to_index = uri_index_map(&media_list);
-        let total_media_count = crate::core::db::count_live_media(loader.pool())
-            .unwrap_or(items.len())
-            .max(items.len()) as u32;
+        let total_media_count = MediaRepository::new(loader.pool().clone())
+            .count(MediaQuery::LiveAll)
+            .unwrap_or(items.len() as u32)
+            .max(items.len() as u32);
         self.imp().virtual_total.set(total_media_count);
         let is_loading_virtual_window = self.imp().virtual_page_loading.get();
         let loading_placeholder_count = if is_loading_virtual_window {

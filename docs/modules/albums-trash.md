@@ -28,9 +28,9 @@ Albums are mostly folder-derived rather than a separate user-authored collection
 Album rows are a derived projection over media rows. New refresh paths should
 route through `core::refresh::RefreshCoordinator` so album rebuilds are
 single-flight and repeated startup/watch events coalesce. UI pages should avoid
-adding new direct `albums::refresh` calls; during migration, remaining direct
-calls are transitional adapters for flows that have not yet emitted domain
-events.
+adding new direct `albums::refresh` calls; trash and favorite mutations should
+go through `MediaRepository` so DB updates, filesystem side effects, and derived
+album refreshes stay behind one core boundary.
 
 Albums are shown under a collapsible "Albums" group header. The sidebar keeps
 at most 15 visible album rows to avoid vertical overflow; if there are more

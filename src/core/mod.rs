@@ -36,7 +36,7 @@ pub use error::{AppError, Result};
 pub use events::{ChangeSource, DomainEvent, DomainEventSender, MediaFields};
 pub use identity::MediaId;
 pub use media::{MediaItem, NewMediaItem};
-pub use media_change_notifier::{MediaChangeEvent, MediaChangeNotifier};
+pub use media_change_notifier::MediaChangeNotifier;
 pub use metadata::{extract as extract_metadata, RawMetadata};
 pub use refresh::RefreshCoordinator;
 pub use repository::{FavoriteSummary, MediaMutation, MediaPage, MediaQuery, MediaRepository};
