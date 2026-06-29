@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use crate::core::albums;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
+use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::repository::{MediaMutation, MediaRepository};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlbumOpMode {
@@ -50,6 +52,44 @@ pub fn add_to_album(
     }
     albums::refresh(pool)?;
     Ok(updated)
+}
+
+pub fn delete_album_to_trash(pool: &DbPool, album: &albums::Album) -> Result<MediaMutation> {
+    delete_albums_to_trash(pool, std::slice::from_ref(album))
+}
+
+pub fn delete_albums_to_trash(
+    pool: &DbPool,
+    albums_to_delete: &[albums::Album],
+) -> Result<MediaMutation> {
+    for album in albums_to_delete {
+        if album.is_virtual {
+            return Err(AppError::Backend(format!(
+                "cannot delete virtual album: {}",
+                album.display_name()
+            )));
+        }
+    }
+
+    let repo = MediaRepository::new(pool.clone());
+    let mut combined = MediaMutation::default();
+    for album in albums_to_delete {
+        let ids = db::list_media_by_folder(pool, &album.folder_path)?
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            continue;
+        }
+
+        let mutation = repo.move_to_trash(&ids)?;
+        combined.changed_ids.extend(mutation.changed_ids);
+        combined.changed_items.extend(mutation.changed_items);
+        combined.removed_uris.extend(mutation.removed_uris);
+    }
+
+    albums::refresh(pool)?;
+    Ok(combined)
 }
 
 fn add_one(
