@@ -174,8 +174,8 @@ fn sidebar_navigation_suite() {
             .expect("settings button should live in sidebar footer");
         let children = direct_children(&surface);
         assert!(
-            children.len() >= 5,
-            "sidebar surface should include top list, album scroll, trash list, spacer, and footer",
+            children.len() >= 6,
+            "sidebar surface should include top list, album scroll, album selection bar, trash list, spacer, and footer",
         );
         assert_eq!(
             children[0],
@@ -189,20 +189,33 @@ fn sidebar_navigation_suite() {
         );
         assert_eq!(
             children[2],
+            window
+                .imp()
+                .album_selection_bar
+                .get()
+                .upcast::<gtk::Widget>(),
+            "sidebar surface child 2 should be the album selection action bar",
+        );
+        assert!(
+            !window.imp().album_selection_bar.get().is_revealed(),
+            "album selection action bar should start hidden",
+        );
+        assert_eq!(
+            children[3],
             trash_list.clone().upcast::<gtk::Widget>(),
-            "sidebar surface child 2 should be the stable Trash list",
+            "sidebar surface child 3 should be the stable Trash list",
         );
         assert!(
-            has_css_class(&children[3], "glass-sidebar-spacer"),
-            "sidebar surface child 3 should be the flexible footer spacer",
+            has_css_class(&children[4], "glass-sidebar-spacer"),
+            "sidebar surface child 4 should be the flexible footer spacer",
         );
         assert!(
-            children[3].property::<bool>("vexpand"),
+            children[4].property::<bool>("vexpand"),
             "sidebar spacer should expand to pin Settings to the bottom",
         );
         assert_eq!(
-            children[4], footer,
-            "sidebar surface child 4 should be the settings footer",
+            children[5], footer,
+            "sidebar surface child 5 should be the settings footer",
         );
     }
 

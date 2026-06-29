@@ -63,12 +63,14 @@ Design intent:
   the list and footer separately; two independently painted glass surfaces
   create a visible color break at the settings button.
 - The Albums header is a collapsible group control. Album rows appear in a
-  dedicated bounded scroll region directly under it, including virtual albums
-  such as Favorites, Photos, and Videos. The top sidebar list itself remains
-  limited to Photos and Albums so Trash does not get pushed below or above the
-  album group.
+  fixed-height scroll region directly under it, including virtual albums such
+  as Favorites, Photos, and Videos. The scroll region contains all albums, so
+  the sidebar no longer uses a More row.
 - Album rows use indentation, icons, and right-aligned counts to communicate
   hierarchy without adding extra panels.
+- Right-click album actions use the shared glass menu treatment. Destructive
+  album deletion is available only for real folder albums and communicates that
+  media is moved to system trash.
 - Drag-to-reorder album rows should feel like a subtle in-place list operation:
   dim the dragged row and show an above/below drop cue without changing the
   sidebar's width or row height.
