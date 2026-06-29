@@ -73,8 +73,18 @@ pub fn delete_albums_to_trash(
 
     let repo = MediaRepository::new(pool.clone());
     let mut combined = MediaMutation::default();
+    let mut processing_started = false;
     for album in albums_to_delete {
-        let ids = db::list_media_by_folder(pool, &album.folder_path)?
+        let items = match db::list_media_by_folder(pool, &album.folder_path) {
+            Ok(items) => items,
+            Err(err) => {
+                if processing_started {
+                    refresh_after_delete_error(pool);
+                }
+                return Err(err);
+            }
+        };
+        let ids = items
             .into_iter()
             .map(|item| MediaId::from(item.id))
             .collect::<Vec<_>>();
@@ -82,7 +92,14 @@ pub fn delete_albums_to_trash(
             continue;
         }
 
-        let mutation = repo.move_to_trash(&ids)?;
+        processing_started = true;
+        let mutation = match repo.move_to_trash(&ids) {
+            Ok(mutation) => mutation,
+            Err(err) => {
+                refresh_after_delete_error(pool);
+                return Err(err);
+            }
+        };
         combined.changed_ids.extend(mutation.changed_ids);
         combined.changed_items.extend(mutation.changed_items);
         combined.removed_uris.extend(mutation.removed_uris);
@@ -90,6 +107,12 @@ pub fn delete_albums_to_trash(
 
     albums::refresh(pool)?;
     Ok(combined)
+}
+
+fn refresh_after_delete_error(pool: &DbPool) {
+    if let Err(refresh_err) = albums::refresh(pool) {
+        tracing::warn!("failed to refresh albums after album delete error: {refresh_err}");
+    }
 }
 
 fn add_one(

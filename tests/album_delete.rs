@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use photo_viewer::core::album_ops;
 use photo_viewer::core::albums::{self, Album, FAVORITES_ALBUM_PATH};
 use photo_viewer::core::db;
@@ -21,6 +21,14 @@ fn scratch_dir() -> TempDir {
 
 fn media_item(path: &Path) -> NewMediaItem {
     let metadata = std::fs::metadata(path).expect("media file should exist");
+    media_item_with_size_and_mtime(path, metadata.len(), Utc::now())
+}
+
+fn media_item_with_size_and_mtime(
+    path: &Path,
+    file_size: u64,
+    file_mtime: chrono::DateTime<Utc>,
+) -> NewMediaItem {
     let uri = format!("file://{}", path.display());
     NewMediaItem {
         uri: uri.clone(),
@@ -32,9 +40,9 @@ fn media_item(path: &Path) -> NewMediaItem {
         width: Some(100),
         height: Some(100),
         video_duration_secs: None,
-        taken_at: Some(Utc::now()),
-        file_mtime: Utc::now(),
-        file_size: metadata.len(),
+        taken_at: Some(file_mtime),
+        file_mtime,
+        file_size,
         blake3_hash: format!("hash-{uri}"),
     }
 }
@@ -46,6 +54,20 @@ fn create_media(pool: &db::DbPool, folder: &Path, name: &str) -> (i64, String, P
     let item = media_item(&path);
     let uri = item.uri.clone();
     let id = db::insert_media_item(pool, &item).expect("insert media row");
+    (id, uri, path)
+}
+
+fn insert_missing_media(
+    pool: &db::DbPool,
+    folder: &Path,
+    name: &str,
+    file_mtime: chrono::DateTime<Utc>,
+) -> (i64, String, PathBuf) {
+    std::fs::create_dir_all(folder).expect("create media folder");
+    let path = folder.join(name);
+    let item = media_item_with_size_and_mtime(&path, 0, file_mtime);
+    let uri = item.uri.clone();
+    let id = db::insert_media_item(pool, &item).expect("insert missing media row");
     (id, uri, path)
 }
 
@@ -90,6 +112,52 @@ fn delete_virtual_album_rejects_with_virtual_album_error() {
 }
 
 #[test]
+fn delete_empty_real_album_returns_empty_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("album-delete.db")).unwrap();
+    let album = Album {
+        folder_path: dir.path().join("Empty"),
+        name: "Empty".into(),
+        cover_uri: None,
+        photo_count: 0,
+        last_modified: Utc::now(),
+        is_virtual: false,
+    };
+
+    let mutation = album_ops::delete_album_to_trash(&pool, &album).unwrap();
+
+    assert!(mutation.changed_ids.is_empty());
+    assert!(mutation.changed_items.is_empty());
+    assert!(mutation.removed_uris.is_empty());
+}
+
+#[test]
+fn delete_mixed_real_and_virtual_albums_rejects_before_trashing_real_media() {
+    let dir = scratch_dir();
+    let pool = db::init_pool(&dir.path().join("album-delete.db")).unwrap();
+    let folder = dir.path().join("Camera");
+    let (id, _uri, path) = create_media(&pool, &folder, "keep.jpg");
+    let album = album_for(&pool, &folder);
+    let virtual_album = Album {
+        folder_path: PathBuf::from(FAVORITES_ALBUM_PATH),
+        name: "Favorites".into(),
+        cover_uri: None,
+        photo_count: 0,
+        last_modified: Utc::now(),
+        is_virtual: true,
+    };
+
+    let error = album_ops::delete_albums_to_trash(&pool, &[album, virtual_album]).unwrap_err();
+
+    assert!(
+        error.to_string().contains("virtual album"),
+        "unexpected error: {error}"
+    );
+    assert!(db::get_media_item(&pool, id).unwrap().trashed_at.is_none());
+    assert!(path.exists());
+}
+
+#[test]
 fn delete_real_folder_album_trashes_media_and_refreshes_album_list() {
     let dir = scratch_dir();
     let pool = db::init_pool(&dir.path().join("album-delete.db")).unwrap();
@@ -131,6 +199,39 @@ fn delete_real_folder_album_trashes_media_and_refreshes_album_list() {
     assert!(albums::find_by_folder_path(&pool, &other_folder)
         .unwrap()
         .is_some());
+}
+
+#[test]
+fn delete_album_refreshes_albums_after_partial_trash_failure() {
+    let dir = scratch_dir();
+    let pool = db::init_pool(&dir.path().join("album-delete.db")).unwrap();
+    let folder = dir.path().join("Camera");
+    let now = Utc::now();
+    let (moved_id, moved_uri, moved_path) = create_media(&pool, &folder, "moved.jpg");
+    let (missing_id, _missing_uri, missing_path) =
+        insert_missing_media(&pool, &folder, "missing.jpg", now - Duration::seconds(60));
+    let _cleanup = TrashCleanup {
+        uris: vec![moved_uri],
+    };
+    let album = album_for(&pool, &folder);
+
+    let result = album_ops::delete_album_to_trash(&pool, &album);
+
+    assert!(result.is_err(), "missing file should make trash fail");
+    assert!(!moved_path.exists());
+    assert!(!missing_path.exists());
+    assert!(db::get_media_item(&pool, moved_id)
+        .unwrap()
+        .trashed_at
+        .is_some());
+    assert!(db::get_media_item(&pool, missing_id)
+        .unwrap()
+        .trashed_at
+        .is_none());
+    let refreshed_album = albums::find_by_folder_path(&pool, &folder)
+        .unwrap()
+        .expect("album should remain for the live missing row");
+    assert_eq!(refreshed_album.photo_count, 1);
 }
 
 #[test]
