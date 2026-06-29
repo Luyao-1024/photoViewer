@@ -11,10 +11,13 @@ cargo clippy --all-targets
 
 Use focused integration tests during development, then broaden when touching shared UI/CSS, storage, navigation, or edit behavior.
 
+Run `cargo test --test ux_click_flows` before pushing/uploading a branch with UI interaction changes. Local edits and commits do not require this gate, but upstream handoff does.
+
 ## Test Layout
 
 - `tests/common/mod.rs`: shared test fixtures and helpers.
 - `tests/e2e_*`: user-flow level coverage.
+- `tests/ux_*`: GTK signal-level UX flows that simulate user clicks/activations.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
 - `tests/*_flow.rs`: module-level behavior such as trash and destructive rotate.
 - `src/**` unit tests: small invariants close to implementation.
