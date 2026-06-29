@@ -91,9 +91,9 @@ pub struct FavoriteMenuState {
 
 pub type ActivateCallback = Rc<dyn Fn(MediaId)>;
 pub type SimpleCallback = Rc<dyn Fn()>;
-pub type SelectionCallback = Rc<dyn Fn(Vec<u32>)>;
-pub type FavoriteCallback = Rc<dyn Fn(Vec<u32>, bool)>;
-pub type FavoriteStateCallback = Rc<dyn Fn(Vec<u32>) -> FavoriteMenuState>;
+pub type SelectionCallback = Rc<dyn Fn(Vec<MediaId>)>;
+pub type FavoriteCallback = Rc<dyn Fn(Vec<MediaId>, bool)>;
+pub type FavoriteStateCallback = Rc<dyn Fn(Vec<MediaId>) -> FavoriteMenuState>;
 
 #[derive(Clone)]
 pub struct MediaGridCallbacks {
@@ -128,14 +128,11 @@ mod imp {
         pub on_move_to_trash: std::cell::OnceCell<SelectionCallback>,
         pub on_set_favorite: std::cell::OnceCell<FavoriteCallback>,
         pub on_query_favorite_state: std::cell::OnceCell<FavoriteStateCallback>,
-        /// Flattened `(flow_child, global_index)` for every rendered tile in
-        /// current mode.
-        pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32)>>,
-        /// Global indices (into the shared `ListStore`) currently in the
-        /// "selected" set. The set is global — it spans year/month/day
-        /// sections, because `PhotosPage` is the only host and it shares one
-        /// `ListStore` across the three sub-grids.
-        pub selected: RefCell<HashSet<u32>>,
+        /// Flattened `(flow_child, local_window_index, media_id)` for every
+        /// rendered tile in current mode.
+        pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32, MediaId)>>,
+        /// Stable media ids currently in the "selected" set.
+        pub selected: RefCell<HashSet<MediaId>>,
         /// 当前渲染上限：初始 = `max_rendered_grid_items()`；
         /// 滚动接近底部时自动增长（最多到 `ABSOLUTE_RENDERED_LIMIT`）。
         pub rendered_limit: Cell<usize>,
@@ -579,7 +576,7 @@ impl MediaGrid {
     }
 
     /// Snapshot of currently-selected global indices. Order is unspecified.
-    pub fn selected_indices(&self) -> Vec<u32> {
+    pub fn selected_ids(&self) -> Vec<MediaId> {
         let s = self.imp().selected.borrow();
         s.iter().copied().collect()
     }
@@ -590,7 +587,7 @@ impl MediaGrid {
             .displayed_items
             .borrow()
             .iter()
-            .map(|(_, gi)| *gi)
+            .map(|(_, gi, _)| *gi)
             .collect()
     }
 
@@ -599,13 +596,13 @@ impl MediaGrid {
         self.imp().is_multi_select_mode.set(true);
         let mut next = HashSet::new();
         let items = self.imp().displayed_items.borrow().clone();
-        for (flow_child, gi) in items {
+        for (flow_child, _, media_id) in items {
             if let Some(parent) = flow_child.parent() {
                 if let Ok(flow) = parent.downcast::<gtk::FlowBox>() {
                     flow.select_child(&flow_child);
                 }
             }
-            next.insert(gi);
+            next.insert(media_id);
         }
 
         let mut changed = false;
@@ -642,18 +639,18 @@ impl MediaGrid {
         if displayed.is_empty() {
             return false;
         }
-        for (_, gi) in displayed.iter() {
-            if !selected.contains(gi) {
+        for (_, _, media_id) in displayed.iter() {
+            if !selected.contains(media_id) {
                 return false;
             }
         }
         true
     }
 
-    fn selected_indices_sorted(&self) -> Vec<u32> {
-        let mut indices: Vec<u32> = self.imp().selected.borrow().iter().copied().collect();
-        indices.sort_unstable();
-        indices
+    fn selected_ids_sorted(&self) -> Vec<MediaId> {
+        let mut ids: Vec<MediaId> = self.imp().selected.borrow().iter().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Clear the selection (both in the `selected` set AND on every visible
@@ -687,14 +684,14 @@ impl MediaGrid {
         &self,
         flow: &gtk::FlowBox,
         clicked_child: &gtk::FlowBoxChild,
-        global_index: u32,
-    ) -> Vec<u32> {
-        let was_selected = self.imp().selected.borrow().contains(&global_index);
+        media_id: MediaId,
+    ) -> Vec<MediaId> {
+        let was_selected = self.imp().selected.borrow().contains(&media_id);
         if !was_selected {
             {
                 let mut s = self.imp().selected.borrow_mut();
                 s.clear();
-                s.insert(global_index);
+                s.insert(media_id);
             }
             let content = self.imp().content.get();
             let mut section_child = content.first_child();
@@ -707,7 +704,7 @@ impl MediaGrid {
             flow.select_child(clicked_child);
             self.fire_selection_changed();
         }
-        self.selected_indices_sorted()
+        self.selected_ids_sorted()
     }
 
     /// Notify whenever the scrolled viewport moves. `PhotosPage` uses this to
@@ -1068,17 +1065,17 @@ impl MediaGrid {
         }
     }
 
-    /// Toggle membership of `global_index` in the selected set, then toggle
+    /// Toggle membership of `media_id` in the selected set, then toggle
     /// the visual highlight on `child` via its parent `FlowBox`. Fires
     /// `selection-changed`.
-    fn toggle_selection(&self, global_index: u32, child: &gtk::FlowBoxChild, flow: &gtk::FlowBox) {
+    fn toggle_selection(&self, media_id: MediaId, child: &gtk::FlowBoxChild, flow: &gtk::FlowBox) {
         let now_selected = {
             let mut s = self.imp().selected.borrow_mut();
-            if s.contains(&global_index) {
-                s.remove(&global_index);
+            if s.contains(&media_id) {
+                s.remove(&media_id);
                 false
             } else {
-                s.insert(global_index);
+                s.insert(media_id);
                 true
             }
         };
@@ -1297,11 +1294,14 @@ impl MediaGrid {
 
                 // Build tiles + remember each child's global index for activation.
                 let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
+                let mut media_ids: Vec<MediaId> = Vec::with_capacity(section.items.len());
                 let mut activation_items: Vec<(i64, String, String)> =
                     Vec::with_capacity(section.items.len());
                 for item in &section.items {
                     let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
+                    let media_id = MediaId::from(item.id);
                     global_indices.push(gi);
+                    media_ids.push(media_id);
                     activation_items.push((
                         item.id,
                         item.display_name().to_string(),
@@ -1327,7 +1327,7 @@ impl MediaGrid {
                         .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
                     {
                         if gi != u32::MAX {
-                            displayed_items.push((flow_child.clone(), gi));
+                            displayed_items.push((flow_child.clone(), gi, media_id));
                         }
                     }
                     photo_count += 1;
@@ -1338,12 +1338,9 @@ impl MediaGrid {
                 // toggles selection; otherwise the item opens in viewer.
                 let on_act = on_activate.clone();
                 let weak = self.downgrade();
-                let media_ids_for_activation: Vec<MediaId> = activation_items
-                    .iter()
-                    .map(|(id, _, _)| MediaId::from(*id))
-                    .collect();
+                let media_ids_for_activation = media_ids.clone();
                 let global_indices_for_activation = global_indices.clone();
-                let global_indices_for_context = global_indices;
+                let media_ids_for_context = media_ids;
                 let section_label_for_activation = section.label.clone();
                 flow.connect_child_activated(move |flow, child| {
                 let idx = child.index();
@@ -1385,7 +1382,7 @@ impl MediaGrid {
                 );
                 if is_multi {
                     // `flow` comes from the signal arg, no extra upgrade needed.
-                    this.toggle_selection(gi, child, flow);
+                    this.toggle_selection(media_id, child, flow);
                 } else {
                     on_act(media_id);
                 }
@@ -1394,7 +1391,7 @@ impl MediaGrid {
                 if enable_context_menu {
                     let weak_for_context = self.downgrade();
                     let section_label_for_ctx = section.label.clone();
-                    let global_indices_for_context = global_indices_for_context.clone();
+                    let media_ids_for_context = media_ids_for_context.clone();
                     let flow_for_ctx = flow.clone();
                     let on_add_to_album_ctx = on_add_to_album.clone();
                     let on_move_to_trash_ctx = on_move_to_trash.clone();
@@ -1420,16 +1417,15 @@ impl MediaGrid {
                         _ => return,
                     };
 
-                    let gi = match global_indices_for_context.get(hit_idx).copied() {
-                        Some(index) if index != u32::MAX => index,
-                        _ => return,
+                    let Some(media_id) = media_ids_for_context.get(hit_idx).copied() else {
+                        return;
                     };
 
                     let in_multi_mode = this.is_multi_select_mode();
                     let target_indices = if in_multi_mode {
-                        this.ensure_context_selection(&flow_for_ctx, &flow_child_for_ctx, gi)
+                        this.ensure_context_selection(&flow_for_ctx, &flow_child_for_ctx, media_id)
                     } else {
-                        vec![gi]
+                        vec![media_id]
                     };
                     let favorite_state = (on_query_favorite_state_ctx)(target_indices.clone());
                     let child_alloc = flow_child_for_ctx.allocation();
@@ -1499,7 +1495,7 @@ impl MediaGrid {
                                 this.ensure_context_selection(
                                     &flow_for_ctx_enter,
                                     &flow_child_for_ctx_enter,
-                                    gi,
+                                    media_id,
                                 );
                             }
                             popover_enter.popdown();
