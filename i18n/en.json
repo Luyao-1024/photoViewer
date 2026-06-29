@@ -209,6 +209,7 @@
     "setting.thumbnail_generation_speed.slow": "Slow",
     "setting.thumbnail_generation_speed.normal": "Normal",
     "setting.thumbnail_generation_speed.fast": "Fast",
+    "setting.thumbnail_generation_speed.fastest": "Fastest",
     "setting.thumbnail_generation_speed_save_failed": "Failed to save thumbnail generation speed: {error}",
     "setting.storage.thumbnails_size": "Thumbnail cache: {size}",
     "setting.storage.database_size": "Database: {size}",

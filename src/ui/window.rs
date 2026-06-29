@@ -1167,37 +1167,76 @@ impl MainWindow {
         storage_group.set_description(Some(&tr("setting.section.storage_description")));
         content.append(&storage_group);
 
+        // ── Thumbnail generation speed: horizontal radio buttons ──────────
         let slow_label = tr("setting.thumbnail_generation_speed.slow");
         let normal_label = tr("setting.thumbnail_generation_speed.normal");
         let fast_label = tr("setting.thumbnail_generation_speed.fast");
-        let speed_dropdown =
-            gtk::DropDown::from_strings(&[&slow_label, &normal_label, &fast_label]);
-        speed_dropdown.set_valign(gtk::Align::Center);
-        speed_dropdown.set_selected(runtime_config::thumbnail_generation_speed().selected_index());
+        let fastest_label = tr("setting.thumbnail_generation_speed.fastest");
+
+        let btn_slow = gtk::CheckButton::with_label(&slow_label);
+        let btn_normal = gtk::CheckButton::with_label(&normal_label);
+        let btn_fast = gtk::CheckButton::with_label(&fast_label);
+        let btn_fastest = gtk::CheckButton::with_label(&fastest_label);
+
+        // Set up radio group: Normal/Fast/Fastest join Slow's group.
+        btn_normal.set_group(Some(&btn_slow));
+        btn_fast.set_group(Some(&btn_slow));
+        btn_fastest.set_group(Some(&btn_slow));
+
+        // Select the radio button matching the current config.
+        let current_speed = runtime_config::thumbnail_generation_speed();
+        match current_speed {
+            runtime_config::ThumbnailGenerationSpeed::Slow => btn_slow.set_active(true),
+            runtime_config::ThumbnailGenerationSpeed::Normal => btn_normal.set_active(true),
+            runtime_config::ThumbnailGenerationSpeed::Fast => btn_fast.set_active(true),
+            runtime_config::ThumbnailGenerationSpeed::Fastest => btn_fastest.set_active(true),
+        }
+
+        let speed_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        speed_box.set_valign(gtk::Align::Center);
+        speed_box.append(&btn_slow);
+        speed_box.append(&btn_normal);
+        speed_box.append(&btn_fast);
+        speed_box.append(&btn_fastest);
 
         let speed_row = adw::ActionRow::new();
         speed_row.set_title(&tr("setting.thumbnail_generation_speed"));
         speed_row.set_subtitle(&tr("setting.thumbnail_generation_speed_description"));
         speed_row.set_activatable(false);
-        speed_row.add_suffix(&speed_dropdown);
+        speed_row.add_suffix(&speed_box);
         storage_group.add(&speed_row);
 
         let parent_for_speed = parent.clone();
-        speed_dropdown.connect_selected_notify(move |dropdown| {
-            let speed =
-                runtime_config::ThumbnailGenerationSpeed::from_selected_index(dropdown.selected());
-            if let Err(err) = runtime_config::set_thumbnail_generation_speed(speed) {
-                show_settings_error_dialog(
-                    &parent_for_speed,
-                    &trf(
-                        "setting.thumbnail_generation_speed_save_failed",
-                        &[("error", &err)],
-                    ),
-                );
-            } else {
-                show_restart_required_dialog(&parent_for_speed);
-            }
-        });
+        let connect_speed_btn =
+            move |btn: &gtk::CheckButton, speed: runtime_config::ThumbnailGenerationSpeed| {
+                let parent = parent_for_speed.clone();
+                btn.connect_toggled(move |btn| {
+                    if !btn.is_active() {
+                        return;
+                    }
+                    if let Err(err) = runtime_config::set_thumbnail_generation_speed(speed) {
+                        show_settings_error_dialog(
+                            &parent,
+                            &trf(
+                                "setting.thumbnail_generation_speed_save_failed",
+                                &[("error", &err)],
+                            ),
+                        );
+                    } else {
+                        show_restart_required_dialog(&parent);
+                    }
+                });
+            };
+        connect_speed_btn(&btn_slow, runtime_config::ThumbnailGenerationSpeed::Slow);
+        connect_speed_btn(
+            &btn_normal,
+            runtime_config::ThumbnailGenerationSpeed::Normal,
+        );
+        connect_speed_btn(&btn_fast, runtime_config::ThumbnailGenerationSpeed::Fast);
+        connect_speed_btn(
+            &btn_fastest,
+            runtime_config::ThumbnailGenerationSpeed::Fastest,
+        );
 
         // Show current storage usage
         let cache_dir = config::cache_dir();
@@ -1849,14 +1888,14 @@ mod tests {
         }
     }
 
-    fn collect_dropdowns(widget: &gtk::Widget, dropdowns: &mut Vec<gtk::DropDown>) {
-        if let Some(dropdown) = widget.downcast_ref::<gtk::DropDown>() {
-            dropdowns.push(dropdown.clone());
+    fn collect_check_buttons(widget: &gtk::Widget, buttons: &mut Vec<gtk::CheckButton>) {
+        if let Some(btn) = widget.downcast_ref::<gtk::CheckButton>() {
+            buttons.push(btn.clone());
         }
         let mut child = widget.first_child();
         while let Some(current) = child {
             child = current.next_sibling();
-            collect_dropdowns(&current, dropdowns);
+            collect_check_buttons(&current, buttons);
         }
     }
 
@@ -2064,13 +2103,27 @@ mod tests {
             "settings page should expose thumbnail generation speed, got {titles:?}"
         );
 
-        let mut dropdowns = Vec::new();
-        collect_dropdowns(&page, &mut dropdowns);
+        let mut check_buttons = Vec::new();
+        collect_check_buttons(&page, &mut check_buttons);
+        let speed_labels: Vec<String> = check_buttons
+            .iter()
+            .filter_map(|btn| btn.label().map(|l| l.to_string()))
+            .collect();
         assert!(
-            dropdowns
-                .iter()
-                .any(|dropdown| dropdown.model().is_some_and(|model| model.n_items() == 3)),
-            "settings page should expose a three-option thumbnail speed dropdown"
+            speed_labels.contains(&tr("setting.thumbnail_generation_speed.slow")),
+            "should have Slow radio button, got {speed_labels:?}"
+        );
+        assert!(
+            speed_labels.contains(&tr("setting.thumbnail_generation_speed.normal")),
+            "should have Normal radio button, got {speed_labels:?}"
+        );
+        assert!(
+            speed_labels.contains(&tr("setting.thumbnail_generation_speed.fast")),
+            "should have Fast radio button, got {speed_labels:?}"
+        );
+        assert!(
+            speed_labels.contains(&tr("setting.thumbnail_generation_speed.fastest")),
+            "should have Fastest radio button, got {speed_labels:?}"
         );
     }
 }

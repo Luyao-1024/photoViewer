@@ -40,6 +40,7 @@ gstreamer-video = "0.22"
 
 [build-dependencies]
 glib-build-tools = "0.19"
+cc = "1"
 
 [dev-dependencies]
 tempfile = "3"

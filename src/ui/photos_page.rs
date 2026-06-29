@@ -23,7 +23,7 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
-use crate::core::thumbnails::ThumbnailLoader;
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, db::DbPool};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -340,15 +340,29 @@ impl PhotosPage {
         obj.imp().mode_selector.get().set_stack(&stack);
         {
             let weak = obj.downgrade();
-            stack.connect_notify_local(Some("visible-child"), move |_, _| {
+            let prewarm_loader = obj.imp().loader.borrow().clone();
+            stack.connect_notify_local(Some("visible-child"), move |stack, _| {
                 if let Some(this) = weak.upgrade() {
                     this.sync_active_grid_rebuilds();
                     this.schedule_mode_selector_contrast_update();
+                }
+                // 同步后台预热缩略图尺寸到当前视图模式
+                if let Some(loader) = &prewarm_loader {
+                    let size = match stack.visible_child_name().as_deref() {
+                        Some("year") => ThumbnailSize::Small,
+                        Some("month" | "day") => ThumbnailSize::Medium,
+                        _ => return,
+                    };
+                    loader.set_prewarm_thumbnail_size(size);
                 }
             });
         }
         obj.sync_active_grid_rebuilds();
         obj.schedule_mode_selector_contrast_update();
+        // 初始化时也同步一次
+        if let Some(loader) = obj.imp().loader.borrow().as_ref() {
+            loader.set_prewarm_thumbnail_size(ThumbnailSize::Small); // Year 是默认模式
+        }
 
         // Wire the batch toolbar buttons. For selected items:
         // - Select All: select current mode's rendered tiles.
