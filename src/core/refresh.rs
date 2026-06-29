@@ -6,6 +6,12 @@ use std::rc::Rc;
 
 type AlbumRefreshJob = Rc<dyn Fn() -> Result<()>>;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LibraryStats {
+    pub live_total: usize,
+    pub thumbnails_generated: usize,
+}
+
 #[derive(Clone)]
 pub struct RefreshCoordinator {
     album_refresh_running: Rc<Cell<bool>>,
