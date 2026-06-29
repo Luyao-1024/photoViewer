@@ -14,6 +14,7 @@
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use photo_viewer::core::albums::{Album, FAVORITES_ALBUM_PATH};
+use photo_viewer::core::i18n::tr;
 use std::path::PathBuf;
 
 fn album(is_virtual: bool) -> Album {
@@ -132,12 +133,18 @@ fn context_menu_uses_glass_menu_classes() {
         "popover should carry glass-menu"
     );
     assert!(
-        labels.iter().any(|label| label == "管理相册"),
-        "real album menu should contain 管理相册, got {labels:?}"
+        labels
+            .iter()
+            .any(|label| label == &tr("album.context.manage")),
+        "real album menu should contain {}, got {labels:?}",
+        tr("album.context.manage")
     );
     assert!(
-        labels.iter().any(|label| label == "删除相册"),
-        "real album menu should contain 删除相册, got {labels:?}"
+        labels
+            .iter()
+            .any(|label| label == &tr("album.context.delete")),
+        "real album menu should contain {}, got {labels:?}",
+        tr("album.context.delete")
     );
 
     let popover = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(true));
@@ -145,11 +152,17 @@ fn context_menu_uses_glass_menu_classes() {
     collect_button_labels(popover.upcast_ref(), &mut labels);
 
     assert!(
-        labels.iter().any(|label| label == "管理相册"),
-        "virtual album menu should contain 管理相册, got {labels:?}"
+        labels
+            .iter()
+            .any(|label| label == &tr("album.context.manage")),
+        "virtual album menu should contain {}, got {labels:?}",
+        tr("album.context.manage")
     );
     assert!(
-        !labels.iter().any(|label| label == "删除相册"),
-        "virtual album menu should omit 删除相册, got {labels:?}"
+        !labels
+            .iter()
+            .any(|label| label == &tr("album.context.delete")),
+        "virtual album menu should omit {}, got {labels:?}",
+        tr("album.context.delete")
     );
 }

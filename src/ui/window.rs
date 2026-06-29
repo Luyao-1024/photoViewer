@@ -22,6 +22,7 @@ use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
+use crate::core::repository::MediaMutation;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
@@ -443,6 +444,11 @@ impl MainWindow {
                 None,
             );
             popover.set_parent(&row);
+            popover.connect_closed(|popover| {
+                if popover.parent().is_some() {
+                    popover.unparent();
+                }
+            });
             let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
             popover.set_pointing_to(Some(&rect));
             popover.popup();
@@ -631,16 +637,14 @@ impl MainWindow {
             return;
         }
 
+        let album_name = album.display_name();
         let dialog = adw::AlertDialog::builder()
-            .heading("删除相册")
-            .body(format!(
-                "相册“{}”中的媒体将移到系统回收站。",
-                album.display_name()
-            ))
+            .heading(tr("album.delete.confirm_title"))
+            .body(trf("album.delete.confirm_body", &[("album", &album_name)]))
             .build();
         dialog.add_css_class("glass-alert-dialog");
-        dialog.add_response("cancel", "取消");
-        dialog.add_response("delete", "删除");
+        dialog.add_response("cancel", &tr("common.cancel"));
+        dialog.add_response("delete", &tr("album.delete.confirm_action"));
         dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -663,39 +667,58 @@ impl MainWindow {
             return;
         };
 
-        let deleted_paths: Vec<PathBuf> = albums
-            .iter()
-            .map(|album| album.folder_path.clone())
-            .collect();
-        match crate::core::album_ops::delete_albums_to_trash(&pool, &albums) {
-            Ok(mutation) => {
-                if let Some(media_list) = self.imp().media_list.borrow().as_ref() {
-                    remove_uris_from_media_list(media_list, &mutation.removed_uris);
-                }
-                self.refresh_album_rows();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let worker_result =
+                gtk::gio::spawn_blocking(move || delete_albums_to_trash_worker(pool, albums)).await;
 
-                let active_deleted = self
-                    .imp()
-                    .active_album
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|active| deleted_paths.iter().any(|path| path == active));
-                if active_deleted {
-                    *self.imp().active_album.borrow_mut() = None;
-                    self.imp().album_list.get().unselect_all();
-                    self.imp().trash_list.get().unselect_all();
-                    self.imp().selecting_programmatically.set(true);
-                    if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
-                        self.imp().sidebar_list.get().select_row(Some(&row));
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            match worker_result {
+                Ok(result) => {
+                    if let Err(err) = &result.operation {
+                        tracing::warn!("failed to delete album to trash: {err}");
                     }
-                    self.imp().selecting_programmatically.set(false);
-                    pop_to_photos_root(&self.imp().nav_view.get());
+                    if let Some(media_list) = window.imp().media_list.borrow().as_ref() {
+                        remove_deleted_album_media_from_media_list(
+                            media_list,
+                            &result.deleted_paths,
+                            &result.remaining_live_uris,
+                        );
+                    }
+                    window.refresh_album_rows();
+
+                    let active_should_close = window
+                        .imp()
+                        .active_album
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|active| {
+                            result.deleted_paths.iter().any(|path| path == active)
+                                && !result
+                                    .remaining_live_folder_paths
+                                    .iter()
+                                    .any(|path| path == active)
+                        });
+                    if active_should_close {
+                        *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
+                        window.imp().selecting_programmatically.set(true);
+                        if let Some(row) = window.imp().sidebar_list.get().row_at_index(0) {
+                            window.imp().sidebar_list.get().select_row(Some(&row));
+                        }
+                        window.imp().selecting_programmatically.set(false);
+                        pop_to_photos_root(&window.imp().nav_view.get());
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("album delete worker failed: {err:?}");
+                    window.refresh_album_rows();
                 }
             }
-            Err(err) => {
-                tracing::warn!("failed to delete album to trash: {err}");
-            }
-        }
+        });
     }
 
     fn show_trash_page(&self, nav_view: &adw::NavigationView) {
@@ -1499,7 +1522,7 @@ fn build_album_context_menu(
         .build();
 
     let manage_btn = gtk::Button::builder()
-        .label("管理相册")
+        .label(tr("album.context.manage"))
         .css_classes(["glass-menu-item"])
         .build();
     if let Some(on_manage) = on_manage {
@@ -1515,7 +1538,7 @@ fn build_album_context_menu(
 
     if let Some(on_select) = on_select {
         let multi_btn = gtk::Button::builder()
-            .label("多选相册")
+            .label(tr("album.context.multi_select"))
             .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
             .build();
         let popover_weak = popover.downgrade();
@@ -1530,7 +1553,7 @@ fn build_album_context_menu(
 
     if !album.is_virtual {
         let delete_btn = gtk::Button::builder()
-            .label("删除相册")
+            .label(tr("album.context.delete"))
             .css_classes(["glass-menu-item", "glass-menu-item-danger"])
             .build();
         if let Some(on_delete) = on_delete {
@@ -1562,18 +1585,70 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
     }
 }
 
-fn remove_uris_from_media_list(media_list: &gtk::gio::ListStore, removed_uris: &[String]) {
-    if removed_uris.is_empty() {
+struct AlbumDeleteUiResult {
+    operation: std::result::Result<MediaMutation, String>,
+    deleted_paths: Vec<PathBuf>,
+    remaining_live_uris: HashSet<String>,
+    remaining_live_folder_paths: HashSet<PathBuf>,
+}
+
+fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDeleteUiResult {
+    let deleted_paths = albums
+        .iter()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
+        .collect::<Vec<_>>();
+    let operation = crate::core::album_ops::delete_albums_to_trash(&pool, &albums)
+        .map_err(|err| err.to_string());
+
+    let mut remaining_live_uris = HashSet::new();
+    let mut remaining_live_folder_paths = HashSet::new();
+    for path in &deleted_paths {
+        match crate::core::db::list_media_by_folder(&pool, path) {
+            Ok(items) => {
+                if !items.is_empty() {
+                    remaining_live_folder_paths.insert(path.clone());
+                }
+                remaining_live_uris.extend(items.into_iter().map(|item| item.uri));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to query remaining live media for album {}: {err}",
+                    path.display()
+                );
+                remaining_live_folder_paths.insert(path.clone());
+            }
+        }
+    }
+
+    AlbumDeleteUiResult {
+        operation,
+        deleted_paths,
+        remaining_live_uris,
+        remaining_live_folder_paths,
+    }
+}
+
+fn remove_deleted_album_media_from_media_list(
+    media_list: &gtk::gio::ListStore,
+    deleted_paths: &[PathBuf],
+    remaining_live_uris: &HashSet<String>,
+) {
+    if deleted_paths.is_empty() {
         return;
     }
 
-    let removed: HashSet<&str> = removed_uris.iter().map(String::as_str).collect();
+    let deleted_paths: HashSet<&PathBuf> = deleted_paths.iter().collect();
     let mut index = 0;
     while index < media_list.n_items() {
         let should_remove = media_list
             .item(index)
             .and_downcast::<glib::BoxedAnyObject>()
-            .is_some_and(|boxed| removed.contains(boxed.borrow::<MediaItem>().uri.as_str()));
+            .is_some_and(|boxed| {
+                let item = boxed.borrow::<MediaItem>();
+                deleted_paths.contains(&item.folder_path)
+                    && !remaining_live_uris.contains(&item.uri)
+            });
         if should_remove {
             media_list.remove(index);
         } else {
@@ -1585,6 +1660,9 @@ fn remove_uris_from_media_list(media_list: &gtk::gio::ListStore, removed_uris: &
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::collections::HashSet;
+    use std::path::Path;
 
     fn collect_labels(widget: &gtk::Widget, labels: &mut Vec<String>) {
         if let Some(label) = widget.downcast_ref::<gtk::Label>() {
@@ -1628,6 +1706,58 @@ mod tests {
             child = current.next_sibling();
             collect_preference_titles(&current, titles);
         }
+    }
+
+    fn media_item(id: i64, folder_path: &str, name: &str) -> MediaItem {
+        let folder_path = PathBuf::from(folder_path);
+        let path = folder_path.join(name);
+        MediaItem {
+            id,
+            uri: format!("file://{}", path.display()),
+            path,
+            folder_path,
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 10,
+            blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
+            trashed_at: None,
+        }
+    }
+
+    fn media_list_uris(list: &gtk::gio::ListStore) -> Vec<String> {
+        (0..list.n_items())
+            .filter_map(|index| {
+                list.item(index)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|boxed| boxed.borrow::<MediaItem>().uri.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn album_delete_pruning_removes_deleted_folder_rows_except_remaining_live_uris() {
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let deleted = media_item(1, "/tmp/Camera", "deleted.jpg");
+        let still_live = media_item(2, "/tmp/Camera", "still-live.jpg");
+        let other = media_item(3, "/tmp/Other", "keep.jpg");
+        list.append(&glib::BoxedAnyObject::new(deleted.clone()));
+        list.append(&glib::BoxedAnyObject::new(still_live.clone()));
+        list.append(&glib::BoxedAnyObject::new(other.clone()));
+
+        remove_deleted_album_media_from_media_list(
+            &list,
+            &[Path::new("/tmp/Camera").to_path_buf()],
+            &HashSet::from([still_live.uri.clone()]),
+        );
+
+        assert_eq!(media_list_uris(&list), vec![still_live.uri, other.uri]);
     }
 
     #[test]
