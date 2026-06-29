@@ -109,6 +109,17 @@ impl MediaRepository {
         }
         Ok(mutation)
     }
+
+    pub fn move_to_trash(&self, ids: &[MediaId]) -> Result<MediaMutation> {
+        let mut mutation = MediaMutation::default();
+        for id in ids {
+            let item = db::get_media_item(&self.pool, id.get())?;
+            crate::core::trash::move_to_trash_marked(&self.pool, item.id, &item.uri)?;
+            mutation.changed_ids.push(*id);
+            mutation.removed_uris.push(item.uri);
+        }
+        Ok(mutation)
+    }
 }
 
 fn page_vec(items: Vec<MediaItem>, start: u32, limit: u32) -> Vec<MediaItem> {

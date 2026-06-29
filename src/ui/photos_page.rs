@@ -25,8 +25,7 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{
     albums,
-    db::{self, DbPool},
-    trash,
+    db::DbPool,
 };
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -735,22 +734,17 @@ impl PhotosPage {
         }
 
         let weak = self.downgrade();
-        let ids_for_worker: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+        let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let removed = gtk::gio::spawn_blocking(move || {
-                let mut removed = Vec::new();
-                for id in ids_for_worker {
-                    let Ok(item) = db::get_media_item(&pool, id) else {
-                        continue;
-                    };
-                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
-                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
-                    if trash::move_to_trash_marked(&pool, item.id, &item.uri).is_ok() {
-                        removed.push(item.id);
-                    }
-                }
+                let repo = crate::core::repository::MediaRepository::new(pool.clone());
+                let mutation = repo.move_to_trash(&ids_for_worker).unwrap_or_default();
                 let _ = albums::refresh(&pool);
-                removed
+                mutation
+                    .changed_ids
+                    .into_iter()
+                    .map(MediaId::get)
+                    .collect::<Vec<_>>()
             })
             .await
             .unwrap_or_default();
@@ -774,12 +768,11 @@ impl PhotosPage {
         }
 
         let weak = self.downgrade();
-        let ids_for_worker: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+        let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let _ = gtk::gio::spawn_blocking(move || {
-                for id in ids_for_worker {
-                    let _ = db::set_media_favorite(&pool, id, is_favorite);
-                }
+                let repo = crate::core::repository::MediaRepository::new(pool.clone());
+                let _ = repo.set_favorite(&ids_for_worker, is_favorite);
                 let _ = albums::refresh(&pool);
             })
             .await;
@@ -1093,7 +1086,7 @@ mod tests {
     fn repeated_photo_activation_pushes_only_one_viewer_while_pending() {
         let _ = gtk::init();
         let tmp = tempfile::tempdir().unwrap();
-        let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
         let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
         let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
