@@ -25,6 +25,13 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 
 Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album counts derived from media rows so scanner/database state remains the source of truth.
 
+Album rows are a derived projection over media rows. New refresh paths should
+route through `core::refresh::RefreshCoordinator` so album rebuilds are
+single-flight and repeated startup/watch events coalesce. UI pages should avoid
+adding new direct `albums::refresh` calls; during migration, remaining direct
+calls are transitional adapters for flows that have not yet emitted domain
+events.
+
 Albums are shown under a collapsible "Albums" group header. The sidebar keeps
 at most 15 visible album rows to avoid vertical overflow; if there are more
 albums,

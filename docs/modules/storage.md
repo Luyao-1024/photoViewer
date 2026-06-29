@@ -25,6 +25,23 @@ Storage covers SQLite schema/migrations, media rows, filesystem scanning, metada
 
 SQLite uses an r2d2 connection pool with WAL and foreign-key pragmas applied through the pool init hook. `schema.sql` is embedded with `include_str!`; migrations are expected to be idempotent.
 
+UI-facing database access should go through `core::repository::MediaRepository`.
+`core::db` remains the low-level SQL/migration module, but widgets and pages
+should not grow new direct calls to it. Repository methods return task-oriented
+snapshots and mutations (`MediaPage`, `MediaMutation`, `FavoriteSummary`) keyed
+by stable `MediaId` values, so future SQL optimizations can stay behind this
+boundary.
+
+Runtime change notifications use `core::events::DomainEvent` as the shared
+vocabulary. Existing scanner/watcher notifications can be bridged into domain
+events during migration, but new refresh paths should emit post-commit domain
+events rather than directly patching unrelated UI state.
+
+Derived refresh work belongs in `core::refresh::RefreshCoordinator`. Album
+refreshes are single-flight with pending replay; thumbnail/library statistics
+should be exposed through cached projection values or dirty callbacks rather
+than synchronous widget-side DB polling.
+
 Startup initialization now also validates that `media_items` still has the required core columns used by current queries (including `video_duration_secs`). If required columns are missing, initialization treats it as a migration failure and deletes/recreates the DB (`.db`, `.db-wal`, `.db-shm`) to auto-recover. Extra columns are tolerated.
 
 Live photos and trashed photos are separated with `trashed_at IS NULL` query/index behavior. Keep this distinction intact when changing media queries.

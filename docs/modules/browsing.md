@@ -58,6 +58,15 @@ model, hidden views, or FlowBox children grow with the full on-disk library;
 doing so drives GB-level memory use and blocks the main thread before the app
 is usable.
 
+Browsing identity is migrating from list indexes to stable `MediaId` values.
+`MediaGrid` activation and multi-select callbacks must pass media ids across
+widget/page boundaries; indexes are local to the current visible window only.
+The `ui::models::media_window_model::MediaWindowModel` is the intended owner of
+visible-window state (`MediaQuery`, total count, window start, generation, and
+the GTK `ListStore` projection). Existing transitional adapters may still
+resolve `MediaId` back to a current-window index for older viewer APIs, but new
+batch actions, selection state, and cross-async work should use `MediaId`.
+
 Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
 `GtkFlowBox` can map most or all children in the current virtual page even when
 they are far below the visible area. The scan requests and priority-boosts
