@@ -11,11 +11,13 @@
 //! than `downcast::<MediaItem>()`.
 use crate::core::db::{self, DbPool};
 use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
 use crate::core::prefs;
+use crate::core::repository::MediaQuery;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
@@ -359,6 +361,15 @@ impl ViewerPage {
         obj.setup_navigation_pop_action();
         obj.setup_lifecycle_logging();
         obj
+    }
+
+    pub fn new_for_query(
+        _query: MediaQuery,
+        current_id: MediaId,
+        initial_items: gtk::gio::ListStore,
+    ) -> Self {
+        let index = index_for_media_id(&initial_items, current_id).unwrap_or(0);
+        Self::new(initial_items, index)
     }
 
     fn apply_i18n(&self) {
@@ -2999,6 +3010,21 @@ fn resize_from_edges(
         (right - left) as u32,
         (bottom - top) as u32,
     )
+}
+
+fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
+    for index in 0..media_list.n_items() {
+        let Some(obj) = media_list.item(index) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<MediaItem>().id == media_id.get() {
+            return Some(index);
+        }
+    }
+    None
 }
 
 /// Pure calculation: compute the initial `[start, end)` window centred on

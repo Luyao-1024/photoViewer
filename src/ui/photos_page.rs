@@ -21,6 +21,7 @@ use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 use crate::core::identity::MediaId;
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
+use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{
@@ -945,7 +946,7 @@ impl PhotosPage {
             }
         });
 
-        let viewer = ViewerPage::new(media_list, global_index);
+        let viewer = ViewerPage::new_for_query(MediaQuery::LiveAll, media_id, media_list);
 
         // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
