@@ -1,10 +1,10 @@
 //! Main window: sidebar + content area
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use glib::subclass::types::ObjectSubclassIsExt;
@@ -21,26 +21,22 @@ use crate::config;
 use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
+use crate::core::media::MediaItem;
+use crate::core::repository::MediaMutation;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
-use crate::ui::album_browser_page::AlbumBrowserPage;
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::grid_css;
 use crate::ui::TrashPage;
 
-const MAX_VISIBLE_ALBUMS_IN_SIDEBAR: usize = 15;
-
-/// What a sidebar row navigates to. The `Gtk.ListBox` row at index `i` maps to
-/// `targets[i]` (kept in lock-step by [`MainWindow::populate_sidebar`] and
-/// [`MainWindow::rebuild_album_rows`]). The albums group is a non-selectable
-/// header that only collapses/expands its children; every other row is a real
-/// navigation target.
+/// What a sidebar row navigates to. The top list uses `targets[index]`, while
+/// the stable bottom Trash list uses `trash_targets[index]`. The albums group
+/// is a non-selectable header that only collapses/expands the dedicated album
+/// list.
 #[derive(Clone, Debug)]
 pub enum SidebarTarget {
     Photos,
     AlbumsHeader,
-    Album(Album),
-    AllAlbums,
     Trash,
 }
 
@@ -71,27 +67,44 @@ mod imp {
         /// Index→target mirror of the sidebar ListBox, so the `row-selected`
         /// handler can dispatch by identity rather than a hardcoded index.
         pub targets: RefCell<Vec<SidebarTarget>>,
+        /// Index→target mirror of the bottom Trash ListBox.
+        pub trash_targets: RefCell<Vec<SidebarTarget>>,
+        /// Index→album mirror of the dedicated album ListBox.
+        pub album_targets: RefCell<Vec<Album>>,
         /// The album rows nested under the "Albums" group header — kept so the
-        /// collapse toggle and the live refresh can hide/rebuild them precisely.
+        /// live refresh and tests can inspect/rebuild them precisely.
         pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
-        /// Row that opens the all-albums browser.
-        pub more_albums_row: RefCell<Option<gtk::ListBoxRow>>,
         /// The disclosure arrow on the Albums header; swapped between
         /// `pan-down-symbolic` (expanded) and `pan-end-symbolic` (collapsed).
         pub albums_arrow: RefCell<Option<gtk::Image>>,
         /// Whether the Albums group is currently expanded.
         pub albums_expanded: Cell<bool>,
-        /// Whether there are albums beyond `MAX_VISIBLE_ALBUMS_IN_SIDEBAR`.
-        pub has_more_albums: Cell<bool>,
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
+        /// Whether the sidebar album list is in batch-selection mode.
+        pub album_selection_mode: Cell<bool>,
+        /// Real album folder paths selected for batch delete. Virtual albums
+        /// are deliberately excluded because they are saved views, not folders.
+        pub selected_album_paths: RefCell<HashSet<PathBuf>>,
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub trash_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub album_selection_bar: TemplateChild<gtk::ActionBar>,
+        #[template_child]
+        pub album_selection_cancel_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub album_selection_delete_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub album_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
         #[template_child]
@@ -148,7 +161,9 @@ impl MainWindow {
             .set_title(&tr("window.sidebar"));
         self.imp().albums_expanded.set(true);
         let list = self.imp().sidebar_list.get();
+        let trash_list = self.imp().trash_list.get();
         let mut targets = Vec::new();
+        let mut trash_targets = Vec::new();
 
         let photos_row = build_nav_row(&tr("sidebar.photos"), "view-grid-symbolic");
         list.append(&photos_row);
@@ -173,14 +188,15 @@ impl MainWindow {
         targets.push(SidebarTarget::AlbumsHeader);
 
         let trash_row = build_nav_row(&tr("sidebar.trash"), "user-trash-symbolic");
-        list.append(&trash_row);
-        targets.push(SidebarTarget::Trash);
+        trash_list.append(&trash_row);
+        trash_targets.push(SidebarTarget::Trash);
 
         self.imp()
             .settings_button
             .set_tooltip_text(Some(&tr("sidebar.settings")));
 
         *self.imp().targets.borrow_mut() = targets;
+        *self.imp().trash_targets.borrow_mut() = trash_targets;
 
         // Highlight Photos as the default root view. Done before
         // connect_sidebar wires row-selected, so this never triggers navigation.
@@ -189,10 +205,10 @@ impl MainWindow {
         self.imp().selecting_programmatically.set(false);
     }
 
-    /// Insert the folder + virtual albums under the Albums header, fetched from
-    /// the current DB snapshot. Called once after `set_resources` (and again by
-    /// [`Self::refresh_album_rows`] on live changes). Safe to call before
-    /// `connect_sidebar`; it only touches rows + the `targets` mirror.
+    /// Insert the folder + virtual albums in the dedicated album list, fetched
+    /// from the current DB snapshot. Called once after `set_resources` (and
+    /// again by [`Self::refresh_album_rows`] on live changes). Safe to call
+    /// before `connect_sidebar`; it only touches album rows + album targets.
     pub fn populate_album_rows(&self) {
         self.rebuild_album_rows();
     }
@@ -202,63 +218,28 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
-        let list = self.imp().sidebar_list.get();
+        let album_list = self.imp().album_list.get();
 
-        // Drop the existing album rows from the listbox and our bookkeeping.
-        let old_rows = std::mem::take(&mut *self.imp().album_rows.borrow_mut());
-        for row in &old_rows {
-            list.remove(row);
+        while let Some(child) = album_list.first_child() {
+            album_list.remove(&child);
         }
-        if let Some(old_more_row) = self.imp().more_albums_row.borrow_mut().take() {
-            list.remove(&old_more_row);
-        }
-
-        // Keep `targets` in lock-step: after removal it should read
-        // [Photos, AlbumsHeader, Trash]. The albums occupied the
-        // indices strictly between the header (1) and Trash (len-1).
-        {
-            let mut targets = self.imp().targets.borrow_mut();
-            if targets.len() >= 3 {
-                let end = targets.len() - 1;
-                if end > 2 {
-                    targets.drain(2..end);
-                }
-            }
-        }
+        self.imp().album_rows.borrow_mut().clear();
+        self.imp().album_targets.borrow_mut().clear();
 
         let albums = list_with_favorites(&pool).unwrap_or_default();
         let album_count = albums.len();
-        let preview_count = album_count.min(MAX_VISIBLE_ALBUMS_IN_SIDEBAR);
-        let show_more_row = album_count > MAX_VISIBLE_ALBUMS_IN_SIDEBAR;
         let expanded = self.imp().albums_expanded.get();
+        self.imp().album_scroll.set_visible(expanded);
 
-        // Insert album rows starting at index 2 (after Photos + header),
-        // pushing Trash back down so the order is preserved.
-        for (visible_pos, album) in albums.iter().take(preview_count).enumerate() {
-            let pos = visible_pos + 2;
-            let row = build_album_row(album);
-            row.set_visible(expanded);
+        for album in albums {
+            let row = build_album_row(&album);
+            row.set_visible(true);
             self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
-            list.insert(&row, pos as i32);
+            self.attach_album_context_menu(&row, album.clone());
+            album_list.append(&row);
             self.imp().album_rows.borrow_mut().push(row);
-            self.imp()
-                .targets
-                .borrow_mut()
-                .insert(pos, SidebarTarget::Album(album.clone()));
+            self.imp().album_targets.borrow_mut().push(album);
         }
-
-        if show_more_row {
-            let more_row = build_more_albums_row(&tr("sidebar.albums_more"));
-            more_row.set_visible(expanded);
-            let more_pos = 2 + preview_count;
-            list.insert(&more_row, more_pos as i32);
-            *self.imp().more_albums_row.borrow_mut() = Some(more_row);
-            self.imp()
-                .targets
-                .borrow_mut()
-                .insert(more_pos, SidebarTarget::AllAlbums);
-        }
-        self.imp().has_more_albums.set(show_more_row);
 
         self.reselect_active_album_row();
         tracing::info!(
@@ -274,28 +255,25 @@ impl MainWindow {
             Some(path) => path,
             None => return,
         };
-        let list = self.imp().sidebar_list.get();
+        let album_list = self.imp().album_list.get();
         let idx = self
             .imp()
-            .targets
+            .album_targets
             .borrow()
             .iter()
-            .position(|t| matches!(t, SidebarTarget::Album(a) if a.folder_path == active));
+            .position(|album| album.folder_path == active);
         if let Some(i) = idx {
-            if let Some(row) = list.row_at_index(i as i32) {
-                if !row.is_visible() {
-                    return;
-                }
+            if let Some(row) = album_list.row_at_index(i as i32) {
                 self.imp().selecting_programmatically.set(true);
-                list.select_row(Some(&row));
+                album_list.select_row(Some(&row));
                 self.imp().selecting_programmatically.set(false);
             }
         }
     }
 
     /// Collapse/expand the Albums group: swap the disclosure arrow and toggle
-    /// every album row's visibility. Hidden rows keep their ListBox index, so
-    /// the `targets[index]` dispatch stays valid while collapsed.
+    /// the dedicated album scroll region. Rows remain mounted in `album_list`
+    /// so their drag order and album target indices stay stable.
     pub fn toggle_albums_expanded(&self) {
         let expanded = !self.imp().albums_expanded.get();
         self.imp().albums_expanded.set(expanded);
@@ -306,32 +284,84 @@ impl MainWindow {
                 Some("pan-end-symbolic")
             });
         }
-        let rows = self.imp().album_rows.borrow();
-        for row in rows.iter() {
-            row.set_visible(expanded);
-        }
-        if let Some(more_row) = self.imp().more_albums_row.borrow().as_ref() {
-            let has_more = self.imp().has_more_albums.get();
-            more_row.set_visible(expanded && has_more);
-        }
+        self.imp().album_scroll.set_visible(expanded);
     }
 
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
-    ///
-    /// Only the first `MAX_VISIBLE_ALBUMS_IN_SIDEBAR` albums remain in the
-    /// sidebar; if all-albums view is currently visible, refresh that page too.
     pub fn refresh_album_rows(&self) {
         self.rebuild_album_rows();
-        if let Some(page) = self
-            .imp()
-            .nav_view
+    }
+
+    pub fn enter_album_selection_mode(&self) {
+        self.imp().album_selection_mode.set(true);
+        self.imp()
+            .album_list
             .get()
-            .visible_page()
-            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
-        {
-            page.refresh();
+            .set_selection_mode(gtk::SelectionMode::Multiple);
+        self.imp().album_list.get().unselect_all();
+        self.imp().selected_album_paths.borrow_mut().clear();
+        self.imp().album_selection_bar.get().set_revealed(true);
+        self.update_album_selection_actions();
+    }
+
+    fn exit_album_selection_mode(&self) {
+        self.imp().album_selection_mode.set(false);
+        self.imp().album_list.get().unselect_all();
+        self.imp()
+            .album_list
+            .get()
+            .set_selection_mode(gtk::SelectionMode::Single);
+        self.imp().selected_album_paths.borrow_mut().clear();
+        self.imp().album_selection_bar.get().set_revealed(false);
+        self.update_album_selection_actions();
+    }
+
+    pub fn selected_album_delete_count(&self) -> usize {
+        self.imp().selected_album_paths.borrow().len()
+    }
+
+    fn sync_selected_album_paths(&self) {
+        let album_list = self.imp().album_list.get();
+        let targets = self.imp().album_targets.borrow().clone();
+        let mut selected = HashSet::new();
+        let mut virtual_rows = Vec::new();
+
+        for row in album_list.selected_rows() {
+            let Some(album) = targets.get(row.index() as usize) else {
+                continue;
+            };
+            if album.is_virtual {
+                virtual_rows.push(row);
+            } else {
+                selected.insert(album.folder_path.clone());
+            }
         }
+
+        for row in virtual_rows {
+            album_list.unselect_row(&row);
+        }
+
+        *self.imp().selected_album_paths.borrow_mut() = selected;
+        self.update_album_selection_actions();
+    }
+
+    fn update_album_selection_actions(&self) {
+        self.imp()
+            .album_selection_delete_btn
+            .get()
+            .set_sensitive(self.selected_album_delete_count() > 0);
+    }
+
+    fn selected_real_albums(&self) -> Vec<Album> {
+        let selected = self.imp().selected_album_paths.borrow().clone();
+        self.imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .filter(|album| !album.is_virtual && selected.contains(&album.folder_path))
+            .cloned()
+            .collect()
     }
 
     /// Persist a drag-to-reorder: move the album at `source_path` so it lands
@@ -352,13 +382,10 @@ impl MainWindow {
         // Current top-to-bottom album order, minus the dragged album.
         let mut order: Vec<String> = self
             .imp()
-            .targets
+            .album_targets
             .borrow()
             .iter()
-            .filter_map(|target| match target {
-                SidebarTarget::Album(a) => Some(a.folder_path.to_string_lossy().into_owned()),
-                _ => None,
-            })
+            .map(|album| album.folder_path.to_string_lossy().into_owned())
             .filter(|p| p != source_path)
             .collect();
 
@@ -454,6 +481,73 @@ impl MainWindow {
         row.add_controller(drop);
     }
 
+    fn attach_album_context_menu(&self, row: &gtk::ListBoxRow, album: Album) {
+        let weak = self.downgrade();
+        let row_weak = row.downgrade();
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_pressed(move |_gesture, n_press, x, y| {
+            if n_press != 1 {
+                return;
+            }
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+
+            let manage_album = album.clone();
+            let delete_album = album.clone();
+            let select_album = album.clone();
+            let nav_view = window.imp().nav_view.get();
+            let popover = build_album_context_menu(
+                &album,
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @weak nav_view,
+                    @weak row,
+                    @strong manage_album => move || {
+                        *window.imp().active_album.borrow_mut() =
+                            Some(manage_album.folder_path.clone());
+                        window.imp().selecting_programmatically.set(true);
+                        window.imp().album_list.get().select_row(Some(&row));
+                        window.imp().selecting_programmatically.set(false);
+                        window.imp().sidebar_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
+                        window.open_album(&nav_view, manage_album.clone());
+                    }
+                ))),
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @strong delete_album => move || {
+                        window.confirm_delete_album(delete_album.clone());
+                    }
+                ))),
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @weak row,
+                    @strong select_album => move || {
+                        window.enter_album_selection_mode();
+                        if !select_album.is_virtual {
+                            window.imp().album_list.get().select_row(Some(&row));
+                        }
+                    }
+                ))),
+            );
+            popover.set_parent(&row);
+            popover.connect_closed(|popover| {
+                if popover.parent().is_some() {
+                    popover.unparent();
+                }
+            });
+            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+        });
+        row.add_controller(gesture);
+    }
+
     /// Accessor for the content area's NavigationView (used by later tasks).
     pub fn nav_view(&self) -> adw::NavigationView {
         self.imp().nav_view.get()
@@ -476,9 +570,9 @@ impl MainWindow {
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row
     /// identity (`targets[index]`), not a hardcoded index:
     ///   - Photos → pop back to the root Photos page.
-    ///   - An album row → push that album's `AlbumDetailPage` directly.
-    ///   - More → open the all-albums browser page (all rows in overlay layer).
     ///   - Trash → push the `TrashPage`.
+    ///
+    /// Album rows live in `album_list` and are wired separately below.
     ///
     /// The Albums header is non-selectable, so it never lands here; its collapse
     /// toggle is driven by its own `GestureClick`.
@@ -487,6 +581,8 @@ impl MainWindow {
     /// missing the closures silently no-op.
     pub fn connect_sidebar(&self, nav_view: &adw::NavigationView) {
         let list = self.imp().sidebar_list.get();
+        let trash_list = self.imp().trash_list.get();
+        let album_list = self.imp().album_list.get();
         let gesture = gtk::GestureSwipe::new();
         gesture.connect_swipe(
             glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
@@ -515,22 +611,63 @@ impl MainWindow {
                 match target {
                     SidebarTarget::Photos => {
                         *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
                     }
                     SidebarTarget::AlbumsHeader => {}
-                    SidebarTarget::AllAlbums => {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.open_all_albums_page(&nav_view);
-                    }
-                    SidebarTarget::Album(album) => {
-                        *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
-                        window.open_album(&nav_view, album);
-                    }
-                    SidebarTarget::Trash => {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.show_trash_page(&nav_view);
-                    }
+                    SidebarTarget::Trash => {}
                 }
+            }),
+        );
+
+        trash_list.connect_row_selected(
+            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                let Some(row) = row else {
+                    return;
+                };
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
+                let target = {
+                    let targets = window.imp().trash_targets.borrow();
+                    let Some(target) = targets.get(row.index() as usize).cloned() else {
+                        return;
+                    };
+                    target
+                };
+                if let SidebarTarget::Trash = target {
+                    *window.imp().active_album.borrow_mut() = None;
+                    window.imp().sidebar_list.get().unselect_all();
+                    window.imp().album_list.get().unselect_all();
+                    window.show_trash_page(&nav_view);
+                }
+            }),
+        );
+
+        album_list.connect_row_selected(
+            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                if window.imp().album_selection_mode.get() {
+                    window.sync_selected_album_paths();
+                    return;
+                }
+                let Some(row) = row else {
+                    return;
+                };
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
+                let album = {
+                    let targets = window.imp().album_targets.borrow();
+                    let Some(album) = targets.get(row.index() as usize).cloned() else {
+                        return;
+                    };
+                    album
+                };
+                *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
+                window.imp().sidebar_list.get().unselect_all();
+                window.imp().trash_list.get().unselect_all();
+                window.open_album(&nav_view, album);
             }),
         );
 
@@ -538,6 +675,28 @@ impl MainWindow {
         settings_btn.connect_clicked(glib::clone!(@weak self as window => move |_| {
             window.show_settings_dialog();
         }));
+
+        self.imp()
+            .album_selection_cancel_btn
+            .set_label(&tr("common.cancel"));
+        self.imp()
+            .album_selection_delete_btn
+            .set_label(&tr("album.selection.delete_selected"));
+        self.imp()
+            .album_selection_delete_btn
+            .get()
+            .set_sensitive(false);
+
+        self.imp().album_selection_cancel_btn.connect_clicked(
+            glib::clone!(@weak self as window => move |_| {
+                window.exit_album_selection_mode();
+            }),
+        );
+        self.imp().album_selection_delete_btn.connect_clicked(
+            glib::clone!(@weak self as window => move |_| {
+                window.confirm_delete_selected_albums();
+            }),
+        );
     }
 
     pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
@@ -591,42 +750,123 @@ impl MainWindow {
         nav_view.push(&page);
     }
 
-    fn open_all_albums_page(&self, nav_view: &adw::NavigationView) {
-        if nav_view
-            .visible_page()
-            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
-            .is_some()
-        {
+    fn confirm_delete_album(&self, album: Album) {
+        if album.is_virtual {
             return;
         }
 
+        let album_name = album.display_name();
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("album.delete.confirm_title"))
+            .body(trf("album.delete.confirm_body", &[("album", &album_name)]))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", &tr("common.cancel"));
+        dialog.add_response("delete", &tr("album.delete.confirm_action"));
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("delete"), move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.delete_albums_to_trash_ui(vec![album.clone()]);
+            }
+        });
+
+        dialog.present(self);
+    }
+
+    fn confirm_delete_selected_albums(&self) {
+        let selected = self.selected_real_albums();
+        if selected.is_empty() {
+            return;
+        }
+
+        let count = selected.len().to_string();
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("album.selection.confirm_title"))
+            .body(trf("album.selection.confirm_body", &[("count", &count)]))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", &tr("common.cancel"));
+        dialog.add_response("delete", &tr("album.delete.confirm_action"));
+        dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("delete"), move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.delete_albums_to_trash_ui(selected.clone());
+                window.exit_album_selection_mode();
+            }
+        });
+
+        dialog.present(self);
+    }
+
+    fn delete_albums_to_trash_ui(&self, albums: Vec<Album>) {
+        if albums.is_empty() {
+            return;
+        }
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
-        let Some(loader) = self.imp().loader.borrow().clone() else {
-            return;
-        };
-
-        pop_to_photos_root(nav_view);
 
         let weak = self.downgrade();
-        let nav_copy = nav_view.clone();
-        let window_for_order = self.downgrade();
-        let page = AlbumBrowserPage::with_order_changed(
-            pool,
-            loader,
-            Rc::new(move |album| {
-                if let Some(window) = weak.upgrade() {
-                    window.open_album(&nav_copy, album);
+        glib::spawn_future_local(async move {
+            let worker_result =
+                gtk::gio::spawn_blocking(move || delete_albums_to_trash_worker(pool, albums)).await;
+
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            match worker_result {
+                Ok(result) => {
+                    if let Err(err) = &result.operation {
+                        tracing::warn!("failed to delete album to trash: {err}");
+                    }
+                    if let Some(media_list) = window.imp().media_list.borrow().as_ref() {
+                        remove_deleted_album_media_from_media_list(
+                            media_list,
+                            &result.deleted_paths,
+                            &result.remaining_live_uris,
+                            &result.unknown_remaining_live_paths,
+                        );
+                    }
+                    window.refresh_album_rows();
+
+                    let active_should_close = window
+                        .imp()
+                        .active_album
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|active| {
+                            result.deleted_paths.iter().any(|path| path == active)
+                                && !result
+                                    .remaining_live_folder_paths
+                                    .iter()
+                                    .any(|path| path == active)
+                        });
+                    if active_should_close {
+                        *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
+                        window.imp().selecting_programmatically.set(true);
+                        if let Some(row) = window.imp().sidebar_list.get().row_at_index(0) {
+                            window.imp().sidebar_list.get().select_row(Some(&row));
+                        }
+                        window.imp().selecting_programmatically.set(false);
+                        pop_to_photos_root(&window.imp().nav_view.get());
+                    }
                 }
-            }),
-            Some(Rc::new(move || {
-                if let Some(window) = window_for_order.upgrade() {
-                    window.rebuild_album_rows();
+                Err(err) => {
+                    tracing::warn!("album delete worker failed: {err:?}");
+                    window.refresh_album_rows();
                 }
-            })),
-        );
-        nav_view.push(&page);
+            }
+        });
     }
 
     fn show_trash_page(&self, nav_view: &adw::NavigationView) {
@@ -1411,30 +1651,73 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
     row
 }
 
-fn build_more_albums_row(label: &str) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.add_css_class("glass-sidebar-row");
-    row.add_css_class("glass-sidebar-subrow");
-    row.add_css_class("glass-sidebar-more");
+pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Popover {
+    build_album_context_menu(album, None, None, None)
+}
 
-    let icon = gtk::Image::from_icon_name("view-more-symbolic");
-    icon.add_css_class("glass-sidebar-icon");
+fn build_album_context_menu(
+    album: &Album,
+    on_manage: Option<Box<dyn Fn() + 'static>>,
+    on_delete: Option<Box<dyn Fn() + 'static>>,
+    on_select: Option<Box<dyn Fn() + 'static>>,
+) -> gtk::Popover {
+    let popover = gtk::Popover::new();
+    popover.add_css_class("glass-menu");
 
-    let lbl = gtk::Label::builder()
-        .label(label)
-        .halign(gtk::Align::Start)
-        .hexpand(true)
-        .css_classes(["glass-sidebar-label"])
+    let menu = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["glass-menu-list"])
         .build();
 
-    let box_ = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(10)
+    let manage_btn = gtk::Button::builder()
+        .label(tr("album.context.manage"))
+        .css_classes(["glass-menu-item"])
         .build();
-    box_.append(&icon);
-    box_.append(&lbl);
-    row.set_child(Some(&box_));
-    row
+    if let Some(on_manage) = on_manage {
+        let popover_weak = popover.downgrade();
+        manage_btn.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+            on_manage();
+        });
+    }
+    menu.append(&manage_btn);
+
+    if let Some(on_select) = on_select {
+        let multi_btn = gtk::Button::builder()
+            .label(tr("album.context.multi_select"))
+            .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
+            .build();
+        let popover_weak = popover.downgrade();
+        multi_btn.connect_clicked(move |_| {
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
+            }
+            on_select();
+        });
+        menu.append(&multi_btn);
+    }
+
+    if !album.is_virtual {
+        let delete_btn = gtk::Button::builder()
+            .label(tr("album.context.delete"))
+            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
+            .build();
+        if let Some(on_delete) = on_delete {
+            let popover_weak = popover.downgrade();
+            delete_btn.connect_clicked(move |_| {
+                if let Some(popover) = popover_weak.upgrade() {
+                    popover.popdown();
+                }
+                on_delete();
+            });
+        }
+        menu.append(&delete_btn);
+    }
+
+    popover.set_child(Some(&menu));
+    popover
 }
 
 /// Find the `MainWindow` that owns `nav` and refresh its sidebar album rows.
@@ -1450,9 +1733,90 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
     }
 }
 
+struct AlbumDeleteUiResult {
+    operation: std::result::Result<MediaMutation, String>,
+    deleted_paths: Vec<PathBuf>,
+    remaining_live_uris: HashSet<String>,
+    remaining_live_folder_paths: HashSet<PathBuf>,
+    unknown_remaining_live_paths: HashSet<PathBuf>,
+}
+
+fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDeleteUiResult {
+    let deleted_paths = albums
+        .iter()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
+        .collect::<Vec<_>>();
+    let operation = crate::core::album_ops::delete_albums_to_trash(&pool, &albums)
+        .map_err(|err| err.to_string());
+
+    let mut remaining_live_uris = HashSet::new();
+    let mut remaining_live_folder_paths = HashSet::new();
+    let mut unknown_remaining_live_paths = HashSet::new();
+    for path in &deleted_paths {
+        match crate::core::db::list_media_by_folder(&pool, path) {
+            Ok(items) => {
+                if !items.is_empty() {
+                    remaining_live_folder_paths.insert(path.clone());
+                }
+                remaining_live_uris.extend(items.into_iter().map(|item| item.uri));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to query remaining live media for album {}: {err}",
+                    path.display()
+                );
+                remaining_live_folder_paths.insert(path.clone());
+                unknown_remaining_live_paths.insert(path.clone());
+            }
+        }
+    }
+
+    AlbumDeleteUiResult {
+        operation,
+        deleted_paths,
+        remaining_live_uris,
+        remaining_live_folder_paths,
+        unknown_remaining_live_paths,
+    }
+}
+
+fn remove_deleted_album_media_from_media_list(
+    media_list: &gtk::gio::ListStore,
+    deleted_paths: &[PathBuf],
+    remaining_live_uris: &HashSet<String>,
+    unknown_remaining_live_paths: &HashSet<PathBuf>,
+) {
+    if deleted_paths.is_empty() {
+        return;
+    }
+
+    let deleted_paths: HashSet<&PathBuf> = deleted_paths.iter().collect();
+    let mut index = 0;
+    while index < media_list.n_items() {
+        let should_remove = media_list
+            .item(index)
+            .and_downcast::<glib::BoxedAnyObject>()
+            .is_some_and(|boxed| {
+                let item = boxed.borrow::<MediaItem>();
+                deleted_paths.contains(&item.folder_path)
+                    && !unknown_remaining_live_paths.contains(&item.folder_path)
+                    && !remaining_live_uris.contains(&item.uri)
+            });
+        if should_remove {
+            media_list.remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::collections::HashSet;
+    use std::path::Path;
 
     fn collect_labels(widget: &gtk::Widget, labels: &mut Vec<String>) {
         if let Some(label) = widget.downcast_ref::<gtk::Label>() {
@@ -1496,6 +1860,82 @@ mod tests {
             child = current.next_sibling();
             collect_preference_titles(&current, titles);
         }
+    }
+
+    fn media_item(id: i64, folder_path: &str, name: &str) -> MediaItem {
+        let folder_path = PathBuf::from(folder_path);
+        let path = folder_path.join(name);
+        MediaItem {
+            id,
+            uri: format!("file://{}", path.display()),
+            path,
+            folder_path,
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 10,
+            blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
+            trashed_at: None,
+        }
+    }
+
+    fn media_list_uris(list: &gtk::gio::ListStore) -> Vec<String> {
+        (0..list.n_items())
+            .filter_map(|index| {
+                list.item(index)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|boxed| boxed.borrow::<MediaItem>().uri.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn album_delete_pruning_removes_deleted_folder_rows_except_remaining_live_uris() {
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let deleted = media_item(1, "/tmp/Camera", "deleted.jpg");
+        let still_live = media_item(2, "/tmp/Camera", "still-live.jpg");
+        let other = media_item(3, "/tmp/Other", "keep.jpg");
+        list.append(&glib::BoxedAnyObject::new(deleted.clone()));
+        list.append(&glib::BoxedAnyObject::new(still_live.clone()));
+        list.append(&glib::BoxedAnyObject::new(other.clone()));
+
+        remove_deleted_album_media_from_media_list(
+            &list,
+            &[Path::new("/tmp/Camera").to_path_buf()],
+            &HashSet::from([still_live.uri.clone()]),
+            &HashSet::new(),
+        );
+
+        assert_eq!(media_list_uris(&list), vec![still_live.uri, other.uri]);
+    }
+
+    #[test]
+    fn album_delete_pruning_preserves_unknown_remaining_live_folder_rows() {
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let unknown = media_item(1, "/tmp/Camera", "unknown.jpg");
+        let deleted = media_item(2, "/tmp/Trips", "deleted.jpg");
+        let other = media_item(3, "/tmp/Other", "keep.jpg");
+        list.append(&glib::BoxedAnyObject::new(unknown.clone()));
+        list.append(&glib::BoxedAnyObject::new(deleted.clone()));
+        list.append(&glib::BoxedAnyObject::new(other.clone()));
+
+        remove_deleted_album_media_from_media_list(
+            &list,
+            &[
+                Path::new("/tmp/Camera").to_path_buf(),
+                Path::new("/tmp/Trips").to_path_buf(),
+            ],
+            &HashSet::new(),
+            &HashSet::from([Path::new("/tmp/Camera").to_path_buf()]),
+        );
+
+        assert_eq!(media_list_uris(&list), vec![unknown.uri, other.uri]);
     }
 
     #[test]

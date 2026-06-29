@@ -35,7 +35,7 @@ struct PhotosFixture {
 }
 
 #[test]
-fn ux_click_flow_suite() {
+fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums() {
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for UX click flows");
     let _runtime_guard = runtime.enter();
@@ -45,6 +45,7 @@ fn ux_click_flow_suite() {
     photos_batch_toolbar_clicks_select_favorite_and_album();
     viewer_chrome_clicks_drive_visible_operations();
     sidebar_clicks_drive_top_level_navigation();
+    album_sidebar_multi_select_deletes_real_albums();
     album_picker_clicks_album_row_and_copy_move();
     album_pages_clicks_open_album_and_viewer();
     album_browser_reorder_persists_full_album_order();
@@ -261,23 +262,32 @@ fn sidebar_clicks_drive_top_level_navigation() {
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
+    let trash_list = window.imp().trash_list.get();
+    assert_eq!(
+        sidebar.observe_children().n_items(),
+        2,
+        "top sidebar list should contain Photos and Albums header",
+    );
+    assert_eq!(
+        trash_list.observe_children().n_items(),
+        1,
+        "trash list should contain one stable Trash row",
+    );
     let header = sidebar.row_at_index(1).expect("Albums header row exists");
-    let first_album_row = window.imp().album_rows.borrow()[0].clone();
-    assert!(visible_flag(first_album_row.upcast_ref()));
+    assert!(visible_flag(window.imp().album_scroll.get().upcast_ref()));
     release_click_on_widget(header.upcast_ref());
     assert!(
-        !visible_flag(first_album_row.upcast_ref()),
-        "clicking the Albums header should collapse album rows"
+        !visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "clicking the Albums header should collapse the album scroll region"
     );
     release_click_on_widget(header.upcast_ref());
     assert!(
-        visible_flag(first_album_row.upcast_ref()),
-        "clicking the Albums header again should expand album rows"
+        visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "clicking the Albums header again should expand the album scroll region"
     );
 
-    let n_items = sidebar.observe_children().n_items() as i32;
-    let trash_row = sidebar.row_at_index(n_items - 1).expect("Trash row exists");
-    sidebar.select_row(Some(&trash_row));
+    let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
+    trash_list.select_row(Some(&trash_row));
     assert!(
         nav.visible_page().and_downcast::<TrashPage>().is_some(),
         "selecting the Trash sidebar row should show TrashPage"
@@ -294,6 +304,67 @@ fn sidebar_clicks_drive_top_level_navigation() {
     assert!(
         nav.has_css_class("settings-background-blur"),
         "clicking the settings button should present settings chrome over the content nav"
+    );
+}
+
+fn album_sidebar_multi_select_deletes_real_albums() {
+    let app = adw::Application::builder()
+        .application_id("org.gnome.PhotoViewer.AlbumMultiSelect")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let fixture = build_photos_page_with_nav();
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+    window.set_resources(
+        fixture.pool.clone(),
+        fixture.loader.clone(),
+        fixture.media_list.clone(),
+    );
+    seed_extra_album(&fixture);
+    albums::refresh(&fixture.pool).unwrap();
+    window.populate_album_rows();
+    let nav = window.nav_view();
+    window.connect_sidebar(&nav);
+
+    window.enter_album_selection_mode();
+    assert_eq!(
+        window.imp().album_list.get().selection_mode(),
+        gtk::SelectionMode::Multiple,
+        "album selection mode should switch the album list to multiple selection",
+    );
+    assert!(
+        window.imp().album_selection_bar.get().is_revealed(),
+        "album selection mode should reveal the batch action bar",
+    );
+    assert!(
+        !window.imp().album_selection_delete_btn.get().is_sensitive(),
+        "delete selected should stay disabled until real albums are selected",
+    );
+
+    let real_rows: Vec<gtk::ListBoxRow> = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .enumerate()
+        .filter(|(_, album)| !album.is_virtual)
+        .take(2)
+        .filter_map(|(idx, _)| window.imp().album_list.get().row_at_index(idx as i32))
+        .collect();
+    assert_eq!(
+        real_rows.len(),
+        2,
+        "fixture should include two real album rows"
+    );
+    for row in &real_rows {
+        window.imp().album_list.get().select_row(Some(row));
+    }
+    assert_eq!(window.selected_album_delete_count(), 2);
+    assert!(
+        window.imp().album_selection_delete_btn.get().is_sensitive(),
+        "selecting real albums should enable the delete selected action",
     );
 }
 
@@ -580,6 +651,15 @@ fn seed_media(pool: &db::DbPool, root: &std::path::Path) -> Vec<MediaItem> {
         items.push(db::get_media_item(pool, id).unwrap());
     }
     items
+}
+
+fn seed_extra_album(fixture: &PhotosFixture) {
+    let album_dir = fixture._tmp.path().join("second-album");
+    std::fs::create_dir_all(&album_dir).unwrap();
+    let album_path = album_dir.join("three.jpg");
+    std::fs::write(&album_path, b"ux-flow-second-album").unwrap();
+    let item = sample_item(200, album_path);
+    db::insert_media_item(&fixture.pool, &NewMediaItem::from(&item)).unwrap();
 }
 
 fn click_mode_selector_cell(selector: &ModeSelector, index: usize) {

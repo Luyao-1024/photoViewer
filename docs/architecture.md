@@ -23,9 +23,11 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 
 `MainWindow` owns the sidebar and an `adw::NavigationView`.
 
-- The sidebar is a `Gtk.ListBox` whose rows map to a `targets[index]` dispatch
-  (not a hardcoded index). Order: Photos, a collapsible **Albums** group
-  header, the album rows nested under it, and Trash.
+- The sidebar uses separate `Gtk.ListBox` regions with explicit target mirrors:
+  `sidebar_list` + `targets[index]` for Photos and the collapsible **Albums**
+  header, `album_list` + `album_targets[index]` inside a fixed-height
+  `Gtk.ScrolledWindow` for all album rows, and `trash_list` +
+  `trash_targets[index]` for the stable Trash row.
 - Photos row → pop to the root `PhotosPage`.
 - An album row → push that album's `AlbumDetailPage` **directly** (there is no
   intermediate album-grid page). The Albums header is non-selectable and only
@@ -33,9 +35,12 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 - Album rows are **drag-to-reorder** (long-press + drag): each carries a
   `DragSource` whose payload is its `folder_path`, and a `DropTarget` that
   persists the new order via `albums::set_album_order` then rebuilds the rows.
-  The order lives in a standalone `album_order` table (decoupled from the
-  `albums` materialized view, which is wiped and rebuilt on every scan), and
-  `albums::list_with_favorites` re-applies it — virtual and folder albums alike.
+  Right-click opens the album context menu; real folder albums can be deleted
+  through a trash-backed operation, and multi-select delete only includes real
+  folder albums. The order lives in a standalone `album_order` table (decoupled
+  from the `albums` materialized view, which is wiped and rebuilt on every
+  scan), and `albums::list_with_favorites` re-applies it — virtual and folder
+  albums alike.
 - Trash row → push `TrashPage`.
 - `PhotosPage` owns Year/Month/Day `MediaGrid` instances backed by the same `gio::ListStore`.
 - Settings is launched from a fixed **gear button** in the sidebar footer, and now

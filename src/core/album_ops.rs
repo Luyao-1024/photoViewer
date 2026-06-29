@@ -15,7 +15,9 @@ use std::path::{Path, PathBuf};
 use crate::core::albums;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
+use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::repository::{MediaMutation, MediaRepository};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlbumOpMode {
@@ -50,6 +52,67 @@ pub fn add_to_album(
     }
     albums::refresh(pool)?;
     Ok(updated)
+}
+
+pub fn delete_album_to_trash(pool: &DbPool, album: &albums::Album) -> Result<MediaMutation> {
+    delete_albums_to_trash(pool, std::slice::from_ref(album))
+}
+
+pub fn delete_albums_to_trash(
+    pool: &DbPool,
+    albums_to_delete: &[albums::Album],
+) -> Result<MediaMutation> {
+    for album in albums_to_delete {
+        if album.is_virtual {
+            return Err(AppError::Backend(format!(
+                "cannot delete virtual album: {}",
+                album.display_name()
+            )));
+        }
+    }
+
+    let repo = MediaRepository::new(pool.clone());
+    let mut combined = MediaMutation::default();
+    let mut processing_started = false;
+    for album in albums_to_delete {
+        let items = match db::list_media_by_folder(pool, &album.folder_path) {
+            Ok(items) => items,
+            Err(err) => {
+                if processing_started {
+                    refresh_after_delete_error(pool);
+                }
+                return Err(err);
+            }
+        };
+        let ids = items
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            continue;
+        }
+
+        processing_started = true;
+        let mutation = match repo.move_to_trash(&ids) {
+            Ok(mutation) => mutation,
+            Err(err) => {
+                refresh_after_delete_error(pool);
+                return Err(err);
+            }
+        };
+        combined.changed_ids.extend(mutation.changed_ids);
+        combined.changed_items.extend(mutation.changed_items);
+        combined.removed_uris.extend(mutation.removed_uris);
+    }
+
+    albums::refresh(pool)?;
+    Ok(combined)
+}
+
+fn refresh_after_delete_error(pool: &DbPool) {
+    if let Err(refresh_err) = albums::refresh(pool) {
+        tracing::warn!("failed to refresh albums after album delete error: {refresh_err}");
+    }
 }
 
 fn add_one(

@@ -32,20 +32,32 @@ adding new direct `albums::refresh` calls; trash and favorite mutations should
 go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
 
-Albums are shown under a collapsible "Albums" group header. The sidebar keeps
-at most 15 visible album rows to avoid vertical overflow; if there are more
-albums,
-the final visible row is `sidebar.albums_more` ("更多"/"More"), which opens
-`AlbumBrowserPage`. `AlbumBrowserPage` is a full-height viewer-style page that
-lists all albums and their counts. Selecting an album row still pushes its
-`AlbumDetailPage` immediately. The per-album filtered media list is built by
-`album_detail_page::filtered_items_for_album`, shared between the sidebar (on open)
-and the favorites album (on favorite-toggle refresh). A favorite/trash change
-refreshes the sidebar counts via `window::refresh_albums_sidebar`.
+Albums are shown under a collapsible "Albums" group header. The group owns a
+fixed-height scroll region in the sidebar: Photos, Trash, and Settings remain
+stable while the album rows themselves scroll. All virtual and folder albums
+are rendered directly in that scroll region; there is no "More" row in the
+sidebar.
+
+Selecting an album row pushes its `AlbumDetailPage` immediately. The per-album
+filtered media list is built by `album_detail_page::filtered_items_for_album`,
+shared between the sidebar (on open) and the favorites album (on
+favorite-toggle refresh). A favorite/trash change refreshes the sidebar counts
+via `window::refresh_albums_sidebar`.
+
+Right-clicking an album row opens a glass context menu. "Manage Album" opens
+the album detail page. Real folder albums also expose "Delete Album", which
+moves every media item in that folder to the system trash and then refreshes
+the derived album list. Virtual albums such as Favorites, Photos, and Videos
+are navigable but not deletable. Album multi-select is limited to deleting
+multiple real folder albums through the same trash-backed operation.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 
-`AlbumBrowserPage` uses the same persistent ordering for the full album grid shown by the "More" row. Each album card is a drag source/drop target with the same `folder_path` payload; dropping on the upper/lower half inserts before/after that card, writes the complete order through `albums::set_album_order`, refreshes the page, and notifies `MainWindow` to rebuild the sidebar rows.
+`AlbumBrowserPage` uses the same persistent ordering for its full album grid.
+Each album card is a drag source/drop target with the same `folder_path`
+payload; dropping on the upper/lower half inserts before/after that card,
+writes the complete order through `albums::set_album_order`, refreshes the
+page, and notifies `MainWindow` to rebuild the sidebar rows.
 
 The Albums page also has virtual logical albums:
 
