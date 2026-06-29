@@ -299,6 +299,8 @@ fn sidebar_clicks_drive_top_level_navigation() {
 
 fn album_picker_clicks_album_row_and_copy_move() {
     let fixture = build_photos_page_with_nav();
+    let window = gtk::Window::new();
+    window.set_child(Some(&fixture.nav));
     let original_count = db::list_all_media(&fixture.pool).unwrap().len();
 
     photo_viewer::ui::AlbumPickerDialog::present(
@@ -369,6 +371,7 @@ fn album_picker_clicks_album_row_and_copy_move() {
         .unwrap_or(false)),
         "clicking Move should update the media item's album folder"
     );
+    drop(window);
 }
 
 fn album_pages_clicks_open_album_and_viewer() {

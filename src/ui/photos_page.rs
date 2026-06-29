@@ -73,6 +73,7 @@ mod imp {
         pub favorite_btn: TemplateChild<gtk::Button>,
         /// 收藏/取消收藏弹层菜单项（在 new 里建好并 set_parent 到 favorite_btn；
         /// refresh_selection_ui 按选中集状态切换 sensitive）。
+        pub favorite_popover: RefCell<Option<gtk::Popover>>,
         pub favorite_item_btn: RefCell<Option<gtk::Button>>,
         pub unfavorite_item_btn: RefCell<Option<gtk::Button>>,
         #[template_child]
@@ -96,6 +97,7 @@ mod imp {
                 select_all_btn: TemplateChild::default(),
                 add_to_album_btn: TemplateChild::default(),
                 favorite_btn: TemplateChild::default(),
+                favorite_popover: RefCell::new(None),
                 favorite_item_btn: RefCell::new(None),
                 unfavorite_item_btn: RefCell::new(None),
                 delete_to_trash_btn: TemplateChild::default(),
@@ -118,7 +120,13 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for PhotosPage {}
+    impl ObjectImpl for PhotosPage {
+        fn dispose(&self) {
+            if let Some(popover) = self.favorite_popover.borrow_mut().take() {
+                popover.unparent();
+            }
+        }
+    }
     impl WidgetImpl for PhotosPage {}
     impl NavigationPageImpl for PhotosPage {}
 }
@@ -416,6 +424,7 @@ impl PhotosPage {
 
             // Anchor the popover to the heart button.
             popover.set_parent(&obj.imp().favorite_btn.get());
+            *obj.imp().favorite_popover.borrow_mut() = Some(popover.clone());
             *obj.imp().favorite_item_btn.borrow_mut() = Some(favorite_item);
             *obj.imp().unfavorite_item_btn.borrow_mut() = Some(unfavorite_item);
 
