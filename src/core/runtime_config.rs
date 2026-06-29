@@ -551,9 +551,7 @@ mod tests {
                 "tier as_str/parse 应往返"
             );
         }
-        assert!("bogus"
-            .parse::<ThumbnailGenerationSpeed>()
-            .is_err());
+        assert!("bogus".parse::<ThumbnailGenerationSpeed>().is_err());
 
         // from_worker_count 仅在值确定小于 cpus 时才断言（避免 4 核机器上 4>=4 命中 Fastest）
         let cpus = available_parallelism();
