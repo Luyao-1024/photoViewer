@@ -262,17 +262,16 @@ fn sidebar_clicks_drive_top_level_navigation() {
 
     let sidebar = window.imp().sidebar_list.get();
     let header = sidebar.row_at_index(1).expect("Albums header row exists");
-    let first_album_row = window.imp().album_rows.borrow()[0].clone();
-    assert!(visible_flag(first_album_row.upcast_ref()));
+    assert!(visible_flag(window.imp().album_scroll.get().upcast_ref()));
     release_click_on_widget(header.upcast_ref());
     assert!(
-        !visible_flag(first_album_row.upcast_ref()),
-        "clicking the Albums header should collapse album rows"
+        !visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "clicking the Albums header should collapse the album scroll region"
     );
     release_click_on_widget(header.upcast_ref());
     assert!(
-        visible_flag(first_album_row.upcast_ref()),
-        "clicking the Albums header again should expand album rows"
+        visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "clicking the Albums header again should expand the album scroll region"
     );
 
     let n_items = sidebar.observe_children().n_items() as i32;

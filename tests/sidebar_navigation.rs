@@ -2,8 +2,9 @@
 //!
 //! The sidebar lists albums directly under a collapsible "Albums" group header;
 //! selecting an album row pushes its `AlbumDetailPage` immediately (there is no
-//! intermediate album-grid page anymore). If there are more than 15 albums, a
-//! dedicated "more" row opens an `AlbumBrowserPage` overlay list.
+//! intermediate album-grid page anymore). The album rows live in a dedicated
+//! bounded scroll region so the top-level Photos / Albums / Trash rows stay
+//! stable even with many albums.
 
 use chrono::Utc;
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::i18n::tr;
 use photo_viewer::core::media::NewMediaItem;
-use photo_viewer::ui::{AlbumBrowserPage, MainWindow, PhotosPage};
+use photo_viewer::ui::{MainWindow, PhotosPage};
 
 /// The `visible` *property flag* — i.e. what `set_visible` controls — rather
 /// than `is_visible()`, which also walks the ancestor chain and is always
@@ -27,20 +28,6 @@ use photo_viewer::ui::{AlbumBrowserPage, MainWindow, PhotosPage};
 /// lets us assert the collapse/expand toggle actually flips row visibility.
 fn visible_flag(w: &gtk::Widget) -> bool {
     w.property::<bool>("visible")
-}
-
-fn item_label_text(widget: &gtk::Widget) -> Option<String> {
-    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-        return Some(label.label().to_string());
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        if let Some(text) = item_label_text(&current) {
-            return Some(text);
-        }
-        child = current.next_sibling();
-    }
-    None
 }
 
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
@@ -212,7 +199,11 @@ fn sidebar_navigation_suite() {
     let first_album_row = window.imp().album_rows.borrow()[0].clone();
 
     // Selecting an album row pushes its AlbumDetailPage directly.
-    sidebar.select_row(Some(&first_album_row));
+    window
+        .imp()
+        .album_list
+        .get()
+        .select_row(Some(&first_album_row));
     assert!(
         nav.visible_page()
             .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
@@ -240,33 +231,24 @@ fn sidebar_navigation_suite() {
         "selecting Trash should push the Trash page",
     );
 
-    // Collapse toggle hides every album row; expanding brings them back.
-    window.toggle_albums_expanded();
-    {
-        let album_rows = window.imp().album_rows.borrow();
-        assert!(
-            !album_rows.is_empty(),
-            "album rows should still exist while collapsed"
-        );
-        for row in album_rows.iter() {
-            assert!(
-                !visible_flag(row.upcast_ref()),
-                "album rows should hide when collapsed"
-            );
-        }
-    }
+    // Collapse toggle hides the album scroll region; expanding brings it back.
     window.toggle_albums_expanded();
     assert!(
-        visible_flag(window.imp().album_rows.borrow()[0].upcast_ref()),
-        "album rows should reappear when expanded",
+        !visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "album scroll region should hide when collapsed"
+    );
+    window.toggle_albums_expanded();
+    assert!(
+        visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "album scroll region should reappear when expanded",
     );
 
-    assert_more_albums_row_opens_album_browser_page();
+    assert_album_sidebar_scroll_region_contains_all_albums();
 }
 
-fn assert_more_albums_row_opens_album_browser_page() {
+fn assert_album_sidebar_scroll_region_contains_all_albums() {
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.TestMoreAlbums")
+        .application_id("org.gnome.PhotoViewer.TestScrollableAlbums")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");
@@ -299,55 +281,33 @@ fn assert_more_albums_row_opens_album_browser_page() {
     window.populate_album_rows();
     window.connect_sidebar(&nav);
 
-    let sidebar = window.imp().sidebar_list.get();
-    let mut more_row_index = None;
-    for (idx, target) in window.imp().targets.borrow().iter().enumerate() {
-        if let photo_viewer::ui::window::SidebarTarget::AllAlbums = target {
-            more_row_index = Some(idx as i32);
-            break;
-        }
-    }
-    let more_row_index = more_row_index.expect("sidebar should contain AllAlbums target");
-    let more_row = sidebar
-        .row_at_index(more_row_index)
-        .expect("more row should exist in sidebar");
-
-    let label = item_label_text(more_row.upcast_ref()).unwrap_or_default();
     assert_eq!(
-        label,
-        tr("sidebar.albums_more"),
-        "more row label should use sidebar.albums_more",
+        window.imp().targets.borrow().len(),
+        3,
+        "main sidebar targets should contain only Photos, AlbumsHeader, and Trash",
     );
-    assert!(
-        visible_flag(more_row.upcast_ref()),
-        "more row should be visible when albums exceed MAX_VISIBLE_ALBUMS_IN_SIDEBAR",
-    );
-    const MAX_VISIBLE_ALBUMS_IN_SIDEBAR: usize = 15;
     assert_eq!(
         window.imp().album_rows.borrow().len(),
-        MAX_VISIBLE_ALBUMS_IN_SIDEBAR,
-        "sidebar should only keep the first 15 albums as dedicated rows",
+        28,
+        "sidebar album list should render all 25 folder albums plus 3 virtual albums",
     );
-    let visible_album_rows = window
-        .imp()
-        .album_rows
-        .borrow()
-        .iter()
-        .filter(|row| visible_flag(row.upcast_ref()))
-        .count();
-    assert_eq!(
-        visible_album_rows, MAX_VISIBLE_ALBUMS_IN_SIDEBAR,
-        "exactly 15 album rows should be visible in sidebar when expanded",
+    assert!(
+        visible_flag(window.imp().album_scroll.get().upcast_ref()),
+        "expanded album section should show its scroll region",
     );
 
-    sidebar.select_row(Some(&more_row));
-    let page = nav
-        .visible_page()
-        .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
-        .expect("selecting more row should push AlbumBrowserPage");
-    assert!(
-        page.album_count() > MAX_VISIBLE_ALBUMS_IN_SIDEBAR,
-        "album browser page should show all albums, not only the visible prefix",
+    let sidebar = window.imp().sidebar_list.get();
+    assert_eq!(
+        sidebar.observe_children().n_items(),
+        3,
+        "main sidebar list should contain only Photos, Albums header, and Trash",
+    );
+    let trash_row = sidebar.row_at_index(2).expect("Trash row remains stable");
+    sidebar.select_row(Some(&trash_row));
+    assert_eq!(
+        nav.visible_page().map(|page| page.title()).as_deref(),
+        Some(tr("page.trash.title").as_str()),
+        "Trash should remain a stable main sidebar row",
     );
 }
 

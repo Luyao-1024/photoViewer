@@ -4,7 +4,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use glib::subclass::types::ObjectSubclassIsExt;
@@ -23,24 +22,18 @@ use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
-use crate::ui::album_browser_page::AlbumBrowserPage;
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::grid_css;
 use crate::ui::TrashPage;
 
-const MAX_VISIBLE_ALBUMS_IN_SIDEBAR: usize = 15;
-
 /// What a sidebar row navigates to. The `Gtk.ListBox` row at index `i` maps to
 /// `targets[i]` (kept in lock-step by [`MainWindow::populate_sidebar`] and
-/// [`MainWindow::rebuild_album_rows`]). The albums group is a non-selectable
-/// header that only collapses/expands its children; every other row is a real
-/// navigation target.
+/// the static sidebar skeleton). The albums group is a non-selectable header
+/// that only collapses/expands the dedicated album list.
 #[derive(Clone, Debug)]
 pub enum SidebarTarget {
     Photos,
     AlbumsHeader,
-    Album(Album),
-    AllAlbums,
     Trash,
 }
 
@@ -71,18 +64,16 @@ mod imp {
         /// Index→target mirror of the sidebar ListBox, so the `row-selected`
         /// handler can dispatch by identity rather than a hardcoded index.
         pub targets: RefCell<Vec<SidebarTarget>>,
+        /// Index→album mirror of the dedicated album ListBox.
+        pub album_targets: RefCell<Vec<Album>>,
         /// The album rows nested under the "Albums" group header — kept so the
-        /// collapse toggle and the live refresh can hide/rebuild them precisely.
+        /// live refresh and tests can inspect/rebuild them precisely.
         pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
-        /// Row that opens the all-albums browser.
-        pub more_albums_row: RefCell<Option<gtk::ListBoxRow>>,
         /// The disclosure arrow on the Albums header; swapped between
         /// `pan-down-symbolic` (expanded) and `pan-end-symbolic` (collapsed).
         pub albums_arrow: RefCell<Option<gtk::Image>>,
         /// Whether the Albums group is currently expanded.
         pub albums_expanded: Cell<bool>,
-        /// Whether there are albums beyond `MAX_VISIBLE_ALBUMS_IN_SIDEBAR`.
-        pub has_more_albums: Cell<bool>,
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
@@ -92,6 +83,10 @@ mod imp {
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub album_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
         #[template_child]
@@ -189,10 +184,10 @@ impl MainWindow {
         self.imp().selecting_programmatically.set(false);
     }
 
-    /// Insert the folder + virtual albums under the Albums header, fetched from
-    /// the current DB snapshot. Called once after `set_resources` (and again by
-    /// [`Self::refresh_album_rows`] on live changes). Safe to call before
-    /// `connect_sidebar`; it only touches rows + the `targets` mirror.
+    /// Insert the folder + virtual albums in the dedicated album list, fetched
+    /// from the current DB snapshot. Called once after `set_resources` (and
+    /// again by [`Self::refresh_album_rows`] on live changes). Safe to call
+    /// before `connect_sidebar`; it only touches album rows + album targets.
     pub fn populate_album_rows(&self) {
         self.rebuild_album_rows();
     }
@@ -202,63 +197,27 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
-        let list = self.imp().sidebar_list.get();
+        let album_list = self.imp().album_list.get();
 
-        // Drop the existing album rows from the listbox and our bookkeeping.
-        let old_rows = std::mem::take(&mut *self.imp().album_rows.borrow_mut());
-        for row in &old_rows {
-            list.remove(row);
+        while let Some(child) = album_list.first_child() {
+            album_list.remove(&child);
         }
-        if let Some(old_more_row) = self.imp().more_albums_row.borrow_mut().take() {
-            list.remove(&old_more_row);
-        }
-
-        // Keep `targets` in lock-step: after removal it should read
-        // [Photos, AlbumsHeader, Trash]. The albums occupied the
-        // indices strictly between the header (1) and Trash (len-1).
-        {
-            let mut targets = self.imp().targets.borrow_mut();
-            if targets.len() >= 3 {
-                let end = targets.len() - 1;
-                if end > 2 {
-                    targets.drain(2..end);
-                }
-            }
-        }
+        self.imp().album_rows.borrow_mut().clear();
+        self.imp().album_targets.borrow_mut().clear();
 
         let albums = list_with_favorites(&pool).unwrap_or_default();
         let album_count = albums.len();
-        let preview_count = album_count.min(MAX_VISIBLE_ALBUMS_IN_SIDEBAR);
-        let show_more_row = album_count > MAX_VISIBLE_ALBUMS_IN_SIDEBAR;
         let expanded = self.imp().albums_expanded.get();
+        self.imp().album_scroll.set_visible(expanded);
 
-        // Insert album rows starting at index 2 (after Photos + header),
-        // pushing Trash back down so the order is preserved.
-        for (visible_pos, album) in albums.iter().take(preview_count).enumerate() {
-            let pos = visible_pos + 2;
-            let row = build_album_row(album);
-            row.set_visible(expanded);
+        for album in albums {
+            let row = build_album_row(&album);
+            row.set_visible(true);
             self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
-            list.insert(&row, pos as i32);
+            album_list.append(&row);
             self.imp().album_rows.borrow_mut().push(row);
-            self.imp()
-                .targets
-                .borrow_mut()
-                .insert(pos, SidebarTarget::Album(album.clone()));
+            self.imp().album_targets.borrow_mut().push(album);
         }
-
-        if show_more_row {
-            let more_row = build_more_albums_row(&tr("sidebar.albums_more"));
-            more_row.set_visible(expanded);
-            let more_pos = 2 + preview_count;
-            list.insert(&more_row, more_pos as i32);
-            *self.imp().more_albums_row.borrow_mut() = Some(more_row);
-            self.imp()
-                .targets
-                .borrow_mut()
-                .insert(more_pos, SidebarTarget::AllAlbums);
-        }
-        self.imp().has_more_albums.set(show_more_row);
 
         self.reselect_active_album_row();
         tracing::info!(
@@ -274,28 +233,28 @@ impl MainWindow {
             Some(path) => path,
             None => return,
         };
-        let list = self.imp().sidebar_list.get();
+        if !self.imp().album_scroll.is_visible() {
+            return;
+        }
+        let album_list = self.imp().album_list.get();
         let idx = self
             .imp()
-            .targets
+            .album_targets
             .borrow()
             .iter()
-            .position(|t| matches!(t, SidebarTarget::Album(a) if a.folder_path == active));
+            .position(|album| album.folder_path == active);
         if let Some(i) = idx {
-            if let Some(row) = list.row_at_index(i as i32) {
-                if !row.is_visible() {
-                    return;
-                }
+            if let Some(row) = album_list.row_at_index(i as i32) {
                 self.imp().selecting_programmatically.set(true);
-                list.select_row(Some(&row));
+                album_list.select_row(Some(&row));
                 self.imp().selecting_programmatically.set(false);
             }
         }
     }
 
     /// Collapse/expand the Albums group: swap the disclosure arrow and toggle
-    /// every album row's visibility. Hidden rows keep their ListBox index, so
-    /// the `targets[index]` dispatch stays valid while collapsed.
+    /// the dedicated album scroll region. Rows remain mounted in `album_list`
+    /// so their drag order and album target indices stay stable.
     pub fn toggle_albums_expanded(&self) {
         let expanded = !self.imp().albums_expanded.get();
         self.imp().albums_expanded.set(expanded);
@@ -306,32 +265,13 @@ impl MainWindow {
                 Some("pan-end-symbolic")
             });
         }
-        let rows = self.imp().album_rows.borrow();
-        for row in rows.iter() {
-            row.set_visible(expanded);
-        }
-        if let Some(more_row) = self.imp().more_albums_row.borrow().as_ref() {
-            let has_more = self.imp().has_more_albums.get();
-            more_row.set_visible(expanded && has_more);
-        }
+        self.imp().album_scroll.set_visible(expanded);
     }
 
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
-    ///
-    /// Only the first `MAX_VISIBLE_ALBUMS_IN_SIDEBAR` albums remain in the
-    /// sidebar; if all-albums view is currently visible, refresh that page too.
     pub fn refresh_album_rows(&self) {
         self.rebuild_album_rows();
-        if let Some(page) = self
-            .imp()
-            .nav_view
-            .get()
-            .visible_page()
-            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
-        {
-            page.refresh();
-        }
     }
 
     /// Persist a drag-to-reorder: move the album at `source_path` so it lands
@@ -352,13 +292,10 @@ impl MainWindow {
         // Current top-to-bottom album order, minus the dragged album.
         let mut order: Vec<String> = self
             .imp()
-            .targets
+            .album_targets
             .borrow()
             .iter()
-            .filter_map(|target| match target {
-                SidebarTarget::Album(a) => Some(a.folder_path.to_string_lossy().into_owned()),
-                _ => None,
-            })
+            .map(|album| album.folder_path.to_string_lossy().into_owned())
             .filter(|p| p != source_path)
             .collect();
 
@@ -476,9 +413,9 @@ impl MainWindow {
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row
     /// identity (`targets[index]`), not a hardcoded index:
     ///   - Photos → pop back to the root Photos page.
-    ///   - An album row → push that album's `AlbumDetailPage` directly.
-    ///   - More → open the all-albums browser page (all rows in overlay layer).
     ///   - Trash → push the `TrashPage`.
+    ///
+    /// Album rows live in `album_list` and are wired separately below.
     ///
     /// The Albums header is non-selectable, so it never lands here; its collapse
     /// toggle is driven by its own `GestureClick`.
@@ -487,6 +424,7 @@ impl MainWindow {
     /// missing the closures silently no-op.
     pub fn connect_sidebar(&self, nav_view: &adw::NavigationView) {
         let list = self.imp().sidebar_list.get();
+        let album_list = self.imp().album_list.get();
         let gesture = gtk::GestureSwipe::new();
         gesture.connect_swipe(
             glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
@@ -515,22 +453,37 @@ impl MainWindow {
                 match target {
                     SidebarTarget::Photos => {
                         *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
                     }
                     SidebarTarget::AlbumsHeader => {}
-                    SidebarTarget::AllAlbums => {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.open_all_albums_page(&nav_view);
-                    }
-                    SidebarTarget::Album(album) => {
-                        *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
-                        window.open_album(&nav_view, album);
-                    }
                     SidebarTarget::Trash => {
                         *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
                         window.show_trash_page(&nav_view);
                     }
                 }
+            }),
+        );
+
+        album_list.connect_row_selected(
+            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                let Some(row) = row else {
+                    return;
+                };
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
+                let album = {
+                    let targets = window.imp().album_targets.borrow();
+                    let Some(album) = targets.get(row.index() as usize).cloned() else {
+                        return;
+                    };
+                    album
+                };
+                *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
+                window.imp().sidebar_list.get().unselect_all();
+                window.open_album(&nav_view, album);
             }),
         );
 
@@ -588,44 +541,6 @@ impl MainWindow {
         }
         let page = AlbumDetailPage::new(album, filtered, master, pool, loader);
         page.set_nav_target(nav_view);
-        nav_view.push(&page);
-    }
-
-    fn open_all_albums_page(&self, nav_view: &adw::NavigationView) {
-        if nav_view
-            .visible_page()
-            .and_then(|page| page.downcast::<AlbumBrowserPage>().ok())
-            .is_some()
-        {
-            return;
-        }
-
-        let Some(pool) = self.imp().pool.borrow().clone() else {
-            return;
-        };
-        let Some(loader) = self.imp().loader.borrow().clone() else {
-            return;
-        };
-
-        pop_to_photos_root(nav_view);
-
-        let weak = self.downgrade();
-        let nav_copy = nav_view.clone();
-        let window_for_order = self.downgrade();
-        let page = AlbumBrowserPage::with_order_changed(
-            pool,
-            loader,
-            Rc::new(move |album| {
-                if let Some(window) = weak.upgrade() {
-                    window.open_album(&nav_copy, album);
-                }
-            }),
-            Some(Rc::new(move || {
-                if let Some(window) = window_for_order.upgrade() {
-                    window.rebuild_album_rows();
-                }
-            })),
-        );
         nav_view.push(&page);
     }
 
@@ -1407,32 +1322,6 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
     box_.append(&icon);
     box_.append(&name);
     box_.append(&count);
-    row.set_child(Some(&box_));
-    row
-}
-
-fn build_more_albums_row(label: &str) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.add_css_class("glass-sidebar-row");
-    row.add_css_class("glass-sidebar-subrow");
-    row.add_css_class("glass-sidebar-more");
-
-    let icon = gtk::Image::from_icon_name("view-more-symbolic");
-    icon.add_css_class("glass-sidebar-icon");
-
-    let lbl = gtk::Label::builder()
-        .label(label)
-        .halign(gtk::Align::Start)
-        .hexpand(true)
-        .css_classes(["glass-sidebar-label"])
-        .build();
-
-    let box_ = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(10)
-        .build();
-    box_.append(&icon);
-    box_.append(&lbl);
     row.set_child(Some(&box_));
     row
 }

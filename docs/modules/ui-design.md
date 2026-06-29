@@ -60,10 +60,10 @@ Design intent:
   rows, and footer stay transparent/layout-only. Do not put `glass-base` on
   the list and footer separately; two independently painted glass surfaces
   create a visible color break at the settings button.
-- The Albums header is a collapsible group control. Most album rows appear
-  directly under it, including virtual albums such as Favorites, Photos, and
-  Videos; when album count exceeds 15, a `More` row opens a dedicated
-  `AlbumBrowserPage`.
+- The Albums header is a collapsible group control. Album rows appear in a
+  dedicated bounded scroll region directly under it, including virtual albums
+  such as Favorites, Photos, and Videos. The main sidebar list itself remains
+  limited to Photos, Albums, and Trash.
 - Album rows use indentation, icons, and right-aligned counts to communicate
   hierarchy without adding extra panels.
 - Drag-to-reorder album rows should feel like a subtle in-place list operation:
