@@ -2,8 +2,10 @@
 //!
 //! Hosts three MediaGrid instances. When the user clicks a tile, a `ViewerPage`
 //! is pushed onto the host `AdwNavigationView` (injected via `set_nav_target`).
-//! Shift/Ctrl-click on a tile multi-selects; the "Add to Album" toolbar button
-//! appears whenever ≥1 tile is selected and opens the `AlbumPickerDialog`.
+//! Multi-select is entered via the right-click "Multi-select" item; while it is
+//! active the batch toolbar (select all / exit multi-select / add to album /
+//! favorite / trash) appears. ESC or the "Exit Multi-select" button leaves
+//! multi-select. The "Add to Album" toolbar button opens the `AlbumPickerDialog`.
 use std::cell::Cell;
 use std::cell::Ref;
 use std::cell::RefCell;
@@ -70,6 +72,8 @@ mod imp {
         #[template_child]
         pub select_all_btn: TemplateChild<gtk::Button>,
         #[template_child]
+        pub exit_multi_select_btn: TemplateChild<gtk::Button>,
+        #[template_child]
         pub add_to_album_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub favorite_btn: TemplateChild<gtk::Button>,
@@ -98,6 +102,7 @@ mod imp {
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
                 select_all_btn: TemplateChild::default(),
+                exit_multi_select_btn: TemplateChild::default(),
                 add_to_album_btn: TemplateChild::default(),
                 favorite_btn: TemplateChild::default(),
                 favorite_popover: RefCell::new(None),
@@ -156,6 +161,15 @@ impl PhotosPage {
             .select_all_btn
             .get()
             .set_tooltip_text(Some(&tr("photos.batch.select_all")));
+        // exit_multi_select_btn carries a fixed "退出多选" label + tooltip.
+        obj.imp()
+            .exit_multi_select_btn
+            .get()
+            .set_label(&tr("photos.batch.exit_multi_select"));
+        obj.imp()
+            .exit_multi_select_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.exit_multi_select")));
         obj.imp()
             .add_to_album_btn
             .get()
@@ -364,6 +378,34 @@ impl PhotosPage {
                 }
             });
         }
+        // ESC exits multi-select (same as the toolbar "退出多选" button).
+        // Capture phase so we intercept the key before any FlowBox binding
+        // (e.g. GTK's own selection-mode Escape) can consume it. Only acts
+        // while a grid is in multi-select; otherwise the key propagates.
+        let esc_ctrl = gtk::EventControllerKey::builder()
+            .propagation_phase(gtk::PropagationPhase::Capture)
+            .build();
+        let weak = obj.downgrade();
+        esc_ctrl.connect_key_pressed(move |_, key, _, _| {
+            let Some(this) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            if key == gtk::gdk::Key::Escape {
+                let any_multi = this
+                    .imp()
+                    .grids
+                    .borrow()
+                    .iter()
+                    .any(|g| g.is_multi_select_mode());
+                if any_multi {
+                    this.clear_selection();
+                    return glib::Propagation::Stop;
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        obj.add_controller(esc_ctrl);
+
         obj.sync_active_grid_rebuilds();
         obj.schedule_mode_selector_contrast_update();
         // 初始化时也同步一次
@@ -384,6 +426,18 @@ impl PhotosPage {
             };
             this.select_all_in_current_mode();
         });
+
+        // Exit multi-select: clears selection across every grid and hides the
+        // batch toolbar. Same effect as the right-click "Exit Multi-select".
+        let weak = obj.downgrade();
+        obj.imp()
+            .exit_multi_select_btn
+            .get()
+            .connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.clear_selection();
+                }
+            });
 
         let weak = obj.downgrade();
         obj.imp().add_to_album_btn.get().connect_clicked(move |_| {
@@ -543,6 +597,12 @@ impl PhotosPage {
             union.extend(grid.selected_ids());
         }
         let has_any = !union.is_empty();
+        let any_multi = self
+            .imp()
+            .grids
+            .borrow()
+            .iter()
+            .any(|g| g.is_multi_select_mode());
         let all_displayed_selected = self
             .current_grid()
             .is_some_and(|grid| grid.is_all_displayed_selected());
@@ -550,6 +610,10 @@ impl PhotosPage {
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);
         self.imp().delete_to_trash_btn.get().set_visible(has_any);
+        // Exit-multi-select is bound to multi-select *mode*, not to having a
+        // selection, so the user can always leave multi-select even after
+        // deselecting everything (otherwise they'd be stuck with no toolbar).
+        self.imp().exit_multi_select_btn.get().set_visible(any_multi);
         // select_all_btn keeps a text label that toggles 全选/取消全选.
         if all_displayed_selected {
             self.imp()
@@ -833,6 +897,7 @@ impl PhotosPage {
         self.imp().add_to_album_btn.get().set_visible(false);
         self.imp().favorite_btn.get().set_visible(false);
         self.imp().delete_to_trash_btn.get().set_visible(false);
+        self.imp().exit_multi_select_btn.get().set_visible(false);
     }
 
     fn open_viewer(&self, media_id: MediaId) {
