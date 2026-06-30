@@ -49,10 +49,9 @@ libadwaita theme variables (`@window_fg_color` / `@window_bg_color`) so they
 adapt to light and dark color schemes automatically. No CSS reapply is needed
 on theme switch; GTK resolves the variables at runtime. The only remaining
 hardcoded whites are content-overlay affordances that float directly on photos
-(selection checkmark, video-duration / favorite / motion badges, and all viewer
-chrome controls — both the header actions and the overlay zoom / prev / next
-arrows); these stay white with a dark `-gtk-icon-shadow` halo for legibility
-over any photo, in both rest and hover states. `alpha(black,…)` drop shadows
+(selection checkmark, video-duration / favorite / motion badges, viewer
+prev/next arrows); these stay white and rely on a dark backing or
+`-gtk-icon-shadow` for legibility over any photo. `alpha(black,…)` drop shadows
 are intentionally theme-independent, since a shadow reads as dark in both
 themes.
 
