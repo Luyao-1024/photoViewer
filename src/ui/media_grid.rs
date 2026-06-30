@@ -1682,9 +1682,11 @@ impl MediaGrid {
                     stats.thumbnails_generated,
                 ));
             } else {
+                this.imp().stats_refresh_source.borrow_mut().take();
                 return glib::ControlFlow::Break;
             }
             if stats.thumbnails_generated >= stats.live_total {
+                this.imp().stats_refresh_source.borrow_mut().take();
                 glib::ControlFlow::Break
             } else {
                 glib::ControlFlow::Continue
@@ -2544,6 +2546,41 @@ mod tests {
         assert_eq!(stats_label.xalign(), 0.5);
         assert!(stats_label.has_css_class("library-stats"));
         assert!(stats_label.has_css_class("glass-raised"));
+    }
+
+    #[gtk::test]
+    fn completed_day_grid_stats_refresh_clears_source_handle() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let item = sample_item(1, "complete.png");
+        let media_id = insert_sample_item(&pool, &item);
+        crate::core::db::mark_thumbnails_generated(&pool, &[media_id]).unwrap();
+        media_list.append(&glib::BoxedAnyObject::new(item));
+
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
+        assert!(
+            grid.imp().stats_refresh_source.borrow().is_some(),
+            "Day grid should keep a live stats timeout while thumbnail status can change"
+        );
+
+        let ctx = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+        while grid.imp().stats_refresh_source.borrow().is_some()
+            && std::time::Instant::now() < deadline
+        {
+            ctx.iteration(true);
+        }
+
+        assert!(
+            grid.imp().stats_refresh_source.borrow().is_none(),
+            "completed stats timeout must not leave a stale SourceId for the next rebuild to remove"
+        );
     }
 
     #[test]
