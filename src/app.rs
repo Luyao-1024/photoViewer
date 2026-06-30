@@ -6,7 +6,7 @@ use crate::core::media::MediaItem;
 use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::apply_to_media_list::ui_media_list_cap;
-use crate::ui::{MainWindow, PhotosPage};
+use crate::ui::{theme, MainWindow, PhotosPage};
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -48,11 +48,7 @@ pub fn build_app() -> adw::Application {
         .build();
 
     app.connect_activate(move |app| {
-        // Follow the system color scheme (libadwaita picks up the user's
-        // GNOME light/dark preference; this just opts in to automatic
-        // tracking rather than forcing light or dark).
-        let style_manager = adw::StyleManager::default();
-        style_manager.set_color_scheme(adw::ColorScheme::Default);
+        theme::apply(crate::core::prefs::theme_preference());
 
         // Register the grid + glass CSS before the first widget is realized so
         // the user's Liquid Glass preference (prefs::liquid_glass_enabled,

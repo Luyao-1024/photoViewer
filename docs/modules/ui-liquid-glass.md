@@ -9,13 +9,29 @@ This module owns the shared UI material system for glass chrome, including the u
 | File | Role |
 |---|---|
 | `src/ui/grid_css.rs` | CSS source, mode split, provider install/reapply |
+| `src/ui/theme.rs` | Maps persisted theme preference to libadwaita color schemes |
 | `src/ui/glass_context_menu.rs` | Overlay-backed right-click menu using raised glass material |
-| `src/core/prefs.rs` | `liquid_glass` preference persistence |
-| `src/ui/window.rs` | Settings UI and live toggle handling |
+| `src/core/prefs.rs` | `theme`, `liquid_glass`, and material transparency preference persistence |
+| `src/ui/window.rs` | Settings UI and live appearance toggle handling |
 | `data/ui/mode-selector.blp` | Canonical segmented glass control |
 | `src/ui/mode_selector.rs` | Mode selector behavior |
 | `tests/ui_grid_css_install.rs` | CSS provider/mode assertions |
 | `tests/ui_mode_selector.rs` | Mode selector template assertions |
+
+## Appearance Preferences
+
+The Settings dialog's Appearance section owns two separate concerns:
+
+- Theme selects the libadwaita color scheme: follow system, light, or dark.
+  `src/ui/theme.rs` applies the persisted `ThemePreference` through
+  `AdwStyleManager`, so changes are live and app startup honors the saved
+  choice before the first window is built.
+- Liquid Glass controls the shared material layer. The toggle switches between
+  Liquid Glass and plain translucent CSS, while the transparency slider adjusts
+  material strength.
+
+Keep these controls independent: theme should not rewrite glass settings, and
+glass settings should not force light or dark mode.
 
 ## Material Split
 

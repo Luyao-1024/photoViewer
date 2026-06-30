@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 use crate::config::config_dir;
 
 const SETTINGS_FILE: &str = "settings.json";
+const THEME_KEY: &str = "theme";
 const LIQUID_GLASS_KEY: &str = "liquid_glass";
 const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
@@ -31,6 +32,31 @@ const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemePreference {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
 
 fn settings_path() -> std::path::PathBuf {
     config_dir().join(SETTINGS_FILE)
@@ -58,6 +84,18 @@ fn read_liquid_glass_at(path: &Path) -> bool {
 
 fn write_liquid_glass_at(path: &Path, enabled: bool) -> Result<(), String> {
     write_bool_at(path, LIQUID_GLASS_KEY, enabled)
+}
+
+fn read_theme_preference_at(path: &Path) -> ThemePreference {
+    let obj = read_object_at(path);
+    obj.get(THEME_KEY)
+        .and_then(|v| v.as_str())
+        .map(ThemePreference::from_str)
+        .unwrap_or(ThemePreference::System)
+}
+
+fn write_theme_preference_at(path: &Path, preference: ThemePreference) -> Result<(), String> {
+    write_string_at(path, THEME_KEY, preference.as_str())
 }
 
 fn read_liquid_glass_transparency_at(path: &Path) -> f64 {
@@ -93,6 +131,17 @@ fn write_f64_at(path: &Path, key: &str, value: f64) -> Result<(), String> {
     }
     let mut object = read_object_at(path);
     object.insert(key.to_string(), Value::from(value));
+    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_string_at(path: &Path, key: &str, value: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut object = read_object_at(path);
+    object.insert(key.to_string(), Value::String(value.to_string()));
     let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
     std::fs::write(path, json).map_err(|e| e.to_string())?;
     Ok(())
@@ -185,6 +234,16 @@ pub fn liquid_glass_enabled() -> bool {
 /// other keys already present. Returns an error string on IO/serialize failure.
 pub fn set_liquid_glass(enabled: bool) -> Result<(), String> {
     write_liquid_glass_at(&settings_path(), enabled)
+}
+
+/// App theme preference. Defaults to following the system color scheme.
+pub fn theme_preference() -> ThemePreference {
+    read_theme_preference_at(&settings_path())
+}
+
+/// Persist the app theme preference.
+pub fn set_theme_preference(preference: ThemePreference) -> Result<(), String> {
+    write_theme_preference_at(&settings_path(), preference)
 }
 
 /// Shared transparency for every glass material. `0.0` is opaque, `1.0` transparent.
@@ -502,6 +561,71 @@ mod tests {
             Some(false),
             "writing motion-photo setting should preserve existing video prefs"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn theme_preference_defaults_to_system() {
+        let path = tmp_path("theme-default");
+        cleanup(&path);
+
+        assert_eq!(
+            read_theme_preference_at(&path),
+            ThemePreference::System,
+            "missing theme should default to following the system"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn theme_preference_round_trips_valid_values() {
+        let path = tmp_path("theme-roundtrip");
+        cleanup(&path);
+
+        for preference in [
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ] {
+            write_theme_preference_at(&path, preference).unwrap();
+            assert_eq!(read_theme_preference_at(&path), preference);
+        }
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn theme_preference_invalid_values_fall_back_to_system() {
+        let path = tmp_path("theme-invalid");
+        cleanup(&path);
+        std::fs::write(&path, "{\"theme\": \"sepia\"}").unwrap();
+
+        assert_eq!(
+            read_theme_preference_at(&path),
+            ThemePreference::System,
+            "unknown theme values should not force a color scheme"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn theme_preference_writing_preserves_other_keys() {
+        let path = tmp_path("theme-preserve");
+        cleanup(&path);
+        std::fs::write(&path, "{\"liquid_glass\": false}").unwrap();
+
+        write_theme_preference_at(&path, ThemePreference::Dark).unwrap();
+
+        let obj = read_object_at(&path);
+        assert_eq!(
+            obj.get(LIQUID_GLASS_KEY).and_then(|v| v.as_bool()),
+            Some(false),
+            "writing theme preference should preserve existing appearance prefs"
+        );
+        assert_eq!(read_theme_preference_at(&path), ThemePreference::Dark);
 
         cleanup(&path);
     }

@@ -17,6 +17,7 @@ pub mod models;
 pub mod photo_tile;
 pub mod photos_page;
 pub mod section_header;
+pub mod theme;
 pub mod toasts;
 pub mod trash_page;
 pub mod viewer_page;

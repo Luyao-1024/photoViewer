@@ -27,8 +27,8 @@ use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
-use crate::ui::grid_css;
 use crate::ui::TrashPage;
+use crate::ui::{grid_css, theme};
 
 /// What a sidebar row navigates to. The top list uses `targets[index]`, while
 /// the stable bottom Trash list uses `trash_targets[index]`. The albums group
@@ -1018,6 +1018,57 @@ impl MainWindow {
         let appearance_title = gtk::Label::new(Some(&tr("setting.section.appearance")));
         appearance_title.set_xalign(0.0);
         content.append(&appearance_title);
+
+        let theme_label = gtk::Label::new(Some(&tr("setting.theme")));
+        theme_label.set_halign(gtk::Align::Start);
+        theme_label.set_hexpand(true);
+
+        let btn_theme_system = gtk::CheckButton::with_label(&tr("setting.theme.system"));
+        let btn_theme_light = gtk::CheckButton::with_label(&tr("setting.theme.light"));
+        let btn_theme_dark = gtk::CheckButton::with_label(&tr("setting.theme.dark"));
+        btn_theme_light.set_group(Some(&btn_theme_system));
+        btn_theme_dark.set_group(Some(&btn_theme_system));
+
+        match prefs::theme_preference() {
+            prefs::ThemePreference::System => btn_theme_system.set_active(true),
+            prefs::ThemePreference::Light => btn_theme_light.set_active(true),
+            prefs::ThemePreference::Dark => btn_theme_dark.set_active(true),
+        }
+
+        let theme_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        theme_box.set_valign(gtk::Align::Center);
+        theme_box.append(&btn_theme_system);
+        theme_box.append(&btn_theme_light);
+        theme_box.append(&btn_theme_dark);
+
+        let theme_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        theme_row.append(&theme_label);
+        theme_row.append(&theme_box);
+        content.append(&theme_row);
+
+        let parent_for_theme = parent.clone();
+        let connect_theme_btn =
+            move |btn: &gtk::CheckButton, preference: prefs::ThemePreference| {
+                let parent = parent_for_theme.clone();
+                btn.connect_toggled(move |btn| {
+                    if !btn.is_active() {
+                        return;
+                    }
+                    match prefs::set_theme_preference(preference) {
+                        Ok(()) => theme::apply(preference),
+                        Err(err) => show_settings_error_dialog(
+                            &parent,
+                            &trf("setting.theme_save_failed", &[("error", &err)]),
+                        ),
+                    }
+                });
+            };
+        connect_theme_btn(&btn_theme_system, prefs::ThemePreference::System);
+        connect_theme_btn(&btn_theme_light, prefs::ThemePreference::Light);
+        connect_theme_btn(&btn_theme_dark, prefs::ThemePreference::Dark);
 
         let switch = gtk::Switch::builder()
             .valign(gtk::Align::Center)
@@ -2058,6 +2109,47 @@ mod tests {
                 scale.adjustment().lower() == 0.0 && scale.adjustment().upper() == 100.0
             }),
             "settings page should expose a 0-100 transparency scale"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_theme_selector() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowThemeSelector")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+
+        let mut labels = Vec::new();
+        collect_labels(&page, &mut labels);
+        assert!(
+            labels.iter().any(|label| label == &tr("setting.theme")),
+            "settings page should expose a theme label, got {labels:?}"
+        );
+
+        let mut check_buttons = Vec::new();
+        collect_check_buttons(&page, &mut check_buttons);
+        let theme_labels: Vec<String> = check_buttons
+            .iter()
+            .filter_map(|btn| btn.label().map(|label| label.to_string()))
+            .collect();
+        assert!(
+            theme_labels.contains(&tr("setting.theme.system")),
+            "settings page should expose Follow System theme option, got {theme_labels:?}"
+        );
+        assert!(
+            theme_labels.contains(&tr("setting.theme.light")),
+            "settings page should expose Light theme option, got {theme_labels:?}"
+        );
+        assert!(
+            theme_labels.contains(&tr("setting.theme.dark")),
+            "settings page should expose Dark theme option, got {theme_labels:?}"
         );
     }
 
