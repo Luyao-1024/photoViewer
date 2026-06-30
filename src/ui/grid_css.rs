@@ -386,9 +386,14 @@ box.mode-selector.on-light-background box.mode-dot,
 /* Right-aligned count badge on album rows. */
 .glass-sidebar-count {
   color: inherit;
-  opacity: 0.5;
+  opacity: 0.72;
   font-size: 0.92em;
   font-weight: 500;
+}
+
+.glass-sidebar-row:selected .glass-sidebar-count {
+  opacity: 0.92;
+  font-weight: 600;
 }
 
 /* Albums group header — a non-selectable disclosure row. Bolder label, no
@@ -669,6 +674,23 @@ button.viewer-thumb-item.viewer-thumb-current picture {
   background: transparent;
   background-color: transparent;
 }
+
+/* Settings content uses AdwPreferencesGroup rows for alignment, but the
+   default boxed-list card is too opaque inside the glass dialog. Keep the
+   content chain transparent and let the scoped material blocks below paint a
+   consistent translucent list surface. */
+.settings-dialog-content preferencesgroup,
+.settings-dialog-content list,
+.settings-dialog-content .boxed-list {
+  box-shadow: none;
+}
+
+.settings-dialog-content .boxed-list > row,
+.settings-dialog-content .boxed-list row,
+row.settings-action-row {
+  background: transparent;
+  background-color: transparent;
+}
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass material:
@@ -833,18 +855,30 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-sidebar-row:hover {
-  background: alpha(white, 0.10);
-  border-color: alpha(white, 0.18);
+  background: alpha(@accent_bg_color, 0.14);
+  border-color: alpha(@accent_bg_color, 0.26);
   box-shadow:
     inset 0 1px alpha(white, 0.28);
 }
 
 .glass-sidebar-row:selected {
-  background: alpha(white, 0.16);
-  border-color: alpha(white, 0.28);
+  background: alpha(@accent_bg_color, 0.22);
+  border-color: alpha(@accent_bg_color, 0.42);
   box-shadow:
     inset 0 1px alpha(white, 0.36),
     inset 0 -1px alpha(black, 0.12);
+}
+
+.settings-dialog-content .boxed-list {
+  background: alpha(black, 0.20);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.16);
+  border-radius: 16px;
+  backdrop-filter: blur(22px) saturate(1.12) brightness(1.02);
+}
+
+row.settings-action-row:hover {
+  background: alpha(white, 0.08);
 }
 
 .settings-background-blur {
@@ -1194,14 +1228,25 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-sidebar-row:hover {
-  background: alpha(white, 0.07);
-  border-color: alpha(white, 0.08);
+  background: alpha(@accent_bg_color, 0.12);
+  border-color: alpha(@accent_bg_color, 0.20);
 }
 
 .glass-sidebar-row:selected {
-  background: alpha(white, 0.12);
-  border-color: alpha(white, 0.14);
+  background: alpha(@accent_bg_color, 0.18);
+  border-color: alpha(@accent_bg_color, 0.32);
   box-shadow: 0 2px 8px alpha(black, 0.16);
+}
+
+.settings-dialog-content .boxed-list {
+  background: alpha(black, 0.38);
+  background-clip: padding-box;
+  border: 1px solid alpha(white, 0.10);
+  border-radius: 16px;
+}
+
+row.settings-action-row:hover {
+  background: alpha(white, 0.07);
 }
 
 .settings-background-blur {
@@ -2173,6 +2218,21 @@ mod tests {
             !transparent.contains("backdrop-filter: none"),
             "GTK backdrop-filter should not be set to none"
         );
+    }
+
+    #[test]
+    fn settings_dialog_preferences_lists_use_scoped_translucent_material() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            assert!(
+                css.contains(".settings-dialog-content .boxed-list"),
+                "settings preferences lists should override default boxed-list material"
+            );
+            assert!(
+                css.contains("row.settings-action-row"),
+                "settings rows should have a scoped row material hook"
+            );
+        }
     }
 
     #[test]

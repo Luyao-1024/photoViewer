@@ -1012,16 +1012,11 @@ impl MainWindow {
         lang_box.append(&btn_en);
         content.append(&lang_box);
 
-        // ── Appearance: Liquid Glass toggle ───────────────────────────────
-        // The switch reflects the persisted pref and re-skins the whole app
-        // live on toggle (no restart). See grid_css::reapply.
-        let appearance_title = gtk::Label::new(Some(&tr("setting.section.appearance")));
-        appearance_title.set_xalign(0.0);
-        content.append(&appearance_title);
-
-        let theme_label = gtk::Label::new(Some(&tr("setting.theme")));
-        theme_label.set_halign(gtk::Align::Start);
-        theme_label.set_hexpand(true);
+        // ── Appearance: theme + Liquid Glass controls ─────────────────────
+        let appearance_group = adw::PreferencesGroup::new();
+        appearance_group.set_title(&tr("setting.section.appearance"));
+        appearance_group.add_css_class("settings-preferences-group");
+        content.append(&appearance_group);
 
         let btn_theme_system = gtk::CheckButton::with_label(&tr("setting.theme.system"));
         let btn_theme_light = gtk::CheckButton::with_label(&tr("setting.theme.light"));
@@ -1041,13 +1036,12 @@ impl MainWindow {
         theme_box.append(&btn_theme_light);
         theme_box.append(&btn_theme_dark);
 
-        let theme_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .build();
-        theme_row.append(&theme_label);
-        theme_row.append(&theme_box);
-        content.append(&theme_row);
+        let theme_row = adw::ActionRow::new();
+        theme_row.add_css_class("settings-action-row");
+        theme_row.set_title(&tr("setting.theme"));
+        theme_row.set_activatable(false);
+        theme_row.add_suffix(&theme_box);
+        appearance_group.add(&theme_row);
 
         let parent_for_theme = parent.clone();
         let connect_theme_btn =
@@ -1075,17 +1069,12 @@ impl MainWindow {
             .active(prefs::liquid_glass_enabled())
             .build();
 
-        let switch_label = gtk::Label::new(Some(&tr("setting.liquid_glass")));
-        switch_label.set_halign(gtk::Align::Start);
-        switch_label.set_hexpand(true);
-
-        let glass_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .build();
-        glass_row.append(&switch_label);
-        glass_row.append(&switch);
-        content.append(&glass_row);
+        let glass_row = adw::ActionRow::new();
+        glass_row.add_css_class("settings-action-row");
+        glass_row.set_title(&tr("setting.liquid_glass"));
+        glass_row.set_activatable(false);
+        glass_row.add_suffix(&switch);
+        appearance_group.add(&glass_row);
 
         let parent_for_glass = parent.clone();
         switch.connect_notify_local(Some("active"), move |sw, _pspec| {
@@ -1105,13 +1094,10 @@ impl MainWindow {
             }
         });
 
-        let transparency_label = gtk::Label::new(Some(&tr("setting.liquid_glass_transparency")));
-        transparency_label.set_halign(gtk::Align::Start);
-        transparency_label.set_hexpand(true);
-
         let transparency_scale =
             gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
         transparency_scale.set_hexpand(true);
+        transparency_scale.set_size_request(300, -1);
         transparency_scale.set_digits(0);
         transparency_scale.set_value(prefs::liquid_glass_transparency() * 100.0);
         for mark in (0..=100).step_by(10) {
@@ -1119,13 +1105,12 @@ impl MainWindow {
             transparency_scale.add_mark(mark as f64, gtk::PositionType::Bottom, Some(&label));
         }
 
-        let transparency_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .build();
-        transparency_row.append(&transparency_label);
-        transparency_row.append(&transparency_scale);
-        content.append(&transparency_row);
+        let transparency_row = adw::ActionRow::new();
+        transparency_row.add_css_class("settings-action-row");
+        transparency_row.set_title(&tr("setting.liquid_glass_transparency"));
+        transparency_row.set_activatable(false);
+        transparency_row.add_suffix(&transparency_scale);
+        appearance_group.add(&transparency_row);
 
         let parent_for_transparency = parent.clone();
         transparency_scale.connect_value_changed(move |scale| {
@@ -1147,26 +1132,22 @@ impl MainWindow {
         // ── Video playback: startup mute preference ───────────────────────
         // Volume itself is persisted from the GtkMediaStream while watching a
         // video; settings only controls whether newly opened videos start muted.
-        let video_title = gtk::Label::new(Some(&tr("setting.section.video")));
-        video_title.set_xalign(0.0);
-        content.append(&video_title);
+        let video_group = adw::PreferencesGroup::new();
+        video_group.set_title(&tr("setting.section.video"));
+        video_group.add_css_class("settings-preferences-group");
+        content.append(&video_group);
 
         let muted_switch = gtk::Switch::builder()
             .valign(gtk::Align::Center)
             .active(prefs::video_default_muted())
             .build();
 
-        let muted_label = gtk::Label::new(Some(&tr("setting.video_default_muted")));
-        muted_label.set_halign(gtk::Align::Start);
-        muted_label.set_hexpand(true);
-
-        let muted_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .build();
-        muted_row.append(&muted_label);
-        muted_row.append(&muted_switch);
-        content.append(&muted_row);
+        let muted_row = adw::ActionRow::new();
+        muted_row.add_css_class("settings-action-row");
+        muted_row.set_title(&tr("setting.video_default_muted"));
+        muted_row.set_activatable(false);
+        muted_row.add_suffix(&muted_switch);
+        video_group.add(&muted_row);
 
         let parent_for_muted = parent.clone();
         muted_switch.connect_notify_local(Some("active"), move |sw, _pspec| {
@@ -1186,17 +1167,12 @@ impl MainWindow {
             .active(prefs::auto_play_motion_photo())
             .build();
 
-        let auto_play_motion_label = gtk::Label::new(Some(&tr("setting.auto_play_motion_photo")));
-        auto_play_motion_label.set_halign(gtk::Align::Start);
-        auto_play_motion_label.set_hexpand(true);
-
-        let auto_play_motion_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
-            .build();
-        auto_play_motion_row.append(&auto_play_motion_label);
-        auto_play_motion_row.append(&auto_play_motion_switch);
-        content.append(&auto_play_motion_row);
+        let auto_play_motion_row = adw::ActionRow::new();
+        auto_play_motion_row.add_css_class("settings-action-row");
+        auto_play_motion_row.set_title(&tr("setting.auto_play_motion_photo"));
+        auto_play_motion_row.set_activatable(false);
+        auto_play_motion_row.add_suffix(&auto_play_motion_switch);
+        video_group.add(&auto_play_motion_row);
 
         let parent_for_auto_play = parent.clone();
         auto_play_motion_switch.connect_notify_local(Some("active"), move |sw, _pspec| {
@@ -1217,6 +1193,7 @@ impl MainWindow {
         let storage_group = adw::PreferencesGroup::new();
         storage_group.set_title(&tr("setting.section.storage"));
         storage_group.set_description(Some(&tr("setting.section.storage_description")));
+        storage_group.add_css_class("settings-preferences-group");
         content.append(&storage_group);
 
         // ── Thumbnail generation speed: horizontal radio buttons ──────────
@@ -1252,6 +1229,7 @@ impl MainWindow {
         speed_box.append(&btn_fastest);
 
         let speed_row = adw::ActionRow::new();
+        speed_row.add_css_class("settings-action-row");
         speed_row.set_title(&tr("setting.thumbnail_generation_speed"));
         speed_row.set_subtitle(&tr("setting.thumbnail_generation_speed_description"));
         speed_row.set_activatable(false);
@@ -1299,6 +1277,7 @@ impl MainWindow {
 
         // Thumbnail cache row with size and clear button
         let thumb_row = adw::ActionRow::new();
+        thumb_row.add_css_class("settings-action-row");
         thumb_row.set_title(&tr("setting.clear_thumbnails"));
         thumb_row.set_subtitle(&format_size(thumb_size));
         thumb_row.set_activatable(false);
@@ -1351,6 +1330,7 @@ impl MainWindow {
 
         // Database row with size and clear button
         let db_row = adw::ActionRow::new();
+        db_row.add_css_class("settings-action-row");
         db_row.set_title(&tr("setting.clear_database"));
         db_row.set_subtitle(&format_size(db_size));
         db_row.set_activatable(false);
@@ -2150,6 +2130,25 @@ mod tests {
         assert!(
             theme_labels.contains(&tr("setting.theme.dark")),
             "settings page should expose Dark theme option, got {theme_labels:?}"
+        );
+
+        let mut titles = Vec::new();
+        collect_preference_titles(&page, &mut titles);
+        assert!(
+            titles.iter().any(|title| title == &tr("setting.theme")),
+            "theme selector should live in a PreferencesRow, got {titles:?}"
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.liquid_glass")),
+            "Liquid Glass toggle should live in a PreferencesRow, got {titles:?}"
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.video_default_muted")),
+            "video mute toggle should live in a PreferencesRow, got {titles:?}"
         );
     }
 
