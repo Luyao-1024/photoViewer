@@ -613,7 +613,10 @@ impl PhotosPage {
         // Exit-multi-select is bound to multi-select *mode*, not to having a
         // selection, so the user can always leave multi-select even after
         // deselecting everything (otherwise they'd be stuck with no toolbar).
-        self.imp().exit_multi_select_btn.get().set_visible(any_multi);
+        self.imp()
+            .exit_multi_select_btn
+            .get()
+            .set_visible(any_multi);
         // select_all_btn keeps a text label that toggles 全选/取消全选.
         if all_displayed_selected {
             self.imp()

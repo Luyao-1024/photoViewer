@@ -339,6 +339,35 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
     Ok(count as usize)
 }
 
+/// 按完整日期(年-月-日)分组统计非回收站媒体数量。
+///
+/// 日期取自 `COALESCE(taken_at, file_mtime)`（与列表排序/分组的基准一致），
+/// 以 UTC 解析，与 `MediaItem::sort_datetime()`（`DateTime<Utc>`）对齐，不会跨年错位。
+/// `file_mtime` 非空，故每条 live 行都会落入某个日期组。返回 `(年, 月, 日, 计数)`，
+/// 供 `section_model::counts_from_date_groups` 按 Year/Month/Day 折叠成 section 真实计数。
+pub fn count_live_media_by_date(pool: &DbPool) -> Result<Vec<(i32, u32, u32, u32)>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT
+                CAST(strftime('%Y', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
+                CAST(strftime('%m', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
+                CAST(strftime('%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
+                COUNT(*)
+         FROM media_items
+         WHERE trashed_at IS NULL
+         GROUP BY 1, 2, 3",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let year: i64 = row.get(0)?;
+        let month: i64 = row.get(1)?;
+        let day: i64 = row.get(2)?;
+        let count: i64 = row.get(3)?;
+        Ok((year as i32, month as u32, day as u32, count as u32))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
 /// 已生成缩略图的媒体项总数。
 pub fn count_thumbnail_generated(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;

@@ -3,6 +3,8 @@ use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
 use crate::core::refresh::LibraryStats;
+use crate::core::section_model::{counts_from_date_groups, GroupBy, SectionKey};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +104,15 @@ impl MediaRepository {
             live_total: db::count_live_media(&self.pool)?,
             thumbnails_generated: db::count_thumbnail_generated(&self.pool)?,
         })
+    }
+
+    /// 按 Year/Month/Day 分组返回每个 section 的真实媒体计数。
+    ///
+    /// 计数来自整个库（DB 聚合），而非当前虚拟分页窗口，因此单个年份/月份超过
+    /// `virtual_media_page_size` 时仍准确。供 `MediaGrid` 覆盖 section 头部计数。
+    pub fn section_counts(&self, mode: GroupBy) -> Result<HashMap<SectionKey, u32>> {
+        let groups = db::count_live_media_by_date(&self.pool)?;
+        Ok(counts_from_date_groups(&groups, mode))
     }
 
     pub fn neighbor(

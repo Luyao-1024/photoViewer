@@ -71,7 +71,7 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{group_items, GroupBy};
+use crate::core::section_model::{apply_authoritative_counts, group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
@@ -1307,7 +1307,13 @@ impl MediaGrid {
                 total_media_count
             );
         } else {
-            let sections = group_items(&items, mode);
+            let mut sections = group_items(&items, mode);
+            // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
+            // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
+            // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
+            if let Ok(counts) = MediaRepository::new(loader.pool().clone()).section_counts(mode) {
+                apply_authoritative_counts(&mut sections, &counts);
+            }
             for section in sections {
                 if section.items.is_empty() {
                     continue;
@@ -2478,16 +2484,13 @@ mod tests {
         media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
         media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
 
-        let grid = MediaGrid::new(
-            media_list,
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
 
         let modes = section_flow_selection_modes(&grid);
-        assert!(!modes.is_empty(), "rebuild should produce section FlowBoxes");
+        assert!(
+            !modes.is_empty(),
+            "rebuild should produce section FlowBoxes"
+        );
         assert!(
             modes.iter().all(|m| *m == gtk::SelectionMode::None),
             "default (non-multi) must be None, got {modes:?}"
