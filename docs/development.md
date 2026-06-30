@@ -31,6 +31,35 @@ cargo run
 
 Liquid Glass depends on GTK runtime support for `backdrop-filter`. The host GTK may be older than the target runtime, so visual checks for blur/refraction-style surfaces should run through the Flatpak GNOME 50 runtime.
 
+Automated visual smoke screenshots are supported only on X11. Wayland
+compositors do not expose a common screenshot/control interface, so the project
+skips automated visual checks on Wayland instead of depending on
+compositor-specific tools.
+
+Additional Fedora dependencies:
+
+```bash
+sudo dnf install xorg-x11-server-Xvfb xdotool ImageMagick xorg-x11-utils
+```
+
+Additional Ubuntu dependencies:
+
+```bash
+sudo apt install xvfb xdotool imagemagick x11-utils
+```
+
+Run the X11 visual smoke check:
+
+```bash
+tools/visual-check-x11.sh
+```
+
+The script uses the current X11 display when available. In non-Wayland
+headless environments it starts `Xvfb`, launches the app through
+`run-flatpak.sh`, waits for the window, and writes a screenshot to
+`target/visual-checks/`. If `XDG_SESSION_TYPE=wayland`, it prints a skip
+message and exits successfully.
+
 For current-worktree debug runs:
 
 ```bash

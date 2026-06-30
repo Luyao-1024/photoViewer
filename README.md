@@ -78,6 +78,25 @@ flatpak info org.gnome.PhotoViewer
 cargo test
 ```
 
+## X11 视觉检测
+
+自动视觉 smoke check 只在 X11 下运行；Wayland 会直接跳过，因为不同
+compositor 的截图/窗口控制工具不统一。
+
+```bash
+# Fedora
+sudo dnf install xorg-x11-server-Xvfb xdotool ImageMagick xorg-x11-utils
+
+# Ubuntu
+sudo apt install xvfb xdotool imagemagick x11-utils
+
+tools/visual-check-x11.sh
+```
+
+脚本会通过 Flatpak GNOME 50 runtime 启动应用，等待窗口出现，并把截图保存到
+`target/visual-checks/`。如果没有当前 X11 display 且不是 Wayland，它会自动启动
+`Xvfb`。
+
 ## 多语言配置
 
 应用默认使用 `zh-CN`（中文）或 `en`（英文）文案。可通过配置文件切换语言和覆盖文案。
