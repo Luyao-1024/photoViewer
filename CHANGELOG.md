@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+- Renamed the application ID to `io.github.luyao_1024.photoviewer` based on the
+  GitHub repository identity for Flathub/AppStream compatibility.
+- Updated Flatpak, desktop, metainfo, icon installation names, development
+  runner, visual check script, and tests to use the new app ID.
+- Added Flathub-oriented AppStream metadata, including homepage, bugtracker,
+  developer, and 0.9 release notes.
+- Added `cargo-sources.json` and switched the Flatpak manifest to offline cargo
+  source resolution.
+- Removed the abandoned Huawei FUSE experiment and an unused editor helper
+  module from the release tree.
+
 ## 0.5.0 (M5 complete)
 
 - Empty states (AdwStatusPage) for all views

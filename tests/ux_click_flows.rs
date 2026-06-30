@@ -289,7 +289,7 @@ fn viewer_chrome_clicks_drive_visible_operations() {
 
 fn sidebar_clicks_drive_top_level_navigation() {
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.UxClickFlows")
+        .application_id("io.github.luyao_1024.photoviewer.UxClickFlows")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");
@@ -359,7 +359,7 @@ fn sidebar_clicks_drive_top_level_navigation() {
 
 fn album_sidebar_multi_select_deletes_real_albums() {
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.AlbumMultiSelect")
+        .application_id("io.github.luyao_1024.photoviewer.AlbumMultiSelect")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");

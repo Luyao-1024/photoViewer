@@ -7,9 +7,9 @@
 # keeps incremental artifacts while using the GNOME 50 toolchain:
 #
 #   - target/flatpak-debug        (compiled Rust artifacts)
-#   - ~/.cache/photoViewer/cargo-home (Cargo registry/git downloads)
+#   - ~/.cache/io.github.luyao_1024.photoviewer/cargo-home (Cargo registry/git downloads)
 #
-# The binary is then launched through the installed org.gnome.PhotoViewer app
+# The binary is then launched through the installed io.github.luyao_1024.photoviewer app
 # sandbox, not the SDK sandbox. GNOME 50's gdk-pixbuf/glycin image loaders fail
 # when nested under the generic SDK app-id, which makes thumbnails stay white.
 #
@@ -57,10 +57,10 @@ USAGE
 cd "$(dirname "$0")"
 
 PROJECT_DIR="$(pwd)"
-CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/photoViewer"
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/io.github.luyao_1024.photoviewer"
 CARGO_HOME_DIR="$CACHE_ROOT/cargo-home"
 TARGET_DIR="target/flatpak-debug"
-FLATPAK_APP_ID="org.gnome.PhotoViewer"
+FLATPAK_APP_ID="io.github.luyao_1024.photoviewer"
 RUN_WITH_AUDIO=1
 RELEASE_BUILD=0
 

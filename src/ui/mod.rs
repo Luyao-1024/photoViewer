@@ -4,7 +4,6 @@ pub mod album_browser_page;
 pub mod album_detail_page;
 pub mod album_picker;
 pub mod apply_to_media_list;
-pub mod edit_panel;
 pub mod editor_panel;
 pub mod empty_states;
 pub mod glass_context_menu;

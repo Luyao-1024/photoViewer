@@ -1,11 +1,13 @@
 //! Application configuration paths (XDG Base Directory spec)
 use std::path::PathBuf;
 
+pub const APP_ID: &str = "io.github.luyao_1024.photoviewer";
+
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| std::env::temp_dir().join("photoViewer-home"))
+        .unwrap_or_else(|| std::env::temp_dir().join("io.github.luyao_1024.photoviewer-home"))
 }
 
 /// Returns the locale-aware user Pictures directory.
@@ -120,7 +122,7 @@ pub fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home_dir().join(".local/share"));
-    base.join("photoViewer")
+    base.join(APP_ID)
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -128,7 +130,7 @@ pub fn cache_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home_dir().join(".cache"));
-    base.join("photoViewer")
+    base.join(APP_ID)
 }
 
 pub fn config_dir() -> PathBuf {
@@ -136,5 +138,5 @@ pub fn config_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home_dir().join(".config"));
-    base.join("photoViewer")
+    base.join(APP_ID)
 }

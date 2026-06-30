@@ -66,7 +66,7 @@ fn make_media_for_path(path: std::path::PathBuf) -> MediaItem {
 fn editor_panel_buttons_use_glass() {
     gtk::init().expect("GTK init failed");
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.EditorPanelGlass")
+        .application_id("io.github.luyao_1024.photoviewer.EditorPanelGlass")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");

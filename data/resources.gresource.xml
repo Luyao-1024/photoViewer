@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <gresource prefix="/org/gnome/PhotoViewer">
+  <gresource prefix="/io/github/luyao_1024/photoviewer">
     <file>ui/window.ui</file>
     <file>ui/album-browser-page.ui</file>
     <file>ui/photos-page.ui</file>

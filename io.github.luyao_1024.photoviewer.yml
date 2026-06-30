@@ -1,4 +1,4 @@
-app-id: org.gnome.PhotoViewer
+app-id: io.github.luyao_1024.photoviewer
 runtime: org.gnome.Platform
 runtime-version: "50"
 sdk: org.gnome.Sdk
@@ -66,20 +66,29 @@ modules:
   - name: photo-viewer
     buildsystem: simple
     build-options:
-      build-args:
-        - --share=network
       env:
         PATH: /usr/lib/sdk/rust-stable/bin:/app/bin:/usr/bin
         CARGO_HOME: /run/build/photo-viewer/cargo-home
-        CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        CARGO_NET_OFFLINE: "true"
     build-commands:
       - cargo build --release --locked
       - install -Dm755 target/release/photo-viewer /app/bin/photo-viewer
-      - install -Dm644 data/org.gnome.PhotoViewer.desktop /app/share/applications/org.gnome.PhotoViewer.desktop
-      - install -Dm644 data/org.gnome.PhotoViewer.metainfo.xml /app/share/metainfo/org.gnome.PhotoViewer.metainfo.xml
-      - install -Dm644 data/icons/photo-viewer-64.png /app/share/icons/hicolor/64x64/apps/org.gnome.PhotoViewer.png
-      - install -Dm644 data/icons/photo-viewer-128.png /app/share/icons/hicolor/128x128/apps/org.gnome.PhotoViewer.png
-      - install -Dm644 data/icons/photo-viewer-symbolic.svg /app/share/icons/hicolor/symbolic/apps/org.gnome.PhotoViewer-symbolic.svg
+      - install -Dm644 data/io.github.luyao_1024.photoviewer.desktop /app/share/applications/io.github.luyao_1024.photoviewer.desktop
+      - install -Dm644 data/io.github.luyao_1024.photoviewer.metainfo.xml /app/share/metainfo/io.github.luyao_1024.photoviewer.metainfo.xml
+      - install -Dm644 data/icons/photo-viewer-64.png /app/share/icons/hicolor/64x64/apps/io.github.luyao_1024.photoviewer.png
+      - install -Dm644 data/icons/photo-viewer-128.png /app/share/icons/hicolor/128x128/apps/io.github.luyao_1024.photoviewer.png
+      - install -Dm644 data/icons/photo-viewer-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.luyao_1024.photoviewer-symbolic.svg
     sources:
       - type: dir
         path: .
+        skip:
+          - .flatpak-builder
+          - .git
+          - .superpowers
+          - .worktrees
+          - build-flatpak
+          - log
+          - playwright-report
+          - target
+          - test-results
+      - cargo-sources.json

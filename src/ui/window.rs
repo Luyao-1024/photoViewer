@@ -2091,7 +2091,7 @@ mod tests {
     fn settings_page_exposes_video_default_mute_without_volume_control() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowSettings")
+            .application_id("io.github.luyao_1024.photoviewer.WindowSettings")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");
@@ -2133,7 +2133,7 @@ mod tests {
     fn settings_page_exposes_liquid_glass_transparency_slider() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowGlassTransparency")
+            .application_id("io.github.luyao_1024.photoviewer.WindowGlassTransparency")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");
@@ -2174,7 +2174,7 @@ mod tests {
     fn settings_page_exposes_theme_selector() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowThemeSelector")
+            .application_id("io.github.luyao_1024.photoviewer.WindowThemeSelector")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");
@@ -2234,7 +2234,7 @@ mod tests {
     fn settings_page_exposes_thumbnail_generation_speed_selector() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowThumbnailSpeed")
+            .application_id("io.github.luyao_1024.photoviewer.WindowThumbnailSpeed")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");
@@ -2281,7 +2281,7 @@ mod tests {
     fn settings_storage_rows_defer_size_calculation() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowStorageUsage")
+            .application_id("io.github.luyao_1024.photoviewer.WindowStorageUsage")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");
@@ -2308,7 +2308,7 @@ mod tests {
     fn settings_dialog_uses_bounded_scroll_child() {
         let _ = gtk::init();
         let app = adw::Application::builder()
-            .application_id("org.gnome.PhotoViewer.WindowSettingsDialogBounds")
+            .application_id("io.github.luyao_1024.photoviewer.WindowSettingsDialogBounds")
             .build();
         app.register(None::<&gtk::gio::Cancellable>)
             .expect("test application should register");

@@ -22,7 +22,7 @@ fn photos_header_uses_glass_toolbar_classes() {
     gtk::init().expect("GTK init failed");
 
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.PhotosToolbar")
+        .application_id("io.github.luyao_1024.photoviewer.PhotosToolbar")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");

@@ -11,6 +11,8 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
+
+use crate::config::APP_ID;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -43,9 +45,7 @@ pub fn build_app() -> adw::Application {
     // thread-local stays set for the entire process.
     let _ = install_tokio_runtime();
 
-    let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer")
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(move |app| {
         theme::apply(crate::core::prefs::theme_preference());

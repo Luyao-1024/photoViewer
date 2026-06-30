@@ -1,6 +1,6 @@
 #[test]
 fn flatpak_manifest_grants_audio_socket_for_video_playback() {
-    let manifest = std::fs::read_to_string("org.gnome.PhotoViewer.yml")
+    let manifest = std::fs::read_to_string("io.github.luyao_1024.photoviewer.yml")
         .expect("flatpak manifest should be readable");
 
     assert!(

@@ -55,7 +55,7 @@ CSS class 实现，不要重新加入 `@media` / `@keyframes`。
   含 popover 与 `AdwAlertDialog`），无需重启。
 - `CssProvider` 在 gtk4-rs 里不是 `Send`/`Sync`，无法放进 `static`，所以当前 provider 存在
   `thread_local!` 里（GTK 全在主线程）。
-- 偏好持久化在 `~/.config/photoViewer/settings.json` 的 `liquid_glass` 字段，由
+- 偏好持久化在 `~/.config/io.github.luyao_1024.photoviewer/settings.json` 的 `liquid_glass` 字段，由
   `src/core/prefs.rs` 读写，默认 `true`（opt-out）。
 - 同一设置页的透明度滑杆持久化为 `liquid_glass_transparency`，范围 0-100：0 是完整玻璃材质，
   100 是背景完全透明。实现上只让 material `background` alpha 降到 0；`border*` 和

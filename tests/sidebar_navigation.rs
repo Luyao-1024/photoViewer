@@ -67,7 +67,7 @@ fn sidebar_navigation_suite() {
     gtk::init().expect("GTK init failed");
 
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.Test")
+        .application_id("io.github.luyao_1024.photoviewer.Test")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");
@@ -367,7 +367,7 @@ fn sidebar_navigation_suite() {
 
 fn assert_album_sidebar_scroll_region_contains_all_albums() {
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.TestScrollableAlbums")
+        .application_id("io.github.luyao_1024.photoviewer.TestScrollableAlbums")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");
@@ -440,7 +440,7 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
 
 fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.TestCollapsedAlbumRefresh")
+        .application_id("io.github.luyao_1024.photoviewer.TestCollapsedAlbumRefresh")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");

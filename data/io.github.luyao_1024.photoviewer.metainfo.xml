@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.gnome.PhotoViewer</id>
+  <id>io.github.luyao_1024.photoviewer</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
 
   <name>Photo Viewer</name>
   <summary>Browse, organize, and edit photos</summary>
+  <developer id="io.github.luyao_1024">
+    <name>wang luyao</name>
+  </developer>
 
   <description>
     <p>
@@ -15,7 +18,11 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">org.gnome.PhotoViewer.desktop</launchable>
+  <url type="homepage">https://github.com/Luyao-1024/photoViewer</url>
+  <url type="bugtracker">https://github.com/Luyao-1024/photoViewer/issues</url>
+  <url type="vcs-browser">https://github.com/Luyao-1024/photoViewer</url>
+
+  <launchable type="desktop-id">io.github.luyao_1024.photoviewer.desktop</launchable>
   <provides>
     <binary>photo-viewer</binary>
   </provides>
@@ -27,6 +34,16 @@
   </categories>
 
   <releases>
+    <release version="0.9.0" date="2026-06-30">
+      <description>
+        <p>
+          Prepares the application for a Flathub-oriented 0.9 release with a
+          GitHub-derived application ID, updated metadata, video viewing,
+          motion photo support, album management, theme preferences, and
+          performance improvements for large local libraries.
+        </p>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-06-29">
       <description>
         <p>

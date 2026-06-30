@@ -67,7 +67,7 @@ cargo build
 flatpak run \
   --filesystem=/home/luyao/workspace/photo_viewer/photoViewer \
   --filesystem=home \
-  --command=sh org.gnome.PhotoViewer \
+  --command=sh io.github.luyao_1024.photoviewer \
   -c 'exec /home/luyao/workspace/photo_viewer/photoViewer/target/debug/photo-viewer'
 ```
 
@@ -75,7 +75,7 @@ For reinstalling the latest app:
 
 ```bash
 flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
-  /tmp/photoViewer-flatpak-build org.gnome.PhotoViewer.yml
+  /tmp/photoViewer-flatpak-build io.github.luyao_1024.photoviewer.yml
 ```
 
 Avoid using repository-local `.flatpak-builder` state as a routine install path while the known `rofiles-fuse` unmount hang is present.

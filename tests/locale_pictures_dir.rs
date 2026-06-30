@@ -153,9 +153,9 @@ fn xdg_paths_do_not_panic_when_home_is_missing() {
     assert!(result.is_ok(), "path helpers should not panic without HOME");
     let (pictures, data, cache, config) = result.unwrap();
     assert!(pictures.ends_with("Pictures"));
-    assert!(data.ends_with("photoViewer"));
-    assert!(cache.ends_with("photoViewer"));
-    assert!(config.ends_with("photoViewer"));
+    assert!(data.ends_with("io.github.luyao_1024.photoviewer"));
+    assert!(cache.ends_with("io.github.luyao_1024.photoviewer"));
+    assert!(config.ends_with("io.github.luyao_1024.photoviewer"));
 }
 
 #[test]

@@ -183,7 +183,7 @@ STARTED_APP=1
 
 find_window_id() {
     xdotool search --onlyvisible --class "photo-viewer" 2>/dev/null | tail -n 1 && return 0
-    xdotool search --onlyvisible --class "org.gnome.PhotoViewer" 2>/dev/null | tail -n 1 && return 0
+    xdotool search --onlyvisible --class "io.github.luyao_1024.photoviewer" 2>/dev/null | tail -n 1 && return 0
     xdotool search --onlyvisible --class "Photo Viewer" 2>/dev/null | tail -n 1 && return 0
     xdotool search --onlyvisible --name "Photo Viewer" 2>/dev/null | tail -n 1 && return 0
     return 1

@@ -470,13 +470,13 @@ mod tests {
         // 必须同时给出 HOST 回收站根（gio 实际落点）和 per-app 根。
         let roots = trash_roots_from(
             Some(OsString::from(
-                "/home/luyao/.var/app/org.gnome.PhotoViewer/data",
+                "/home/luyao/.var/app/io.github.luyao_1024.photoviewer/data",
             )),
             Some(OsString::from("/home/luyao")),
         );
         assert_eq!(roots[0], PathBuf::from("/home/luyao/.local/share/Trash"));
         assert!(roots.contains(&PathBuf::from(
-            "/home/luyao/.var/app/org.gnome.PhotoViewer/data/Trash"
+            "/home/luyao/.var/app/io.github.luyao_1024.photoviewer/data/Trash"
         )));
     }
 

@@ -37,7 +37,7 @@ fn find_widget<F: Fn(&gtk::Widget) -> bool>(root: &gtk::Widget, pred: F) -> Opti
 fn album_picker_buttons_use_glass() {
     gtk::init().expect("GTK init failed");
     let app = adw::Application::builder()
-        .application_id("org.gnome.PhotoViewer.AlbumPickerGlass")
+        .application_id("io.github.luyao_1024.photoviewer.AlbumPickerGlass")
         .build();
     app.register(None::<&gtk::gio::Cancellable>).unwrap();
     grid_css::install();
