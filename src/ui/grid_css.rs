@@ -691,6 +691,15 @@ row.settings-action-row {
   background: transparent;
   background-color: transparent;
 }
+
+.settings-dialog-content label {
+  color: @window_fg_color;
+}
+
+.settings-dialog-content label.dim-label,
+.settings-dialog-content row.settings-action-row label.subtitle {
+  color: alpha(@window_fg_color, 0.62);
+}
 ";
 
 /* ── LIQUID_GLASS_MATERIAL_CSS ─ the dramatic Liquid Glass material:
@@ -699,9 +708,9 @@ floating shadows. This is the default (opt-out) look. */
 const LIQUID_GLASS_MATERIAL_CSS: &str = "
 /* glass-base — sidebar, header, details panel */
 .glass-base {
-  background: alpha(white, 0.06);
+  background: alpha(@window_bg_color, 0.42);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.18);
+  border: 1px solid alpha(@window_fg_color, 0.14);
   backdrop-filter: blur(22px) saturate(1.18) brightness(1.04);
   box-shadow:
     inset 0 1px alpha(white, 0.32),
@@ -710,9 +719,9 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 
 /* glass-raised — floating controls (mode selector, menus, popovers) */
 .glass-raised {
-  background: alpha(white, 0.10);
+  background: alpha(@window_bg_color, 0.58);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.30);
+  border: 1px solid alpha(@window_fg_color, 0.18);
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 18px 48px alpha(black, 0.26),
@@ -724,9 +733,9 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 .glass-menu > contents {
   padding: 6px;
   border-radius: 16px;
-  background: linear-gradient(135deg, alpha(white, 0.34), alpha(white, 0.18) 48%, alpha(black, 0.10));
+  background: alpha(@window_bg_color, 0.72);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.30);
+  border: 1px solid alpha(@window_fg_color, 0.16);
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 18px 48px alpha(black, 0.26),
@@ -738,9 +747,9 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
    all button-like chrome so the Settings switch changes the whole language. */
 .glass-toolbar-button,
 .glass-header windowcontrols button image {
-  background: alpha(white, 0.12);
+  background: alpha(@window_bg_color, 0.48);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.28);
+  border: 1px solid alpha(@window_fg_color, 0.14);
   box-shadow:
     0 12px 32px alpha(black, 0.24),
     inset 0 1px alpha(white, 0.44),
@@ -749,8 +758,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 
 .glass-toolbar-button:hover,
 .glass-header windowcontrols button:hover image {
-  background: alpha(white, 0.18);
-  border-color: alpha(white, 0.38);
+  background: alpha(@window_bg_color, 0.62);
+  border-color: alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
     inset 0 1px alpha(white, 0.52),
@@ -761,8 +770,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 .glass-toolbar-button:checked,
 .glass-header windowcontrols button:active image,
 .glass-header windowcontrols button:checked image {
-  background: alpha(white, 0.24);
-  border-color: alpha(white, 0.44);
+  background: alpha(@window_bg_color, 0.72);
+  border-color: alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
     inset 0 1px alpha(white, 0.34),
@@ -804,8 +813,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-menu-item:hover {
-  background: alpha(white, 0.16);
-  border-color: alpha(white, 0.26);
+  background: alpha(@window_fg_color, 0.08);
+  border-color: alpha(@window_fg_color, 0.14);
   box-shadow:
     inset 0 1px alpha(white, 0.36),
     inset 0 -1px alpha(black, 0.10);
@@ -831,8 +840,8 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-context-menu-item:hover {
-  background: alpha(white, 0.10);
-  border-color: alpha(white, 0.18);
+  background: alpha(@window_fg_color, 0.08);
+  border-color: alpha(@window_fg_color, 0.12);
   box-shadow:
     inset 0 1px alpha(white, 0.28);
 }
@@ -870,23 +879,29 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .settings-dialog-content .boxed-list {
-  background: alpha(black, 0.20);
+  background: alpha(@card_bg_color, 0.62);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.16);
+  border: 1px solid alpha(@window_fg_color, 0.12);
   border-radius: 16px;
   backdrop-filter: blur(22px) saturate(1.12) brightness(1.02);
 }
 
 row.settings-action-row:hover {
-  background: alpha(white, 0.08);
+  background: alpha(@window_fg_color, 0.06);
 }
 
 .settings-background-blur {
   filter: blur(12px) brightness(0.82);
 }
 
+.settings-dialog-backdrop .background {
+  background: alpha(@window_bg_color, 0.76);
+  border-color: alpha(@window_fg_color, 0.12);
+  color: @window_fg_color;
+}
+
 .settings-dialog-backdrop {
-  background: alpha(black, 0.16);
+  background: alpha(@window_bg_color, 0.26);
   backdrop-filter: blur(18px) saturate(1.08) brightness(0.94);
 }
 
@@ -906,17 +921,17 @@ row.settings-action-row:hover {
 }
 
 .viewer-overlay-nav-btn {
-  background: alpha(white, 0.13);
+  background: alpha(@window_bg_color, 0.52);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.26);
+  border: 1px solid alpha(@window_fg_color, 0.16);
   box-shadow:
     inset 0 1px alpha(white, 0.36),
     inset 0 -1px alpha(black, 0.10);
 }
 
 .viewer-overlay-nav-btn:hover {
-  background: alpha(white, 0.22);
-  border-color: alpha(white, 0.38);
+  background: alpha(@window_bg_color, 0.68);
+  border-color: alpha(@window_fg_color, 0.22);
 }
 
 /* ── Viewer chrome: glass material only on hover/focus ──────────────
@@ -940,9 +955,9 @@ row.settings-action-row:hover {
 .viewer-chrome .glass-toolbar-button:focus-visible,
 .viewer-overlay-nav-btn:hover,
 .viewer-overlay-nav-btn:focus-visible {
-  background: alpha(white, 0.18);
+  background: alpha(@window_bg_color, 0.62);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.38);
+  border: 1px solid alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
     inset 0 1px alpha(white, 0.52),
@@ -951,8 +966,8 @@ row.settings-action-row:hover {
 
 .viewer-chrome .glass-toolbar-button:active,
 .viewer-chrome .glass-toolbar-button:checked {
-  background: alpha(white, 0.24);
-  border: 1px solid alpha(white, 0.44);
+  background: alpha(@window_bg_color, 0.72);
+  border: 1px solid alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
     inset 0 1px alpha(white, 0.34),
@@ -987,9 +1002,9 @@ row.settings-action-row:hover {
 
 .sidebar-settings-button:hover,
 .sidebar-settings-button:focus-visible {
-  background: alpha(white, 0.18);
+  background: alpha(@window_bg_color, 0.62);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.38);
+  border: 1px solid alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
     inset 0 1px alpha(white, 0.52),
@@ -997,8 +1012,8 @@ row.settings-action-row:hover {
 }
 
 .sidebar-settings-button:active {
-  background: alpha(white, 0.24);
-  border: 1px solid alpha(white, 0.44);
+  background: alpha(@window_bg_color, 0.72);
+  border: 1px solid alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
     inset 0 1px alpha(white, 0.34),
@@ -1014,24 +1029,24 @@ row.settings-action-row:hover {
 }
 
 .glass-alert-dialog .background {
-  background: alpha(black, 0.48);
+  background: alpha(@window_bg_color, 0.78);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.24);
+  border: 1px solid alpha(@window_fg_color, 0.16);
   border-radius: 20px;
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 24px 64px alpha(black, 0.40),
     inset 0 1px alpha(white, 0.28);
-  color: #ffffff;
+  color: @window_fg_color;
 }
 
 .glass-alert-dialog .title-2 {
   font-weight: 700;
-  color: #ffffff;
+  color: @window_fg_color;
 }
 
 .glass-alert-dialog .body {
-  color: alpha(white, 0.72);
+  color: alpha(@window_fg_color, 0.72);
 }
 
 /* Response buttons — 液态玻璃 pill 风格 */
@@ -1039,20 +1054,20 @@ row.settings-action-row:hover {
   min-height: 38px;
   border-radius: 12px;
   padding: 0 18px;
-  background: alpha(white, 0.10);
-  border: 1px solid alpha(white, 0.22);
-  color: #ffffff;
+  background: alpha(@window_bg_color, 0.54);
+  border: 1px solid alpha(@window_fg_color, 0.14);
+  color: @window_fg_color;
   font-weight: 600;
   transition: background 120ms ease, border-color 120ms ease;
 }
 
 .glass-alert-dialog button.text-button:hover {
-  background: alpha(white, 0.18);
-  border-color: alpha(white, 0.36);
+  background: alpha(@window_bg_color, 0.68);
+  border-color: alpha(@window_fg_color, 0.22);
 }
 
 .glass-alert-dialog button.text-button:active {
-  background: alpha(white, 0.26);
+  background: alpha(@window_bg_color, 0.78);
 }
 
 /* Destructive response — 红色调液态玻璃 */
@@ -1067,17 +1082,17 @@ row.settings-action-row:hover {
 
 /* glass-header — header bar surface (calmer than glass-raised) */
 .glass-header {
-  background: alpha(black, 0.18);
+  background: alpha(@window_bg_color, 0.56);
   background-clip: padding-box;
-  border-bottom: 1px solid alpha(white, 0.08);
+  border-bottom: 1px solid alpha(@window_fg_color, 0.10);
   backdrop-filter: blur(20px) saturate(1.10) brightness(1.02);
 }
 
 /* viewer-details-panel — metadata sidebar uses glass-base, not opaque. */
 .viewer-details-panel {
-  background: alpha(black, 0.30);
+  background: alpha(@window_bg_color, 0.66);
   background-clip: padding-box;
-  border-left: 1px solid alpha(white, 0.12);
+  border-left: 1px solid alpha(@window_fg_color, 0.12);
   backdrop-filter: blur(22px) saturate(1.12);
 }
 
@@ -1087,9 +1102,9 @@ row.settings-action-row:hover {
   margin: 12px;
   margin-left: 0;
   border-radius: 16px;
-  background: alpha(black, 0.32);
+  background: alpha(@window_bg_color, 0.70);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.20);
+  border: 1px solid alpha(@window_fg_color, 0.14);
   backdrop-filter: blur(26px) saturate(1.20) brightness(1.05);
   box-shadow:
     0 14px 44px alpha(black, 0.42),
@@ -1106,47 +1121,47 @@ translucent panels and controls with restrained borders.
 轻阴影,与液态玻璃差异明显。 */
 const PLAIN_GLASS_MATERIAL_CSS: &str = "
 .glass-base {
-  background: alpha(black, 0.55);
+  background: alpha(@window_bg_color, 0.72);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.08);
+  border: 1px solid alpha(@window_fg_color, 0.10);
 }
 
 .glass-raised {
-  background: alpha(black, 0.62);
+  background: alpha(@window_bg_color, 0.78);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   box-shadow: 0 4px 12px alpha(black, 0.22);
 }
 
 .glass-menu > contents {
   padding: 6px;
   border-radius: 16px;
-  background: alpha(black, 0.62);
+  background: alpha(@window_bg_color, 0.78);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   box-shadow: 0 4px 12px alpha(black, 0.22);
 }
 
 .glass-toolbar-button,
 .glass-header windowcontrols button image {
-  background: alpha(white, 0.07);
+  background: alpha(@window_bg_color, 0.52);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   box-shadow: 0 3px 10px alpha(black, 0.18);
 }
 
 .glass-toolbar-button:hover,
 .glass-header windowcontrols button:hover image {
-  background: alpha(white, 0.12);
-  border-color: alpha(white, 0.16);
+  background: alpha(@window_bg_color, 0.64);
+  border-color: alpha(@window_fg_color, 0.16);
 }
 
 .glass-toolbar-button:active,
 .glass-toolbar-button:checked,
 .glass-header windowcontrols button:active image,
 .glass-header windowcontrols button:checked image {
-  background: alpha(white, 0.16);
-  border-color: alpha(white, 0.20);
+  background: alpha(@window_bg_color, 0.74);
+  border-color: alpha(@window_fg_color, 0.20);
 }
 
 .glass-header windowcontrols button.close image {
@@ -1183,8 +1198,8 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-menu-item:hover {
-  background: alpha(white, 0.11);
-  border-color: alpha(white, 0.12);
+  background: alpha(@window_fg_color, 0.07);
+  border-color: alpha(@window_fg_color, 0.10);
 }
 
 .glass-menu-item-suggested:hover {
@@ -1206,8 +1221,8 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-context-menu-item:hover {
-  background: alpha(white, 0.07);
-  border-color: alpha(white, 0.08);
+  background: alpha(@window_fg_color, 0.06);
+  border-color: alpha(@window_fg_color, 0.08);
 }
 
 .glass-context-menu-item-suggested:hover {
@@ -1239,22 +1254,28 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 }
 
 .settings-dialog-content .boxed-list {
-  background: alpha(black, 0.38);
+  background: alpha(@card_bg_color, 0.72);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   border-radius: 16px;
 }
 
 row.settings-action-row:hover {
-  background: alpha(white, 0.07);
+  background: alpha(@window_fg_color, 0.06);
 }
 
 .settings-background-blur {
   opacity: 0.72;
 }
 
+.settings-dialog-backdrop .background {
+  background: alpha(@window_bg_color, 0.88);
+  border-color: alpha(@window_fg_color, 0.10);
+  color: @window_fg_color;
+}
+
 .settings-dialog-backdrop {
-  background: alpha(black, 0.34);
+  background: alpha(@window_bg_color, 0.34);
 }
 
 .settings-about-text {
@@ -1271,14 +1292,14 @@ row.settings-action-row:hover {
 }
 
 .viewer-overlay-nav-btn {
-  background: alpha(white, 0.08);
+  background: alpha(@window_bg_color, 0.52);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
 }
 
 .viewer-overlay-nav-btn:hover {
-  background: alpha(white, 0.14);
-  border-color: alpha(white, 0.16);
+  background: alpha(@window_bg_color, 0.64);
+  border-color: alpha(@window_fg_color, 0.16);
 }
 
 /* ── Viewer chrome: glass material only on hover/focus (plain mode) ──
@@ -1299,15 +1320,15 @@ row.settings-action-row:hover {
 .viewer-chrome .glass-toolbar-button:focus-visible,
 .viewer-overlay-nav-btn:hover,
 .viewer-overlay-nav-btn:focus-visible {
-  background: alpha(white, 0.12);
+  background: alpha(@window_bg_color, 0.64);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.16);
+  border: 1px solid alpha(@window_fg_color, 0.16);
 }
 
 .viewer-chrome .glass-toolbar-button:active,
 .viewer-chrome .glass-toolbar-button:checked {
-  background: alpha(white, 0.16);
-  border: 1px solid alpha(white, 0.20);
+  background: alpha(@window_bg_color, 0.74);
+  border: 1px solid alpha(@window_fg_color, 0.20);
 }
 
 /* Delete keeps its red danger treatment on hover inside the viewer. */
@@ -1330,14 +1351,14 @@ row.settings-action-row:hover {
 
 .sidebar-settings-button:hover,
 .sidebar-settings-button:focus-visible {
-  background: alpha(white, 0.12);
+  background: alpha(@window_bg_color, 0.64);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.16);
+  border: 1px solid alpha(@window_fg_color, 0.16);
 }
 
 .sidebar-settings-button:active {
-  background: alpha(white, 0.16);
-  border: 1px solid alpha(white, 0.20);
+  background: alpha(@window_bg_color, 0.74);
+  border: 1px solid alpha(@window_fg_color, 0.20);
 }
 
 /* Favorite-active has no surface material here either — heart icon color
@@ -1348,40 +1369,40 @@ row.settings-action-row:hover {
 }
 
 .glass-alert-dialog .background {
-  background: alpha(black, 0.72);
+  background: alpha(@window_bg_color, 0.88);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   border-radius: 20px;
   box-shadow: 0 8px 24px alpha(black, 0.30);
-  color: #ffffff;
+  color: @window_fg_color;
 }
 
 .glass-alert-dialog .title-2 {
   font-weight: 700;
-  color: #ffffff;
+  color: @window_fg_color;
 }
 
 .glass-alert-dialog .body {
-  color: alpha(white, 0.72);
+  color: alpha(@window_fg_color, 0.72);
 }
 
 .glass-alert-dialog button.text-button {
   min-height: 38px;
   border-radius: 12px;
   padding: 0 18px;
-  background: #2a2a30;
-  border: 1px solid alpha(white, 0.10);
-  color: #ffffff;
+  background: alpha(@window_bg_color, 0.62);
+  border: 1px solid alpha(@window_fg_color, 0.10);
+  color: @window_fg_color;
   font-weight: 600;
 }
 
 .glass-alert-dialog button.text-button:hover {
-  background: #36363e;
-  border-color: alpha(white, 0.18);
+  background: alpha(@window_bg_color, 0.74);
+  border-color: alpha(@window_fg_color, 0.18);
 }
 
 .glass-alert-dialog button.text-button:active {
-  background: #40404a;
+  background: alpha(@window_bg_color, 0.82);
 }
 
 .glass-alert-dialog button.destructive-action {
@@ -1394,15 +1415,15 @@ row.settings-action-row:hover {
 }
 
 .glass-header {
-  background: alpha(black, 0.50);
+  background: alpha(@window_bg_color, 0.78);
   background-clip: padding-box;
-  border-bottom: 1px solid alpha(white, 0.08);
+  border-bottom: 1px solid alpha(@window_fg_color, 0.08);
 }
 
 .viewer-details-panel {
-  background: alpha(black, 0.60);
+  background: alpha(@window_bg_color, 0.82);
   background-clip: padding-box;
-  border-left: 1px solid alpha(white, 0.08);
+  border-left: 1px solid alpha(@window_fg_color, 0.08);
 }
 
 /* viewer-floating-panel — 详情面板浮层(普通模式):无模糊,更深半透明底 + 轻投影。 */
@@ -1410,9 +1431,9 @@ row.settings-action-row:hover {
   margin: 12px;
   margin-left: 0;
   border-radius: 12px;
-  background: alpha(black, 0.62);
+  background: alpha(@window_bg_color, 0.84);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.10);
+  border: 1px solid alpha(@window_fg_color, 0.10);
   box-shadow: 0 4px 14px alpha(black, 0.30);
 }
 ";
@@ -2164,7 +2185,7 @@ mod tests {
         let css = build_css_with_transparency(true, 0.5);
 
         assert!(
-            css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.06);"),
+            css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(@window_bg_color, 0.24);"),
             "toolbar button background alpha should be halved at 50% transparency"
         );
         assert!(
@@ -2185,7 +2206,7 @@ mod tests {
     fn glass_transparency_hundred_keeps_interactive_edges_visible() {
         let opaque = build_css_with_transparency(true, 0.0);
         assert!(
-            opaque.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.12);"),
+            opaque.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(@window_bg_color, 0.48);"),
             "0% transparency should keep the original fully opaque material"
         );
         assert!(
@@ -2195,11 +2216,11 @@ mod tests {
 
         let transparent = build_css_with_transparency(true, 1.0);
         assert!(
-            transparent.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(white, 0.0);"),
+            transparent.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {\n  background: alpha(@window_bg_color, 0.0);"),
             "100% transparency should remove material fill"
         );
         assert!(
-            transparent.contains("border: 1px solid alpha(white, 0.1);"),
+            transparent.contains("border: 1px solid alpha(@window_fg_color, 0.1);"),
             "100% transparency should keep a minimum button border"
         );
         assert!(
@@ -2207,7 +2228,8 @@ mod tests {
             "100% transparency should keep a minimum button shadow"
         );
         assert!(
-            transparent.contains(".glass-alert-dialog .body {\n  color: alpha(white, 0.72);"),
+            transparent
+                .contains(".glass-alert-dialog .body {\n  color: alpha(@window_fg_color, 0.72);"),
             "text color opacity should not be scaled by glass transparency"
         );
         assert!(
@@ -2231,6 +2253,23 @@ mod tests {
             assert!(
                 css.contains("row.settings-action-row"),
                 "settings rows should have a scoped row material hook"
+            );
+            assert!(
+                css.contains(".settings-dialog-content label {\n  color: @window_fg_color;"),
+                "settings dialog labels should follow the active light/dark theme"
+            );
+            assert!(
+                css.contains("color: alpha(@window_fg_color, 0.62);"),
+                "settings dialog dim labels should use a theme-aware translucent foreground"
+            );
+            assert!(
+                css.contains(".settings-dialog-backdrop .background")
+                    && css.contains("background: alpha(@window_bg_color"),
+                "settings dialog background should use theme-aware window colors"
+            );
+            assert!(
+                css.contains("background: alpha(@card_bg_color"),
+                "settings preferences lists should use theme-aware card colors"
             );
         }
     }
@@ -2277,8 +2316,8 @@ mod tests {
     fn glass_menu_surface_matches_raised_segmented_surface_visual_weight() {
         let liquid = build_css(true);
         for marker in [
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: linear-gradient(135deg, alpha(white, 0.34), alpha(white, 0.18) 48%, alpha(black, 0.10));",
-            "background-clip: padding-box;\n  border: 1px solid alpha(white, 0.30);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.72);",
+            "background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.16);",
             "0 18px 48px alpha(black, 0.26)",
             "inset 0 1px alpha(white, 0.58)",
         ] {
@@ -2290,8 +2329,8 @@ mod tests {
 
         let plain = build_css(false);
         for marker in [
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(black, 0.62);",
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(black, 0.62);\n  background-clip: padding-box;\n  border: 1px solid alpha(white, 0.10);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.78);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.78);\n  background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.10);",
             "box-shadow: 0 4px 12px alpha(black, 0.22);",
         ] {
             assert!(
@@ -2342,7 +2381,7 @@ mod tests {
             "menu items should not add a second resting translucency layer over the raised menu surface",
         );
         assert!(
-            css.contains(".glass-menu-item:hover {\n  background: alpha(white, 0.16);"),
+            css.contains(".glass-menu-item:hover {\n  background: alpha(@window_fg_color, 0.08);"),
             "menu items should still show lightweight hover state",
         );
     }
@@ -2360,7 +2399,9 @@ mod tests {
             "custom context menu items should stay transparent at rest",
         );
         assert!(
-            css.contains(".glass-context-menu-item:hover {\n  background: alpha(white, 0.10);"),
+            css.contains(
+                ".glass-context-menu-item:hover {\n  background: alpha(@window_fg_color, 0.08);"
+            ),
             "custom context menu should use lightweight internal hover state",
         );
     }

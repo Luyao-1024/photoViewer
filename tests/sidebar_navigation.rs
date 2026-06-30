@@ -123,6 +123,11 @@ fn sidebar_navigation_suite() {
             list_classes.iter().any(|c| c == "glass-sidebar"),
             "top sidebar list should carry glass-sidebar, got {list_classes:?}",
         );
+        assert_eq!(
+            top_sidebar.margin_top(),
+            8,
+            "Photos row should not sit flush against the top window edge",
+        );
         assert!(
             trash_list_classes.iter().any(|c| c == "glass-sidebar"),
             "trash sidebar list should carry glass-sidebar, got {trash_list_classes:?}",
