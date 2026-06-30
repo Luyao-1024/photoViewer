@@ -1459,10 +1459,15 @@ fn build_about_label() -> gtk::Label {
 struct RestartSpec {
     program: PathBuf,
     args: Vec<OsString>,
+    exit_current_process_after_spawn: bool,
 }
 
 fn restart_spec_from(program: PathBuf, args: Vec<OsString>) -> RestartSpec {
-    RestartSpec { program, args }
+    RestartSpec {
+        program,
+        args,
+        exit_current_process_after_spawn: true,
+    }
 }
 
 fn current_restart_spec() -> Result<RestartSpec, String> {
@@ -1481,7 +1486,14 @@ fn restart_application() -> Result<(), String> {
         .args(&spec.args)
         .spawn()
         .map_err(|e| e.to_string())?;
-    gtk::Application::default().quit();
+    if spec.exit_current_process_after_spawn {
+        let app = gtk::Application::default();
+        for window in app.windows() {
+            window.close();
+        }
+        app.quit();
+        std::process::exit(0);
+    }
     Ok(())
 }
 
@@ -2066,6 +2078,13 @@ mod tests {
 
         assert_eq!(spec.program, exe);
         assert_eq!(spec.args, args);
+    }
+
+    #[test]
+    fn restart_spec_requires_current_process_exit_after_spawn() {
+        let spec = restart_spec_from(PathBuf::from("/tmp/photo-viewer"), Vec::new());
+
+        assert!(spec.exit_current_process_after_spawn);
     }
 
     #[gtk::test]
