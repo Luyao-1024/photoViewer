@@ -173,22 +173,16 @@ box.mode-dot,
   color: inherit;
 }
 
-/* Viewer chrome buttons (the viewer header) are square (1:1) and float over
-   the photo, so — like .viewer-overlay-nav-btn — they render a white icon with
-   a dark halo instead of inheriting the theme foreground. This keeps every
-   viewer control reading as one set of light affordances over the image, and
-   stops a black icon (light theme) vanishing into a bright photo bleeding
-   through the translucent header. Scoped to .viewer-chrome (only the viewer
-   header carries it) so the shared .glass-toolbar-button in other headers
-   (photos/trash/albums/editor) is untouched. The prev/next arrows
-   (.viewer-overlay-nav-btn) are smaller and live in their own bottom-right
-   pair, so they don't match this geometry override. */
+/* Viewer chrome buttons (the viewer header) are square (1:1). The base
+   .glass-toolbar-button is shared by every header bar (photos, trash, albums,
+   editor), so this geometry override is scoped to .viewer-chrome, which the
+   viewer header carries. The floating prev/next arrows
+   (.viewer-overlay-nav-btn) are intentionally smaller and live in their own
+   compact bottom-right pair, so they do not match this. */
 .viewer-chrome .glass-toolbar-button {
   min-width: 38px;
   min-height: 38px;
   padding: 0;
-  color: #ffffff;
-  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.9), 0 0 6px alpha(black, 0.65);
 }
 
 .glass-toolbar-button.crop-ratio-arrow-button {
