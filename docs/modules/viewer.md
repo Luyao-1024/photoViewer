@@ -55,7 +55,7 @@ For videos, play/pause and seeking are handled by the `GtkVideo`'s own built-in 
 
 Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
 
-Image zoom controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, zoom-in. At identity zoom, show only the zoom-in button; reveal zoom-out and reset only once the image is enlarged. Zoom state is viewer-local and resets when switching media, opening the editor, or using the reset button; videos remain view-only and do not show the image zoom controls.
+Image zoom and portable rotation controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, zoom-in. At identity zoom, show rotate-left, rotate-right, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
 
 ## Header Toolbar
 
@@ -68,6 +68,8 @@ The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the
 Details/editor side panels should be treated as overlay chrome, not as layout that changes the main image viewport unexpectedly. Collapsed state should hide or unparent expensive/size-forcing child regions where needed.
 
 The details panel mirrors its row set to the media kind: photos get EXIF camera-parameter rows (aperture, exposure, focal length, location, …), while videos get `ffprobe`-derived rows (duration, codec + profile, frame rate, bit rate, container, device) appended to the same `file_group` via the same dynamic-`ActionRow` mechanism. Video `width`/`height`/`taken_at` light up the shared dimensions/captured rows just like photos. Both sets load asynchronously (`load_camera_details` / `load_video_details`) behind a navigation token so switching items cancels stale loads.
+
+The details panel name row is slightly larger than the other file rows and is activatable. Clicking it opens an inline rename entry that edits the file stem only; the original extension is preserved by the repository rename path, even if the user types a different suffix. Successful renames update the current `ListStore` item, viewer title, details rows, and filmstrip without saving any image/video pixels.
 
 Videos are view-only. Keep the Edit button disabled for `video/*` items and guard the click handler so videos cannot configure `EditorPanel`.
 

@@ -152,6 +152,21 @@ fn viewer_toolbar_uses_glass_classes() {
         !imp.video.get().is_autoplay(),
         "Gtk.Video autoplay must stay disabled so audio prefs apply before playback starts",
     );
+    let name_row_classes = css_classes_vec(&imp.name_row.get());
+    assert!(
+        name_row_classes
+            .iter()
+            .any(|c| c == "viewer-details-name-row"),
+        "name_row should use the larger details name treatment, got {name_row_classes:?}",
+    );
+    assert!(
+        imp.name_row.get().is_activatable(),
+        "name_row should be activatable so clicking it starts inline rename"
+    );
+    assert!(
+        !gtk::prelude::WidgetExt::is_visible(&imp.name_entry.get()),
+        "inline rename entry should stay hidden until the name row is activated"
+    );
 
     let prev_parent = imp
         .prev_btn
@@ -171,12 +186,36 @@ fn viewer_toolbar_uses_glass_classes() {
     for (name, classes) in [
         ("prev_btn", css_classes_vec(&imp.prev_btn.get())),
         ("next_btn", css_classes_vec(&imp.next_btn.get())),
+        (
+            "rotate_left_btn",
+            css_classes_vec(&imp.rotate_left_btn.get()),
+        ),
+        (
+            "rotate_right_btn",
+            css_classes_vec(&imp.rotate_right_btn.get()),
+        ),
     ] {
         assert!(
             classes.iter().any(|c| c == "viewer-overlay-nav-btn"),
             "{name} should use the overlay glass nav button class, got {classes:?}",
         );
     }
+
+    let zoom_parent = imp
+        .zoom_in_btn
+        .get()
+        .parent()
+        .expect("zoom-in button should have a parent container");
+    assert_eq!(
+        imp.rotate_right_btn.get().next_sibling().as_ref(),
+        Some(imp.zoom_in_btn.get().upcast_ref()),
+        "rotate-right should sit immediately to the left of zoom-in"
+    );
+    assert_eq!(
+        imp.rotate_left_btn.get().parent().as_ref(),
+        Some(&zoom_parent),
+        "rotate buttons should live in the zoom controls container"
+    );
 
     // Task: favorite-active class toggle on the viewer favorite button.
     // The class is owned by the global CSS provider (Task 7) and must be

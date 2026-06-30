@@ -206,6 +206,34 @@ fn viewer_chrome_clicks_drive_visible_operations() {
         viewer.imp().details_split_view.get().shows_sidebar(),
         "clicking details should reveal the details sidebar"
     );
+    viewer
+        .imp()
+        .name_row
+        .get()
+        .emit_by_name::<()>("activated", &[]);
+    assert!(
+        gtk::prelude::WidgetExt::is_visible(&viewer.imp().name_entry.get()),
+        "clicking the details name row should reveal the inline rename entry"
+    );
+    assert_eq!(
+        viewer.imp().name_entry.get().text().as_str(),
+        "one",
+        "inline rename should edit only the stem by default"
+    );
+    viewer.imp().name_entry.get().set_text("renamed.png");
+    viewer
+        .imp()
+        .name_entry
+        .get()
+        .emit_by_name::<()>("activate", &[]);
+    let renamed_path = fixture._tmp.path().join("photos").join("renamed.jpg");
+    assert!(
+        wait_until(Duration::from_secs(2), || renamed_path.exists()
+            && db::get_media_item(&fixture.pool, fixture.items[0].id)
+                .map(|item| item.display_name() == "renamed.jpg")
+                .unwrap_or(false)),
+        "inline rename should preserve the original extension and update the DB item"
+    );
     click_button(&viewer.imp().details_close_btn.get());
     assert!(
         !viewer.imp().details_split_view.get().shows_sidebar(),
@@ -218,11 +246,33 @@ fn viewer_chrome_clicks_drive_visible_operations() {
         viewer.imp().zoom_scale.get() > initial_zoom,
         "clicking zoom-in should increase viewer zoom"
     );
+    assert!(
+        !viewer.imp().rotate_left_btn.get().is_visible()
+            && !viewer.imp().rotate_right_btn.get().is_visible(),
+        "viewer rotate buttons should hide once the image is enlarged"
+    );
     click_button(&viewer.imp().zoom_reset_btn.get());
     assert_eq!(
         viewer.imp().zoom_scale.get(),
         initial_zoom,
         "clicking zoom reset should restore the initial zoom"
+    );
+    click_button(&viewer.imp().rotate_right_btn.get());
+    assert_eq!(
+        viewer.imp().viewer_rotation_degrees.get(),
+        90,
+        "clicking rotate-right should rotate the current viewer image clockwise"
+    );
+    click_button(&viewer.imp().zoom_in_btn.get());
+    assert!(
+        viewer.imp().zoom_scale.get() > initial_zoom,
+        "clicking zoom-in should still enlarge after a viewer-only rotation"
+    );
+    click_button(&viewer.imp().rotate_left_btn.get());
+    assert_eq!(
+        viewer.imp().viewer_rotation_degrees.get(),
+        0,
+        "clicking rotate-left should rotate the current viewer image counter-clockwise"
     );
 
     click_button(&viewer.imp().favorite_btn.get());

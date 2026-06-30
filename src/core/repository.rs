@@ -3,7 +3,7 @@ use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
 use crate::core::refresh::LibraryStats;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaQuery {
@@ -234,6 +234,75 @@ impl MediaRepository {
             removed_uris: Vec::new(),
         })
     }
+
+    pub fn rename_media_file(&self, id: MediaId, requested_name: &str) -> Result<MediaMutation> {
+        let item = db::get_media_item(&self.pool, id.get())?;
+        let target = rename_target_path(&item.path, requested_name)?;
+        if target == item.path {
+            return Ok(MediaMutation {
+                changed_ids: vec![id],
+                changed_items: vec![item],
+                removed_uris: Vec::new(),
+            });
+        }
+        if target.exists() {
+            return Err(AppError::Backend(format!(
+                "target file already exists: {}",
+                target.display()
+            )));
+        }
+
+        std::fs::rename(&item.path, &target)?;
+        let parent = target
+            .parent()
+            .ok_or_else(|| AppError::Backend("renamed file has no parent folder".into()))?;
+        if let Err(err) = db::update_media_location(&self.pool, item.id, &target, parent) {
+            if let Err(rollback_err) = std::fs::rename(&target, &item.path) {
+                tracing::warn!(
+                    "failed to roll back rename from {} to {} after DB update error {err}: {rollback_err}",
+                    target.display(),
+                    item.path.display()
+                );
+            }
+            return Err(err);
+        }
+
+        let changed = db::get_media_item(&self.pool, item.id)?;
+        Ok(MediaMutation {
+            changed_ids: vec![id],
+            changed_items: vec![changed],
+            removed_uris: Vec::new(),
+        })
+    }
+}
+
+fn rename_target_path(current_path: &Path, requested_name: &str) -> Result<PathBuf> {
+    let trimmed = requested_name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Backend("file name cannot be empty".into()));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\0') {
+        return Err(AppError::Backend(
+            "file name cannot contain path separators".into(),
+        ));
+    }
+
+    let requested_path = Path::new(trimmed);
+    let stem = requested_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty())
+        .ok_or_else(|| AppError::Backend("file name cannot be empty".into()))?;
+    let parent = current_path
+        .parent()
+        .ok_or_else(|| AppError::Backend("current file has no parent folder".into()))?;
+    let mut file_name = stem.to_string();
+    if let Some(ext) = current_path.extension().and_then(|ext| ext.to_str()) {
+        file_name.push('.');
+        file_name.push_str(ext);
+    }
+    Ok(parent.join(file_name))
 }
 
 fn page_vec(items: Vec<MediaItem>, start: u32, limit: u32) -> Vec<MediaItem> {

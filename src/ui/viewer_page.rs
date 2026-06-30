@@ -10,7 +10,7 @@
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
 //! than `downcast::<MediaItem>()`.
 use crate::core::db::DbPool;
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
@@ -181,6 +181,9 @@ mod imp {
         pub current_token: Cell<u64>,
         /// Cumulative zoom scale (1.0 = identity). GestureZoom multiplies into it.
         pub zoom_scale: Cell<f64>,
+        /// Viewer-local image rotation in clockwise degrees. This affects only
+        /// the current on-screen transform and is never persisted.
+        pub viewer_rotation_degrees: Cell<i32>,
         /// Viewer image pan offset in allocated widget pixels.
         pub zoom_pan_x: Cell<f64>,
         pub zoom_pan_y: Cell<f64>,
@@ -278,6 +281,8 @@ mod imp {
         #[template_child]
         pub name_row: TemplateChild<adw::ActionRow>,
         #[template_child]
+        pub name_entry: TemplateChild<gtk::Entry>,
+        #[template_child]
         pub folder_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub mime_row: TemplateChild<adw::ActionRow>,
@@ -299,6 +304,10 @@ mod imp {
         pub zoom_out_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub zoom_reset_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub rotate_left_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub rotate_right_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub zoom_in_btn: TemplateChild<gtk::Button>,
     }
@@ -413,6 +422,12 @@ impl ViewerPage {
         imp.zoom_reset_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_reset")));
+        imp.rotate_left_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.rotate_left")));
+        imp.rotate_right_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.rotate_right")));
         imp.motion_play_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.play_motion_photo")));
@@ -570,7 +585,7 @@ impl ViewerPage {
 
     /// Reveal the editor side-panel and lock navigation gestures.
     fn start_editing(&self) {
-        self.reset_viewer_zoom();
+        self.reset_viewer_transform();
         self.imp().is_editing.set(true);
         self.set_overlay_navigation_visible(false);
         self.set_zoom_controls_visible(false);
@@ -1164,6 +1179,20 @@ impl ViewerPage {
             }
         });
 
+        let weak = self.downgrade();
+        imp.rotate_left_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.rotate_viewer_image(-90);
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.rotate_right_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.rotate_viewer_image(90);
+            }
+        });
+
         self.update_zoom_buttons();
     }
 
@@ -1178,6 +1207,19 @@ impl ViewerPage {
 
     fn reset_viewer_zoom(&self) {
         self.set_viewer_zoom(MIN_VIEWER_ZOOM, 0.0, 0.0);
+    }
+
+    fn reset_viewer_transform(&self) {
+        self.imp().viewer_rotation_degrees.set(0);
+        self.set_viewer_zoom(MIN_VIEWER_ZOOM, 0.0, 0.0);
+    }
+
+    fn rotate_viewer_image(&self, delta_degrees: i32) {
+        let current = self.imp().viewer_rotation_degrees.get();
+        let next = (current + delta_degrees).rem_euclid(360);
+        self.imp().viewer_rotation_degrees.set(next);
+        self.update_zoom_transform();
+        self.update_zoom_buttons();
     }
 
     fn set_viewer_zoom(&self, scale: f64, pan_x: f64, pan_y: f64) {
@@ -1207,9 +1249,10 @@ impl ViewerPage {
         let scale = imp.zoom_scale.get();
         let pan_x = imp.zoom_pan_x.get();
         let pan_y = imp.zoom_pan_y.get();
+        let rotation = imp.viewer_rotation_degrees.get();
         if let Some(provider) = imp.zoom_provider.borrow().as_ref() {
             provider.load_from_data(&format!(
-                "picture.viewer-image-frame {{ transform: translate({pan_x}px, {pan_y}px) scale({scale}); }}"
+                "picture.viewer-image-frame {{ transform: translate({pan_x}px, {pan_y}px) rotate({rotation}deg) scale({scale}); }}"
             ));
         }
         imp.picture.get().queue_draw();
@@ -1228,6 +1271,8 @@ impl ViewerPage {
         imp.zoom_in_btn.get().set_visible(true);
         imp.zoom_out_btn.get().set_visible(zoomed);
         imp.zoom_reset_btn.get().set_visible(zoomed);
+        imp.rotate_left_btn.get().set_visible(!zoomed);
+        imp.rotate_right_btn.get().set_visible(!zoomed);
     }
 
     fn stop_video_playback(&self) {
@@ -1253,7 +1298,7 @@ impl ViewerPage {
 
     fn show_video_stage(&self, item: &MediaItem) {
         self.stop_video_playback();
-        self.reset_viewer_zoom();
+        self.reset_viewer_transform();
         self.imp().motion_play_btn.get().set_visible(false);
         self.imp()
             .picture
@@ -1288,7 +1333,7 @@ impl ViewerPage {
 
     fn show_motion_video_stage(&self, video_path: PathBuf, token: u64) {
         self.stop_video_playback();
-        self.reset_viewer_zoom();
+        self.reset_viewer_transform();
         self.imp().picture.get().set_visible(false);
         self.imp().video.get().set_visible(true);
         self.imp().motion_play_btn.get().set_visible(false);
@@ -1890,6 +1935,42 @@ impl ViewerPage {
                 }
             });
         });
+
+        let weak = self.downgrade();
+        imp.name_row.get().connect_activated(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.start_inline_rename();
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.name_entry.get().connect_activate(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.finish_inline_rename(true);
+            }
+        });
+
+        let focus = gtk::EventControllerFocus::new();
+        let weak = self.downgrade();
+        focus.connect_leave(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.finish_inline_rename(true);
+            }
+        });
+        imp.name_entry.get().add_controller(focus);
+
+        let key = gtk::EventControllerKey::new();
+        let weak = self.downgrade();
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(this) = weak.upgrade() {
+                    this.finish_inline_rename(false);
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        imp.name_entry.get().add_controller(key);
     }
 
     fn setup_navigation_pop_action(&self) {
@@ -2026,6 +2107,98 @@ impl ViewerPage {
         });
     }
 
+    fn start_inline_rename(&self) {
+        let Some(item) = self.current_media_item() else {
+            return;
+        };
+        let stem = item
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_else(|| item.display_name());
+        let imp = self.imp();
+        imp.name_entry.get().set_text(stem);
+        imp.name_row.get().set_subtitle("");
+        imp.name_entry.get().set_visible(true);
+        imp.name_entry.get().grab_focus();
+        imp.name_entry.get().select_region(0, -1);
+    }
+
+    fn finish_inline_rename(&self, commit: bool) {
+        let imp = self.imp();
+        if !gtk::prelude::WidgetExt::is_visible(&imp.name_entry.get()) {
+            return;
+        }
+        let requested = imp.name_entry.get().text().to_string();
+        imp.name_entry.get().set_visible(false);
+        if let Some(item) = self.current_media_item() {
+            imp.name_row.get().set_subtitle(item.display_name());
+        }
+        if commit {
+            self.rename_current_media(requested);
+        }
+    }
+
+    fn rename_current_media(&self, requested_name: String) {
+        let Some(item) = self.current_media_item() else {
+            return;
+        };
+        let current_stem = item
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_else(|| item.display_name());
+        if requested_name.trim() == current_stem {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            tracing::warn!("ViewerPage: inline rename requested but pool not set");
+            return;
+        };
+        let media_id = MediaId::from(item.id);
+        let weak = self.downgrade();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        gio::spawn_blocking(move || {
+            let repo = MediaRepository::new(pool);
+            let result = repo.rename_media_file(media_id, &requested_name);
+            let _ = tx.send(result);
+        });
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.await else {
+                return;
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(mutation) => {
+                    if let Some(item) = mutation.changed_items.into_iter().next() {
+                        this.replace_current_media_item(item.clone());
+                        this.set_title(item.display_name());
+                        this.update_details(&item);
+                        this.refresh_thumb_strip();
+                    }
+                }
+                Err(err) => {
+                    let message = trf("viewer.toast.rename_failed", &[("error", &err.to_string())]);
+                    toasts::error(&this.imp().toast_overlay.get(), &message);
+                }
+            }
+        });
+    }
+
+    fn replace_current_media_item(&self, item: MediaItem) {
+        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(index) = find_media_index_by_id(&list, item.id) else {
+            return;
+        };
+        list.splice(index, 1, &[glib::BoxedAnyObject::new(item.clone())]);
+        self.imp().current_index.set(index);
+        self.imp().current_media_id.set(item.id);
+    }
+
     fn log_nav_state(&self, label: &str) {
         if let Some(nav) = self.imp().nav_view.borrow().as_ref() {
             tracing::debug!(
@@ -2074,7 +2247,7 @@ impl ViewerPage {
         );
         self.imp().current_index.set(index);
         self.imp().spinner.get().set_visible(true);
-        self.reset_viewer_zoom();
+        self.reset_viewer_transform();
 
         // Bump token so a stale response from a previous show_at() doesn't
         // overwrite the current picture.
@@ -2376,6 +2549,7 @@ impl ViewerPage {
             .get()
             .set_title(&tr("viewer.details.captured"));
 
+        imp.name_entry.get().set_visible(false);
         imp.name_row.get().set_subtitle(item.display_name());
         imp.folder_row
             .get()
@@ -3690,7 +3864,7 @@ mod tests {
     }
 
     #[gtk::test]
-    fn zoom_controls_live_in_top_right_with_reset_out_decrease_increase_order() {
+    fn zoom_controls_live_in_top_right_with_reset_out_rotate_increase_order() {
         init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
@@ -3732,14 +3906,26 @@ mod tests {
         );
         assert_eq!(
             imp.zoom_out_btn.get().next_sibling(),
+            Some(imp.rotate_left_btn.get().upcast::<gtk::Widget>()),
+            "rotate-left should follow zoom-out"
+        );
+        assert_eq!(
+            imp.rotate_left_btn.get().next_sibling(),
+            Some(imp.rotate_right_btn.get().upcast::<gtk::Widget>()),
+            "rotate-right should follow rotate-left"
+        );
+        assert_eq!(
+            imp.rotate_right_btn.get().next_sibling(),
             Some(imp.zoom_in_btn.get().upcast::<gtk::Widget>()),
-            "zoom-in should follow zoom-out"
+            "zoom-in should follow rotate-right"
         );
 
         for (name, button) in [
             ("zoom_in_btn", imp.zoom_in_btn.get()),
             ("zoom_out_btn", imp.zoom_out_btn.get()),
             ("zoom_reset_btn", imp.zoom_reset_btn.get()),
+            ("rotate_left_btn", imp.rotate_left_btn.get()),
+            ("rotate_right_btn", imp.rotate_right_btn.get()),
         ] {
             assert!(
                 button
@@ -3758,11 +3944,15 @@ mod tests {
         assert!(imp.zoom_in_btn.get().is_visible());
         assert!(!imp.zoom_out_btn.get().is_visible());
         assert!(!imp.zoom_reset_btn.get().is_visible());
+        assert!(imp.rotate_left_btn.get().is_visible());
+        assert!(imp.rotate_right_btn.get().is_visible());
 
         viewer.set_viewer_zoom_for_tests(1.25, 0.0, 0.0);
         assert!(imp.zoom_in_btn.get().is_visible());
         assert!(imp.zoom_out_btn.get().is_visible());
         assert!(imp.zoom_reset_btn.get().is_visible());
+        assert!(!imp.rotate_left_btn.get().is_visible());
+        assert!(!imp.rotate_right_btn.get().is_visible());
     }
 
     #[gtk::test]

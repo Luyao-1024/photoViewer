@@ -32,6 +32,12 @@ snapshots and mutations (`MediaPage`, `MediaMutation`, `FavoriteSummary`) keyed
 by stable `MediaId` values, so future SQL optimizations can stay behind this
 boundary.
 
+Viewer inline rename also goes through `MediaRepository::rename_media_file`.
+That path renames the filesystem entry first, preserves the original extension
+instead of accepting a new suffix from UI text, then calls
+`db::update_media_location` so `uri`, `path`, `folder_path`, and `file_mtime`
+stay in sync for images and videos.
+
 Runtime change notifications use `core::events::DomainEvent` as the shared
 vocabulary and receiver payload. `MediaChangeNotifier` remains as the
 scanner/watcher producer facade, but its channel emits domain events directly.

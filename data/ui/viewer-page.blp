@@ -183,6 +183,18 @@ template $ViewerPage : Adw.NavigationPage {
                   tooltip-text: "";
                 }
 
+                Gtk.Button rotate_left_btn {
+                  icon-name: "object-rotate-left-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+
+                Gtk.Button rotate_right_btn {
+                  icon-name: "object-rotate-right-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+
                 Gtk.Button zoom_in_btn {
                   icon-name: "zoom-in-symbolic";
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
@@ -264,7 +276,17 @@ template $ViewerPage : Adw.NavigationPage {
 
                 Adw.ActionRow name_row {
                   title: "";
-                  activatable: false;
+                  activatable: true;
+                  css-classes: ["viewer-details-name-row"];
+
+                  [suffix]
+                  Gtk.Entry name_entry {
+                    visible: false;
+                    hexpand: true;
+                    width-chars: 18;
+                    max-width-chars: 28;
+                    css-classes: ["viewer-details-name-entry"];
+                  }
                 }
 
                 Adw.ActionRow folder_row {

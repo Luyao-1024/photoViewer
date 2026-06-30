@@ -450,6 +450,14 @@ box.mode-selector.on-light-background box.mode-dot,
     0 0 0 1px alpha(white, 0.10);
 }
 
+.viewer-details-name-row {
+  min-height: 68px;
+}
+
+.viewer-details-name-entry {
+  min-width: 180px;
+}
+
 /* glass-editor-preview — analogous to .viewer-stage, but calmer: the
    editor's adjustment sliders occupy the same screen and need every
    ounce of readable chrome, so this is a near-flat panel with a hairline

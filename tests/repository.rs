@@ -4,6 +4,7 @@ use chrono::{TimeZone, Utc};
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::NewMediaItem;
 use photo_viewer::core::repository::{MediaNeighbor, MediaQuery, MediaRepository};
+use std::path::Path;
 
 fn item(id_name: &str, ts: i64) -> NewMediaItem {
     let path = std::path::PathBuf::from(format!("/tmp/{id_name}.jpg"));
@@ -12,6 +13,29 @@ fn item(id_name: &str, ts: i64) -> NewMediaItem {
         path: path.clone(),
         folder_path: std::path::PathBuf::from("/tmp"),
         mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
+        width: Some(64),
+        height: Some(48),
+        video_duration_secs: None,
+        taken_at: None,
+        file_mtime: Utc.timestamp_opt(ts, 0).unwrap(),
+        file_size: 1,
+        blake3_hash: String::new(),
+    }
+}
+
+fn item_at(dir: &Path, file_name: &str, ts: i64) -> NewMediaItem {
+    let path = dir.join(file_name);
+    NewMediaItem {
+        uri: format!("file://{}", path.display()),
+        path: path.clone(),
+        folder_path: dir.to_path_buf(),
+        mime_type: if file_name.ends_with(".mp4") {
+            "video/mp4".into()
+        } else {
+            "image/jpeg".into()
+        },
         media_subkind: "standard".into(),
         media_attributes: "{}".into(),
         width: Some(64),
@@ -89,6 +113,33 @@ fn repository_upsert_batch_returns_changed_items() {
     assert_eq!(mutation.changed_items.len(), 2);
     assert_eq!(mutation.changed_items[0].uri, "file:///tmp/a.jpg");
     assert_eq!(mutation.changed_items[1].uri, "file:///tmp/b.jpg");
+}
+
+#[test]
+fn repository_rename_media_file_preserves_original_extension() {
+    let dir = common::tmp_dir();
+    let media_path = dir.path().join("IMG_001.jpg");
+    std::fs::write(&media_path, b"jpeg").unwrap();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-rename.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item_at(dir.path(), "IMG_001.jpg", 10)],
+    )
+    .unwrap();
+    let repo = MediaRepository::new(pool);
+
+    let mutation = repo
+        .rename_media_file(MediaId::from(inserted[0].id), "holiday.png")
+        .unwrap();
+
+    let renamed = dir.path().join("holiday.jpg");
+    assert!(
+        renamed.exists(),
+        "rename should keep the original .jpg suffix"
+    );
+    assert!(!dir.path().join("holiday.png").exists());
+    assert_eq!(mutation.changed_items[0].path, renamed);
+    assert_eq!(mutation.changed_items[0].display_name(), "holiday.jpg");
 }
 
 #[test]
