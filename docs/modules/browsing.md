@@ -83,6 +83,11 @@ Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto 
 
 Multi-select selection state is owned by each section `GtkFlowBox` (`selection-mode = Multiple`); `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
 
+Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
+than `GtkPopover`, so they render through the same page-overlay path as the
+Year/Month/Day selector. Keep button-triggered popovers separate from this
+right-click menu path.
+
 ## Mode Selector
 
 The Year/Month/Day control is both navigation and the canonical Liquid Glass segmented control. Preserve its visual structure:

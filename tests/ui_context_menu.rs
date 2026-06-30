@@ -15,6 +15,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use photo_viewer::core::albums::{Album, FAVORITES_ALBUM_PATH};
 use photo_viewer::core::i18n::tr;
+use photo_viewer::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use std::path::PathBuf;
 
 fn album(is_virtual: bool) -> Album {
@@ -91,91 +92,63 @@ fn assert_button_has_class(button: &gtk::Button, class_name: &str) {
     );
 }
 
+fn assert_button_lacks_class(button: &gtk::Button, class_name: &str) {
+    assert!(
+        !button.css_classes().iter().any(|class| class == class_name),
+        "button {:?} should not carry {class_name}, got {:?}",
+        button.label(),
+        button.css_classes()
+    );
+}
+
 #[test]
 fn context_menu_uses_glass_menu_classes() {
     gtk::init().expect("GTK init failed");
 
-    // Build a stand-in for the popover a right-click would create. The real
-    // construction lives inside MediaGrid's gesture handler; we only need to
-    // verify the class assignments here.
-    let popover = gtk::Popover::new();
-    popover.add_css_class("glass-menu");
-
-    let menu = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .css_classes(["glass-menu-list"])
-        .build();
-
-    // multi-select entry (suggested) and delete entry (danger) — the two
-    // accent variants the brief calls out specifically.
-    let multi_btn = gtk::Button::with_label("multi");
-    multi_btn.add_css_class("glass-menu-item");
-    multi_btn.add_css_class("glass-menu-item-suggested");
-
-    let delete_btn = gtk::Button::with_label("delete");
-    delete_btn.add_css_class("glass-menu-item");
-    delete_btn.add_css_class("glass-menu-item-danger");
-
-    // A plain item too (favorite / unfavorite / move-to-album).
-    let plain_btn = gtk::Button::with_label("plain");
-    plain_btn.add_css_class("glass-menu-item");
-
-    menu.append(&multi_btn);
-    menu.append(&delete_btn);
-    menu.append(&plain_btn);
-    popover.set_child(Some(&menu));
-
+    let glass_panel = glass_context_menu::build_menu_panel_for_tests(vec![
+        GlassMenuItem::new("manage", GlassMenuItemKind::Normal, || {}),
+        GlassMenuItem::new("multi", GlassMenuItemKind::Suggested, || {}),
+        GlassMenuItem::new("delete", GlassMenuItemKind::Danger, || {}),
+    ]);
     assert!(
-        popover.css_classes().iter().any(|c| c == "glass-menu"),
-        "popover should carry glass-menu"
+        glass_panel.has_css_class("glass-raised"),
+        "custom context menu should reuse the ModeSelector raised glass material"
     );
     assert!(
-        menu.css_classes().iter().any(|c| c == "glass-menu-list"),
-        "inner list box should carry glass-menu-list"
+        glass_panel.has_css_class("glass-context-menu"),
+        "custom context menu should use the overlay menu panel class"
     );
     assert!(
-        multi_btn
-            .css_classes()
-            .iter()
-            .any(|c| c == "glass-menu-item-suggested"),
-        "multi-select button should carry glass-menu-item-suggested"
+        !glass_panel.has_css_class("glass-menu"),
+        "custom context menu should not use GtkPopover glass-menu styling"
     );
-    assert!(
-        delete_btn
-            .css_classes()
-            .iter()
-            .any(|c| c == "glass-menu-item-danger"),
-        "delete button should carry glass-menu-item-danger"
-    );
-    assert!(
-        plain_btn
-            .css_classes()
-            .iter()
-            .any(|c| c == "glass-menu-item"),
-        "plain button should carry glass-menu-item"
-    );
-    // None of the new buttons should carry the GTK built-ins anymore — the
-    // glass-menu-item / -suggested / -danger rules now own the visual.
-    for btn in [&multi_btn, &delete_btn, &plain_btn] {
-        for banned in ["flat", "suggested-action", "destructive-action"] {
-            assert!(
-                !btn.css_classes().iter().any(|c| c == banned),
-                "button should not carry {banned}"
-            );
-        }
-    }
+    let mut glass_buttons = Vec::new();
+    collect_buttons(glass_panel.upcast_ref(), &mut glass_buttons);
+    assert_eq!(glass_buttons.len(), 3);
+    assert_button_has_class(&glass_buttons[0], "glass-context-menu-item");
+    assert_button_lacks_class(&glass_buttons[0], "glass-menu-item");
+    assert_button_has_class(&glass_buttons[1], "glass-context-menu-item-suggested");
+    assert_button_has_class(&glass_buttons[2], "glass-context-menu-item-danger");
 
-    let popover = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(false));
+    let album_panel = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(false));
     let mut labels = Vec::new();
-    collect_button_labels(popover.upcast_ref(), &mut labels);
+    collect_button_labels(album_panel.upcast_ref(), &mut labels);
     let mut buttons = Vec::new();
-    collect_buttons(popover.upcast_ref(), &mut buttons);
+    collect_buttons(album_panel.upcast_ref(), &mut buttons);
     let manage_button = button_with_label(&buttons, &tr("album.context.manage"));
     let delete_button = button_with_label(&buttons, &tr("album.context.delete"));
 
     assert!(
-        popover.css_classes().iter().any(|c| c == "glass-menu"),
-        "popover should carry glass-menu"
+        album_panel.has_css_class("glass-raised"),
+        "album context menu should carry glass-raised"
+    );
+    assert!(
+        album_panel.has_css_class("glass-context-menu"),
+        "album context menu should carry glass-context-menu"
+    );
+    assert!(
+        !album_panel.has_css_class("glass-menu"),
+        "album context menu should not use GtkPopover glass-menu styling"
     );
     assert!(
         labels
@@ -191,15 +164,15 @@ fn context_menu_uses_glass_menu_classes() {
         "real album menu should contain {}, got {labels:?}",
         tr("album.context.delete")
     );
-    assert_button_has_class(&manage_button, "glass-menu-item");
-    assert_button_has_class(&delete_button, "glass-menu-item");
-    assert_button_has_class(&delete_button, "glass-menu-item-danger");
+    assert_button_has_class(&manage_button, "glass-context-menu-item");
+    assert_button_has_class(&delete_button, "glass-context-menu-item");
+    assert_button_has_class(&delete_button, "glass-context-menu-item-danger");
 
-    let popover = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(true));
+    let album_panel = photo_viewer::ui::window::build_album_context_menu_for_tests(&album(true));
     let mut labels = Vec::new();
-    collect_button_labels(popover.upcast_ref(), &mut labels);
+    collect_button_labels(album_panel.upcast_ref(), &mut labels);
     let mut buttons = Vec::new();
-    collect_buttons(popover.upcast_ref(), &mut buttons);
+    collect_buttons(album_panel.upcast_ref(), &mut buttons);
     let manage_button = button_with_label(&buttons, &tr("album.context.manage"));
 
     assert!(
@@ -223,5 +196,5 @@ fn context_menu_uses_glass_menu_classes() {
         "virtual album menu should not create a delete button, got {:?}",
         button_labels(&buttons)
     );
-    assert_button_has_class(&manage_button, "glass-menu-item");
+    assert_button_has_class(&manage_button, "glass-context-menu-item");
 }

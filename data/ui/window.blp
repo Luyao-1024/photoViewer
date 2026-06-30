@@ -6,89 +6,91 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
   default-width: 1200;
   default-height: 800;
 
-  Adw.OverlaySplitView split_view {
-    min-sidebar-width: 240;
-    max-sidebar-width: 240;
+  Gtk.Overlay root_overlay {
+    Adw.OverlaySplitView split_view {
+      min-sidebar-width: 240;
+      max-sidebar-width: 240;
 
-    sidebar: Adw.NavigationPage sidebar_page {
-      title: "";
-      css-classes: ["glass-sidebar-page"];
+      sidebar: Adw.NavigationPage sidebar_page {
+        title: "";
+        css-classes: ["glass-sidebar-page"];
 
-      Gtk.Box {
-        orientation: vertical;
-        css-classes: ["glass-sidebar-surface", "glass-base"];
-
-        Gtk.ListBox sidebar_list {
-          css-classes: ["glass-sidebar", "glass-sidebar-main"];
-          hexpand: true;
-          selection-mode: single;
-        }
-
-        Gtk.Box album_trash_wrapper {
+        Gtk.Box {
           orientation: vertical;
-          vexpand: true;
+          css-classes: ["glass-sidebar-surface", "glass-base"];
 
-          Gtk.ScrolledWindow album_scroll {
-            css-classes: ["glass-sidebar-album-scroll"];
+          Gtk.ListBox sidebar_list {
+            css-classes: ["glass-sidebar", "glass-sidebar-main"];
             hexpand: true;
-            propagate-natural-height: true;
-            hscrollbar-policy: never;
-            vscrollbar-policy: automatic;
+            selection-mode: single;
+          }
 
-            Gtk.ListBox album_list {
-              css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
+          Gtk.Box album_trash_wrapper {
+            orientation: vertical;
+            vexpand: true;
+
+            Gtk.ScrolledWindow album_scroll {
+              css-classes: ["glass-sidebar-album-scroll"];
+              hexpand: true;
+              propagate-natural-height: true;
+              hscrollbar-policy: never;
+              vscrollbar-policy: automatic;
+
+              Gtk.ListBox album_list {
+                css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
+                hexpand: true;
+                selection-mode: single;
+              }
+            }
+
+            Gtk.ActionBar album_selection_bar {
+              revealed: false;
+
+              [start]
+              Gtk.Button album_selection_cancel_btn {
+                label: "";
+                css-classes: ["glass-toolbar-button"];
+              }
+
+              [end]
+              Gtk.Button album_selection_delete_btn {
+                label: "";
+                css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+              }
+            }
+
+            Gtk.ListBox trash_list {
+              css-classes: ["glass-sidebar"];
               hexpand: true;
               selection-mode: single;
             }
           }
 
-          Gtk.ActionBar album_selection_bar {
-            revealed: false;
+          Gtk.Box sidebar_spacer {
+            css-classes: ["glass-sidebar-spacer"];
+            vexpand: false;
+          }
 
-            [start]
-            Gtk.Button album_selection_cancel_btn {
-              label: "";
-              css-classes: ["glass-toolbar-button"];
+          Gtk.Box {
+            css-classes: ["glass-sidebar-footer"];
+            margin-start: 8;
+            margin-end: 8;
+            margin-bottom: 8;
+
+            Gtk.Button settings_button {
+              icon-name: "preferences-system-symbolic";
+              css-classes: ["glass-toolbar-button", "circular", "sidebar-settings-button"];
+              width-request: 40;
+              height-request: 40;
+              valign: center;
+              halign: start;
             }
-
-            [end]
-            Gtk.Button album_selection_delete_btn {
-              label: "";
-              css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
-            }
-          }
-
-          Gtk.ListBox trash_list {
-            css-classes: ["glass-sidebar"];
-            hexpand: true;
-            selection-mode: single;
           }
         }
+      };
 
-        Gtk.Box sidebar_spacer {
-          css-classes: ["glass-sidebar-spacer"];
-          vexpand: false;
-        }
-
-        Gtk.Box {
-          css-classes: ["glass-sidebar-footer"];
-          margin-start: 8;
-          margin-end: 8;
-          margin-bottom: 8;
-
-          Gtk.Button settings_button {
-            icon-name: "preferences-system-symbolic";
-            css-classes: ["glass-toolbar-button", "circular", "sidebar-settings-button"];
-            width-request: 40;
-            height-request: 40;
-            valign: center;
-            halign: start;
-          }
-        }
+      content: Adw.NavigationView nav_view {
+      };
       }
-    };
-
-    content: Adw.NavigationView nav_view {
-    };
   }
 }

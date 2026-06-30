@@ -139,6 +139,7 @@ struct QueuedEntry {
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
     enqueued_at: Instant,
+    media_id: i64,
 }
 
 /// 优先级队列的可变状态。
@@ -356,6 +357,35 @@ impl ThumbnailLoader {
         reply: oneshot::Sender<LoadedThumb>,
         tier: u8,
     ) {
+        self.request_inner(0, uri, size, mtime, reply, tier);
+    }
+
+    /// Submit a thumbnail request for a known DB media row.
+    ///
+    /// UI-visible requests use this so a successfully generated thumbnail
+    /// updates `media_items.thumbnail_generated_at` immediately, keeping the
+    /// library stats label in sync even before background prewarm reaches it.
+    pub fn request_for_media(
+        &self,
+        media_id: i64,
+        uri: String,
+        size: ThumbnailSize,
+        mtime: Option<SystemTime>,
+        reply: oneshot::Sender<LoadedThumb>,
+        tier: u8,
+    ) {
+        self.request_inner(media_id, uri, size, mtime, reply, tier);
+    }
+
+    fn request_inner(
+        &self,
+        media_id: i64,
+        uri: String,
+        size: ThumbnailSize,
+        mtime: Option<SystemTime>,
+        reply: oneshot::Sender<LoadedThumb>,
+        tier: u8,
+    ) {
         let requested_at = Instant::now();
         let Some(cache_key) = cache_key_str(&uri, size, mtime) else {
             // 源文件不存在 / 无法 stat：无法去重，按"生成失败"处理。
@@ -440,6 +470,7 @@ impl ThumbnailLoader {
                         size,
                         mtime,
                         enqueued_at: requested_at,
+                        media_id,
                     },
                 );
                 q.heap.push(Reverse(PriItem {
@@ -450,7 +481,7 @@ impl ThumbnailLoader {
                     size,
                     mtime,
                     enqueued_at: requested_at,
-                    media_id: 0,
+                    media_id,
                 }));
                 true
             }
@@ -516,6 +547,7 @@ impl ThumbnailLoader {
             let size = entry.size;
             let mtime = entry.mtime;
             let enqueued_at = entry.enqueued_at;
+            let media_id = entry.media_id;
             if let Some(e) = q.queued.get_mut(key) {
                 e.tier = TIER_BOOST;
             }
@@ -529,7 +561,7 @@ impl ThumbnailLoader {
                 size,
                 mtime,
                 enqueued_at,
-                media_id: 0,
+                media_id,
             }));
             changed = true;
         }
@@ -610,9 +642,8 @@ fn worker_loop(
         );
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
-                // BACKGROUND 拉取项：生成成功后立刻标记，避免小图库反复拉取同一行。
-                let generated_media_id =
-                    (req.tier >= TIER_BACKGROUND && req.media_id != 0).then_some(req.media_id);
+                // 带 media_id 的请求生成成功后立刻标记，避免统计落后于可见缩略图。
+                let generated_media_id = (req.media_id != 0).then_some(req.media_id);
                 debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB_TIMING worker_done uri={} size={:?} tier={} media_id={} queue_wait_ms={} worker_ms={} cache_key={} texture={}x{}",
@@ -643,9 +674,6 @@ fn worker_loop(
                     }
                     st.in_flight.remove(&req.cache_key).unwrap_or_default()
                 };
-                for w in waiters {
-                    let _ = w.send(loaded.clone());
-                }
                 if let Some(media_id) = generated_media_id {
                     if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
                         warn!("更新缩略图状态失败: {}", e);
@@ -654,6 +682,9 @@ fn worker_loop(
                             callback();
                         }
                     }
+                }
+                for w in waiters {
+                    let _ = w.send(loaded.clone());
                 }
             }
             Err(e) => {
@@ -785,6 +816,7 @@ fn pull_batch_and_enqueue(
                     size: item.size,
                     mtime: item.mtime,
                     enqueued_at: item.enqueued_at,
+                    media_id: item.media_id,
                 },
             );
             q.heap.push(Reverse(item.clone()));

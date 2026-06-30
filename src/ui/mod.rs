@@ -7,6 +7,7 @@ pub mod apply_to_media_list;
 pub mod edit_panel;
 pub mod editor_panel;
 pub mod empty_states;
+pub mod glass_context_menu;
 pub mod grid_css;
 pub mod grid_row;
 pub mod media_grid;

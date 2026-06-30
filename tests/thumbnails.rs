@@ -200,6 +200,48 @@ fn background_prewarm_marks_small_library_after_first_generation() {
     }
 }
 
+#[test]
+fn visible_media_request_marks_thumbnail_generated() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("visible-src.jpg");
+    let img = image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(640, 480, |_, _| {
+        image::Rgb([110, 130, 170])
+    });
+    img.save(&src).unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    let item = backend
+        .upsert_from_path(&src)
+        .unwrap()
+        .expect("test image should be inserted");
+
+    let runtime = rt();
+    let _guard = runtime.enter();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    loader.spawn_workers(1);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    loader.request_for_media(
+        item.id,
+        item.uri.clone(),
+        ThumbnailSize::Medium,
+        Some(std::time::SystemTime::from(item.file_mtime)),
+        tx,
+        photo_viewer::core::thumbnails::TIER_BOOST,
+    );
+    let loaded = runtime.block_on(async { rx.await.unwrap() });
+    drop(_guard);
+
+    assert!(loaded.texture.width() > 0);
+    assert_eq!(
+        loader.generated_count(),
+        1,
+        "visible grid thumbnail generation should update the DB-backed stats counter"
+    );
+}
+
 /// Regression for the first-load "blank thumbnails" bug.
 ///
 /// Three PhotosPage grids (Year/Month/Day) used to fire one request per tile

@@ -9,6 +9,7 @@ This module owns the shared UI material system for glass chrome, including the u
 | File | Role |
 |---|---|
 | `src/ui/grid_css.rs` | CSS source, mode split, provider install/reapply |
+| `src/ui/glass_context_menu.rs` | Overlay-backed right-click menu using raised glass material |
 | `src/core/prefs.rs` | `liquid_glass` preference persistence |
 | `src/ui/window.rs` | Settings UI and live toggle handling |
 | `data/ui/mode-selector.blp` | Canonical segmented glass control |
@@ -53,6 +54,14 @@ The style is intentionally one glass container with lightweight internal state. 
 3. Keep shape/layout/state rules in `BASE_CSS`.
 4. Never put `backdrop-filter` in `BASE_CSS`.
 5. Extend CSS tests when adding selectors or changing mode behavior.
+
+Right-click menus should use the custom overlay `GlassContextMenu` and compose
+`.glass-raised glass-context-menu` so they render as normal overlay children,
+matching the Year/Month/Day selector's glass path. `GtkPopover` menus may still
+use `.glass-menu > contents` for button-triggered popovers, but do not use them
+for right-click context menus. Menu items stay transparent at rest so the menu
+reads as one raised panel instead of a stack of separate buttons; hover and
+accent states remain separate.
 
 ## Button Material Modes
 

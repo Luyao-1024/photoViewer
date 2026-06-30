@@ -54,7 +54,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gtk4 as gtk;
-use gtk4::gdk;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -67,6 +66,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
 use crate::core::section_model::{group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
 
@@ -141,6 +141,7 @@ mod imp {
         pub on_move_to_trash: std::cell::OnceCell<SelectionCallback>,
         pub on_set_favorite: std::cell::OnceCell<FavoriteCallback>,
         pub on_query_favorite_state: std::cell::OnceCell<FavoriteStateCallback>,
+        pub context_menu_overlay: RefCell<Option<gtk::Overlay>>,
         /// Flattened `(flow_child, local_window_index, media_id)` for every
         /// rendered tile in current mode.
         pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32, MediaId)>>,
@@ -209,6 +210,7 @@ mod imp {
                 on_move_to_trash: std::cell::OnceCell::new(),
                 on_set_favorite: std::cell::OnceCell::new(),
                 on_query_favorite_state: std::cell::OnceCell::new(),
+                context_menu_overlay: RefCell::new(None),
                 displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
                 rendered_limit: Cell::new(
@@ -429,6 +431,10 @@ fn build_virtual_placeholder_flow(spec: ViewSpec, count: u32) -> gtk::FlowBox {
 }
 
 impl MediaGrid {
+    pub fn set_context_menu_overlay(&self, overlay: Option<&gtk::Overlay>) {
+        *self.imp().context_menu_overlay.borrow_mut() = overlay.cloned();
+    }
+
     /// Build a MediaGrid that immediately renders `(media_list, mode)`.
     /// `on_activate` fires with the activated photo's stable media id when
     /// the user activates a photo (click without modifier).
@@ -523,8 +529,13 @@ impl MediaGrid {
                 if this.imp().applying_virtual_page.get() {
                     return;
                 }
+                let was_empty = list.n_items().saturating_sub(added) == 0;
                 if removed > 0 {
                     // 有项被移除或全量替换 → 必须重建。
+                    this.rebuild_immediately(list.clone());
+                } else if added > 0 && was_empty {
+                    // 首次启动扫描从空库追加第一批媒体时，Day grid 已经按空列表
+                    // 构建过；必须立即重建，否则空态切回 Day 后 tile/统计仍为空。
                     this.rebuild_immediately(list.clone());
                 }
                 // 单纯追加（removed == 0）：不重建。新项在 rendered_limit 之外，
@@ -1454,13 +1465,6 @@ impl MediaGrid {
                         vec![media_id]
                     };
                     let favorite_state = (on_query_favorite_state_ctx)(target_indices.clone());
-                    let child_alloc = flow_child_for_ctx.allocation();
-                    let point_in_child = gdk::Rectangle::new(
-                        (x as i32 - child_alloc.x()).max(0),
-                        (y as i32 - child_alloc.y()).max(0),
-                        1,
-                        1,
-                    );
                     tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "VIEWER_DEBUG context_menu mode={:?} section={} selected={:?} multi_select={}",
@@ -1470,190 +1474,129 @@ impl MediaGrid {
                         in_multi_mode,
                     );
 
-                    let popover = gtk::Popover::new();
-                    popover.set_parent(&flow_child_for_ctx);
-                    popover.add_css_class("glass-menu");
-                    popover.set_has_arrow(false);
-                    popover.set_autohide(true);
-                    popover.set_position(gtk::PositionType::Bottom);
-                    // set_offset / set_pointing_to are deferred until after
-                    // set_child so we can `measure()` the popover's actual
-                    // width and shift it so its top-left lands on the click
-                    // point (the default Bottom position centers the popover
-                    // on the pointing rect, which is what puts the menu's
-                    // middle under the mouse).
-
-                    let menu = gtk::Box::builder()
-                        .orientation(gtk::Orientation::Vertical)
-                        .spacing(2)
-                        .css_classes(["glass-menu-list"])
-                        .build();
+                    let Some(context_overlay) = this.imp().context_menu_overlay.borrow().clone()
+                    else {
+                        return;
+                    };
+                    let mut items = Vec::new();
 
                     // Multi-select / Exit Multi-select.
                     if in_multi_mode {
-                        let exit_btn = gtk::Button::builder()
-                            .label(tr("photos.batch.exit_multi_select"))
-                            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
-                            .build();
-
-                        let popover_exit = popover.clone();
                         let weak_exit = weak_for_context.clone();
-                        exit_btn.connect_clicked(move |_| {
-                            if let Some(this) = weak_exit.upgrade() {
-                                this.set_multi_select_mode(false);
-                            }
-                            popover_exit.popdown();
-                        });
-                        menu.append(&exit_btn);
+                        items.push(GlassMenuItem::new(
+                            tr("photos.batch.exit_multi_select"),
+                            GlassMenuItemKind::Danger,
+                            move || {
+                                if let Some(this) = weak_exit.upgrade() {
+                                    this.set_multi_select_mode(false);
+                                }
+                            },
+                        ));
                     } else {
-                        let multi_btn = gtk::Button::builder()
-                            .label(tr("photos.batch.multi_select"))
-                            .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
-                            .build();
-
                         let weak_enter = weak_for_context.clone();
                         let flow_for_ctx_enter = flow_for_ctx.clone();
                         let flow_child_for_ctx_enter = flow_child_for_ctx.clone();
-                        let popover_enter = popover.clone();
-                        multi_btn.connect_clicked(move |_| {
-                            if let Some(this) = weak_enter.upgrade() {
-                                this.set_multi_select_mode(true);
-                                this.ensure_context_selection(
-                                    &flow_for_ctx_enter,
-                                    &flow_child_for_ctx_enter,
-                                    media_id,
-                                );
-                            }
-                            popover_enter.popdown();
-                        });
-                        menu.append(&multi_btn);
+                        items.push(GlassMenuItem::new(
+                            tr("photos.batch.multi_select"),
+                            GlassMenuItemKind::Suggested,
+                            move || {
+                                if let Some(this) = weak_enter.upgrade() {
+                                    this.set_multi_select_mode(true);
+                                    this.ensure_context_selection(
+                                        &flow_for_ctx_enter,
+                                        &flow_child_for_ctx_enter,
+                                        media_id,
+                                    );
+                                }
+                            },
+                        ));
                     }
 
                     // Favorite / Unfavorite (single and batch context).
                     if favorite_state.can_favorite {
-                        let favorite_btn = gtk::Button::builder()
-                            .label(tr("photos.batch.favorite"))
-                            .css_classes(["glass-menu-item"])
-                            .build();
                         let indices_for_fav = target_indices.clone();
                         let on_set_favorite_fav = on_set_favorite_ctx.clone();
-                        let popover_fav = popover.clone();
-                        favorite_btn.connect_clicked(move |_| {
-                            on_set_favorite_fav(indices_for_fav.clone(), true);
-                            popover_fav.popdown();
-                        });
-                        menu.append(&favorite_btn);
+                        items.push(GlassMenuItem::new(
+                            tr("photos.batch.favorite"),
+                            GlassMenuItemKind::Normal,
+                            move || {
+                                on_set_favorite_fav(indices_for_fav.clone(), true);
+                            },
+                        ));
                     }
                     if favorite_state.can_unfavorite {
-                        let unfav_btn = gtk::Button::builder()
-                            .label(tr("photos.batch.unfavorite"))
-                            .css_classes(["glass-menu-item"])
-                            .build();
                         let indices_for_unfav = target_indices.clone();
                         let on_set_favorite_unfav = on_set_favorite_ctx.clone();
-                        let popover_unfav = popover.clone();
-                        unfav_btn.connect_clicked(move |_| {
-                            on_set_favorite_unfav(indices_for_unfav.clone(), false);
-                            popover_unfav.popdown();
-                        });
-                        menu.append(&unfav_btn);
+                        items.push(GlassMenuItem::new(
+                            tr("photos.batch.unfavorite"),
+                            GlassMenuItemKind::Normal,
+                            move || {
+                                on_set_favorite_unfav(indices_for_unfav.clone(), false);
+                            },
+                        ));
                     }
 
                     if !target_indices.is_empty() {
-                        let move_album_btn = gtk::Button::builder()
-                            .label(tr("photos.batch.move_to_album"))
-                            .css_classes(["glass-menu-item"])
-                            .build();
                         let indices_for_album = target_indices.clone();
                         let on_add_to_album_ctx = on_add_to_album_ctx.clone();
-                        let popover_album = popover.clone();
-                        move_album_btn.connect_clicked(move |_| {
-                            on_add_to_album_ctx(indices_for_album.clone());
-                            popover_album.popdown();
-                        });
-                        menu.append(&move_album_btn);
+                        items.push(GlassMenuItem::new(
+                            tr("photos.batch.move_to_album"),
+                            GlassMenuItemKind::Normal,
+                            move || {
+                                on_add_to_album_ctx(indices_for_album.clone());
+                            },
+                        ));
 
-                        let delete_btn = gtk::Button::builder()
-                            .label(tr("viewer.tooltip.move_to_trash"))
-                            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
-                            .build();
                         let indices_for_trash = target_indices.clone();
                         let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
-                        let popover_trash = popover.clone();
                         let grid_weak = this.downgrade();
-                        delete_btn.connect_clicked(move |_| {
-                            popover_trash.popdown();
+                        items.push(GlassMenuItem::new(
+                            tr("viewer.tooltip.move_to_trash"),
+                            GlassMenuItemKind::Danger,
+                            move || {
+                                let count = indices_for_trash.len();
+                                let body = if count == 1 {
+                                    tr("trash.confirm_body_one")
+                                } else {
+                                    tr("trash.confirm_body_many")
+                                        .replace("{count}", &count.to_string())
+                                };
+                                let dialog = adw::AlertDialog::builder()
+                                    .heading(tr("trash.confirm_title"))
+                                    .body(body)
+                                    .build();
+                                dialog.add_css_class("glass-alert-dialog");
+                                dialog.add_response("cancel", &tr("dialog.cancel"));
+                                dialog.add_response("trash", &tr("dialog.trash"));
+                                dialog.set_response_appearance(
+                                    "trash",
+                                    adw::ResponseAppearance::Destructive,
+                                );
+                                dialog.set_default_response(Some("cancel"));
+                                dialog.set_close_response("cancel");
 
-                            let count = indices_for_trash.len();
-                            let body = if count == 1 {
-                                tr("trash.confirm_body_one")
-                            } else {
-                                tr("trash.confirm_body_many")
-                                    .replace("{count}", &count.to_string())
-                            };
-                            let dialog = adw::AlertDialog::builder()
-                                .heading(tr("trash.confirm_title"))
-                                .body(body)
-                                .build();
-                            dialog.add_css_class("glass-alert-dialog");
-                            dialog.add_response("cancel", &tr("dialog.cancel"));
-                            dialog.add_response("trash", &tr("dialog.trash"));
-                            dialog.set_response_appearance(
-                                "trash",
-                                adw::ResponseAppearance::Destructive,
-                            );
-                            dialog.set_default_response(Some("cancel"));
-                            dialog.set_close_response("cancel");
+                                let indices2 = indices_for_trash.clone();
+                                let on_move2 = on_move_to_trash_ctx.clone();
+                                dialog.connect_response(None, move |_, response| {
+                                    if response == "trash" {
+                                        on_move2(indices2.clone());
+                                    }
+                                });
 
-                            let indices2 = indices_for_trash.clone();
-                            let on_move2 = on_move_to_trash_ctx.clone();
-                            dialog.connect_response(None, move |_, response| {
-                                if response == "trash" {
-                                    on_move2(indices2.clone());
+                                if let Some(grid) = grid_weak.upgrade() {
+                                    dialog.present(&grid);
                                 }
-                            });
-
-                            if let Some(grid) = grid_weak.upgrade() {
-                                dialog.present(&grid);
-                            }
-                        });
-                        menu.append(&delete_btn);
+                            },
+                        ));
                     }
 
-                    popover.set_child(Some(&menu));
-
-                    // Anchor the popover's VISIBLE top-left at the click
-                    // point.
-                    //
-                    // GTK4's `PositionType::Bottom` aligns the popover's
-                    // top-center with the center of the pointing rect, so
-                    // without an offset the popover's geometric center sits
-                    // under the mouse. The naive correction is
-                    // `set_offset(popover_w / 2, 0)`, but the offset has to
-                    // be set BEFORE `popup()` — applying it after causes a
-                    // visible "jump" because the popover is briefly mapped
-                    // at the default position.
-                    //
-                    // The naive `popover_w / 2` still lands 25 px to the
-                    // right and 5 px below the click because of how GTK4
-                    // accounts for the 1×1 pointing rect and the shadow
-                    // buffer around the popover. Those two constants were
-                    // measured empirically (see `popover_actual` diagnostic
-                    // logs in the dev history) and baked in below. If the
-                    // GTK theme or popover CSS changes, retune by setting
-                    // `set_offset(0, 0)` here, right-clicking, and reading
-                    // off the `popover_actual` delta.
-                    let (menu_min, menu_nat, _, _) =
-                        menu.measure(gtk::Orientation::Horizontal, -1);
-                    let menu_w = menu_min.max(menu_nat).max(1);
-                    let popover_w = menu_w.max(160); // CSS `min-width: 160px`
-                    let half_w = popover_w / 2;
-                    const POPOVER_X_BIAS_PX: i32 = 25;
-                    const POPOVER_Y_BIAS_PX: i32 = -5; // shift up by 5
-                    popover.set_offset(half_w - POPOVER_X_BIAS_PX, POPOVER_Y_BIAS_PX);
-                    popover.set_pointing_to(Some(&point_in_child));
-
-                    popover.popup();
+                    glass_context_menu::show(
+                        &context_overlay,
+                        flow_for_ctx.upcast_ref(),
+                        x,
+                        y,
+                        items,
+                    );
                 });
 
                     flow.add_controller(gesture);
@@ -2272,7 +2215,8 @@ fn build_photo_picture(
             );
 
             let (tx, rx) = tokio::sync::oneshot::channel();
-            loader.request(
+            loader.request_for_media(
+                current_item.id,
                 item_uri.clone(),
                 size,
                 Some(item_mtime),
@@ -2523,6 +2467,49 @@ mod tests {
             2,
             "activating a dirty grid should build tiles from the current model"
         );
+    }
+
+    #[gtk::test]
+    fn active_empty_day_grid_rebuilds_when_first_scan_items_arrive() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+
+        assert_eq!(tile_count(&grid), 0);
+        assert!(
+            grid.imp().stats_label.borrow().is_none(),
+            "empty Day grid should not render a stats label before media exists"
+        );
+
+        let item = sample_item(1, "first-scan.png");
+        insert_sample_item(&pool, &item);
+        media_list.append(&glib::BoxedAnyObject::new(item));
+
+        assert_eq!(
+            tile_count(&grid),
+            1,
+            "active Day grid must render the first media items delivered by startup scan"
+        );
+        let stats_label = grid
+            .imp()
+            .stats_label
+            .borrow()
+            .as_ref()
+            .expect("Day grid should create the library stats label after first media arrives")
+            .clone();
+        assert_eq!(stats_label.label(), "媒体 1 项 · 缩略图 0/1");
     }
 
     #[gtk::test]

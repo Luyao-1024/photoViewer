@@ -62,6 +62,8 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub grid_overlay: TemplateChild<gtk::Overlay>,
+        #[template_child]
         pub view_stack: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub mode_selector: TemplateChild<ModeSelector>,
@@ -92,6 +94,7 @@ mod imp {
                 contrast_update_pending: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 header_bar: TemplateChild::default(),
+                grid_overlay: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
                 select_all_btn: TemplateChild::default(),
@@ -256,6 +259,10 @@ impl PhotosPage {
             true,
             true,
         );
+        let context_menu_overlay = obj.imp().grid_overlay.get();
+        year_grid.set_context_menu_overlay(Some(&context_menu_overlay));
+        month_grid.set_context_menu_overlay(Some(&context_menu_overlay));
+        day_grid.set_context_menu_overlay(Some(&context_menu_overlay));
 
         // Wire selection-changed: each grid fires when its own `selected` set
         // changes. We collect the union into PhotosPage's `selected_ids`

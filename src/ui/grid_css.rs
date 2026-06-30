@@ -252,6 +252,11 @@ box.mode-selector.on-light-background box.mode-dot,
   min-width: 190px;
 }
 
+.glass-menu-compact,
+.glass-menu-list-compact {
+  min-width: 150px;
+}
+
 .glass-menu-item {
   min-height: 36px;
   border-radius: 10px;
@@ -271,6 +276,33 @@ box.mode-selector.on-light-background box.mode-dot,
 .glass-menu-item-suggested { color: #a8d2ff; }
 
 .glass-menu-item-danger { color: #ffb4ab; }
+
+.glass-context-menu-layer {
+  background: transparent;
+}
+
+.glass-context-menu {
+  padding: 8px 12px;
+  border-radius: 24px;
+  min-width: 128px;
+}
+
+.glass-context-menu-item {
+  min-height: 36px;
+  border-radius: 14px;
+  padding: 0 12px;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.glass-context-menu-item:focus-visible,
+.glass-context-menu-item:focus {
+  outline: none;
+}
+
+.glass-context-menu-item-suggested { color: #a8d2ff; }
+
+.glass-context-menu-item-danger { color: #ffb4ab; }
 
 /* glass-sidebar — list/layout only. The sidebar surface itself is the parent
    .glass-sidebar-surface.glass-base, so list and footer stay on one material. */
@@ -662,13 +694,14 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 .glass-menu > contents {
   padding: 6px;
   border-radius: 16px;
-  background: alpha(black, 0.42);
+  background: linear-gradient(135deg, alpha(white, 0.34), alpha(white, 0.18) 48%, alpha(black, 0.10));
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.22);
+  border: 1px solid alpha(white, 0.30);
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
-    0 18px 48px alpha(black, 0.35),
-    inset 0 1px alpha(white, 0.24);
+    0 18px 48px alpha(black, 0.26),
+    inset 0 1px alpha(white, 0.58),
+    inset 0 -1px alpha(black, 0.16);
 }
 
 /* Unified Liquid Glass button material. These selectors intentionally cover
@@ -735,7 +768,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 }
 
 .glass-menu-item {
-  background: alpha(white, 0.05);
+  background: transparent;
   background-clip: padding-box;
   border: 1px solid transparent;
 }
@@ -757,6 +790,32 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
 .glass-menu-item-danger:hover {
   background: alpha(#ff5449, 0.24);
   border-color: alpha(#ffb4ab, 0.34);
+  color: #ffcfca;
+}
+
+.glass-context-menu-item {
+  background: transparent;
+  background-clip: padding-box;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+.glass-context-menu-item:hover {
+  background: alpha(white, 0.10);
+  border-color: alpha(white, 0.18);
+  box-shadow:
+    inset 0 1px alpha(white, 0.28);
+}
+
+.glass-context-menu-item-suggested:hover {
+  background: alpha(#5aa7ff, 0.20);
+  border-color: alpha(#a8d2ff, 0.30);
+  color: #c8e0ff;
+}
+
+.glass-context-menu-item-danger:hover {
+  background: alpha(#ff5449, 0.20);
+  border-color: alpha(#ffb4ab, 0.30);
   color: #ffcfca;
 }
 
@@ -1020,10 +1079,10 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 .glass-menu > contents {
   padding: 6px;
   border-radius: 16px;
-  background: alpha(black, 0.70);
+  background: alpha(black, 0.62);
   background-clip: padding-box;
   border: 1px solid alpha(white, 0.10);
-  box-shadow: 0 6px 18px alpha(black, 0.28);
+  box-shadow: 0 4px 12px alpha(black, 0.22);
 }
 
 .glass-toolbar-button,
@@ -1095,6 +1154,29 @@ const PLAIN_GLASS_MATERIAL_CSS: &str = "
 .glass-menu-item-danger:hover {
   background: alpha(#ff5449, 0.18);
   border-color: alpha(#ffb4ab, 0.22);
+  color: #ffcfca;
+}
+
+.glass-context-menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+.glass-context-menu-item:hover {
+  background: alpha(white, 0.07);
+  border-color: alpha(white, 0.08);
+}
+
+.glass-context-menu-item-suggested:hover {
+  background: alpha(#5aa7ff, 0.16);
+  border-color: alpha(#a8d2ff, 0.20);
+  color: #c8e0ff;
+}
+
+.glass-context-menu-item-danger:hover {
+  background: alpha(#ff5449, 0.16);
+  border-color: alpha(#ffb4ab, 0.20);
   color: #ffcfca;
 }
 
@@ -2124,6 +2206,34 @@ mod tests {
     }
 
     #[test]
+    fn glass_menu_surface_matches_raised_segmented_surface_visual_weight() {
+        let liquid = build_css(true);
+        for marker in [
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: linear-gradient(135deg, alpha(white, 0.34), alpha(white, 0.18) 48%, alpha(black, 0.10));",
+            "background-clip: padding-box;\n  border: 1px solid alpha(white, 0.30);",
+            "0 18px 48px alpha(black, 0.26)",
+            "inset 0 1px alpha(white, 0.58)",
+        ] {
+            assert!(
+                liquid.contains(marker),
+                "liquid menu surface should preserve raised visual marker {marker}",
+            );
+        }
+
+        let plain = build_css(false);
+        for marker in [
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(black, 0.62);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(black, 0.62);\n  background-clip: padding-box;\n  border: 1px solid alpha(white, 0.10);",
+            "box-shadow: 0 4px 12px alpha(black, 0.22);",
+        ] {
+            assert!(
+                plain.contains(marker),
+                "plain menu surface should match glass-raised opacity marker {marker}",
+            );
+        }
+    }
+
+    #[test]
     fn segmented_glass_style_is_exposed_as_reusable_css_classes() {
         let css = build_css(true);
 
@@ -2139,6 +2249,52 @@ mod tests {
                 "segmented glass style should expose reusable marker {marker}",
             );
         }
+    }
+
+    #[test]
+    fn compact_glass_menu_width_is_available_for_album_context_menus() {
+        let css = build_css(true);
+
+        assert!(
+            css.contains(".glass-menu-compact,\n.glass-menu-list-compact {\n  min-width: 150px;"),
+            "compact glass menus should have a narrower width than the default photo grid menu",
+        );
+        assert!(
+            css.contains(".glass-menu {\n  padding: 0;\n  min-width: 190px;"),
+            "default glass menu width should remain available for denser grid menus",
+        );
+    }
+
+    #[test]
+    fn glass_menu_items_are_transparent_at_rest_like_segmented_slots() {
+        let css = build_css(true);
+
+        assert!(
+            css.contains(".glass-menu-item {\n  background: transparent;\n  background-clip: padding-box;\n  border: 1px solid transparent;"),
+            "menu items should not add a second resting translucency layer over the raised menu surface",
+        );
+        assert!(
+            css.contains(".glass-menu-item:hover {\n  background: alpha(white, 0.16);"),
+            "menu items should still show lightweight hover state",
+        );
+    }
+
+    #[test]
+    fn custom_context_menu_reuses_raised_panel_material() {
+        let css = build_css(true);
+
+        assert!(
+            css.contains(".glass-context-menu {\n  padding: 8px 12px;\n  border-radius: 24px;\n  min-width: 128px;"),
+            "custom context menu should use the same capsule geometry family as the mode selector",
+        );
+        assert!(
+            css.contains(".glass-context-menu-item {\n  background: transparent;\n  background-clip: padding-box;\n  border: 1px solid transparent;"),
+            "custom context menu items should stay transparent at rest",
+        );
+        assert!(
+            css.contains(".glass-context-menu-item:hover {\n  background: alpha(white, 0.10);"),
+            "custom context menu should use lightweight internal hover state",
+        );
     }
 
     /// Plain mode keeps the same selectors but removes the liquid button

@@ -26,6 +26,7 @@ use crate::core::repository::MediaMutation;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
+use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::grid_css;
 use crate::ui::TrashPage;
 
@@ -91,6 +92,8 @@ mod imp {
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
+        #[template_child]
+        pub root_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub sidebar_list: TemplateChild<gtk::ListBox>,
         #[template_child]
@@ -510,7 +513,7 @@ impl MainWindow {
             let delete_album = album.clone();
             let select_album = album.clone();
             let nav_view = window.imp().nav_view.get();
-            let popover = build_album_context_menu(
+            let items = build_album_context_menu_items(
                 &album,
                 Some(Box::new(glib::clone!(
                     @weak window,
@@ -544,15 +547,13 @@ impl MainWindow {
                     }
                 ))),
             );
-            popover.set_parent(&row);
-            popover.connect_closed(|popover| {
-                if popover.parent().is_some() {
-                    popover.unparent();
-                }
-            });
-            let rect = gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-            popover.set_pointing_to(Some(&rect));
-            popover.popup();
+            glass_context_menu::show(
+                &window.imp().root_overlay.get(),
+                row.upcast_ref(),
+                x,
+                y,
+                items,
+            );
         });
         row.add_controller(gesture);
     }
@@ -1699,73 +1700,53 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
     row
 }
 
-pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Popover {
-    build_album_context_menu(album, None, None, None)
+pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Box {
+    glass_context_menu::build_menu_panel_for_tests(build_album_context_menu_items(
+        album, None, None, None,
+    ))
 }
 
-fn build_album_context_menu(
+fn build_album_context_menu_items(
     album: &Album,
     on_manage: Option<Box<dyn Fn() + 'static>>,
     on_delete: Option<Box<dyn Fn() + 'static>>,
     on_select: Option<Box<dyn Fn() + 'static>>,
-) -> gtk::Popover {
-    let popover = gtk::Popover::new();
-    popover.add_css_class("glass-menu");
+) -> Vec<GlassMenuItem> {
+    let mut items = Vec::new();
 
-    let menu = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .css_classes(["glass-menu-list"])
-        .build();
-
-    let manage_btn = gtk::Button::builder()
-        .label(tr("album.context.manage"))
-        .css_classes(["glass-menu-item"])
-        .build();
-    if let Some(on_manage) = on_manage {
-        let popover_weak = popover.downgrade();
-        manage_btn.connect_clicked(move |_| {
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
+    items.push(GlassMenuItem::new(
+        tr("album.context.manage"),
+        GlassMenuItemKind::Normal,
+        move || {
+            if let Some(on_manage) = &on_manage {
+                on_manage();
             }
-            on_manage();
-        });
-    }
-    menu.append(&manage_btn);
+        },
+    ));
 
     if let Some(on_select) = on_select {
-        let multi_btn = gtk::Button::builder()
-            .label(tr("album.context.multi_select"))
-            .css_classes(["glass-menu-item", "glass-menu-item-suggested"])
-            .build();
-        let popover_weak = popover.downgrade();
-        multi_btn.connect_clicked(move |_| {
-            if let Some(popover) = popover_weak.upgrade() {
-                popover.popdown();
-            }
-            on_select();
-        });
-        menu.append(&multi_btn);
+        items.push(GlassMenuItem::new(
+            tr("album.context.multi_select"),
+            GlassMenuItemKind::Suggested,
+            move || {
+                on_select();
+            },
+        ));
     }
 
     if !album.is_virtual {
-        let delete_btn = gtk::Button::builder()
-            .label(tr("album.context.delete"))
-            .css_classes(["glass-menu-item", "glass-menu-item-danger"])
-            .build();
-        if let Some(on_delete) = on_delete {
-            let popover_weak = popover.downgrade();
-            delete_btn.connect_clicked(move |_| {
-                if let Some(popover) = popover_weak.upgrade() {
-                    popover.popdown();
+        items.push(GlassMenuItem::new(
+            tr("album.context.delete"),
+            GlassMenuItemKind::Danger,
+            move || {
+                if let Some(on_delete) = &on_delete {
+                    on_delete();
                 }
-                on_delete();
-            });
-        }
-        menu.append(&delete_btn);
+            },
+        ));
     }
 
-    popover.set_child(Some(&menu));
-    popover
+    items
 }
 
 /// Find the `MainWindow` that owns `nav` and refresh its sidebar album rows.
