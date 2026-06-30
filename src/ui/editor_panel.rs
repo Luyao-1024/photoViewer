@@ -762,17 +762,19 @@ impl EditorPanel {
         let x = (area_width - rect_width) / 2.0;
         let y = (area_height - rect_height) / 2.0;
 
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.12);
+        // Accent blue (theme-independent) keeps the ratio guide visible over
+        // both bright and dark photos; matches the viewer's selected crop frame.
+        cr.set_source_rgba(0.38, 0.72, 1.0, 0.16);
         cr.rectangle(x, y, rect_width, rect_height);
         let _ = cr.fill();
 
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.84);
+        cr.set_source_rgba(0.38, 0.72, 1.0, 0.92);
         cr.set_line_width(2.0);
         cr.rectangle(x, y, rect_width, rect_height);
         let _ = cr.stroke();
 
         if ratio.id == "free" {
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.52);
+            cr.set_source_rgba(0.38, 0.72, 1.0, 0.60);
             cr.set_line_width(1.0);
             cr.move_to(x + rect_width * 0.25, y + rect_height * 0.22);
             cr.line_to(x + rect_width * 0.75, y + rect_height * 0.78);

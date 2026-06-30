@@ -44,6 +44,18 @@ glass settings should not force light or dark mode.
 | `PLAIN_GLASS_MATERIAL_CSS` | Plain translucent fallback with no `backdrop-filter` |
 | `A11Y_CSS` | Reserved for GTK-supported accessibility/runtime class rules |
 
+All chrome surfaces — fills, top highlights, hairline edges, and text — use
+libadwaita theme variables (`@window_fg_color` / `@window_bg_color`) so they
+adapt to light and dark color schemes automatically. No CSS reapply is needed
+on theme switch; GTK resolves the variables at runtime. The only remaining
+hardcoded whites are content-overlay affordances that float directly on photos
+(selection checkmark, video-duration / favorite / motion badges, and all viewer
+chrome controls — both the header actions and the overlay zoom / prev / next
+arrows); these stay white with a dark `-gtk-icon-shadow` halo for legibility
+over any photo, in both rest and hover states. `alpha(black,…)` drop shadows
+are intentionally theme-independent, since a shadow reads as dark in both
+themes.
+
 `build_css(bool)` chooses the material block. `install()` applies the startup preference and `reapply(bool)` swaps the display-level provider when the setting changes.
 
 `liquid_glass_transparency` is shared by the material block. The Settings page exposes it as a 0-100 slider where 0 is fully opaque/strong glass and 100 is fully transparent. `grid_css` applies the slider by CSS property before registering the provider: material `background` alpha can reach 0, while `border*` and `box-shadow` alpha values keep a small visibility floor so buttons and other interactive chrome remain discoverable at 100. Text/icon color alpha is not scaled, and non-material base affordances (such as thumbnail selection checkmarks) stay stable. Liquid `backdrop-filter` blur/saturate/brightness values fade continuously toward `blur(0px) saturate(1) brightness(1)` as transparency increases, so high transparency does not keep a full-strength blur until it suddenly clears at 100. The filter is never set to `none`, preserving GTK's accepted filter syntax.

@@ -56,25 +56,25 @@ flowbox.thumb-grid { padding: 8px; background: transparent; }
 
 /* Hover — soft veil on the flowboxchild, no border. */
 flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
-  background: alpha(white, 0.08);
-  border-color: alpha(white, 0.18);
+  background: alpha(@window_fg_color, 0.08);
+  border-color: alpha(@window_fg_color, 0.18);
 }
 
 /* Keyboard focus — glass ring. Hidden once the pointer leaves the grid
    (see .pointer-left rule below) so the ring doesn't linger on the
    last-hovered tile after the mouse moves away. */
 flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
-  outline: 2px solid alpha(white, 0.55);
+  outline: 2px solid alpha(@window_fg_color, 0.55);
   outline-offset: 2px;
 }
 
 /* Selected — luminous glass border + soft inner veil. Glass alone
    communicates the selected state; no accent colour needed. */
 flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card {
-  background: alpha(white, 0.10);
-  border-color: alpha(white, 0.48);
+  background: alpha(@window_fg_color, 0.10);
+  border-color: alpha(@window_fg_color, 0.48);
   box-shadow:
-    inset 0 1px alpha(white, 0.35);
+    inset 0 1px alpha(@window_fg_color,0.35);
 }
 
 /* Pointer-left — hide the focus ring once the mouse exits the grid.
@@ -135,19 +135,15 @@ box.mode-cell,
   padding: 4px 12px;
 }
 
-/* 标签：默认半透明、title-3 字号 */
+/* 标签：默认半透明、title-3 字号。颜色跟随主题变量，与 glass-raised 容器
+   底配套，亮/暗主题下都可见。 */
 box.mode-selector label,
 .glass-segment-label {
   font-size: 14pt;
   font-weight: 700;
-  color: #ffffff;
+  color: @window_fg_color;
   opacity: 0.55;
   transition: opacity 120ms ease;
-}
-
-box.mode-selector.on-light-background label,
-.glass-segmented.on-light-background .glass-segment-label {
-  color: #000000;
 }
 
 /* 激活态：标签全亮 */
@@ -159,16 +155,11 @@ box.mode-selector label.active,
 /* 激活指示点 */
 box.mode-dot,
 .glass-segment-indicator {
-  background: #ffffff;
+  background: @window_fg_color;
   border-radius: 2px;
   min-width: 24px;
   min-height: 4px;
   margin-top: 2px;
-}
-
-box.mode-selector.on-light-background box.mode-dot,
-.glass-segmented.on-light-background .glass-segment-indicator {
-  background: #000000;
 }
 
 /* glass-toolbar-button — individual buttons in glass header bars.
@@ -182,16 +173,22 @@ box.mode-selector.on-light-background box.mode-dot,
   color: inherit;
 }
 
-/* Viewer chrome buttons (the viewer header) are square (1:1). The base
-   .glass-toolbar-button is shared by every header bar (photos, trash, albums,
-   editor), so this geometry override is scoped to .viewer-chrome, which the
-   viewer header carries. The floating prev/next arrows
-   (.viewer-overlay-nav-btn) are intentionally smaller and live in their own
-   compact bottom-right pair, so they do not match this. */
+/* Viewer chrome buttons (the viewer header) are square (1:1) and float over
+   the photo, so — like .viewer-overlay-nav-btn — they render a white icon with
+   a dark halo instead of inheriting the theme foreground. This keeps every
+   viewer control reading as one set of light affordances over the image, and
+   stops a black icon (light theme) vanishing into a bright photo bleeding
+   through the translucent header. Scoped to .viewer-chrome (only the viewer
+   header carries it) so the shared .glass-toolbar-button in other headers
+   (photos/trash/albums/editor) is untouched. The prev/next arrows
+   (.viewer-overlay-nav-btn) are smaller and live in their own bottom-right
+   pair, so they don't match this geometry override. */
 .viewer-chrome .glass-toolbar-button {
   min-width: 38px;
   min-height: 38px;
   padding: 0;
+  color: #ffffff;
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.9), 0 0 6px alpha(black, 0.65);
 }
 
 .glass-toolbar-button.crop-ratio-arrow-button {
@@ -291,7 +288,7 @@ box.mode-selector.on-light-background box.mode-dot,
   min-height: 36px;
   border-radius: 14px;
   padding: 0 12px;
-  color: #ffffff;
+  color: @window_fg_color;
   font-weight: 600;
 }
 
@@ -444,15 +441,15 @@ box.mode-selector.on-light-background box.mode-dot,
 .viewer-stage {
   padding: 32px;
   background:
-    radial-gradient(circle at center, alpha(white, 0.06), transparent 55%),
-    alpha(black, 0.10);
+    radial-gradient(circle at center, alpha(@window_fg_color, 0.06), transparent 55%),
+    alpha(@window_bg_color, 0.10);
 }
 
 .viewer-image-frame {
   border-radius: 14px;
   box-shadow:
     0 24px 80px alpha(black, 0.38),
-    0 0 0 1px alpha(white, 0.10);
+    0 0 0 1px alpha(@window_fg_color, 0.10);
 }
 
 .viewer-details-name-row {
@@ -471,9 +468,9 @@ box.mode-selector.on-light-background box.mode-dot,
    chrome,所以这是近乎平坦的面板加一道细线边框,而不是沉重的玻璃舞台。 */
 .glass-editor-preview {
   padding: 24px;
-  background: alpha(black, 0.06);
+  background: alpha(@window_bg_color, 0.06);
   background-clip: padding-box;
-  border: 1px solid alpha(white, 0.06);
+  border: 1px solid alpha(@window_fg_color, 0.10);
 }
 
 /* Viewer favorite button active state. Class is added/removed by
@@ -527,7 +524,7 @@ box.mode-selector.on-light-background box.mode-dot,
 .library-stats {
   border-radius: 999px;
   padding: 7px 14px;
-  color: alpha(white, 0.88);
+  color: alpha(@window_fg_color, 0.88);
   font-size: 10pt;
   font-weight: 600;
 }
@@ -535,12 +532,12 @@ box.mode-selector.on-light-background box.mode-dot,
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {
-  background-color: alpha(white, 0.05);
+  background-color: alpha(@window_fg_color, 0.05);
 }
 
 .thumb-placeholder {
-  background-color: alpha(white, 0.08);
-  box-shadow: inset 0 0 0 1px alpha(white, 0.10);
+  background-color: alpha(@window_fg_color, 0.08);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.10);
 }
 
 /* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
@@ -592,12 +589,12 @@ button.viewer-thumb-item.viewer-thumb-current {
   margin-right: 12px;
   padding: 4px;
   transform: scale(1.30);
-  background: alpha(white, 0.10);
-  outline: 2px solid alpha(white, 0.55);
+  background: alpha(@window_fg_color, 0.10);
+  outline: 2px solid alpha(@window_fg_color, 0.55);
   outline-offset: 2px;
   box-shadow:
-    inset 0 1px alpha(white, 0.35),
-    0 0 0 4px alpha(white, 0.12),
+    inset 0 1px alpha(@window_fg_color,0.35),
+    0 0 0 4px alpha(@window_fg_color, 0.12),
     0 10px 24px alpha(black, 0.48);
   opacity: 1.0;
 }
@@ -610,8 +607,8 @@ button.viewer-thumb-item picture {
 }
 
 button.viewer-thumb-item.viewer-thumb-current picture {
-  border: 2px solid alpha(white, 0.48);
-  box-shadow: 0 0 18px alpha(white, 0.20);
+  border: 2px solid alpha(@window_fg_color, 0.48);
+  box-shadow: 0 0 18px alpha(@window_fg_color, 0.20);
 }
 
 /* viewer-overlay-nav — layout box only for the prev/next overlay buttons.
@@ -628,7 +625,12 @@ button.viewer-thumb-item.viewer-thumb-current picture {
   min-height: 32px;
   padding: 0;
   border-radius: 10px;
+  /* These buttons float bare over the photo at rest and gain a theme-following
+     glass capsule on hover. The icon stays white in BOTH states so there is no
+     jarring light→dark jump on hover; the dark halo keeps it legible over any
+     photo and also over the light capsule a light theme produces on hover. */
   color: #ffffff;
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.9), 0 0 6px alpha(black, 0.65);
 }
 
 /* viewer-floating-panel 内容链透明化 ─────────────────────────────
@@ -713,7 +715,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border: 1px solid alpha(@window_fg_color, 0.14);
   backdrop-filter: blur(22px) saturate(1.18) brightness(1.04);
   box-shadow:
-    inset 0 1px alpha(white, 0.32),
+    inset 0 1px alpha(@window_fg_color,0.32),
     inset 0 -1px alpha(black, 0.10);
 }
 
@@ -725,7 +727,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 18px 48px alpha(black, 0.26),
-    inset 0 1px alpha(white, 0.58),
+    inset 0 1px alpha(@window_fg_color,0.58),
     inset 0 -1px alpha(black, 0.16);
 }
 
@@ -739,7 +741,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 18px 48px alpha(black, 0.26),
-    inset 0 1px alpha(white, 0.58),
+    inset 0 1px alpha(@window_fg_color,0.58),
     inset 0 -1px alpha(black, 0.16);
 }
 
@@ -752,7 +754,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border: 1px solid alpha(@window_fg_color, 0.14);
   box-shadow:
     0 12px 32px alpha(black, 0.24),
-    inset 0 1px alpha(white, 0.44),
+    inset 0 1px alpha(@window_fg_color,0.44),
     inset 0 -1px alpha(black, 0.12);
 }
 
@@ -762,7 +764,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border-color: alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
-    inset 0 1px alpha(white, 0.52),
+    inset 0 1px alpha(@window_fg_color,0.52),
     inset 0 -1px alpha(black, 0.14);
 }
 
@@ -774,7 +776,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   border-color: alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
-    inset 0 1px alpha(white, 0.34),
+    inset 0 1px alpha(@window_fg_color,0.34),
     inset 0 -1px alpha(black, 0.18);
 }
 
@@ -816,7 +818,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   background: alpha(@window_fg_color, 0.08);
   border-color: alpha(@window_fg_color, 0.14);
   box-shadow:
-    inset 0 1px alpha(white, 0.36),
+    inset 0 1px alpha(@window_fg_color,0.36),
     inset 0 -1px alpha(black, 0.10);
 }
 
@@ -843,7 +845,7 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   background: alpha(@window_fg_color, 0.08);
   border-color: alpha(@window_fg_color, 0.12);
   box-shadow:
-    inset 0 1px alpha(white, 0.28);
+    inset 0 1px alpha(@window_fg_color,0.28);
 }
 
 .glass-context-menu-item-suggested:hover {
@@ -867,14 +869,14 @@ const LIQUID_GLASS_MATERIAL_CSS: &str = "
   background: alpha(@accent_bg_color, 0.14);
   border-color: alpha(@accent_bg_color, 0.26);
   box-shadow:
-    inset 0 1px alpha(white, 0.28);
+    inset 0 1px alpha(@window_fg_color,0.28);
 }
 
 .glass-sidebar-row:selected {
   background: alpha(@accent_bg_color, 0.22);
   border-color: alpha(@accent_bg_color, 0.42);
   box-shadow:
-    inset 0 1px alpha(white, 0.36),
+    inset 0 1px alpha(@window_fg_color,0.36),
     inset 0 -1px alpha(black, 0.12);
 }
 
@@ -924,7 +926,7 @@ row.settings-action-row:hover {
   background-clip: padding-box;
   border: 1px solid alpha(@window_fg_color, 0.16);
   box-shadow:
-    inset 0 1px alpha(white, 0.36),
+    inset 0 1px alpha(@window_fg_color,0.36),
     inset 0 -1px alpha(black, 0.10);
 }
 
@@ -959,7 +961,7 @@ row.settings-action-row:hover {
   border: 1px solid alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
-    inset 0 1px alpha(white, 0.52),
+    inset 0 1px alpha(@window_fg_color,0.52),
     inset 0 -1px alpha(black, 0.14);
 }
 
@@ -969,7 +971,7 @@ row.settings-action-row:hover {
   border: 1px solid alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
-    inset 0 1px alpha(white, 0.34),
+    inset 0 1px alpha(@window_fg_color,0.34),
     inset 0 -1px alpha(black, 0.18);
 }
 
@@ -979,7 +981,7 @@ row.settings-action-row:hover {
   border: 1px solid alpha(#ffb4ab, 0.42);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
-    inset 0 1px alpha(white, 0.52),
+    inset 0 1px alpha(@window_fg_color,0.52),
     inset 0 -1px alpha(black, 0.14);
   color: #ffb4ab;
 }
@@ -1006,7 +1008,7 @@ row.settings-action-row:hover {
   border: 1px solid alpha(@window_fg_color, 0.20);
   box-shadow:
     0 14px 36px alpha(black, 0.30),
-    inset 0 1px alpha(white, 0.52),
+    inset 0 1px alpha(@window_fg_color,0.52),
     inset 0 -1px alpha(black, 0.14);
 }
 
@@ -1015,7 +1017,7 @@ row.settings-action-row:hover {
   border: 1px solid alpha(@window_fg_color, 0.24);
   box-shadow:
     0 8px 22px alpha(black, 0.24),
-    inset 0 1px alpha(white, 0.34),
+    inset 0 1px alpha(@window_fg_color,0.34),
     inset 0 -1px alpha(black, 0.18);
 }
 
@@ -1035,7 +1037,7 @@ row.settings-action-row:hover {
   backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);
   box-shadow:
     0 24px 64px alpha(black, 0.40),
-    inset 0 1px alpha(white, 0.28);
+    inset 0 1px alpha(@window_fg_color,0.28);
   color: @window_fg_color;
 }
 
@@ -1107,7 +1109,7 @@ row.settings-action-row:hover {
   backdrop-filter: blur(26px) saturate(1.20) brightness(1.05);
   box-shadow:
     0 14px 44px alpha(black, 0.42),
-    inset 0 1px alpha(white, 0.30);
+    inset 0 1px alpha(@window_fg_color,0.30);
 }
 ";
 
@@ -2035,7 +2037,7 @@ mod tests {
             "current filmstrip thumbnail should reserve fixed side breathing room",
         );
         assert!(
-            css.contains("background: alpha(white, 0.10)"),
+            css.contains("background: alpha(@window_fg_color, 0.10)"),
             "current filmstrip thumbnail should use the shared glass selection veil",
         );
         assert!(
@@ -2051,11 +2053,11 @@ mod tests {
             "hover state should also suppress the default GTK button frame",
         );
         assert!(
-            css.contains("border: 2px solid alpha(white, 0.48)"),
+            css.contains("border: 2px solid alpha(@window_fg_color, 0.48)"),
             "current filmstrip thumbnail image should use the same glass ring as grid selection",
         );
         assert!(
-            css.contains("outline: 2px solid alpha(white, 0.55)"),
+            css.contains("outline: 2px solid alpha(@window_fg_color, 0.55)"),
             "current filmstrip thumbnail should draw an outer glass emphasis ring",
         );
         assert!(
@@ -2097,7 +2099,7 @@ mod tests {
             "liquid mode must keep the heavy raised drop shadow"
         );
         assert!(
-            css.contains("inset 0 1px alpha(white, 0.58)"),
+            css.contains("inset 0 1px alpha(@window_fg_color,0.58)"),
             "liquid mode must keep the bright raised top highlight"
         );
         // shared BASE
@@ -2138,7 +2140,7 @@ mod tests {
         );
         // drops liquid drama
         assert!(
-            !css.contains("inset 0 1px alpha(white, 0.58)"),
+            !css.contains("inset 0 1px alpha(@window_fg_color,0.58)"),
             "plain mode must drop the raised top highlight"
         );
         assert!(
@@ -2176,8 +2178,8 @@ mod tests {
         }
 
         for liquid_signature in [
-            "inset 0 1px alpha(white, 0.44)",
-            "inset 0 1px alpha(white, 0.36)",
+            "inset 0 1px alpha(@window_fg_color,0.44)",
+            "inset 0 1px alpha(@window_fg_color,0.36)",
             "0 12px 32px alpha(black, 0.24)",
         ] {
             assert!(
@@ -2324,7 +2326,7 @@ mod tests {
             ".glass-raised {",
             "backdrop-filter: blur(28px) saturate(1.22) brightness(1.06)",
             "0 18px 48px alpha(black, 0.26)",
-            "inset 0 1px alpha(white, 0.58)",
+            "inset 0 1px alpha(@window_fg_color,0.58)",
         ] {
             assert!(
                 css.contains(marker),
@@ -2344,7 +2346,7 @@ mod tests {
             ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.72);",
             "background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.16);",
             "0 18px 48px alpha(black, 0.26)",
-            "inset 0 1px alpha(white, 0.58)",
+            "inset 0 1px alpha(@window_fg_color,0.58)",
         ] {
             assert!(
                 liquid.contains(marker),
@@ -2454,8 +2456,8 @@ mod tests {
         }
 
         for liquid_signature in [
-            "inset 0 1px alpha(white, 0.44)",
-            "inset 0 1px alpha(white, 0.36)",
+            "inset 0 1px alpha(@window_fg_color,0.44)",
+            "inset 0 1px alpha(@window_fg_color,0.36)",
             "0 12px 32px alpha(black, 0.24)",
         ] {
             assert!(
