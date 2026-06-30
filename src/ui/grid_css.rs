@@ -891,7 +891,7 @@ row.settings-action-row:hover {
 }
 
 .settings-background-blur {
-  filter: blur(12px) brightness(0.82);
+  opacity: 0.82;
 }
 
 .settings-dialog-backdrop .background {
@@ -902,7 +902,6 @@ row.settings-action-row:hover {
 
 .settings-dialog-backdrop {
   background: alpha(@window_bg_color, 0.26);
-  backdrop-filter: blur(18px) saturate(1.08) brightness(0.94);
 }
 
 .settings-about-text {
@@ -1868,6 +1867,14 @@ pub fn attach_kbd_nav(flow: &gtk::FlowBox) {
 mod tests {
     use super::*;
 
+    fn css_block(css: &str, selector: &str) -> Option<String> {
+        let pattern = format!("{selector} {{");
+        let start = css.find(&pattern)?;
+        let open = css[start..].find('{')? + start;
+        let close = css[open..].find('}')? + open;
+        Some(css[start..=close].to_string())
+    }
+
     /// `.viewer-favorite-btn.favorite-active:hover` must exist alongside the
     /// base `.viewer-favorite-btn.favorite-active` rule. Without the :hover
     /// override, the bare-at-rest/hover viewer-chrome rules would win and the
@@ -2272,6 +2279,24 @@ mod tests {
                 "settings preferences lists should use theme-aware card colors"
             );
         }
+    }
+
+    #[test]
+    fn settings_modal_scrim_avoids_full_scene_filters() {
+        let css = build_css(true);
+        let blur_block = css_block(&css, ".settings-background-blur")
+            .expect("settings background class should exist");
+        assert!(
+            !blur_block.contains("filter:"),
+            "settings should not blur the full navigation view while the dialog animates"
+        );
+
+        let backdrop_block =
+            css_block(&css, ".settings-dialog-backdrop").expect("settings backdrop should exist");
+        assert!(
+            !backdrop_block.contains("backdrop-filter:"),
+            "settings backdrop should stay a lightweight scrim instead of a full-window backdrop blur"
+        );
     }
 
     #[test]

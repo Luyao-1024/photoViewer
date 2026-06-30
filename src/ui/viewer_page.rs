@@ -18,7 +18,7 @@ use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::repository::{MediaQuery, MediaRepository};
-use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
 use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::toasts;
@@ -114,6 +114,10 @@ pub struct CropDragState {
 fn strip_file_uri(uri: &str) -> PathBuf {
     let stripped = uri.strip_prefix("file://").unwrap_or(uri);
     PathBuf::from(stripped)
+}
+
+fn viewer_preview_thumbnail_size() -> ThumbnailSize {
+    ThumbnailSize::Medium
 }
 
 fn should_retry_thumb_centering(applied: bool, attempts_remaining: u8) -> bool {
@@ -2293,6 +2297,11 @@ impl ViewerPage {
             return;
         }
         self.show_image_stage();
+        self.imp()
+            .picture
+            .get()
+            .set_paintable(None::<&gdk::Paintable>);
+        self.imp().edit_btn.get().set_sensitive(false);
         self.set_motion_play_button_for_item(&item);
         if prefs::auto_play_motion_photo() && item.is_motion_photo() {
             self.play_current_motion_photo();
@@ -2307,6 +2316,8 @@ impl ViewerPage {
             item.uri,
             path.display()
         );
+
+        self.request_current_preview_thumbnail(&item, token);
 
         // Preload neighbours first (fire-and-forget — we just want the OS
         // page cache warm). Preload is reduced from ±1±2 to ±1 only because
@@ -2336,40 +2347,91 @@ impl ViewerPage {
             let _ = tx.send(result);
         });
 
-        let picture_weak = self.imp().picture.downgrade();
-        let spinner_weak = self.imp().spinner.downgrade();
-        let token_holder = self.imp().current_token.clone();
+        let viewer_weak = self.downgrade();
         glib::spawn_future_local(async move {
             let texture = match rx.await {
                 Ok(Ok(t)) => t,
                 Ok(Err(e)) => {
                     tracing::warn!("ViewerPage: {e}");
-                    if let Some(spinner) = spinner_weak.upgrade() {
-                        spinner.set_visible(false);
+                    if let Some(this) = viewer_weak.upgrade() {
+                        if this.imp().current_token.get() == token {
+                            this.imp().spinner.get().set_visible(false);
+                        }
                     }
                     return;
                 }
                 Err(_) => return, // sender dropped — cancelled
             };
             // Stale response: another show_at() ran in the meantime.
-            if token_holder.get() != token {
+            let Some(this) = viewer_weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
                 return;
             }
-            if let (Some(picture), Some(spinner)) = (picture_weak.upgrade(), spinner_weak.upgrade())
-            {
-                tracing::debug!(
-                    target: crate::core::log_targets::VIEWER,
-                    "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
-                    token,
-                    decode_item_name,
-                    decode_source_uri,
-                    decode_path.display(),
-                    texture.width(),
-                    texture.height()
-                );
-                picture.set_paintable(Some(&texture));
-                spinner.set_visible(false);
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
+                token,
+                decode_item_name,
+                decode_source_uri,
+                decode_path.display(),
+                texture.width(),
+                texture.height()
+            );
+            this.imp().picture.get().set_paintable(Some(&texture));
+            this.imp().spinner.get().set_visible(false);
+            this.imp().edit_btn.get().set_sensitive(true);
+        });
+    }
+
+    fn request_current_preview_thumbnail(&self, item: &MediaItem, token: u64) {
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let fs_mtime = std::fs::metadata(&item.path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        let item_mtime = fs_mtime.unwrap_or_else(|| std::time::SystemTime::from(item.file_mtime));
+        let item_id = item.id;
+        let item_uri = item.uri.clone();
+        let item_name = item.display_name().to_string();
+        let size = viewer_preview_thumbnail_size();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request_for_media(
+            item_id,
+            item_uri.clone(),
+            size,
+            Some(item_mtime),
+            tx,
+            TIER_BOOST,
+        );
+
+        let viewer_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(loaded) = rx.await else {
+                return;
+            };
+            let Some(this) = viewer_weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
             }
+            let texture = loaded.texture;
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG viewer preview_loaded token={} item_id={} item_name={} source_uri={} size={:?} texture={}x{}",
+                token,
+                item_id,
+                item_name,
+                item_uri,
+                size,
+                texture.width(),
+                texture.height()
+            );
+            this.imp().picture.get().set_paintable(Some(&texture));
+            this.imp().spinner.get().set_visible(false);
         });
     }
 
@@ -3968,6 +4030,11 @@ mod tests {
         assert_eq!(viewer.imp().zoom_scale.get(), 1.0);
         assert_eq!(viewer.imp().zoom_pan_x.get(), 0.0);
         assert_eq!(viewer.imp().zoom_pan_y.get(), 0.0);
+    }
+
+    #[test]
+    fn viewer_preview_uses_medium_thumbnail() {
+        assert_eq!(viewer_preview_thumbnail_size(), ThumbnailSize::Medium);
     }
 
     fn sample_media_item() -> MediaItem {

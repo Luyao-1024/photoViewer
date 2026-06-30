@@ -5,7 +5,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
@@ -938,11 +940,20 @@ impl MainWindow {
     }
 
     fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(false)
+            .min_content_height(0)
+            .max_content_height(700)
+            .child(&self.build_settings_page(host))
+            .build();
+
         let dialog = adw::Dialog::builder()
             .title(tr("setting.page.title"))
             .content_width(540)
-            .content_height(760)
-            .child(&self.build_settings_page(host))
+            .content_height(700)
+            .child(&scroller)
             .build();
         dialog.add_css_class("glass-alert-dialog");
         dialog.add_css_class("settings-dialog-backdrop");
@@ -1271,16 +1282,14 @@ impl MainWindow {
         // Show current storage usage
         let cache_dir = config::cache_dir();
         let thumb_dir = cache_dir.join("thumbnails");
-        let thumb_size = crate::core::cache::dir_size(&thumb_dir);
         let db_path = crate::config::data_dir().join("photos.db");
-        let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
         // Thumbnail cache row with size and clear button
         let thumb_row = adw::ActionRow::new();
         thumb_row.add_css_class("settings-action-row");
         thumb_row.set_title(&tr("setting.clear_thumbnails"));
-        thumb_row.set_subtitle(&format_size(thumb_size));
         thumb_row.set_activatable(false);
+        update_storage_size_async(&thumb_row, move || crate::core::cache::dir_size(&thumb_dir));
 
         let btn_clear_thumbs = gtk::Button::new();
         btn_clear_thumbs.set_icon_name("user-trash-symbolic");
@@ -1332,8 +1341,10 @@ impl MainWindow {
         let db_row = adw::ActionRow::new();
         db_row.add_css_class("settings-action-row");
         db_row.set_title(&tr("setting.clear_database"));
-        db_row.set_subtitle(&format_size(db_size));
         db_row.set_activatable(false);
+        update_storage_size_async(&db_row, move || {
+            std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0)
+        });
 
         let btn_clear_db = gtk::Button::new();
         btn_clear_db.set_icon_name("user-trash-symbolic");
@@ -1532,6 +1543,38 @@ fn show_settings_error_dialog(parent: &gtk::Widget, body: &str) {
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("ok");
     dialog.present(parent);
+}
+
+fn update_storage_size_async<F>(row: &adw::ActionRow, compute_size: F)
+where
+    F: FnOnce() -> u64 + Send + 'static,
+{
+    row.set_subtitle(&tr("setting.storage_usage_calculating"));
+
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = sender.send(compute_size());
+    });
+
+    let row = row.downgrade();
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        match receiver.try_recv() {
+            Ok(size) => {
+                if let Some(row) = row.upgrade() {
+                    row.set_subtitle(&format_size(size));
+                }
+                glib::ControlFlow::Break
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                if row.upgrade().is_some() {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        }
+    });
 }
 
 fn persist_locale(locale: &str) -> Result<(), String> {
@@ -1922,6 +1965,22 @@ mod tests {
         }
     }
 
+    fn find_action_row_subtitle(widget: &gtk::Widget, title: &str) -> Option<String> {
+        if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+            if row.title() == title {
+                return row.subtitle().map(|subtitle| subtitle.to_string());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            child = current.next_sibling();
+            if let Some(subtitle) = find_action_row_subtitle(&current, title) {
+                return Some(subtitle);
+            }
+        }
+        None
+    }
+
     fn media_item(id: i64, folder_path: &str, name: &str) -> MediaItem {
         let folder_path = PathBuf::from(folder_path);
         let path = folder_path.join(name);
@@ -2196,6 +2255,59 @@ mod tests {
         assert!(
             speed_labels.contains(&tr("setting.thumbnail_generation_speed.fastest")),
             "should have Fastest radio button, got {speed_labels:?}"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_storage_rows_defer_size_calculation() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowStorageUsage")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+        let pending = tr("setting.storage_usage_calculating");
+
+        assert_eq!(
+            find_action_row_subtitle(&page, &tr("setting.clear_thumbnails")).as_deref(),
+            Some(pending.as_str()),
+            "thumbnail cache size must not be calculated while constructing Settings"
+        );
+        assert_eq!(
+            find_action_row_subtitle(&page, &tr("setting.clear_database")).as_deref(),
+            Some(pending.as_str()),
+            "database size must not be calculated while constructing Settings"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_dialog_uses_bounded_scroll_child() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("org.gnome.PhotoViewer.WindowSettingsDialogBounds")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let dialog = window.build_settings_dialog(&host);
+
+        assert!(
+            dialog.content_height() <= 700,
+            "settings dialog content height should stay below an 800px window; got {}",
+            dialog.content_height()
+        );
+        assert!(
+            dialog
+                .child()
+                .is_some_and(|child| child.is::<gtk::ScrolledWindow>()),
+            "settings dialog should use a ScrolledWindow so tall content does not over-request sheet height"
         );
     }
 }

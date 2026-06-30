@@ -94,6 +94,11 @@ Each scope gets its own bare-at-rest reset plus a hover/focus material rule in *
 
 Do not reintroduce the abandoned CPU/GSK background capture approach or custom `snapshot` refraction path. The current implementation relies on GTK/GSK CSS rendering.
 
+Avoid full-window `filter` or `backdrop-filter` on modal scrims. The Settings
+dialog may dim the gallery while open, but large-scene blur during dialog
+animations is too expensive; keep blur on bounded chrome surfaces such as the
+dialog card, menus, and side panels.
+
 ## Legacy Document
 
 The original detailed Liquid Glass notes are still available at [`../liquid-glass.md`](../liquid-glass.md). Prefer this module document for current navigation and keep both in sync when changing material contracts.

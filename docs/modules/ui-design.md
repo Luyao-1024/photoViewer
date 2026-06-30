@@ -273,8 +273,9 @@ imply app-local deletion if the operation is actually backed by host trash.
 
 Settings is reached from the sidebar footer gear button and currently owns user-facing visual
 preferences such as the Liquid Glass toggle. It opens as a popup dialog; while
-the dialog is visible, the gallery content behind it is dimmed/blurred in the
-Liquid Glass mode so the modal layer reads clearly above the library.
+the dialog is visible, the gallery content behind it is lightly dimmed so the
+modal layer reads clearly above the library without forcing a full-window blur
+during the dialog animation.
 
 Design intent:
 
@@ -289,8 +290,15 @@ Design intent:
   such as scan, restore, or album management unless the information architecture
   is revisited.
 - Thumbnail generation speed belongs in Settings as a quiet storage/runtime
-  preference. It should stay a simple three-option control for slow, normal, and
-  fast background generation rather than exposing raw worker counts.
+  preference. It should stay a simple tiered control for slow, normal
+  (default), fast, and fastest background generation rather than exposing raw
+  worker counts.
+- Storage usage rows may display a pending size briefly. Directory-size
+  calculations, especially thumbnail-cache scans, must not run synchronously
+  while constructing or presenting the Settings dialog.
+- Settings content is wrapped in a bounded vertical scroller inside the dialog.
+  Keep the dialog's requested height below common 800px windows so
+  `AdwFloatingSheet` does not over-request during open/close animations.
 - Settings that cannot apply live should show the shared restart-required
   confirmation after a successful save. Choosing yes relaunches the current
   executable and quits the current process; choosing no leaves the setting saved

@@ -344,7 +344,7 @@ pub fn notify_file_settle_ms() -> u64 {
 }
 
 fn default_thumbnail_worker_count() -> usize {
-    ThumbnailGenerationSpeed::Fastest.worker_count()
+    ThumbnailGenerationSpeed::Normal.worker_count()
 }
 
 fn write_usize_at(path: &Path, key: &str, value: usize) -> Result<(), String> {
@@ -424,6 +424,10 @@ mod tests {
         assert_eq!(config.grid_render_absolute_cap, 1_200);
         assert_eq!(config.grid_render_expand_step, 200);
         assert_eq!(config.grid_reprioritize_debounce_ms, 120);
+        assert_eq!(
+            config.thumbnail_worker_count,
+            ThumbnailGenerationSpeed::Normal.worker_count()
+        );
         assert_eq!(config.thumbnail_queue_capacity, 8192);
         assert_eq!(config.thumbnail_mem_cache_cap, 16);
         assert_eq!(config.thumbnail_disk_cache_bytes, 2 * 1024 * 1024 * 1024);
