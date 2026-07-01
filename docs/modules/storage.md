@@ -60,6 +60,13 @@ and must use the partial expression index `idx_media_live_sort`. Without that
 index, large libraries can fall back to a full live-row scan plus a temporary
 sort for every virtual page request.
 
+Album detail and virtual album queries use the same canonical sort order after
+filtering by `folder_path`, `is_favorite`, `media_kind`, or `media_subkind`.
+Keep the filtered sort indexes (`idx_media_folder_sort`,
+`idx_media_favorite_sort`, `idx_media_kind_sort`, `idx_media_subkind_sort`) in
+place so switching between albums does not build temporary sort tables over
+large media collections.
+
 ## Media Model
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.

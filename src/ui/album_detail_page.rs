@@ -1,5 +1,6 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
 use std::sync::Arc;
+use std::time::Instant;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -76,6 +77,19 @@ impl AlbumDetailPage {
         pool: DbPool,
         loader: Arc<ThumbnailLoader>,
     ) -> Self {
+        let total_start = Instant::now();
+        let album_name = album.display_name();
+        let album_path = album.folder_path.to_string_lossy().into_owned();
+        let initial_items = media_list.n_items();
+        tracing::debug!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            is_virtual = album.is_virtual,
+            item_count = initial_items,
+            "album_detail_page: build_begin"
+        );
+
         let obj: Self = glib::Object::builder().build();
         obj.set_title(&album.display_name());
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
@@ -85,11 +99,21 @@ impl AlbumDetailPage {
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
         if media_list.n_items() == 0 {
+            let empty_start = Instant::now();
             let empty = empty_states::no_album_photos();
             empty.set_hexpand(true);
             empty.set_vexpand(true);
             obj.imp().content_box.get().append(&empty);
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                empty_ms = empty_start.elapsed().as_millis(),
+                total_ms = total_start.elapsed().as_millis(),
+                "album_detail_page: empty_state_built"
+            );
         } else {
+            let grid_start = Instant::now();
             let on_activate: Rc<dyn Fn(MediaId)> = {
                 let weak = obj.downgrade();
                 Rc::new(move |media_id| {
@@ -106,7 +130,7 @@ impl AlbumDetailPage {
                 })
             };
             let on_background_changed: Rc<dyn Fn()> = Rc::new(|| {});
-            let grid = MediaGrid::new(
+            let grid = MediaGrid::new_for_album(
                 media_list,
                 GroupBy::Day,
                 loader,
@@ -118,10 +142,26 @@ impl AlbumDetailPage {
                     on_set_favorite: Rc::new(|_, _| {}),
                     on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                 },
-                false,
             );
             obj.imp().content_box.get().append(&grid);
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                grid_ms = grid_start.elapsed().as_millis(),
+                total_ms = total_start.elapsed().as_millis(),
+                "album_detail_page: grid_built"
+            );
         }
+
+        tracing::debug!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            item_count = initial_items,
+            total_ms = total_start.elapsed().as_millis(),
+            "album_detail_page: build_end"
+        );
 
         obj
     }
@@ -233,10 +273,13 @@ impl AlbumDetailPage {
             return;
         };
 
+        let refresh_start = Instant::now();
         // Re-evaluate the per-album predicate (shared with the sidebar) against
         // the current DB/favorites state and splice it into the live store so
         // the grid + open viewer track the new membership without a page rebuild.
         let items = filtered_items_for_album(&album, &master_list, &pool);
+        let query_ms = refresh_start.elapsed().as_millis();
+        let splice_start = Instant::now();
         while media_list.n_items() > 0 {
             media_list.remove(media_list.n_items() - 1);
         }
@@ -245,8 +288,13 @@ impl AlbumDetailPage {
         }
         tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
-            "AlbumDetailPage: refreshed virtual album media list, n_items={}",
-            media_list.n_items()
+            album_name = %album.display_name(),
+            album_path = %album.folder_path.display(),
+            item_count = media_list.n_items(),
+            query_ms,
+            splice_ms = splice_start.elapsed().as_millis(),
+            total_ms = refresh_start.elapsed().as_millis(),
+            "album_detail_page: refreshed_virtual_media_list"
         );
     }
 }
@@ -265,11 +313,25 @@ pub(crate) fn filtered_items_for_album(
     master: &gtk::gio::ListStore,
     pool: &DbPool,
 ) -> Vec<crate::core::media::MediaItem> {
+    let start = Instant::now();
+    let album_name = album.display_name();
+    let album_path = album.folder_path.to_string_lossy().into_owned();
     if album.is_virtual {
-        return MediaRepository::new(pool.clone())
+        let result = MediaRepository::new(pool.clone())
             .page(media_query_for_album(album), 0, u32::MAX)
             .map(|page| page.items)
             .unwrap_or_default();
+        tracing::debug!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            is_virtual = true,
+            master_items = master.n_items(),
+            result_items = result.len(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "album_filter: loaded_virtual_from_repository"
+        );
+        return result;
     }
 
     let mut items = Vec::new();
@@ -285,10 +347,20 @@ pub(crate) fn filtered_items_for_album(
             items.push(item);
         }
     }
+    tracing::debug!(
+        target: crate::core::log_targets::ALBUMS,
+        album_name = %album_name,
+        album_path = %album_path,
+        is_virtual = false,
+        master_items = master.n_items(),
+        result_items = items.len(),
+        elapsed_ms = start.elapsed().as_millis(),
+        "album_filter: filtered_master_list"
+    );
     items
 }
 
-fn media_query_for_album(album: &Album) -> MediaQuery {
+pub(crate) fn media_query_for_album(album: &Album) -> MediaQuery {
     if album.is_favorites_album() {
         MediaQuery::Favorites
     } else if album.is_images_album() {

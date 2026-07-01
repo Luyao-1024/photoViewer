@@ -339,6 +339,51 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
     Ok(count as usize)
 }
 
+pub fn count_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Result<usize> {
+    let conn = pool.get()?;
+    let folder_str = folder_path.to_string_lossy().to_string();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+         WHERE trashed_at IS NULL AND folder_path = ?1",
+        [folder_str],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+pub fn count_favorite_media(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+         WHERE trashed_at IS NULL AND is_favorite = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+pub fn count_media_by_kind(pool: &DbPool, media_kind: &str) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+         WHERE trashed_at IS NULL AND media_kind = ?1",
+        [media_kind],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+pub fn count_media_by_subkind(pool: &DbPool, media_subkind: &str) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+         WHERE trashed_at IS NULL AND media_subkind = ?1",
+        [media_subkind],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 /// 按完整日期(年-月-日)分组统计非回收站媒体数量。
 ///
 /// 日期取自 `COALESCE(taken_at, file_mtime)`（与列表排序/分组的基准一致），
@@ -442,6 +487,95 @@ pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<Med
          LIMIT ?1 OFFSET ?2",
     )?;
     let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+pub fn list_media_by_folder_page(
+    pool: &DbPool,
+    folder_path: &std::path::Path,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let folder_str = folder_path.to_string_lossy().to_string();
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND folder_path = ?1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![folder_str, limit as i64, offset as i64],
+        row_to_media_item,
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+pub fn list_favorite_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND is_favorite = 1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?1 OFFSET ?2",
+    )?;
+    let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+pub fn list_media_by_kind_page(
+    pool: &DbPool,
+    media_kind: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND media_kind = ?1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![media_kind, limit as i64, offset as i64],
+        row_to_media_item,
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
+pub fn list_media_by_subkind_page(
+    pool: &DbPool,
+    media_subkind: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND media_subkind = ?1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![media_subkind, limit as i64, offset as i64],
+        row_to_media_item,
+    )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
 }
@@ -670,19 +804,7 @@ pub fn list_media_by_folder(
     pool: &DbPool,
     folder_path: &std::path::Path,
 ) -> Result<Vec<MediaItem>> {
-    let conn = pool.get()?;
-    let folder_str = folder_path.to_string_lossy().to_string();
-    let mut stmt = conn.prepare(
-        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
-         WHERE trashed_at IS NULL AND folder_path = ?1
-         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
-    )?;
-    let rows = stmt.query_map([folder_str], row_to_media_item)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(AppError::from)
+    list_media_by_folder_page(pool, folder_path, 0, u32::MAX)
 }
 
 /// 列出所有未删除的收藏媒体 ID，按 `file_mtime` 倒序。

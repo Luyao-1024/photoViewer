@@ -158,6 +158,7 @@ mod imp {
         pub scroller: TemplateChild<gtk::ScrolledWindow>,
         pub mode: Cell<GroupBy>,
         pub enable_context_menu: Cell<bool>,
+        pub full_library_context: Cell<bool>,
         pub active: Cell<bool>,
         pub dirty_model: Cell<bool>,
         pub media_list: RefCell<Option<gio::ListStore>>,
@@ -227,6 +228,7 @@ mod imp {
                 scroller: TemplateChild::default(),
                 mode: Cell::default(),
                 enable_context_menu: Cell::new(false),
+                full_library_context: Cell::new(true),
                 active: Cell::new(true),
                 dirty_model: Cell::new(false),
                 media_list: RefCell::new(None),
@@ -490,9 +492,39 @@ impl MediaGrid {
         enable_context_menu: bool,
         initial_active: bool,
     ) -> Self {
+        Self::new_with_options(
+            media_list,
+            mode,
+            loader,
+            callbacks,
+            enable_context_menu,
+            initial_active,
+            true,
+        )
+    }
+
+    pub fn new_for_album(
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        callbacks: MediaGridCallbacks,
+    ) -> Self {
+        Self::new_with_options(media_list, mode, loader, callbacks, false, true, false)
+    }
+
+    fn new_with_options(
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        callbacks: MediaGridCallbacks,
+        enable_context_menu: bool,
+        initial_active: bool,
+        full_library_context: bool,
+    ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
         obj.imp().active.set(initial_active);
+        obj.imp().full_library_context.set(full_library_context);
         obj.imp()
             .loader
             .set(loader)
@@ -1251,10 +1283,14 @@ impl MediaGrid {
             items.truncate(max_items);
         }
         let uri_to_index = uri_index_map(&media_list);
-        let total_media_count = MediaRepository::new(loader.pool().clone())
-            .count(MediaQuery::LiveAll)
-            .unwrap_or(items.len() as u32)
-            .max(items.len() as u32);
+        let total_media_count = if self.imp().full_library_context.get() {
+            MediaRepository::new(loader.pool().clone())
+                .count(MediaQuery::LiveAll)
+                .unwrap_or(items.len() as u32)
+                .max(items.len() as u32)
+        } else {
+            source_len
+        };
         self.imp().virtual_total.set(total_media_count);
         let is_loading_virtual_window = self.imp().virtual_page_loading.get();
         let loading_placeholder_count = if is_loading_virtual_window {
@@ -1286,7 +1322,10 @@ impl MediaGrid {
         }
 
         let total_media = total_media_count as usize;
-        if mode == GroupBy::Day && (loading_placeholder_count > 0 || !items.is_empty()) {
+        if self.imp().full_library_context.get()
+            && mode == GroupBy::Day
+            && (loading_placeholder_count > 0 || !items.is_empty())
+        {
             let stats = library_stats_for(&loader, total_media);
             if should_show_library_stats(&stats) {
                 let stats_label = build_library_stats_label(stats);
@@ -1320,8 +1359,11 @@ impl MediaGrid {
             // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
             // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
             // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
-            if let Ok(counts) = MediaRepository::new(loader.pool().clone()).section_counts(mode) {
-                apply_authoritative_counts(&mut sections, &counts);
+            if self.imp().full_library_context.get() {
+                if let Ok(counts) = MediaRepository::new(loader.pool().clone()).section_counts(mode)
+                {
+                    apply_authoritative_counts(&mut sections, &counts);
+                }
             }
             for section in sections {
                 if section.items.is_empty() {
@@ -2671,6 +2713,32 @@ mod tests {
         assert!(
             first_child.has_css_class("library-stats"),
             "Day grid stats should be the first content child, above the first date header"
+        );
+    }
+
+    #[gtk::test]
+    fn album_grid_skips_global_library_stats() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let item = sample_item(1, "album-only.png");
+        insert_sample_item(&pool, &item);
+        media_list.append(&glib::BoxedAnyObject::new(item));
+
+        let grid = MediaGrid::new_for_album(media_list, GroupBy::Day, loader, noop_callbacks());
+
+        assert!(
+            grid.imp().stats_label.borrow().is_none(),
+            "album grids should not query or render full-library thumbnail stats"
+        );
+        assert!(
+            grid.imp().stats_refresh_source.borrow().is_none(),
+            "album grids should not start the full-library stats refresh timer"
         );
     }
 

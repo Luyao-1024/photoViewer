@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
@@ -25,9 +25,10 @@ use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaMutation;
+use crate::core::repository::MediaQuery;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::{prefs, runtime_config};
-use crate::ui::album_detail_page::{filtered_items_for_album, AlbumDetailPage};
+use crate::ui::album_detail_page::{media_query_for_album, AlbumDetailPage};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::TrashPage;
 use crate::ui::{grid_css, theme};
@@ -863,8 +864,22 @@ impl MainWindow {
     }
 
     pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
+        let total_start = Instant::now();
+        let album_name = album.display_name();
+        let album_path = album.folder_path.to_string_lossy().into_owned();
+        let album_is_virtual = album.is_virtual;
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            is_virtual = album_is_virtual,
+            expected_count = album.photo_count,
+            "album_switch: begin"
+        );
+
         // Already viewing this album → no-op (avoids rebuilding/pushing a
         // duplicate detail page on a re-select).
+        let visible_check_start = Instant::now();
         let already_visible = nav_view
             .visible_page()
             .and_then(|page| page.downcast::<AlbumDetailPage>().ok())
@@ -872,45 +887,123 @@ impl MainWindow {
                 detail.album_folder_path().as_deref() == Some(album.folder_path.as_path())
             });
         if already_visible {
+            tracing::info!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                visible_check_ms = visible_check_start.elapsed().as_millis(),
+                total_ms = total_start.elapsed().as_millis(),
+                "album_switch: already_visible"
+            );
             return;
         }
 
         let Some(pool) = self.imp().pool.borrow().clone() else {
+            tracing::warn!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                "album_switch: missing_db_pool"
+            );
             return;
         };
         let Some(loader) = self.imp().loader.borrow().clone() else {
+            tracing::warn!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                "album_switch: missing_thumbnail_loader"
+            );
             return;
         };
         let Some(master) = self.imp().media_list.borrow().clone() else {
+            tracing::warn!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                "album_switch: missing_master_media_list"
+            );
             return;
         };
 
         // Albums are top-level destinations: drop any stacked pages back to the
         // Photos root, then push a fresh detail page so the back stack stays
         // shallow and consistent.
+        let pop_start = Instant::now();
         pop_to_photos_root(nav_view);
+        let pop_ms = pop_start.elapsed().as_millis();
 
-        // 文件夹相册和虚拟相册都从数据库加载完整内容，不受 UI_MEDIA_LIST_CAP
-        // 或启动时 master GTK 列表窗口限制。
-        let items = if album.is_virtual {
-            filtered_items_for_album(&album, &master, &pool)
-        } else {
-            crate::core::repository::MediaRepository::new(pool.clone())
-                .page(
-                    crate::core::repository::MediaQuery::AlbumFolder(album.folder_path.clone()),
-                    0,
-                    u32::MAX,
-                )
-                .map(|page| page.items)
-                .unwrap_or_default()
+        // 文件夹相册和虚拟相册都从数据库加载，不受 UI_MEDIA_LIST_CAP
+        // 或启动时 master GTK 列表窗口限制。切换路径只同步加载首个可渲染窗口；
+        // 大相册剩余项后台补齐，避免打开相册时阻塞主线程。
+        let load_start = Instant::now();
+        let query = media_query_for_album(&album);
+        let initial_limit = album_initial_load_limit(album.photo_count);
+        let page_result = crate::core::repository::MediaRepository::new(pool.clone()).page(
+            query.clone(),
+            0,
+            initial_limit,
+        );
+        let (items, total_items) = match page_result {
+            Ok(page) => {
+                let total = page.total;
+                (page.items, total)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    album_name = %album_name,
+                    album_path = %album_path,
+                    ?query,
+                    "album_switch: initial_page_failed error={err}"
+                );
+                (Vec::new(), 0)
+            }
         };
+        let load_ms = load_start.elapsed().as_millis();
+        let item_count = items.len();
+
+        let store_start = Instant::now();
         let filtered = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         for item in items {
             filtered.append(&glib::BoxedAnyObject::new(item));
         }
-        let page = AlbumDetailPage::new(album, filtered, master, pool, loader);
+        let store_ms = store_start.elapsed().as_millis();
+
+        let page_start = Instant::now();
+        let page = AlbumDetailPage::new(album, filtered.clone(), master, pool.clone(), loader);
+        let page_ms = page_start.elapsed().as_millis();
         page.set_nav_target(nav_view);
+        let push_start = Instant::now();
         nav_view.push(&page);
+        let push_ms = push_start.elapsed().as_millis();
+
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            is_virtual = album_is_virtual,
+            item_count,
+            pop_ms,
+            load_ms,
+            store_ms,
+            page_ms,
+            push_ms,
+            total_ms = total_start.elapsed().as_millis(),
+            "album_switch: end"
+        );
+
+        if total_items > item_count as u32 {
+            backfill_album_media_list(
+                filtered,
+                pool,
+                query,
+                item_count as u32,
+                total_items,
+                album_name,
+                album_path,
+            );
+        }
     }
 
     fn confirm_delete_album(&self, album: Album) {
@@ -1606,6 +1699,115 @@ fn build_about_label() -> gtk::Label {
         .build()
 }
 
+fn album_initial_load_limit(total: i64) -> u32 {
+    let total = u32::try_from(total.max(0)).unwrap_or(u32::MAX);
+    let initial = crate::core::runtime_config::max_rendered_grid_items();
+    total.min(u32::try_from(initial).unwrap_or(u32::MAX))
+}
+
+fn backfill_album_media_list(
+    list: gtk::gio::ListStore,
+    pool: DbPool,
+    query: MediaQuery,
+    start: u32,
+    total: u32,
+    album_name: String,
+    album_path: String,
+) {
+    glib::spawn_future_local(async move {
+        let query_for_worker = query.clone();
+        let fetch_started = Instant::now();
+        let result = gtk::gio::spawn_blocking(move || {
+            crate::core::repository::MediaRepository::new(pool)
+                .page(query_for_worker, start, u32::MAX)
+                .map(|page| page.items)
+        })
+        .await;
+
+        let items = match result {
+            Ok(Ok(items)) => items,
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    album_name = %album_name,
+                    album_path = %album_path,
+                    ?query,
+                    start,
+                    total,
+                    fetch_ms = fetch_started.elapsed().as_millis(),
+                    "album_backfill: fetch_failed error={err}"
+                );
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    album_name = %album_name,
+                    album_path = %album_path,
+                    ?query,
+                    start,
+                    total,
+                    fetch_ms = fetch_started.elapsed().as_millis(),
+                    "album_backfill: join_failed error={err:?}"
+                );
+                return;
+            }
+        };
+
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            ?query,
+            start,
+            total,
+            fetched = items.len(),
+            fetch_ms = fetch_started.elapsed().as_millis(),
+            "album_backfill: fetched"
+        );
+        append_album_items_in_chunks(list, items, album_name, album_path, start, total);
+    });
+}
+
+fn append_album_items_in_chunks(
+    list: gtk::gio::ListStore,
+    items: Vec<crate::core::media::MediaItem>,
+    album_name: String,
+    album_path: String,
+    start: u32,
+    total: u32,
+) {
+    const CHUNK_SIZE: usize = 500;
+    let append_started = Instant::now();
+    let mut chunks = items.into_iter();
+    let mut appended = 0usize;
+    glib::idle_add_local(move || {
+        let chunk: Vec<glib::BoxedAnyObject> = chunks
+            .by_ref()
+            .take(CHUNK_SIZE)
+            .map(glib::BoxedAnyObject::new)
+            .collect();
+        if chunk.is_empty() {
+            tracing::info!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album_name,
+                album_path = %album_path,
+                start,
+                total,
+                appended,
+                list_items = list.n_items(),
+                append_ms = append_started.elapsed().as_millis(),
+                "album_backfill: appended"
+            );
+            return glib::ControlFlow::Break;
+        }
+        let old_len = list.n_items();
+        appended += chunk.len();
+        list.splice(old_len, 0, &chunk);
+        glib::ControlFlow::Continue
+    });
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RestartSpec {
     program: PathBuf,
@@ -2234,6 +2436,16 @@ mod tests {
         );
 
         assert_eq!(media_list_uris(&list), vec![unknown.uri, other.uri]);
+    }
+
+    #[test]
+    fn album_initial_load_limit_caps_large_albums_to_render_window() {
+        assert_eq!(album_initial_load_limit(2), 2);
+        assert_eq!(
+            album_initial_load_limit(100_000),
+            crate::core::runtime_config::DEFAULT_MAX_RENDERED_GRID_ITEMS as u32
+        );
+        assert_eq!(album_initial_load_limit(-1), 0);
     }
 
     #[test]

@@ -49,8 +49,14 @@ media list is built by `album_detail_page::filtered_items_for_album`. Virtual
 albums (Favorites, Photos, Videos, and media-type rows such as Dynamic Photos)
 load their full membership from
 `MediaRepository` so they are not capped by the startup GTK list window; real
-folder albums filter by `folder_path`. A favorite/trash change refreshes the
-sidebar counts via `window::refresh_albums_sidebar`.
+folder albums query the database by `folder_path`. These album detail loads must
+stay behind `MediaRepository` and use SQL-level filtering/counting; do not load
+the full live media table and filter in Rust when switching albums. Opening an
+album synchronously loads only the initial render window, then backfills the
+remaining album membership into the shared `ListStore` from background work so
+large virtual albums do not block navigation. A favorite/trash change refreshes
+the sidebar counts via
+`window::refresh_albums_sidebar`.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as

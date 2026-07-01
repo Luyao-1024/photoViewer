@@ -28,6 +28,9 @@ CREATE INDEX IF NOT EXISTS idx_media_live_sort
     WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_folder
     ON media_items(folder_path)    WHERE trashed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_folder_sort
+    ON media_items(folder_path, COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_trashed
     ON media_items(trashed_at)     WHERE trashed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_blake3
@@ -36,13 +39,22 @@ CREATE INDEX IF NOT EXISTS idx_media_blake3
 CREATE INDEX IF NOT EXISTS idx_media_favorite
     ON media_items(is_favorite)
     WHERE trashed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_favorite_sort
+    ON media_items(is_favorite, COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_media_kind
     ON media_items(media_kind)
     WHERE trashed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_kind_sort
+    ON media_items(media_kind, COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_media_subkind
     ON media_items(media_subkind)
+    WHERE trashed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_media_subkind_sort
+    ON media_items(media_subkind, COALESCE(taken_at, file_mtime) DESC, id DESC)
     WHERE trashed_at IS NULL;
 
 -- albums 物化视图

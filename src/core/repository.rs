@@ -6,6 +6,7 @@ use crate::core::refresh::LibraryStats;
 use crate::core::section_model::{counts_from_date_groups, GroupBy, SectionKey};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaQuery {
@@ -65,41 +66,56 @@ impl MediaRepository {
         let count = match query {
             MediaQuery::LiveAll => db::count_live_media(&self.pool)?,
             MediaQuery::Trash => db::list_trashed_media(&self.pool)?.len(),
-            MediaQuery::AlbumFolder(path) => db::list_media_by_folder(&self.pool, &path)?.len(),
-            MediaQuery::Favorites => db::list_favorite_media_ids(&self.pool)?.len(),
-            MediaQuery::Images => media_kind_items(&self.pool, "image")?.len(),
-            MediaQuery::Videos => media_kind_items(&self.pool, "video")?.len(),
-            MediaQuery::MotionPhotos => {
-                media_subkind_items(&self.pool, crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO)?
-                    .len()
-            }
+            MediaQuery::AlbumFolder(path) => db::count_media_by_folder(&self.pool, &path)?,
+            MediaQuery::Favorites => db::count_favorite_media(&self.pool)?,
+            MediaQuery::Images => db::count_media_by_kind(&self.pool, "image")?,
+            MediaQuery::Videos => db::count_media_by_kind(&self.pool, "video")?,
+            MediaQuery::MotionPhotos => db::count_media_by_subkind(
+                &self.pool,
+                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+            )?,
         };
         u32::try_from(count)
             .map_err(|_| AppError::Backend(format!("media count does not fit u32: {count}")))
     }
 
     pub fn page(&self, query: MediaQuery, start: u32, limit: u32) -> Result<MediaPage> {
+        let total_start = Instant::now();
+        let count_start = Instant::now();
         let total = self.count(query.clone())?;
+        let count_ms = count_start.elapsed().as_millis();
+        let fetch_start = Instant::now();
         let items = match &query {
             MediaQuery::LiveAll => db::list_media_page(&self.pool, start, limit)?,
             MediaQuery::Trash => page_vec(db::list_trashed_media(&self.pool)?, start, limit),
             MediaQuery::AlbumFolder(path) => {
-                page_vec(db::list_media_by_folder(&self.pool, path)?, start, limit)
+                db::list_media_by_folder_page(&self.pool, path, start, limit)?
             }
-            MediaQuery::Favorites => page_by_ids(
+            MediaQuery::Favorites => db::list_favorite_media_page(&self.pool, start, limit)?,
+            MediaQuery::Images => db::list_media_by_kind_page(&self.pool, "image", start, limit)?,
+            MediaQuery::Videos => db::list_media_by_kind_page(&self.pool, "video", start, limit)?,
+            MediaQuery::MotionPhotos => db::list_media_by_subkind_page(
                 &self.pool,
-                db::list_favorite_media_ids(&self.pool)?,
+                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
                 start,
                 limit,
             )?,
-            MediaQuery::Images => page_vec(media_kind_items(&self.pool, "image")?, start, limit),
-            MediaQuery::Videos => page_vec(media_kind_items(&self.pool, "video")?, start, limit),
-            MediaQuery::MotionPhotos => page_vec(
-                media_subkind_items(&self.pool, crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO)?,
+        };
+        let fetch_ms = fetch_start.elapsed().as_millis();
+        if !matches!(query, MediaQuery::LiveAll) {
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                ?query,
                 start,
                 limit,
-            ),
-        };
+                total,
+                item_count = items.len(),
+                count_ms,
+                fetch_ms,
+                total_ms = total_start.elapsed().as_millis(),
+                "media_repository_page: loaded"
+            );
+        }
 
         Ok(MediaPage {
             query,
@@ -332,28 +348,4 @@ fn page_vec(items: Vec<MediaItem>, start: u32, limit: u32) -> Vec<MediaItem> {
         .skip(start as usize)
         .take(limit as usize)
         .collect()
-}
-
-fn page_by_ids(pool: &DbPool, ids: Vec<i64>, start: u32, limit: u32) -> Result<Vec<MediaItem>> {
-    let mut out = Vec::new();
-    for id in ids.into_iter().skip(start as usize).take(limit as usize) {
-        out.push(db::get_media_item(pool, id)?);
-    }
-    Ok(out)
-}
-
-fn media_kind_items(pool: &DbPool, media_kind: &str) -> Result<Vec<MediaItem>> {
-    Ok(db::list_media_page(pool, 0, u32::MAX)?
-        .into_iter()
-        .filter(|item| {
-            (media_kind == "image" && item.is_image()) || (media_kind == "video" && item.is_video())
-        })
-        .collect())
-}
-
-fn media_subkind_items(pool: &DbPool, media_subkind: &str) -> Result<Vec<MediaItem>> {
-    Ok(db::list_media_page(pool, 0, u32::MAX)?
-        .into_iter()
-        .filter(|item| item.media_subkind == media_subkind)
-        .collect())
 }

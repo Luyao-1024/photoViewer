@@ -159,6 +159,85 @@ fn live_media_page_query_uses_sort_index_without_temp_btree() {
 }
 
 #[test]
+fn album_media_queries_use_filtered_sort_indexes_without_temp_btree() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let pool = db::init_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let cases = [
+        (
+            "folder album",
+            "idx_media_folder_sort",
+            "EXPLAIN QUERY PLAN
+             SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL AND folder_path = '/tmp/Camera'
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 500 OFFSET 1000",
+        ),
+        (
+            "favorites album",
+            "idx_media_favorite_sort",
+            "EXPLAIN QUERY PLAN
+             SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL AND is_favorite = 1
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 500 OFFSET 1000",
+        ),
+        (
+            "media kind album",
+            "idx_media_kind_sort",
+            "EXPLAIN QUERY PLAN
+             SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL AND media_kind = 'image'
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 500 OFFSET 1000",
+        ),
+        (
+            "media subkind album",
+            "idx_media_subkind_sort",
+            "EXPLAIN QUERY PLAN
+             SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL AND media_subkind = 'motion_photo'
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 500 OFFSET 1000",
+        ),
+    ];
+
+    for (name, expected_index, sql) in cases {
+        let plan: Vec<String> = conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        let plan_text = plan.join("\n");
+
+        assert!(
+            plan_text.contains(expected_index),
+            "{name} query should use {expected_index}; plan:\n{plan_text}"
+        );
+        assert!(
+            !plan_text.contains("USE TEMP B-TREE"),
+            "{name} query must not sort large album results into a temp B-tree; plan:\n{plan_text}"
+        );
+    }
+}
+
+#[test]
 fn migrations_are_idempotent() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
