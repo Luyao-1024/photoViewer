@@ -33,6 +33,13 @@ use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::TrashPage;
 use crate::ui::{grid_css, theme};
 
+#[derive(Debug, Default)]
+struct SidebarAlbumSnapshot {
+    albums: Vec<Album>,
+    media_type_albums: Vec<Album>,
+    live_count: Option<u32>,
+}
+
 /// What a sidebar row navigates to. The top list uses `targets[index]`, while
 /// the stable bottom Trash list uses `trash_targets[index]`. The albums group
 /// is a non-selectable header that only collapses/expands the dedicated album
@@ -258,6 +265,7 @@ impl MainWindow {
     /// again by [`Self::refresh_album_rows`] on live changes). Safe to call
     /// before `connect_sidebar`; it only touches album rows + album targets.
     pub fn populate_album_rows(&self) {
+        self.update_photos_count_label_from_db();
         self.rebuild_album_rows();
         self.rebuild_media_type_rows();
     }
@@ -267,6 +275,11 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
+        let albums = list_with_favorites(&pool).unwrap_or_default();
+        self.apply_album_rows(albums, started);
+    }
+
+    fn apply_album_rows(&self, albums: Vec<Album>, started: std::time::Instant) {
         let album_list = self.imp().album_list.get();
 
         while let Some(child) = album_list.first_child() {
@@ -275,7 +288,6 @@ impl MainWindow {
         self.imp().album_rows.borrow_mut().clear();
         self.imp().album_targets.borrow_mut().clear();
 
-        let albums = list_with_favorites(&pool).unwrap_or_default();
         let album_count = albums.len();
         let expanded = self.imp().albums_expanded.get();
         self.imp().album_scroll.set_visible(expanded);
@@ -303,6 +315,11 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
+        let albums = list_media_type_albums(&pool).unwrap_or_default();
+        self.apply_media_type_rows(albums);
+    }
+
+    fn apply_media_type_rows(&self, albums: Vec<Album>) {
         let media_type_list = self.imp().media_type_list.get();
 
         while let Some(child) = media_type_list.first_child() {
@@ -311,7 +328,6 @@ impl MainWindow {
         self.imp().media_type_rows.borrow_mut().clear();
         self.imp().media_type_targets.borrow_mut().clear();
 
-        let albums = list_media_type_albums(&pool).unwrap_or_default();
         let expanded = self.imp().media_types_expanded.get();
         self.imp().media_type_header_list.set_visible(true);
         self.imp().media_type_scroll.set_visible(expanded);
@@ -325,6 +341,15 @@ impl MainWindow {
         }
 
         self.reselect_active_album_row();
+    }
+
+    fn apply_sidebar_album_snapshot(&self, snapshot: SidebarAlbumSnapshot) {
+        let started = std::time::Instant::now();
+        if let Some(live_count) = snapshot.live_count {
+            self.set_photos_count_label(live_count);
+        }
+        self.apply_album_rows(snapshot.albums, started);
+        self.apply_media_type_rows(snapshot.media_type_albums);
     }
 
     fn reselect_active_album_row(&self) {
@@ -399,7 +424,7 @@ impl MainWindow {
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
     pub fn refresh_album_rows(&self) {
-        self.update_photos_count_label();
+        self.update_photos_count_label_from_db();
         self.rebuild_album_rows();
         self.rebuild_media_type_rows();
     }
@@ -679,9 +704,25 @@ impl MainWindow {
     }
 
     fn update_photos_count_label(&self) {
+        let count = self
+            .imp()
+            .media_list
+            .borrow()
+            .as_ref()
+            .map(|list| list.n_items())
+            .unwrap_or(0);
+        self.set_photos_count_label(count);
+    }
+
+    fn set_photos_count_label(&self, count: u32) {
         let Some(label) = self.imp().photos_count_label.borrow().as_ref().cloned() else {
             return;
         };
+        label.set_label(&count.to_string());
+        label.set_visible(true);
+    }
+
+    fn update_photos_count_label_from_db(&self) {
         let count = self
             .imp()
             .pool
@@ -700,8 +741,24 @@ impl MainWindow {
                     .map(|list| list.n_items())
                     .unwrap_or(0)
             });
-        label.set_label(&count.to_string());
-        label.set_visible(true);
+        self.set_photos_count_label(count);
+    }
+
+    pub fn refresh_sidebar_snapshot_async(&self) {
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || load_sidebar_album_snapshot(&pool)).await;
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            match result {
+                Ok(snapshot) => window.apply_sidebar_album_snapshot(snapshot),
+                Err(err) => tracing::warn!("sidebar snapshot refresh failed: {err:?}"),
+            }
+        });
     }
 
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row
@@ -2213,7 +2270,18 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
         .ancestor(MainWindow::static_type())
         .and_downcast::<MainWindow>()
     {
-        window.refresh_album_rows();
+        window.refresh_sidebar_snapshot_async();
+    }
+}
+
+fn load_sidebar_album_snapshot(pool: &DbPool) -> SidebarAlbumSnapshot {
+    let live_count = crate::core::repository::MediaRepository::new(pool.clone())
+        .count(crate::core::repository::MediaQuery::LiveAll)
+        .ok();
+    SidebarAlbumSnapshot {
+        albums: list_with_favorites(pool).unwrap_or_default(),
+        media_type_albums: list_media_type_albums(pool).unwrap_or_default(),
+        live_count,
     }
 }
 

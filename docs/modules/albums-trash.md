@@ -32,6 +32,12 @@ adding new direct `albums::refresh` calls; trash and favorite mutations should
 go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
 
+Startup must not synchronously block on sidebar album projections. The window
+initially shows the Photos row count from the already-loaded GTK model window,
+then `MainWindow::refresh_sidebar_snapshot_async()` refreshes the true live
+count, folder albums, virtual album counts, and media-type rows from a blocking
+worker after the Photos page is usable.
+
 Albums are shown under a collapsible "Albums" group header. The group owns a
 fixed-height scroll region in the sidebar: Photos, media-type categories,
 Trash, and Settings remain stable while the album rows themselves scroll. All

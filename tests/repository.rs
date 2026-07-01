@@ -69,6 +69,24 @@ fn repository_live_page_returns_total_and_ordered_rows() {
 }
 
 #[test]
+fn repository_items_returns_ordered_rows_without_page_total() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-items.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("older", 10), item("newer", 20), item("middle", 15)],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let items = repo.items(MediaQuery::LiveAll, 0, 2).unwrap();
+
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].uri, "file:///tmp/newer.jpg");
+    assert_eq!(items[1].uri, "file:///tmp/middle.jpg");
+}
+
+#[test]
 fn repository_favorite_summary_batches_ids() {
     let dir = common::tmp_dir();
     let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs.db")).unwrap();

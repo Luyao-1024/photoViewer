@@ -75,8 +75,11 @@ visible thumbnails ahead of off-screen work while still making near-scroll
 content warm quickly.
 
 The Day grid's library statistics label sits at the top of the grid content,
-above the first date section header with a small top inset, and reads
-`MediaRepository::library_stats()`. It should display the repository projection
+above the first date section header with a small top inset, after the
+full-library metadata background refresh has loaded. The initial grid rebuild
+must render from the already-loaded GTK model window only; it must not block on
+`MediaRepository::library_stats()`, live total count, or date section GROUP BY
+queries. Once loaded, the label should display the repository projection
 (`LibraryStats`) and not calculate thumbnail progress from `ThumbnailLoader`
 internals; stale thumbnail markers are filtered at the DB projection layer.
 Keep it as plain text, not a raised glass capsule, and size it slightly larger
@@ -88,12 +91,13 @@ Each section header's photo count (Year/Month/Day) must come from the database,
 not from the currently loaded virtual-page window. Because the shared `media_list`
 only holds a `virtual_media_page_size` (default 500) window, a year or month with
 more photos than the window would otherwise show a truncated count (e.g. "500")
-instead of the true total. `MediaGrid::rebuild` therefore calls
+instead of the true total. `MediaGrid` therefore loads
 `MediaRepository::section_counts(mode)` (backed by `db::count_live_media_by_date`,
-grouping by `COALESCE(taken_at, file_mtime)` in UTC) and
-`section_model::apply_authoritative_counts` to overwrite each section's label with
-the authoritative count after `group_items`. The window only decides which
-thumbnails render; it must not affect the displayed counts.
+grouping by `COALESCE(taken_at, file_mtime)` in UTC) from a background worker,
+then `section_model::apply_authoritative_counts` overwrites each section's label
+after the metadata snapshot is available. The first rebuild may temporarily use
+the visible window counts; the window only decides which thumbnails render and
+must not remain the authoritative count after background metadata lands.
 
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 

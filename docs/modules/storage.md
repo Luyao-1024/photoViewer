@@ -108,7 +108,30 @@ The local backend scans filesystem paths and inserts/updates media rows. Startup
 - Deletions and trash transitions.
 - UI change notification timing.
 
-Startup must not wait for the full filesystem scan before showing Photos. `app::initialize` loads only the first configured live DB page (`initial_media_page_size`, default 500) for the initial grid, then runs startup scanning and trash reconciliation in background work. The Photos grid pages directly from the database as the user scrolls: its scrollbar uses virtual top/bottom spacers derived from the full live-media count, and scrolling near a global position swaps in a configured DB window (`virtual_media_page_size`, default 500) around that offset. While a requested page is still loading, the grid shows a skeleton placeholder window at the target offset; rapid drag retargets use a generation counter so stale DB page results are ignored. The GTK-facing `media_list` is capped by `apply_to_media_list::ui_media_list_cap()` (from `runtime.json`, default 1500 newest rows) for live scanner/watch merges; the database remains the full source of truth for scans, search, album counts, thumbnail prewarm, and virtual paging. Startup scan batches are ignored by the GTK model once that cap is filled, preventing repeated visible grid rebuilds while the database scan continues. The startup scan uses `LocalBackend::scan_and_upsert_dir_notify`, preserving the `(uri, file_mtime, file_size)` unchanged-file short-circuit while sending each actually upserted live `MediaItem` through `MediaChangeNotifier::upserted` so the GTK consumer receives `DomainEvent::MediaUpserted` and can merge it into the shared `media_list` without letting UI memory grow with the full library.
+Startup must not wait for the full filesystem scan before showing Photos.
+`app::initialize` loads only the first configured live DB rows
+(`initial_media_page_size`, default 500) for the initial grid, using
+`MediaRepository::items` so startup does not also block on a full live-media
+count. Full-library counts, thumbnail stats, date section counts, and sidebar
+album projections are refreshed afterward from background workers. The Photos
+grid pages directly from the database as the user scrolls: its scrollbar uses
+virtual top/bottom spacers derived from the full live-media count once that
+background metadata has loaded, and scrolling near a global position swaps in a
+configured DB window (`virtual_media_page_size`, default 500) around that
+offset. While a requested page is still loading, the grid shows a skeleton
+placeholder window at the target offset; rapid drag retargets use a generation
+counter so stale DB page results are ignored. The GTK-facing `media_list` is
+capped by `apply_to_media_list::ui_media_list_cap()` (from `runtime.json`,
+default 1500 newest rows) for live scanner/watch merges; the database remains
+the full source of truth for scans, search, album counts, thumbnail prewarm,
+and virtual paging. Startup scan batches are ignored by the GTK model once that
+cap is filled, preventing repeated visible grid rebuilds while the database scan
+continues. The startup scan uses `LocalBackend::scan_and_upsert_dir_notify`,
+preserving the `(uri, file_mtime, file_size)` unchanged-file short-circuit while
+sending each actually upserted live `MediaItem` through
+`MediaChangeNotifier::upserted` so the GTK consumer receives
+`DomainEvent::MediaUpserted` and can merge it into the shared `media_list`
+without letting UI memory grow with the full library.
 
 **Watcher must not hard-delete trashed rows.** When the app moves a photo to trash, `gio::File::trash()` relocates the file out of the watched directory, so the watcher sees the original path disappear. `db::delete_media_by_path` therefore filters with `AND trashed_at IS NULL`: a row the app has flagged via `mark_trashed` is preserved even though its original path is gone, so `list_trashed_media` keeps returning it for the Trash page. Removing that clause reintroduces "trash page shows nothing after deleting to trash."
 

@@ -85,22 +85,7 @@ impl MediaRepository {
         let total = self.count(query.clone())?;
         let count_ms = count_start.elapsed().as_millis();
         let fetch_start = Instant::now();
-        let items = match &query {
-            MediaQuery::LiveAll => db::list_media_page(&self.pool, start, limit)?,
-            MediaQuery::Trash => page_vec(db::list_trashed_media(&self.pool)?, start, limit),
-            MediaQuery::AlbumFolder(path) => {
-                db::list_media_by_folder_page(&self.pool, path, start, limit)?
-            }
-            MediaQuery::Favorites => db::list_favorite_media_page(&self.pool, start, limit)?,
-            MediaQuery::Images => db::list_media_by_kind_page(&self.pool, "image", start, limit)?,
-            MediaQuery::Videos => db::list_media_by_kind_page(&self.pool, "video", start, limit)?,
-            MediaQuery::MotionPhotos => db::list_media_by_subkind_page(
-                &self.pool,
-                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
-                start,
-                limit,
-            )?,
-        };
+        let items = self.items(query.clone(), start, limit)?;
         let fetch_ms = fetch_start.elapsed().as_millis();
         if !matches!(query, MediaQuery::LiveAll) {
             tracing::debug!(
@@ -123,6 +108,25 @@ impl MediaRepository {
             total,
             items,
         })
+    }
+
+    pub fn items(&self, query: MediaQuery, start: u32, limit: u32) -> Result<Vec<MediaItem>> {
+        match query {
+            MediaQuery::LiveAll => db::list_media_page(&self.pool, start, limit),
+            MediaQuery::Trash => Ok(page_vec(db::list_trashed_media(&self.pool)?, start, limit)),
+            MediaQuery::AlbumFolder(path) => {
+                db::list_media_by_folder_page(&self.pool, &path, start, limit)
+            }
+            MediaQuery::Favorites => db::list_favorite_media_page(&self.pool, start, limit),
+            MediaQuery::Images => db::list_media_by_kind_page(&self.pool, "image", start, limit),
+            MediaQuery::Videos => db::list_media_by_kind_page(&self.pool, "video", start, limit),
+            MediaQuery::MotionPhotos => db::list_media_by_subkind_page(
+                &self.pool,
+                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                start,
+                limit,
+            ),
+        }
     }
 
     pub fn library_stats(&self) -> Result<LibraryStats> {

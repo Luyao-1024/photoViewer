@@ -60,6 +60,53 @@ fn find_label_with_class(widget: &gtk::Widget, class_name: &str) -> Option<gtk::
     None
 }
 
+fn photos_count_uses_loaded_model_before_background_refresh() {
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.TestDeferredPhotosCount")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item("file:///tmp/root/two.jpg", "/tmp/root/two.jpg", "/tmp/root"),
+    )
+    .unwrap();
+    let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(
+        db::list_media_page(&pool, 0, 1).unwrap().remove(0),
+    ));
+
+    window.set_resources(pool, loader, media_list);
+
+    let photos_row = window
+        .imp()
+        .sidebar_list
+        .get()
+        .row_at_index(0)
+        .expect("Photos row exists");
+    let photos_count = find_label_with_class(photos_row.upcast_ref(), "photos-sidebar-count")
+        .expect("Photos row should expose a media count label");
+    assert_eq!(
+        photos_count.label(),
+        "1",
+        "startup count should use the loaded model and avoid a blocking DB total query"
+    );
+}
+
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
@@ -82,6 +129,7 @@ fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
 fn sidebar_navigation_suite() {
     gtk::init().expect("GTK init failed");
 
+    photos_count_uses_loaded_model_before_background_refresh();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.Test")
         .build();

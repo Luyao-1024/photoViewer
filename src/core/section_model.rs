@@ -4,7 +4,7 @@ use crate::core::media::MediaItem;
 use chrono::{Datelike, NaiveDate, Weekday};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GroupBy {
     Year,
     Month,

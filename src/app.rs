@@ -83,10 +83,12 @@ pub fn build_app() -> adw::Application {
                     // row-selected to push them onto nav_view.
                     let pool_for_refresh = pool.clone();
                     window.set_resources(pool, loader, media_list.clone());
-                    // Now that the pool is available, populate the album rows
-                    // nested under the sidebar's Albums group header.
-                    window.populate_album_rows();
                     window.connect_sidebar(&nav);
+                    // Heavy sidebar projections (album rows, per-album counts,
+                    // and the true live-media total) are loaded after the
+                    // Photos page is usable so startup is not gated by COUNT /
+                    // GROUP BY queries.
+                    window.refresh_sidebar_snapshot_async();
 
                     // Consumer: GTK 主线程独占 media_list 写权限，所以 spawn_local
                     // 排空 change_rx。Upserted/Removed → 同步到 media_list；
@@ -99,7 +101,7 @@ pub fn build_app() -> adw::Application {
                             let window = window.downgrade();
                             move || {
                                 if let Some(window) = window.upgrade() {
-                                    window.refresh_album_rows();
+                                    window.refresh_sidebar_snapshot_async();
                                 }
                             }
                         }),
@@ -271,9 +273,11 @@ fn initialize_db_once_blocking(
     page_size: u32,
 ) -> CoreResult<(DbPool, Vec<MediaItem>)> {
     let pool = init_pool(&path)?;
-    let items = crate::core::repository::MediaRepository::new(pool.clone())
-        .page(crate::core::repository::MediaQuery::LiveAll, 0, page_size)?
-        .items;
+    let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
+        crate::core::repository::MediaQuery::LiveAll,
+        0,
+        page_size,
+    )?;
     Ok((pool, items))
 }
 

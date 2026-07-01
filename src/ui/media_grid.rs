@@ -55,7 +55,7 @@
 //! is no modifier-key path; multi-select is entered only via the right-click
 //! "Multi-select" item.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,9 +69,10 @@ use gtk4::subclass::prelude::*;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
+use crate::core::refresh::LibraryStats;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{apply_authoritative_counts, group_items, GroupBy};
+use crate::core::section_model::{apply_authoritative_counts, group_items, GroupBy, SectionKey};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
@@ -91,18 +92,6 @@ fn library_stats_text(total_media: usize, generated: usize) -> String {
     )
 }
 
-fn library_stats_for(
-    loader: &ThumbnailLoader,
-    fallback_total: usize,
-) -> crate::core::refresh::LibraryStats {
-    MediaRepository::new(loader.pool().clone())
-        .library_stats()
-        .unwrap_or(crate::core::refresh::LibraryStats {
-            live_total: fallback_total,
-            thumbnails_generated: 0,
-        })
-}
-
 fn build_library_stats_label(stats: crate::core::refresh::LibraryStats) -> gtk::Label {
     gtk::Label::builder()
         .label(library_stats_text(
@@ -117,6 +106,24 @@ fn build_library_stats_label(stats: crate::core::refresh::LibraryStats) -> gtk::
         .justify(gtk::Justification::Center)
         .css_classes(["library-stats"])
         .build()
+}
+
+#[derive(Debug)]
+struct GridMetadataSnapshot {
+    mode: GroupBy,
+    live_total: Option<u32>,
+    library_stats: Option<LibraryStats>,
+    section_counts: Option<HashMap<SectionKey, u32>>,
+}
+
+fn load_grid_metadata(pool: crate::core::db::DbPool, mode: GroupBy) -> GridMetadataSnapshot {
+    let repo = MediaRepository::new(pool);
+    GridMetadataSnapshot {
+        mode,
+        live_total: repo.count(MediaQuery::LiveAll).ok(),
+        library_stats: repo.library_stats().ok(),
+        section_counts: repo.section_counts(mode).ok(),
+    }
 }
 
 fn should_show_library_stats(stats: &crate::core::refresh::LibraryStats) -> bool {
@@ -213,6 +220,14 @@ mod imp {
         /// 定时器轮询更新文本。
         pub stats_label: RefCell<Option<gtk::Label>>,
         pub stats_refresh_source: RefCell<Option<gtk::glib::SourceId>>,
+        pub stats_refresh_running: Cell<bool>,
+        /// Full-library metadata used by virtual spacers, thumbnail stats, and
+        /// authoritative section counts. Loaded after first paint so startup
+        /// is not blocked by COUNT/GROUP BY projections.
+        pub library_metadata_loading: Cell<bool>,
+        pub library_total_snapshot: Cell<Option<u32>>,
+        pub library_stats_snapshot: Cell<Option<LibraryStats>>,
+        pub section_count_snapshots: RefCell<HashMap<GroupBy, HashMap<SectionKey, u32>>>,
         /// Shared model changes can arrive in large bursts during first-start
         /// scanning. Rebuilding all sections for every `items-changed` signal
         /// makes the GTK main thread do O(n²) widget work. Coalesce those
@@ -260,6 +275,11 @@ mod imp {
                 reprio_debounce: RefCell::new(None),
                 stats_label: RefCell::new(None),
                 stats_refresh_source: RefCell::new(None),
+                stats_refresh_running: Cell::new(false),
+                library_metadata_loading: Cell::new(false),
+                library_total_snapshot: Cell::new(None),
+                library_stats_snapshot: Cell::new(None),
+                section_count_snapshots: RefCell::new(HashMap::new()),
                 rebuild_debounce: RefCell::new(None),
             }
         }
@@ -588,6 +608,7 @@ impl MediaGrid {
                 if this.imp().applying_virtual_page.get() {
                     return;
                 }
+                this.invalidate_library_metadata();
                 let was_empty = list.n_items().saturating_sub(added) == 0;
                 if removed > 0 {
                     // 有项被移除或全量替换 → 必须重建。
@@ -1284,14 +1305,16 @@ impl MediaGrid {
         }
         let uri_to_index = uri_index_map(&media_list);
         let total_media_count = if self.imp().full_library_context.get() {
-            MediaRepository::new(loader.pool().clone())
-                .count(MediaQuery::LiveAll)
-                .unwrap_or(items.len() as u32)
-                .max(items.len() as u32)
+            self.imp()
+                .library_total_snapshot
+                .get()
+                .unwrap_or(source_len)
+                .max(source_len)
         } else {
             source_len
         };
         self.imp().virtual_total.set(total_media_count);
+        self.ensure_library_metadata_async(loader.clone(), mode);
         let is_loading_virtual_window = self.imp().virtual_page_loading.get();
         let loading_placeholder_count = if is_loading_virtual_window {
             virtual_window_item_count(
@@ -1326,12 +1349,13 @@ impl MediaGrid {
             && mode == GroupBy::Day
             && (loading_placeholder_count > 0 || !items.is_empty())
         {
-            let stats = library_stats_for(&loader, total_media);
-            if should_show_library_stats(&stats) {
-                let stats_label = build_library_stats_label(stats);
-                content.append(&stats_label);
-                *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
-                self.start_stats_refresh(loader.clone(), total_media);
+            if let Some(stats) = self.imp().library_stats_snapshot.get() {
+                if should_show_library_stats(&stats) {
+                    let stats_label = build_library_stats_label(stats);
+                    content.append(&stats_label);
+                    *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
+                    self.start_stats_refresh(loader.clone(), total_media);
+                }
             }
         }
 
@@ -1360,8 +1384,7 @@ impl MediaGrid {
             // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
             // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
             if self.imp().full_library_context.get() {
-                if let Ok(counts) = MediaRepository::new(loader.pool().clone()).section_counts(mode)
-                {
+                if let Some(counts) = self.imp().section_count_snapshots.borrow().get(&mode) {
                     apply_authoritative_counts(&mut sections, &counts);
                 }
             }
@@ -1745,6 +1768,70 @@ impl MediaGrid {
         });
     }
 
+    fn ensure_library_metadata_async(&self, loader: Arc<ThumbnailLoader>, mode: GroupBy) {
+        if !self.imp().full_library_context.get() {
+            return;
+        }
+        let has_mode_counts = self
+            .imp()
+            .section_count_snapshots
+            .borrow()
+            .contains_key(&mode);
+        if self.imp().library_total_snapshot.get().is_some()
+            && self.imp().library_stats_snapshot.get().is_some()
+            && has_mode_counts
+        {
+            return;
+        }
+        if self.imp().library_metadata_loading.get() {
+            return;
+        }
+
+        self.imp().library_metadata_loading.set(true);
+        let pool = loader.pool().clone();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || load_grid_metadata(pool, mode)).await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().library_metadata_loading.set(false);
+            let snapshot = match result {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    tracing::warn!("media grid metadata refresh failed: {err:?}");
+                    return;
+                }
+            };
+            if let Some(total) = snapshot.live_total {
+                this.imp().library_total_snapshot.set(Some(total));
+            }
+            if let Some(stats) = snapshot.library_stats {
+                this.imp().library_stats_snapshot.set(Some(stats));
+            }
+            if let Some(counts) = snapshot.section_counts {
+                this.imp()
+                    .section_count_snapshots
+                    .borrow_mut()
+                    .insert(snapshot.mode, counts);
+            }
+            if this.imp().active.get() {
+                if let Some(list) = this.imp().media_list.borrow().as_ref().cloned() {
+                    this.rebuild(list, this.mode());
+                }
+            }
+        });
+    }
+
+    fn invalidate_library_metadata(&self) {
+        if !self.imp().full_library_context.get() {
+            return;
+        }
+        self.imp().library_total_snapshot.set(None);
+        self.imp().library_stats_snapshot.set(None);
+        self.imp().section_count_snapshots.borrow_mut().clear();
+    }
+
     fn start_stats_refresh(&self, loader: Arc<ThumbnailLoader>, total_media: usize) {
         if total_media == 0 {
             return;
@@ -1755,27 +1842,55 @@ impl MediaGrid {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            let stats = library_stats_for(&loader, total_media);
-            if let Some(label) = this.imp().stats_label.borrow().as_ref() {
-                label.set_label(&library_stats_text(
-                    stats.live_total,
-                    stats.thumbnails_generated,
-                ));
-            } else {
+            if this.imp().stats_label.borrow().is_none() {
                 this.imp().stats_refresh_source.borrow_mut().take();
                 return glib::ControlFlow::Break;
             }
-            if stats.thumbnails_generated >= stats.live_total {
-                if let Some(label) = this.imp().stats_label.borrow_mut().take() {
-                    if let Some(parent) = label.parent().and_downcast::<gtk::Box>() {
-                        parent.remove(&label);
-                    }
-                }
-                this.imp().stats_refresh_source.borrow_mut().take();
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
+            if this.imp().stats_refresh_running.replace(true) {
+                return glib::ControlFlow::Continue;
             }
+
+            let pool = loader.pool().clone();
+            let weak_for_refresh = this.downgrade();
+            glib::spawn_future_local(async move {
+                let result =
+                    gtk::gio::spawn_blocking(move || MediaRepository::new(pool).library_stats())
+                        .await;
+                let Some(this) = weak_for_refresh.upgrade() else {
+                    return;
+                };
+                this.imp().stats_refresh_running.set(false);
+                let stats = match result {
+                    Ok(Ok(stats)) => stats,
+                    Ok(Err(err)) => {
+                        tracing::warn!("media grid stats refresh failed: {err}");
+                        return;
+                    }
+                    Err(err) => {
+                        tracing::warn!("media grid stats refresh join failed: {err:?}");
+                        return;
+                    }
+                };
+                this.imp().library_stats_snapshot.set(Some(stats));
+                if let Some(label) = this.imp().stats_label.borrow().as_ref() {
+                    label.set_label(&library_stats_text(
+                        stats.live_total,
+                        stats.thumbnails_generated,
+                    ));
+                } else {
+                    this.imp().stats_refresh_source.borrow_mut().take();
+                    return;
+                }
+                if stats.thumbnails_generated >= stats.live_total {
+                    if let Some(label) = this.imp().stats_label.borrow_mut().take() {
+                        if let Some(parent) = label.parent().and_downcast::<gtk::Box>() {
+                            parent.remove(&label);
+                        }
+                    }
+                    this.imp().stats_refresh_source.borrow_mut().take();
+                }
+            });
+            glib::ControlFlow::Continue
         });
         *self.imp().stats_refresh_source.borrow_mut() = Some(source);
     }
@@ -2642,18 +2757,14 @@ mod tests {
             1,
             "active Day grid must render the first media items delivered by startup scan"
         );
-        let stats_label = grid
-            .imp()
-            .stats_label
-            .borrow()
-            .as_ref()
-            .expect("Day grid should create the library stats label after first media arrives")
-            .clone();
-        assert_eq!(stats_label.label(), "媒体 1 项 · 缩略图 0/1");
+        assert!(
+            grid.imp().stats_label.borrow().is_none(),
+            "stats should be filled by background metadata, not the first scan-triggered rebuild"
+        );
     }
 
     #[gtk::test]
-    fn day_grid_stats_show_thumbnail_progress_and_are_centered() {
+    fn day_grid_defers_stats_until_background_metadata_refresh() {
         let _ = gtk::init();
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
@@ -2672,21 +2783,15 @@ mod tests {
 
         let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
 
-        let stats_label = grid
-            .imp()
-            .stats_label
-            .borrow()
-            .as_ref()
-            .expect("Day grid should render the library stats label")
-            .clone();
-        assert_eq!(stats_label.label(), "媒体 2 项 · 缩略图 1/2");
-        assert_eq!(stats_label.halign(), gtk::Align::Center);
-        assert_eq!(stats_label.xalign(), 0.5);
-        assert_eq!(stats_label.margin_top(), 24);
-        assert!(stats_label.has_css_class("library-stats"));
+        assert_eq!(tile_count(&grid), 2);
         assert!(
-            !stats_label.has_css_class("glass-raised"),
-            "stats should be plain text, not a raised glass capsule"
+            grid.imp().stats_label.borrow().is_none(),
+            "first rebuild should not block on full-library thumbnail stats"
+        );
+        assert_eq!(
+            grid.imp().virtual_total.get(),
+            2,
+            "first rebuild should use the loaded window as the temporary total"
         );
     }
 
@@ -2704,7 +2809,19 @@ mod tests {
         insert_sample_item(&pool, &one);
         media_list.append(&glib::BoxedAnyObject::new(one));
 
-        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        grid.imp().library_total_snapshot.set(Some(1));
+        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
+            live_total: 1,
+            thumbnails_generated: 0,
+        }));
+        grid.rebuild(media_list, GroupBy::Day);
         let content = grid.imp().content.get();
         let first_child = content
             .first_child()
