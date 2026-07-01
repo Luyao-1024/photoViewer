@@ -32,8 +32,11 @@
 //! between tiles. The highlight (a clean accent `outline` on the
 //! `flowboxchild` — the same node GTK uses for its keyboard-focus ring, so
 //! mouse hover and arrow-key focus look identical) lives in
-//! `crate::ui::grid_css`. `selection-mode = None` because
-//! `activate-on-single-click` already routes clicks to `child_activated`.
+//! `crate::ui::grid_css`. Each section FlowBox defaults to
+//! `selection-mode = None` and is switched to `Multiple` only while
+//! multi-select is active (see `apply_selection_mode`), so a stray
+//! `flowboxchild:selected` — and the `.thumb-checkmark` it reveals — cannot
+//! surface outside explicit multi-select.
 //! `attach_kbd_nav` drives arrow-key cursor movement and hides `:hover` while
 //! arrow-keying so the highlight follows the keyboard cursor, not the resting
 //! pointer.
@@ -41,12 +44,16 @@
 //! ## Multi-select
 //!
 //! `MediaGrid` supports batch operations (e.g. "Add N selected photos to
-//! album"). `selection_mode` is `Multiple` on every per-section FlowBox; the
-//! `selected` set on `imp` records the *global* indices (into the shared
-//! `ListStore`) currently selected. `child_activated` decides between
-//! "open viewer" (no modifier) and "toggle membership" (Shift or Ctrl) using
-//! the latest modifier mask captured by an `EventControllerKey` on the
-//! content box.
+//! album"). Each per-section FlowBox's `selection_mode` tracks the
+//! multi-select flag: `None` by default (so the FlowBox ignores GTK's
+//! built-in selection and no child can become `:selected`, keeping the
+//! `.thumb-checkmark` hidden), switched to `Multiple` only while multi-select
+//! is active. `apply_selection_mode` keeps every section FlowBox in sync with
+//! the flag. The `selected` set on `imp` records the *global* indices (into
+//! the shared `ListStore`) currently selected. `child_activated` opens the
+//! viewer normally, or toggles membership when multi-select is active — there
+//! is no modifier-key path; multi-select is entered only via the right-click
+//! "Multi-select" item.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -64,7 +71,7 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{group_items, GroupBy};
+use crate::core::section_model::{apply_authoritative_counts, group_items, GroupBy};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
@@ -623,6 +630,9 @@ impl MediaGrid {
     /// Select all rendered tiles and sync visible highlights.
     pub fn select_all(&self) {
         self.imp().is_multi_select_mode.set(true);
+        // `select_child` below only marks a child `:selected` while the
+        // FlowBox is in `Multiple`; flip every section first.
+        self.apply_selection_mode();
         let mut next = HashSet::new();
         let items = self.imp().displayed_items.borrow().clone();
         for (flow_child, _, media_id) in items {
@@ -651,6 +661,10 @@ impl MediaGrid {
     /// Disabling clears selection for a clean single-select state.
     pub fn set_multi_select_mode(&self, enabled: bool) {
         self.imp().is_multi_select_mode.set(enabled);
+        // Flip every section FlowBox to `Multiple` (enabled) or `None`
+        // (disabled) so the checkmark can only appear while multi-select is
+        // active. Must precede callers that rely on `select_child`.
+        self.apply_selection_mode();
         if !enabled {
             self.clear_selection();
         }
@@ -659,6 +673,29 @@ impl MediaGrid {
     /// Whether explicit multi-select mode is enabled.
     pub fn is_multi_select_mode(&self) -> bool {
         self.imp().is_multi_select_mode.get()
+    }
+
+    /// Sync every section FlowBox's `selection_mode` with the multi-select
+    /// flag: `None` when off (so the FlowBox ignores GTK's built-in selection
+    /// and no child can become `:selected` — keeping the `.thumb-checkmark`
+    /// hidden), `Multiple` when on. Without this the per-section FlowBoxes
+    /// stayed on `Multiple` permanently and GTK could leave a child
+    /// `:selected` even when the user never entered multi-select, surfacing a
+    /// stray checkmark on a thumbnail.
+    fn apply_selection_mode(&self) {
+        let mode = if self.imp().is_multi_select_mode.get() {
+            gtk::SelectionMode::Multiple
+        } else {
+            gtk::SelectionMode::None
+        };
+        let content = self.imp().content.get();
+        let mut child = content.first_child();
+        while let Some(c) = child {
+            if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
+                flow.set_selection_mode(mode);
+            }
+            child = c.next_sibling();
+        }
     }
 
     /// Whether every currently rendered tile is selected.
@@ -704,6 +741,9 @@ impl MediaGrid {
             }
             child = c.next_sibling();
         }
+        // Drop to `None` so no child can re-enter `:selected` — and reveal the
+        // checkmark — until multi-select is explicitly re-entered.
+        self.apply_selection_mode();
         if changed {
             self.fire_selection_changed();
         }
@@ -1267,7 +1307,13 @@ impl MediaGrid {
                 total_media_count
             );
         } else {
-            let sections = group_items(&items, mode);
+            let mut sections = group_items(&items, mode);
+            // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
+            // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
+            // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
+            if let Ok(counts) = MediaRepository::new(loader.pool().clone()).section_counts(mode) {
+                apply_authoritative_counts(&mut sections, &counts);
+            }
             for section in sections {
                 if section.items.is_empty() {
                     continue;
@@ -1310,18 +1356,21 @@ impl MediaGrid {
                 // cells become target×target squares. `column/row spacing` is the
                 // thin separator (≤3px); hover styling lives in grid_css.
                 //
-                // `selection_mode = Multiple` so the FlowBox itself tracks which
-                // children are visually highlighted. We mirror that into
-                // `imp.selected` for our own bookkeeping. The visual highlight
-                // reuses the default `flowboxchild:selected` style; the focus
-                // ring (driven by `:hover` / `:focus` in grid_css) is unchanged.
+                // `selection_mode` starts at `None` and is flipped to
+                // `Multiple` only while multi-select is active (see
+                // `apply_selection_mode`). `None` stops the FlowBox from
+                // tracking its own selection, so no child can become
+                // `:selected` — and reveal the `.thumb-checkmark` — outside
+                // explicit multi-select. We mirror selection into
+                // `imp.selected` for our own bookkeeping; the focus ring
+                // (driven by `:hover` / `:focus` in grid_css) is unchanged.
                 let flow = gtk::FlowBox::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .homogeneous(true)
                     .column_spacing(8)
                     .row_spacing(8)
                     .max_children_per_line(100)
-                    .selection_mode(gtk::SelectionMode::Multiple)
+                    .selection_mode(gtk::SelectionMode::None)
                     .build();
                 flow.set_activate_on_single_click(true);
                 flow.add_css_class("thumb-grid");
@@ -2407,6 +2456,59 @@ mod tests {
             child = widget.next_sibling();
         }
         count
+    }
+
+    fn section_flow_selection_modes(grid: &MediaGrid) -> Vec<gtk::SelectionMode> {
+        let content = grid.imp().content.get();
+        let mut modes = Vec::new();
+        let mut child = content.first_child();
+        while let Some(c) = child {
+            if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
+                modes.push(flow.selection_mode());
+            }
+            child = c.next_sibling();
+        }
+        modes
+    }
+
+    #[gtk::test]
+    fn section_flowbox_selection_mode_tracks_multi_select() {
+        // The checkmark is revealed by `flowboxchild:selected`, which can only
+        // happen while a section FlowBox is in `Multiple`. Out of multi-select
+        // every section must be `None` so no stray tick can appear.
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
+
+        let modes = section_flow_selection_modes(&grid);
+        assert!(
+            !modes.is_empty(),
+            "rebuild should produce section FlowBoxes"
+        );
+        assert!(
+            modes.iter().all(|m| *m == gtk::SelectionMode::None),
+            "default (non-multi) must be None, got {modes:?}"
+        );
+
+        grid.set_multi_select_mode(true);
+        let modes = section_flow_selection_modes(&grid);
+        assert!(
+            modes.iter().all(|m| *m == gtk::SelectionMode::Multiple),
+            "multi-select must flip every section to Multiple, got {modes:?}"
+        );
+
+        grid.set_multi_select_mode(false);
+        let modes = section_flow_selection_modes(&grid);
+        assert!(
+            modes.iter().all(|m| *m == gtk::SelectionMode::None),
+            "exiting multi-select must restore None, got {modes:?}"
+        );
     }
 
     #[gtk::test]

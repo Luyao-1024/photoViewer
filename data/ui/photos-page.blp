@@ -24,6 +24,14 @@ template $PhotosPage : Adw.NavigationPage {
         css-classes: ["glass-toolbar-button"];
       }
 
+      // Exit multi-select. Visible only while multi-select is active — even
+      // with zero selection — so the user is never stuck in multi-select.
+      [start]
+      Gtk.Button exit_multi_select_btn {
+        visible: false;
+        css-classes: ["glass-toolbar-button"];
+      }
+
       [end]
       Gtk.Button delete_to_trash_btn {
         icon-name: "user-trash-symbolic";

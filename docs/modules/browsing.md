@@ -79,9 +79,20 @@ It should display the repository projection (`LibraryStats`) and not calculate
 thumbnail progress from `ThumbnailLoader` internals; stale thumbnail markers
 are filtered at the DB projection layer.
 
+Each section header's photo count (Year/Month/Day) must come from the database,
+not from the currently loaded virtual-page window. Because the shared `media_list`
+only holds a `virtual_media_page_size` (default 500) window, a year or month with
+more photos than the window would otherwise show a truncated count (e.g. "500")
+instead of the true total. `MediaGrid::rebuild` therefore calls
+`MediaRepository::section_counts(mode)` (backed by `db::count_live_media_by_date`,
+grouping by `COALESCE(taken_at, file_mtime)` in UTC) and
+`section_model::apply_authoritative_counts` to overwrite each section's label with
+the authoritative count after `group_items`. The window only decides which
+thumbnails render; it must not affect the displayed counts.
+
 Media activation is debounced by `PhotosPage` while it pushes `ViewerPage` onto the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page and must not leak a second click into viewer-level pop/navigation handling during the transition.
 
-Multi-select selection state is owned by each section `GtkFlowBox` (`selection-mode = Multiple`); `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
+Multi-select selection state is owned by each section `GtkFlowBox`. Its `selection-mode` tracks the multi-select flag — `None` by default, switched to `Multiple` only while multi-select is active (kept in sync by `MediaGrid::apply_selection_mode`, called from `set_multi_select_mode` / `select_all` / `clear_selection`). `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state — this only takes effect because multi-select first flips the FlowBox to `Multiple`. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; tying selection to `None`-by-default means the checkmark can never appear unless the user explicitly enters multi-select. Do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
 
 Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
 than `GtkPopover`, so they render through the same page-overlay path as the
