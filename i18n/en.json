@@ -17,6 +17,8 @@
     "viewer.button.favorite": "Favorite",
     "viewer.button.favorite_active": "Unfavorite",
     "viewer.tooltip.image_details": "Image Details",
+    "viewer.tooltip.fullscreen": "Fullscreen",
+    "viewer.tooltip.exit_fullscreen": "Exit Fullscreen",
     "viewer.tooltip.move_to_trash": "Move to Trash",
     "viewer.tooltip.favorite": "Favorite",
     "viewer.tooltip.add_to_album": "Add to Album",

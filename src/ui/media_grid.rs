@@ -1385,7 +1385,7 @@ impl MediaGrid {
             // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
             if self.imp().full_library_context.get() {
                 if let Some(counts) = self.imp().section_count_snapshots.borrow().get(&mode) {
-                    apply_authoritative_counts(&mut sections, &counts);
+                    apply_authoritative_counts(&mut sections, counts);
                 }
             }
             for section in sections {

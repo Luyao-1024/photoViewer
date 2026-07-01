@@ -58,13 +58,14 @@ fn viewer_toolbar_uses_glass_classes() {
         "header_bar should carry viewer-toolbar (scopes square button geometry), got {header_classes:?}",
     );
 
-    // All four header buttons carry glass-toolbar-button. Header order is
-    // favorite → edit → delete → details (add-to-album was removed).
-    let button_classes: [(&str, Vec<String>); 4] = [
+    // Header buttons carry glass-toolbar-button. Header order is favorite →
+    // edit → delete → details → fullscreen (add-to-album was removed).
+    let button_classes: [(&str, Vec<String>); 5] = [
         ("favorite_btn", css_classes_vec(&imp.favorite_btn.get())),
         ("edit_btn", css_classes_vec(&imp.edit_btn.get())),
         ("delete_btn", css_classes_vec(&imp.delete_btn.get())),
         ("details_btn", css_classes_vec(&imp.details_btn.get())),
+        ("fullscreen_btn", css_classes_vec(&imp.fullscreen_btn.get())),
     ];
     for (name, classes) in button_classes.iter() {
         assert!(
@@ -72,6 +73,11 @@ fn viewer_toolbar_uses_glass_classes() {
             "{name} should carry glass-toolbar-button, got {classes:?}",
         );
     }
+    assert_eq!(
+        imp.fullscreen_btn.get().icon_name().as_deref(),
+        Some("view-fullscreen-symbolic"),
+        "fullscreen_btn should start with the enter-fullscreen icon",
+    );
 
     let motion_play_classes = css_classes_vec(&imp.motion_play_btn.get());
     assert!(
@@ -161,6 +167,11 @@ fn viewer_toolbar_uses_glass_classes() {
     assert!(
         !imp.video.get().is_autoplay(),
         "Gtk.Video autoplay must stay disabled so audio prefs apply before playback starts",
+    );
+    assert_eq!(
+        imp.video.get().overflow(),
+        gtk::Overflow::Hidden,
+        "Gtk.Video should clip its internal picture and controls to the rounded viewer-image-frame",
     );
     let name_row_classes = css_classes_vec(&imp.name_row.get());
     assert!(

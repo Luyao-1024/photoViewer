@@ -74,6 +74,9 @@ const CROP_MIN_SOURCE_SIZE: u32 = 24;
 const MIN_VIEWER_ZOOM: f64 = 1.0;
 const MAX_VIEWER_ZOOM: f64 = 8.0;
 const VIEWER_ZOOM_STEP: f64 = 1.25;
+const VIDEO_CONTROLS_CLICK_EXCLUSION_PX: f64 = 48.0;
+const VIEWER_FULLSCREEN_ICON: &str = "view-fullscreen-symbolic";
+const VIEWER_RESTORE_ICON: &str = "view-restore-symbolic";
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -173,6 +176,16 @@ fn persist_video_volume_from_stream(stream: &impl IsA<gtk::MediaStream>) {
     }
 }
 
+fn should_toggle_video_from_stage_click(y: f64, height: f64) -> bool {
+    height > VIDEO_CONTROLS_CLICK_EXCLUSION_PX
+        && y >= 0.0
+        && y < height - VIDEO_CONTROLS_CLICK_EXCLUSION_PX
+}
+
+fn key_toggles_video_playback(key: gdk::Key) -> bool {
+    matches!(key, gdk::Key::space | gdk::Key::KP_Space)
+}
+
 fn motion_video_cache_path(item: &MediaItem) -> PathBuf {
     // Key on the db id only: it's already unique per motion photo, and
     // blake3_hash is no longer computed at scan time.
@@ -264,6 +277,8 @@ mod imp {
         pub details_title: TemplateChild<gtk::Label>,
         #[template_child]
         pub details_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub fullscreen_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub delete_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -382,12 +397,14 @@ impl ViewerPage {
         obj.setup_zoom_controls();
         obj.setup_gesture();
         obj.setup_keyboard();
+        obj.setup_video_playback_interactions();
         obj.setup_edit_button();
         obj.setup_editor_callbacks();
         obj.setup_crop_overlay();
         obj.setup_delete_button();
         obj.setup_details_panel();
         obj.setup_favorite_button();
+        obj.setup_fullscreen_button();
         obj.setup_nav_buttons();
         obj.setup_motion_play_button();
         obj.setup_thumb_strip_listener();
@@ -413,6 +430,9 @@ impl ViewerPage {
         imp.details_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.image_details")));
+        imp.fullscreen_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
         imp.delete_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
@@ -1026,6 +1046,58 @@ impl ViewerPage {
         });
     }
 
+    fn setup_fullscreen_button(&self) {
+        self.update_fullscreen_button(false);
+        let weak = self.downgrade();
+        self.imp().fullscreen_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.toggle_fullscreen();
+        });
+    }
+
+    fn viewer_window(&self) -> Option<gtk::Window> {
+        self.root()
+            .and_then(|root| root.downcast::<gtk::Window>().ok())
+    }
+
+    fn toggle_fullscreen(&self) {
+        let Some(window) = self.viewer_window() else {
+            return;
+        };
+        if window.is_fullscreen() {
+            window.unfullscreen();
+            self.update_fullscreen_button(false);
+        } else {
+            window.fullscreen();
+            self.update_fullscreen_button(true);
+        }
+    }
+
+    fn exit_fullscreen_if_active(&self) -> bool {
+        let Some(window) = self.viewer_window() else {
+            return false;
+        };
+        if !window.is_fullscreen() {
+            return false;
+        }
+        window.unfullscreen();
+        self.update_fullscreen_button(false);
+        true
+    }
+
+    fn update_fullscreen_button(&self, fullscreen: bool) {
+        let button = self.imp().fullscreen_btn.get();
+        if fullscreen {
+            button.set_icon_name(VIEWER_RESTORE_ICON);
+            button.set_tooltip_text(Some(&tr("viewer.tooltip.exit_fullscreen")));
+        } else {
+            button.set_icon_name(VIEWER_FULLSCREEN_ICON);
+            button.set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
+        }
+    }
+
     fn remove_deleted_item(&self, item_id: i64) {
         let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
             self.fire_nav(NAV_POP);
@@ -1300,6 +1372,19 @@ impl ViewerPage {
             .set_media_stream(gtk::MediaStream::NONE);
     }
 
+    fn toggle_video_playback(&self) -> bool {
+        let imp = self.imp();
+        let video = imp.video.get();
+        if !video.is_visible() || imp.is_editing.get() {
+            return false;
+        }
+        let Some(stream) = video.media_stream() else {
+            return false;
+        };
+        stream.set_playing(!stream.is_playing());
+        true
+    }
+
     fn show_image_stage(&self) {
         self.stop_video_playback();
         self.imp().video.get().set_visible(false);
@@ -1434,6 +1519,7 @@ impl ViewerPage {
         self.imp().picture.get().set_visible(false);
         self.imp().video.get().set_visible(true);
         self.imp().spinner.get().set_visible(false);
+        self.imp().video.get().grab_focus();
     }
 
     /// Rebuild or update the filmstrip for the current index. Called from
@@ -2613,46 +2699,85 @@ impl ViewerPage {
         self.imp().image_overlay.get().add_controller(drag);
     }
 
-    fn setup_keyboard(&self) {
+    fn install_viewer_key_controller<W: IsA<gtk::Widget>>(&self, widget: &W) {
         let key_ctrl = gtk::EventControllerKey::new();
         let weak = self.downgrade();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| match key {
-            gdk::Key::Right => {
-                if let Some(this) = weak.upgrade() {
-                    if this.imp().is_editing.get() {
-                        return glib::Propagation::Stop;
-                    }
-                    this.navigate_by_delta(1);
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            let Some(this) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            this.handle_viewer_key(key)
+        });
+        widget.add_controller(key_ctrl);
+    }
+
+    fn setup_keyboard(&self) {
+        self.install_viewer_key_controller(&self.imp().picture.get());
+        self.install_viewer_key_controller(&self.imp().video.get());
+    }
+
+    fn setup_video_playback_interactions(&self) {
+        let video = self.imp().video.get();
+        video.set_focusable(true);
+
+        let click = gtk::GestureClick::new();
+        click.set_button(gdk::BUTTON_PRIMARY);
+        let weak = self.downgrade();
+        click.connect_released(move |gesture, _, _, y| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let widget = gesture.widget();
+            if !should_toggle_video_from_stage_click(y, widget.allocated_height() as f64) {
+                return;
+            }
+            if this.toggle_video_playback() {
+                this.imp().video.get().grab_focus();
+            }
+        });
+        video.add_controller(click);
+    }
+
+    fn handle_viewer_key(&self, key: gdk::Key) -> glib::Propagation {
+        match key {
+            key if key_toggles_video_playback(key) => {
+                if self.toggle_video_playback() {
+                    return glib::Propagation::Stop;
                 }
+                glib::Propagation::Proceed
+            }
+            gdk::Key::Right => {
+                if self.imp().is_editing.get() {
+                    return glib::Propagation::Stop;
+                }
+                self.navigate_by_delta(1);
                 glib::Propagation::Proceed
             }
             gdk::Key::Left => {
-                if let Some(this) = weak.upgrade() {
-                    if this.imp().is_editing.get() {
-                        return glib::Propagation::Stop;
-                    }
-                    this.navigate_by_delta(-1);
+                if self.imp().is_editing.get() {
+                    return glib::Propagation::Stop;
                 }
+                self.navigate_by_delta(-1);
                 glib::Propagation::Proceed
             }
             gdk::Key::Escape => {
-                if let Some(this) = weak.upgrade() {
-                    if this.imp().editor_split_view.get().shows_sidebar() {
-                        this.stop_editing();
-                        return glib::Propagation::Stop;
-                    }
-                    let details_split_view = this.imp().details_split_view.get();
-                    if details_split_view.shows_sidebar() {
-                        this.set_details_revealed(false, "key Escape");
-                        return glib::Propagation::Stop;
-                    }
-                    this.fire_nav(NAV_POP);
+                if self.exit_fullscreen_if_active() {
+                    return glib::Propagation::Stop;
                 }
+                if self.imp().editor_split_view.get().shows_sidebar() {
+                    self.stop_editing();
+                    return glib::Propagation::Stop;
+                }
+                let details_split_view = self.imp().details_split_view.get();
+                if details_split_view.shows_sidebar() {
+                    self.set_details_revealed(false, "key Escape");
+                    return glib::Propagation::Stop;
+                }
+                self.fire_nav(NAV_POP);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
-        });
-        self.imp().picture.get().add_controller(key_ctrl);
+        }
     }
 
     /// Current item index in the backing `ListStore`.
@@ -3545,6 +3670,25 @@ mod tests {
     fn save_result_closes_editor_only_on_success() {
         assert!(save_result_closes_editor(SaveResultKind::Success));
         assert!(!save_result_closes_editor(SaveResultKind::Error));
+    }
+
+    #[test]
+    fn video_stage_click_toggles_above_builtin_controls() {
+        assert!(should_toggle_video_from_stage_click(240.0, 600.0));
+    }
+
+    #[test]
+    fn video_stage_click_leaves_builtin_controls_alone() {
+        assert!(!should_toggle_video_from_stage_click(570.0, 600.0));
+        assert!(!should_toggle_video_from_stage_click(-1.0, 600.0));
+        assert!(!should_toggle_video_from_stage_click(0.0, 40.0));
+    }
+
+    #[test]
+    fn space_keys_toggle_video_playback() {
+        assert!(key_toggles_video_playback(gdk::Key::space));
+        assert!(key_toggles_video_playback(gdk::Key::KP_Space));
+        assert!(!key_toggles_video_playback(gdk::Key::Right));
     }
 
     #[test]

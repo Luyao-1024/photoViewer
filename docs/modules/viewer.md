@@ -65,7 +65,12 @@ CSS node is named `controls`; keep the control bar a light translucent strip in
 light mode, with a thin rounded progress trough, accent-colored played range,
 and compact circular scrubber. These rules must stay scoped to
 `video.viewer-media-surface` so other GTK scales and media controls are
-unaffected.
+unaffected. The `GtkVideo` widget itself must use hidden overflow so its
+internal picture and control overlay clip to the same rounded
+`viewer-image-frame` corners as still images. Clicking the video body, or
+pressing Space while the video has focus, toggles play/pause; clicks in the
+bottom built-in controls strip stay reserved for GTK's native progress and
+volume controls.
 
 ## Navigation Buttons
 
@@ -75,9 +80,21 @@ Image zoom and portable rotation controls sit at the image stage's top-right edg
 
 ## Header Toolbar
 
-The viewer header carries four actions, left-to-right: favorite, edit, delete, details. (The earlier add-to-album entry was removed from the viewer — album assignment for a photo is reached from the photos grid batch menu instead.) All viewer header buttons share one hover-only treatment: bare at rest, glass surface on hover/focus, scoped via the `.viewer-chrome` class so the shared `.glass-toolbar-button` rule used by other pages' headers stays always-on.
+The viewer header carries five actions, left-to-right: favorite, edit, delete,
+details, fullscreen. (The earlier add-to-album entry was removed from the
+viewer — album assignment for a photo is reached from the photos grid batch
+menu instead.) All viewer header buttons share one hover-only treatment: bare
+at rest, glass surface on hover/focus, scoped via the `.viewer-chrome` class so
+the shared `.glass-toolbar-button` rule used by other pages' headers stays
+always-on.
 
 The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the Favorites album). Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
+
+The viewer header also includes a fullscreen toggle at the far end of the
+action group. It uses the same hover-only glass treatment as the other header
+actions, switches between the fullscreen and restore symbolic icons, and acts on
+the containing `GtkWindow`. While the window is fullscreen, Escape exits
+fullscreen before it closes side panels or pops the viewer page.
 
 ## Details And Editor Panels
 
