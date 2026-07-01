@@ -196,19 +196,20 @@ fn sidebar_navigation_suite() {
         let children = direct_children(&surface);
         assert!(
             children.len() >= 4,
-            "sidebar surface should include top list, album-trash wrapper, spacer, and footer",
+            "sidebar surface should include top list, album/media/trash wrapper, spacer, and footer",
         );
         assert_eq!(
             children[0],
             top_sidebar.clone().upcast::<gtk::Widget>(),
             "sidebar surface child 0 should be the top navigation list",
         );
-        // The wrapper Box groups album_scroll + selection bar + trash_list.
+        // The wrapper Box groups album_scroll + selection bar +
+        // media_type_header_list + media_type_scroll + trash_list.
         let wrapper = &children[1];
         let wrapper_children = direct_children(wrapper);
         assert!(
-            wrapper_children.len() >= 3,
-            "wrapper should contain album scroll, selection bar, and trash list",
+            wrapper_children.len() >= 5,
+            "wrapper should contain album scroll, selection bar, media type header, media type scroll, and trash list",
         );
         assert_eq!(
             wrapper_children[0],
@@ -230,8 +231,22 @@ fn sidebar_navigation_suite() {
         );
         assert_eq!(
             wrapper_children[2],
+            window
+                .imp()
+                .media_type_header_list
+                .get()
+                .upcast::<gtk::Widget>(),
+            "wrapper child 2 should be the media type header list",
+        );
+        assert_eq!(
+            wrapper_children[3],
+            window.imp().media_type_scroll.get().upcast::<gtk::Widget>(),
+            "wrapper child 3 should be the media type scroll region",
+        );
+        assert_eq!(
+            wrapper_children[4],
             trash_list.clone().upcast::<gtk::Widget>(),
-            "wrapper child 2 should be the Trash list",
+            "wrapper child 4 should be the Trash list",
         );
         assert!(
             has_css_class(&children[2], "glass-sidebar-spacer"),
@@ -327,6 +342,16 @@ fn sidebar_navigation_suite() {
         !header.is_selectable(),
         "Albums header should be non-selectable so it never claims the navigation slot",
     );
+    let media_type_header = window
+        .imp()
+        .media_type_header_list
+        .get()
+        .row_at_index(0)
+        .expect("Media Types header row exists");
+    assert!(
+        !media_type_header.is_selectable(),
+        "Media Types header should be non-selectable so it never claims the navigation slot",
+    );
 
     // Album rows are nested under the header. Even with an empty DB the three
     // virtual albums (favorites / images / videos) are present.
@@ -348,6 +373,24 @@ fn sidebar_navigation_suite() {
                 "album row should carry glass-sidebar-subrow, got {classes:?}",
             );
         }
+    }
+    {
+        let media_type_rows = window.imp().media_type_rows.borrow();
+        assert_eq!(
+            media_type_rows.len(),
+            1,
+            "sidebar should list the single dynamic image media type"
+        );
+        let row = media_type_rows[0].clone();
+        assert!(
+            visible_flag(row.upcast_ref()),
+            "media type rows start expanded/visible"
+        );
+        let classes: Vec<String> = row.css_classes().iter().map(|s| s.to_string()).collect();
+        assert!(
+            classes.iter().any(|c| c == "glass-sidebar-subrow"),
+            "media type row should carry glass-sidebar-subrow, got {classes:?}",
+        );
     }
     let first_album_row = window.imp().album_rows.borrow()[0].clone();
 
@@ -373,6 +416,20 @@ fn sidebar_navigation_suite() {
         "selecting Photos should return to the Photos root page",
     );
 
+    // Selecting a media type row uses the same AlbumDetailPage flow.
+    let media_type_row = window.imp().media_type_rows.borrow()[0].clone();
+    window
+        .imp()
+        .media_type_list
+        .get()
+        .select_row(Some(&media_type_row));
+    assert!(
+        nav.visible_page()
+            .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
+            .is_some(),
+        "selecting a media type row should push AlbumDetailPage directly",
+    );
+
     // Trash is in its own stable bottom nav list. Selecting it pushes the Trash
     // page on top of the Photos root.
     let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
@@ -393,6 +450,16 @@ fn sidebar_navigation_suite() {
     assert!(
         visible_flag(window.imp().album_scroll.get().upcast_ref()),
         "album scroll region should reappear when expanded",
+    );
+    window.toggle_media_types_expanded();
+    assert!(
+        !visible_flag(window.imp().media_type_scroll.get().upcast_ref()),
+        "media type scroll region should hide when collapsed"
+    );
+    window.toggle_media_types_expanded();
+    assert!(
+        visible_flag(window.imp().media_type_scroll.get().upcast_ref()),
+        "media type scroll region should reappear when expanded",
     );
 
     assert_album_sidebar_scroll_region_contains_all_albums();

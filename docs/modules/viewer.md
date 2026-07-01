@@ -29,7 +29,7 @@ Overlay controls should have stable dimensions. Hidden panels should not leave c
 
 Original image decode must apply orientation metadata before creating the display texture. Rotate from the editor changes metadata only, so the viewer must not rely on pixel dimensions from `image::open` to infer display direction.
 
-Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. The image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
+Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. While a video stream is loading, keep the `GtkPicture` layer visible with the current video's preview thumbnail; reveal `GtkVideo` only after the stream reports `prepared` and the navigation token still matches. Outside that loading handoff, the image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
 
 The image, video, and loading surfaces use the shared `viewer-media-surface`
 CSS class so empty/loading backgrounds follow the current libadwaita theme.
@@ -42,7 +42,7 @@ Flatpak builds and Flatpak-based development runs must include `--socket=pulseau
 
 When a video stream is created, the viewer applies the persisted video audio preferences before playback starts: `video_default_muted` controls whether newly opened videos start muted (default `true`), and `video_volume` restores the last stream volume. The settings page exposes only the default-mute switch; volume changes are persisted from the media stream itself, not from a separate settings slider.
 
-Keep `Gtk.Video` template autoplay disabled. `show_video_stage` attaches the `GtkMediaFile`, applies the saved mute/volume state, then starts playback explicitly; this ordering prevents `Gtk.Video`'s built-in controls/autoplay setup from overriding audio preferences at stream bind time. Volume changes reported while the stream is muted are ignored for persistence so a default-muted startup does not overwrite the last audible volume with `0.0`.
+Keep `Gtk.Video` template autoplay disabled. `show_video_stage` attaches the `GtkMediaFile`, applies the saved mute/volume state, then starts playback explicitly while the thumbnail preview remains visible; this ordering prevents `Gtk.Video`'s built-in controls/autoplay setup from overriding audio preferences at stream bind time. Volume changes reported while the stream is muted are ignored for persistence so a default-muted startup does not overwrite the last audible volume with `0.0`.
 
 ## Thumbnail Strip
 

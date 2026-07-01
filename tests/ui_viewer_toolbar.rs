@@ -293,12 +293,12 @@ fn assert_viewer_video_mode_disables_editing() {
     let imp = page.imp();
 
     assert!(
-        imp.video.get().is_visible(),
-        "video widget should be visible for video media"
+        !imp.video.get().is_visible(),
+        "video widget should stay hidden while the video stream is preparing"
     );
     assert!(
-        !imp.picture.get().is_visible(),
-        "image widget should be hidden for video media"
+        imp.picture.get().is_visible(),
+        "image widget should show the video thumbnail preview while the stream is preparing"
     );
     assert!(
         !imp.edit_btn.get().is_sensitive(),

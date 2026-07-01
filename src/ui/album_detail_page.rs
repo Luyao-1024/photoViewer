@@ -255,10 +255,10 @@ impl AlbumDetailPage {
 ///
 /// Mirrors the album semantics established by `albums::list_with_favorites`:
 /// favorites album → the favorites id set; images/videos albums → `media_kind`;
-/// folder albums → equal `folder_path`. Virtual albums query the database
-/// directly so they are not limited by the bounded startup GTK model. The
-/// sidebar builds an `AlbumDetailPage` from this, and virtual album refreshes
-/// splice the already-attached media list via
+/// motion photos album → `media_subkind`; folder albums → equal `folder_path`.
+/// Virtual albums query the database directly so they are not limited by the
+/// bounded startup GTK model. The sidebar builds an `AlbumDetailPage` from
+/// this, and virtual album refreshes splice the already-attached media list via
 /// [`AlbumDetailPage::refresh_virtual_album_media_list`].
 pub(crate) fn filtered_items_for_album(
     album: &Album,
@@ -295,6 +295,8 @@ fn media_query_for_album(album: &Album) -> MediaQuery {
         MediaQuery::Images
     } else if album.is_videos_album() {
         MediaQuery::Videos
+    } else if album.is_motion_photos_album() {
+        MediaQuery::MotionPhotos
     } else {
         MediaQuery::AlbumFolder(album.folder_path.clone())
     }

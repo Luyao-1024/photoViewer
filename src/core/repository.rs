@@ -14,6 +14,7 @@ pub enum MediaQuery {
     Favorites,
     Images,
     Videos,
+    MotionPhotos,
     Trash,
 }
 
@@ -68,6 +69,10 @@ impl MediaRepository {
             MediaQuery::Favorites => db::list_favorite_media_ids(&self.pool)?.len(),
             MediaQuery::Images => media_kind_items(&self.pool, "image")?.len(),
             MediaQuery::Videos => media_kind_items(&self.pool, "video")?.len(),
+            MediaQuery::MotionPhotos => {
+                media_subkind_items(&self.pool, crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO)?
+                    .len()
+            }
         };
         u32::try_from(count)
             .map_err(|_| AppError::Backend(format!("media count does not fit u32: {count}")))
@@ -89,6 +94,11 @@ impl MediaRepository {
             )?,
             MediaQuery::Images => page_vec(media_kind_items(&self.pool, "image")?, start, limit),
             MediaQuery::Videos => page_vec(media_kind_items(&self.pool, "video")?, start, limit),
+            MediaQuery::MotionPhotos => page_vec(
+                media_subkind_items(&self.pool, crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO)?,
+                start,
+                limit,
+            ),
         };
 
         Ok(MediaPage {
@@ -338,5 +348,12 @@ fn media_kind_items(pool: &DbPool, media_kind: &str) -> Result<Vec<MediaItem>> {
         .filter(|item| {
             (media_kind == "image" && item.is_image()) || (media_kind == "video" && item.is_video())
         })
+        .collect())
+}
+
+fn media_subkind_items(pool: &DbPool, media_subkind: &str) -> Result<Vec<MediaItem>> {
+    Ok(db::list_media_page(pool, 0, u32::MAX)?
+        .into_iter()
+        .filter(|item| item.media_subkind == media_subkind)
         .collect())
 }

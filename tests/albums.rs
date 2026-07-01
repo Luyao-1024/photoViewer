@@ -10,12 +10,22 @@ fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
 }
 
 fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> NewMediaItem {
+    make_item_with_mime_and_subkind(uri, path, folder, mime_type, "standard")
+}
+
+fn make_item_with_mime_and_subkind(
+    uri: &str,
+    path: &str,
+    folder: &str,
+    mime_type: &str,
+    media_subkind: &str,
+) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
         path: path.into(),
         folder_path: folder.into(),
         mime_type: mime_type.into(),
-        media_subkind: "standard".into(),
+        media_subkind: media_subkind.into(),
         media_attributes: "{}".into(),
         width: Some(100),
         height: Some(100),
@@ -25,6 +35,48 @@ fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> 
         file_size: 1000,
         blake3_hash: format!("h{}", uri),
     }
+}
+
+#[test]
+fn media_type_albums_include_motion_photos_only() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime_and_subkind(
+            "file:///Pictures/live.jpg",
+            "/Pictures/live.jpg",
+            "/Pictures",
+            "image/jpeg",
+            "motion_photo",
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime(
+            "file:///Pictures/still.jpg",
+            "/Pictures/still.jpg",
+            "/Pictures",
+            "image/jpeg",
+        ),
+    )
+    .unwrap();
+
+    let list = albums::list_media_type_albums(&pool).unwrap();
+    assert_eq!(list.len(), 1);
+    let motion = &list[0];
+    assert_eq!(
+        motion.folder_path.as_path(),
+        Path::new(albums::MOTION_PHOTOS_ALBUM_PATH)
+    );
+    assert!(motion.is_virtual);
+    assert_eq!(motion.photo_count, 1);
+    assert_eq!(
+        motion.cover_uri.as_deref(),
+        Some("file:///Pictures/live.jpg")
+    );
 }
 
 #[test]

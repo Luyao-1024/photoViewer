@@ -124,6 +124,14 @@ fn should_retry_thumb_centering(applied: bool, attempts_remaining: u8) -> bool {
     !applied && attempts_remaining > 0
 }
 
+fn should_reveal_prepared_video_stage(
+    expected_token: u64,
+    current_token: u64,
+    stream_prepared: bool,
+) -> bool {
+    expected_token == current_token && stream_prepared
+}
+
 fn find_media_index_by_id(list: &gio::ListStore, item_id: i64) -> Option<u32> {
     for idx in 0..list.n_items() {
         let Some(obj) = list.item(idx) else {
@@ -1300,18 +1308,14 @@ impl ViewerPage {
         self.set_zoom_controls_visible(!self.imp().is_editing.get());
     }
 
-    fn show_video_stage(&self, item: &MediaItem) {
+    fn show_video_stage(&self, item: &MediaItem, token: u64) {
         self.stop_video_playback();
         self.reset_viewer_transform();
         self.imp().motion_play_btn.get().set_visible(false);
-        self.imp()
-            .picture
-            .get()
-            .set_paintable(None::<&gdk::Paintable>);
-        self.imp().picture.get().set_visible(false);
-        self.imp().video.get().set_visible(true);
+        self.imp().picture.get().set_visible(true);
+        self.imp().video.get().set_visible(false);
         self.set_zoom_controls_visible(false);
-        self.imp().spinner.get().set_visible(false);
+        self.imp().spinner.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(false);
         self.set_crop_overlay(CropOverlayUpdate {
             active: false,
@@ -1323,10 +1327,12 @@ impl ViewerPage {
         stream.set_loop(false);
         let default_muted = prefs::video_default_muted();
         let persisted_volume = prefs::video_volume();
+        self.connect_video_preview_reveal(&stream, token, false);
         self.imp().video.get().set_media_stream(Some(&stream));
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
         stream.connect_volume_notify(persist_video_volume_from_stream);
         stream.set_playing(true);
+        self.reveal_prepared_video_stage(&stream, token, false);
         let stream_weak = stream.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(stream) = stream_weak.upgrade() {
@@ -1338,17 +1344,18 @@ impl ViewerPage {
     fn show_motion_video_stage(&self, video_path: PathBuf, token: u64) {
         self.stop_video_playback();
         self.reset_viewer_transform();
-        self.imp().picture.get().set_visible(false);
-        self.imp().video.get().set_visible(true);
+        self.imp().picture.get().set_visible(true);
+        self.imp().video.get().set_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
         self.set_zoom_controls_visible(false);
-        self.imp().spinner.get().set_visible(false);
+        self.imp().spinner.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(false);
 
         let stream = gtk::MediaFile::for_filename(&video_path);
         stream.set_loop(false);
         let default_muted = prefs::video_default_muted();
         let persisted_volume = prefs::video_volume();
+        self.connect_video_preview_reveal(&stream, token, true);
         self.imp().video.get().set_media_stream(Some(&stream));
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
         stream.connect_volume_notify(persist_video_volume_from_stream);
@@ -1364,12 +1371,69 @@ impl ViewerPage {
         });
 
         stream.set_playing(true);
+        self.reveal_prepared_video_stage(&stream, token, true);
         let stream_weak = stream.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(stream) = stream_weak.upgrade() {
                 apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
             }
         });
+    }
+
+    fn connect_video_preview_reveal(
+        &self,
+        stream: &gtk::MediaFile,
+        token: u64,
+        restore_motion_on_error: bool,
+    ) {
+        let weak = self.downgrade();
+        stream.connect_prepared_notify(move |stream| {
+            if let Some(this) = weak.upgrade() {
+                this.reveal_prepared_video_stage(stream, token, restore_motion_on_error);
+            }
+        });
+
+        let weak = self.downgrade();
+        stream.connect_error_notify(move |stream| {
+            if stream.error().is_none() {
+                return;
+            }
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
+            }
+            this.imp().spinner.get().set_visible(false);
+            if restore_motion_on_error {
+                this.restore_image_after_motion_video(token);
+            }
+        });
+    }
+
+    fn reveal_prepared_video_stage(
+        &self,
+        stream: &impl IsA<gtk::MediaStream>,
+        token: u64,
+        restore_motion_on_error: bool,
+    ) {
+        if stream.error().is_some() {
+            self.imp().spinner.get().set_visible(false);
+            if restore_motion_on_error {
+                self.restore_image_after_motion_video(token);
+            }
+            return;
+        }
+        if !should_reveal_prepared_video_stage(
+            token,
+            self.imp().current_token.get(),
+            stream.is_prepared(),
+        ) {
+            return;
+        }
+        self.imp().picture.get().set_visible(false);
+        self.imp().video.get().set_visible(true);
+        self.imp().spinner.get().set_visible(false);
     }
 
     /// Rebuild or update the filmstrip for the current index. Called from
@@ -2293,7 +2357,12 @@ impl ViewerPage {
         if item.is_video() {
             self.refresh_thumb_strip();
             self.imp().motion_play_btn.get().set_visible(false);
-            self.show_video_stage(&item);
+            self.imp()
+                .picture
+                .get()
+                .set_paintable(None::<&gdk::Paintable>);
+            self.request_current_preview_thumbnail(&item, token);
+            self.show_video_stage(&item, token);
             return;
         }
         self.show_image_stage();
@@ -4035,6 +4104,22 @@ mod tests {
     #[test]
     fn viewer_preview_uses_medium_thumbnail() {
         assert_eq!(viewer_preview_thumbnail_size(), ThumbnailSize::Medium);
+    }
+
+    #[test]
+    fn video_stage_reveals_only_for_current_prepared_stream() {
+        assert!(
+            should_reveal_prepared_video_stage(7, 7, true),
+            "current prepared streams should switch from thumbnail preview to video"
+        );
+        assert!(
+            !should_reveal_prepared_video_stage(7, 8, true),
+            "stale streams from previous navigation must not reveal the video layer"
+        );
+        assert!(
+            !should_reveal_prepared_video_stage(7, 7, false),
+            "unprepared streams should keep the thumbnail preview visible"
+        );
     }
 
     fn sample_media_item() -> MediaItem {

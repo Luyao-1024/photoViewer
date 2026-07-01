@@ -33,14 +33,21 @@ go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
 
 Albums are shown under a collapsible "Albums" group header. The group owns a
-fixed-height scroll region in the sidebar: Photos, Trash, and Settings remain
-stable while the album rows themselves scroll. All virtual and folder albums
-are rendered directly in that scroll region; there is no "More" row in the
-sidebar.
+fixed-height scroll region in the sidebar: Photos, media-type categories,
+Trash, and Settings remain stable while the album rows themselves scroll. All
+virtual and folder albums are rendered directly in that scroll region; there is
+no "More" row in the sidebar.
+
+Below Albums, the sidebar has a matching collapsible "Media Types" group. It
+uses the same sub-row visual treatment and opens the same `AlbumDetailPage`
+virtual-album flow, but it is not part of album drag ordering or album deletion.
+The only current media-type row is Dynamic Photos, backed by
+`media_items.media_subkind = 'motion_photo'`.
 
 Selecting an album row pushes its `AlbumDetailPage` immediately. The per-album
 media list is built by `album_detail_page::filtered_items_for_album`. Virtual
-albums (Favorites, Photos, Videos) load their full membership from
+albums (Favorites, Photos, Videos, and media-type rows such as Dynamic Photos)
+load their full membership from
 `MediaRepository` so they are not capped by the startup GTK list window; real
 folder albums filter by `folder_path`. A favorite/trash change refreshes the
 sidebar counts via `window::refresh_albums_sidebar`.

@@ -20,7 +20,7 @@ use libadwaita::prelude::{
 use serde_json::{Map, Value};
 
 use crate::config;
-use crate::core::albums::{list_with_favorites, set_album_order, Album};
+use crate::core::albums::{list_media_type_albums, list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
@@ -51,6 +51,8 @@ fn album_icon_name(album: &Album) -> &'static str {
         "image-x-generic-symbolic"
     } else if album.is_videos_album() {
         "video-x-generic-symbolic"
+    } else if album.is_motion_photos_album() {
+        "media-playback-start-symbolic"
     } else {
         "folder-symbolic"
     }
@@ -74,16 +76,24 @@ mod imp {
         pub trash_targets: RefCell<Vec<SidebarTarget>>,
         /// Index→album mirror of the dedicated album ListBox.
         pub album_targets: RefCell<Vec<Album>>,
+        /// Index→virtual media type mirror of the dedicated media type ListBox.
+        pub media_type_targets: RefCell<Vec<Album>>,
         /// The album rows nested under the "Albums" group header — kept so the
         /// live refresh and tests can inspect/rebuild them precisely.
         pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
+        /// Rows nested under the "Media Types" group header.
+        pub media_type_rows: RefCell<Vec<gtk::ListBoxRow>>,
         /// Right-aligned total live-media count on the Photos sidebar row.
         pub photos_count_label: RefCell<Option<gtk::Label>>,
         /// The disclosure arrow on the Albums header; swapped between
         /// `pan-down-symbolic` (expanded) and `pan-end-symbolic` (collapsed).
         pub albums_arrow: RefCell<Option<gtk::Image>>,
+        /// Disclosure arrow on the Media Types header.
+        pub media_types_arrow: RefCell<Option<gtk::Image>>,
         /// Whether the Albums group is currently expanded.
         pub albums_expanded: Cell<bool>,
+        /// Whether the Media Types group is currently expanded.
+        pub media_types_expanded: Cell<bool>,
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
@@ -109,6 +119,10 @@ mod imp {
         #[template_child]
         pub album_scroll: TemplateChild<gtk::ScrolledWindow>,
         #[template_child]
+        pub media_type_header_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub media_type_scroll: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
         pub album_selection_bar: TemplateChild<gtk::ActionBar>,
         #[template_child]
         pub album_selection_cancel_btn: TemplateChild<gtk::Button>,
@@ -116,6 +130,8 @@ mod imp {
         pub album_selection_delete_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub album_list: TemplateChild<gtk::ListBox>,
+        #[template_child]
+        pub media_type_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
         #[template_child]
@@ -171,6 +187,7 @@ impl MainWindow {
             .get()
             .set_title(&tr("window.sidebar"));
         self.imp().albums_expanded.set(true);
+        self.imp().media_types_expanded.set(true);
         let list = self.imp().sidebar_list.get();
         let trash_list = self.imp().trash_list.get();
         let mut targets = Vec::new();
@@ -200,6 +217,23 @@ impl MainWindow {
         list.append(&header_row);
         targets.push(SidebarTarget::AlbumsHeader);
 
+        let media_type_header_list = self.imp().media_type_header_list.get();
+        let (media_types_row, media_types_arrow) =
+            build_albums_header_row(&tr("sidebar.media_types"));
+        media_types_row.set_selectable(false);
+        {
+            let weak = self.downgrade();
+            let gesture = gtk::GestureClick::new();
+            gesture.connect_released(move |_, _, _, _| {
+                if let Some(window) = weak.upgrade() {
+                    window.toggle_media_types_expanded();
+                }
+            });
+            media_types_row.add_controller(gesture);
+        }
+        *self.imp().media_types_arrow.borrow_mut() = Some(media_types_arrow);
+        media_type_header_list.append(&media_types_row);
+
         let (trash_row, _) = build_nav_row(&tr("sidebar.trash"), "user-trash-symbolic", false);
         trash_list.append(&trash_row);
         trash_targets.push(SidebarTarget::Trash);
@@ -224,6 +258,7 @@ impl MainWindow {
     /// before `connect_sidebar`; it only touches album rows + album targets.
     pub fn populate_album_rows(&self) {
         self.rebuild_album_rows();
+        self.rebuild_media_type_rows();
     }
 
     fn rebuild_album_rows(&self) {
@@ -263,6 +298,34 @@ impl MainWindow {
         );
     }
 
+    fn rebuild_media_type_rows(&self) {
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+        let media_type_list = self.imp().media_type_list.get();
+
+        while let Some(child) = media_type_list.first_child() {
+            media_type_list.remove(&child);
+        }
+        self.imp().media_type_rows.borrow_mut().clear();
+        self.imp().media_type_targets.borrow_mut().clear();
+
+        let albums = list_media_type_albums(&pool).unwrap_or_default();
+        let expanded = self.imp().media_types_expanded.get();
+        self.imp().media_type_header_list.set_visible(true);
+        self.imp().media_type_scroll.set_visible(expanded);
+
+        for album in albums {
+            let row = build_album_row(&album);
+            row.set_visible(true);
+            media_type_list.append(&row);
+            self.imp().media_type_rows.borrow_mut().push(row);
+            self.imp().media_type_targets.borrow_mut().push(album);
+        }
+
+        self.reselect_active_album_row();
+    }
+
     fn reselect_active_album_row(&self) {
         let active = match self.imp().active_album.borrow().clone() {
             Some(path) => path,
@@ -279,6 +342,20 @@ impl MainWindow {
             if let Some(row) = album_list.row_at_index(i as i32) {
                 self.imp().selecting_programmatically.set(true);
                 album_list.select_row(Some(&row));
+                self.imp().selecting_programmatically.set(false);
+            }
+        }
+        let media_type_list = self.imp().media_type_list.get();
+        let idx = self
+            .imp()
+            .media_type_targets
+            .borrow()
+            .iter()
+            .position(|album| album.folder_path == active);
+        if let Some(i) = idx {
+            if let Some(row) = media_type_list.row_at_index(i as i32) {
+                self.imp().selecting_programmatically.set(true);
+                media_type_list.select_row(Some(&row));
                 self.imp().selecting_programmatically.set(false);
             }
         }
@@ -305,11 +382,25 @@ impl MainWindow {
         self.imp().sidebar_spacer.set_vexpand(!expanded);
     }
 
+    pub fn toggle_media_types_expanded(&self) {
+        let expanded = !self.imp().media_types_expanded.get();
+        self.imp().media_types_expanded.set(expanded);
+        if let Some(arrow) = self.imp().media_types_arrow.borrow().clone() {
+            arrow.set_icon_name(if expanded {
+                Some("pan-down-symbolic")
+            } else {
+                Some("pan-end-symbolic")
+            });
+        }
+        self.imp().media_type_scroll.set_visible(expanded);
+    }
+
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
     pub fn refresh_album_rows(&self) {
         self.update_photos_count_label();
         self.rebuild_album_rows();
+        self.rebuild_media_type_rows();
     }
 
     pub fn enter_album_selection_mode(&self) {
@@ -533,6 +624,7 @@ impl MainWindow {
                         window.imp().album_list.get().select_row(Some(&row));
                         window.imp().selecting_programmatically.set(false);
                         window.imp().sidebar_list.get().unselect_all();
+                        window.imp().media_type_list.get().unselect_all();
                         window.imp().trash_list.get().unselect_all();
                         window.open_album(&nav_view, manage_album.clone());
                     }
@@ -627,6 +719,7 @@ impl MainWindow {
         let list = self.imp().sidebar_list.get();
         let trash_list = self.imp().trash_list.get();
         let album_list = self.imp().album_list.get();
+        let media_type_list = self.imp().media_type_list.get();
         let gesture = gtk::GestureSwipe::new();
         gesture.connect_swipe(
             glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
@@ -656,6 +749,7 @@ impl MainWindow {
                     SidebarTarget::Photos => {
                         *window.imp().active_album.borrow_mut() = None;
                         window.imp().album_list.get().unselect_all();
+                        window.imp().media_type_list.get().unselect_all();
                         window.imp().trash_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
                     }
@@ -684,6 +778,7 @@ impl MainWindow {
                     *window.imp().active_album.borrow_mut() = None;
                     window.imp().sidebar_list.get().unselect_all();
                     window.imp().album_list.get().unselect_all();
+                    window.imp().media_type_list.get().unselect_all();
                     window.show_trash_page(&nav_view);
                 }
             }),
@@ -710,6 +805,30 @@ impl MainWindow {
                 };
                 *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
                 window.imp().sidebar_list.get().unselect_all();
+                window.imp().media_type_list.get().unselect_all();
+                window.imp().trash_list.get().unselect_all();
+                window.open_album(&nav_view, album);
+            }),
+        );
+
+        media_type_list.connect_row_selected(
+            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+                let Some(row) = row else {
+                    return;
+                };
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
+                let album = {
+                    let targets = window.imp().media_type_targets.borrow();
+                    let Some(album) = targets.get(row.index() as usize).cloned() else {
+                        return;
+                    };
+                    album
+                };
+                *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
+                window.imp().sidebar_list.get().unselect_all();
+                window.imp().album_list.get().unselect_all();
                 window.imp().trash_list.get().unselect_all();
                 window.open_album(&nav_view, album);
             }),

@@ -60,6 +60,26 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
               }
             }
 
+            Gtk.ListBox media_type_header_list {
+              css-classes: ["glass-sidebar", "glass-sidebar-main"];
+              hexpand: true;
+              selection-mode: none;
+            }
+
+            Gtk.ScrolledWindow media_type_scroll {
+              css-classes: ["glass-sidebar-album-scroll"];
+              hexpand: true;
+              propagate-natural-height: true;
+              hscrollbar-policy: never;
+              vscrollbar-policy: automatic;
+
+              Gtk.ListBox media_type_list {
+                css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
+                hexpand: true;
+                selection-mode: single;
+              }
+            }
+
             Gtk.ListBox trash_list {
               css-classes: ["glass-sidebar"];
               hexpand: true;
