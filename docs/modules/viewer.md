@@ -34,7 +34,10 @@ Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. 
 The image, video, and loading surfaces use the shared `viewer-media-surface`
 CSS class so empty/loading backgrounds follow the current libadwaita theme.
 Do not hardcode black for these surfaces; light theme must keep the stage
-visually light while dark theme remains naturally subdued.
+visually light while dark theme remains naturally subdued. `GtkVideo` renders
+the playing stream through an internal `GtkPicture`; style that child picture
+with the plain theme background so playback letterboxing stays white/light in
+light mode instead of returning to GTK's default black or the gray stage wash.
 
 Dynamic photos (`media_subkind=motion_photo`) open as images first. The still `GtkPicture` remains the default stage and a top-left play button starts the persisted embedded video range. Playback extracts that byte range to a temporary MP4, reuses the same `GtkVideo` layer, and switches back to the still image when the stream reports `ended`. Dynamic photos remain editable as still images; only normal `video/*` items disable editing.
 
@@ -55,6 +58,14 @@ The filmstrip `ScrolledWindow` must keep `propagate-natural-width: false` and us
 Thumbnail generation applies the same orientation metadata as the original viewer decode. Because the thumbnail cache key includes source mtime, orientation-only edits must update the in-memory `MediaItem.file_mtime` before refreshing the strip; waiting for the filesystem watcher leaves the current viewer session using the old cache key and can show a stale direction.
 
 For videos, play/pause and seeking are handled by the `GtkVideo`'s own built-in media controller (its progress bar sits directly under the video). There is no separate progress widget above the filmstrip — an earlier custom `Gtk.Scale` duplicated the built-in bar and was removed.
+
+The built-in media controls are styled through viewer-scoped `GtkVideo`
+internal CSS nodes, not by replacing the controller. GTK's `GtkMediaControls`
+CSS node is named `controls`; keep the control bar a light translucent strip in
+light mode, with a thin rounded progress trough, accent-colored played range,
+and compact circular scrubber. These rules must stay scoped to
+`video.viewer-media-surface` so other GTK scales and media controls are
+unaffected.
 
 ## Navigation Buttons
 

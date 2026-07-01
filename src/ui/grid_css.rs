@@ -447,6 +447,62 @@ box.mode-dot,
   border: 1px solid alpha(@window_fg_color, 0.08);
 }
 
+video.viewer-media-surface picture {
+  background: @window_bg_color;
+}
+
+video.viewer-media-surface controls {
+  padding: 7px 10px 6px;
+  background: alpha(@window_bg_color, 0.72);
+  color: alpha(@window_fg_color, 0.78);
+  border-top: 1px solid alpha(@window_fg_color, 0.12);
+}
+
+video.viewer-media-surface controls button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: alpha(@window_fg_color, 0.74);
+  box-shadow: none;
+}
+
+video.viewer-media-surface controls button:hover {
+  background: alpha(@window_fg_color, 0.08);
+  color: @window_fg_color;
+}
+
+video.viewer-media-surface controls scale {
+  min-height: 18px;
+  padding: 0 4px;
+}
+
+video.viewer-media-surface controls scale trough {
+  min-height: 4px;
+  border-radius: 999px;
+  background: alpha(@window_fg_color, 0.16);
+  border: 0;
+}
+
+video.viewer-media-surface controls scale trough highlight {
+  min-height: 4px;
+  border-radius: 999px;
+  background: @accent_bg_color;
+}
+
+video.viewer-media-surface controls scale slider {
+  min-width: 14px;
+  min-height: 14px;
+  margin: -5px;
+  border-radius: 999px;
+  background: @window_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.14);
+  box-shadow:
+    0 2px 8px alpha(black, 0.24),
+    0 0 0 1px alpha(@accent_bg_color, 0.22);
+}
+
 .viewer-image-frame {
   border-radius: 14px;
   box-shadow:
@@ -1911,6 +1967,72 @@ mod tests {
         assert!(
             !block.contains("black"),
             "viewer media surface must not use a hardcoded black background, got {block}",
+        );
+    }
+
+    #[test]
+    fn viewer_video_child_picture_uses_plain_theme_background() {
+        let css = build_css(true);
+        let block = css_block(&css, "video.viewer-media-surface picture")
+            .expect("GtkVideo's internal picture should have a dedicated CSS block");
+        assert!(
+            block.contains("background: @window_bg_color"),
+            "GtkVideo child picture should use the plain theme background for playback letterboxing, got {block}",
+        );
+        assert!(
+            !block.contains("@window_fg_color"),
+            "GtkVideo child picture should not use the stage wash for playback letterboxing, got {block}",
+        );
+        assert!(
+            !block.contains("alpha(") && !block.contains("radial-gradient"),
+            "GtkVideo child picture must not use translucent/radial material for playback letterboxing, got {block}",
+        );
+    }
+
+    #[test]
+    fn viewer_video_controls_use_light_glass_progress_style() {
+        let css = build_css(true);
+        let controls = css_block(&css, "video.viewer-media-surface controls")
+            .expect("GtkVideo media controls should have a viewer-specific block");
+        assert!(
+            controls.contains("alpha(@window_bg_color"),
+            "media controls should use a light theme-aware glass background, got {controls}",
+        );
+        assert!(
+            controls.contains("border-top: 1px solid alpha(@window_fg_color"),
+            "media controls should keep a subtle top hairline over the video, got {controls}",
+        );
+
+        let trough = css_block(&css, "video.viewer-media-surface controls scale trough")
+            .expect("GtkVideo progress trough should have a viewer-specific block");
+        assert!(
+            trough.contains("min-height: 4px") && trough.contains("border-radius: 999px"),
+            "progress trough should be a thin rounded rail, got {trough}",
+        );
+        assert!(
+            trough.contains("alpha(@window_fg_color"),
+            "progress trough should use a neutral theme-aware rail, got {trough}",
+        );
+
+        let highlight = css_block(
+            &css,
+            "video.viewer-media-surface controls scale trough highlight",
+        )
+        .expect("GtkVideo progress highlight should have a viewer-specific block");
+        assert!(
+            highlight.contains("@accent_bg_color"),
+            "played progress should use the app accent color, got {highlight}",
+        );
+
+        let slider = css_block(&css, "video.viewer-media-surface controls scale slider")
+            .expect("GtkVideo progress slider should have a viewer-specific block");
+        assert!(
+            slider.contains("min-width: 14px") && slider.contains("min-height: 14px"),
+            "progress slider should be a compact circular thumb, got {slider}",
+        );
+        assert!(
+            slider.contains("@window_bg_color") && slider.contains("box-shadow:"),
+            "progress slider should be light with a small shadow, got {slider}",
         );
     }
 
