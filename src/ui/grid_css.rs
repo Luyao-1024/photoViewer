@@ -524,11 +524,9 @@ box.mode-dot,
 }
 
 .library-stats {
-  border-radius: 999px;
-  padding: 7px 14px;
-  color: alpha(@window_fg_color, 0.88);
-  font-size: 10pt;
-  font-weight: 600;
+  color: alpha(@window_fg_color, 0.68);
+  font-size: 12pt;
+  font-weight: 500;
 }
 
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
@@ -2088,6 +2086,17 @@ mod tests {
         assert!(
             css.contains("button.viewer-thumb-item.viewer-thumb-current picture"),
             "current filmstrip thumbnail emphasis should be painted on the image node, not the reset button node",
+        );
+    }
+
+    #[test]
+    fn library_stats_text_is_larger_than_auxiliary_tile_text() {
+        let css = build_css(true);
+        assert!(
+            css.contains(
+                ".library-stats {\n  color: alpha(@window_fg_color, 0.68);\n  font-size: 12pt;"
+            ),
+            "library stats should stay plain text but read larger than thumbnail badges"
         );
     }
 

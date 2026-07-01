@@ -44,6 +44,22 @@ fn direct_children(widget: &gtk::Widget) -> Vec<gtk::Widget> {
     children
 }
 
+fn find_label_with_class(widget: &gtk::Widget, class_name: &str) -> Option<gtk::Label> {
+    if widget.has_css_class(class_name) {
+        if let Ok(label) = widget.clone().downcast::<gtk::Label>() {
+            return Some(label);
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = find_label_with_class(&current, class_name) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
+}
+
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
@@ -233,6 +249,16 @@ fn sidebar_navigation_suite() {
 
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item("file:///tmp/root/two.jpg", "/tmp/root/two.jpg", "/tmp/root"),
+    )
+    .unwrap();
     let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
         pool.clone(),
         tmp.path().join("thumbs"),
@@ -281,6 +307,14 @@ fn sidebar_navigation_suite() {
         trash_list.observe_children().n_items(),
         1,
         "trash list should contain the stable Trash row",
+    );
+    let photos_row = sidebar.row_at_index(0).expect("Photos row exists");
+    let photos_count = find_label_with_class(photos_row.upcast_ref(), "photos-sidebar-count")
+        .expect("Photos row should expose a media count label");
+    assert_eq!(
+        photos_count.label(),
+        "2",
+        "Photos row should show the total live media count"
     );
     assert!(
         !window.imp().album_scroll.property::<bool>("vexpand"),

@@ -77,6 +77,8 @@ mod imp {
         /// The album rows nested under the "Albums" group header — kept so the
         /// live refresh and tests can inspect/rebuild them precisely.
         pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
+        /// Right-aligned total live-media count on the Photos sidebar row.
+        pub photos_count_label: RefCell<Option<gtk::Label>>,
         /// The disclosure arrow on the Albums header; swapped between
         /// `pan-down-symbolic` (expanded) and `pan-end-symbolic` (collapsed).
         pub albums_arrow: RefCell<Option<gtk::Image>>,
@@ -174,7 +176,9 @@ impl MainWindow {
         let mut targets = Vec::new();
         let mut trash_targets = Vec::new();
 
-        let photos_row = build_nav_row(&tr("sidebar.photos"), "view-grid-symbolic");
+        let (photos_row, photos_count_label) =
+            build_nav_row(&tr("sidebar.photos"), "view-grid-symbolic", true);
+        *self.imp().photos_count_label.borrow_mut() = photos_count_label;
         list.append(&photos_row);
         targets.push(SidebarTarget::Photos);
 
@@ -196,7 +200,7 @@ impl MainWindow {
         list.append(&header_row);
         targets.push(SidebarTarget::AlbumsHeader);
 
-        let trash_row = build_nav_row(&tr("sidebar.trash"), "user-trash-symbolic");
+        let (trash_row, _) = build_nav_row(&tr("sidebar.trash"), "user-trash-symbolic", false);
         trash_list.append(&trash_row);
         trash_targets.push(SidebarTarget::Trash);
 
@@ -304,6 +308,7 @@ impl MainWindow {
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
     pub fn refresh_album_rows(&self) {
+        self.update_photos_count_label();
         self.rebuild_album_rows();
     }
 
@@ -577,6 +582,33 @@ impl MainWindow {
         *self.imp().pool.borrow_mut() = Some(pool);
         *self.imp().loader.borrow_mut() = Some(loader);
         *self.imp().media_list.borrow_mut() = Some(media_list);
+        self.update_photos_count_label();
+    }
+
+    fn update_photos_count_label(&self) {
+        let Some(label) = self.imp().photos_count_label.borrow().as_ref().cloned() else {
+            return;
+        };
+        let count = self
+            .imp()
+            .pool
+            .borrow()
+            .as_ref()
+            .and_then(|pool| {
+                crate::core::repository::MediaRepository::new(pool.clone())
+                    .count(crate::core::repository::MediaQuery::LiveAll)
+                    .ok()
+            })
+            .unwrap_or_else(|| {
+                self.imp()
+                    .media_list
+                    .borrow()
+                    .as_ref()
+                    .map(|list| list.n_items())
+                    .unwrap_or(0)
+            });
+        label.set_label(&count.to_string());
+        label.set_visible(true);
     }
 
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row
@@ -1696,7 +1728,11 @@ fn format_size(bytes: u64) -> String {
 // count badge, section header weight).
 
 /// A plain navigable sidebar row: leading symbolic icon + label.
-fn build_nav_row(label: &str, icon_name: &str) -> gtk::ListBoxRow {
+fn build_nav_row(
+    label: &str,
+    icon_name: &str,
+    include_count: bool,
+) -> (gtk::ListBoxRow, Option<gtk::Label>) {
     let row = gtk::ListBoxRow::new();
     row.add_css_class("glass-sidebar-row");
 
@@ -1716,8 +1752,20 @@ fn build_nav_row(label: &str, icon_name: &str) -> gtk::ListBoxRow {
         .build();
     box_.append(&icon);
     box_.append(&lbl);
+    let count_label = if include_count {
+        let count = gtk::Label::builder()
+            .label("0")
+            .visible(false)
+            .halign(gtk::Align::End)
+            .css_classes(["glass-sidebar-count", "photos-sidebar-count"])
+            .build();
+        box_.append(&count);
+        Some(count)
+    } else {
+        None
+    };
     row.set_child(Some(&box_));
-    row
+    (row, count_label)
 }
 
 /// The "Albums" group header: a non-selectable disclosure row. The arrow is

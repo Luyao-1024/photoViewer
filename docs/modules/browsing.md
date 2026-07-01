@@ -74,10 +74,15 @@ tiles intersecting the viewport plus one viewport of overscan, which keeps
 visible thumbnails ahead of off-screen work while still making near-scroll
 content warm quickly.
 
-The Day grid's library statistics label reads `MediaRepository::library_stats()`.
-It should display the repository projection (`LibraryStats`) and not calculate
-thumbnail progress from `ThumbnailLoader` internals; stale thumbnail markers
-are filtered at the DB projection layer.
+The Day grid's library statistics label sits at the top of the grid content,
+above the first date section header with a small top inset, and reads
+`MediaRepository::library_stats()`. It should display the repository projection
+(`LibraryStats`) and not calculate thumbnail progress from `ThumbnailLoader`
+internals; stale thumbnail markers are filtered at the DB projection layer.
+Keep it as plain text, not a raised glass capsule, and size it slightly larger
+than the day section count text. Once every live media item has a current
+thumbnail, hide the Day grid statistics label entirely; the Photos sidebar row
+remains the persistent place for the total live media count.
 
 Each section header's photo count (Year/Month/Day) must come from the database,
 not from the currently loaded virtual-page window. Because the shared `media_list`

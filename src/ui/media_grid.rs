@@ -103,6 +103,26 @@ fn library_stats_for(
         })
 }
 
+fn build_library_stats_label(stats: crate::core::refresh::LibraryStats) -> gtk::Label {
+    gtk::Label::builder()
+        .label(library_stats_text(
+            stats.live_total,
+            stats.thumbnails_generated,
+        ))
+        .halign(gtk::Align::Center)
+        .hexpand(true)
+        .margin_top(24)
+        .margin_bottom(14)
+        .xalign(0.5)
+        .justify(gtk::Justification::Center)
+        .css_classes(["library-stats"])
+        .build()
+}
+
+fn should_show_library_stats(stats: &crate::core::refresh::LibraryStats) -> bool {
+    stats.live_total > 0 && stats.thumbnails_generated < stats.live_total
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FavoriteMenuState {
     pub can_favorite: bool,
@@ -1265,33 +1285,22 @@ impl MediaGrid {
             content.append(&virtual_spacer(top_spacer_height));
         }
 
-        // Group by year/month/day, then emit header + FlowBox per section.
-        let mut section_count = 0u32;
-        let mut photo_count = 0u32;
-        let mut displayed_items = Vec::new();
-        // Day 视图第一组头部下方插入统计栏
-        let stats_emitted = std::cell::Cell::new(false);
         let total_media = total_media_count as usize;
-        if loading_placeholder_count > 0 {
-            if mode == GroupBy::Day && !stats_emitted.replace(true) {
-                let stats = library_stats_for(&loader, total_media);
-                let stats_label = gtk::Label::builder()
-                    .label(library_stats_text(
-                        stats.live_total,
-                        stats.thumbnails_generated,
-                    ))
-                    .halign(gtk::Align::Center)
-                    .hexpand(true)
-                    .margin_bottom(14)
-                    .xalign(0.5)
-                    .justify(gtk::Justification::Center)
-                    .css_classes(["library-stats", "glass-raised"])
-                    .build();
+        if mode == GroupBy::Day && (loading_placeholder_count > 0 || !items.is_empty()) {
+            let stats = library_stats_for(&loader, total_media);
+            if should_show_library_stats(&stats) {
+                let stats_label = build_library_stats_label(stats);
                 content.append(&stats_label);
                 *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
                 self.start_stats_refresh(loader.clone(), total_media);
             }
+        }
 
+        // Group by year/month/day, then emit header + FlowBox per section.
+        let mut section_count = 0u32;
+        let mut photo_count = 0u32;
+        let mut displayed_items = Vec::new();
+        if loading_placeholder_count > 0 {
             content.append(&build_virtual_placeholder_flow(
                 spec,
                 loading_placeholder_count,
@@ -1330,26 +1339,6 @@ impl MediaGrid {
                     .css_classes(["heading"])
                     .build();
                 content.append(&header);
-
-                // Day 视图：第一组 header 下方插入库统计栏
-                if mode == GroupBy::Day && !stats_emitted.replace(true) {
-                    let stats = library_stats_for(&loader, total_media);
-                    let stats_label = gtk::Label::builder()
-                        .label(library_stats_text(
-                            stats.live_total,
-                            stats.thumbnails_generated,
-                        ))
-                        .halign(gtk::Align::Center)
-                        .hexpand(true)
-                        .margin_bottom(14)
-                        .xalign(0.5)
-                        .justify(gtk::Justification::Center)
-                        .css_classes(["library-stats", "glass-raised"])
-                        .build();
-                    content.append(&stats_label);
-                    *self.imp().stats_label.borrow_mut() = Some(stats_label.clone());
-                    self.start_stats_refresh(loader.clone(), total_media);
-                }
 
                 // FlowBox of square thumbnails. `homogeneous` makes every cell the
                 // same size; with each picture's `set_size_request(target)` the
@@ -1735,6 +1724,11 @@ impl MediaGrid {
                 return glib::ControlFlow::Break;
             }
             if stats.thumbnails_generated >= stats.live_total {
+                if let Some(label) = this.imp().stats_label.borrow_mut().take() {
+                    if let Some(parent) = label.parent().and_downcast::<gtk::Box>() {
+                        parent.remove(&label);
+                    }
+                }
                 this.imp().stats_refresh_source.borrow_mut().take();
                 glib::ControlFlow::Break
             } else {
@@ -2646,12 +2640,42 @@ mod tests {
         assert_eq!(stats_label.label(), "媒体 2 项 · 缩略图 1/2");
         assert_eq!(stats_label.halign(), gtk::Align::Center);
         assert_eq!(stats_label.xalign(), 0.5);
+        assert_eq!(stats_label.margin_top(), 24);
         assert!(stats_label.has_css_class("library-stats"));
-        assert!(stats_label.has_css_class("glass-raised"));
+        assert!(
+            !stats_label.has_css_class("glass-raised"),
+            "stats should be plain text, not a raised glass capsule"
+        );
     }
 
     #[gtk::test]
-    fn completed_day_grid_stats_refresh_clears_source_handle() {
+    fn day_grid_stats_are_above_first_section_header() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let one = sample_item(1, "one.png");
+        insert_sample_item(&pool, &one);
+        media_list.append(&glib::BoxedAnyObject::new(one));
+
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
+        let content = grid.imp().content.get();
+        let first_child = content
+            .first_child()
+            .expect("Day grid should have a first content child");
+
+        assert!(
+            first_child.has_css_class("library-stats"),
+            "Day grid stats should be the first content child, above the first date header"
+        );
+    }
+
+    #[gtk::test]
+    fn completed_day_grid_stats_are_hidden() {
         let _ = gtk::init();
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
@@ -2667,21 +2691,12 @@ mod tests {
 
         let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
         assert!(
-            grid.imp().stats_refresh_source.borrow().is_some(),
-            "Day grid should keep a live stats timeout while thumbnail status can change"
+            grid.imp().stats_label.borrow().is_none(),
+            "completed thumbnail generation should hide the Day grid stats label"
         );
-
-        let ctx = glib::MainContext::default();
-        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
-        while grid.imp().stats_refresh_source.borrow().is_some()
-            && std::time::Instant::now() < deadline
-        {
-            ctx.iteration(true);
-        }
-
         assert!(
             grid.imp().stats_refresh_source.borrow().is_none(),
-            "completed stats timeout must not leave a stale SourceId for the next rebuild to remove"
+            "completed thumbnail generation should not start a stats refresh timeout"
         );
     }
 
