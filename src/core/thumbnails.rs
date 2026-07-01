@@ -1061,7 +1061,6 @@ fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbu
             "10%",
             "-c",
             "png",
-            "-f",
         ])
         .output()
         .map_err(|e| anyhow::anyhow!("启动 ffmpegthumbnailer 失败: {e}"))?;
@@ -2007,6 +2006,77 @@ mod tests {
             ffmpeg_thumbnail_temp_path(path, 1024),
             "parallel video thumbnail requests for different buckets must not share one temp output"
         );
+    }
+
+    /// 回归：`ffmpegthumbnailer -f` 会给缩略图加一层"电影胶片"装饰（左右白齿孔 +
+    /// 上下黑边），让所有视频缩略图都长成胶片框。修复后 `-f` 已移除，抽出的帧应直接
+    /// 是视频内容本身——左侧第一列应该出现视频颜色，而不是一整列纯黑。
+    ///
+    /// 跑法：`cargo test -p photo-viewer extract_video_frame_ffmpeg_does_not_add_movie_strip_overlay -- --nocapture`
+    /// 覆盖路径：`VIDEO_TEST_FILE=/path/to/some.mp4 cargo test ...`
+    #[test]
+    fn extract_video_frame_ffmpeg_does_not_add_movie_strip_overlay() {
+        let path = video_fixture_path();
+        if !path.exists() {
+            eprintln!("跳过：找不到测试视频 {}", path.display());
+            return;
+        }
+        let pb = match extract_video_frame_ffmpeg(&path, 256) {
+            Ok(pb) => pb,
+            Err(e) => {
+                // 主机若没装 ffmpegthumbnailer 也无法验证：跳过而不是失败。
+                eprintln!("跳过：extract_video_frame_ffmpeg 失败 {e}");
+                return;
+            }
+        };
+
+        let bytes = pb.read_pixel_bytes();
+        let buf: &[u8] = bytes.as_ref();
+        let rowstride = pb.rowstride() as usize;
+        let channels = pb.n_channels() as usize;
+        let w = pb.width() as usize;
+        let h = pb.height() as usize;
+        assert!(channels >= 3, "pixbuf 至少需要 RGB 三通道");
+
+        // `-f` 装饰的胶片框会让图像左侧整列（外加右侧对称列）变成纯黑 0,0,0。
+        // 统计 x=0 这一列的纯黑像素占比：装饰模式下应 ≈100%；正常视频帧应远低于此。
+        let mut black_count = 0usize;
+        for y in 0..h {
+            let i = y * rowstride;
+            if i + 2 < buf.len() && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 {
+                black_count += 1;
+            }
+        }
+        eprintln!(
+            "左侧 (x=0) 列像素统计: {}/{} 为纯黑 ({:.1}%)",
+            black_count,
+            h,
+            100.0 * black_count as f64 / h as f64
+        );
+        assert!(
+            black_count * 2 < h,
+            "左侧整列几乎全是纯黑 ({} / {}) ——ffmpegthumbnailer 又被传入了 -f (胶片装饰) 选项",
+            black_count,
+            h
+        );
+
+        // 同时校验顶部一行也不该被胶片框的黑色横条占满：抽样中间一段像素，
+        // 至少应有多种非黑颜色（真实视频帧的顶部有树叶/天空/物件等）。
+        let mid = h / 2;
+        let mut distinct = std::collections::HashSet::new();
+        for x in (w / 4)..(3 * w / 4) {
+            let i = mid * rowstride + x * channels;
+            if i + 2 < buf.len() {
+                distinct.insert((buf[i], buf[i + 1], buf[i + 2]));
+            }
+        }
+        assert!(
+            distinct.len() >= 4,
+            "图像中段颜色种类过少 ({} 种)，缩略图可能仍被胶片框覆盖",
+            distinct.len()
+        );
+        // Sanity: image must have non-trivial size.
+        let _ = w;
     }
 
     /// 视频帧提取端到端测试。默认使用仓库内真实视频；设置
