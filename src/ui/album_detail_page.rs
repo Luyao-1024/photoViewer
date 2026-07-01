@@ -1,5 +1,4 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -14,7 +13,7 @@ use crate::core::albums::Album;
 use crate::core::db::DbPool;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
-use crate::core::repository::MediaQuery;
+use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
@@ -156,7 +155,7 @@ impl AlbumDetailPage {
             .album
             .borrow()
             .as_ref()
-            .map(|album| MediaQuery::AlbumFolder(album.folder_path.clone()))
+            .map(media_query_for_album)
             .unwrap_or(MediaQuery::LiveAll);
         let viewer = ViewerPage::new_for_query(query, media_id, media_list);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
@@ -252,26 +251,27 @@ impl AlbumDetailPage {
     }
 }
 
-/// Build the per-album filtered media items from the shared master list.
+/// Build the per-album filtered media items.
 ///
 /// Mirrors the album semantics established by `albums::list_with_favorites`:
 /// favorites album → the favorites id set; images/videos albums → `media_kind`;
-/// folder albums → equal `folder_path`. The sidebar builds an `AlbumDetailPage`
-/// from this, and the favorites album refreshes its already-attached media
-/// list on favorite toggles via [`AlbumDetailPage::refresh_virtual_album_media_list`].
+/// folder albums → equal `folder_path`. Virtual albums query the database
+/// directly so they are not limited by the bounded startup GTK model. The
+/// sidebar builds an `AlbumDetailPage` from this, and virtual album refreshes
+/// splice the already-attached media list via
+/// [`AlbumDetailPage::refresh_virtual_album_media_list`].
 pub(crate) fn filtered_items_for_album(
     album: &Album,
     master: &gtk::gio::ListStore,
     pool: &DbPool,
 ) -> Vec<crate::core::media::MediaItem> {
-    let favorite_ids: HashSet<i64> = if album.is_favorites_album() {
-        crate::core::albums::favorite_media_ids(pool)
-            .unwrap_or_default()
-            .into_iter()
-            .collect()
-    } else {
-        HashSet::new()
-    };
+    if album.is_virtual {
+        return MediaRepository::new(pool.clone())
+            .page(media_query_for_album(album), 0, u32::MAX)
+            .map(|page| page.items)
+            .unwrap_or_default();
+    }
+
     let mut items = Vec::new();
     for idx in 0..master.n_items() {
         let Some(obj) = master.item(idx) else {
@@ -281,20 +281,23 @@ pub(crate) fn filtered_items_for_album(
             continue;
         };
         let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
-        let should_include = if album.is_favorites_album() {
-            favorite_ids.contains(&item.id)
-        } else if album.is_images_album() {
-            item.is_image()
-        } else if album.is_videos_album() {
-            item.is_video()
-        } else {
-            item.folder_path == album.folder_path
-        };
-        if should_include {
+        if item.folder_path == album.folder_path {
             items.push(item);
         }
     }
     items
+}
+
+fn media_query_for_album(album: &Album) -> MediaQuery {
+    if album.is_favorites_album() {
+        MediaQuery::Favorites
+    } else if album.is_images_album() {
+        MediaQuery::Images
+    } else if album.is_videos_album() {
+        MediaQuery::Videos
+    } else {
+        MediaQuery::AlbumFolder(album.folder_path.clone())
+    }
 }
 
 fn remove_media_item_by_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
@@ -362,6 +365,31 @@ mod tests {
         }
     }
 
+    fn new_item(id: i64, mime_type: &str) -> crate::core::media::NewMediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
+        let ext = if mime_type.starts_with("video/") {
+            "mp4"
+        } else {
+            "jpg"
+        };
+        let path = PathBuf::from(format!("/tmp/{id}.{ext}"));
+        crate::core::media::NewMediaItem {
+            uri: format!("file:///tmp/{id}.{ext}"),
+            path,
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: mime_type.into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 100,
+            blake3_hash: format!("hash-new-{id}"),
+        }
+    }
+
     #[gtk::test]
     fn remove_media_item_by_id_updates_shared_master_list() {
         let _ = gtk::init();
@@ -372,5 +400,32 @@ mod tests {
         assert!(remove_media_item_by_id(&list, 1));
         assert_eq!(list.n_items(), 1);
         assert!(!remove_media_item_by_id(&list, 3));
+    }
+
+    #[gtk::test]
+    fn video_virtual_album_uses_database_when_master_window_has_no_videos() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("videos.db")).unwrap();
+        crate::core::db::upsert_media_items_batch(
+            &pool,
+            &[new_item(1, "image/jpeg"), new_item(2, "video/mp4")],
+        )
+        .unwrap();
+        let album = crate::core::albums::Album {
+            folder_path: PathBuf::from(crate::core::albums::VIDEOS_ALBUM_PATH),
+            name: "Videos".into(),
+            cover_uri: None,
+            photo_count: 1,
+            last_modified: Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap(),
+            is_virtual: true,
+        };
+        let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        master.append(&glib::BoxedAnyObject::new(sample_item(1)));
+
+        let items = filtered_items_for_album(&album, &master, &pool);
+
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_video());
     }
 }

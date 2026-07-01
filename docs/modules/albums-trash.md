@@ -39,10 +39,11 @@ are rendered directly in that scroll region; there is no "More" row in the
 sidebar.
 
 Selecting an album row pushes its `AlbumDetailPage` immediately. The per-album
-filtered media list is built by `album_detail_page::filtered_items_for_album`,
-shared between the sidebar (on open) and the favorites album (on
-favorite-toggle refresh). A favorite/trash change refreshes the sidebar counts
-via `window::refresh_albums_sidebar`.
+media list is built by `album_detail_page::filtered_items_for_album`. Virtual
+albums (Favorites, Photos, Videos) load their full membership from
+`MediaRepository` so they are not capped by the startup GTK list window; real
+folder albums filter by `folder_path`. A favorite/trash change refreshes the
+sidebar counts via `window::refresh_albums_sidebar`.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as

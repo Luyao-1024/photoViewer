@@ -739,8 +739,8 @@ impl MainWindow {
         // shallow and consistent.
         pop_to_photos_root(nav_view);
 
-        // 文件夹相册直接从数据库加载完整内容，不受 UI_MEDIA_LIST_CAP 限制
-        // 虚拟相册（收藏/图片/视频）仍从 master 列表过滤
+        // 文件夹相册和虚拟相册都从数据库加载完整内容，不受 UI_MEDIA_LIST_CAP
+        // 或启动时 master GTK 列表窗口限制。
         let items = if album.is_virtual {
             filtered_items_for_album(&album, &master, &pool)
         } else {
