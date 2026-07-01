@@ -68,7 +68,7 @@ modules:
     build-options:
       env:
         PATH: /usr/lib/sdk/rust-stable/bin:/app/bin:/usr/bin
-        CARGO_HOME: /run/build/photo-viewer/cargo-home
+        CARGO_HOME: /run/build/photo-viewer/cargo
         CARGO_NET_OFFLINE: "true"
     build-commands:
       - cargo build --release --locked

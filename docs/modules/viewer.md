@@ -31,6 +31,11 @@ Original image decode must apply orientation metadata before creating the displa
 
 Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. The image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
 
+The image, video, and loading surfaces use the shared `viewer-media-surface`
+CSS class so empty/loading backgrounds follow the current libadwaita theme.
+Do not hardcode black for these surfaces; light theme must keep the stage
+visually light while dark theme remains naturally subdued.
+
 Dynamic photos (`media_subkind=motion_photo`) open as images first. The still `GtkPicture` remains the default stage and a top-left play button starts the persisted embedded video range. Playback extracts that byte range to a temporary MP4, reuses the same `GtkVideo` layer, and switches back to the still image when the stream reports `ended`. Dynamic photos remain editable as still images; only normal `video/*` items disable editing.
 
 Flatpak builds and Flatpak-based development runs must include `--socket=pulseaudio`. GTK/GStreamer can still render video without that sandbox permission, but audio output is unavailable, which presents as silent video playback even though the viewer code is playing the media stream.

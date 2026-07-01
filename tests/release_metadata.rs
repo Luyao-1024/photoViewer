@@ -35,6 +35,14 @@ fn release_metadata_uses_git_derived_app_id_and_version() {
         manifest.contains("CARGO_NET_OFFLINE: \"true\""),
         "release Flatpak manifest should force cargo offline mode"
     );
+    assert!(
+        manifest.contains("CARGO_HOME: /run/build/photo-viewer/cargo"),
+        "release Flatpak manifest must point CARGO_HOME at cargo-sources.json's vendored cargo directory"
+    );
+    assert!(
+        !manifest.contains("CARGO_HOME: /run/build/photo-viewer/cargo-home"),
+        "release Flatpak manifest must not point CARGO_HOME at an empty cargo-home directory"
+    );
 
     let desktop_path = format!("data/{APP_ID}.desktop");
     let desktop = std::fs::read_to_string(&desktop_path).expect("read desktop file");

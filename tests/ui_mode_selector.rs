@@ -309,6 +309,7 @@ fn mode_selector_integration_suite() {
         "glass-sidebar-label",
         "glass-header",
         "viewer-stage",
+        "viewer-media-surface",
         "viewer-image-frame",
         "viewer-details-panel",
         "glass-thumb-card",

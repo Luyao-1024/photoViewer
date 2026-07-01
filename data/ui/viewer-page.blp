@@ -89,7 +89,7 @@ template $ViewerPage : Adw.NavigationPage {
                 vexpand: true;
                 hexpand: true;
                 content-fit: contain;
-                css-classes: ["viewer-image-frame"];
+                css-classes: ["viewer-media-surface", "viewer-image-frame"];
               };
 
               [overlay]
@@ -98,7 +98,7 @@ template $ViewerPage : Adw.NavigationPage {
                 vexpand: true;
                 hexpand: true;
                 autoplay: false;
-                css-classes: ["viewer-image-frame"];
+                css-classes: ["viewer-media-surface", "viewer-image-frame"];
               }
 
               [overlay]
@@ -129,6 +129,7 @@ template $ViewerPage : Adw.NavigationPage {
                 valign: center;
                 spinning: true;
                 visible: true;
+                css-classes: ["viewer-media-surface"];
               }
 
               [overlay]

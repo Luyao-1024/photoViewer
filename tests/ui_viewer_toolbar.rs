@@ -148,6 +148,16 @@ fn viewer_toolbar_uses_glass_classes() {
         !imp.video.get().is_visible(),
         "video widget should start hidden until a video media item is shown",
     );
+    for (name, classes) in [
+        ("picture", css_classes_vec(&imp.picture.get())),
+        ("video", css_classes_vec(&imp.video.get())),
+        ("spinner", css_classes_vec(&imp.spinner.get())),
+    ] {
+        assert!(
+            classes.iter().any(|c| c == "viewer-media-surface"),
+            "{name} should carry viewer-media-surface so loading and video backgrounds adapt to the theme, got {classes:?}",
+        );
+    }
     assert!(
         !imp.video.get().is_autoplay(),
         "Gtk.Video autoplay must stay disabled so audio prefs apply before playback starts",

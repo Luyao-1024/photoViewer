@@ -439,6 +439,14 @@ box.mode-dot,
     alpha(@window_bg_color, 0.10);
 }
 
+.viewer-media-surface {
+  background:
+    radial-gradient(circle at center, alpha(@window_fg_color, 0.03), transparent 62%),
+    alpha(@window_bg_color, 0.82);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.08);
+}
+
 .viewer-image-frame {
   border-radius: 14px;
   box-shadow:
@@ -1886,6 +1894,25 @@ mod tests {
         assert!(
             css.contains(".viewer-favorite-btn.favorite-active:hover"),
             "CSS must define a :hover override so the red heart brightens on pointer-over",
+        );
+    }
+
+    #[test]
+    fn viewer_media_surface_uses_theme_adaptive_background() {
+        let css = build_css(true);
+        let block = css_block(&css, ".viewer-media-surface")
+            .expect("viewer media surface should have a dedicated CSS block");
+        assert!(
+            block.contains("@window_bg_color"),
+            "viewer media surface should use theme background variables, got {block}",
+        );
+        assert!(
+            block.contains("@window_fg_color"),
+            "viewer media surface should use theme foreground variables for its edge, got {block}",
+        );
+        assert!(
+            !block.contains("black"),
+            "viewer media surface must not use a hardcoded black background, got {block}",
         );
     }
 
