@@ -44,6 +44,7 @@ fn main() {
         "data/ui/mode-selector.blp",
         "data/ui/photo-tile.blp",
         "data/ui/section-header.blp",
+        "data/ui/search-page.blp",
         "data/ui/viewer-page.blp",
         "data/ui/trash-page.blp",
         "data/ui/editor-panel.blp",

@@ -64,6 +64,8 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub search_btn: TemplateChild<gtk::Button>,
+        #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub view_stack: TemplateChild<adw::ViewStack>,
@@ -98,6 +100,7 @@ mod imp {
                 contrast_update_pending: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 header_bar: TemplateChild::default(),
+                search_btn: TemplateChild::default(),
                 grid_overlay: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
@@ -184,6 +187,10 @@ impl PhotosPage {
             .delete_to_trash_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
+        obj.imp()
+            .search_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.search.tooltip")));
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
@@ -427,6 +434,13 @@ impl PhotosPage {
             this.select_all_in_current_mode();
         });
 
+        let weak = obj.downgrade();
+        obj.imp().search_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.open_search_page();
+            }
+        });
+
         // Exit multi-select: clears selection across every grid and hides the
         // batch toolbar. Same effect as the right-click "Exit Multi-select".
         let weak = obj.downgrade();
@@ -586,6 +600,21 @@ impl PhotosPage {
 
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
+    }
+
+    fn open_search_page(&self) {
+        let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
     }
 
     /// Rebuild the union of selected media ids from each visible grid, then

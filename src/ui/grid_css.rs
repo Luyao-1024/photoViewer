@@ -173,6 +173,13 @@ box.mode-dot,
   color: inherit;
 }
 
+.glass-toolbar-button.round-search-button {
+  min-height: 38px;
+  min-width: 38px;
+  border-radius: 999px;
+  padding: 0;
+}
+
 /* Viewer chrome buttons (the viewer header) are square (1:1). The base
    .glass-toolbar-button is shared by every header bar (photos, trash, albums,
    editor), so this geometry override is scoped to .viewer-chrome, which the

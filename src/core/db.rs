@@ -339,6 +339,61 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
     Ok(count as usize)
 }
 
+fn search_like_pattern(term: &str) -> String {
+    let mut pattern = String::from("%");
+    let normalized = term
+        .trim()
+        .replace('年', "-")
+        .replace('月', "-")
+        .replace('日', "");
+    let normalized = normalized.trim_end_matches('-');
+    for ch in normalized.chars() {
+        match ch {
+            '%' | '_' | '\\' => {
+                pattern.push('\\');
+                pattern.push(ch);
+            }
+            _ => pattern.push(ch),
+        }
+    }
+    pattern.push('%');
+    pattern
+}
+
+pub fn count_live_media_search(
+    pool: &DbPool,
+    term: &str,
+    media_kind: Option<&str>,
+) -> Result<usize> {
+    let conn = pool.get()?;
+    let pattern = search_like_pattern(term);
+    let count: i64 = if let Some(media_kind) = media_kind {
+        conn.query_row(
+            "SELECT COUNT(*) FROM media_items
+             WHERE trashed_at IS NULL
+               AND media_kind = ?2
+               AND (
+                 lower(path) LIKE lower(?1) ESCAPE '\\'
+                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
+               )",
+            rusqlite::params![pattern, media_kind],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM media_items
+             WHERE trashed_at IS NULL
+               AND (
+                 lower(path) LIKE lower(?1) ESCAPE '\\'
+                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
+               )",
+            [pattern],
+            |row| row.get(0),
+        )?
+    };
+    Ok(count as usize)
+}
+
 pub fn count_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Result<usize> {
     let conn = pool.get()?;
     let folder_str = folder_path.to_string_lossy().to_string();
@@ -489,6 +544,59 @@ pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<Med
     let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
+}
+
+pub fn list_media_search_page(
+    pool: &DbPool,
+    term: &str,
+    media_kind: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let pattern = search_like_pattern(term);
+    if let Some(media_kind) = media_kind {
+        let mut stmt = conn.prepare(
+            "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL
+               AND media_kind = ?2
+               AND (
+                 lower(path) LIKE lower(?1) ESCAPE '\\'
+                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
+               )
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![pattern, media_kind, limit as i64, offset as i64],
+            row_to_media_item,
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                    media_attributes, width, height, video_duration_secs, taken_at,
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+             FROM media_items
+             WHERE trashed_at IS NULL
+               AND (
+                 lower(path) LIKE lower(?1) ESCAPE '\\'
+                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
+               )
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![pattern, limit as i64, offset as i64],
+            row_to_media_item,
+        )?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
 }
 
 pub fn list_media_by_folder_page(

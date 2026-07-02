@@ -87,6 +87,47 @@ fn repository_items_returns_ordered_rows_without_page_total() {
 }
 
 #[test]
+fn repository_searches_live_media_by_file_name_and_capture_date() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-search.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item("Summer_Beach", 10),
+            item("winter", 90_000),
+            item("family_summer", 172_800),
+            item("summer_trashed", 40),
+        ],
+    )
+    .unwrap();
+    photo_viewer::core::db::mark_trashed(&pool, inserted[3].id).unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let page = repo
+        .page(MediaQuery::Search("summer".into()), 0, 10)
+        .unwrap();
+
+    assert_eq!(page.total, 2);
+    let names: Vec<_> = page
+        .items
+        .iter()
+        .map(|item| item.display_name().to_string())
+        .collect();
+    assert_eq!(names, vec!["family_summer.jpg", "Summer_Beach.jpg"]);
+
+    let page = repo
+        .page(MediaQuery::Search("1970-01-01".into()), 0, 10)
+        .unwrap();
+
+    let names: Vec<_> = page
+        .items
+        .iter()
+        .map(|item| item.display_name().to_string())
+        .collect();
+    assert_eq!(names, vec!["Summer_Beach.jpg"]);
+}
+
+#[test]
 fn repository_favorite_summary_batches_ids() {
     let dir = common::tmp_dir();
     let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs.db")).unwrap();

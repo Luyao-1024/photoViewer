@@ -22,6 +22,26 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 
 `PhotosPage` owns three `MediaGrid` instances for Year, Month, and Day views. All views are backed by the same `gio::ListStore`, so changes to the media collection should propagate without rebuilding unrelated UI state. The list can contain both image and video `MediaItem`s; grouping still uses `taken_at` when present, falling back to file time.
 
+The Photos header includes a circular search button that pushes a dedicated
+`SearchPage`. Search filters live media through `MediaRepository` using
+`MediaQuery::Search` / `MediaQuery::SearchKind`; do not implement search by
+filtering only the current GTK window, because large-library startup and
+virtual paging keep only a bounded subset in memory. Search currently matches
+file names and shooting dates (`taken_at`, falling back to `file_mtime`) with
+date fragments such as `2026`, `2026-07`, or `2026-07-02`; Chinese `年/月/日`
+input is normalized to the same date form. Search results are rendered in
+separate image and video result sections, each backed by its own bounded
+`ListStore` and a Year-mode `MediaGrid` so result thumbnails use the compact
+overview size. Search result grids show a bounded preview sized from the
+available page width: enough Year-mode tiles to fill two complete rows, with a
+stable two-row fallback before GTK has allocated the page. When a result set
+does not fit that flat preview, the section shows a "More" button that pushes a
+type-specific results page containing only those image or video matches. Empty result
+sections stay hidden, so image and video areas grow from their result counts
+instead of splitting the page 50/50. Opening the viewer from a result section
+passes a kind-scoped search query so previous/next navigation remains inside
+that section's result set.
+
 When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
 
 Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids and legacy photo tiles display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.

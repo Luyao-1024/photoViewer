@@ -45,10 +45,12 @@ fn photos_header_uses_glass_toolbar_classes() {
         "header_bar should carry glass-header, got {header_classes:?}",
     );
 
-    // The four batch-action toolbar widgets carry glass-toolbar-button.
+    // The search button and four batch-action toolbar widgets carry
+    // glass-toolbar-button.
     // favorite_btn is now the merged heart trigger (icon-only); its two
     // actions live in a popover built in PhotosPage::new.
-    let buttons: [(&str, gtk::Button); 4] = [
+    let buttons: [(&str, gtk::Button); 5] = [
+        ("search_btn", imp.search_btn.get()),
         ("select_all_btn", imp.select_all_btn.get()),
         ("add_to_album_btn", imp.add_to_album_btn.get()),
         ("favorite_btn", imp.favorite_btn.get()),
@@ -61,6 +63,11 @@ fn photos_header_uses_glass_toolbar_classes() {
             "{name} should carry glass-toolbar-button, got {classes:?}",
         );
     }
+
+    assert!(
+        imp.search_btn.get().has_css_class("round-search-button"),
+        "search_btn should use the dedicated circular search-button class"
+    );
 
     // favorite_btn is a smart toggle: it reuses the viewer's red-heart hook
     // (viewer-favorite-btn + favorite-active) so an all-favorited selection

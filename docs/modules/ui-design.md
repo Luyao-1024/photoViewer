@@ -92,6 +92,15 @@ Design intent:
 - Selection mode should make batch actions discoverable without permanently
   occupying header space. Add-to-album, favorite, and trash actions belong in
   the header because they apply to the selected set.
+- Search is a normal browsing action in the header. The search button is a
+  circular icon button that opens a dedicated search page. The search page uses
+  a focused search entry and separates image and video results while preserving
+  the existing media grid language for each result group. Result thumbnails use
+  the compact Year grid size, and the image/video sections size to their own
+  result content rather than dividing the page equally. Each section first
+  shows a width-aware flat preview that fills at least two Year-grid rows;
+  overflow is exposed through a small "More" button that opens a type-specific
+  results page.
 - The batch-action toolbar is split across the header: select-all (text label,
   toggling 全选 / 取消全选) stays on the left (`[start]`); the icon-only batch
   actions live on the right (`[end]`) — add-to-album (`list-add-symbolic`, the

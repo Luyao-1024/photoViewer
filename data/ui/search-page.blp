@@ -1,0 +1,51 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $SearchPage : Adw.NavigationPage {
+  title: "";
+
+  child: Gtk.Box root_box {
+    orientation: vertical;
+
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+      css-classes: ["glass-header"];
+    }
+
+    Gtk.Box search_panel {
+      orientation: vertical;
+      margin-start: 16;
+      margin-end: 16;
+      margin-top: 12;
+      margin-bottom: 8;
+
+      Gtk.SearchEntry search_entry {
+        hexpand: true;
+      }
+    }
+
+    Gtk.Box content_box {
+      orientation: vertical;
+      spacing: 12;
+      vexpand: true;
+      hexpand: true;
+      margin-start: 16;
+      margin-end: 16;
+      margin-bottom: 16;
+
+      Gtk.Box image_results_box {
+        orientation: vertical;
+        spacing: 8;
+        hexpand: true;
+        css-classes: ["search-results-section"];
+      }
+
+      Gtk.Box video_results_box {
+        orientation: vertical;
+        spacing: 8;
+        hexpand: true;
+        css-classes: ["search-results-section"];
+      }
+    }
+  };
+}

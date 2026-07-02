@@ -33,6 +33,13 @@ template $PhotosPage : Adw.NavigationPage {
       }
 
       [end]
+      Gtk.Button search_btn {
+        icon-name: "system-search-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
+
+      [end]
       Gtk.Button delete_to_trash_btn {
         icon-name: "user-trash-symbolic";
         tooltip-text: "";

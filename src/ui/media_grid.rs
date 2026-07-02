@@ -670,6 +670,31 @@ impl MediaGrid {
         }
     }
 
+    pub fn set_full_library_context(&self, enabled: bool) {
+        if self.imp().full_library_context.replace(enabled) == enabled {
+            return;
+        }
+        self.invalidate_library_metadata();
+        self.imp().virtual_page_loading.set(false);
+        self.imp().virtual_query_in_flight.set(false);
+        self.imp().pending_virtual_page_start.set(None);
+        self.imp().pending_virtual_page_ratio.set(None);
+        self.imp()
+            .virtual_page_generation
+            .set(self.imp().virtual_page_generation.get().saturating_add(1));
+        if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
+            self.rebuild_immediately(media_list);
+        }
+    }
+
+    pub fn set_content_sized_scroll(&self, max_content_height: i32) {
+        self.set_vexpand(false);
+        let scroller = self.imp().scroller.get();
+        scroller.set_vexpand(false);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_max_content_height(max_content_height.max(1));
+    }
+
     pub fn mode(&self) -> GroupBy {
         self.imp().mode.get()
     }
