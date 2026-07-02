@@ -33,7 +33,13 @@ pub const DEFAULT_GRID_RENDER_ABSOLUTE_CAP: usize = 1_200;
 pub const DEFAULT_GRID_RENDER_EXPAND_STEP: usize = 200;
 pub const DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS: u64 = 120;
 pub const DEFAULT_THUMBNAIL_QUEUE_CAPACITY: usize = 8192;
-pub const DEFAULT_THUMBNAIL_MEM_CACHE_CAP: usize = 16;
+/// Sized for viewer navigation: each switch warms the target's Medium preview,
+/// and the viewer prefetches ±1 neighbours. With 16, sequential navigation
+/// evicted the just-visited preview before the user could swipe back, forcing
+/// every switch back to a disk-cache read (50–200ms). 128 keeps a generous
+/// window of recent + prefetched Medium thumbs resident so switches stay
+/// mem-cache hits.
+pub const DEFAULT_THUMBNAIL_MEM_CACHE_CAP: usize = 128;
 pub const DEFAULT_THUMBNAIL_DISK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_THUMBNAIL_PREWARM_POLL_MS: u64 = 500;
 pub const DEFAULT_THUMBNAIL_IDLE_WAIT_MS: u64 = 30_000;
@@ -429,7 +435,7 @@ mod tests {
             ThumbnailGenerationSpeed::Normal.worker_count()
         );
         assert_eq!(config.thumbnail_queue_capacity, 8192);
-        assert_eq!(config.thumbnail_mem_cache_cap, 16);
+        assert_eq!(config.thumbnail_mem_cache_cap, 128);
         assert_eq!(config.thumbnail_disk_cache_bytes, 2 * 1024 * 1024 * 1024);
         assert_eq!(config.thumbnail_prewarm_poll_ms, 500);
         assert_eq!(config.thumbnail_idle_wait_ms, 30_000);

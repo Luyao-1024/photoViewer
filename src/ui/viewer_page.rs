@@ -83,6 +83,12 @@ const VIEWER_FULLSCREEN_ICON: &str = "view-fullscreen-symbolic";
 pub type NavDelta = i32;
 pub const NAV_POP: NavDelta = i32::MIN;
 
+/// Upper bound the deferred switch will wait for the target preview thumbnail
+/// before switching anyway. The thumbnail is almost always warm (prefetched by
+/// `prefetch_neighbors`), so this is a pure safety net against a stuck
+/// generation/queue — the current frame is held meanwhile, never a spinner.
+const NAV_READY_TIMEOUT_MS: u64 = 400;
+
 /// Callback the host registers for keyboard navigation. Shared via `Rc` so
 /// closures capturing owned state can be cloned into GTK signal handlers.
 pub type NavCallback = Rc<dyn Fn(NavDelta)>;
@@ -200,6 +206,22 @@ mod imp {
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
+        /// Navigation coalescing token. Bumped on every left/right press so a
+        /// stale in-flight prefetch (DB neighbour lookup or thumbnail wait)
+        /// can be discarded when the user pressed again. 0 = no pending nav.
+        pub nav_token: Cell<u64>,
+        /// The `nav_token` whose deferred switch has already been settled
+        /// (i.e. `show_at` ran). Prevents the thumb-ready and timeout
+        /// fallback from both firing `show_at` for the same nav.
+        pub nav_settled_token: Cell<u64>,
+        /// `current_media_id` the neighbour cache was populated for. 0 = empty.
+        /// Lets `navigate_by_delta` skip the DB neighbour query when the user
+        /// presses again on the same item we prefetched during `show_at`.
+        pub cached_neighbor_for_id: Cell<i64>,
+        /// Prefetched +1 neighbour item (next), warmed by `prefetch_neighbors`.
+        pub cached_next_item: RefCell<Option<MediaItem>>,
+        /// Prefetched -1 neighbour item (previous), warmed by `prefetch_neighbors`.
+        pub cached_prev_item: RefCell<Option<MediaItem>>,
         /// Cumulative zoom scale (1.0 = identity).
         pub zoom_scale: Cell<f64>,
         /// Viewer-local image rotation in clockwise degrees. This affects only
@@ -622,6 +644,40 @@ impl ViewerPage {
             return;
         }
 
+        // Anchor for the full switch latency (neighbour lookup + thumbnail
+        // ready wait + show_at), reported at the deferred-settle milestone.
+        let nav_start = std::time::Instant::now();
+        // Bump the nav token so any in-flight prefetch / thumbnail-wait from a
+        // previous press is discarded: latest press wins, rapid presses chain.
+        let token = {
+            let t = self.imp().nav_token.get() + 1;
+            self.imp().nav_token.set(t);
+            t
+        };
+
+        // Fast path: the ±1 neighbour was prefetched (item + Medium thumb
+        // warmed) during the previous show_at. Skip the DB query entirely.
+        if delta == 1 || delta == -1 {
+            if let Some(item) = self.take_cached_neighbor(delta) {
+                let neighbor_id = item.id;
+                let index = self.ensure_media_item_in_window(item.clone());
+                tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
+                    "VIEWER_SWITCH nav cache_hit delta={} target_index={} neighbor_id={}",
+                    delta,
+                    index,
+                    neighbor_id
+                );
+                // Optimistically advance logical position so a consecutive
+                // press chains from here; `current_index` (what the title,
+                // favorite, filmstrip, editor all read) stays synced to the
+                // display via show_at.
+                self.imp().current_media_id.set(neighbor_id);
+                self.switch_when_thumb_ready(index, item, token, nav_start);
+                return;
+            }
+        }
+
         let weak = self.downgrade();
         let (tx, rx) = tokio::sync::oneshot::channel();
         gio::spawn_blocking(move || {
@@ -630,16 +686,31 @@ impl ViewerPage {
             let _ = tx.send(result);
         });
         glib::spawn_future_local(async move {
-            let Ok(result) = rx.await else {
-                return;
+            let result = match rx.await {
+                Ok(r) => r,
+                Err(_) => return,
             };
             let Some(this) = weak.upgrade() else {
                 return;
             };
+            if this.imp().nav_token.get() != token {
+                return; // a newer press superseded this one
+            }
             match result {
                 Ok(Some(neighbor)) => {
-                    let index = this.ensure_media_item_in_window(neighbor.item);
-                    this.show_at(index);
+                    let item = neighbor.item;
+                    let neighbor_id = item.id;
+                    let index = this.ensure_media_item_in_window(item.clone());
+                    tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
+                        "VIEWER_SWITCH nav resolved delta={} target_index={} db_query_ms={} neighbor_id={}",
+                        delta,
+                        index,
+                        nav_start.elapsed().as_millis(),
+                        neighbor_id
+                    );
+                    this.imp().current_media_id.set(neighbor_id);
+                    this.switch_when_thumb_ready(index, item, token, nav_start);
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -648,6 +719,136 @@ impl ViewerPage {
                 }
             }
         });
+    }
+
+    /// Consume the cached ±1 neighbour for `delta` if it was prefetched for
+    /// the current item. Returns `None` for non-±1 deltas or a stale/empty
+    /// cache so the caller falls back to a DB neighbour query.
+    fn take_cached_neighbor(&self, delta: NavDelta) -> Option<MediaItem> {
+        if self.imp().cached_neighbor_for_id.get() != self.imp().current_media_id.get() {
+            return None;
+        }
+        let item = if delta == 1 {
+            self.imp().cached_next_item.borrow().clone()
+        } else {
+            self.imp().cached_prev_item.borrow().clone()
+        };
+        // Invalidate so a second identical press does not reuse the entry;
+        // prefetch_neighbors repopulates after the next show_at.
+        if item.is_some() {
+            self.imp().cached_neighbor_for_id.set(0);
+        }
+        item
+    }
+
+    /// Defer the visual switch (`show_at`) for `item` at `index` until the
+    /// target's Medium preview thumbnail is ready, so the current frame stays
+    /// on screen and no loading animation ever appears. `token` is the nav
+    /// token from the originating press; if a newer press bumps it, this
+    /// wait is abandoned. A `NAV_READY_TIMEOUT_MS` fallback guarantees we
+    /// never hang on the old frame; if there is no loader or the item is a
+    /// video, we switch immediately (show_at keeps the old frame until its
+    /// own preview/stream lands).
+    fn switch_when_thumb_ready(
+        &self,
+        index: u32,
+        item: MediaItem,
+        token: u64,
+        nav_start: std::time::Instant,
+    ) {
+        let item_id = item.id;
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            self.settle_nav_switch(index, token, nav_start, "no_loader");
+            return;
+        };
+        if item.is_video() {
+            self.settle_nav_switch(index, token, nav_start, "video");
+            return;
+        }
+
+        let fs_mtime = std::fs::metadata(&item.path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        let item_mtime = fs_mtime.unwrap_or_else(|| std::time::SystemTime::from(item.file_mtime));
+        let size = viewer_preview_thumbnail_size();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request_for_media(
+            item.id,
+            item.uri.clone(),
+            size,
+            Some(item_mtime),
+            tx,
+            TIER_BOOST,
+        );
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            match rx.await {
+                Ok(loaded) => {
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
+                        "VIEWER_SWITCH ready_before_switch token={} item_id={} wait_ms={} texture={}x{}",
+                        token,
+                        item_id,
+                        nav_start.elapsed().as_millis(),
+                        loaded.texture.width(),
+                        loaded.texture.height()
+                    );
+                    this.settle_nav_switch(index, token, nav_start, "thumb_ready");
+                }
+                Err(_) => {
+                    // Sender dropped (queue full / generation failed): switch
+                    // anyway rather than holding the old frame forever.
+                    if let Some(this) = weak.upgrade() {
+                        this.settle_nav_switch(index, token, nav_start, "thumb_send_failed");
+                    }
+                }
+            }
+        });
+
+        // Timeout safety net. settle_nav_switch's settled guard makes this a
+        // no-op if the thumbnail already landed.
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(NAV_READY_TIMEOUT_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.settle_nav_switch(index, token, nav_start, "timeout");
+                }
+            },
+        );
+    }
+
+    /// Perform the deferred `show_at` exactly once per nav token. The
+    /// thumb-ready, timeout, and error fallback paths all funnel here; after
+    /// the first settles, later callers for the same token (or a stale token)
+    /// are no-ops.
+    fn settle_nav_switch(
+        &self,
+        index: u32,
+        token: u64,
+        nav_start: std::time::Instant,
+        reason: &str,
+    ) {
+        if self.imp().nav_token.get() != token {
+            return; // superseded by a newer press
+        }
+        if self.imp().nav_settled_token.get() == token {
+            return; // already settled
+        }
+        self.imp().nav_settled_token.set(token);
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
+            "VIEWER_SWITCH nav_settled token={} index={} reason={} total_wait_ms={}",
+            token,
+            index,
+            reason,
+            nav_start.elapsed().as_millis()
+        );
+        self.show_at(index);
     }
 
     fn ensure_media_item_in_window(&self, item: MediaItem) -> u32 {
@@ -660,6 +861,92 @@ impl ViewerPage {
         let index = list.n_items();
         list.append(&glib::BoxedAnyObject::new(item));
         index
+    }
+
+    /// Warm the Medium preview thumbnail for `item` without using the result.
+    /// The loader populates its mem + disk cache as a side effect of
+    /// servicing the request, so a subsequent viewer preview request for the
+    /// same item becomes a mem-cache hit. The reply sender is dropped on
+    /// purpose — we only want the cache populated, not the texture.
+    fn warm_medium_thumbnail(loader: &ThumbnailLoader, item: &MediaItem) {
+        let fs_mtime = std::fs::metadata(&item.path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok());
+        let item_mtime = fs_mtime.unwrap_or_else(|| std::time::SystemTime::from(item.file_mtime));
+        let (_tx, _drop_rx) = tokio::sync::oneshot::channel();
+        loader.request_for_media(
+            item.id,
+            item.uri.clone(),
+            ThumbnailSize::Medium,
+            Some(item_mtime),
+            _tx,
+            TIER_BOOST,
+        );
+        // `_drop_rx` is dropped here: the worker still runs, still caches the
+        // generated thumbnail, and the reply send silently fails.
+    }
+
+    /// Prefetch the ±1 neighbour items and warm their Medium preview
+    /// thumbnails. The cached items let the next `navigate_by_delta` skip the
+    /// DB neighbour query (`db_query_ms`), and the warmed thumbnails make the
+    /// next switch's preview a mem-cache hit instead of a disk-cache read.
+    /// Fire-and-forget; stale results are dropped when `current_media_id` no
+    /// longer matches the item we prefetched for.
+    fn prefetch_neighbors(&self) {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(query) = self.imp().media_query.borrow().clone() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let for_id = self.imp().current_media_id.get();
+        if for_id == 0 {
+            return;
+        }
+        // Reserve the cache slot synchronously so a fast subsequent press
+        // sees `cached_neighbor_for_id == current_media_id` and reads whatever
+        // has resolved so far (falling back to a DB query for a direction
+        // whose item is still `None`).
+        self.imp().cached_neighbor_for_id.set(for_id);
+        *self.imp().cached_next_item.borrow_mut() = None;
+        *self.imp().cached_prev_item.borrow_mut() = None;
+
+        for delta in [1i32, -1i32] {
+            let pool = pool.clone();
+            let query = query.clone();
+            let loader = loader.clone();
+            let weak = self.downgrade();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            gio::spawn_blocking(move || {
+                let repo = MediaRepository::new(pool);
+                let _ = tx.send(repo.neighbor(query, MediaId::from(for_id), delta));
+            });
+            glib::spawn_future_local(async move {
+                let neighbor = match rx.await {
+                    Ok(Ok(Some(n))) => n,
+                    _ => return,
+                };
+                let item = neighbor.item;
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                // Stale if the user already navigated away from `for_id`.
+                if this.imp().current_media_id.get() != for_id
+                    || this.imp().cached_neighbor_for_id.get() != for_id
+                {
+                    return;
+                }
+                Self::warm_medium_thumbnail(&loader, &item);
+                match delta {
+                    1 => *this.imp().cached_next_item.borrow_mut() = Some(item),
+                    -1 => *this.imp().cached_prev_item.borrow_mut() = Some(item),
+                    _ => {}
+                }
+            });
+        }
     }
 
     /// Wire the Edit button: configure the embedded `EditorPanel` for the
@@ -2753,6 +3040,11 @@ impl ViewerPage {
     /// main thread, and preload its immediate neighbours. Safe to call
     /// multiple times.
     pub fn show_at(&self, index: u32) {
+        // Anchor for per-switch latency. Measured from the moment show_at is
+        // entered (i.e. after the navigation DB round-trip for left/right) to
+        // each milestone: thumbnail dispatch, thumbnail painted, original
+        // painted. Carried by Copy into the async completions below.
+        let switch_start = std::time::Instant::now();
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG show_at requested_index={} current_before={} details_revealed={}",
@@ -2761,7 +3053,15 @@ impl ViewerPage {
             self.imp().details_split_view.get().shows_sidebar()
         );
         self.imp().current_index.set(index);
-        self.imp().spinner.get().set_visible(true);
+        // Keep the previous frame on screen until a new texture arrives — no
+        // proactive spinner on navigation. The spinner only appears when there
+        // is genuinely nothing to show (first viewer open, or the previous
+        // frame was already cleared). This is the base layer that removes the
+        // "loading animation" during the decode gap; the deferred-switch path
+        // in `navigate_by_delta` guarantees the new preview is already warm
+        // before we even get here.
+        let had_paintable = self.imp().picture.get().paintable().is_some();
+        self.imp().spinner.get().set_visible(!had_paintable);
         self.reset_viewer_transform();
 
         // Bump token so a stale response from a previous show_at() doesn't
@@ -2804,19 +3104,17 @@ impl ViewerPage {
         if item.is_video() {
             self.refresh_thumb_strip();
             self.imp().motion_play_btn.get().set_visible(false);
-            self.imp()
-                .picture
-                .get()
-                .set_paintable(None::<&gdk::Paintable>);
-            self.request_current_preview_thumbnail(&item, token);
+            // Intentionally not clearing the picture: the previous frame stays
+            // visible until the video preview thumbnail (or stream) replaces
+            // it, so there is no blank/spinner gap.
+            self.request_current_preview_thumbnail(&item, token, switch_start);
             self.show_video_stage(&item, token);
             return;
         }
         self.show_image_stage();
-        self.imp()
-            .picture
-            .get()
-            .set_paintable(None::<&gdk::Paintable>);
+        // Intentionally not clearing the picture: the previous frame stays
+        // visible until the new preview/original texture arrives. This is what
+        // removes the loading animation during switching.
         self.imp().edit_btn.get().set_sensitive(false);
         self.set_motion_play_button_for_item(&item);
         if prefs::auto_play_motion_photo() && item.is_motion_photo() {
@@ -2833,14 +3131,26 @@ impl ViewerPage {
             path.display()
         );
 
-        self.request_current_preview_thumbnail(&item, token);
+        self.request_current_preview_thumbnail(&item, token, switch_start);
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
+            "VIEWER_SWITCH thumb_dispatch index={} item_id={} item_name={} dispatch_offset_ms={}",
+            index,
+            item.id,
+            item.display_name(),
+            switch_start.elapsed().as_millis()
+        );
 
-        // Preload neighbours first (fire-and-forget — we just want the OS
-        // page cache warm). Preload is reduced from ±1±2 to ±1 only because
-        // each original decode can be tens of MB; holding 4 in memory at
-        // once is too much for typical browsing.
-        self.preload_neighbor(-1);
-        self.preload_neighbor(1);
+        // Warm the OS page cache for the ±1 neighbours so the next original
+        // decode does not stall on disk I/O. This only `read`s the bytes
+        // (cheap); thumbnail warming — the bigger win for perceived latency —
+        // is done by `prefetch_neighbors`.
+        self.preload_neighbor_pages(-1);
+        self.preload_neighbor_pages(1);
+        // Prefetch ±1 neighbour items (cuts the next switch's DB neighbour
+        // query) and warm their Medium preview thumbnails (makes the next
+        // switch's preview a mem-cache hit).
+        self.prefetch_neighbors();
 
         // Update the bottom filmstrip (highlight or rebuild + scroll).
         self.refresh_thumb_strip();
@@ -2856,6 +3166,7 @@ impl ViewerPage {
         let decode_item_name = item.display_name().to_string();
         let decode_source_uri = item.uri.clone();
         let decode_path = path.clone();
+        let decode_dispatch_at = std::time::Instant::now();
         gio::spawn_blocking(move || {
             let result = orientation::load_oriented_pixbuf(&path)
                 .map(|pb| gdk::Texture::for_pixbuf(&pb))
@@ -2895,13 +3206,29 @@ impl ViewerPage {
                 texture.width(),
                 texture.height()
             );
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_SWITCH orig_loaded token={} item_name={} source_uri={} switch_to_orig_ms={} decode_dispatch_to_orig_ms={} texture={}x{}",
+                token,
+                decode_item_name,
+                decode_source_uri,
+                switch_start.elapsed().as_millis(),
+                decode_dispatch_at.elapsed().as_millis(),
+                texture.width(),
+                texture.height()
+            );
             this.imp().picture.get().set_paintable(Some(&texture));
             this.imp().spinner.get().set_visible(false);
             this.imp().edit_btn.get().set_sensitive(true);
         });
     }
 
-    fn request_current_preview_thumbnail(&self, item: &MediaItem, token: u64) {
+    fn request_current_preview_thumbnail(
+        &self,
+        item: &MediaItem,
+        token: u64,
+        switch_start: std::time::Instant,
+    ) {
         let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
             return;
         };
@@ -2946,16 +3273,31 @@ impl ViewerPage {
                 texture.width(),
                 texture.height()
             );
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_SWITCH thumb_loaded token={} item_id={} item_name={} source_uri={} switch_to_thumb_ms={} texture={}x{}",
+                token,
+                item_id,
+                item_name,
+                item_uri,
+                switch_start.elapsed().as_millis(),
+                texture.width(),
+                texture.height()
+            );
             this.imp().picture.get().set_paintable(Some(&texture));
             this.imp().spinner.get().set_visible(false);
         });
     }
 
-    /// Decode the neighbour at `current + offset` and drop the result. Used
-    /// purely to warm the OS page cache so navigation feels snappier. The
-    /// returned `Pixbuf` is dropped immediately; the OS still retains the
-    /// file pages for the next decode.
-    fn preload_neighbor(&self, offset: i32) {
+    /// Warm the OS page cache for the neighbour at `current + offset` so the
+    /// next original decode does not stall on disk I/O. We only `read` the
+    /// file bytes (cheap) rather than fully decoding it: a full
+    /// `load_oriented_pixbuf` per neighbour used to fire two concurrent HEIC
+    /// decodes on every switch, stealing CPU from the current decode and
+    /// inflating `switch_to_orig_ms`. The neighbour's *thumbnail* is warmed
+    /// separately by `prefetch_neighbors`, which is the cheaper and more
+    /// important cache for the perceived switch latency.
+    fn preload_neighbor_pages(&self, offset: i32) {
         let cur = self.imp().current_index.get() as i32;
         let target = cur + offset;
         let path = {
@@ -2985,9 +3327,10 @@ impl ViewerPage {
             strip_file_uri(&uri)
         };
         gio::spawn_blocking(move || {
-            // Result intentionally dropped — we only care that the file
-            // got read into the page cache.
-            let _ = orientation::load_oriented_pixbuf(&path);
+            // `read` pulls the file into the OS page cache; the bytes are
+            // dropped immediately. Deliberately not decoding — the next
+            // switch decodes on demand.
+            let _ = std::fs::read(&path);
         });
     }
 

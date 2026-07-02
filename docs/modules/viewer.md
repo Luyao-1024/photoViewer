@@ -77,6 +77,39 @@ volume controls.
 
 Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
 
+## Switch Latency And The Deferred Switch
+
+Left/right (and filmstrip) navigation must never show a loading animation.
+The switch path is built around three guarantees:
+
+1. **Ready-before-switch (the complete fallback).** `navigate_by_delta` does
+   not call `show_at` until the target's Medium preview thumbnail is actually
+   loaded. The current frame stays on screen the whole time; there is no
+   `set_paintable(None)` + spinner gap. A `nav_token` is bumped on every press
+   so the latest press wins and rapid presses chain; a `NAV_READY_TIMEOUT_MS`
+   fallback settles the switch even if a thumbnail never arrives, so the UI
+   can never get stuck on the old frame.
+2. **Optimistic logical position vs. synced display.** While a switch is
+   pending, `current_media_id` advances optimistically (so the next press
+   computes its neighbour from the new position and rapid presses skip
+   forward correctly), but `current_index` — read by the title, favorite,
+   details, filmstrip, and editor — only advances when `show_at` actually
+   paints. The display is always consistent with `current_index`.
+3. **Neighbour prefetch warms the cache.** `prefetch_neighbors`, run from
+   `show_at`, background-resolves the ±1 neighbour items (cached so the next
+   press skips the DB `neighbor()` query) and warms their Medium preview
+   thumbnails at `TIER_BOOST`. Combined with the 128-entry thumbnail mem
+   cache, the typical switch's preview is a mem-cache hit, so the deferred
+   wait is only a few milliseconds.
+
+`show_at` itself never proactively clears the paintable or shows the spinner:
+it keeps the previous frame until a new texture (preview or original) lands,
+and only shows the spinner when there is genuinely nothing to display (first
+viewer open). Neighbour page-cache warming (`preload_neighbor_pages`) only
+`read`s the file bytes — it must not do a full `load_oriented_pixbuf`, which
+used to fire two concurrent HEIC decodes per switch and steal CPU from the
+current decode.
+
 Image zoom, portable rotation, and fullscreen-preview controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in. At identity zoom, show rotate-left, rotate-right, fullscreen, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
 
 Viewer previous/next, cancel/close, video playback toggle, image transform, fullscreen-preview, details, edit, and delete shortcuts are routed through the project-wide keyboard subsystem documented in [`keyboard.md`](keyboard.md). Keep visible buttons as the primary affordance and route keyboard actions through the same viewer methods or button signal paths. Do not install touch-only pinch, pan, or global swipe controllers on the viewer image stage, because they compete with overlay buttons and keyboard-driven actions. The editor crop overlay is the exception: its direct drag interaction is part of crop editing, not viewer navigation.
