@@ -965,7 +965,12 @@ impl MainWindow {
                 window.imp().sidebar_list.get().unselect_all();
                 window.imp().media_type_list.get().unselect_all();
                 window.imp().trash_list.get().unselect_all();
-                window.open_album(&nav_view, album);
+                // Defer open_album to idle so navigation (pop/push) cannot
+                // re-enter these row-selected handlers and panic on a
+                // double RefCell borrow.
+                glib::idle_add_local_once(glib::clone!(@weak window, @weak nav_view => move || {
+                    window.open_album(&nav_view, album);
+                }));
             }),
         );
 
@@ -988,7 +993,12 @@ impl MainWindow {
                 window.imp().sidebar_list.get().unselect_all();
                 window.imp().album_list.get().unselect_all();
                 window.imp().trash_list.get().unselect_all();
-                window.open_album(&nav_view, album);
+                // Defer open_album to idle so navigation (pop/push) cannot
+                // re-enter these row-selected handlers and panic on a
+                // double RefCell borrow.
+                glib::idle_add_local_once(glib::clone!(@weak window, @weak nav_view => move || {
+                    window.open_album(&nav_view, album);
+                }));
             }),
         );
 
