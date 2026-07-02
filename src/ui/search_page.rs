@@ -10,7 +10,7 @@ use libadwaita as adw;
 use libadwaita::prelude::{NavigationPageExt, WidgetExt};
 use libadwaita::subclass::prelude::*;
 
-use crate::core::db::DbPool;
+use crate::core::db::{DbPool, SearchField};
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
@@ -46,6 +46,7 @@ mod imp {
         pub video_more_tile: RefCell<Option<gtk::Button>>,
         pub preview_capacity: Cell<usize>,
         pub search_generation: Cell<u64>,
+        pub search_field: Cell<SearchField>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -56,6 +57,12 @@ mod imp {
         pub image_results_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub video_results_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub field_all: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub field_name: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub field_date: TemplateChild<gtk::ToggleButton>,
     }
 
     #[gtk::glib::object_subclass]
@@ -122,6 +129,100 @@ impl SearchPage {
         obj.imp()
             .preview_capacity
             .set(Self::fallback_preview_capacity());
+
+        // Wire up the search field toggle buttons as a group.
+        // In GTK4, all buttons in the same radio group should set the same group leader.
+        let field_all = obj.imp().field_all.get();
+        let field_name = obj.imp().field_name.get();
+        let field_date = obj.imp().field_date.get();
+        field_name.set_group(Some(&field_all));
+        field_date.set_group(Some(&field_all));
+
+        // Connect toggle button signals to update search field.
+        let weak = obj.downgrade();
+        field_all.connect_toggled(move |btn| {
+            if let Some(this) = weak.upgrade() {
+                if btn.is_active() {
+                    this.imp().search_field.set(SearchField::All);
+                    this.run_search(this.imp().search_entry.get().text().as_str());
+                }
+            }
+        });
+        let weak = obj.downgrade();
+        field_name.connect_toggled(move |btn| {
+            if let Some(this) = weak.upgrade() {
+                if btn.is_active() {
+                    this.imp().search_field.set(SearchField::Name);
+                    this.run_search(this.imp().search_entry.get().text().as_str());
+                }
+            }
+        });
+        let weak = obj.downgrade();
+        field_date.connect_toggled(move |btn| {
+            if let Some(this) = weak.upgrade() {
+                if btn.is_active() {
+                    this.imp().search_field.set(SearchField::Date);
+                    this.run_search(this.imp().search_entry.get().text().as_str());
+                }
+            }
+        });
+
+        // Date input auto-formatting via insert_text signal.
+        let weak = obj.downgrade();
+        obj.imp()
+            .search_entry
+            .get()
+            .connect_insert_text(move |editable, text, position| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                // Only format when Date field is selected.
+                if this.imp().search_field.get() != SearchField::Date {
+                    return;
+                }
+                // Only format digit inputs (allow backspace/delete via other signals).
+                if !text.chars().all(|c| c.is_ascii_digit()) {
+                    return;
+                }
+
+                let current = editable.text().to_string();
+                let pos = *position as usize;
+
+                // Build the new text by inserting at cursor position.
+                let mut new_text = current.clone();
+                new_text.insert_str(pos, text);
+
+                // Strip existing separators to get pure digits.
+                let digits: String = new_text
+                    .chars()
+                    .filter(|c| c.is_ascii_digit())
+                    .take(8) // Max 8 digits for YYYYMMDD
+                    .collect();
+
+                // Format as YYYY/MM/DD with auto-inserted separators.
+                let formatted = match digits.len() {
+                    0..=4 => digits.clone(),
+                    5..=6 => format!("{}/{}", &digits[..4], &digits[4..]),
+                    7..=8 => format!("{}/{}/{}", &digits[..4], &digits[4..6], &digits[6..]),
+                    _ => digits.clone(),
+                };
+
+                // Calculate new cursor position accounting for inserted "/" chars.
+                let digits_typed = text.len();
+                let new_digit_pos = pos + digits_typed;
+                // Count how many "/" appear before the new digit position in formatted string.
+                let seps_before = formatted
+                    .chars()
+                    .take(new_digit_pos.min(formatted.len()))
+                    .filter(|c| *c == '/')
+                    .count();
+                let new_cursor = (new_digit_pos + seps_before).min(formatted.len()) as i32;
+
+                // Stop default insertion and set formatted text.
+                editable.stop_signal_emission_by_name("insert-text");
+                editable.set_text(&formatted);
+                editable.set_position(new_cursor);
+            });
 
         let weak = obj.downgrade();
         obj.imp()
@@ -272,6 +373,7 @@ impl SearchPage {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
+        let field = self.imp().search_field.get();
         let limit = runtime_config::ui_media_list_cap().min(u32::MAX as usize) as u32;
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
@@ -281,6 +383,7 @@ impl SearchPage {
                     MediaQuery::SearchKind {
                         term: term.clone(),
                         media_kind: "image".into(),
+                        field,
                     },
                     0,
                     limit,
@@ -289,6 +392,7 @@ impl SearchPage {
                     MediaQuery::SearchKind {
                         term,
                         media_kind: "video".into(),
+                        field,
                     },
                     0,
                     limit,
@@ -512,10 +616,12 @@ impl SearchPage {
             return;
         };
         let term = self.imp().search_entry.get().text().trim().to_string();
+        let field = self.imp().search_field.get();
         let viewer = ViewerPage::new_for_query(
             MediaQuery::SearchKind {
                 term,
                 media_kind: media_kind.into(),
+                field,
             },
             media_id,
             media_list,

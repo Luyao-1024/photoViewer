@@ -1,6 +1,18 @@
 //! SQLite 连接池与迁移管理
 use crate::core::error::{AppError, Result};
 use crate::core::media::{media_kind_from_mime, MediaItem, MediaKind, NewMediaItem};
+
+/// Which fields to search in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SearchField {
+    /// Search both filename and date (default).
+    #[default]
+    All,
+    /// Search only by file name (path).
+    Name,
+    /// Search only by date (taken_at or file_mtime).
+    Date,
+}
 use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -345,7 +357,8 @@ fn search_like_pattern(term: &str) -> String {
         .trim()
         .replace('年', "-")
         .replace('月', "-")
-        .replace('日', "");
+        .replace('日', "")
+        .replace('/', "-"); // Normalize slash to dash for date matching.
     let normalized = normalized.trim_end_matches('-');
     for ch in normalized.chars() {
         match ch {
@@ -364,29 +377,38 @@ pub fn count_live_media_search(
     pool: &DbPool,
     term: &str,
     media_kind: Option<&str>,
+    field: SearchField,
 ) -> Result<usize> {
     let conn = pool.get()?;
     let pattern = search_like_pattern(term);
+    let field_clause = match field {
+        SearchField::All => {
+            "(lower(path) LIKE lower(?1) ESCAPE '\\' \
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\')"
+        }
+        SearchField::Name => "lower(path) LIKE lower(?1) ESCAPE '\\'",
+        SearchField::Date => {
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'"
+        }
+    };
     let count: i64 = if let Some(media_kind) = media_kind {
         conn.query_row(
-            "SELECT COUNT(*) FROM media_items
-             WHERE trashed_at IS NULL
-               AND media_kind = ?2
-               AND (
-                 lower(path) LIKE lower(?1) ESCAPE '\\'
-                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM media_items
+                 WHERE trashed_at IS NULL
+                   AND media_kind = ?2
+                   AND {field_clause}"
+            ),
             rusqlite::params![pattern, media_kind],
             |row| row.get(0),
         )?
     } else {
         conn.query_row(
-            "SELECT COUNT(*) FROM media_items
-             WHERE trashed_at IS NULL
-               AND (
-                 lower(path) LIKE lower(?1) ESCAPE '\\'
-                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
-               )",
+            &format!(
+                "SELECT COUNT(*) FROM media_items
+                 WHERE trashed_at IS NULL
+                   AND {field_clause}"
+            ),
             [pattern],
             |row| row.get(0),
         )?
@@ -550,26 +572,35 @@ pub fn list_media_search_page(
     pool: &DbPool,
     term: &str,
     media_kind: Option<&str>,
+    field: SearchField,
     offset: u32,
     limit: u32,
 ) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let pattern = search_like_pattern(term);
-    if let Some(media_kind) = media_kind {
-        let mut stmt = conn.prepare(
-            "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+    let field_clause = match field {
+        SearchField::All => {
+            "(lower(path) LIKE lower(?1) ESCAPE '\\' \
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\')"
+        }
+        SearchField::Name => "lower(path) LIKE lower(?1) ESCAPE '\\'",
+        SearchField::Date => {
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'"
+        }
+    };
+    let columns = "id, uri, path, folder_path, mime_type, media_subkind,
                     media_attributes, width, height, video_duration_secs, taken_at,
-                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at";
+    if let Some(media_kind) = media_kind {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {columns}
              FROM media_items
              WHERE trashed_at IS NULL
                AND media_kind = ?2
-               AND (
-                 lower(path) LIKE lower(?1) ESCAPE '\\'
-                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
-               )
+               AND {field_clause}
              ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
-             LIMIT ?3 OFFSET ?4",
-        )?;
+             LIMIT ?3 OFFSET ?4"
+        ))?;
         let rows = stmt.query_map(
             rusqlite::params![pattern, media_kind, limit as i64, offset as i64],
             row_to_media_item,
@@ -577,19 +608,14 @@ pub fn list_media_search_page(
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
     } else {
-        let mut stmt = conn.prepare(
-            "SELECT id, uri, path, folder_path, mime_type, media_subkind,
-                    media_attributes, width, height, video_duration_secs, taken_at,
-                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {columns}
              FROM media_items
              WHERE trashed_at IS NULL
-               AND (
-                 lower(path) LIKE lower(?1) ESCAPE '\\'
-                 OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'
-               )
+               AND {field_clause}
              ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
-             LIMIT ?2 OFFSET ?3",
-        )?;
+             LIMIT ?2 OFFSET ?3"
+        ))?;
         let rows = stmt.query_map(
             rusqlite::params![pattern, limit as i64, offset as i64],
             row_to_media_item,

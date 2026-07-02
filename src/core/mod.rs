@@ -39,6 +39,7 @@ pub use media::{MediaItem, NewMediaItem};
 pub use media_change_notifier::MediaChangeNotifier;
 pub use metadata::{extract as extract_metadata, RawMetadata};
 pub use refresh::RefreshCoordinator;
+pub use db::SearchField;
 pub use repository::{FavoriteSummary, MediaMutation, MediaPage, MediaQuery, MediaRepository};
 pub use section_model::{group_items, GroupBy, MediaSection, SectionKey};
 pub use thumbnails::{ThumbnailLoader, ThumbnailSize};

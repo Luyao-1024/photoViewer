@@ -1,4 +1,4 @@
-use crate::core::db::{self, DbPool};
+use crate::core::db::{self, DbPool, SearchField};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
@@ -11,8 +11,15 @@ use std::time::Instant;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaQuery {
     LiveAll,
-    Search(String),
-    SearchKind { term: String, media_kind: String },
+    Search {
+        term: String,
+        field: SearchField,
+    },
+    SearchKind {
+        term: String,
+        media_kind: String,
+        field: SearchField,
+    },
     AlbumFolder(PathBuf),
     Favorites,
     Images,
@@ -67,10 +74,14 @@ impl MediaRepository {
     pub fn count(&self, query: MediaQuery) -> Result<u32> {
         let count = match query {
             MediaQuery::LiveAll => db::count_live_media(&self.pool)?,
-            MediaQuery::Search(term) => db::count_live_media_search(&self.pool, &term, None)?,
-            MediaQuery::SearchKind { term, media_kind } => {
-                db::count_live_media_search(&self.pool, &term, Some(&media_kind))?
+            MediaQuery::Search { term, field } => {
+                db::count_live_media_search(&self.pool, &term, None, field)?
             }
+            MediaQuery::SearchKind {
+                term,
+                media_kind,
+                field,
+            } => db::count_live_media_search(&self.pool, &term, Some(&media_kind), field)?,
             MediaQuery::Trash => db::list_trashed_media(&self.pool)?.len(),
             MediaQuery::AlbumFolder(path) => db::count_media_by_folder(&self.pool, &path)?,
             MediaQuery::Favorites => db::count_favorite_media(&self.pool)?,
@@ -119,12 +130,14 @@ impl MediaRepository {
     pub fn items(&self, query: MediaQuery, start: u32, limit: u32) -> Result<Vec<MediaItem>> {
         match query {
             MediaQuery::LiveAll => db::list_media_page(&self.pool, start, limit),
-            MediaQuery::Search(term) => {
-                db::list_media_search_page(&self.pool, &term, None, start, limit)
+            MediaQuery::Search { term, field } => {
+                db::list_media_search_page(&self.pool, &term, None, field, start, limit)
             }
-            MediaQuery::SearchKind { term, media_kind } => {
-                db::list_media_search_page(&self.pool, &term, Some(&media_kind), start, limit)
-            }
+            MediaQuery::SearchKind {
+                term,
+                media_kind,
+                field,
+            } => db::list_media_search_page(&self.pool, &term, Some(&media_kind), field, start, limit),
             MediaQuery::Trash => Ok(page_vec(db::list_trashed_media(&self.pool)?, start, limit)),
             MediaQuery::AlbumFolder(path) => {
                 db::list_media_by_folder_page(&self.pool, &path, start, limit)

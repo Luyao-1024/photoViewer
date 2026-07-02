@@ -18,9 +18,30 @@ template $SearchPage : Adw.NavigationPage {
       margin-end: 16;
       margin-top: 12;
       margin-bottom: 8;
+      spacing: 8;
 
       Gtk.SearchEntry search_entry {
         hexpand: true;
+      }
+
+      Gtk.Box search_field_bar {
+        orientation: horizontal;
+        halign: center;
+        spacing: 2;
+        css-classes: ["linked"];
+
+        Gtk.ToggleButton field_all {
+          label: "全部";
+          active: true;
+        }
+
+        Gtk.ToggleButton field_name {
+          label: "文件名";
+        }
+
+        Gtk.ToggleButton field_date {
+          label: "日期";
+        }
       }
     }
 

@@ -29,22 +29,36 @@ filtering only the current GTK window, because large-library startup and
 virtual paging keep only a bounded subset in memory. Search currently matches
 file names and shooting dates (`taken_at`, falling back to `file_mtime`) with
 date fragments such as `2026`, `2026-07`, or `2026-07-02`; Chinese `年/月/日`
-input is normalized to the same date form. Search results are rendered in
-separate image and video result sections, each backed by its own bounded
-`ListStore` and a Year-mode `MediaGrid` so result thumbnails use the compact
-overview size. Search preview grids are flat and disable horizontal scrolling:
-they do not render per-year section headers, so matches from different years
-wrap into the same preview area instead of continuing in a single clipped row.
-Search result grids show a bounded preview sized from the available page width
-and height: at least two Year-mode rows, expanding to fill more of the result
-content area when the window is taller. Preview grids disable internal
-scrolling; when a result set does not fit the calculated preview capacity, the
-section shows a "More" button that pushes a type-specific results page
-containing only those image or video matches. Empty result
-sections stay hidden, so image and video areas grow from their result counts
-instead of splitting the page 50/50. Opening the viewer from a result section
-passes a kind-scoped search query so previous/next navigation remains inside
-that section's result set.
+input is normalized to the same date form. A segmented control above the search
+entry lets the user restrict matching to file names only, dates only, or both
+(the default). The selected field is stored as `SearchField` (`All`, `Name`,
+`Date`) and passed through `MediaQuery` to the DB layer.
+
+When the **Date** field is selected, the search entry provides automatic date
+formatting: typing digits auto-inserts "/" separators (e.g., typing "20251001"
+becomes "2025/10/01"). Date search supports multiple granularities:
+- Year only: "2025" matches all media from 2025
+- Year/Month: "2025/10" or "2025-10" matches October 2025
+- Full date: "2025/10/01" or "2025-10-01" matches October 1, 2025
+Both "/" and "-" separators are accepted; Chinese "年/月/日" characters are also
+normalized. The DB layer converts all separators to "-" for matching against
+SQLite's `strftime('%Y-%m-%d', ...)` output.
+
+Search results are rendered in separate image and video result sections, each
+backed by its own bounded `ListStore` and a Year-mode `MediaGrid` so result
+thumbnails use the compact overview size. Search preview grids are flat and
+disable horizontal scrolling: they do not render per-year section headers, so
+matches from different years wrap into the same preview area instead of
+continuing in a single clipped row. Search result grids show a bounded preview
+sized from the available page width and height: at least two Year-mode rows,
+expanding to fill more of the result content area when the window is taller.
+Preview grids disable internal scrolling; when a result set does not fit the
+calculated preview capacity, the section shows a "More" button that pushes a
+type-specific results page containing only those image or video matches. Empty
+result sections stay hidden, so image and video areas grow from their result
+counts instead of splitting the page 50/50. Opening the viewer from a result
+section passes a kind-scoped search query so previous/next navigation remains
+inside that section's result set.
 
 When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
 

@@ -3,6 +3,7 @@ mod common;
 use chrono::{TimeZone, Utc};
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::NewMediaItem;
+use photo_viewer::core::db::SearchField;
 use photo_viewer::core::repository::{MediaNeighbor, MediaQuery, MediaRepository};
 use std::path::Path;
 
@@ -104,7 +105,7 @@ fn repository_searches_live_media_by_file_name_and_capture_date() {
 
     let repo = MediaRepository::new(pool);
     let page = repo
-        .page(MediaQuery::Search("summer".into()), 0, 10)
+        .page(MediaQuery::Search { term: "summer".into(), field: SearchField::All }, 0, 10)
         .unwrap();
 
     assert_eq!(page.total, 2);
@@ -115,8 +116,9 @@ fn repository_searches_live_media_by_file_name_and_capture_date() {
         .collect();
     assert_eq!(names, vec!["family_summer.jpg", "Summer_Beach.jpg"]);
 
+    // Search by date only.
     let page = repo
-        .page(MediaQuery::Search("1970-01-01".into()), 0, 10)
+        .page(MediaQuery::Search { term: "1970-01-01".into(), field: SearchField::All }, 0, 10)
         .unwrap();
 
     let names: Vec<_> = page
@@ -125,6 +127,84 @@ fn repository_searches_live_media_by_file_name_and_capture_date() {
         .map(|item| item.display_name().to_string())
         .collect();
     assert_eq!(names, vec!["Summer_Beach.jpg"]);
+
+    // Search by filename only — date term should not match.
+    let page = repo
+        .page(MediaQuery::Search { term: "1970-01-01".into(), field: SearchField::Name }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 0);
+
+    // Search by filename only — name term should match.
+    let page = repo
+        .page(MediaQuery::Search { term: "summer".into(), field: SearchField::Name }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 2);
+
+    // Search by date only — name term should not match.
+    let page = repo
+        .page(MediaQuery::Search { term: "summer".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 0);
+
+    // Search by date only — date term should match.
+    let page = repo
+        .page(MediaQuery::Search { term: "1970-01-01".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 1);
+}
+
+#[test]
+fn repository_date_search_supports_year_month_day_granularity() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-date-granularity.db")).unwrap();
+
+    // Create items with different dates using timestamps.
+    // 2025-01-15 00:00:00 UTC = 1736899200
+    // 2025-06-20 00:00:00 UTC = 1750377600
+    // 2025-10-01 00:00:00 UTC = 1759276800
+    // 2024-03-10 00:00:00 UTC = 1710028800
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item("photo_jan", 1736899200),
+            item("photo_jun", 1750377600),
+            item("photo_oct", 1759276800),
+            item("photo_2024", 1710028800),
+        ],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+
+    // Search by year only — should match all 2025 items.
+    let page = repo
+        .page(MediaQuery::Search { term: "2025".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 3, "Year search should match 3 items from 2025");
+
+    // Search by year/month with slash separator.
+    let page = repo
+        .page(MediaQuery::Search { term: "2025/06".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 1, "Year/month search should match 1 item from June 2025");
+
+    // Search by year/month with dash separator.
+    let page = repo
+        .page(MediaQuery::Search { term: "2025-10".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 1, "Year/month search should match 1 item from October 2025");
+
+    // Search by full date with slash.
+    let page = repo
+        .page(MediaQuery::Search { term: "2025/01/15".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 1, "Full date search should match exactly Jan 15, 2025");
+
+    // Search for different year.
+    let page = repo
+        .page(MediaQuery::Search { term: "2024".into(), field: SearchField::Date }, 0, 10)
+        .unwrap();
+    assert_eq!(page.total, 1, "Year search should match 1 item from 2024");
 }
 
 #[test]
