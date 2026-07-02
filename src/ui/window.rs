@@ -31,7 +31,7 @@ use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{media_query_for_album, AlbumDetailPage};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::TrashPage;
-use crate::ui::{grid_css, theme};
+use crate::ui::{grid_css, keyboard, theme, PhotosPage, SearchPage, ViewerPage};
 
 #[derive(Debug, Default)]
 struct SidebarAlbumSnapshot {
@@ -179,10 +179,119 @@ gtk::glib::wrapper! {
 
 impl MainWindow {
     pub fn new(app: &adw::Application) -> Self {
-        gtk::glib::Object::builder()
+        let window: Self = gtk::glib::Object::builder()
             .property("application", app)
             .property("title", tr("app.title"))
-            .build()
+            .build();
+        keyboard::router::install(
+            &window,
+            {
+                let weak = window.downgrade();
+                move || {
+                    weak.upgrade()
+                        .map(|window| window.resolve_keyboard_scope())
+                        .unwrap_or(keyboard::KeyboardScope::Global)
+                }
+            },
+            {
+                let weak = window.downgrade();
+                move |action| {
+                    weak.upgrade()
+                        .map(|window| window.handle_keyboard_action(action))
+                        .unwrap_or(keyboard::KeyboardResult::Ignored)
+                }
+            },
+        );
+        window
+    }
+
+    fn resolve_keyboard_scope(&self) -> keyboard::KeyboardScope {
+        let root_scope = keyboard::router::scope_for_focus(self.upcast_ref());
+        if root_scope == keyboard::KeyboardScope::TextInput {
+            return root_scope;
+        }
+        if self.imp().settings_dialog.borrow().is_some() {
+            return keyboard::KeyboardScope::Modal;
+        }
+        if widget_tree_has_visible_class(
+            self.imp().root_overlay.get().upcast_ref(),
+            "glass-context-menu-layer",
+        ) {
+            return keyboard::KeyboardScope::Modal;
+        }
+
+        let Some(page) = self.imp().nav_view.get().visible_page() else {
+            return keyboard::KeyboardScope::Global;
+        };
+
+        if let Ok(viewer) = page.clone().downcast::<ViewerPage>() {
+            if viewer.is_editing_keyboard_scope() {
+                return keyboard::KeyboardScope::Editor;
+            }
+            return keyboard::KeyboardScope::Viewer;
+        }
+
+        if page.clone().downcast::<PhotosPage>().is_ok()
+            || page.clone().downcast::<AlbumDetailPage>().is_ok()
+            || page.clone().downcast::<SearchPage>().is_ok()
+            || page.clone().downcast::<TrashPage>().is_ok()
+        {
+            return keyboard::KeyboardScope::Browsing;
+        }
+
+        keyboard::KeyboardScope::Global
+    }
+
+    fn handle_keyboard_action(&self, action: keyboard::KeyboardAction) -> keyboard::KeyboardResult {
+        let settings_dialog = self.imp().settings_dialog.borrow().as_ref().cloned();
+        if let Some(dialog) = settings_dialog {
+            return match action {
+                keyboard::KeyboardAction::CancelOrClose => {
+                    self.close_settings_dialog(dialog);
+                    keyboard::KeyboardResult::Handled
+                }
+                _ => keyboard::KeyboardResult::Ignored,
+            };
+        }
+        if self.resolve_keyboard_scope() == keyboard::KeyboardScope::Modal {
+            return keyboard::KeyboardResult::Ignored;
+        }
+
+        if let Some(page) = self.imp().nav_view.get().visible_page() {
+            if let Ok(viewer) = page.clone().downcast::<ViewerPage>() {
+                let result = viewer.handle_keyboard_action(action);
+                if result.is_handled() {
+                    return result;
+                }
+            }
+        }
+
+        match action {
+            keyboard::KeyboardAction::Search => {
+                if self.open_search_page() {
+                    keyboard::KeyboardResult::Handled
+                } else {
+                    keyboard::KeyboardResult::Ignored
+                }
+            }
+            keyboard::KeyboardAction::OpenSettings => {
+                self.show_settings_dialog();
+                keyboard::KeyboardResult::Handled
+            }
+            keyboard::KeyboardAction::NavigateBack | keyboard::KeyboardAction::CancelOrClose => {
+                if self.imp().nav_view.get().pop() {
+                    keyboard::KeyboardResult::Handled
+                } else {
+                    keyboard::KeyboardResult::Ignored
+                }
+            }
+            _ => keyboard::KeyboardResult::Ignored,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn keyboard_scope_for_tests(&self) -> keyboard::KeyboardScope {
+        self.resolve_keyboard_scope()
     }
 
     /// Build the static sidebar skeleton: Photos, the collapsible Albums group
@@ -778,15 +887,6 @@ impl MainWindow {
         let trash_list = self.imp().trash_list.get();
         let album_list = self.imp().album_list.get();
         let media_type_list = self.imp().media_type_list.get();
-        let gesture = gtk::GestureSwipe::new();
-        gesture.connect_swipe(
-            glib::clone!(@weak self as window, @weak nav_view => move |_gesture, velocity_x, _velocity_y| {
-                if velocity_x.abs() > 450.0 {
-                    window.show_settings_dialog();
-                }
-            }),
-        );
-        self.imp().nav_view.get().add_controller(gesture);
 
         list.connect_row_selected(
             glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
@@ -1213,6 +1313,27 @@ impl MainWindow {
         }
     }
 
+    fn open_search_page(&self) -> bool {
+        let nav = self.imp().nav_view.get();
+        if let Some(search) = nav
+            .visible_page()
+            .and_then(|page| page.downcast::<SearchPage>().ok())
+        {
+            search.focus_search_entry();
+            return true;
+        }
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let page = SearchPage::new(pool, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
+        true
+    }
+
     fn show_settings_dialog(&self) {
         if self.imp().settings_dialog.borrow().is_some() {
             return;
@@ -1228,16 +1349,32 @@ impl MainWindow {
             .borrow_mut()
             .replace(dialog.clone());
         let weak = self.downgrade();
-        dialog.connect_closed(move |_| {
+        dialog.connect_closed(move |dialog| {
             if let Some(window) = weak.upgrade() {
-                window
-                    .imp()
-                    .nav_view
-                    .remove_css_class("settings-background-blur");
-                window.imp().settings_dialog.borrow_mut().take();
+                window.close_settings_dialog_state(dialog);
             }
         });
         dialog.present(self);
+    }
+
+    fn close_settings_dialog(&self, dialog: adw::Dialog) {
+        self.close_settings_dialog_state(&dialog);
+        dialog.close();
+    }
+
+    fn close_settings_dialog_state(&self, dialog: &adw::Dialog) {
+        self.imp()
+            .nav_view
+            .remove_css_class("settings-background-blur");
+        let should_take = self
+            .imp()
+            .settings_dialog
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current == dialog);
+        if should_take {
+            self.imp().settings_dialog.borrow_mut().take();
+        }
     }
 
     fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
@@ -1737,6 +1874,27 @@ fn widget_or_ancestor_has_class(widget: &gtk::Widget, class_name: &str) -> bool 
         }
         current = w.parent();
     }
+    false
+}
+
+fn widget_tree_has_visible_class(widget: &gtk::Widget, class_name: &str) -> bool {
+    if widget.is_visible()
+        && widget
+            .css_classes()
+            .iter()
+            .any(|class| class.as_str() == class_name)
+    {
+        return true;
+    }
+
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if widget_tree_has_visible_class(&current, class_name) {
+            return true;
+        }
+        child = current.next_sibling();
+    }
+
     false
 }
 
@@ -2369,6 +2527,7 @@ mod tests {
     use chrono::Utc;
     use std::collections::HashSet;
     use std::path::Path;
+    use std::rc::Rc;
 
     fn collect_labels(widget: &gtk::Widget, labels: &mut Vec<String>) {
         if let Some(label) = widget.downcast_ref::<gtk::Label>() {
@@ -2451,6 +2610,394 @@ mod tests {
             is_favorite: false,
             trashed_at: None,
         }
+    }
+
+    fn keyboard_media_item(id: i64) -> MediaItem {
+        MediaItem {
+            id,
+            uri: format!("file:///tmp/keyboard-{id}.jpg"),
+            path: PathBuf::from(format!("/tmp/keyboard-{id}.jpg")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(64),
+            height: Some(48),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 1024,
+            blake3_hash: format!("keyboard-hash-{id}"),
+            is_favorite: false,
+            trashed_at: None,
+        }
+    }
+
+    fn keyboard_media_list() -> gtk::gio::ListStore {
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(keyboard_media_item(1)));
+        media_list
+    }
+
+    fn keyboard_thumbnail_loader() -> (tempfile::TempDir, Arc<ThumbnailLoader>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("keyboard-scope.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+        (tmp, loader)
+    }
+
+    fn emit_key_for_tests<W: IsA<gtk::Widget>>(
+        widget: &W,
+        key: gtk::gdk::Key,
+        state: gtk::gdk::ModifierType,
+    ) -> bool {
+        let controller = widget
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+            .filter(|controller| {
+                controller.name().as_deref() == Some("photo-viewer-keyboard-router")
+            })
+            .expect("keyboard router should be installed");
+        controller.emit_by_name("key-pressed", &[&key, &0_u32, &state])
+    }
+
+    #[gtk::test]
+    fn main_window_installs_single_keyboard_router() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardRouter")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        let window = MainWindow::new(&app);
+
+        let key_controllers: Vec<gtk::EventControllerKey> = window
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .filter_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+            .filter(|controller| {
+                controller.name().as_deref() == Some("photo-viewer-keyboard-router")
+            })
+            .filter(|controller| controller.propagation_phase() == gtk::PropagationPhase::Capture)
+            .collect();
+
+        assert_eq!(
+            key_controllers.len(),
+            1,
+            "MainWindow should own one capture-phase keyboard router"
+        );
+        assert_eq!(
+            key_controllers[0].propagation_phase(),
+            gtk::PropagationPhase::Capture
+        );
+    }
+
+    #[gtk::test]
+    fn navigation_view_has_no_touch_swipe_controller() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.NoSwipeRouter")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        let window = MainWindow::new(&app);
+        window.populate_sidebar();
+
+        let nav = window.nav_view();
+        window.connect_sidebar(&nav);
+
+        let has_swipe = nav
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .any(|controller| controller.downcast::<gtk::GestureSwipe>().is_ok());
+        assert!(
+            !has_swipe,
+            "NavigationView should not install a touch swipe controller that competes with buttons and keyboard actions"
+        );
+    }
+
+    #[gtk::test]
+    fn keyboard_scope_is_viewer_when_viewer_page_is_visible() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardScopeViewer")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+
+        let viewer = crate::ui::ViewerPage::new(keyboard_media_list(), 0);
+        nav.push(&viewer);
+
+        assert_eq!(
+            window.keyboard_scope_for_tests(),
+            crate::ui::keyboard::KeyboardScope::Viewer
+        );
+    }
+
+    #[gtk::test]
+    fn keyboard_scope_is_browsing_when_photos_page_is_visible() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardScopeBrowsing")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let (_tmp, loader) = keyboard_thumbnail_loader();
+        let photos = PhotosPage::new(keyboard_media_list(), loader);
+        nav.push(&photos);
+
+        assert_eq!(
+            window.keyboard_scope_for_tests(),
+            crate::ui::keyboard::KeyboardScope::Browsing
+        );
+    }
+
+    #[gtk::test]
+    fn ctrl_f_opens_search_from_photos_page() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardSearch")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (tmp, loader) = keyboard_thumbnail_loader();
+        let pool = crate::core::db::init_pool(&tmp.path().join("keyboard-search.db")).unwrap();
+        window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+        let photos = PhotosPage::new(media_list, loader);
+        photos.set_nav_target(&nav);
+        photos.set_db_pool(pool);
+        nav.push(&photos);
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::f,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+
+        assert!(handled, "Ctrl+F should be handled from PhotosPage");
+        assert!(
+            nav.visible_page().and_downcast::<SearchPage>().is_some(),
+            "Ctrl+F should push SearchPage from PhotosPage"
+        );
+    }
+
+    #[gtk::test]
+    fn ctrl_f_opens_search_from_trash_page() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardSearchTrash")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (tmp, loader) = keyboard_thumbnail_loader();
+        let pool =
+            crate::core::db::init_pool(&tmp.path().join("keyboard-search-trash.db")).unwrap();
+        window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+        let trash = TrashPage::with_media_list(pool, loader, media_list);
+        nav.push(&trash);
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::f,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+
+        assert!(handled, "Ctrl+F should be handled from TrashPage");
+        assert!(
+            nav.visible_page().and_downcast::<SearchPage>().is_some(),
+            "Ctrl+F should push SearchPage from non-Photos pages when resources are available"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_modal_blocks_global_search_and_closes_on_escape() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardSettingsModal")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (tmp, loader) = keyboard_thumbnail_loader();
+        let pool = crate::core::db::init_pool(&tmp.path().join("keyboard-settings.db")).unwrap();
+        window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+        let photos = PhotosPage::new(media_list, loader);
+        photos.set_nav_target(&nav);
+        photos.set_db_pool(pool);
+        nav.push(&photos);
+
+        let opened = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::comma,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+        assert!(opened, "Ctrl+, should open Settings");
+        assert!(window.imp().settings_dialog.borrow().is_some());
+        assert_eq!(
+            window.keyboard_scope_for_tests(),
+            crate::ui::keyboard::KeyboardScope::Modal
+        );
+
+        let leaked = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::f,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+        assert!(!leaked, "Ctrl+F must not leak through Settings modal");
+        assert!(
+            nav.visible_page().and_downcast::<SearchPage>().is_none(),
+            "SearchPage should not open behind Settings"
+        );
+        let settings_reopen = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::comma,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+        assert!(
+            !settings_reopen,
+            "Ctrl+, must not re-enter Settings while modal is open"
+        );
+        assert!(window.imp().settings_dialog.borrow().is_some());
+
+        let closed = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::Escape,
+            gtk::gdk::ModifierType::empty(),
+        );
+        assert!(closed, "Escape should close Settings modal");
+        assert!(window.imp().settings_dialog.borrow().is_none());
+    }
+
+    #[gtk::test]
+    fn glass_menu_modal_escape_does_not_pop_visible_page() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardGlassMenuModal")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let root = adw::NavigationPage::builder()
+            .title("Root")
+            .child(&gtk::Label::new(Some("root")))
+            .build();
+        let pushed = adw::NavigationPage::builder()
+            .title("Pushed")
+            .child(&gtk::Label::new(Some("pushed")))
+            .build();
+        nav.push(&root);
+        nav.push(&pushed);
+
+        let layer = gtk::Fixed::builder()
+            .can_focus(true)
+            .css_classes(["glass-context-menu-layer"])
+            .build();
+        let button = gtk::Button::with_label("Menu item");
+        layer.put(&button, 0.0, 0.0);
+        window.imp().root_overlay.get().add_overlay(&layer);
+        window.present();
+        button.grab_focus();
+        while glib::MainContext::default().iteration(false) {}
+        assert_eq!(
+            window.keyboard_scope_for_tests(),
+            crate::ui::keyboard::KeyboardScope::Modal
+        );
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::Escape,
+            gtk::gdk::ModifierType::empty(),
+        );
+
+        assert!(
+            !handled,
+            "Window router should let glass menu Escape reach the menu-local handler"
+        );
+        assert_eq!(
+            nav.visible_page().map(|page| page.title().to_string()),
+            Some("Pushed".to_string()),
+            "Modal Escape must not pop the page underneath"
+        );
+        window.imp().root_overlay.get().remove_overlay(&layer);
+    }
+
+    #[gtk::test]
+    fn ctrl_f_reuses_visible_search_page() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardSearchReuse")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (tmp, loader) = keyboard_thumbnail_loader();
+        let pool =
+            crate::core::db::init_pool(&tmp.path().join("keyboard-search-reuse.db")).unwrap();
+        window.set_resources(pool.clone(), loader.clone(), media_list);
+        let search = SearchPage::new(pool, loader);
+        search.set_nav_target(&nav);
+        nav.push(&search);
+        let page_before = nav.visible_page().expect("search visible");
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::f,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+
+        assert!(handled, "Ctrl+F should focus/reuse visible SearchPage");
+        let page_after = nav.visible_page().expect("search still visible");
+        assert!(
+            page_before == page_after,
+            "Ctrl+F should not push a duplicate SearchPage"
+        );
+    }
+
+    #[gtk::test]
+    fn viewer_right_key_navigates_when_focus_is_on_header_button() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardViewerFocus")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+
+        let viewer = crate::ui::ViewerPage::new(keyboard_media_list(), 0);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let events_for_cb = events.clone();
+        viewer.connect_navigation(move |delta| {
+            events_for_cb.borrow_mut().push(delta);
+        });
+        nav.push(&viewer);
+
+        viewer.imp().details_btn.get().grab_focus();
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::Right,
+            gtk::gdk::ModifierType::empty(),
+        );
+
+        assert!(handled, "viewer Right shortcut should stop propagation");
+        assert_eq!(events.borrow().as_slice(), &[1]);
     }
 
     fn media_list_uris(list: &gtk::gio::ListStore) -> Vec<String> {

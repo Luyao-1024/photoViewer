@@ -24,6 +24,7 @@ Key implementation locations:
 | Editor panel | `data/ui/editor-panel.blp`, `src/ui/editor_panel.rs` |
 | Album detail | `data/ui/album-detail-page.blp`, `src/ui/album_detail_page.rs` |
 | Trash | `data/ui/trash-page.blp`, `src/ui/trash_page.rs` |
+| Keyboard routing | `src/ui/keyboard/`, [`keyboard.md`](keyboard.md) |
 | Shared material | `src/ui/grid_css.rs`, `docs/modules/ui-liquid-glass.md` |
 
 ## Global Design Principles
@@ -39,6 +40,10 @@ Key implementation locations:
 - Use icons for compact actions. Prefer named symbolic icons and tooltips for
   toolbar actions; reserve text labels for destructive confirmations, banners,
   empty states, and footer actions where clarity matters.
+- Route project-wide shortcuts through the keyboard subsystem documented in
+  [`keyboard.md`](keyboard.md); keep local key handlers only for widget-local
+  behavior such as text editing, inline rename, menus, fullscreen preview, and
+  crop manipulation.
 - Maintain a usable non-Liquid fallback. Any new glass surface must work in both
   Liquid Glass and plain translucent modes.
 

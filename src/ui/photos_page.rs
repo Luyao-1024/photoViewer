@@ -602,7 +602,7 @@ impl PhotosPage {
         self.imp().media_list.borrow()
     }
 
-    fn open_search_page(&self) {
+    pub(crate) fn open_search_page(&self) {
         let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
             return;
         };

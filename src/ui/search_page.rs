@@ -151,6 +151,10 @@ impl SearchPage {
         obj
     }
 
+    pub(crate) fn focus_search_entry(&self) {
+        self.imp().search_entry.get().grab_focus();
+    }
+
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }

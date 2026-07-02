@@ -1,10 +1,10 @@
-//! ViewerPage — media viewer with preloading and gestures.
+//! ViewerPage — media viewer with preloading.
 //!
 //! `ViewerPage` is pushed onto the `AdwNavigationView` when the user clicks a
 //! `PhotoTile`. It decodes the **original** image (no thumbnail pipeline) for
 //! the current item, plus preloads the ±1 neighbours so panning feels
-//! reasonably snappy. It also wires up a `GestureZoom` and a keyboard
-//! controller for basic interaction.
+//! reasonably snappy. Keyboard interaction is routed through the main-window
+//! keyboard subsystem.
 //!
 //! Note: items in the `gio::ListStore` are `BoxedAnyObject<MediaItem>` (see
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
@@ -21,6 +21,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
 use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
+use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
 use chrono::{Local, Utc};
 use gtk4 as gtk;
@@ -181,10 +182,6 @@ fn should_toggle_video_from_stage_click(y: f64, height: f64) -> bool {
         && y < height - VIDEO_CONTROLS_CLICK_EXCLUSION_PX
 }
 
-fn key_toggles_video_playback(key: gdk::Key) -> bool {
-    matches!(key, gdk::Key::space | gdk::Key::KP_Space)
-}
-
 fn motion_video_cache_path(item: &MediaItem) -> PathBuf {
     // Key on the db id only: it's already unique per motion photo, and
     // blake3_hash is no longer computed at scan time.
@@ -203,7 +200,7 @@ mod imp {
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
-        /// Cumulative zoom scale (1.0 = identity). GestureZoom multiplies into it.
+        /// Cumulative zoom scale (1.0 = identity).
         pub zoom_scale: Cell<f64>,
         /// Viewer-local image rotation in clockwise degrees. This affects only
         /// the current on-screen transform and is never persisted.
@@ -211,19 +208,11 @@ mod imp {
         /// Viewer image pan offset in allocated widget pixels.
         pub zoom_pan_x: Cell<f64>,
         pub zoom_pan_y: Cell<f64>,
-        /// Pan offset captured at the start of the current drag gesture.
-        pub zoom_drag_origin_x: Cell<f64>,
-        pub zoom_drag_origin_y: Cell<f64>,
-        /// Zoom captured at pinch begin; GestureZoom scale values are relative
-        /// to that begin point, not incremental deltas.
-        pub zoom_gesture_origin_scale: Cell<f64>,
         /// Callback registered by the host (PhotosPage) for keyboard navigation.
         pub nav_cb: RefCell<Option<NavCallback>>,
         /// Callback fired after this viewer successfully moves an item to trash.
         pub trashed_cb: RefCell<Option<ItemCallback>>,
-        /// Cached CssProvider reused across gesture ticks. Without this
-        /// we would allocate a new provider on every pinch-tick and
-        /// never release the previous one.
+        /// Cached CssProvider reused by viewer-local zoom/rotation transforms.
         pub zoom_provider: RefCell<Option<gtk::CssProvider>>,
         /// Optional callback invoked whenever current media favorite state changes.
         pub favorite_state_cb: RefCell<Option<FavoriteStateCallback>>,
@@ -394,11 +383,9 @@ impl ViewerPage {
             obj.imp().current_media_id.set(item.id);
         }
         obj.imp().zoom_scale.set(MIN_VIEWER_ZOOM);
-        obj.imp().zoom_gesture_origin_scale.set(MIN_VIEWER_ZOOM);
         obj.apply_i18n();
         obj.setup_zoom_controls();
-        obj.setup_gesture();
-        obj.setup_keyboard();
+        obj.setup_zoom_transform_provider();
         obj.setup_video_playback_interactions();
         obj.setup_edit_button();
         obj.setup_editor_callbacks();
@@ -485,6 +472,100 @@ impl ViewerPage {
     /// Escape. The callback receives the requested action: -1 / +1 / pop.
     pub fn connect_navigation<F: Fn(NavDelta) + 'static>(&self, f: F) {
         *self.imp().nav_cb.borrow_mut() = Some(Rc::new(f));
+    }
+
+    pub(crate) fn is_editing_keyboard_scope(&self) -> bool {
+        self.imp().is_editing.get() || self.imp().editor_split_view.get().shows_sidebar()
+    }
+
+    pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        match action {
+            KeyboardAction::ViewerNext => {
+                if !self.is_editing_keyboard_scope() {
+                    self.navigate_by_delta(1);
+                }
+                KeyboardResult::Handled
+            }
+            KeyboardAction::ViewerPrevious => {
+                if !self.is_editing_keyboard_scope() {
+                    self.navigate_by_delta(-1);
+                }
+                KeyboardResult::Handled
+            }
+            KeyboardAction::CancelOrClose => {
+                if self.imp().editor_split_view.get().shows_sidebar() {
+                    self.stop_editing();
+                } else if self.imp().details_split_view.get().shows_sidebar() {
+                    self.set_details_revealed(false, "keyboard action");
+                } else {
+                    self.fire_nav(NAV_POP);
+                }
+                KeyboardResult::Handled
+            }
+            KeyboardAction::ViewerTogglePlayback => {
+                if self.toggle_video_playback() {
+                    KeyboardResult::Handled
+                } else {
+                    KeyboardResult::Ignored
+                }
+            }
+            KeyboardAction::ViewerZoomIn => self.handle_image_keyboard_action(|this| {
+                this.step_viewer_zoom(1);
+            }),
+            KeyboardAction::ViewerZoomOut => self.handle_image_keyboard_action(|this| {
+                this.step_viewer_zoom(-1);
+            }),
+            KeyboardAction::ViewerZoomReset => self.handle_image_keyboard_action(|this| {
+                this.reset_viewer_zoom();
+            }),
+            KeyboardAction::ViewerRotateLeft => self.handle_image_keyboard_action(|this| {
+                this.rotate_viewer_image(-90);
+            }),
+            KeyboardAction::ViewerRotateRight => self.handle_image_keyboard_action(|this| {
+                this.rotate_viewer_image(90);
+            }),
+            KeyboardAction::ViewerFullscreenPreview => self.handle_image_keyboard_action(|this| {
+                this.open_fullscreen_preview_window();
+            }),
+            KeyboardAction::ViewerToggleDetails => {
+                let next = !self.imp().details_split_view.get().shows_sidebar();
+                self.set_details_revealed(next, "keyboard action");
+                if next {
+                    if let Some(item) = self.current_media_item() {
+                        self.update_details(&item);
+                    }
+                }
+                KeyboardResult::Handled
+            }
+            KeyboardAction::ViewerToggleEdit => {
+                if self.imp().edit_btn.get().is_sensitive() {
+                    self.imp().edit_btn.get().emit_clicked();
+                    KeyboardResult::Handled
+                } else {
+                    KeyboardResult::Ignored
+                }
+            }
+            KeyboardAction::ViewerToggleFavorite => {
+                self.imp().favorite_btn.get().emit_clicked();
+                KeyboardResult::Handled
+            }
+            KeyboardAction::Delete => {
+                self.imp().delete_btn.get().emit_clicked();
+                KeyboardResult::Handled
+            }
+            _ => KeyboardResult::Ignored,
+        }
+    }
+
+    fn handle_image_keyboard_action<F>(&self, f: F) -> KeyboardResult
+    where
+        F: FnOnce(&Self),
+    {
+        if self.is_editing_keyboard_scope() || !self.imp().picture.get().is_visible() {
+            return KeyboardResult::Ignored;
+        }
+        f(self);
+        KeyboardResult::Handled
     }
 
     pub fn connect_item_trashed<F: Fn(i64) + 'static>(&self, f: F) {
@@ -2910,11 +2991,7 @@ impl ViewerPage {
         });
     }
 
-    fn setup_gesture(&self) {
-        // Lazily allocate a single CssProvider and install it once on the
-        // display. Subsequent gesture ticks only `load_from_data` to
-        // update the transform, avoiding a fresh provider (and a leak)
-        // on every pinch event.
+    fn setup_zoom_transform_provider(&self) {
         let provider = gtk::CssProvider::new();
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
@@ -2924,76 +3001,6 @@ impl ViewerPage {
             );
         }
         *self.imp().zoom_provider.borrow_mut() = Some(provider);
-
-        let gesture = gtk::GestureZoom::new();
-        let weak = self.downgrade();
-        gesture.connect_begin(move |_, _| {
-            if let Some(this) = weak.upgrade() {
-                this.imp()
-                    .zoom_gesture_origin_scale
-                    .set(this.imp().zoom_scale.get());
-            }
-        });
-        let weak = self.downgrade();
-        gesture.connect_scale_changed(move |_, scale| {
-            if let Some(this) = weak.upgrade() {
-                let next =
-                    pinch_zoom_from_origin(this.imp().zoom_gesture_origin_scale.get(), scale);
-                this.set_viewer_zoom(
-                    next,
-                    this.imp().zoom_pan_x.get(),
-                    this.imp().zoom_pan_y.get(),
-                );
-            }
-        });
-        self.imp().image_overlay.get().add_controller(gesture);
-
-        let drag = gtk::GestureDrag::new();
-        let weak = self.downgrade();
-        drag.connect_drag_begin(move |_, _, _| {
-            if let Some(this) = weak.upgrade() {
-                this.imp()
-                    .zoom_drag_origin_x
-                    .set(this.imp().zoom_pan_x.get());
-                this.imp()
-                    .zoom_drag_origin_y
-                    .set(this.imp().zoom_pan_y.get());
-            }
-        });
-        let weak = self.downgrade();
-        drag.connect_drag_update(move |_, dx, dy| {
-            if let Some(this) = weak.upgrade() {
-                if this.imp().is_editing.get()
-                    || this.imp().crop_overlay_active.get()
-                    || this.imp().zoom_scale.get() <= MIN_VIEWER_ZOOM
-                {
-                    return;
-                }
-                this.set_viewer_zoom(
-                    this.imp().zoom_scale.get(),
-                    this.imp().zoom_drag_origin_x.get() + dx,
-                    this.imp().zoom_drag_origin_y.get() + dy,
-                );
-            }
-        });
-        self.imp().image_overlay.get().add_controller(drag);
-    }
-
-    fn install_viewer_key_controller<W: IsA<gtk::Widget>>(&self, widget: &W) {
-        let key_ctrl = gtk::EventControllerKey::new();
-        let weak = self.downgrade();
-        key_ctrl.connect_key_pressed(move |_, key, _, _| {
-            let Some(this) = weak.upgrade() else {
-                return glib::Propagation::Proceed;
-            };
-            this.handle_viewer_key(key)
-        });
-        widget.add_controller(key_ctrl);
-    }
-
-    fn setup_keyboard(&self) {
-        self.install_viewer_key_controller(&self.imp().picture.get());
-        self.install_viewer_key_controller(&self.imp().video.get());
     }
 
     fn setup_video_playback_interactions(&self) {
@@ -3016,45 +3023,6 @@ impl ViewerPage {
             }
         });
         video.add_controller(click);
-    }
-
-    fn handle_viewer_key(&self, key: gdk::Key) -> glib::Propagation {
-        match key {
-            key if key_toggles_video_playback(key) => {
-                if self.toggle_video_playback() {
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
-            }
-            gdk::Key::Right => {
-                if self.imp().is_editing.get() {
-                    return glib::Propagation::Stop;
-                }
-                self.navigate_by_delta(1);
-                glib::Propagation::Proceed
-            }
-            gdk::Key::Left => {
-                if self.imp().is_editing.get() {
-                    return glib::Propagation::Stop;
-                }
-                self.navigate_by_delta(-1);
-                glib::Propagation::Proceed
-            }
-            gdk::Key::Escape => {
-                if self.imp().editor_split_view.get().shows_sidebar() {
-                    self.stop_editing();
-                    return glib::Propagation::Stop;
-                }
-                let details_split_view = self.imp().details_split_view.get();
-                if details_split_view.shows_sidebar() {
-                    self.set_details_revealed(false, "key Escape");
-                    return glib::Propagation::Stop;
-                }
-                self.fire_nav(NAV_POP);
-                glib::Propagation::Stop
-            }
-            _ => glib::Propagation::Proceed,
-        }
     }
 
     /// Current item index in the backing `ListStore`.
@@ -3536,10 +3504,6 @@ fn step_zoom(current: f64, direction: i32) -> f64 {
     (current * factor).clamp(MIN_VIEWER_ZOOM, MAX_VIEWER_ZOOM)
 }
 
-fn pinch_zoom_from_origin(origin_scale: f64, gesture_scale: f64) -> f64 {
-    (origin_scale * gesture_scale).clamp(MIN_VIEWER_ZOOM, MAX_VIEWER_ZOOM)
-}
-
 fn clamp_zoom_pan(
     scale: f64,
     pan_x: f64,
@@ -3948,7 +3912,6 @@ fn format_datetime(value: Option<chrono::DateTime<Utc>>) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use glib::value::ToValue;
     use std::cell::Cell;
 
     // ── filmstrip window calculations ──────────────────────────────────
@@ -3969,13 +3932,6 @@ mod tests {
         assert!(!should_toggle_video_from_stage_click(570.0, 600.0));
         assert!(!should_toggle_video_from_stage_click(-1.0, 600.0));
         assert!(!should_toggle_video_from_stage_click(0.0, 40.0));
-    }
-
-    #[test]
-    fn space_keys_toggle_video_playback() {
-        assert!(key_toggles_video_playback(gdk::Key::space));
-        assert!(key_toggles_video_playback(gdk::Key::KP_Space));
-        assert!(!key_toggles_video_playback(gdk::Key::Right));
     }
 
     #[test]
@@ -4486,16 +4442,6 @@ mod tests {
     }
 
     #[test]
-    fn pinch_zoom_uses_gesture_origin_instead_of_compounding_updates() {
-        assert_eq!(pinch_zoom_from_origin(2.0, 1.1), 2.2);
-        assert_eq!(
-            pinch_zoom_from_origin(2.0, 1.2),
-            2.4,
-            "a second pinch update should still use the gesture origin, not compound 2.2 * 1.2"
-        );
-    }
-
-    #[test]
     fn zoom_pan_is_clamped_and_resets_at_identity() {
         assert_eq!(
             clamp_zoom_pan(1.0, 120.0, -80.0, 1000.0, 700.0),
@@ -4645,6 +4591,35 @@ mod tests {
         );
     }
 
+    #[gtk::test]
+    fn viewer_keyboard_action_navigates_and_closes() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let events_for_cb = events.clone();
+        viewer.connect_navigation(move |delta| {
+            events_for_cb.borrow_mut().push(delta);
+        });
+
+        assert_eq!(
+            viewer.handle_keyboard_action(crate::ui::keyboard::KeyboardAction::ViewerNext),
+            crate::ui::keyboard::KeyboardResult::Handled
+        );
+        assert_eq!(
+            viewer.handle_keyboard_action(crate::ui::keyboard::KeyboardAction::ViewerPrevious),
+            crate::ui::keyboard::KeyboardResult::Handled
+        );
+        assert_eq!(
+            viewer.handle_keyboard_action(crate::ui::keyboard::KeyboardAction::CancelOrClose),
+            crate::ui::keyboard::KeyboardResult::Handled
+        );
+
+        assert_eq!(events.borrow().as_slice(), &[1, -1, NAV_POP]);
+    }
+
     fn sample_media_item() -> MediaItem {
         MediaItem {
             id: 1,
@@ -4726,21 +4701,10 @@ mod tests {
             }
         });
 
-        let key_ctrl = viewer
-            .imp()
-            .picture
-            .get()
-            .observe_controllers()
-            .snapshot()
-            .into_iter()
-            .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
-            .expect("viewer picture should have a key controller");
-        let args: &[&dyn ToValue] = &[&gdk::Key::Escape, &0u32, &gdk::ModifierType::empty()];
-        let handled: bool = key_ctrl.emit_by_name("key-pressed", args);
-
-        assert!(
-            handled,
-            "Escape should be consumed when details are visible"
+        assert_eq!(
+            viewer.handle_keyboard_action(KeyboardAction::CancelOrClose),
+            KeyboardResult::Handled,
+            "Escape action should be consumed when details are visible"
         );
         assert!(
             !viewer.imp().details_split_view.get().shows_sidebar(),

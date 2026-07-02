@@ -17,6 +17,7 @@ cursor only.
 | File | Role |
 |---|---|
 | `src/ui/viewer_page.rs` | Viewer state, navigation, overlay panel behavior |
+| `src/ui/keyboard/` | Project-wide shortcut bindings and router |
 | `data/ui/viewer-page.blp` | Viewer template |
 | `tests/e2e_viewer.rs` | Viewer flow coverage |
 | `tests/ui_viewer_toolbar.rs` | Viewer toolbar/template assertions |
@@ -78,6 +79,8 @@ Left/right image navigation belongs to viewer chrome. The prev/next controls flo
 
 Image zoom, portable rotation, and fullscreen-preview controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in. At identity zoom, show rotate-left, rotate-right, fullscreen, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
 
+Viewer previous/next, cancel/close, video playback toggle, image transform, fullscreen-preview, details, edit, and delete shortcuts are routed through the project-wide keyboard subsystem documented in [`keyboard.md`](keyboard.md). Keep visible buttons as the primary affordance and route keyboard actions through the same viewer methods or button signal paths. Do not install touch-only pinch, pan, or global swipe controllers on the viewer image stage, because they compete with overlay buttons and keyboard-driven actions. The editor crop overlay is the exception: its direct drag interaction is part of crop editing, not viewer navigation.
+
 ## Header Toolbar
 
 The viewer header carries four actions, left-to-right: favorite, edit, delete,
@@ -119,4 +122,4 @@ Videos are view-only. Keep the Edit button disabled for `video/*` items and guar
 
 The editor crop selector is drawn as a `GtkDrawingArea` overlay above the viewer `GtkPicture`. It must stay in the image overlay so users can drag the crop rectangle directly over the photo. Coordinate conversion maps the displayed contain-fitted image rectangle back to oriented source-image pixels before updating `EditorPanel`. A hit crop rectangle remains visually selected after click/drag begin so the movable/resizable affordance is obvious.
 
-When the editor sidebar is open, the viewer overlay previous/next navigation buttons are hidden. Keyboard and gesture navigation are already blocked by `is_editing`; the visible chrome must match that locked state so editing controls are not mixed with viewer navigation.
+When the editor sidebar is open, the viewer overlay previous/next navigation buttons are hidden. Keyboard navigation is blocked by the `Editor` keyboard scope; the visible chrome must match that locked state so editing controls are not mixed with viewer navigation.
