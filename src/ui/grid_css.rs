@@ -603,6 +603,31 @@ video.viewer-media-surface controls scale slider {
   box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.10);
 }
 
+/* search-more-tile: show-more button styled as a grid tile */
+.search-more-tile {
+  min-width: 90px;
+  min-height: 90px;
+  border-radius: 10px;
+  padding: 0;
+  background: alpha(@window_fg_color, 0.06);
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  color: alpha(@window_fg_color, 0.52);
+  font-size: 11pt;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.search-more-tile:hover {
+  background: alpha(@window_fg_color, 0.12);
+  border-color: alpha(@window_fg_color, 0.22);
+  color: @window_fg_color;
+}
+
+.search-more-tile:active {
+  background: alpha(@window_fg_color, 0.16);
+  border-color: alpha(@window_fg_color, 0.28);
+}
+
 /* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
    The bottom overlay in ViewerPage. The bar is layout-only so the thumbnails
    float without a capsule background; these rules own per-item emphasis.
@@ -1084,6 +1109,37 @@ row.settings-action-row:hover {
     inset 0 -1px alpha(black, 0.18);
 }
 
+/* ── Search button: glass only on hover (liquid mode) ──
+   Same hover-only language as viewer chrome and sidebar settings:
+   the search button shows just its icon at rest and only draws a glass
+   capsule on hover/focus, keeping header bars calm. */
+.round-search-button {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.round-search-button:hover,
+.round-search-button:focus-visible {
+  background: alpha(@window_bg_color, 0.62);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.20);
+  box-shadow:
+    0 14px 36px alpha(black, 0.30),
+    inset 0 1px alpha(@window_fg_color,0.52),
+    inset 0 -1px alpha(black, 0.14);
+}
+
+.round-search-button:active {
+  background: alpha(@window_bg_color, 0.72);
+  border: 1px solid alpha(@window_fg_color, 0.24);
+  box-shadow:
+    0 8px 22px alpha(black, 0.24),
+    inset 0 1px alpha(@window_fg_color,0.34),
+    inset 0 -1px alpha(black, 0.18);
+}
+
 /* ── Glass alert dialog — 毛玻璃半透明弹框 + 液态玻璃按钮 ──────────────
    AdwAlertDialog 的 CSS 类加在最外层节点(1200x800 填满窗口)，
    可见卡片是深层后代 AdwGizmo.background(约 300x178)。
@@ -1421,6 +1477,29 @@ row.settings-action-row:hover {
 }
 
 .sidebar-settings-button:active {
+  background: alpha(@window_bg_color, 0.74);
+  border: 1px solid alpha(@window_fg_color, 0.20);
+}
+
+/* ── Search button: glass only on hover (plain mode) ──
+   Mirrors the liquid block with the calmer plain material: bare icon at
+   rest, translucent fill on hover/focus. No blur, no inset highlight, no
+   heavy shadow. */
+.round-search-button {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.round-search-button:hover,
+.round-search-button:focus-visible {
+  background: alpha(@window_bg_color, 0.64);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.16);
+}
+
+.round-search-button:active {
   background: alpha(@window_bg_color, 0.74);
   border: 1px solid alpha(@window_fg_color, 0.20);
 }
@@ -2133,6 +2212,29 @@ mod tests {
                     ".sidebar-settings-button:hover,\n.sidebar-settings-button:focus-visible {"
                 ),
                 "sidebar settings button must regain material on hover/focus ({liquid} mode)"
+            );
+        }
+    }
+
+    /// The search button mirrors the viewer-chrome and sidebar-settings
+    /// hover-only treatment: bare icon at rest, glass capsule on hover/focus,
+    /// in BOTH glass modes. Scoped to .round-search-button so the shared
+    /// always-on .glass-toolbar-button rule is unaffected.
+    #[test]
+    fn search_button_is_glass_only_on_hover() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+
+            assert!(
+                css.contains(".round-search-button {\n  background: transparent"),
+                "search button must be bare at rest ({liquid} mode)"
+            );
+
+            assert!(
+                css.contains(
+                    ".round-search-button:hover,\n.round-search-button:focus-visible {"
+                ),
+                "search button must regain material on hover/focus ({liquid} mode)"
             );
         }
     }

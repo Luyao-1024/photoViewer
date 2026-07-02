@@ -8,6 +8,13 @@ template $AlbumDetailPage : Adw.NavigationPage {
     Adw.HeaderBar header_bar {
       show-end-title-buttons: true;
       css-classes: ["glass-header"];
+
+      [start]
+      Gtk.Button search_btn {
+        icon-name: "system-search-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
     }
 
     Gtk.Box content_box {

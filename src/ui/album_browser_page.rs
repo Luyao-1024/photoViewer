@@ -34,12 +34,15 @@ mod imp {
         pub albums: RefCell<Vec<Album>>,
         pub pool: RefCell<Option<DbPool>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub on_album_open: RefCell<Option<AlbumOpenCallback>>,
         pub on_order_changed: RefCell<Option<AlbumOrderChangedCallback>>,
         #[template_child]
         pub flow_box: TemplateChild<gtk::FlowBox>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
+        #[template_child]
+        pub search_btn: TemplateChild<gtk::Button>,
     }
 
     #[gtk::glib::object_subclass]
@@ -96,8 +99,44 @@ impl AlbumBrowserPage {
         *obj.imp().loader.borrow_mut() = Some(loader);
         *obj.imp().on_album_open.borrow_mut() = Some(on_album_open);
         *obj.imp().on_order_changed.borrow_mut() = on_order_changed;
+
+        // Wire the search button to open the search page.
+        obj.imp()
+            .search_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.search.tooltip")));
+        {
+            let weak = obj.downgrade();
+            obj.imp().search_btn.get().connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.open_search_page();
+                }
+            });
+        }
+
         obj.refresh();
         obj
+    }
+
+    /// Inject the `AdwNavigationView` we live inside — needed to push the
+    /// search page. Called by the host after pushing this page.
+    pub fn set_nav_target(&self, nav: &adw::NavigationView) {
+        *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    pub(crate) fn open_search_page(&self) {
+        let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
     }
 
     /// Re-read albums from DB and render all rows.

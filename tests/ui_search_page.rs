@@ -140,19 +140,19 @@ fn search_page_has_dedicated_search_surface_and_split_result_areas() {
         "search preview should fall back to a stable two-row capacity before layout is allocated"
     );
     assert!(
-        !imp.image_more_btn
+        !imp.image_more_tile
             .borrow()
             .as_ref()
             .expect("image results should own a more button")
             .is_visible(),
-        "image more button should stay hidden until preview results overflow"
+        "image more tile should stay hidden until preview results overflow"
     );
     assert!(
-        !imp.video_more_btn
+        !imp.video_more_tile
             .borrow()
             .as_ref()
             .expect("video results should own a more button")
             .is_visible(),
-        "video more button should stay hidden until preview results overflow"
+        "video more tile should stay hidden until preview results overflow"
     );
 }

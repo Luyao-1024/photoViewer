@@ -42,8 +42,8 @@ mod imp {
         pub video_full_results: RefCell<Vec<MediaItem>>,
         pub image_grid: RefCell<Option<MediaGrid>>,
         pub video_grid: RefCell<Option<MediaGrid>>,
-        pub image_more_btn: RefCell<Option<gtk::Button>>,
-        pub video_more_btn: RefCell<Option<gtk::Button>>,
+        pub image_more_tile: RefCell<Option<gtk::Button>>,
+        pub video_more_tile: RefCell<Option<gtk::Button>>,
         pub preview_capacity: Cell<usize>,
         pub search_generation: Cell<u64>,
         #[template_child]
@@ -208,27 +208,8 @@ impl SearchPage {
             .hexpand(true)
             .css_classes(["search-results-title"])
             .build();
-        let more_btn = gtk::Button::builder()
-            .label(tr("search.more"))
-            .halign(gtk::Align::End)
-            .visible(false)
-            .css_classes(["glass-toolbar-button"])
-            .build();
-        let weak = self.downgrade();
-        more_btn.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.open_more_results(media_kind);
-            }
-        });
         header.append(&label);
-        header.append(&more_btn);
         section.append(&header);
-
-        match media_kind {
-            "image" => *self.imp().image_more_btn.borrow_mut() = Some(more_btn),
-            "video" => *self.imp().video_more_btn.borrow_mut() = Some(more_btn),
-            _ => {}
-        }
 
         let on_activate: Rc<dyn Fn(MediaId)> = {
             let weak = self.downgrade();
@@ -255,6 +236,28 @@ impl SearchPage {
         grid.set_flat_sections(true);
         grid.set_content_sized_scroll(560);
         section.append(&grid);
+
+        // "Show more" tile — created here, but appended into the grid's
+        // FlowBox after each replace_results (because MediaGrid rebuilds its
+        // FlowBox when the media list changes).
+        let more_btn = gtk::Button::builder()
+            .label("更多...")
+            .css_classes(["search-more-tile"])
+            .build();
+        let weak = self.downgrade();
+        more_btn.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.open_more_results(media_kind);
+            }
+        });
+        more_btn.set_visible(false);
+
+        match media_kind {
+            "image" => *self.imp().image_more_tile.borrow_mut() = Some(more_btn.clone()),
+            "video" => *self.imp().video_more_tile.borrow_mut() = Some(more_btn),
+            _ => {}
+        }
+
         grid
     }
 
@@ -323,21 +326,52 @@ impl SearchPage {
         let has_videos = !videos.is_empty();
         let image_has_more = images.len() > preview_capacity;
         let video_has_more = videos.len() > preview_capacity;
+        // Reserve one slot for the "show more" tile when results are truncated.
+        let image_preview = if image_has_more {
+            preview_capacity.saturating_sub(1)
+        } else {
+            preview_capacity
+        };
+        let video_preview = if video_has_more {
+            preview_capacity.saturating_sub(1)
+        } else {
+            preview_capacity
+        };
         *self.imp().image_full_results.borrow_mut() = images.clone();
         *self.imp().video_full_results.borrow_mut() = videos.clone();
         self.imp().image_results_box.get().set_visible(has_images);
         self.imp().video_results_box.get().set_visible(has_videos);
-        if let Some(button) = self.imp().image_more_btn.borrow().as_ref() {
-            button.set_visible(image_has_more);
+        if let Some(btn) = self.imp().image_more_tile.borrow().as_ref() {
+            btn.set_visible(image_has_more);
         }
-        if let Some(button) = self.imp().video_more_btn.borrow().as_ref() {
-            button.set_visible(video_has_more);
+        if let Some(btn) = self.imp().video_more_tile.borrow().as_ref() {
+            btn.set_visible(video_has_more);
         }
         if let Some(list) = self.imp().image_list.borrow().as_ref() {
-            replace_store_items(list, preview_items(&images, preview_capacity));
+            replace_store_items(list, preview_items(&images, image_preview));
         }
         if let Some(list) = self.imp().video_list.borrow().as_ref() {
-            replace_store_items(list, preview_items(&videos, preview_capacity));
+            replace_store_items(list, preview_items(&videos, video_preview));
+        }
+        // Re-append tiles after list update (grid rebuilds its FlowBox).
+        self.reattach_more_tiles();
+    }
+
+    /// Re-append the "show more" tiles into their grids' FlowBoxes.
+    /// MediaGrid rebuilds its FlowBox content whenever the media list changes,
+    /// so the tiles must be re-appended after each list update.
+    fn reattach_more_tiles(&self) {
+        if let (Some(btn), Some(grid)) = (
+            self.imp().image_more_tile.borrow().as_ref(),
+            self.imp().image_grid.borrow().as_ref(),
+        ) {
+            grid.append_extra_child(btn.upcast_ref());
+        }
+        if let (Some(btn), Some(grid)) = (
+            self.imp().video_more_tile.borrow().as_ref(),
+            self.imp().video_grid.borrow().as_ref(),
+        ) {
+            grid.append_extra_child(btn.upcast_ref());
         }
     }
 
@@ -363,18 +397,32 @@ impl SearchPage {
         let preview_capacity = self.imp().preview_capacity.get();
         let images = self.imp().image_full_results.borrow().clone();
         let videos = self.imp().video_full_results.borrow().clone();
-        if let Some(button) = self.imp().image_more_btn.borrow().as_ref() {
-            button.set_visible(images.len() > preview_capacity);
+        let image_has_more = images.len() > preview_capacity;
+        let video_has_more = videos.len() > preview_capacity;
+        let image_preview = if image_has_more {
+            preview_capacity.saturating_sub(1)
+        } else {
+            preview_capacity
+        };
+        let video_preview = if video_has_more {
+            preview_capacity.saturating_sub(1)
+        } else {
+            preview_capacity
+        };
+        if let Some(btn) = self.imp().image_more_tile.borrow().as_ref() {
+            btn.set_visible(image_has_more);
         }
-        if let Some(button) = self.imp().video_more_btn.borrow().as_ref() {
-            button.set_visible(videos.len() > preview_capacity);
+        if let Some(btn) = self.imp().video_more_tile.borrow().as_ref() {
+            btn.set_visible(video_has_more);
         }
         if let Some(list) = self.imp().image_list.borrow().as_ref() {
-            replace_store_items(list, preview_items(&images, preview_capacity));
+            replace_store_items(list, preview_items(&images, image_preview));
         }
         if let Some(list) = self.imp().video_list.borrow().as_ref() {
-            replace_store_items(list, preview_items(&videos, preview_capacity));
+            replace_store_items(list, preview_items(&videos, video_preview));
         }
+        // Re-append tiles after list update (grid rebuilds its FlowBox).
+        self.reattach_more_tiles();
     }
 
     fn open_more_results(&self, media_kind: &'static str) {

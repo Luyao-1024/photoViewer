@@ -713,6 +713,28 @@ impl MediaGrid {
         self.imp().flat_sections.get()
     }
 
+    /// Append a custom widget as the last child of the last section FlowBox.
+    /// Used by the search page to insert a "show more" tile at the end of the
+    /// grid. The widget is wrapped in a `FlowBoxChild` automatically.
+    pub fn append_extra_child(&self, widget: &gtk::Widget) {
+        let content = self.imp().content.get();
+        // Find the last FlowBox child of the content box.
+        let mut last_flow: Option<gtk::FlowBox> = None;
+        let mut child = content.first_child();
+        while let Some(c) = child {
+            if let Ok(flow) = c.clone().downcast::<gtk::FlowBox>() {
+                last_flow = Some(flow);
+            }
+            child = c.next_sibling();
+        }
+        if let Some(flow) = last_flow {
+            let flow_child = gtk::FlowBoxChild::builder()
+                .child(widget)
+                .build();
+            flow.append(&flow_child);
+        }
+    }
+
     pub fn hscrollbar_policy(&self) -> gtk::PolicyType {
         self.imp().scroller.get().hscrollbar_policy()
     }

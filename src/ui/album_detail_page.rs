@@ -38,6 +38,8 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub search_btn: TemplateChild<gtk::Button>,
+        #[template_child]
         pub content_box: TemplateChild<gtk::Box>,
     }
 
@@ -163,11 +165,40 @@ impl AlbumDetailPage {
             "album_detail_page: build_end"
         );
 
+        // Wire the search button to open the search page.
+        obj.imp()
+            .search_btn
+            .get()
+            .set_tooltip_text(Some(&crate::core::i18n::tr("photos.search.tooltip")));
+        {
+            let weak = obj.downgrade();
+            obj.imp().search_btn.get().connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.open_search_page();
+                }
+            });
+        }
+
         obj
     }
 
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    pub(crate) fn open_search_page(&self) {
+        let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
     }
 
     /// The album's folder_path. The sidebar uses this to detect "already
