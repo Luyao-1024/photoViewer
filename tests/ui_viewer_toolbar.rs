@@ -59,13 +59,13 @@ fn viewer_toolbar_uses_glass_classes() {
     );
 
     // Header buttons carry glass-toolbar-button. Header order is favorite →
-    // edit → delete → details → fullscreen (add-to-album was removed).
-    let button_classes: [(&str, Vec<String>); 5] = [
+    // edit → delete → details (add-to-album was removed). Fullscreen lives in
+    // the image-stage zoom controls, not the header.
+    let button_classes: [(&str, Vec<String>); 4] = [
         ("favorite_btn", css_classes_vec(&imp.favorite_btn.get())),
         ("edit_btn", css_classes_vec(&imp.edit_btn.get())),
         ("delete_btn", css_classes_vec(&imp.delete_btn.get())),
         ("details_btn", css_classes_vec(&imp.details_btn.get())),
-        ("fullscreen_btn", css_classes_vec(&imp.fullscreen_btn.get())),
     ];
     for (name, classes) in button_classes.iter() {
         assert!(
@@ -77,6 +77,12 @@ fn viewer_toolbar_uses_glass_classes() {
         imp.fullscreen_btn.get().icon_name().as_deref(),
         Some("view-fullscreen-symbolic"),
         "fullscreen_btn should start with the enter-fullscreen icon",
+    );
+    assert!(
+        css_classes_vec(&imp.fullscreen_btn.get())
+            .iter()
+            .any(|c| c == "viewer-overlay-nav-btn"),
+        "fullscreen_btn should use image-stage overlay button styling",
     );
 
     let motion_play_classes = css_classes_vec(&imp.motion_play_btn.get());
@@ -215,6 +221,7 @@ fn viewer_toolbar_uses_glass_classes() {
             "rotate_right_btn",
             css_classes_vec(&imp.rotate_right_btn.get()),
         ),
+        ("fullscreen_btn", css_classes_vec(&imp.fullscreen_btn.get())),
     ] {
         assert!(
             classes.iter().any(|c| c == "viewer-overlay-nav-btn"),
@@ -229,8 +236,13 @@ fn viewer_toolbar_uses_glass_classes() {
         .expect("zoom-in button should have a parent container");
     assert_eq!(
         imp.rotate_right_btn.get().next_sibling().as_ref(),
+        Some(imp.fullscreen_btn.get().upcast_ref()),
+        "fullscreen should sit immediately to the left of zoom-in after rotate-right"
+    );
+    assert_eq!(
+        imp.fullscreen_btn.get().next_sibling().as_ref(),
         Some(imp.zoom_in_btn.get().upcast_ref()),
-        "rotate-right should sit immediately to the left of zoom-in"
+        "zoom-in should sit immediately to the right of fullscreen"
     );
     assert_eq!(
         imp.rotate_left_btn.get().parent().as_ref(),

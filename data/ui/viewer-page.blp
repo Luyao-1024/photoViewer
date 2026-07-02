@@ -16,15 +16,8 @@ template $ViewerPage : Adw.NavigationPage {
         css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
         // Header actions render left-to-right as favorite, edit, delete,
-        // details, fullscreen. Adw.HeaderBar packs `[end]` children edge-first (first
+        // details. Adw.HeaderBar packs `[end]` children edge-first (first
         // declared = rightmost), so declare them in reverse.
-        [end]
-        Gtk.Button fullscreen_btn {
-          icon-name: "view-fullscreen-symbolic";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button"];
-        }
-
         [end]
         Gtk.Button details_btn {
           icon-name: "info-symbolic";
@@ -202,6 +195,12 @@ template $ViewerPage : Adw.NavigationPage {
                   icon-name: "object-rotate-right-symbolic";
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
                   tooltip-text: "";
+                }
+
+                Gtk.Button fullscreen_btn {
+                  icon-name: "view-fullscreen-symbolic";
+                  tooltip-text: "";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
                 }
 
                 Gtk.Button zoom_in_btn {

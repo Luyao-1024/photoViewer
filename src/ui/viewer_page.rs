@@ -1,4 +1,4 @@
-//! ViewerPage — fullscreen image viewer with preloading and gestures.
+//! ViewerPage — media viewer with preloading and gestures.
 //!
 //! `ViewerPage` is pushed onto the `AdwNavigationView` when the user clicks a
 //! `PhotoTile`. It decodes the **original** image (no thumbnail pipeline) for
@@ -76,7 +76,6 @@ const MAX_VIEWER_ZOOM: f64 = 8.0;
 const VIEWER_ZOOM_STEP: f64 = 1.25;
 const VIDEO_CONTROLS_CLICK_EXCLUSION_PX: f64 = 48.0;
 const VIEWER_FULLSCREEN_ICON: &str = "view-fullscreen-symbolic";
-const VIEWER_RESTORE_ICON: &str = "view-restore-symbolic";
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
 /// "pop navigation" sentinel; other values are a delta on the current index.
@@ -269,6 +268,7 @@ mod imp {
         pub crop_overlay_rect: Cell<Option<(u32, u32, u32, u32)>>,
         pub crop_overlay_dimensions: Cell<(u32, u32)>,
         pub crop_drag: RefCell<Option<CropDragState>>,
+        pub fullscreen_preview_window: RefCell<Option<gtk::Window>>,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
@@ -321,6 +321,8 @@ mod imp {
         pub taken_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub thumb_scrolled: TemplateChild<gtk::ScrolledWindow>,
+        #[template_child]
+        pub viewer_bottom_stack: TemplateChild<gtk::Box>,
         #[template_child]
         pub thumb_strip: TemplateChild<gtk::Box>,
         #[template_child]
@@ -502,10 +504,16 @@ impl ViewerPage {
     fn fire_nav(&self, delta: NavDelta) {
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={}",
+            "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={} editor_revealed={} fullscreen_preview_open={} can_pop={} root_present={} header_visible={} bottom_visible={}",
             delta,
             self.imp().current_index.get(),
-            self.imp().details_split_view.get().shows_sidebar()
+            self.imp().details_split_view.get().shows_sidebar(),
+            self.imp().editor_split_view.get().shows_sidebar(),
+            self.imp().fullscreen_preview_window.borrow().is_some(),
+            self.can_pop(),
+            self.root().is_some(),
+            self.imp().header_bar.get().is_visible(),
+            self.imp().viewer_bottom_stack.get().is_visible()
         );
         let cb = self.imp().nav_cb.borrow().clone();
         if let Some(cb) = cb {
@@ -1047,55 +1055,315 @@ impl ViewerPage {
     }
 
     fn setup_fullscreen_button(&self) {
-        self.update_fullscreen_button(false);
+        self.update_fullscreen_button();
         let weak = self.downgrade();
         self.imp().fullscreen_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            this.toggle_fullscreen();
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG fullscreen_preview_button_clicked index={} already_open={} root_present={} can_pop={} header_visible={} bottom_visible={}",
+                this.imp().current_index.get(),
+                this.imp().fullscreen_preview_window.borrow().is_some(),
+                this.root().is_some(),
+                this.can_pop(),
+                this.imp().header_bar.get().is_visible(),
+                this.imp().viewer_bottom_stack.get().is_visible()
+            );
+            this.open_fullscreen_preview_window();
         });
     }
 
-    fn viewer_window(&self) -> Option<gtk::Window> {
-        self.root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok())
-    }
+    fn open_fullscreen_preview_window(&self) {
+        if let Some(window) = self.imp().fullscreen_preview_window.borrow().as_ref() {
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG fullscreen_preview_present_existing index={}",
+                self.imp().current_index.get()
+            );
+            window.present();
+            return;
+        }
 
-    fn toggle_fullscreen(&self) {
-        let Some(window) = self.viewer_window() else {
+        let Some(paintable) = self.imp().picture.get().paintable() else {
+            tracing::warn!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG fullscreen_preview_no_paintable index={}",
+                self.imp().current_index.get()
+            );
             return;
         };
-        if window.is_fullscreen() {
-            window.unfullscreen();
-            self.update_fullscreen_button(false);
-        } else {
+
+        let title = self
+            .current_media_item()
+            .map(|item| item.display_name().to_string())
+            .unwrap_or_else(|| tr("page.viewer.title"));
+        let parent_window = self
+            .root()
+            .and_then(|root| root.downcast::<gtk::Window>().ok());
+        let (default_width, default_height) = parent_window
+            .as_ref()
+            .and_then(|parent| {
+                let surface = parent.surface()?;
+                let display = gtk::prelude::WidgetExt::display(parent);
+                let monitor = display.monitor_at_surface(&surface)?;
+                let geometry = monitor.geometry();
+                Some((geometry.width(), geometry.height()))
+            })
+            .unwrap_or((1024, 768));
+        let window = gtk::Window::builder()
+            .title(title.as_str())
+            .default_width(default_width)
+            .default_height(default_height)
+            .decorated(false)
+            .fullscreened(true)
+            .build();
+        if let Some(application) = parent_window
+            .as_ref()
+            .and_then(|parent| parent.application())
+        {
+            window.set_application(Some(&application));
+        }
+
+        let overlay = gtk::Overlay::new();
+        overlay.add_css_class("viewer-stage");
+
+        let picture = gtk::Picture::builder()
+            .paintable(&paintable)
+            .content_fit(gtk::ContentFit::Contain)
+            .can_shrink(true)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        picture.add_css_class("viewer-media-surface");
+        picture.add_css_class("viewer-fullscreen-preview-picture");
+        overlay.set_child(Some(&picture));
+
+        let preview_provider = Rc::new(gtk::CssProvider::new());
+        gtk::style_context_add_provider_for_display(
+            &gtk::prelude::WidgetExt::display(&picture),
+            preview_provider.as_ref(),
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        let preview_scale = Rc::new(Cell::new(MIN_VIEWER_ZOOM));
+        let preview_rotation = Rc::new(Cell::new(0_i32));
+
+        let nav_controls = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::End)
+            .margin_bottom(34)
+            .margin_end(10)
+            .build();
+        nav_controls.add_css_class("viewer-overlay-nav");
+        let preview_prev_btn =
+            viewer_overlay_button("go-previous-symbolic", &tr("viewer.tooltip.previous"));
+        let preview_next_btn =
+            viewer_overlay_button("go-next-symbolic", &tr("viewer.tooltip.next"));
+        nav_controls.append(&preview_prev_btn);
+        nav_controls.append(&preview_next_btn);
+        overlay.add_overlay(&nav_controls);
+
+        let zoom_controls = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
+            .margin_top(10)
+            .margin_end(10)
+            .build();
+        zoom_controls.add_css_class("viewer-zoom-controls");
+        let preview_zoom_reset_btn =
+            viewer_overlay_button("zoom-fit-best-symbolic", &tr("viewer.tooltip.zoom_reset"));
+        let preview_zoom_out_btn =
+            viewer_overlay_button("zoom-out-symbolic", &tr("viewer.tooltip.zoom_out"));
+        let preview_rotate_left_btn = viewer_overlay_button(
+            "object-rotate-left-symbolic",
+            &tr("viewer.tooltip.rotate_left"),
+        );
+        let preview_rotate_right_btn = viewer_overlay_button(
+            "object-rotate-right-symbolic",
+            &tr("viewer.tooltip.rotate_right"),
+        );
+        let preview_restore_btn = viewer_overlay_button(
+            "view-restore-symbolic",
+            &tr("viewer.tooltip.exit_fullscreen"),
+        );
+        let preview_zoom_in_btn =
+            viewer_overlay_button("zoom-in-symbolic", &tr("viewer.tooltip.zoom_in"));
+        zoom_controls.append(&preview_zoom_reset_btn);
+        zoom_controls.append(&preview_zoom_out_btn);
+        zoom_controls.append(&preview_rotate_left_btn);
+        zoom_controls.append(&preview_rotate_right_btn);
+        zoom_controls.append(&preview_restore_btn);
+        zoom_controls.append(&preview_zoom_in_btn);
+        overlay.add_overlay(&zoom_controls);
+        window.set_child(Some(&overlay));
+
+        let update_preview_controls: Rc<dyn Fn()> = Rc::new({
+            let picture = picture.clone();
+            let provider = preview_provider.clone();
+            let scale = preview_scale.clone();
+            let rotation = preview_rotation.clone();
+            let zoom_reset_btn = preview_zoom_reset_btn.clone();
+            let zoom_out_btn = preview_zoom_out_btn.clone();
+            let rotate_left_btn = preview_rotate_left_btn.clone();
+            let rotate_right_btn = preview_rotate_right_btn.clone();
+            let zoom_in_btn = preview_zoom_in_btn.clone();
+            move || {
+                let current_scale = scale.get();
+                let current_rotation = rotation.get();
+                provider.load_from_data(&format!(
+                    "picture.viewer-fullscreen-preview-picture {{ transform: rotate({current_rotation}deg) scale({current_scale}); }}"
+                ));
+                let zoomed = current_scale > MIN_VIEWER_ZOOM;
+                zoom_in_btn.set_visible(true);
+                zoom_out_btn.set_visible(zoomed);
+                zoom_reset_btn.set_visible(zoomed);
+                rotate_left_btn.set_visible(!zoomed);
+                rotate_right_btn.set_visible(!zoomed);
+                picture.queue_draw();
+            }
+        });
+        update_preview_controls();
+
+        let paintable_handler_id: Rc<RefCell<Option<glib::SignalHandlerId>>> =
+            Rc::new(RefCell::new(None));
+        let handler_id = self.imp().picture.get().connect_paintable_notify({
+            let preview_picture = picture.downgrade();
+            let preview_scale = preview_scale.clone();
+            let preview_rotation = preview_rotation.clone();
+            let update_preview_controls = update_preview_controls.clone();
+            move |main_picture| {
+                let Some(preview_picture) = preview_picture.upgrade() else {
+                    return;
+                };
+                if let Some(paintable) = main_picture.paintable() {
+                    preview_picture.set_paintable(Some(&paintable));
+                    preview_scale.set(MIN_VIEWER_ZOOM);
+                    preview_rotation.set(0);
+                    update_preview_controls();
+                }
+            }
+        });
+        *paintable_handler_id.borrow_mut() = Some(handler_id);
+
+        let weak = self.downgrade();
+        let preview_scale_for_prev = preview_scale.clone();
+        let preview_rotation_for_prev = preview_rotation.clone();
+        let update_for_prev = update_preview_controls.clone();
+        preview_prev_btn.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                preview_scale_for_prev.set(MIN_VIEWER_ZOOM);
+                preview_rotation_for_prev.set(0);
+                update_for_prev();
+                this.navigate_by_delta(-1);
+            }
+        });
+        let weak = self.downgrade();
+        let preview_scale_for_next = preview_scale.clone();
+        let preview_rotation_for_next = preview_rotation.clone();
+        let update_for_next = update_preview_controls.clone();
+        preview_next_btn.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                preview_scale_for_next.set(MIN_VIEWER_ZOOM);
+                preview_rotation_for_next.set(0);
+                update_for_next();
+                this.navigate_by_delta(1);
+            }
+        });
+
+        let scale_for_zoom_in = preview_scale.clone();
+        let update_for_zoom_in = update_preview_controls.clone();
+        preview_zoom_in_btn.connect_clicked(move |_| {
+            scale_for_zoom_in.set(step_zoom(scale_for_zoom_in.get(), 1));
+            update_for_zoom_in();
+        });
+        let scale_for_zoom_out = preview_scale.clone();
+        let update_for_zoom_out = update_preview_controls.clone();
+        preview_zoom_out_btn.connect_clicked(move |_| {
+            scale_for_zoom_out.set(step_zoom(scale_for_zoom_out.get(), -1));
+            update_for_zoom_out();
+        });
+        let scale_for_reset = preview_scale.clone();
+        let rotation_for_reset = preview_rotation.clone();
+        let update_for_reset = update_preview_controls.clone();
+        preview_zoom_reset_btn.connect_clicked(move |_| {
+            scale_for_reset.set(MIN_VIEWER_ZOOM);
+            rotation_for_reset.set(0);
+            update_for_reset();
+        });
+        let rotation_for_left = preview_rotation.clone();
+        let update_for_left = update_preview_controls.clone();
+        preview_rotate_left_btn.connect_clicked(move |_| {
+            rotation_for_left.set((rotation_for_left.get() - 90).rem_euclid(360));
+            update_for_left();
+        });
+        let rotation_for_right = preview_rotation.clone();
+        let update_for_right = update_preview_controls.clone();
+        preview_rotate_right_btn.connect_clicked(move |_| {
+            rotation_for_right.set((rotation_for_right.get() + 90).rem_euclid(360));
+            update_for_right();
+        });
+        let window_weak = window.downgrade();
+        preview_restore_btn.connect_clicked(move |_| {
+            if let Some(window) = window_weak.upgrade() {
+                window.close();
+            }
+        });
+
+        let key = gtk::EventControllerKey::new();
+        let window_weak = window.downgrade();
+        key.connect_key_pressed(move |_, key, _, _| {
+            if key == gdk::Key::Escape {
+                if let Some(window) = window_weak.upgrade() {
+                    window.close();
+                }
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(key);
+
+        let weak = self.downgrade();
+        let handler_id_for_close = paintable_handler_id.clone();
+        window.connect_close_request(move |_| {
+            if let Some(this) = weak.upgrade() {
+                tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
+                    "VIEWER_DEBUG fullscreen_preview_close_request index={}",
+                    this.imp().current_index.get()
+                );
+                if let Some(handler_id) = handler_id_for_close.borrow_mut().take() {
+                    this.imp().picture.get().disconnect(handler_id);
+                }
+                this.imp().fullscreen_preview_window.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        window.connect_map(|window| {
+            window.set_fullscreened(true);
             window.fullscreen();
-            self.update_fullscreen_button(true);
-        }
+        });
+
+        tracing::debug!(
+            target: crate::core::log_targets::VIEWER,
+            "VIEWER_DEBUG fullscreen_preview_open index={} title={}",
+            self.imp().current_index.get(),
+            title
+        );
+        window.present();
+        window.set_fullscreened(true);
+        window.fullscreen();
+        *self.imp().fullscreen_preview_window.borrow_mut() = Some(window);
     }
 
-    fn exit_fullscreen_if_active(&self) -> bool {
-        let Some(window) = self.viewer_window() else {
-            return false;
-        };
-        if !window.is_fullscreen() {
-            return false;
-        }
-        window.unfullscreen();
-        self.update_fullscreen_button(false);
-        true
-    }
-
-    fn update_fullscreen_button(&self, fullscreen: bool) {
+    fn update_fullscreen_button(&self) {
         let button = self.imp().fullscreen_btn.get();
-        if fullscreen {
-            button.set_icon_name(VIEWER_RESTORE_ICON);
-            button.set_tooltip_text(Some(&tr("viewer.tooltip.exit_fullscreen")));
-        } else {
-            button.set_icon_name(VIEWER_FULLSCREEN_ICON);
-            button.set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
-        }
+        button.set_icon_name(VIEWER_FULLSCREEN_ICON);
+        button.set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
     }
 
     fn remove_deleted_item(&self, item_id: i64) {
@@ -2135,6 +2403,18 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else { return };
             let details_split_view = this.imp().details_split_view.get();
             let editor_split_view = this.imp().editor_split_view.get();
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_DEBUG navigation_pop_action index={} details_revealed={} editor_revealed={} fullscreen_preview_open={} can_pop={} root_present={} header_visible={} bottom_visible={}",
+                this.imp().current_index.get(),
+                details_split_view.shows_sidebar(),
+                editor_split_view.shows_sidebar(),
+                this.imp().fullscreen_preview_window.borrow().is_some(),
+                this.can_pop(),
+                this.root().is_some(),
+                this.imp().header_bar.get().is_visible(),
+                this.imp().viewer_bottom_stack.get().is_visible()
+            );
             if editor_split_view.shows_sidebar() {
                 this.stop_editing();
             } else if details_split_view.shows_sidebar() {
@@ -2761,9 +3041,6 @@ impl ViewerPage {
                 glib::Propagation::Proceed
             }
             gdk::Key::Escape => {
-                if self.exit_fullscreen_if_active() {
-                    return glib::Propagation::Stop;
-                }
                 if self.imp().editor_split_view.get().shows_sidebar() {
                     self.stop_editing();
                     return glib::Propagation::Stop;
@@ -3277,6 +3554,16 @@ fn clamp_zoom_pan(
     let max_x = viewport_width * (scale - 1.0) / 2.0;
     let max_y = viewport_height * (scale - 1.0) / 2.0;
     (pan_x.clamp(-max_x, max_x), pan_y.clamp(-max_y, max_y))
+}
+
+fn viewer_overlay_button(icon_name: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .icon_name(icon_name)
+        .tooltip_text(tooltip)
+        .build();
+    button.add_css_class("glass-toolbar-button");
+    button.add_css_class("viewer-overlay-nav-btn");
+    button
 }
 
 /// Pure calculation: scroll adjustment value plus a visual-only residual that
@@ -4076,6 +4363,90 @@ mod tests {
     }
 
     #[gtk::test]
+    fn fullscreen_preview_opens_separate_window_without_changing_viewer_layout() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let texture = test_texture();
+        viewer.imp().picture.get().set_paintable(Some(&texture));
+        let parent = gtk::Window::builder()
+            .title("Viewer parent")
+            .default_width(900)
+            .default_height(700)
+            .build();
+        parent.set_child(Some(&viewer));
+        parent.present();
+        while glib::MainContext::default().iteration(false) {}
+
+        viewer.open_fullscreen_preview_window();
+
+        let preview = viewer
+            .imp()
+            .fullscreen_preview_window
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("fullscreen preview should keep a separate top-level window");
+        assert!(
+            preview.is_fullscreened(),
+            "fullscreen preview should request fullscreen as its initial window state"
+        );
+        assert!(
+            !preview.is_decorated(),
+            "fullscreen preview should be borderless and hide the system titlebar controls"
+        );
+        assert!(
+            preview.transient_for().is_none(),
+            "fullscreen preview should be an independent top-level window so compositors honor fullscreen"
+        );
+        let preview_overlay = preview
+            .child()
+            .expect("fullscreen preview should have overlay content")
+            .downcast::<gtk::Overlay>()
+            .expect("fullscreen preview content should be a GtkOverlay");
+        assert!(
+            widget_tree_has_class(&preview_overlay, "viewer-fullscreen-preview-picture"),
+            "fullscreen preview should render the media picture inside the overlay"
+        );
+        assert!(
+            widget_tree_has_class(&preview_overlay, "viewer-overlay-nav"),
+            "fullscreen preview should include the image-stage previous/next controls"
+        );
+        assert!(
+            widget_tree_has_class(&preview_overlay, "viewer-zoom-controls"),
+            "fullscreen preview should include the image-stage zoom/rotate controls"
+        );
+        assert!(
+            widget_tree_has_button_icon(&preview_overlay, "view-restore-symbolic"),
+            "fullscreen preview should include a restore button to close the enlarged window"
+        );
+        assert!(
+            !widget_tree_has_class(&preview_overlay, "glass-header"),
+            "fullscreen preview should not include the main viewer header actions"
+        );
+        assert!(
+            viewer.imp().header_bar.get().is_visible(),
+            "opening fullscreen preview must not hide the viewer header or disturb NavigationView"
+        );
+        assert!(viewer.imp().viewer_bottom_stack.get().is_visible());
+        assert!(viewer.can_pop());
+        assert_eq!(
+            viewer.imp().fullscreen_btn.get().icon_name().as_deref(),
+            Some(VIEWER_FULLSCREEN_ICON),
+            "main viewer button should remain an open-preview command"
+        );
+
+        preview.close();
+        parent.close();
+        while glib::MainContext::default().iteration(false) {}
+        assert!(
+            viewer.imp().fullscreen_preview_window.borrow().is_none(),
+            "closing the transient preview window should clear the stored handle"
+        );
+    }
+
+    #[gtk::test]
     fn editing_hides_overlay_navigation_buttons() {
         init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
@@ -4139,7 +4510,7 @@ mod tests {
     }
 
     #[gtk::test]
-    fn zoom_controls_live_in_top_right_with_reset_out_rotate_increase_order() {
+    fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_order() {
         init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
@@ -4191,8 +4562,13 @@ mod tests {
         );
         assert_eq!(
             imp.rotate_right_btn.get().next_sibling(),
+            Some(imp.fullscreen_btn.get().upcast::<gtk::Widget>()),
+            "fullscreen should follow rotate-right"
+        );
+        assert_eq!(
+            imp.fullscreen_btn.get().next_sibling(),
             Some(imp.zoom_in_btn.get().upcast::<gtk::Widget>()),
-            "zoom-in should follow rotate-right"
+            "zoom-in should follow fullscreen"
         );
 
         for (name, button) in [
@@ -4201,6 +4577,7 @@ mod tests {
             ("zoom_reset_btn", imp.zoom_reset_btn.get()),
             ("rotate_left_btn", imp.rotate_left_btn.get()),
             ("rotate_right_btn", imp.rotate_right_btn.get()),
+            ("fullscreen_btn", imp.fullscreen_btn.get()),
         ] {
             assert!(
                 button
@@ -4221,6 +4598,7 @@ mod tests {
         assert!(!imp.zoom_reset_btn.get().is_visible());
         assert!(imp.rotate_left_btn.get().is_visible());
         assert!(imp.rotate_right_btn.get().is_visible());
+        assert!(imp.fullscreen_btn.get().is_visible());
 
         viewer.set_viewer_zoom_for_tests(1.25, 0.0, 0.0);
         assert!(imp.zoom_in_btn.get().is_visible());
@@ -4228,6 +4606,7 @@ mod tests {
         assert!(imp.zoom_reset_btn.get().is_visible());
         assert!(!imp.rotate_left_btn.get().is_visible());
         assert!(!imp.rotate_right_btn.get().is_visible());
+        assert!(imp.fullscreen_btn.get().is_visible());
     }
 
     #[gtk::test]
@@ -4290,6 +4669,45 @@ mod tests {
     fn init_viewer_test() {
         let _ = gtk::init();
         crate::ui::grid_css::install();
+    }
+
+    fn test_texture() -> gdk::Texture {
+        let bytes = glib::Bytes::from_owned(vec![255_u8, 0, 0, 255]);
+        gdk::MemoryTexture::new(1, 1, gdk::MemoryFormat::R8g8b8a8, &bytes, 4).upcast()
+    }
+
+    fn widget_tree_has_class<W: IsA<gtk::Widget>>(widget: &W, class_name: &str) -> bool {
+        let widget = widget.as_ref();
+        if widget.css_classes().iter().any(|class| class == class_name) {
+            return true;
+        }
+
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if widget_tree_has_class(&current, class_name) {
+                return true;
+            }
+            child = current.next_sibling();
+        }
+        false
+    }
+
+    fn widget_tree_has_button_icon<W: IsA<gtk::Widget>>(widget: &W, icon_name: &str) -> bool {
+        let widget = widget.as_ref();
+        if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+            if button.icon_name().as_deref() == Some(icon_name) {
+                return true;
+            }
+        }
+
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if widget_tree_has_button_icon(&current, icon_name) {
+                return true;
+            }
+            child = current.next_sibling();
+        }
+        false
     }
 
     #[gtk::test]

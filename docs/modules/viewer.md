@@ -76,12 +76,12 @@ volume controls.
 
 Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
 
-Image zoom and portable rotation controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, zoom-in. At identity zoom, show rotate-left, rotate-right, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
+Image zoom, portable rotation, and fullscreen-preview controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in. At identity zoom, show rotate-left, rotate-right, fullscreen, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
 
 ## Header Toolbar
 
-The viewer header carries five actions, left-to-right: favorite, edit, delete,
-details, fullscreen. (The earlier add-to-album entry was removed from the
+The viewer header carries four actions, left-to-right: favorite, edit, delete,
+details. (The earlier add-to-album entry was removed from the
 viewer — album assignment for a photo is reached from the photos grid batch
 menu instead.) All viewer header buttons share one hover-only treatment: bare
 at rest, glass surface on hover/focus, scoped via the `.viewer-chrome` class so
@@ -90,11 +90,22 @@ always-on.
 
 The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the Favorites album). Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
 
-The viewer header also includes a fullscreen toggle at the far end of the
-action group. It uses the same hover-only glass treatment as the other header
-actions, switches between the fullscreen and restore symbolic icons, and acts on
-the containing `GtkWindow`. While the window is fullscreen, Escape exits
-fullscreen before it closes side panels or pops the viewer page.
+The image-stage top-right control group also includes a fullscreen preview
+action, placed between rotate-right and zoom-in. It opens a separate independent top-level `GtkWindow`,
+borderless and fullscreened on the current display, with a contain-fitted
+`GtkPicture` using the current viewer paintable. It must not be marked transient
+for the main window, because some compositors keep transient windows at dialog
+size and do not honor fullscreen. The preview window inherits the main window's
+`GtkApplication` when available, uses the current monitor geometry as its
+fallback default size, and must not resize/maximize the main application window,
+hide viewer chrome, or change the `Adw.NavigationView` stack. Inside the preview
+window, only image-stage overlay controls are recreated: the bottom-right
+previous/next pair and the top-right zoom/reset/rotate/restore buttons. Header
+actions, details/editor controls, and the bottom thumbnail strip do not appear
+in this window. Preview zoom/rotation state is local to the fullscreen window;
+preview previous/next reuses the main viewer navigation and keeps the preview
+paintable synced when the main viewer image changes. Escape or the restore
+button closes only that preview.
 
 ## Details And Editor Panels
 
