@@ -93,6 +93,34 @@ fn search_page_has_dedicated_search_surface_and_split_result_areas() {
         "video grid should let its scroller size to result content"
     );
     assert!(
+        image_grid.uses_flat_sections(),
+        "search image previews should be flat so they can fill two rows across years"
+    );
+    assert!(
+        video_grid.uses_flat_sections(),
+        "search video previews should be flat so they can fill two rows across years"
+    );
+    assert_eq!(
+        image_grid.hscrollbar_policy(),
+        gtk::PolicyType::Never,
+        "search image preview should wrap rows instead of scrolling horizontally"
+    );
+    assert_eq!(
+        video_grid.hscrollbar_policy(),
+        gtk::PolicyType::Never,
+        "search video preview should wrap rows instead of scrolling horizontally"
+    );
+    assert_eq!(
+        image_grid.vscrollbar_policy(),
+        gtk::PolicyType::Never,
+        "search image preview should show only fitted results and use more instead of inner scrolling"
+    );
+    assert_eq!(
+        video_grid.vscrollbar_policy(),
+        gtk::PolicyType::Never,
+        "search video preview should show only fitted results and use more instead of inner scrolling"
+    );
+    assert!(
         SearchPage::preview_item_limit() > 0,
         "search preview should expose a finite tile capacity before showing more"
     );
@@ -100,6 +128,11 @@ fn search_page_has_dedicated_search_surface_and_split_result_areas() {
         SearchPage::preview_capacity_for_width(980),
         20,
         "search preview should fill two complete year-view rows for the available width"
+    );
+    assert_eq!(
+        SearchPage::preview_capacity_for_area(980, 680, 2),
+        30,
+        "search preview should use available section height to show more than two rows when they fit"
     );
     assert_eq!(
         SearchPage::preview_capacity_for_width(0),

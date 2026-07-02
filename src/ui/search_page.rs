@@ -25,6 +25,7 @@ const SEARCH_PREVIEW_FALLBACK_COLUMNS: usize = 8;
 const SEARCH_PREVIEW_MIN_ROWS: usize = 2;
 const SEARCH_YEAR_TILE_SIZE: i32 = 90;
 const SEARCH_YEAR_TILE_GAP: i32 = 8;
+const SEARCH_SECTION_HEADER_HEIGHT: i32 = 40;
 
 mod imp {
     use super::*;
@@ -49,6 +50,8 @@ mod imp {
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
+        #[template_child]
+        pub content_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub image_results_box: TemplateChild<gtk::Box>,
         #[template_child]
@@ -161,13 +164,25 @@ impl SearchPage {
     }
 
     pub fn preview_capacity_for_width(width: i32) -> usize {
+        Self::preview_capacity_for_area(width, 0, 1)
+    }
+
+    pub fn preview_capacity_for_area(width: i32, height: i32, visible_sections: usize) -> usize {
         let available = width.max(0);
         if available <= 0 {
             return Self::fallback_preview_capacity();
         }
         let tile_step = (SEARCH_YEAR_TILE_SIZE + SEARCH_YEAR_TILE_GAP).max(1);
         let columns = (available / tile_step).max(1) as usize;
-        columns * SEARCH_PREVIEW_MIN_ROWS
+        let available_height = height.max(0);
+        if available_height <= 0 {
+            return columns * SEARCH_PREVIEW_MIN_ROWS;
+        }
+        let sections = visible_sections.max(1) as i32;
+        let section_height =
+            (available_height - sections * SEARCH_SECTION_HEADER_HEIGHT).max(tile_step);
+        let rows = (section_height / sections / tile_step).max(SEARCH_PREVIEW_MIN_ROWS as i32);
+        columns * rows as usize
     }
 
     fn build_result_section(
@@ -233,6 +248,7 @@ impl SearchPage {
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
             },
         );
+        grid.set_flat_sections(true);
         grid.set_content_sized_scroll(560);
         section.append(&grid);
         grid
@@ -323,7 +339,16 @@ impl SearchPage {
 
     fn refresh_preview_capacity_from_layout(&self) {
         let width = self.imp().image_results_box.get().allocated_width();
-        let capacity = Self::preview_capacity_for_width(width);
+        let height = self.imp().content_box.get().allocated_height();
+        let visible_sections = [
+            !self.imp().image_full_results.borrow().is_empty(),
+            !self.imp().video_full_results.borrow().is_empty(),
+        ]
+        .into_iter()
+        .filter(|visible| *visible)
+        .count()
+        .max(1);
+        let capacity = Self::preview_capacity_for_area(width, height, visible_sections);
         if self.imp().preview_capacity.replace(capacity) == capacity {
             return;
         }

@@ -32,11 +32,15 @@ date fragments such as `2026`, `2026-07`, or `2026-07-02`; Chinese `年/月/日`
 input is normalized to the same date form. Search results are rendered in
 separate image and video result sections, each backed by its own bounded
 `ListStore` and a Year-mode `MediaGrid` so result thumbnails use the compact
-overview size. Search result grids show a bounded preview sized from the
-available page width: enough Year-mode tiles to fill two complete rows, with a
-stable two-row fallback before GTK has allocated the page. When a result set
-does not fit that flat preview, the section shows a "More" button that pushes a
-type-specific results page containing only those image or video matches. Empty result
+overview size. Search preview grids are flat and disable horizontal scrolling:
+they do not render per-year section headers, so matches from different years
+wrap into the same preview area instead of continuing in a single clipped row.
+Search result grids show a bounded preview sized from the available page width
+and height: at least two Year-mode rows, expanding to fill more of the result
+content area when the window is taller. Preview grids disable internal
+scrolling; when a result set does not fit the calculated preview capacity, the
+section shows a "More" button that pushes a type-specific results page
+containing only those image or video matches. Empty result
 sections stay hidden, so image and video areas grow from their result counts
 instead of splitting the page 50/50. Opening the viewer from a result section
 passes a kind-scoped search query so previous/next navigation remains inside

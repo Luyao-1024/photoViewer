@@ -98,9 +98,10 @@ Design intent:
   the existing media grid language for each result group. Result thumbnails use
   the compact Year grid size, and the image/video sections size to their own
   result content rather than dividing the page equally. Each section first
-  shows a width-aware flat preview that fills at least two Year-grid rows;
-  overflow is exposed through a small "More" button that opens a type-specific
-  results page.
+  shows a width- and height-aware flat preview that fills as much of the window
+  as practical without internal scrolling; the preview is not broken up by
+  per-year headers. Overflow is exposed through a small "More" button that
+  opens a type-specific results page.
 - The batch-action toolbar is split across the header: select-all (text label,
   toggling 全选 / 取消全选) stays on the left (`[start]`); the icon-only batch
   actions live on the right (`[end]`) — add-to-album (`list-add-symbolic`, the

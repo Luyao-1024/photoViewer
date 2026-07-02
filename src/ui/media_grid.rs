@@ -72,7 +72,9 @@ use crate::core::media::MediaItem;
 use crate::core::refresh::LibraryStats;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{apply_authoritative_counts, group_items, GroupBy, SectionKey};
+use crate::core::section_model::{
+    apply_authoritative_counts, group_items, GroupBy, MediaSection, SectionKey,
+};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
@@ -166,6 +168,7 @@ mod imp {
         pub mode: Cell<GroupBy>,
         pub enable_context_menu: Cell<bool>,
         pub full_library_context: Cell<bool>,
+        pub flat_sections: Cell<bool>,
         pub active: Cell<bool>,
         pub dirty_model: Cell<bool>,
         pub media_list: RefCell<Option<gio::ListStore>>,
@@ -244,6 +247,7 @@ mod imp {
                 mode: Cell::default(),
                 enable_context_menu: Cell::new(false),
                 full_library_context: Cell::new(true),
+                flat_sections: Cell::new(false),
                 active: Cell::new(true),
                 dirty_model: Cell::new(false),
                 media_list: RefCell::new(None),
@@ -691,8 +695,30 @@ impl MediaGrid {
         self.set_vexpand(false);
         let scroller = self.imp().scroller.get();
         scroller.set_vexpand(false);
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
         scroller.set_propagate_natural_height(true);
         scroller.set_max_content_height(max_content_height.max(1));
+    }
+
+    pub fn set_flat_sections(&self, enabled: bool) {
+        if self.imp().flat_sections.replace(enabled) == enabled {
+            return;
+        }
+        if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
+            self.rebuild_immediately(media_list);
+        }
+    }
+
+    pub fn uses_flat_sections(&self) -> bool {
+        self.imp().flat_sections.get()
+    }
+
+    pub fn hscrollbar_policy(&self) -> gtk::PolicyType {
+        self.imp().scroller.get().hscrollbar_policy()
+    }
+
+    pub fn vscrollbar_policy(&self) -> gtk::PolicyType {
+        self.imp().scroller.get().vscrollbar_policy()
     }
 
     pub fn mode(&self) -> GroupBy {
@@ -1328,6 +1354,7 @@ impl MediaGrid {
             );
             items.truncate(max_items);
         }
+        let rendered_item_count = items.len() as u32;
         let uri_to_index = uri_index_map(&media_list);
         let total_media_count = if self.imp().full_library_context.get() {
             self.imp()
@@ -1404,11 +1431,24 @@ impl MediaGrid {
                 total_media_count
             );
         } else {
-            let mut sections = group_items(&items, mode);
+            let flat_sections = self.imp().flat_sections.get();
+            let mut sections = if flat_sections {
+                vec![MediaSection {
+                    key: SectionKey {
+                        year: None,
+                        month: None,
+                        day: None,
+                    },
+                    label: String::new(),
+                    items,
+                }]
+            } else {
+                group_items(&items, mode)
+            };
             // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
             // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
             // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
-            if self.imp().full_library_context.get() {
+            if !flat_sections && self.imp().full_library_context.get() {
                 if let Some(counts) = self.imp().section_count_snapshots.borrow().get(&mode) {
                     apply_authoritative_counts(&mut sections, counts);
                 }
@@ -1418,17 +1458,19 @@ impl MediaGrid {
                     continue;
                 }
 
-                // Full-width section header.
-                let header = gtk::Label::builder()
-                    .label(&section.label)
-                    .halign(gtk::Align::Start)
-                    .margin_start(12)
-                    .margin_top(12)
-                    .margin_bottom(6)
-                    .xalign(0.0)
-                    .css_classes(["heading"])
-                    .build();
-                content.append(&header);
+                if !flat_sections {
+                    // Full-width section header.
+                    let header = gtk::Label::builder()
+                        .label(&section.label)
+                        .halign(gtk::Align::Start)
+                        .margin_start(12)
+                        .margin_top(12)
+                        .margin_bottom(6)
+                        .xalign(0.0)
+                        .css_classes(["heading"])
+                        .build();
+                    content.append(&header);
+                }
 
                 // FlowBox of square thumbnails. `homogeneous` makes every cell the
                 // same size; with each picture's `set_size_request(target)` the
@@ -1737,7 +1779,7 @@ impl MediaGrid {
         let rendered_window_len = if loading_placeholder_count > 0 {
             loading_placeholder_count
         } else {
-            items.len() as u32
+            rendered_item_count
         };
         let loaded_end = window_start.saturating_add(rendered_window_len);
         let bottom_unloaded = total_media_count.saturating_sub(loaded_end);
