@@ -76,6 +76,7 @@ fn media_grid_flowbox_uses_8px_gaps() {
             on_move_to_trash: Rc::new(|_| {}),
             on_set_favorite: Rc::new(|_, _| {}),
             on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+            on_set_album_cover: None,
         },
         false,
     );

@@ -38,11 +38,19 @@ then `MainWindow::refresh_sidebar_snapshot_async()` refreshes the true live
 count, folder albums, virtual album counts, and media-type rows from a blocking
 worker after the Photos page is usable.
 
+Album covers are persisted separately from the `albums` materialized view in
+`album_covers(folder_path, cover_uri)`. `albums::refresh` applies the same
+priority everywhere: explicit user cover first, newest live media in that album
+second, and no cover only for empty albums. Keep the override table independent
+from `albums` so scan/refresh rebuilds do not erase user choices.
+
 Albums are shown under a collapsible "Albums" group header. The group owns a
 fixed-height scroll region in the sidebar: Photos, media-type categories,
 Trash, and Settings remain stable while the album rows themselves scroll. All
 virtual and folder albums are rendered directly in that scroll region; there is
-no "More" row in the sidebar.
+no "More" row in the sidebar. Sidebar album rows show album cover thumbnails,
+not symbolic folder/type icons. Covers load through `ThumbnailLoader` so row
+construction does not decode media on the GTK main thread.
 
 Below Albums, the sidebar has a matching collapsible "Media Types" group. It
 uses the same sub-row visual treatment and opens the same `AlbumDetailPage`
@@ -75,6 +83,10 @@ in that folder to the system trash and then refreshes the derived album list.
 Virtual albums such as Favorites, Photos, and Videos are navigable but not
 ignorable or deletable. Album multi-select is limited to deleting multiple real
 folder albums through the same trash-backed operation.
+
+Within an album detail page, right-clicking a media tile can set that item as
+the album cover. The action writes `album_covers`, refreshes the sidebar, and
+leaves media files untouched.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 

@@ -86,6 +86,7 @@
     "album.hdr.name": "HDR",
     "album.no_albums_yet": "No Albums Yet",
     "album.context.manage": "Manage Album",
+    "album.context.set_cover": "Set as Album Cover",
     "album.context.multi_select": "Select Albums",
     "album.context.ignore": "Ignore Album",
     "album.context.delete": "Delete Album",

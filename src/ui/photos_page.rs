@@ -254,6 +254,7 @@ impl PhotosPage {
             on_move_to_trash,
             on_set_favorite: on_favorite,
             on_query_favorite_state,
+            on_set_album_cover: None,
         };
 
         // Three independent MediaGrid instances — one per grouping mode.

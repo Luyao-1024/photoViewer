@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS album_order (
     sort_order      INTEGER NOT NULL
 );
 
+-- album_covers 持久化用户手动指定的相册封面。
+-- 单独成表而非写入 albums.cover_uri：albums 是物化视图，每次刷新会重建。
+CREATE TABLE IF NOT EXISTS album_covers (
+    folder_path     TEXT PRIMARY KEY,
+    cover_uri       TEXT NOT NULL
+);
+
 -- edits 非破坏性编辑记录
 CREATE TABLE IF NOT EXISTS edits (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

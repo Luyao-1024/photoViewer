@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
@@ -7,6 +7,25 @@ use tempfile::tempdir;
 
 fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     make_item_with_mime(uri, path, folder, "image/jpeg")
+}
+
+fn make_item_at(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
+    let mtime = Utc.with_ymd_and_hms(2025, 4, day, 12, 0, 0).unwrap();
+    NewMediaItem {
+        uri: uri.into(),
+        path: path.into(),
+        folder_path: folder.into(),
+        mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
+        width: Some(100),
+        height: Some(100),
+        video_duration_secs: None,
+        taken_at: Some(mtime),
+        file_mtime: mtime,
+        file_size: 1000,
+        blake3_hash: format!("h{}", uri),
+    }
 }
 
 fn make_item_with_mime(uri: &str, path: &str, folder: &str, mime_type: &str) -> NewMediaItem {
@@ -184,6 +203,84 @@ fn refresh_groups_by_folder() {
     assert_eq!(list.len(), 2);
     assert_eq!(list[0].name, "/p/Camera"); // 最近修改，应排第一；name 与 folder_path 相同
     assert_eq!(list[0].photo_count, 2);
+}
+
+#[test]
+fn folder_album_cover_defaults_to_latest_media() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    db::insert_media_item(
+        &pool,
+        &make_item_at(
+            "file:///p/Camera/old.jpg",
+            "/p/Camera/old.jpg",
+            "/p/Camera",
+            1,
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item_at(
+            "file:///p/Camera/new.jpg",
+            "/p/Camera/new.jpg",
+            "/p/Camera",
+            2,
+        ),
+    )
+    .unwrap();
+
+    albums::refresh(&pool).unwrap();
+
+    let album = albums::find_by_folder_path(&pool, Path::new("/p/Camera"))
+        .unwrap()
+        .expect("folder album should exist");
+    assert_eq!(
+        album.cover_uri.as_deref(),
+        Some("file:///p/Camera/new.jpg"),
+        "album cover should fall back to the newest media item"
+    );
+}
+
+#[test]
+fn explicit_folder_album_cover_overrides_latest_media_and_survives_refresh() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    db::insert_media_item(
+        &pool,
+        &make_item_at(
+            "file:///p/Camera/old.jpg",
+            "/p/Camera/old.jpg",
+            "/p/Camera",
+            1,
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item_at(
+            "file:///p/Camera/new.jpg",
+            "/p/Camera/new.jpg",
+            "/p/Camera",
+            2,
+        ),
+    )
+    .unwrap();
+
+    albums::refresh(&pool).unwrap();
+    albums::set_album_cover(&pool, Path::new("/p/Camera"), "file:///p/Camera/old.jpg").unwrap();
+    albums::refresh(&pool).unwrap();
+
+    let album = albums::find_by_folder_path(&pool, Path::new("/p/Camera"))
+        .unwrap()
+        .expect("folder album should exist");
+    assert_eq!(
+        album.cover_uri.as_deref(),
+        Some("file:///p/Camera/old.jpg"),
+        "manual album cover should have priority over the newest media item"
+    );
 }
 
 #[test]

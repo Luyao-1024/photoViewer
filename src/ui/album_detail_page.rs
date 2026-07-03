@@ -10,7 +10,7 @@ use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
-use crate::core::albums::Album;
+use crate::core::albums::{self, Album};
 use crate::core::db::DbPool;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
@@ -39,6 +39,8 @@ mod imp {
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub content_box: TemplateChild<gtk::Box>,
     }
@@ -132,7 +134,15 @@ impl AlbumDetailPage {
                 })
             };
             let on_background_changed: Rc<dyn Fn()> = Rc::new(|| {});
-            let grid = MediaGrid::new_for_album(
+            let on_set_album_cover: Rc<dyn Fn(MediaId)> = {
+                let weak = obj.downgrade();
+                Rc::new(move |media_id| {
+                    if let Some(this) = weak.upgrade() {
+                        this.set_album_cover_from_media(media_id);
+                    }
+                })
+            };
+            let grid = MediaGrid::new_for_album_with_context_menu(
                 media_list,
                 GroupBy::Day,
                 loader,
@@ -143,8 +153,10 @@ impl AlbumDetailPage {
                     on_move_to_trash: Rc::new(|_| {}),
                     on_set_favorite: Rc::new(|_, _| {}),
                     on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                    on_set_album_cover: Some(on_set_album_cover),
                 },
             );
+            grid.set_context_menu_overlay(Some(&obj.imp().grid_overlay.get()));
             obj.imp().content_box.get().append(&grid);
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
@@ -199,6 +211,33 @@ impl AlbumDetailPage {
         let page = crate::ui::search_page::SearchPage::new(pool, loader);
         page.set_nav_target(&nav);
         nav.push(&page);
+    }
+
+    fn set_album_cover_from_media(&self, media_id: MediaId) {
+        let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(cover_uri) = media_uri_for_id(&media_list, media_id) else {
+            return;
+        };
+
+        let folder_path = album.folder_path.clone();
+        let nav = self.imp().nav_view.borrow().as_ref().cloned();
+        glib::spawn_future_local(async move {
+            let _ = gtk::gio::spawn_blocking(move || {
+                albums::set_album_cover(&pool, &folder_path, &cover_uri)
+            })
+            .await;
+            if let Some(nav) = nav {
+                crate::ui::window::refresh_albums_sidebar(&nav);
+            }
+        });
     }
 
     /// The album's folder_path. The sidebar uses this to detect "already
@@ -447,6 +486,22 @@ fn index_for_media_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u
         };
         if boxed.borrow::<MediaItem>().id == media_id.get() {
             return Some(index);
+        }
+    }
+    None
+}
+
+fn media_uri_for_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<String> {
+    for i in 0..list.n_items() {
+        let Some(obj) = list.item(i) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        let item = boxed.borrow::<MediaItem>();
+        if item.id == media_id.get() {
+            return Some(item.uri.clone());
         }
     }
     None
