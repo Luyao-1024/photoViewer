@@ -377,8 +377,10 @@ box.mode-dot,
 }
 
 /* Album cover thumbnail in sidebar rows. Fixed geometry keeps the rail stable
-   while async thumbnails load. */
-.glass-sidebar-cover {
+   while async thumbnails load. The double-class selector overrides
+   .glass-thumb-card's border-radius (both are single-class; this one needs
+   higher specificity since .glass-thumb-card comes later in the sheet). */
+.glass-sidebar-cover.glass-thumb-card {
   min-width: 24px;
   min-height: 24px;
   padding: 0;
@@ -2824,6 +2826,29 @@ mod tests {
             assert!(
                 css.contains("margin-left: 0;"),
                 "floating panel should paint from the overlay sidebar's leading edge ({liquid} mode)"
+            );
+        }
+    }
+
+    /// Sidebar album covers must have square corners (border-radius: 0),
+    /// overriding the default .glass-thumb-card 10px radius.
+    #[test]
+    fn sidebar_cover_has_square_corners() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            // The double-class selector must override .glass-thumb-card's radius.
+            let block = css_block(&css, ".glass-sidebar-cover.glass-thumb-card")
+                .expect("sidebar cover must have a dedicated double-class rule");
+            assert!(
+                block.contains("border-radius: 0"),
+                "sidebar album cover must have square corners ({liquid} mode), got {block}"
+            );
+            // The inner picture must also be square.
+            let img_block = css_block(&css, ".glass-sidebar-cover .thumb-image")
+                .expect("sidebar cover image must have a dedicated rule");
+            assert!(
+                img_block.contains("border-radius: 0"),
+                "sidebar album cover image must have square corners ({liquid} mode), got {img_block}"
             );
         }
     }
