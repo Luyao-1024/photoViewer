@@ -228,6 +228,7 @@ mod imp {
         /// authoritative section counts. Loaded after first paint so startup
         /// is not blocked by COUNT/GROUP BY projections.
         pub library_metadata_loading: Cell<bool>,
+        pub library_metadata_dirty_pending: Cell<bool>,
         pub library_total_snapshot: Cell<Option<u32>>,
         pub library_stats_snapshot: Cell<Option<LibraryStats>>,
         pub section_count_snapshots: RefCell<HashMap<GroupBy, HashMap<SectionKey, u32>>>,
@@ -281,6 +282,7 @@ mod imp {
                 stats_refresh_source: RefCell::new(None),
                 stats_refresh_running: Cell::new(false),
                 library_metadata_loading: Cell::new(false),
+                library_metadata_dirty_pending: Cell::new(false),
                 library_total_snapshot: Cell::new(None),
                 library_stats_snapshot: Cell::new(None),
                 section_count_snapshots: RefCell::new(HashMap::new()),
@@ -621,10 +623,12 @@ impl MediaGrid {
                     // 首次启动扫描从空库追加第一批媒体时，Day grid 已经按空列表
                     // 构建过；必须立即重建，否则空态切回 Day 后 tile/统计仍为空。
                     this.rebuild_immediately(list.clone());
+                } else if added > 0 {
+                    // 启动扫描和 watcher 的纯新增事件可能把较新的项目插入到当前窗口
+                    // 前部。去抖重建以吸收批量扫描突发，同时避免每个新增信号都同步
+                    // 拆/建 FlowBox。
+                    this.schedule_rebuild(list.clone());
                 }
-                // 单纯追加（removed == 0）：不重建。新项在 rendered_limit 之外，
-                // 待用户滚到底时由 try_expand_render_limit 触发单次重建统一拾取。
-                // 否则后台分页加载 500+ 页，每页触发一次全量重建，会持续闪烁 + 丢滚动位。
             } else {
                 this.imp().dirty_model.set(true);
             }
@@ -1883,6 +1887,10 @@ impl MediaGrid {
                 return;
             };
             this.imp().library_metadata_loading.set(false);
+            if this.imp().library_metadata_dirty_pending.replace(false) {
+                this.ensure_library_metadata_async(loader.clone(), mode);
+                return;
+            }
             let snapshot = match result {
                 Ok(snapshot) => snapshot,
                 Err(err) => {
@@ -1913,6 +1921,11 @@ impl MediaGrid {
     fn invalidate_library_metadata(&self) {
         if !self.imp().full_library_context.get() {
             return;
+        }
+        if self.imp().library_metadata_loading.get() {
+            self.imp().library_metadata_dirty_pending.set(true);
+        } else {
+            self.imp().library_metadata_dirty_pending.set(false);
         }
         self.imp().library_total_snapshot.set(None);
         self.imp().library_stats_snapshot.set(None);
@@ -2895,6 +2908,39 @@ mod tests {
             grid.imp().virtual_total.get(),
             2,
             "first rebuild should use the loaded window as the temporary total"
+        );
+    }
+
+    #[gtk::test]
+    fn metadata_invalidation_during_load_requests_followup_refresh() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+
+        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
+        grid.imp().library_metadata_loading.set(true);
+        grid.imp().library_total_snapshot.set(Some(1));
+        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
+            live_total: 1,
+            thumbnails_generated: 0,
+        }));
+
+        grid.invalidate_library_metadata();
+
+        assert!(
+            grid.imp().library_metadata_dirty_pending.get(),
+            "metadata invalidated while a DB snapshot is loading must request a follow-up refresh"
+        );
+        assert!(
+            grid.imp().library_total_snapshot.get().is_none(),
+            "stale total snapshot should be cleared immediately"
+        );
+        assert!(
+            grid.imp().library_stats_snapshot.get().is_none(),
+            "stale stats snapshot should be cleared immediately"
         );
     }
 

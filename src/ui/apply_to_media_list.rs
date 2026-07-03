@@ -64,6 +64,9 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
         );
         return;
     }
+    if source == ChangeSource::StartupScan && apply_startup_scan_insertions(list, &items) {
+        return;
+    }
 
     let started = std::time::Instant::now();
     let incoming_len = items.len();
@@ -104,6 +107,70 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
         list.n_items(),
         started.elapsed().as_millis()
     );
+}
+
+fn compare_media_order(a: &MediaItem, b: &MediaItem) -> std::cmp::Ordering {
+    b.sort_datetime()
+        .cmp(&a.sort_datetime())
+        .then_with(|| b.id.cmp(&a.id))
+}
+
+fn item_at(list: &gtk::gio::ListStore, index: u32) -> Option<MediaItem> {
+    list.item(index)
+        .and_downcast::<glib::BoxedAnyObject>()
+        .map(|obj| (*obj.borrow::<MediaItem>()).clone())
+}
+
+fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
+    for i in 0..list.n_items() {
+        let Some(existing) = item_at(list, i) else {
+            continue;
+        };
+        if compare_media_order(item, &existing) == std::cmp::Ordering::Less {
+            return i;
+        }
+    }
+    list.n_items()
+}
+
+fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]) -> bool {
+    let mut existing_uris = std::collections::HashSet::with_capacity(list.n_items() as usize);
+    for i in 0..list.n_items() {
+        if let Some(item) = item_at(list, i) {
+            existing_uris.insert(item.uri);
+        }
+    }
+    if items.iter().any(|item| existing_uris.contains(&item.uri)) {
+        return false;
+    }
+
+    let started = std::time::Instant::now();
+    let mut incoming = items.to_vec();
+    incoming.sort_by(compare_media_order);
+    let cap = ui_media_list_cap() as u32;
+    let mut inserted = 0u32;
+    for item in incoming {
+        let position = sorted_insert_position(list, &item);
+        if position >= cap {
+            continue;
+        }
+        let boxed = glib::BoxedAnyObject::new(item);
+        list.insert(position, &boxed);
+        inserted += 1;
+        if list.n_items() > cap {
+            list.remove(list.n_items() - 1);
+        }
+    }
+
+    tracing::info!(
+        target: crate::core::log_targets::BROWSING,
+        "UI_LIST_STARTUP_INSERT incoming_len={} inserted={} list_len_after={} elapsed_ms={}",
+        items.len(),
+        inserted,
+        list.n_items(),
+        started.elapsed().as_millis()
+    );
+    true
 }
 
 #[cfg(test)]
@@ -274,6 +341,39 @@ mod tests {
 
         assert_eq!(list.n_items() as usize, initial_len + 1);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/newest-from-scan.jpg");
+    }
+
+    #[test]
+    fn startup_scan_new_items_insert_without_removing_existing_rows() {
+        let list = list_with(vec![item_at(
+            1,
+            "file:///tmp/existing.jpg",
+            2026,
+            6,
+            24,
+            12,
+        )]);
+        let removed_total = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let removed_total_for_signal = removed_total.clone();
+        list.connect_items_changed(move |_, _, removed, _| {
+            removed_total_for_signal.set(removed_total_for_signal.get() + removed);
+        });
+
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::StartupScan,
+                items: vec![item_at(2, "file:///tmp/newer.jpg", 2026, 6, 25, 12)],
+            },
+        );
+
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/newer.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/existing.jpg");
+        assert_eq!(
+            removed_total.get(),
+            0,
+            "startup scan insertions should not look like a full model replacement to MediaGrid"
+        );
     }
 
     #[test]

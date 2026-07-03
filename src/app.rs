@@ -211,8 +211,10 @@ async fn initialize() -> anyhow::Result<(
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("photos.db");
     let initial_media_page_size = runtime_config::initial_media_page_size();
+    let pictures = crate::config::pictures_dir();
     let (pool, items) =
-        initialize_db_once_with_retry(db_path.clone(), initial_media_page_size).await?;
+        initialize_db_once_with_retry(db_path.clone(), initial_media_page_size, pictures.clone())
+            .await?;
 
     // 缩略图加载器单例（M2-T1）
     let thumbnail_loader = Arc::new(ThumbnailLoader::new(
@@ -221,7 +223,6 @@ async fn initialize() -> anyhow::Result<(
     ));
     thumbnail_loader.spawn_workers(runtime_config::thumbnail_worker_count());
 
-    let pictures = crate::config::pictures_dir();
     let media_roots = crate::config::media_roots();
 
     // 启动文件监听（M5-T5+）：监听媒体根的后续变更并增量 upsert。
@@ -270,11 +271,16 @@ async fn initialize() -> anyhow::Result<(
     Ok((list, thumbnail_loader, pool, change_rx))
 }
 
-fn initialize_db_once_blocking(
+fn initialize_db_once_blocking_with_preload<F>(
     path: PathBuf,
     page_size: u32,
-) -> CoreResult<(DbPool, Vec<MediaItem>)> {
+    preload: F,
+) -> CoreResult<(DbPool, Vec<MediaItem>)>
+where
+    F: FnOnce(&DbPool) -> CoreResult<()>,
+{
     let pool = init_pool(&path)?;
+    preload(&pool)?;
     let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
         crate::core::repository::MediaQuery::LiveAll,
         0,
@@ -283,13 +289,66 @@ fn initialize_db_once_blocking(
     Ok((pool, items))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::media::{NewMediaItem, MEDIA_SUBKIND_STANDARD};
+    use chrono::{TimeZone, Utc};
+
+    fn sample_new_media(path: &std::path::Path) -> NewMediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap();
+        NewMediaItem {
+            uri: format!("file://{}", path.display()),
+            path: path.to_path_buf(),
+            folder_path: path.parent().unwrap().to_path_buf(),
+            mime_type: "image/png".into(),
+            media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+            media_attributes: "{}".into(),
+            width: Some(64),
+            height: Some(48),
+            video_duration_secs: None,
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 123,
+            blake3_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn startup_preload_reconcile_runs_before_initial_live_page_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("photos.db");
+        let media_path = dir.path().join("camera.png");
+
+        let pool = init_pool(&db_path).unwrap();
+        let id = crate::core::db::insert_media_item(&pool, &sample_new_media(&media_path)).unwrap();
+        drop(pool);
+
+        let (_pool, items) = initialize_db_once_blocking_with_preload(db_path, 500, |pool| {
+            crate::core::db::mark_trashed(pool, id)
+        })
+        .unwrap();
+
+        assert!(
+            items.is_empty(),
+            "startup reconcile/preload work must happen before the first live media page is read"
+        );
+    }
+}
+
 async fn initialize_db_once_with_retry(
     path: PathBuf,
     page_size: u32,
+    pictures: PathBuf,
 ) -> anyhow::Result<(DbPool, Vec<MediaItem>)> {
     let first = match gtk::gio::spawn_blocking({
         let path = path.clone();
-        move || initialize_db_once_blocking(path, page_size)
+        let pictures = pictures.clone();
+        move || {
+            initialize_db_once_blocking_with_preload(path, page_size, |pool| {
+                crate::core::trash::reconcile_trash(pool, &pictures).map(|_| ())
+            })
+        }
     })
     .await
     {
@@ -307,7 +366,12 @@ async fn initialize_db_once_with_retry(
         );
         let second = match gtk::gio::spawn_blocking({
             let path = path.clone();
-            move || initialize_db_once_blocking(path, page_size)
+            let pictures = pictures.clone();
+            move || {
+                initialize_db_once_blocking_with_preload(path, page_size, |pool| {
+                    crate::core::trash::reconcile_trash(pool, &pictures).map(|_| ())
+                })
+            }
         })
         .await
         {
