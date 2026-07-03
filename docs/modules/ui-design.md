@@ -71,8 +71,10 @@ Design intent:
   fixed-height scroll region directly under it, including virtual albums such
   as Favorites, Photos, and Videos. The scroll region contains all albums, so
   the sidebar no longer uses a More row.
-- Album rows use indentation, icons, and right-aligned counts to communicate
-  hierarchy without adding extra panels.
+- Album rows use indentation, cover thumbnails, and right-aligned counts to
+  communicate hierarchy without adding extra panels. The thumbnail frame has
+  fixed geometry so async cover loading never changes row height or sidebar
+  width.
 - Right-click album actions use the shared glass menu treatment. Destructive
   album deletion is available only for real folder albums and communicates that
   media is moved to system trash.

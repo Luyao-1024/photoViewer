@@ -143,6 +143,7 @@ pub type SimpleCallback = Rc<dyn Fn()>;
 pub type SelectionCallback = Rc<dyn Fn(Vec<MediaId>)>;
 pub type FavoriteCallback = Rc<dyn Fn(Vec<MediaId>, bool)>;
 pub type FavoriteStateCallback = Rc<dyn Fn(Vec<MediaId>) -> FavoriteMenuState>;
+pub type CoverCallback = Rc<dyn Fn(MediaId)>;
 
 #[derive(Clone)]
 pub struct MediaGridCallbacks {
@@ -152,6 +153,7 @@ pub struct MediaGridCallbacks {
     pub on_move_to_trash: SelectionCallback,
     pub on_set_favorite: FavoriteCallback,
     pub on_query_favorite_state: FavoriteStateCallback,
+    pub on_set_album_cover: Option<CoverCallback>,
 }
 
 mod imp {
@@ -179,6 +181,7 @@ mod imp {
         pub on_move_to_trash: std::cell::OnceCell<SelectionCallback>,
         pub on_set_favorite: std::cell::OnceCell<FavoriteCallback>,
         pub on_query_favorite_state: std::cell::OnceCell<FavoriteStateCallback>,
+        pub on_set_album_cover: std::cell::OnceCell<Option<CoverCallback>>,
         pub context_menu_overlay: RefCell<Option<gtk::Overlay>>,
         /// Flattened `(flow_child, local_window_index, media_id)` for every
         /// rendered tile in current mode.
@@ -258,6 +261,7 @@ mod imp {
                 on_move_to_trash: std::cell::OnceCell::new(),
                 on_set_favorite: std::cell::OnceCell::new(),
                 on_query_favorite_state: std::cell::OnceCell::new(),
+                on_set_album_cover: std::cell::OnceCell::new(),
                 context_menu_overlay: RefCell::new(None),
                 displayed_items: RefCell::new(Vec::new()),
                 selected: RefCell::default(),
@@ -536,6 +540,15 @@ impl MediaGrid {
         Self::new_with_options(media_list, mode, loader, callbacks, false, true, false)
     }
 
+    pub fn new_for_album_with_context_menu(
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        callbacks: MediaGridCallbacks,
+    ) -> Self {
+        Self::new_with_options(media_list, mode, loader, callbacks, true, true, false)
+    }
+
     fn new_with_options(
         media_list: gtk::gio::ListStore,
         mode: GroupBy,
@@ -582,6 +595,11 @@ impl MediaGrid {
         obj.imp()
             .on_query_favorite_state
             .set(callbacks.on_query_favorite_state)
+            .ok()
+            .expect("MediaGrid::new called more than once");
+        obj.imp()
+            .on_set_album_cover
+            .set(callbacks.on_set_album_cover)
             .ok()
             .expect("MediaGrid::new called more than once");
         obj.imp().enable_context_menu.set(enable_context_menu);
@@ -1341,6 +1359,12 @@ impl MediaGrid {
             .get()
             .expect("MediaGrid::rebuild called before new()")
             .clone();
+        let on_set_album_cover = self
+            .imp()
+            .on_set_album_cover
+            .get()
+            .expect("MediaGrid::rebuild called before new()")
+            .clone();
         let enable_context_menu = self.imp().enable_context_menu.get();
 
         let spec = spec_for_mode(mode);
@@ -1624,6 +1648,7 @@ impl MediaGrid {
                     let on_move_to_trash_ctx = on_move_to_trash.clone();
                     let on_set_favorite_ctx = on_set_favorite.clone();
                     let on_query_favorite_state_ctx = on_query_favorite_state.clone();
+                    let on_set_album_cover_ctx = on_set_album_cover.clone();
                     let gesture = gtk::GestureClick::new();
                     gesture.set_button(3);
                     gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1727,6 +1752,18 @@ impl MediaGrid {
                     }
 
                     if !target_indices.is_empty() {
+                        if !in_multi_mode {
+                            if let Some(on_set_album_cover_ctx) = on_set_album_cover_ctx.clone() {
+                                items.push(GlassMenuItem::new(
+                                    tr("album.context.set_cover"),
+                                    GlassMenuItemKind::Normal,
+                                    move || {
+                                        on_set_album_cover_ctx(media_id);
+                                    },
+                                ));
+                            }
+                        }
+
                         let indices_for_album = target_indices.clone();
                         let on_add_to_album_ctx = on_add_to_album_ctx.clone();
                         items.push(GlassMenuItem::new(
@@ -2634,6 +2671,7 @@ mod tests {
             on_move_to_trash: Rc::new(|_| {}),
             on_set_favorite: Rc::new(|_, _| {}),
             on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+            on_set_album_cover: None,
         }
     }
 

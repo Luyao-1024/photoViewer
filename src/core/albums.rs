@@ -170,19 +170,38 @@ pub fn set_album_order(pool: &DbPool, ordered: &[String]) -> Result<()> {
     Ok(())
 }
 
+pub fn set_album_cover(pool: &DbPool, folder: &Path, cover_uri: &str) -> Result<()> {
+    let conn = pool.get()?;
+    let folder_path = folder.to_string_lossy();
+    conn.execute(
+        "INSERT INTO album_covers (folder_path, cover_uri)
+         VALUES (?1, ?2)
+         ON CONFLICT(folder_path) DO UPDATE SET cover_uri = excluded.cover_uri",
+        rusqlite::params![folder_path.as_ref(), cover_uri],
+    )?;
+    conn.execute(
+        "UPDATE albums SET cover_uri = ?2 WHERE folder_path = ?1",
+        rusqlite::params![folder_path.as_ref(), cover_uri],
+    )?;
+    Ok(())
+}
+
 fn favorites_album(pool: &DbPool) -> Result<Album> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
         "SELECT
             COUNT(*),
+            COALESCE(
+            (SELECT cover_uri FROM album_covers c
+             WHERE c.folder_path = ?1),
             (SELECT uri FROM media_items m2
              WHERE m2.trashed_at IS NULL AND m2.is_favorite = 1
-             ORDER BY m2.file_mtime DESC LIMIT 1),
+             ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
          FROM media_items
          WHERE trashed_at IS NULL AND is_favorite = 1",
     )?;
-    let album = stmt.query_row([], |row| {
+    let album = stmt.query_row([FAVORITES_ALBUM_PATH], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;
@@ -209,14 +228,17 @@ fn media_kind_album(
     let mut stmt = conn.prepare(
         "SELECT
             COUNT(*),
+            COALESCE(
+            (SELECT cover_uri FROM album_covers c
+             WHERE c.folder_path = ?2),
             (SELECT uri FROM media_items m2
              WHERE m2.trashed_at IS NULL AND m2.media_kind = ?1
-             ORDER BY m2.file_mtime DESC LIMIT 1),
+             ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
          FROM media_items
          WHERE trashed_at IS NULL AND media_kind = ?1",
     )?;
-    let album = stmt.query_row([media_kind], |row| {
+    let album = stmt.query_row([media_kind, virtual_path], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;
@@ -243,14 +265,17 @@ fn media_subkind_album(
     let mut stmt = conn.prepare(
         "SELECT
             COUNT(*),
+            COALESCE(
+            (SELECT cover_uri FROM album_covers c
+             WHERE c.folder_path = ?2),
             (SELECT uri FROM media_items m2
              WHERE m2.trashed_at IS NULL AND m2.media_subkind = ?1
-             ORDER BY m2.file_mtime DESC LIMIT 1),
+             ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
          FROM media_items
          WHERE trashed_at IS NULL AND media_subkind = ?1",
     )?;
-    let album = stmt.query_row([media_subkind], |row| {
+    let album = stmt.query_row([media_subkind, virtual_path], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;
@@ -278,14 +303,17 @@ fn media_attribute_album(
     let mut stmt = conn.prepare(
         "SELECT
             COUNT(*),
+            COALESCE(
+            (SELECT cover_uri FROM album_covers c
+             WHERE c.folder_path = ?2),
             (SELECT uri FROM media_items m2
              WHERE m2.trashed_at IS NULL AND json_extract(m2.media_attributes, ?1) = 1
-             ORDER BY m2.file_mtime DESC LIMIT 1),
+             ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
          FROM media_items
          WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1",
     )?;
-    let album = stmt.query_row([json_path], |row| {
+    let album = stmt.query_row(rusqlite::params![json_path, virtual_path], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;
@@ -316,9 +344,12 @@ pub fn refresh(pool: &DbPool) -> Result<()> {
          SELECT
              folder_path,
              folder_path,
+             COALESCE(
+             (SELECT cover_uri FROM album_covers c
+              WHERE c.folder_path = m.folder_path),
              (SELECT uri FROM media_items m2
               WHERE m2.folder_path = m.folder_path AND m2.trashed_at IS NULL
-              ORDER BY m2.file_mtime DESC LIMIT 1),
+              ORDER BY m2.file_mtime DESC LIMIT 1)),
              COUNT(*),
              MAX(file_mtime)
          FROM media_items m

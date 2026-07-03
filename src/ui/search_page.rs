@@ -332,6 +332,7 @@ impl SearchPage {
                 on_move_to_trash: Rc::new(|_| {}),
                 on_set_favorite: Rc::new(|_, _| {}),
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                on_set_album_cover: None,
             },
         );
         grid.set_flat_sections(true);
@@ -591,6 +592,7 @@ impl SearchPage {
                 on_move_to_trash: Rc::new(|_| {}),
                 on_set_favorite: Rc::new(|_, _| {}),
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                on_set_album_cover: None,
             },
         );
         content.append(&grid);

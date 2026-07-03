@@ -9,6 +9,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gdk_pixbuf::Pixbuf;
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
 use gtk4::prelude::*;
@@ -26,10 +27,11 @@ use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaMutation;
 use crate::core::repository::MediaQuery;
-use crate::core::thumbnails::ThumbnailLoader;
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{prefs, runtime_config};
 use crate::ui::album_detail_page::{media_query_for_album, AlbumDetailPage};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
+use crate::ui::media_grid::square_tile::SquareTile;
 use crate::ui::TrashPage;
 use crate::ui::{grid_css, keyboard, theme, PhotosPage, SearchPage, ViewerPage};
 
@@ -49,21 +51,6 @@ pub enum SidebarTarget {
     Photos,
     AlbumsHeader,
     Trash,
-}
-
-/// Icon shown beside each album row, matching the screenshot's per-album glyph.
-fn album_icon_name(album: &Album) -> &'static str {
-    if album.is_favorites_album() {
-        "emblem-favorite-symbolic"
-    } else if album.is_images_album() {
-        "image-x-generic-symbolic"
-    } else if album.is_videos_album() {
-        "video-x-generic-symbolic"
-    } else if album.is_motion_photos_album() {
-        "media-playback-start-symbolic"
-    } else {
-        "folder-symbolic"
-    }
 }
 
 mod imp {
@@ -408,7 +395,7 @@ impl MainWindow {
         self.imp().album_scroll.set_visible(expanded);
 
         for album in albums {
-            let row = build_album_row(&album);
+            let row = build_album_row(&album, self.imp().loader.borrow().as_ref().cloned());
             row.set_visible(true);
             self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
             self.attach_album_context_menu(&row, album.clone());
@@ -453,7 +440,7 @@ impl MainWindow {
             .set_visible(has_media_types && expanded);
 
         for album in albums {
-            let row = build_album_row(&album);
+            let row = build_album_row(&album, self.imp().loader.borrow().as_ref().cloned());
             row.set_visible(true);
             media_type_list.append(&row);
             self.imp().media_type_rows.borrow_mut().push(row);
@@ -2648,15 +2635,14 @@ fn build_albums_header_row(label: &str) -> (gtk::ListBoxRow, gtk::Image) {
     (row, arrow)
 }
 
-/// An album sub-row: indented under the Albums header, with a per-kind icon,
+/// An album sub-row: indented under the Albums header, with the album cover,
 /// the album name, and a right-aligned count badge.
-fn build_album_row(album: &Album) -> gtk::ListBoxRow {
+fn build_album_row(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.add_css_class("glass-sidebar-row");
     row.add_css_class("glass-sidebar-subrow");
 
-    let icon = gtk::Image::from_icon_name(album_icon_name(album));
-    icon.add_css_class("glass-sidebar-icon");
+    let cover = build_sidebar_album_cover(album, loader);
 
     let name = gtk::Label::builder()
         .label(album.display_name())
@@ -2680,11 +2666,56 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
         .orientation(gtk::Orientation::Horizontal)
         .spacing(10)
         .build();
-    box_.append(&icon);
+    box_.append(&cover);
     box_.append(&name);
     box_.append(&count);
     row.set_child(Some(&box_));
     row
+}
+
+fn build_sidebar_album_cover(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> SquareTile {
+    let tile = SquareTile::new();
+    tile.set_target(24);
+    tile.set_halign(gtk::Align::Center);
+    tile.set_valign(gtk::Align::Center);
+    tile.set_hexpand(false);
+    tile.set_vexpand(false);
+    tile.add_css_class("glass-sidebar-cover");
+    tile.set_paintable(Some(&sidebar_cover_placeholder_texture()));
+
+    let Some(loader) = loader else {
+        return tile;
+    };
+    let Some(cover_uri) = album.cover_uri.as_ref().cloned() else {
+        return tile;
+    };
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    loader.request(
+        cover_uri,
+        ThumbnailSize::Small,
+        Some(std::time::SystemTime::from(album.last_modified)),
+        tx,
+        crate::core::thumbnails::TIER_NORMAL,
+    );
+    let tile_weak = tile.downgrade();
+    gtk::glib::spawn_future_local(async move {
+        let Ok(loaded) = rx.await else {
+            return;
+        };
+        if let Some(tile) = tile_weak.upgrade() {
+            tile.set_paintable(Some(&loaded.texture));
+        }
+    });
+
+    tile
+}
+
+fn sidebar_cover_placeholder_texture() -> gtk::gdk::Texture {
+    let pixbuf = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, true, 8, 2, 2)
+        .expect("allocate 2x2 sidebar album cover placeholder pixbuf");
+    pixbuf.fill(0xC8C8C8FF);
+    gtk::gdk::Texture::for_pixbuf(&pixbuf)
 }
 
 pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Box {

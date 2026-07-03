@@ -376,9 +376,17 @@ box.mode-dot,
   padding-bottom: 0;
 }
 
-/* Leading symbolic icon — slightly muted so the label stays primary. */
-.glass-sidebar-icon {
-  opacity: 0.72;
+/* Album cover thumbnail in sidebar rows. Fixed geometry keeps the rail stable
+   while async thumbnails load. */
+.glass-sidebar-cover {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 0;
+}
+
+.glass-sidebar-cover .thumb-image {
+  border-radius: 0;
 }
 
 /* Right-aligned count badge on album rows. */
