@@ -20,13 +20,24 @@ fn make_item_with_mime_and_subkind(
     mime_type: &str,
     media_subkind: &str,
 ) -> NewMediaItem {
+    make_item_with_mime_subkind_and_attrs(uri, path, folder, mime_type, media_subkind, "{}")
+}
+
+fn make_item_with_mime_subkind_and_attrs(
+    uri: &str,
+    path: &str,
+    folder: &str,
+    mime_type: &str,
+    media_subkind: &str,
+    media_attributes: &str,
+) -> NewMediaItem {
     NewMediaItem {
         uri: uri.into(),
         path: path.into(),
         folder_path: folder.into(),
         mime_type: mime_type.into(),
         media_subkind: media_subkind.into(),
-        media_attributes: "{}".into(),
+        media_attributes: media_attributes.into(),
         width: Some(100),
         height: Some(100),
         video_duration_secs: None,
@@ -38,7 +49,7 @@ fn make_item_with_mime_and_subkind(
 }
 
 #[test]
-fn media_type_albums_include_motion_photos_only() {
+fn media_type_albums_include_only_non_empty_attribute_categories() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
@@ -55,6 +66,30 @@ fn media_type_albums_include_motion_photos_only() {
     .unwrap();
     db::insert_media_item(
         &pool,
+        &make_item_with_mime_subkind_and_attrs(
+            "file:///Pictures/anim.gif",
+            "/Pictures/anim.gif",
+            "/Pictures",
+            "image/gif",
+            "standard",
+            r#"{"animated":true}"#,
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime_subkind_and_attrs(
+            "file:///Pictures/hdr.heic",
+            "/Pictures/hdr.heic",
+            "/Pictures",
+            "image/heic",
+            "standard",
+            r#"{"hdr":true}"#,
+        ),
+    )
+    .unwrap();
+    db::insert_media_item(
+        &pool,
         &make_item_with_mime(
             "file:///Pictures/still.jpg",
             "/Pictures/still.jpg",
@@ -65,7 +100,7 @@ fn media_type_albums_include_motion_photos_only() {
     .unwrap();
 
     let list = albums::list_media_type_albums(&pool).unwrap();
-    assert_eq!(list.len(), 1);
+    assert_eq!(list.len(), 3);
     let motion = &list[0];
     assert_eq!(
         motion.folder_path.as_path(),
@@ -76,6 +111,45 @@ fn media_type_albums_include_motion_photos_only() {
     assert_eq!(
         motion.cover_uri.as_deref(),
         Some("file:///Pictures/live.jpg")
+    );
+
+    let animated = &list[1];
+    assert_eq!(
+        animated.folder_path.as_path(),
+        Path::new(albums::ANIMATED_ALBUM_PATH)
+    );
+    assert_eq!(animated.photo_count, 1);
+    assert_eq!(
+        animated.cover_uri.as_deref(),
+        Some("file:///Pictures/anim.gif")
+    );
+
+    let hdr = &list[2];
+    assert_eq!(hdr.folder_path.as_path(), Path::new(albums::HDR_ALBUM_PATH));
+    assert_eq!(hdr.photo_count, 1);
+    assert_eq!(hdr.cover_uri.as_deref(), Some("file:///Pictures/hdr.heic"));
+}
+
+#[test]
+fn media_type_albums_hide_empty_categories() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    db::insert_media_item(
+        &pool,
+        &make_item_with_mime(
+            "file:///Pictures/still.jpg",
+            "/Pictures/still.jpg",
+            "/Pictures",
+            "image/jpeg",
+        ),
+    )
+    .unwrap();
+
+    let list = albums::list_media_type_albums(&pool).unwrap();
+    assert!(
+        list.is_empty(),
+        "media type albums should be hidden when no attribute categories have media"
     );
 }
 

@@ -443,9 +443,14 @@ impl MainWindow {
         self.imp().media_type_rows.borrow_mut().clear();
         self.imp().media_type_targets.borrow_mut().clear();
 
+        let has_media_types = !albums.is_empty();
         let expanded = self.imp().media_types_expanded.get();
-        self.imp().media_type_header_list.set_visible(true);
-        self.imp().media_type_scroll.set_visible(expanded);
+        self.imp()
+            .media_type_header_list
+            .set_visible(has_media_types);
+        self.imp()
+            .media_type_scroll
+            .set_visible(has_media_types && expanded);
 
         for album in albums {
             let row = build_album_row(&album);

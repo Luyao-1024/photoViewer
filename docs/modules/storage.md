@@ -80,7 +80,7 @@ instead of one adjacent row.
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
-`media_items.media_kind` is the persisted primary media discriminator (`image` / `video`), derived from MIME at insert/update time. `media_items.media_subkind` is the secondary classification (`standard`, `motion_photo`, later HDR/depth/burst-style variants), and `media_items.media_attributes` is JSON for subkind-specific details. Dynamic photos remain `media_kind='image'` and set `media_subkind='motion_photo'`; their embedded video offsets/lengths live under the JSON `motion_photo` object. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
+`media_items.media_kind` is the persisted primary media discriminator (`image` / `video`), derived from MIME at insert/update time. `media_items.media_subkind` is the secondary classification (`standard`, `motion_photo`), and `media_items.media_attributes` is JSON for subkind-specific details plus additive media attributes. Dynamic photos remain `media_kind='image'` and set `media_subkind='motion_photo'`; their embedded video offsets/lengths live under the JSON `motion_photo` object. General attributes such as animated images and HDR media live as top-level JSON booleans (`animated`, `hdr`) so they can coexist with `motion_photo`. GIF files are supported image media and are scanned with `animated: true`; HDR is only shown when the persisted JSON flag is true. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
 
 ## Preferences
 

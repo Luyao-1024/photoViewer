@@ -24,6 +24,10 @@ pub struct MotionPhotoInfo {
 pub struct MediaAttributes {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub motion_photo: Option<MotionPhotoInfo>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub animated: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hdr: bool,
 }
 
 impl MediaAttributes {
@@ -34,13 +38,22 @@ impl MediaAttributes {
     pub fn motion_photo_json(info: MotionPhotoInfo) -> String {
         serde_json::to_string(&Self {
             motion_photo: Some(info),
+            ..Self::default()
         })
         .unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn to_json(self) -> String {
+        serde_json::to_string(&self).unwrap_or_else(|_| "{}".to_string())
     }
 
     pub fn from_json(raw: &str) -> Self {
         serde_json::from_str(raw).unwrap_or_default()
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug)]

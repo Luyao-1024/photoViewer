@@ -82,6 +82,8 @@
     "album.images.name": "Photos",
     "album.videos.name": "Videos",
     "album.motion_photos.name": "Live Photos",
+    "album.animated.name": "Animated",
+    "album.hdr.name": "HDR",
     "album.no_albums_yet": "No Albums Yet",
     "album.context.manage": "Manage Album",
     "album.context.multi_select": "Select Albums",

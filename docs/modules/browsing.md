@@ -64,6 +64,12 @@ When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child,
 
 Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids and legacy photo tiles display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
 
+The sidebar Media Types group contains only non-empty attribute virtual albums.
+Motion photos are backed by `media_subkind='motion_photo'`; Animated and HDR are
+backed by top-level `media_attributes` JSON booleans. If no media type album has
+any live media, hide the whole Media Types group instead of showing an empty
+header.
+
 `MediaGrid::spec_for_mode` owns per-view tile sizing. Section headers are separate GTK labels because the thumbnail grid cannot span a full-width header row by itself.
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are

@@ -129,6 +129,17 @@ fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     }
 }
 
+fn make_item_with_subkind(
+    uri: &str,
+    path: &str,
+    folder: &str,
+    media_subkind: &str,
+) -> NewMediaItem {
+    let mut item = make_item(uri, path, folder);
+    item.media_subkind = media_subkind.into();
+    item
+}
+
 fn navigation_view_has_no_touch_swipe_controller() {
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.TestNoTouchSwipe")
@@ -347,7 +358,12 @@ fn sidebar_navigation_suite() {
     .unwrap();
     db::insert_media_item(
         &pool,
-        &make_item("file:///tmp/root/two.jpg", "/tmp/root/two.jpg", "/tmp/root"),
+        &make_item_with_subkind(
+            "file:///tmp/root/two.jpg",
+            "/tmp/root/two.jpg",
+            "/tmp/root",
+            photo_viewer::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+        ),
     )
     .unwrap();
     let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
@@ -455,7 +471,7 @@ fn sidebar_navigation_suite() {
         assert_eq!(
             media_type_rows.len(),
             1,
-            "sidebar should list the single dynamic image media type"
+            "sidebar should list the single non-empty media type"
         );
         let row = media_type_rows[0].clone();
         assert!(
@@ -542,6 +558,43 @@ fn sidebar_navigation_suite() {
 
     assert_album_sidebar_scroll_region_contains_all_albums();
     assert_collapsed_album_refresh_restores_active_selection_after_expand();
+    assert_media_type_group_hides_when_no_media_type_albums_exist();
+}
+
+fn assert_media_type_group_hides_when_no_media_type_albums_exist() {
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.TestEmptyMediaTypes")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+    db::insert_media_item(
+        &pool,
+        &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
+    )
+    .unwrap();
+    let loader = Arc::new(photo_viewer::core::thumbnails::ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+
+    window.set_resources(pool, loader, media_list);
+    window.populate_album_rows();
+
+    assert!(window.imp().media_type_rows.borrow().is_empty());
+    assert!(
+        !visible_flag(window.imp().media_type_header_list.get().upcast_ref()),
+        "media type header should be hidden when every media type category is empty"
+    );
+    assert!(
+        !visible_flag(window.imp().media_type_scroll.get().upcast_ref()),
+        "media type scroll region should be hidden when every media type category is empty"
+    );
 }
 
 fn assert_album_sidebar_scroll_region_contains_all_albums() {

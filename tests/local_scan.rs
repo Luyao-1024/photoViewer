@@ -58,6 +58,30 @@ fn scan_finds_images_and_videos_in_same_directory() {
 }
 
 #[test]
+fn scan_marks_gif_as_animated_media_attribute() {
+    let dir = tmp_dir();
+    let root = dir.path();
+    std::fs::write(
+        root.join("loop.gif"),
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;",
+    )
+    .unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    let items = backend.scan_dir(root).unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].mime_type, "image/gif");
+    assert!(
+        items[0].media_attributes.contains(r#""animated":true"#),
+        "GIF scan should persist animated=true, got {}",
+        items[0].media_attributes
+    );
+}
+
+#[test]
 fn upsert_inserts_and_updates_by_uri() {
     let dir = tmp_dir();
     let root = dir.path();

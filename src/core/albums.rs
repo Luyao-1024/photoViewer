@@ -10,6 +10,8 @@ pub const FAVORITES_ALBUM_PATH: &str = "__photo-viewer-favorites__";
 pub const IMAGES_ALBUM_PATH: &str = "__photo-viewer-images__";
 pub const VIDEOS_ALBUM_PATH: &str = "__photo-viewer-videos__";
 pub const MOTION_PHOTOS_ALBUM_PATH: &str = "__photo-viewer-motion-photos__";
+pub const ANIMATED_ALBUM_PATH: &str = "__photo-viewer-animated__";
+pub const HDR_ALBUM_PATH: &str = "__photo-viewer-hdr__";
 
 #[derive(Debug, Clone)]
 pub struct Album {
@@ -49,6 +51,14 @@ impl Album {
     pub fn is_motion_photos_album(&self) -> bool {
         self.is_virtual && self.folder_path.as_path() == Path::new(MOTION_PHOTOS_ALBUM_PATH)
     }
+
+    pub fn is_animated_album(&self) -> bool {
+        self.is_virtual && self.folder_path.as_path() == Path::new(ANIMATED_ALBUM_PATH)
+    }
+
+    pub fn is_hdr_album(&self) -> bool {
+        self.is_virtual && self.folder_path.as_path() == Path::new(HDR_ALBUM_PATH)
+    }
 }
 
 /// 列出实体相册 + 虚拟“收藏/图片/视频”相册（放在列表首位）。
@@ -74,12 +84,30 @@ pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
 /// subkind-based categories can sit below Albums without changing folder
 /// ordering. Currently only dynamic/motion photos are exposed.
 pub fn list_media_type_albums(pool: &DbPool) -> Result<Vec<Album>> {
-    Ok(vec![media_subkind_album(
-        pool,
-        crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
-        MOTION_PHOTOS_ALBUM_PATH,
-        tr("album.motion_photos.name"),
-    )?])
+    let candidates = vec![
+        media_subkind_album(
+            pool,
+            crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+            MOTION_PHOTOS_ALBUM_PATH,
+            tr("album.motion_photos.name"),
+        )?,
+        media_attribute_album(
+            pool,
+            crate::core::media::MEDIA_ATTRIBUTE_ANIMATED,
+            ANIMATED_ALBUM_PATH,
+            tr("album.animated.name"),
+        )?,
+        media_attribute_album(
+            pool,
+            crate::core::media::MEDIA_ATTRIBUTE_HDR,
+            HDR_ALBUM_PATH,
+            tr("album.hdr.name"),
+        )?,
+    ];
+    Ok(candidates
+        .into_iter()
+        .filter(|album| album.photo_count > 0)
+        .collect())
 }
 
 /// 按 `album_order` 表中保存的顺序重排相册列表。
@@ -223,6 +251,41 @@ fn media_subkind_album(
          WHERE trashed_at IS NULL AND media_subkind = ?1",
     )?;
     let album = stmt.query_row([media_subkind], |row| {
+        let count: i64 = row.get(0)?;
+        let cover_uri: Option<String> = row.get(1)?;
+        let last_modified: i64 = row.get(2)?;
+        Ok(Album {
+            folder_path: PathBuf::from(virtual_path),
+            name,
+            cover_uri,
+            photo_count: count,
+            last_modified: chrono::DateTime::from_timestamp(last_modified, 0)
+                .unwrap_or_else(Utc::now),
+            is_virtual: true,
+        })
+    })?;
+    Ok(album)
+}
+
+fn media_attribute_album(
+    pool: &DbPool,
+    attribute: &str,
+    virtual_path: &str,
+    name: String,
+) -> Result<Album> {
+    let conn = pool.get()?;
+    let json_path = format!("$.{attribute}");
+    let mut stmt = conn.prepare(
+        "SELECT
+            COUNT(*),
+            (SELECT uri FROM media_items m2
+             WHERE m2.trashed_at IS NULL AND json_extract(m2.media_attributes, ?1) = 1
+             ORDER BY m2.file_mtime DESC LIMIT 1),
+            COALESCE(MAX(file_mtime), 0)
+         FROM media_items
+         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1",
+    )?;
+    let album = stmt.query_row([json_path], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;

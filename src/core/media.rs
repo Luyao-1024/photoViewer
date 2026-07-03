@@ -18,8 +18,11 @@ impl MediaKind {
 
 pub const MEDIA_SUBKIND_STANDARD: &str = "standard";
 pub const MEDIA_SUBKIND_MOTION_PHOTO: &str = "motion_photo";
+pub const MEDIA_ATTRIBUTE_ANIMATED: &str = "animated";
+pub const MEDIA_ATTRIBUTE_HDR: &str = "hdr";
 
-pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "heic", "heif"];
+pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
+    &["jpg", "jpeg", "png", "webp", "heic", "heif", "gif"];
 pub const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "webm", "mkv", "avi"];
 
 pub fn mime_from_extension(path: &Path) -> Option<&'static str> {
@@ -29,6 +32,7 @@ pub fn mime_from_extension(path: &Path) -> Option<&'static str> {
         "png" => "image/png",
         "webp" => "image/webp",
         "heic" | "heif" => "image/heic",
+        "gif" => "image/gif",
         "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
         "webm" => "video/webm",
@@ -90,6 +94,14 @@ impl MediaItem {
         self.media_subkind == MEDIA_SUBKIND_MOTION_PHOTO
     }
 
+    pub fn is_animated(&self) -> bool {
+        media_attribute_flag(&self.media_attributes, MEDIA_ATTRIBUTE_ANIMATED)
+    }
+
+    pub fn is_hdr(&self) -> bool {
+        media_attribute_flag(&self.media_attributes, MEDIA_ATTRIBUTE_HDR)
+    }
+
     pub fn display_name(&self) -> &str {
         self.path
             .file_name()
@@ -100,6 +112,13 @@ impl MediaItem {
     pub fn sort_datetime(&self) -> DateTime<Utc> {
         self.taken_at.unwrap_or(self.file_mtime)
     }
+}
+
+pub fn media_attribute_flag(raw: &str, attribute: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.get(attribute).and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
 }
 
 /// 用于 INSERT 的新项（不含 id 和 trashed_at）
@@ -177,5 +196,25 @@ mod tests {
         assert!(item.trashed_at.is_none());
         item.trashed_at = Some(Utc::now());
         assert!(item.trashed_at.is_some());
+    }
+
+    #[test]
+    fn media_attribute_helpers_read_top_level_json_flags() {
+        let mut item = sample_item();
+        item.media_attributes = r#"{"animated":true,"hdr":true}"#.into();
+
+        assert!(item.is_animated());
+        assert!(item.is_hdr());
+    }
+
+    #[test]
+    fn media_attribute_helpers_ignore_missing_or_false_flags() {
+        let mut item = sample_item();
+        assert!(!item.is_animated());
+        assert!(!item.is_hdr());
+
+        item.media_attributes = r#"{"animated":false,"hdr":false}"#.into();
+        assert!(!item.is_animated());
+        assert!(!item.is_hdr());
     }
 }

@@ -460,6 +460,18 @@ pub fn count_media_by_subkind(pool: &DbPool, media_subkind: &str) -> Result<usiz
     Ok(count as usize)
 }
 
+pub fn count_media_by_attribute(pool: &DbPool, attribute: &str) -> Result<usize> {
+    let conn = pool.get()?;
+    let json_path = format!("$.{attribute}");
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items
+         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1",
+        [json_path],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
 /// 按完整日期(年-月-日)分组统计非回收站媒体数量。
 ///
 /// 日期取自 `COALESCE(taken_at, file_mtime)`（与列表排序/分组的基准一致），
@@ -713,6 +725,31 @@ pub fn list_media_by_subkind_page(
         .map_err(AppError::from)
 }
 
+pub fn list_media_by_attribute_page(
+    pool: &DbPool,
+    attribute: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let json_path = format!("$.{attribute}");
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(
+        rusqlite::params![json_path, limit as i64, offset as i64],
+        row_to_media_item,
+    )?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
 /// Return the neighbor of a live media item in the canonical live sort order.
 ///
 /// `delta` follows viewer cursor semantics: `1` moves to the next row in the
@@ -781,6 +818,21 @@ pub fn subkind_media_neighbor(
         delta,
         "trashed_at IS NULL AND media_subkind = ?",
         vec![Value::Text(media_subkind.to_string())],
+    )
+}
+
+pub fn attribute_media_neighbor(
+    pool: &DbPool,
+    attribute: &str,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NULL AND json_extract(media_attributes, ?) = 1",
+        vec![Value::Text(format!("$.{attribute}"))],
     )
 }
 

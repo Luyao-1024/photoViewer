@@ -25,6 +25,7 @@ pub enum MediaQuery {
     Images,
     Videos,
     MotionPhotos,
+    Attribute(String),
     Trash,
 }
 
@@ -91,6 +92,9 @@ impl MediaRepository {
                 &self.pool,
                 crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
             )?,
+            MediaQuery::Attribute(attribute) => {
+                db::count_media_by_attribute(&self.pool, &attribute)?
+            }
         };
         u32::try_from(count)
             .map_err(|_| AppError::Backend(format!("media count does not fit u32: {count}")))
@@ -158,6 +162,9 @@ impl MediaRepository {
                 start,
                 limit,
             ),
+            MediaQuery::Attribute(attribute) => {
+                db::list_media_by_attribute_page(&self.pool, &attribute, start, limit)
+            }
         }
     }
 
@@ -206,6 +213,9 @@ impl MediaRepository {
                 current_id.get(),
                 delta,
             )?,
+            MediaQuery::Attribute(attribute) => {
+                db::attribute_media_neighbor(&self.pool, attribute, current_id.get(), delta)?
+            }
             MediaQuery::Search { term, field } => {
                 db::search_media_neighbor(&self.pool, term, None, *field, current_id.get(), delta)?
             }

@@ -26,6 +26,12 @@ fn item(id_name: &str, ts: i64) -> NewMediaItem {
     }
 }
 
+fn item_with_attrs(id_name: &str, ts: i64, attrs: &str) -> NewMediaItem {
+    let mut item = item(id_name, ts);
+    item.media_attributes = attrs.into();
+    item
+}
+
 fn item_at(dir: &Path, file_name: &str, ts: i64) -> NewMediaItem {
     let path = dir.join(file_name);
     NewMediaItem {
@@ -47,6 +53,63 @@ fn item_at(dir: &Path, file_name: &str, ts: i64) -> NewMediaItem {
         file_size: 1,
         blake3_hash: String::new(),
     }
+}
+
+#[test]
+fn repository_attribute_page_returns_only_matching_live_media() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-attribute.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_with_attrs("animated_old", 10, r#"{"animated":true}"#),
+            item("plain_new", 30),
+            item_with_attrs("animated_new", 40, r#"{"animated":true}"#),
+        ],
+    )
+    .unwrap();
+    photo_viewer::core::db::mark_trashed(&pool, inserted[0].id).unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let page = repo
+        .page(
+            MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into()),
+            0,
+            10,
+        )
+        .unwrap();
+
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].uri, "file:///tmp/animated_new.jpg");
+}
+
+#[test]
+fn repository_attribute_neighbor_stays_inside_attribute_projection() {
+    let dir = common::tmp_dir();
+    let pool =
+        photo_viewer::core::db::init_pool(&dir.path().join("repo-attribute-neighbor.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_with_attrs("animated_old", 10, r#"{"animated":true}"#),
+            item("plain_middle", 20),
+            item_with_attrs("animated_new", 30, r#"{"animated":true}"#),
+        ],
+    )
+    .unwrap();
+    let query = MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into());
+    let repo = MediaRepository::new(pool);
+
+    let neighbor = repo
+        .neighbor(query.clone(), MediaId::from(inserted[2].id), 1)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(neighbor.query, query);
+    assert_eq!(neighbor.index, 1);
+    assert_eq!(neighbor.total, 2);
+    assert_eq!(neighbor.item.uri, "file:///tmp/animated_old.jpg");
 }
 
 #[test]

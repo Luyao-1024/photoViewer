@@ -414,19 +414,25 @@ impl LocalBackend {
         };
         SCAN_MOTION_MS.fetch_add(t_motion.elapsed().as_millis() as u64, Ordering::Relaxed);
 
+        let mut media_attributes = motion_photo
+            .map(|info| MediaAttributes {
+                motion_photo: Some(info),
+                ..MediaAttributes::default()
+            })
+            .unwrap_or_default();
+        media_attributes.animated = meta.mime_type == "image/gif";
+
         Ok(Some(NewMediaItem {
             uri,
             path: path.to_path_buf(),
             folder_path: folder,
             mime_type: meta.mime_type,
-            media_subkind: if motion_photo.is_some() {
+            media_subkind: if media_attributes.motion_photo.is_some() {
                 MEDIA_SUBKIND_MOTION_PHOTO.into()
             } else {
                 MEDIA_SUBKIND_STANDARD.into()
             },
-            media_attributes: motion_photo
-                .map(MediaAttributes::motion_photo_json)
-                .unwrap_or_else(MediaAttributes::standard_json),
+            media_attributes: media_attributes.to_json(),
             width: meta.width,
             height: meta.height,
             video_duration_secs: meta.video.and_then(|v| v.duration_secs),
@@ -456,19 +462,24 @@ impl LocalBackend {
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
         let hash = stream_file_hash(source)?;
         let motion_photo = motion_photo::detect(source);
+        let mut media_attributes = motion_photo
+            .map(|info| MediaAttributes {
+                motion_photo: Some(info),
+                ..MediaAttributes::default()
+            })
+            .unwrap_or_default();
+        media_attributes.animated = meta.mime_type == "image/gif";
         Ok(NewMediaItem {
             uri: uri.to_string(),
             path: path.to_path_buf(),
             folder_path: folder.to_path_buf(),
             mime_type: meta.mime_type,
-            media_subkind: if motion_photo.is_some() {
+            media_subkind: if media_attributes.motion_photo.is_some() {
                 MEDIA_SUBKIND_MOTION_PHOTO.into()
             } else {
                 MEDIA_SUBKIND_STANDARD.into()
             },
-            media_attributes: motion_photo
-                .map(MediaAttributes::motion_photo_json)
-                .unwrap_or_else(MediaAttributes::standard_json),
+            media_attributes: media_attributes.to_json(),
             width: meta.width,
             height: meta.height,
             video_duration_secs: meta.video.and_then(|v| v.duration_secs),
