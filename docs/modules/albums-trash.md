@@ -12,7 +12,7 @@ Albums expose folders as browsable collections. Trash integrates system trash be
 | `src/core/album_ops.rs` | Album operations |
 | `src/core/trash.rs` | Trash operations |
 | `src/ui/window.rs` | Sidebar: lists albums directly under the Albums group header |
-| `src/ui/album_detail_page.rs` | Album detail grid + `filtered_items_for_album` helper |
+| `src/ui/album_detail_page.rs` | Album detail grid + bounded album filtering helper |
 | `src/ui/trash_page.rs` | Trash UI and actions |
 | `data/ui/album-detail-page.blp` | Album detail template |
 | `data/ui/trash-page.blp` | Trash template |
@@ -53,16 +53,16 @@ The only current media-type row is Dynamic Photos, backed by
 Selecting an album row pushes its `AlbumDetailPage` immediately. The per-album
 media list is built by `album_detail_page::filtered_items_for_album`. Virtual
 albums (Favorites, Photos, Videos, and media-type rows such as Dynamic Photos)
-load their full membership from
-`MediaRepository` so they are not capped by the startup GTK list window; real
-folder albums query the database by `folder_path`. These album detail loads must
-stay behind `MediaRepository` and use SQL-level filtering/counting; do not load
-the full live media table and filter in Rust when switching albums. Opening an
-album synchronously loads only the initial render window, then backfills the
-remaining album membership into the shared `ListStore` from background work so
-large virtual albums do not block navigation. A favorite/trash change refreshes
-the sidebar counts via
-`window::refresh_albums_sidebar`.
+load their membership from `MediaRepository` so they are not capped by the
+startup GTK list window; real folder albums query the database by `folder_path`.
+These album detail loads must stay behind `MediaRepository` and use SQL-level
+filtering/counting; do not load the full live media table and filter in Rust
+when switching albums. Opening an album synchronously loads only the initial
+render window, then may backfill a bounded continuation window up to the UI
+media-list cap. Do not backfill the full album into the GTK `ListStore`; viewer
+navigation can resolve off-window neighbours through repository queries. A
+favorite/trash change refreshes the visible virtual-album window and sidebar
+counts without materializing the complete virtual album.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as
@@ -101,6 +101,14 @@ Trash views must distinguish reversible trash state from permanent delete. Datab
 **Trashed files live in the HOST `~/.local/share/Trash`, not the sandbox `XDG_DATA_HOME/Trash`.** Under Flatpak the gvfs trash backend runs on the host, so `gio::File::trash()` moves files to `~/.local/share/Trash/files/` even though the sandbox sees a per-app `XDG_DATA_HOME`. `src/core/trash.rs` therefore searches both roots, scans every `.trashinfo` (gio collision suffixes can start at `.0`), and percent-decodes the `Path=` field (non-ASCII like `图片` is stored as `%E5%9B%BE%E7%89%87`). Thumbnail decoding, restore, and permanent-delete all depend on this resolution being correct.
 
 **The Trash view is fully reconciled with the system trash at startup (`trash::reconcile_trash`), and kept live thereafter.** Bidirectional: it adds trashed rows for trash entries whose original path was under the pictures dir (inserting from the `Trash/files` copy under the original uri, or marking an existing live row), and prunes DB trashed rows whose file is no longer in the system trash (externally emptied). Restored files (original present) are left to the scan. The watcher also watches the trash dir: external restore/empty/delete is debounced → re-reconciled → `TrashChanged` → the visible Trash view refreshes without a page switch. See [`storage.md`](storage.md).
+
+Trash UI loads a bounded initial repository page capped by
+`runtime_config::ui_media_list_cap()`; do not populate the GTK model with the
+entire trash table during page construction. Viewer previous/next from Trash
+uses a DB-level `trashed_at DESC, id DESC` neighbor query, so navigation should
+not re-materialize the full trash page either. Empty Trash is the only flow that
+intentionally walks the full trash set because it is applying a destructive
+operation to every item.
 
 When touching trash flows, verify:
 

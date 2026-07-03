@@ -308,7 +308,8 @@ impl AlbumDetailPage {
         // Re-evaluate the per-album predicate (shared with the sidebar) against
         // the current DB/favorites state and splice it into the live store so
         // the grid + open viewer track the new membership without a page rebuild.
-        let items = filtered_items_for_album(&album, &master_list, &pool);
+        let limit = album_refresh_load_limit(album.photo_count);
+        let items = filtered_items_for_album_limited(&album, &master_list, &pool, limit);
         let query_ms = refresh_start.elapsed().as_millis();
         let splice_start = Instant::now();
         while media_list.n_items() > 0 {
@@ -339,17 +340,18 @@ impl AlbumDetailPage {
 /// bounded startup GTK model. The sidebar builds an `AlbumDetailPage` from
 /// this, and virtual album refreshes splice the already-attached media list via
 /// [`AlbumDetailPage::refresh_virtual_album_media_list`].
-pub(crate) fn filtered_items_for_album(
+pub(crate) fn filtered_items_for_album_limited(
     album: &Album,
     master: &gtk::gio::ListStore,
     pool: &DbPool,
+    limit: u32,
 ) -> Vec<crate::core::media::MediaItem> {
     let start = Instant::now();
     let album_name = album.display_name();
     let album_path = album.folder_path.to_string_lossy().into_owned();
     if album.is_virtual {
         let result = MediaRepository::new(pool.clone())
-            .page(media_query_for_album(album), 0, u32::MAX)
+            .page(media_query_for_album(album), 0, limit)
             .map(|page| page.items)
             .unwrap_or_default();
         tracing::debug!(
@@ -376,6 +378,9 @@ pub(crate) fn filtered_items_for_album(
         let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
         if item.folder_path == album.folder_path {
             items.push(item);
+            if items.len() >= limit as usize {
+                break;
+            }
         }
     }
     tracing::debug!(
@@ -389,6 +394,13 @@ pub(crate) fn filtered_items_for_album(
         "album_filter: filtered_master_list"
     );
     items
+}
+
+fn album_refresh_load_limit(total: i64) -> u32 {
+    let total = u32::try_from(total.max(0)).unwrap_or(u32::MAX);
+    let ui_cap =
+        u32::try_from(crate::core::runtime_config::ui_media_list_cap()).unwrap_or(u32::MAX);
+    total.min(ui_cap)
 }
 
 pub(crate) fn media_query_for_album(album: &Album) -> MediaQuery {
@@ -528,9 +540,38 @@ mod tests {
         let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         master.append(&glib::BoxedAnyObject::new(sample_item(1)));
 
-        let items = filtered_items_for_album(&album, &master, &pool);
+        let items = filtered_items_for_album_limited(&album, &master, &pool, u32::MAX);
 
         assert_eq!(items.len(), 1);
         assert!(items[0].is_video());
+    }
+
+    #[gtk::test]
+    fn virtual_album_filter_can_limit_database_membership() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("limited-videos.db")).unwrap();
+        crate::core::db::upsert_media_items_batch(
+            &pool,
+            &[
+                new_item(1, "video/mp4"),
+                new_item(2, "video/mp4"),
+                new_item(3, "video/mp4"),
+            ],
+        )
+        .unwrap();
+        let album = crate::core::albums::Album {
+            folder_path: PathBuf::from(crate::core::albums::VIDEOS_ALBUM_PATH),
+            name: "Videos".into(),
+            cover_uri: None,
+            photo_count: 3,
+            last_modified: Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap(),
+            is_virtual: true,
+        };
+        let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+
+        let items = filtered_items_for_album_limited(&album, &master, &pool, 2);
+
+        assert_eq!(items.len(), 2);
     }
 }

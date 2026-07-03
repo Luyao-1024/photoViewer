@@ -67,6 +67,15 @@ Keep the filtered sort indexes (`idx_media_folder_sort`,
 place so switching between albums does not build temporary sort tables over
 large media collections.
 
+Viewer previous/next navigation uses `MediaRepository::neighbor()` and must stay
+behind DB-level neighbour queries for the same projections: live media,
+search/search-kind results, folder albums, favorites, image/video type albums,
+motion photos, and trash. Trash uses its own `trashed_at DESC, id DESC` order.
+Avoid implementing viewer navigation by calling `page(query, 0, u32::MAX)` for
+these projections; that materializes large result sets and makes repeated
+left/right navigation scale with the whole album, search result, or trash table
+instead of one adjacent row.
+
 ## Media Model
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.

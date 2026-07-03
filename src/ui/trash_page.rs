@@ -56,8 +56,9 @@ fn empty_trash(pool: &DbPool) {
 }
 
 fn load_trash_items(pool: DbPool) -> crate::core::Result<Vec<MediaItem>> {
+    let limit = crate::core::runtime_config::ui_media_list_cap().min(u32::MAX as usize) as u32;
     Ok(MediaRepository::new(pool)
-        .page(MediaQuery::Trash, 0, u32::MAX)?
+        .page(MediaQuery::Trash, 0, limit)?
         .items)
 }
 

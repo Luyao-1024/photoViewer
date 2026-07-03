@@ -82,7 +82,7 @@ impl MediaRepository {
                 media_kind,
                 field,
             } => db::count_live_media_search(&self.pool, &term, Some(&media_kind), field)?,
-            MediaQuery::Trash => db::list_trashed_media(&self.pool)?.len(),
+            MediaQuery::Trash => db::count_trashed_media(&self.pool)?,
             MediaQuery::AlbumFolder(path) => db::count_media_by_folder(&self.pool, &path)?,
             MediaQuery::Favorites => db::count_favorite_media(&self.pool)?,
             MediaQuery::Images => db::count_media_by_kind(&self.pool, "image")?,
@@ -145,7 +145,7 @@ impl MediaRepository {
                 start,
                 limit,
             ),
-            MediaQuery::Trash => Ok(page_vec(db::list_trashed_media(&self.pool)?, start, limit)),
+            MediaQuery::Trash => db::list_trashed_media_page(&self.pool, start, limit),
             MediaQuery::AlbumFolder(path) => {
                 db::list_media_by_folder_page(&self.pool, &path, start, limit)
             }
@@ -186,35 +186,48 @@ impl MediaRepository {
         if delta == 0 {
             return Ok(None);
         }
-        if query == MediaQuery::LiveAll {
-            return db::live_media_neighbor(&self.pool, current_id.get(), delta).map(|neighbor| {
-                neighbor.map(|(index, total, item)| MediaNeighbor {
-                    query,
-                    index,
-                    total,
-                    item,
-                })
-            });
-        }
-
-        let page = self.page(query.clone(), 0, u32::MAX)?;
-        let Some(current_index) = page
-            .items
-            .iter()
-            .position(|item| item.id == current_id.get())
-        else {
-            return Ok(None);
+        let neighbor = match &query {
+            MediaQuery::LiveAll => db::live_media_neighbor(&self.pool, current_id.get(), delta)?,
+            MediaQuery::AlbumFolder(path) => {
+                db::folder_media_neighbor(&self.pool, path, current_id.get(), delta)?
+            }
+            MediaQuery::Favorites => {
+                db::favorite_media_neighbor(&self.pool, current_id.get(), delta)?
+            }
+            MediaQuery::Images => {
+                db::kind_media_neighbor(&self.pool, "image", current_id.get(), delta)?
+            }
+            MediaQuery::Videos => {
+                db::kind_media_neighbor(&self.pool, "video", current_id.get(), delta)?
+            }
+            MediaQuery::MotionPhotos => db::subkind_media_neighbor(
+                &self.pool,
+                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                current_id.get(),
+                delta,
+            )?,
+            MediaQuery::Search { term, field } => {
+                db::search_media_neighbor(&self.pool, term, None, *field, current_id.get(), delta)?
+            }
+            MediaQuery::SearchKind {
+                term,
+                media_kind,
+                field,
+            } => db::search_media_neighbor(
+                &self.pool,
+                term,
+                Some(media_kind),
+                *field,
+                current_id.get(),
+                delta,
+            )?,
+            MediaQuery::Trash => db::trashed_media_neighbor(&self.pool, current_id.get(), delta)?,
         };
-        let target_index = current_index as i64 + delta as i64;
-        if target_index < 0 || target_index >= page.items.len() as i64 {
-            return Ok(None);
-        }
-        let index = target_index as u32;
-        let item = page.items[index as usize].clone();
-        Ok(Some(MediaNeighbor {
+
+        Ok(neighbor.map(|(index, total, item)| MediaNeighbor {
             query,
             index,
-            total: page.total,
+            total,
             item,
         }))
     }
@@ -376,12 +389,4 @@ fn rename_target_path(current_path: &Path, requested_name: &str) -> Result<PathB
         file_name.push_str(ext);
     }
     Ok(parent.join(file_name))
-}
-
-fn page_vec(items: Vec<MediaItem>, start: u32, limit: u32) -> Vec<MediaItem> {
-    items
-        .into_iter()
-        .skip(start as usize)
-        .take(limit as usize)
-        .collect()
 }

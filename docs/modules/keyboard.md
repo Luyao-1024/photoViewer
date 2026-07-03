@@ -34,11 +34,15 @@ Scope priority is conservative:
 TextInput > Modal > Editor > Viewer > Browsing > Global
 ```
 
-The first functional slice routes viewer shortcuts from the window, so
-Left/Right/Escape/Space work even when focus is on header buttons, the
-filmstrip, or other viewer children. Browsing arrow movement remains owned by
-the grid for now; browsing actions may resolve from bindings but are ignored by
-the window router until page-level handlers are added.
+Viewer shortcuts are routed from the window, so Left/Right/Escape/Space work
+even when focus is on header buttons, the filmstrip, or other viewer children.
+Photos browsing also handles selection-oriented shortcuts from the window:
+`Ctrl+A` toggles the current visible grid's select-all state, `Delete` moves the
+selected photos through the existing trash path, and `Escape` clears active
+selection before any navigation-back fallback runs. Browsing arrow movement,
+Enter activation, and Space focused-item toggling remain owned by future
+grid-level focus work; those actions may resolve from bindings but stay ignored
+until the grid exposes a focus cursor.
 
 ## Default Keymap
 

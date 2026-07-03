@@ -16,8 +16,8 @@ pub enum SearchField {
 use chrono::{DateTime, TimeZone, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::types::Type;
-use rusqlite::OptionalExtension;
+use rusqlite::types::{Type, Value};
+use rusqlite::{params_from_iter, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -355,8 +355,7 @@ fn search_like_pattern(term: &str) -> String {
     let mut pattern = String::from("%");
     let normalized = term
         .trim()
-        .replace('年', "-")
-        .replace('月', "-")
+        .replace(['年', '月'], "-")
         .replace('日', "")
         .replace('/', "-"); // Normalize slash to dash for date matching.
     let normalized = normalized.trim_end_matches('-');
@@ -723,26 +722,169 @@ pub fn live_media_neighbor(
     current_id: i64,
     delta: i32,
 ) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(pool, current_id, delta, "trashed_at IS NULL", vec![])
+}
+
+pub fn favorite_media_neighbor(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NULL AND is_favorite = 1",
+        vec![],
+    )
+}
+
+pub fn folder_media_neighbor(
+    pool: &DbPool,
+    folder_path: &std::path::Path,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NULL AND folder_path = ?",
+        vec![Value::Text(folder_path.to_string_lossy().to_string())],
+    )
+}
+
+pub fn kind_media_neighbor(
+    pool: &DbPool,
+    media_kind: &str,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NULL AND media_kind = ?",
+        vec![Value::Text(media_kind.to_string())],
+    )
+}
+
+pub fn subkind_media_neighbor(
+    pool: &DbPool,
+    media_subkind: &str,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NULL AND media_subkind = ?",
+        vec![Value::Text(media_subkind.to_string())],
+    )
+}
+
+pub fn search_media_neighbor(
+    pool: &DbPool,
+    term: &str,
+    media_kind: Option<&str>,
+    field: SearchField,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    let pattern = search_like_pattern(term);
+    let (field_clause, mut params) = match field {
+        SearchField::All => (
+            "(lower(path) LIKE lower(?) ESCAPE '\\' \
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ? ESCAPE '\\')",
+            vec![Value::Text(pattern.clone()), Value::Text(pattern)],
+        ),
+        SearchField::Name => (
+            "lower(path) LIKE lower(?) ESCAPE '\\'",
+            vec![Value::Text(pattern)],
+        ),
+        SearchField::Date => (
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ? ESCAPE '\\'",
+            vec![Value::Text(pattern)],
+        ),
+    };
+    let where_clause = if let Some(media_kind) = media_kind {
+        let mut with_kind = vec![Value::Text(media_kind.to_string())];
+        with_kind.append(&mut params);
+        params = with_kind;
+        format!("trashed_at IS NULL AND media_kind = ? AND {field_clause}")
+    } else {
+        format!("trashed_at IS NULL AND {field_clause}")
+    };
+
+    media_neighbor_with_filter(pool, current_id, delta, &where_clause, params)
+}
+
+pub fn trashed_media_neighbor(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter_and_order(
+        pool,
+        current_id,
+        delta,
+        "trashed_at IS NOT NULL",
+        vec![],
+        "trashed_at DESC, id DESC",
+    )
+}
+
+fn media_neighbor_with_filter(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+    where_clause: &str,
+    filter_params: Vec<Value>,
+) -> Result<Option<(u32, u32, MediaItem)>> {
+    media_neighbor_with_filter_and_order(
+        pool,
+        current_id,
+        delta,
+        where_clause,
+        filter_params,
+        "COALESCE(taken_at, file_mtime) DESC, id DESC",
+    )
+}
+
+fn media_neighbor_with_filter_and_order(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+    where_clause: &str,
+    filter_params: Vec<Value>,
+    order_by: &str,
+) -> Result<Option<(u32, u32, MediaItem)>> {
     if delta == 0 {
         return Ok(None);
     }
 
     let conn = pool.get()?;
-    let total = count_live_media(pool)?;
-    let Some(current_index) = conn
+    let mut current_params = filter_params.clone();
+    current_params.push(Value::Integer(current_id));
+    let current_sql = format!(
+        "SELECT row_index, total_count
+         FROM (
+           SELECT id,
+                  ROW_NUMBER() OVER (
+                    ORDER BY {order_by}
+                  ) - 1 AS row_index,
+                  COUNT(*) OVER () AS total_count
+           FROM media_items
+           WHERE {where_clause}
+         )
+         WHERE id = ?"
+    );
+    let Some((current_index, total)) = conn
         .query_row(
-            "SELECT row_index
-             FROM (
-               SELECT id,
-                      ROW_NUMBER() OVER (
-                        ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
-                      ) - 1 AS row_index
-               FROM media_items
-               WHERE trashed_at IS NULL
-             )
-             WHERE id = ?1",
-            [current_id],
-            |row| row.get::<_, i64>(0),
+            &current_sql,
+            params_from_iter(current_params.iter()),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()?
     else {
@@ -750,20 +892,26 @@ pub fn live_media_neighbor(
     };
 
     let target_index = current_index + i64::from(delta);
-    if target_index < 0 || target_index >= total as i64 {
+    if target_index < 0 || target_index >= total {
         return Ok(None);
     }
 
-    let mut stmt = conn.prepare(
+    let mut item_params = filter_params;
+    item_params.push(Value::Integer(target_index));
+    let item_sql = format!(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
                 file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
-         WHERE trashed_at IS NULL
-         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
-         LIMIT 1 OFFSET ?1",
+         WHERE {where_clause}
+         ORDER BY {order_by}
+         LIMIT 1 OFFSET ?"
+    );
+    let item = conn.query_row(
+        &item_sql,
+        params_from_iter(item_params.iter()),
+        row_to_media_item,
     )?;
-    let item = stmt.query_row([target_index], row_to_media_item)?;
     Ok(Some((target_index as u32, total as u32, item)))
 }
 
@@ -897,6 +1045,20 @@ pub fn update_media_location(
 
 /// 列出所有回收站中项
 pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
+    list_trashed_media_page(pool, 0, u32::MAX)
+}
+
+pub fn count_trashed_media(pool: &DbPool) -> Result<usize> {
+    let conn = pool.get()?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count as usize)
+}
+
+pub fn list_trashed_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
@@ -904,9 +1066,10 @@ pub fn list_trashed_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
                 file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
          WHERE trashed_at IS NOT NULL
-         ORDER BY trashed_at DESC",
+         ORDER BY trashed_at DESC, id DESC
+         LIMIT ?1 OFFSET ?2",
     )?;
-    let rows = stmt.query_map([], row_to_media_item)?;
+    let rows = stmt.query_map([limit as i64, offset as i64], row_to_media_item)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
 }

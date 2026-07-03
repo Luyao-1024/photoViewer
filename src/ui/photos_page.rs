@@ -29,6 +29,7 @@ use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::{albums, db::DbPool};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
+use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
@@ -719,6 +720,45 @@ impl PhotosPage {
         let mut selected: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
         selected.sort_unstable();
         selected
+    }
+
+    pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        match action {
+            KeyboardAction::SelectAll => {
+                self.select_all_in_current_mode();
+                KeyboardResult::Handled
+            }
+            KeyboardAction::Delete => {
+                let ids = self.selected_ids_vec();
+                if ids.is_empty() {
+                    KeyboardResult::Ignored
+                } else {
+                    self.delete_to_trash_for_ids(ids);
+                    KeyboardResult::Handled
+                }
+            }
+            KeyboardAction::CancelOrClose => {
+                let has_selection = !self.selected_ids_vec().is_empty()
+                    || self
+                        .imp()
+                        .grids
+                        .borrow()
+                        .iter()
+                        .any(|grid| grid.is_multi_select_mode());
+                if has_selection {
+                    self.clear_selection();
+                    KeyboardResult::Handled
+                } else {
+                    KeyboardResult::Ignored
+                }
+            }
+            _ => KeyboardResult::Ignored,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_count_for_tests(&self) -> usize {
+        self.imp().selected_ids.borrow().len()
     }
 
     fn current_grid(&self) -> Option<MediaGrid> {

@@ -9,8 +9,11 @@ should open a viewer with a `MediaQuery` plus `MediaId` and an initial visible
 window, not with a long-lived "global index". `ViewerPage::new_for_query`
 stores that query and id; left/right navigation uses
 `MediaRepository::neighbor()` to find adjacent media, then syncs the local
-viewer window by id. The current `ListStore` index remains an internal render
-cursor only.
+viewer window by id. The repository must resolve neighbours through
+query-specific SQL projections for live media, search/search-kind results,
+folder albums, favorites, image/video type albums, and motion photos; do not
+load the full query result just to move one step in the viewer. The current
+`ListStore` index remains an internal render cursor only.
 
 ## Key Files
 

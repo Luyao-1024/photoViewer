@@ -419,3 +419,140 @@ fn repository_neighbor_returns_adjacent_media_for_live_query_order() {
     assert_eq!(neighbor.index, 0);
     assert_eq!(neighbor.item.uri, "file:///tmp/new.jpg");
 }
+
+#[test]
+fn db_favorite_neighbor_uses_favorite_projection_order() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-fav-neighbor.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item("old_fav", 10),
+            item("middle_fav", 20),
+            item("new_unfav", 30),
+            item("new_fav", 40),
+        ],
+    )
+    .unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
+
+    let neighbor =
+        photo_viewer::core::db::favorite_media_neighbor(&pool, inserted[1].id, 1).unwrap();
+
+    let (index, total, item) = neighbor.unwrap();
+    assert_eq!(index, 2);
+    assert_eq!(total, 3);
+    assert_eq!(item.uri, "file:///tmp/old_fav.jpg");
+}
+
+#[test]
+fn repository_neighbor_returns_adjacent_media_for_favorites_query_order() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-fav-neighbor-wrapper.db"))
+        .unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item("old_fav", 10),
+            item("middle_fav", 20),
+            item("new_unfav", 30),
+            item("new_fav", 40),
+        ],
+    )
+    .unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
+    photo_viewer::core::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
+    let repo = MediaRepository::new(pool);
+
+    let neighbor = repo
+        .neighbor(MediaQuery::Favorites, MediaId::from(inserted[1].id), -1)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(neighbor.query, MediaQuery::Favorites);
+    assert_eq!(neighbor.index, 0);
+    assert_eq!(neighbor.total, 3);
+    assert_eq!(neighbor.item.uri, "file:///tmp/new_fav.jpg");
+}
+
+#[test]
+fn db_search_neighbor_uses_search_projection_order() {
+    let dir = common::tmp_dir();
+    let pool =
+        photo_viewer::core::db::init_pool(&dir.path().join("repo-search-neighbor.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item("summer_old", 10),
+            item("summer_middle", 20),
+            item("winter_new", 30),
+            item("summer_new", 40),
+        ],
+    )
+    .unwrap();
+
+    let neighbor = photo_viewer::core::db::search_media_neighbor(
+        &pool,
+        "summer",
+        None,
+        SearchField::Name,
+        inserted[1].id,
+        -1,
+    )
+    .unwrap()
+    .unwrap();
+
+    let (index, total, item) = neighbor;
+    assert_eq!(index, 0);
+    assert_eq!(total, 3);
+    assert_eq!(item.uri, "file:///tmp/summer_new.jpg");
+}
+
+#[test]
+fn db_trashed_media_page_returns_bounded_rows() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-trash-page.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("old", 10), item("middle", 20), item("new", 30)],
+    )
+    .unwrap();
+    for item in &inserted {
+        photo_viewer::core::db::mark_trashed(&pool, item.id).unwrap();
+    }
+
+    let page = photo_viewer::core::db::list_trashed_media_page(&pool, 0, 2).unwrap();
+
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].uri, "file:///tmp/new.jpg");
+    assert_eq!(page[1].uri, "file:///tmp/middle.jpg");
+}
+
+#[test]
+fn repository_neighbor_returns_adjacent_media_for_trash_query_order() {
+    let dir = common::tmp_dir();
+    let pool =
+        photo_viewer::core::db::init_pool(&dir.path().join("repo-trash-neighbor.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("old", 10), item("middle", 20), item("new", 30)],
+    )
+    .unwrap();
+    for item in &inserted {
+        photo_viewer::core::db::mark_trashed(&pool, item.id).unwrap();
+    }
+    let repo = MediaRepository::new(pool);
+
+    let neighbor = repo
+        .neighbor(MediaQuery::Trash, MediaId::from(inserted[1].id), -1)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(neighbor.query, MediaQuery::Trash);
+    assert_eq!(neighbor.index, 0);
+    assert_eq!(neighbor.total, 3);
+    assert_eq!(neighbor.item.uri, "file:///tmp/new.jpg");
+}

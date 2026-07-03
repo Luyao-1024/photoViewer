@@ -264,6 +264,12 @@ impl MainWindow {
                     return result;
                 }
             }
+            if let Ok(photos) = page.clone().downcast::<PhotosPage>() {
+                let result = photos.handle_keyboard_action(action);
+                if result.is_handled() {
+                    return result;
+                }
+            }
         }
 
         match action {
@@ -2198,6 +2204,18 @@ fn album_initial_load_limit(total: i64) -> u32 {
     total.min(u32::try_from(initial).unwrap_or(u32::MAX))
 }
 
+fn album_backfill_fetch_limit(current_len: u32, total: u32) -> u32 {
+    if current_len >= total {
+        return 0;
+    }
+    let ui_cap =
+        u32::try_from(crate::core::runtime_config::ui_media_list_cap()).unwrap_or(u32::MAX);
+    if current_len >= ui_cap {
+        return 0;
+    }
+    total.saturating_sub(current_len).min(ui_cap - current_len)
+}
+
 fn backfill_album_media_list(
     list: gtk::gio::ListStore,
     pool: DbPool,
@@ -2207,12 +2225,25 @@ fn backfill_album_media_list(
     album_name: String,
     album_path: String,
 ) {
+    let limit = album_backfill_fetch_limit(start, total);
+    if limit == 0 {
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            album_name = %album_name,
+            album_path = %album_path,
+            ?query,
+            start,
+            total,
+            "album_backfill: skipped_at_cap"
+        );
+        return;
+    }
     glib::spawn_future_local(async move {
         let query_for_worker = query.clone();
         let fetch_started = Instant::now();
         let result = gtk::gio::spawn_blocking(move || {
             crate::core::repository::MediaRepository::new(pool)
-                .page(query_for_worker, start, u32::MAX)
+                .page(query_for_worker, start, limit)
                 .map(|page| page.items)
         })
         .await;
@@ -2227,6 +2258,7 @@ fn backfill_album_media_list(
                     ?query,
                     start,
                     total,
+                    limit,
                     fetch_ms = fetch_started.elapsed().as_millis(),
                     "album_backfill: fetch_failed error={err}"
                 );
@@ -2240,6 +2272,7 @@ fn backfill_album_media_list(
                     ?query,
                     start,
                     total,
+                    limit,
                     fetch_ms = fetch_started.elapsed().as_millis(),
                     "album_backfill: join_failed error={err:?}"
                 );
@@ -2254,6 +2287,7 @@ fn backfill_album_media_list(
             ?query,
             start,
             total,
+            limit,
             fetched = items.len(),
             fetch_ms = fetch_started.elapsed().as_millis(),
             "album_backfill: fetched"
@@ -3119,6 +3153,81 @@ mod tests {
     }
 
     #[gtk::test]
+    fn ctrl_a_selects_visible_photos_grid_items() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardBrowseSelectAll")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (_tmp, loader) = keyboard_thumbnail_loader();
+        let photos = PhotosPage::new(media_list, loader);
+        nav.push(&photos);
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::a,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        );
+
+        assert!(
+            handled,
+            "Ctrl+A should be handled by the visible PhotosPage"
+        );
+        assert_eq!(
+            photos.selected_count_for_tests(),
+            1,
+            "Ctrl+A should select the currently rendered item"
+        );
+    }
+
+    #[gtk::test]
+    fn escape_clears_photos_grid_selection_before_navigation_back() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.KeyboardBrowseEscapeSelection")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        crate::ui::grid_css::install();
+        let window = MainWindow::new(&app);
+        let nav = window.nav_view();
+        let media_list = keyboard_media_list();
+        let (_tmp, loader) = keyboard_thumbnail_loader();
+        let photos = PhotosPage::new(media_list, loader);
+        nav.push(&photos);
+
+        assert!(emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::a,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        ));
+        assert_eq!(photos.selected_count_for_tests(), 1);
+
+        let handled = emit_key_for_tests(
+            &window,
+            gtk::gdk::Key::Escape,
+            gtk::gdk::ModifierType::empty(),
+        );
+
+        assert!(
+            handled,
+            "Escape should be consumed by PhotosPage while selection is active"
+        );
+        assert_eq!(
+            photos.selected_count_for_tests(),
+            0,
+            "Escape should clear selected photos"
+        );
+        assert!(
+            nav.visible_page().and_downcast::<PhotosPage>().is_some(),
+            "Escape should not navigate away while it is clearing selection"
+        );
+    }
+
+    #[gtk::test]
     fn ctrl_f_opens_search_from_trash_page() {
         let app = adw::Application::builder()
             .application_id("io.github.luyao_1024.photoviewer.KeyboardSearchTrash")
@@ -3389,6 +3498,21 @@ mod tests {
             crate::core::runtime_config::DEFAULT_MAX_RENDERED_GRID_ITEMS as u32
         );
         assert_eq!(album_initial_load_limit(-1), 0);
+    }
+
+    #[test]
+    fn album_backfill_limit_caps_large_albums_to_ui_window() {
+        let initial = album_initial_load_limit(100_000);
+        let limit = album_backfill_fetch_limit(initial, 100_000);
+
+        assert!(
+            initial + limit <= crate::core::runtime_config::DEFAULT_UI_MEDIA_LIST_CAP as u32,
+            "album backfill must not materialize the full album into the GTK ListStore"
+        );
+        assert!(
+            limit < 100_000 - initial,
+            "large album backfill should fetch only a bounded continuation window"
+        );
     }
 
     #[test]
