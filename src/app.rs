@@ -232,12 +232,14 @@ async fn initialize() -> anyhow::Result<(
     // 必须单独监听才能实时感知（见 notify_watcher 的防抖对账）。
     let (notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
     let trash_roots = crate::core::trash::trash_roots();
+    let excluded_scan_roots = crate::core::prefs::excluded_scan_roots();
     let mut watch_paths = media_roots.clone();
     watch_paths.extend(trash_roots.iter().filter(|r| r.exists()).cloned());
     let _watcher = crate::core::notify_watcher::start_watching(
         pool.clone(),
         watch_paths,
         trash_roots,
+        excluded_scan_roots,
         pictures.clone(),
         notifier.clone(),
     );

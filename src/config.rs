@@ -1,4 +1,5 @@
 //! Application configuration paths (XDG Base Directory spec)
+use crate::core::prefs;
 use std::path::PathBuf;
 
 pub const APP_ID: &str = "io.github.luyao_1024.photoviewer";
@@ -59,13 +60,50 @@ pub fn videos_dir() -> PathBuf {
 }
 
 pub fn media_roots() -> Vec<PathBuf> {
+    media_roots_from_parts(
+        vec![pictures_dir(), videos_dir()],
+        prefs::custom_scan_roots(),
+        prefs::excluded_scan_roots(),
+    )
+}
+
+pub fn media_roots_from_parts(
+    defaults: Vec<PathBuf>,
+    custom: Vec<PathBuf>,
+    excluded: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let excluded = clean_absolute_paths(excluded);
     let mut roots = Vec::new();
-    for root in [pictures_dir(), videos_dir()] {
-        if !roots.iter().any(|existing| existing == &root) {
-            roots.push(root);
+    for root in defaults.into_iter().chain(custom) {
+        if !root.is_absolute() {
+            continue;
         }
+        if excluded.iter().any(|exclude| root.starts_with(exclude)) {
+            continue;
+        }
+        if roots
+            .iter()
+            .any(|existing: &PathBuf| root.starts_with(existing))
+        {
+            continue;
+        }
+        roots.retain(|existing: &PathBuf| !existing.starts_with(&root));
+        roots.push(root);
     }
     roots
+}
+
+fn clean_absolute_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    for path in paths {
+        if !path.is_absolute() {
+            continue;
+        }
+        if !result.iter().any(|existing| existing == &path) {
+            result.push(path);
+        }
+    }
+    result
 }
 
 /// Returns true if `LANG` or `LC_ALL` starts with `zh`.

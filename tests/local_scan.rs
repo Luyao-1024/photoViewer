@@ -90,6 +90,26 @@ fn scan_recursive_subdirs() {
     assert_eq!(items.len(), 2);
 }
 
+#[test]
+fn scan_dir_with_exclusions_prunes_excluded_directories() {
+    let dir = tmp_dir();
+    let root = dir.path();
+    let keep = root.join("keep");
+    let skip = root.join("skip");
+    std::fs::create_dir(&keep).unwrap();
+    std::fs::create_dir(&skip).unwrap();
+    write_plain_jpeg(&keep, "visible.jpg");
+    write_plain_jpeg(&skip, "excluded.jpg");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    let items = backend.scan_dir_with_exclusions(root, &[skip]).unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].path, keep.join("visible.jpg"));
+}
+
 /// Regression for the startup re-hash cost: on a warm DB the scan must NOT
 /// re-read every file's bytes to recompute its blake3 hash. `scan_and_upsert_dir`
 /// skips any file whose `(uri, file_mtime, file_size)` already matches a row —

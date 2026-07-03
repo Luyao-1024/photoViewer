@@ -744,6 +744,7 @@ impl MainWindow {
 
             let manage_album = album.clone();
             let delete_album = album.clone();
+            let ignore_album = album.clone();
             let select_album = album.clone();
             let nav_view = window.imp().nav_view.get();
             let items = build_album_context_menu_items(
@@ -768,6 +769,12 @@ impl MainWindow {
                     @weak window,
                     @strong delete_album => move || {
                         window.confirm_delete_album(delete_album.clone());
+                    }
+                ))),
+                Some(Box::new(glib::clone!(
+                    @weak window,
+                    @strong ignore_album => move || {
+                        window.confirm_ignore_album(ignore_album.clone());
                     }
                 ))),
                 Some(Box::new(glib::clone!(
@@ -1198,6 +1205,96 @@ impl MainWindow {
         });
 
         dialog.present(self);
+    }
+
+    fn confirm_ignore_album(&self, album: Album) {
+        if album.is_virtual {
+            return;
+        }
+
+        let album_name = album.display_name();
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("album.ignore.confirm_title"))
+            .body(trf("album.ignore.confirm_body", &[("album", &album_name)]))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", &tr("common.cancel"));
+        dialog.add_response("ignore", &tr("album.ignore.confirm_action"));
+        dialog.set_response_appearance("ignore", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("ignore"), move |_, _| {
+            if let Some(window) = weak.upgrade() {
+                window.ignore_album_ui(album.clone());
+            }
+        });
+
+        dialog.present(self);
+    }
+
+    fn ignore_album_ui(&self, album: Album) {
+        if album.is_virtual {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let worker_result =
+                gtk::gio::spawn_blocking(move || ignore_album_worker(pool, album.folder_path))
+                    .await;
+
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            match worker_result {
+                Ok(Ok(result)) => {
+                    tracing::info!(
+                        "ignored album {} and removed {} indexed media rows",
+                        result.folder_path.display(),
+                        result.removed_count
+                    );
+                    if let Some(media_list) = window.imp().media_list.borrow().as_ref() {
+                        remove_ignored_album_media_from_media_list(media_list, &result.folder_path);
+                    }
+                    window.refresh_album_rows();
+
+                    let active_should_close = window
+                        .imp()
+                        .active_album
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|active| active == &result.folder_path);
+                    if active_should_close {
+                        *window.imp().active_album.borrow_mut() = None;
+                        window.imp().album_list.get().unselect_all();
+                        window.imp().trash_list.get().unselect_all();
+                        window.imp().selecting_programmatically.set(true);
+                        if let Some(row) = window.imp().sidebar_list.get().row_at_index(0) {
+                            window.imp().sidebar_list.get().select_row(Some(&row));
+                        }
+                        window.imp().selecting_programmatically.set(false);
+                        pop_to_photos_root(&window.imp().nav_view.get());
+                    }
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!("failed to ignore album: {err}");
+                    show_settings_error_dialog(
+                        window.upcast_ref(),
+                        &trf("setting.scan_paths.save_failed", &[("error", &err)]),
+                    );
+                    window.refresh_album_rows();
+                }
+                Err(err) => {
+                    tracing::warn!("album ignore worker failed: {err:?}");
+                    window.refresh_album_rows();
+                }
+            }
+        });
     }
 
     fn confirm_delete_selected_albums(&self) {
@@ -1646,6 +1743,10 @@ impl MainWindow {
             }
         });
 
+        // ── Album management: custom and excluded scan folders ────────────
+        let scan_paths_group = build_scan_paths_group(parent);
+        content.append(&scan_paths_group);
+
         // ── Storage: Clear Cache ────────────────────────────────────────────
         // Show current storage usage with action rows matching the project's
         // Adw.PreferencesGroup + Adw.ActionRow design pattern.
@@ -1922,6 +2023,173 @@ fn build_about_label() -> gtk::Label {
         .halign(gtk::Align::Center)
         .css_classes(["settings-about-text"])
         .build()
+}
+
+#[derive(Clone, Copy)]
+enum ScanPathListKind {
+    Custom,
+    Excluded,
+}
+
+fn build_scan_paths_group(parent: &gtk::Widget) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::new();
+    group.set_title(&tr("setting.section.scan_paths"));
+    group.set_description(Some(&tr("setting.section.scan_paths_description")));
+    group.add_css_class("settings-preferences-group");
+
+    add_scan_path_section(
+        &group,
+        parent,
+        ScanPathListKind::Custom,
+        &tr("setting.scan_paths.custom"),
+        &tr("setting.scan_paths.custom_description"),
+        prefs::custom_scan_roots(),
+    );
+    add_scan_path_section(
+        &group,
+        parent,
+        ScanPathListKind::Excluded,
+        &tr("setting.scan_paths.excluded"),
+        &tr("setting.scan_paths.excluded_description"),
+        prefs::excluded_scan_roots(),
+    );
+
+    group
+}
+
+fn add_scan_path_section(
+    group: &adw::PreferencesGroup,
+    parent: &gtk::Widget,
+    kind: ScanPathListKind,
+    title: &str,
+    subtitle: &str,
+    paths: Vec<PathBuf>,
+) {
+    let row = adw::ActionRow::new();
+    row.add_css_class("settings-action-row");
+    row.set_title(title);
+    row.set_subtitle(subtitle);
+    row.set_activatable(false);
+
+    let add_button = gtk::Button::new();
+    add_button.set_icon_name("list-add-symbolic");
+    add_button.set_valign(gtk::Align::Center);
+    add_button.add_css_class("glass-toolbar-button");
+    add_button.set_tooltip_text(Some(&tr("setting.scan_paths.add")));
+    row.add_suffix(&add_button);
+    group.add(&row);
+
+    for path in paths {
+        add_scan_path_value_row(group, parent, kind, path);
+    }
+
+    let parent_for_add = parent.clone();
+    let group_for_add = group.clone();
+    add_button.connect_clicked(move |_| {
+        choose_scan_folder(&parent_for_add, {
+            let parent = parent_for_add.clone();
+            let group = group_for_add.clone();
+            move |path| match append_scan_path(kind, path.clone()) {
+                Ok(true) => {
+                    add_scan_path_value_row(&group, &parent, kind, path);
+                    show_restart_required_dialog(&parent);
+                }
+                Ok(false) => show_restart_required_dialog(&parent),
+                Err(err) => show_settings_error_dialog(
+                    &parent,
+                    &trf("setting.scan_paths.save_failed", &[("error", &err)]),
+                ),
+            }
+        });
+    });
+}
+
+fn add_scan_path_value_row(
+    group: &adw::PreferencesGroup,
+    parent: &gtk::Widget,
+    kind: ScanPathListKind,
+    path: PathBuf,
+) {
+    let row = adw::ActionRow::new();
+    row.add_css_class("settings-action-row");
+    row.set_title(&path.to_string_lossy());
+    row.set_activatable(false);
+
+    let remove_button = gtk::Button::new();
+    remove_button.set_icon_name("user-trash-symbolic");
+    remove_button.set_valign(gtk::Align::Center);
+    remove_button.add_css_class("glass-toolbar-button");
+    remove_button.add_css_class("glass-toolbar-danger");
+    remove_button.set_tooltip_text(Some(&tr("setting.scan_paths.remove")));
+    row.add_suffix(&remove_button);
+    group.add(&row);
+
+    let parent_for_remove = parent.clone();
+    let row_for_remove = row.clone();
+    remove_button.connect_clicked(move |_| match remove_scan_path(kind, &path) {
+        Ok(()) => {
+            row_for_remove.set_visible(false);
+            show_restart_required_dialog(&parent_for_remove);
+        }
+        Err(err) => show_settings_error_dialog(
+            &parent_for_remove,
+            &trf("setting.scan_paths.save_failed", &[("error", &err)]),
+        ),
+    });
+}
+
+fn choose_scan_folder<F>(parent: &gtk::Widget, on_selected: F)
+where
+    F: Fn(PathBuf) + 'static,
+{
+    let native = gtk::FileChooserNative::builder()
+        .title(tr("setting.scan_paths.choose_folder"))
+        .action(gtk::FileChooserAction::SelectFolder)
+        .accept_label(tr("setting.scan_paths.choose"))
+        .cancel_label(tr("button.cancel"))
+        .build();
+    if let Some(window) = parent.root().and_downcast::<gtk::Window>() {
+        native.set_transient_for(Some(&window));
+    }
+    native.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            if let Some(path) = dialog.file().and_then(|file| file.path()) {
+                on_selected(path);
+            }
+        }
+        dialog.destroy();
+    });
+    native.show();
+}
+
+fn append_scan_path(kind: ScanPathListKind, path: PathBuf) -> Result<bool, String> {
+    let mut paths = scan_paths(kind);
+    if paths.iter().any(|existing| existing == &path) {
+        return Ok(false);
+    }
+    paths.push(path);
+    set_scan_paths(kind, &paths)?;
+    Ok(true)
+}
+
+fn remove_scan_path(kind: ScanPathListKind, path: &PathBuf) -> Result<(), String> {
+    let mut paths = scan_paths(kind);
+    paths.retain(|existing| existing != path);
+    set_scan_paths(kind, &paths)
+}
+
+fn scan_paths(kind: ScanPathListKind) -> Vec<PathBuf> {
+    match kind {
+        ScanPathListKind::Custom => prefs::custom_scan_roots(),
+        ScanPathListKind::Excluded => prefs::excluded_scan_roots(),
+    }
+}
+
+fn set_scan_paths(kind: ScanPathListKind, paths: &[PathBuf]) -> Result<(), String> {
+    match kind {
+        ScanPathListKind::Custom => prefs::set_custom_scan_roots(paths),
+        ScanPathListKind::Excluded => prefs::set_excluded_scan_roots(paths),
+    }
 }
 
 fn album_initial_load_limit(total: i64) -> u32 {
@@ -2382,7 +2650,7 @@ fn build_album_row(album: &Album) -> gtk::ListBoxRow {
 
 pub fn build_album_context_menu_for_tests(album: &Album) -> gtk::Box {
     glass_context_menu::build_menu_panel_for_tests(build_album_context_menu_items(
-        album, None, None, None,
+        album, None, None, None, None,
     ))
 }
 
@@ -2390,6 +2658,7 @@ fn build_album_context_menu_items(
     album: &Album,
     on_manage: Option<Box<dyn Fn() + 'static>>,
     on_delete: Option<Box<dyn Fn() + 'static>>,
+    on_ignore: Option<Box<dyn Fn() + 'static>>,
     on_select: Option<Box<dyn Fn() + 'static>>,
 ) -> Vec<GlassMenuItem> {
     let mut items = Vec::new();
@@ -2415,6 +2684,15 @@ fn build_album_context_menu_items(
     }
 
     if !album.is_virtual {
+        items.push(GlassMenuItem::new(
+            tr("album.context.ignore"),
+            GlassMenuItemKind::Normal,
+            move || {
+                if let Some(on_ignore) = &on_ignore {
+                    on_ignore();
+                }
+            },
+        ));
         items.push(GlassMenuItem::new(
             tr("album.context.delete"),
             GlassMenuItemKind::Danger,
@@ -2461,6 +2739,25 @@ struct AlbumDeleteUiResult {
     unknown_remaining_live_paths: HashSet<PathBuf>,
 }
 
+struct AlbumIgnoreUiResult {
+    folder_path: PathBuf,
+    removed_count: usize,
+}
+
+fn ignore_album_worker(
+    pool: DbPool,
+    folder_path: PathBuf,
+) -> std::result::Result<AlbumIgnoreUiResult, String> {
+    append_scan_path(ScanPathListKind::Excluded, folder_path.clone())?;
+    let removed_count = crate::core::db::delete_live_media_by_folder(&pool, &folder_path)
+        .map_err(|err| err.to_string())?;
+    crate::core::albums::refresh(&pool).map_err(|err| err.to_string())?;
+    Ok(AlbumIgnoreUiResult {
+        folder_path,
+        removed_count,
+    })
+}
+
 fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDeleteUiResult {
     let deleted_paths = albums
         .iter()
@@ -2498,6 +2795,27 @@ fn delete_albums_to_trash_worker(pool: DbPool, albums: Vec<Album>) -> AlbumDelet
         remaining_live_uris,
         remaining_live_folder_paths,
         unknown_remaining_live_paths,
+    }
+}
+
+fn remove_ignored_album_media_from_media_list(
+    media_list: &gtk::gio::ListStore,
+    ignored_path: &PathBuf,
+) {
+    let mut index = 0;
+    while index < media_list.n_items() {
+        let should_remove = media_list
+            .item(index)
+            .and_downcast::<glib::BoxedAnyObject>()
+            .is_some_and(|boxed| {
+                let item = boxed.borrow::<MediaItem>();
+                item.folder_path == *ignored_path
+            });
+        if should_remove {
+            media_list.remove(index);
+        } else {
+            index += 1;
+        }
     }
 }
 
@@ -3278,6 +3596,36 @@ mod tests {
         assert!(
             speed_labels.contains(&tr("setting.thumbnail_generation_speed.fastest")),
             "should have Fastest radio button, got {speed_labels:?}"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_scan_path_management() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.WindowScanPaths")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+
+        let mut titles = Vec::new();
+        collect_preference_titles(&page, &mut titles);
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.scan_paths.custom")),
+            "settings page should expose custom scan path management, got {titles:?}"
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.scan_paths.excluded")),
+            "settings page should expose excluded scan path management, got {titles:?}"
         );
     }
 

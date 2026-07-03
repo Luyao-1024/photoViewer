@@ -213,6 +213,43 @@ fn parses_user_dirs_videos_with_home_substitution() {
 }
 
 #[test]
+fn media_roots_include_custom_and_filter_excluded_roots() {
+    let defaults = vec![
+        PathBuf::from("/library/Pictures"),
+        PathBuf::from("/library/Videos"),
+    ];
+    let custom = vec![
+        PathBuf::from("/archive/Camera"),
+        PathBuf::from("/library/Pictures"),
+        PathBuf::from("relative"),
+    ];
+    let excluded = vec![PathBuf::from("/library/Videos")];
+
+    assert_eq!(
+        photo_viewer::config::media_roots_from_parts(defaults, custom, excluded),
+        vec![
+            PathBuf::from("/library/Pictures"),
+            PathBuf::from("/archive/Camera"),
+        ]
+    );
+}
+
+#[test]
+fn media_roots_drop_paths_below_excluded_parent() {
+    let defaults = vec![PathBuf::from("/library")];
+    let custom = vec![
+        PathBuf::from("/library/Private"),
+        PathBuf::from("/library/Camera"),
+    ];
+    let excluded = vec![PathBuf::from("/library/Private")];
+
+    assert_eq!(
+        photo_viewer::config::media_roots_from_parts(defaults, custom, excluded),
+        vec![PathBuf::from("/library")]
+    );
+}
+
+#[test]
 fn chinese_locale_falls_back_to_videos_dir_unicode() {
     let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempdir().unwrap();

@@ -38,7 +38,14 @@ fn spawn_watcher(
     let (notifier, rx) = MediaChangeNotifier::new();
     let h = {
         let _guard = rt.enter();
-        notify_watcher::start_watching(pool.clone(), vec![root.clone()], vec![], root, notifier)
+        notify_watcher::start_watching(
+            pool.clone(),
+            vec![root.clone()],
+            vec![],
+            vec![],
+            root,
+            notifier,
+        )
     };
     // Give the watcher a moment to call `watcher.watch(...)`.
     std::thread::sleep(Duration::from_millis(300));

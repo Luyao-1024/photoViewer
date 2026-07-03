@@ -821,6 +821,16 @@ pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     Ok(changed)
 }
 
+/// 删除指定文件夹相册下的 live 媒体索引。只删除数据库行，不触碰磁盘文件。
+pub fn delete_live_media_by_folder(pool: &DbPool, folder_path: &Path) -> Result<usize> {
+    let conn = pool.get()?;
+    let changed = conn.execute(
+        "DELETE FROM media_items WHERE folder_path = ?1 AND trashed_at IS NULL",
+        rusqlite::params![folder_path.to_string_lossy()],
+    )?;
+    Ok(changed)
+}
+
 /// 清空所有媒体记录。返回删除的记录数。
 ///
 /// 用于重置数据库，不会删除原始文件。

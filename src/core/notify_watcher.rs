@@ -37,11 +37,19 @@ pub fn start_watching(
     pool: DbPool,
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
+    excluded_roots: Vec<PathBuf>,
     pictures_root: PathBuf,
     notifier: MediaChangeNotifier,
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
-        run_watcher_loop(pool, watch_paths, trash_roots, pictures_root, notifier)
+        run_watcher_loop(
+            pool,
+            watch_paths,
+            trash_roots,
+            excluded_roots,
+            pictures_root,
+            notifier,
+        )
     })
 }
 
@@ -49,6 +57,7 @@ fn run_watcher_loop(
     pool: DbPool,
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
+    excluded_roots: Vec<PathBuf>,
     pictures_root: PathBuf,
     notifier: MediaChangeNotifier,
 ) {
@@ -74,14 +83,28 @@ fn run_watcher_loop(
     let mut trash_dirty = false;
 
     while let Ok(evt) = rx.recv() {
-        dispatch_event(&backend, evt, &notifier, &trash_roots, &mut trash_dirty);
+        dispatch_event(
+            &backend,
+            evt,
+            &notifier,
+            &trash_roots,
+            &excluded_roots,
+            &mut trash_dirty,
+        );
 
         // 排空本轮事件突发；静默配置的防抖时间（或通道关闭）后，若有回收站事件则
         // 对账 + 通知。
         while let Ok(e) = rx.recv_timeout(Duration::from_millis(
             runtime_config::notify_trash_debounce_ms(),
         )) {
-            dispatch_event(&backend, e, &notifier, &trash_roots, &mut trash_dirty);
+            dispatch_event(
+                &backend,
+                e,
+                &notifier,
+                &trash_roots,
+                &excluded_roots,
+                &mut trash_dirty,
+            );
         }
         flush_trash_reconcile(&pool, &pictures_root, &notifier, &mut trash_dirty);
     }
@@ -99,6 +122,7 @@ fn dispatch_event(
     evt: Result<notify::Event, notify::Error>,
     notifier: &MediaChangeNotifier,
     trash_roots: &[PathBuf],
+    excluded_roots: &[PathBuf],
     trash_dirty: &mut bool,
 ) {
     let evt = match evt {
@@ -112,11 +136,32 @@ fn dispatch_event(
         *trash_dirty = true;
         return;
     }
+    let current_excluded_roots = crate::core::prefs::excluded_scan_roots();
+    if evt
+        .paths
+        .iter()
+        .any(|p| is_under_effective_excluded(p, excluded_roots, current_excluded_roots.as_slice()))
+    {
+        return;
+    }
     handle_event(backend, Ok(evt), notifier);
 }
 
 fn is_under_trash(path: &Path, trash_roots: &[PathBuf]) -> bool {
     trash_roots.iter().any(|root| path.starts_with(root))
+}
+
+fn is_under_excluded(path: &Path, excluded_roots: &[PathBuf]) -> bool {
+    excluded_roots.iter().any(|root| path.starts_with(root))
+}
+
+fn is_under_effective_excluded(
+    path: &Path,
+    startup_excluded_roots: &[PathBuf],
+    current_excluded_roots: &[PathBuf],
+) -> bool {
+    is_under_excluded(path, startup_excluded_roots)
+        || is_under_excluded(path, current_excluded_roots)
 }
 
 /// 若有挂起的回收站事件：跑一次对账（add + prune 收敛 DB），并广播 TrashChanged
@@ -441,6 +486,7 @@ mod tests {
             }),
             &notifier,
             &trash_roots,
+            &[],
             &mut dirty,
         );
 
@@ -449,5 +495,57 @@ mod tests {
             rx.try_recv().is_err(),
             "a trash-dir event must not trigger handle_event / notifier"
         );
+    }
+
+    #[test]
+    fn scan_excluded_events_are_ignored_without_media_notifications() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
+        let backend = LocalBackend::new(pool);
+        let (notifier, mut rx) = MediaChangeNotifier::new();
+        let trash_roots = Vec::new();
+        let excluded_roots = vec![dir.path().join("Private")];
+        let mut dirty = false;
+
+        dispatch_event(
+            &backend,
+            Ok(Event {
+                kind: EventKind::Remove(RemoveKind::File),
+                paths: vec![dir.path().join("Private").join("x.jpg")],
+                attrs: Default::default(),
+            }),
+            &notifier,
+            &trash_roots,
+            &excluded_roots,
+            &mut dirty,
+        );
+
+        assert!(!dirty, "scan exclusions are separate from trash events");
+        assert!(
+            rx.try_recv().is_err(),
+            "excluded scan events must not trigger media notifications"
+        );
+    }
+
+    #[test]
+    fn effective_exclusions_include_paths_added_after_watcher_start() {
+        let startup_excluded = vec![PathBuf::from("/library/OldPrivate")];
+        let current_excluded = vec![PathBuf::from("/library/NewPrivate")];
+
+        assert!(is_under_effective_excluded(
+            Path::new("/library/OldPrivate/a.jpg"),
+            &startup_excluded,
+            &current_excluded
+        ));
+        assert!(is_under_effective_excluded(
+            Path::new("/library/NewPrivate/a.jpg"),
+            &startup_excluded,
+            &current_excluded
+        ));
+        assert!(!is_under_effective_excluded(
+            Path::new("/library/Public/a.jpg"),
+            &startup_excluded,
+            &current_excluded
+        ));
     }
 }

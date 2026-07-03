@@ -132,6 +132,39 @@ fn delete_empty_real_album_returns_empty_mutation() {
 }
 
 #[test]
+fn ignore_album_index_removes_db_rows_without_deleting_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("album-ignore.db")).unwrap();
+    let folder = dir.path().join("Camera");
+    let other_folder = dir.path().join("Keep");
+    let (_, _, ignored_path) = create_media(&pool, &folder, "ignored.jpg");
+    let (_, _, kept_path) = create_media(&pool, &other_folder, "kept.jpg");
+    albums::refresh(&pool).unwrap();
+
+    let removed = db::delete_live_media_by_folder(&pool, &folder).unwrap();
+    albums::refresh(&pool).unwrap();
+
+    assert_eq!(removed, 1);
+    assert!(
+        ignored_path.exists(),
+        "ignoring an album must not delete the original file"
+    );
+    assert!(kept_path.exists());
+    assert!(
+        albums::find_by_folder_path(&pool, &folder)
+            .unwrap()
+            .is_none(),
+        "ignored album should disappear from album projection after index removal"
+    );
+    assert!(
+        albums::find_by_folder_path(&pool, &other_folder)
+            .unwrap()
+            .is_some(),
+        "other album should remain indexed"
+    );
+}
+
+#[test]
 fn delete_mixed_real_and_virtual_albums_rejects_before_trashing_real_media() {
     let dir = scratch_dir();
     let pool = db::init_pool(&dir.path().join("album-delete.db")).unwrap();

@@ -26,6 +26,7 @@ fn watcher_emits_upserted_after_successful_upsert() {
             pool.clone(),
             vec![dir.path().to_path_buf()],
             vec![],
+            vec![],
             dir.path().to_path_buf(),
             notifier,
         )

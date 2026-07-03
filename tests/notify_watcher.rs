@@ -95,6 +95,7 @@ fn watcher_picks_up_new_file() {
             pool.clone(),
             vec![root.clone()],
             vec![],
+            vec![],
             root.clone(),
             notifier,
         )

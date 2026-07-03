@@ -9,7 +9,7 @@ use crate::core::metadata;
 use crate::core::motion_photo::{self, MediaAttributes};
 use chrono::Utc;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -68,6 +68,12 @@ pub struct LocalBackend {
     pool: DbPool,
 }
 
+fn is_excluded_path(path: &Path, excluded_roots: &[PathBuf]) -> bool {
+    excluded_roots
+        .iter()
+        .any(|excluded| path.starts_with(excluded))
+}
+
 impl LocalBackend {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
@@ -84,8 +90,21 @@ impl LocalBackend {
     /// 启动扫描请用 [`Self::scan_and_upsert_dir`]，它会跳过未改动文件以避免
     /// 重复哈希。
     pub fn scan_dir(&self, root: &Path) -> Result<Vec<NewMediaItem>> {
+        self.scan_dir_with_exclusions(root, &[])
+    }
+
+    pub fn scan_dir_with_exclusions(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+    ) -> Result<Vec<NewMediaItem>> {
         let mut items = Vec::new();
-        for entry in WalkDir::new(root).follow_links(false).into_iter().flatten() {
+        for entry in WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| !is_excluded_path(entry.path(), excluded_roots))
+            .flatten()
+        {
             let path = entry.path();
             // 一次 stat 既判 is_file 又喂给 process_file（复用，不再在 process_file 内重复 stat）。
             let file_meta = match std::fs::metadata(path) {
@@ -111,7 +130,15 @@ impl LocalBackend {
     /// 这把「每次启动对整个图库重复哈希」（1.8GB → 数秒）降到「逐文件 stat + 一次
     /// 索引查询」（毫秒级），除非文件真的新增/改动。
     pub fn scan_and_upsert_dir(&self, root: &Path) -> Result<usize> {
-        self.scan_and_upsert_dir_with(root, |_| {})
+        self.scan_and_upsert_dir_with(root, &[], |_| {})
+    }
+
+    pub fn scan_and_upsert_dir_with_exclusions(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+    ) -> Result<usize> {
+        self.scan_and_upsert_dir_with(root, excluded_roots, |_| {})
     }
 
     /// 与 [`Self::scan_and_upsert_dir`] 相同，但每个实际 upsert 的项目都会传给
@@ -121,10 +148,27 @@ impl LocalBackend {
     where
         F: FnMut(MediaItem),
     {
-        self.scan_and_upsert_dir_with(root, on_upserted)
+        self.scan_and_upsert_dir_with(root, &[], on_upserted)
     }
 
-    fn scan_and_upsert_dir_with<F>(&self, root: &Path, mut on_upserted: F) -> Result<usize>
+    pub fn scan_and_upsert_dir_notify_with_exclusions<F>(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+        on_upserted: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(MediaItem),
+    {
+        self.scan_and_upsert_dir_with(root, excluded_roots, on_upserted)
+    }
+
+    fn scan_and_upsert_dir_with<F>(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+        mut on_upserted: F,
+    ) -> Result<usize>
     where
         F: FnMut(MediaItem),
     {
@@ -154,6 +198,7 @@ impl LocalBackend {
         // 要重新索引的文件 extract 成 NewMediaItem 后经有界 channel 交给消费者。它独立线程
         // 跑，与消费者的批量入库形成流水——提取与落库并行，互不阻塞。
         let root_owned = root.to_path_buf();
+        let excluded_roots = excluded_roots.to_vec();
         let (item_tx, item_rx) = sync_channel::<WorkOutcome>(SCAN_ITEM_CHANNEL_CAP);
         let producer_pool = self.pool.clone();
         let producer = std::thread::spawn(move || -> Result<(u64, u64, u64)> {
@@ -164,6 +209,7 @@ impl LocalBackend {
             for entry in WalkDir::new(&root_owned)
                 .follow_links(false)
                 .into_iter()
+                .filter_entry(|entry| !is_excluded_path(entry.path(), &excluded_roots))
                 .flatten()
             {
                 visited += 1;

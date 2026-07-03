@@ -11,7 +11,7 @@
 //! into path-injected helpers (`*_at`) so the unit tests can point at a
 //! temp file without mutating process-global env vars (which race under
 //! `cargo test`'s parallel runner).
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
@@ -24,6 +24,8 @@ const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
 const AUTO_PLAY_MOTION_PHOTO_KEY: &str = "auto_play_motion_photo";
+const CUSTOM_SCAN_ROOTS_KEY: &str = "custom_scan_roots";
+const EXCLUDED_SCAN_ROOTS_KEY: &str = "excluded_scan_roots";
 
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
@@ -147,6 +149,45 @@ fn write_string_at(path: &Path, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn read_path_list_at(path: &Path, key: &str) -> Vec<PathBuf> {
+    let obj = read_object_at(path);
+    let Some(values) = obj.get(key).and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    sanitize_path_list(values.iter().filter_map(|v| v.as_str()).map(PathBuf::from))
+}
+
+fn write_path_list_at(path: &Path, key: &str, paths: &[PathBuf]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut object = read_object_at(path);
+    let values = sanitize_path_list(paths.iter().cloned())
+        .into_iter()
+        .map(|path| Value::String(path.to_string_lossy().into_owned()))
+        .collect();
+    object.insert(key.to_string(), Value::Array(values));
+    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn sanitize_path_list<I>(paths: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut result = Vec::new();
+    for path in paths {
+        if !path.is_absolute() {
+            continue;
+        }
+        if !result.iter().any(|existing| existing == &path) {
+            result.push(path);
+        }
+    }
+    result
+}
+
 fn read_video_default_muted_at(path: &Path) -> bool {
     let obj = read_object_at(path);
     obj.get(VIDEO_DEFAULT_MUTED_KEY)
@@ -202,6 +243,22 @@ fn read_auto_play_motion_photo_at(path: &Path) -> bool {
 
 fn write_auto_play_motion_photo_at(path: &Path, enabled: bool) -> Result<(), String> {
     write_bool_at(path, AUTO_PLAY_MOTION_PHOTO_KEY, enabled)
+}
+
+fn read_custom_scan_roots_at(path: &Path) -> Vec<PathBuf> {
+    read_path_list_at(path, CUSTOM_SCAN_ROOTS_KEY)
+}
+
+fn write_custom_scan_roots_at(path: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    write_path_list_at(path, CUSTOM_SCAN_ROOTS_KEY, roots)
+}
+
+fn read_excluded_scan_roots_at(path: &Path) -> Vec<PathBuf> {
+    read_path_list_at(path, EXCLUDED_SCAN_ROOTS_KEY)
+}
+
+fn write_excluded_scan_roots_at(path: &Path, roots: &[PathBuf]) -> Result<(), String> {
+    write_path_list_at(path, EXCLUDED_SCAN_ROOTS_KEY, roots)
 }
 
 fn write_video_volume_at(path: &Path, volume: f64) -> Result<(), String> {
@@ -284,6 +341,26 @@ pub fn auto_play_motion_photo() -> bool {
 /// Persist the motion-photo auto-play preference.
 pub fn set_auto_play_motion_photo(enabled: bool) -> Result<(), String> {
     write_auto_play_motion_photo_at(&settings_path(), enabled)
+}
+
+/// Extra directories to scan in addition to the default Pictures/Videos roots.
+pub fn custom_scan_roots() -> Vec<PathBuf> {
+    read_custom_scan_roots_at(&settings_path())
+}
+
+/// Persist extra scan directories.
+pub fn set_custom_scan_roots(roots: &[PathBuf]) -> Result<(), String> {
+    write_custom_scan_roots_at(&settings_path(), roots)
+}
+
+/// Directories excluded from scanning. Exclusion never deletes files.
+pub fn excluded_scan_roots() -> Vec<PathBuf> {
+    read_excluded_scan_roots_at(&settings_path())
+}
+
+/// Persist scan exclusion directories.
+pub fn set_excluded_scan_roots(roots: &[PathBuf]) -> Result<(), String> {
+    write_excluded_scan_roots_at(&settings_path(), roots)
 }
 
 #[cfg(test)]
@@ -626,6 +703,84 @@ mod tests {
             "writing theme preference should preserve existing appearance prefs"
         );
         assert_eq!(read_theme_preference_at(&path), ThemePreference::Dark);
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn scan_path_preferences_default_to_empty_lists() {
+        let path = tmp_path("scan-path-defaults");
+        cleanup(&path);
+
+        assert!(read_custom_scan_roots_at(&path).is_empty());
+        assert!(read_excluded_scan_roots_at(&path).is_empty());
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn scan_path_preferences_round_trip_clean_absolute_unique_paths() {
+        let path = tmp_path("scan-path-roundtrip");
+        cleanup(&path);
+        std::fs::write(
+            &path,
+            "{\"locale_hint\": \"en\", \"custom_scan_roots\": [\"relative\", \"/old\"]}",
+        )
+        .unwrap();
+
+        write_custom_scan_roots_at(
+            &path,
+            &[
+                std::path::PathBuf::from("/library/Camera"),
+                std::path::PathBuf::from("relative"),
+                std::path::PathBuf::from("/library/Camera"),
+                std::path::PathBuf::from("/library/Exports"),
+            ],
+        )
+        .unwrap();
+        write_excluded_scan_roots_at(
+            &path,
+            &[
+                std::path::PathBuf::from("/library/Camera/Private"),
+                std::path::PathBuf::from("/library/Camera/Private"),
+                std::path::PathBuf::from("../nope"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_custom_scan_roots_at(&path),
+            vec![
+                std::path::PathBuf::from("/library/Camera"),
+                std::path::PathBuf::from("/library/Exports"),
+            ]
+        );
+        assert_eq!(
+            read_excluded_scan_roots_at(&path),
+            vec![std::path::PathBuf::from("/library/Camera/Private")]
+        );
+
+        let obj = read_object_at(&path);
+        assert_eq!(obj.get("locale_hint").and_then(|v| v.as_str()), Some("en"));
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn scan_path_preferences_ignore_malformed_json_values() {
+        let path = tmp_path("scan-path-malformed");
+        cleanup(&path);
+        std::fs::write(
+            &path,
+            "{\"custom_scan_roots\": [42, false, \"/ok\"], \"excluded_scan_roots\": \"nope\"}",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_custom_scan_roots_at(&path),
+            vec![std::path::PathBuf::from("/ok")]
+        );
+        assert!(read_excluded_scan_roots_at(&path).is_empty());
 
         cleanup(&path);
     }

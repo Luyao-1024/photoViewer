@@ -67,11 +67,14 @@ the sidebar counts via
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as
 the Year/Month/Day selector. "Manage Album" opens the album detail page. Real
-folder albums also expose "Delete Album", which moves every media item in that
-folder to the system trash and then refreshes the derived album list. Virtual
-albums such as Favorites, Photos, and Videos are navigable but not deletable.
-Album multi-select is limited to deleting multiple real folder albums through
-the same trash-backed operation.
+folder albums also expose "Ignore Album" and "Delete Album". Ignore Album adds
+the folder to `excluded_scan_roots`, immediately removes that folder's live
+media rows from the database and visible GTK model, refreshes the derived album
+list, and never touches the files on disk. Delete Album moves every media item
+in that folder to the system trash and then refreshes the derived album list.
+Virtual albums such as Favorites, Photos, and Videos are navigable but not
+ignorable or deletable. Album multi-select is limited to deleting multiple real
+folder albums through the same trash-backed operation.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 
@@ -88,6 +91,8 @@ The Albums page also has virtual logical albums:
 - Videos: filtered by `media_items.media_kind = 'video'`.
 
 The Photos and Videos virtual albums are type-based only. Do not infer them from folder paths; images and videos may live under either picture or video roots.
+
+Settings includes an Album Management section for scan paths. "Additional scan folders" adds custom roots to future scans. "Excluded scan folders" skips matching folders during startup scans and filesystem watching. Excluding a folder is not album deletion: it must not move files to trash, permanently delete files, or invoke `album_ops::delete_albums_to_trash`.
 
 ## Trash
 

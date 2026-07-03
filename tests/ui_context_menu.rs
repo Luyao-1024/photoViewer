@@ -136,6 +136,7 @@ fn context_menu_uses_glass_menu_classes() {
     let mut buttons = Vec::new();
     collect_buttons(album_panel.upcast_ref(), &mut buttons);
     let manage_button = button_with_label(&buttons, &tr("album.context.manage"));
+    let ignore_button = button_with_label(&buttons, &tr("album.context.ignore"));
     let delete_button = button_with_label(&buttons, &tr("album.context.delete"));
 
     assert!(
@@ -160,11 +161,19 @@ fn context_menu_uses_glass_menu_classes() {
     assert!(
         labels
             .iter()
+            .any(|label| label == &tr("album.context.ignore")),
+        "real album menu should contain {}, got {labels:?}",
+        tr("album.context.ignore")
+    );
+    assert!(
+        labels
+            .iter()
             .any(|label| label == &tr("album.context.delete")),
         "real album menu should contain {}, got {labels:?}",
         tr("album.context.delete")
     );
     assert_button_has_class(&manage_button, "glass-context-menu-item");
+    assert_button_has_class(&ignore_button, "glass-context-menu-item");
     assert_button_has_class(&delete_button, "glass-context-menu-item");
     assert_button_has_class(&delete_button, "glass-context-menu-item-danger");
 
@@ -181,6 +190,13 @@ fn context_menu_uses_glass_menu_classes() {
             .any(|label| label == &tr("album.context.manage")),
         "virtual album menu should contain {}, got {labels:?}",
         tr("album.context.manage")
+    );
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label == &tr("album.context.ignore")),
+        "virtual album menu should omit {}, got {labels:?}",
+        tr("album.context.ignore")
     );
     assert!(
         !labels
