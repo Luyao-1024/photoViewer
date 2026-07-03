@@ -2231,9 +2231,7 @@ mod tests {
             );
 
             assert!(
-                css.contains(
-                    ".round-search-button:hover,\n.round-search-button:focus-visible {"
-                ),
+                css.contains(".round-search-button:hover,\n.round-search-button:focus-visible {"),
                 "search button must regain material on hover/focus ({liquid} mode)"
             );
         }

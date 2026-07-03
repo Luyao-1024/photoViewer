@@ -137,7 +137,14 @@ impl MediaRepository {
                 term,
                 media_kind,
                 field,
-            } => db::list_media_search_page(&self.pool, &term, Some(&media_kind), field, start, limit),
+            } => db::list_media_search_page(
+                &self.pool,
+                &term,
+                Some(&media_kind),
+                field,
+                start,
+                limit,
+            ),
             MediaQuery::Trash => Ok(page_vec(db::list_trashed_media(&self.pool)?, start, limit)),
             MediaQuery::AlbumFolder(path) => {
                 db::list_media_by_folder_page(&self.pool, &path, start, limit)

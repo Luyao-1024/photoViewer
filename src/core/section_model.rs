@@ -28,6 +28,7 @@ pub struct MediaSection {
 
 pub fn group_items(items: &[MediaItem], mode: GroupBy) -> Vec<MediaSection> {
     let mut sections: Vec<MediaSection> = Vec::new();
+    let mut section_positions: HashMap<SectionKey, usize> = HashMap::new();
     let mut unknown_section: Option<MediaSection> = None;
 
     for item in items {
@@ -48,14 +49,17 @@ pub fn group_items(items: &[MediaItem], mode: GroupBy) -> Vec<MediaSection> {
             continue;
         }
 
-        let pos = sections.iter().position(|s| s.key == key);
-        match pos {
+        match section_positions.get(&key).copied() {
             Some(idx) => sections[idx].items.push(item.clone()),
-            None => sections.push(MediaSection {
-                key,
-                label: String::new(),
-                items: vec![item.clone()],
-            }),
+            None => {
+                let idx = sections.len();
+                section_positions.insert(key.clone(), idx);
+                sections.push(MediaSection {
+                    key,
+                    label: String::new(),
+                    items: vec![item.clone()],
+                });
+            }
         }
     }
 
@@ -216,6 +220,71 @@ mod tests {
     #[test]
     fn groupby_default_is_day() {
         assert_eq!(GroupBy::default(), GroupBy::Day);
+    }
+
+    #[test]
+    fn group_items_preserves_first_seen_section_order_and_counts() {
+        let mk = |id: i64, y: i32, m: u32, d: u32| MediaItem {
+            id,
+            uri: format!("file:///tmp/{id}.jpg"),
+            path: format!("/tmp/{id}.jpg").into(),
+            folder_path: "/tmp".into(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(64),
+            height: Some(48),
+            video_duration_secs: None,
+            taken_at: Some(
+                NaiveDate::from_ymd_opt(y, m, d)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+                    .and_utc(),
+            ),
+            file_mtime: NaiveDate::from_ymd_opt(y, m, d)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc(),
+            file_size: 1,
+            blake3_hash: format!("h{id}"),
+            is_favorite: false,
+            trashed_at: None,
+        };
+        let items = vec![
+            mk(1, 2026, 5, 2),
+            mk(2, 2025, 12, 31),
+            mk(3, 2026, 5, 2),
+            mk(4, 2026, 5, 1),
+        ];
+
+        let sections = group_items(&items, GroupBy::Day);
+        let keys: Vec<_> = sections.iter().map(|section| section.key.clone()).collect();
+
+        assert_eq!(
+            keys,
+            vec![
+                SectionKey {
+                    year: Some(2026),
+                    month: Some(5),
+                    day: Some(2)
+                },
+                SectionKey {
+                    year: Some(2025),
+                    month: Some(12),
+                    day: Some(31)
+                },
+                SectionKey {
+                    year: Some(2026),
+                    month: Some(5),
+                    day: Some(1)
+                },
+            ]
+        );
+        assert_eq!(sections[0].items.len(), 2);
+        assert_eq!(sections[1].items.len(), 1);
+        assert_eq!(sections[2].items.len(), 1);
     }
 
     #[test]

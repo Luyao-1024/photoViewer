@@ -110,7 +110,9 @@ Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
 they are far below the visible area. The scan requests and priority-boosts
 tiles intersecting the viewport plus one viewport of overscan, which keeps
 visible thumbnails ahead of off-screen work while still making near-scroll
-content warm quickly.
+content warm quickly. Thumbnail request cache keys use the `MediaItem`
+metadata already loaded from the database, including `file_mtime`; do not add
+per-tile filesystem `metadata()` calls on the GTK thread.
 
 The Day grid's library statistics label sits at the top of the grid content,
 above the first date section header with a small top inset, after the

@@ -4784,6 +4784,32 @@ mod tests {
         assert_eq!(step_zoom(MIN_VIEWER_ZOOM, -1), MIN_VIEWER_ZOOM);
     }
 
+    #[gtk::test]
+    fn image_overlay_has_no_touch_zoom_or_pan_gestures() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let controllers = viewer.imp().image_overlay.get().observe_controllers();
+        let has_zoom = controllers
+            .snapshot()
+            .into_iter()
+            .any(|controller| controller.downcast::<gtk::GestureZoom>().is_ok());
+        let has_drag = controllers
+            .snapshot()
+            .into_iter()
+            .any(|controller| controller.downcast::<gtk::GestureDrag>().is_ok());
+
+        assert!(
+            !has_zoom,
+            "image overlay should not install touch pinch zoom while buttons own zoom actions"
+        );
+        assert!(
+            !has_drag,
+            "image overlay should not install touch drag pan while buttons own zoom/navigation actions"
+        );
+    }
+
     #[test]
     fn zoom_pan_is_clamped_and_resets_at_identity() {
         assert_eq!(

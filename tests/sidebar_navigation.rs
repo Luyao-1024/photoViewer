@@ -1,7 +1,7 @@
 //! Regression coverage for the tree-shaped sidebar navigation.
 //!
 //! The sidebar lists albums directly under a collapsible "Albums" group header;
-//! selecting an album row pushes its `AlbumDetailPage` immediately (there is no
+//! selecting an album row schedules its `AlbumDetailPage` push directly (there is no
 //! intermediate album-grid page anymore). The album rows live in a dedicated
 //! bounded scroll region so the top-level Photos / Albums / Trash rows stay
 //! stable even with many albums.
@@ -32,6 +32,10 @@ fn visible_flag(w: &gtk::Widget) -> bool {
 
 fn has_css_class(widget: &gtk::Widget, class_name: &str) -> bool {
     widget.css_classes().iter().any(|class| class == class_name)
+}
+
+fn drain_main_context() {
+    while glib::MainContext::default().iteration(false) {}
 }
 
 fn direct_children(widget: &gtk::Widget) -> Vec<gtk::Widget> {
@@ -125,11 +129,35 @@ fn make_item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
     }
 }
 
+fn navigation_view_has_no_touch_swipe_controller() {
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.TestNoTouchSwipe")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+
+    let nav = window.nav_view();
+    window.connect_sidebar(&nav);
+
+    let has_swipe = nav
+        .observe_controllers()
+        .snapshot()
+        .into_iter()
+        .any(|controller| controller.downcast::<gtk::GestureSwipe>().is_ok());
+    assert!(
+        !has_swipe,
+        "NavigationView should not install a touch swipe controller that can compete with buttons"
+    );
+}
+
 #[test]
 fn sidebar_navigation_suite() {
     gtk::init().expect("GTK init failed");
 
     photos_count_uses_loaded_model_before_background_refresh();
+    navigation_view_has_no_touch_swipe_controller();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.Test")
         .build();
@@ -442,17 +470,18 @@ fn sidebar_navigation_suite() {
     }
     let first_album_row = window.imp().album_rows.borrow()[0].clone();
 
-    // Selecting an album row pushes its AlbumDetailPage directly.
+    // Selecting an album row schedules its AlbumDetailPage push directly.
     window
         .imp()
         .album_list
         .get()
         .select_row(Some(&first_album_row));
+    drain_main_context();
     assert!(
         nav.visible_page()
             .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
             .is_some(),
-        "selecting an album row should push AlbumDetailPage directly",
+        "selecting an album row should push AlbumDetailPage after idle dispatch",
     );
 
     // Selecting Photos returns to the root Photos page.
@@ -471,11 +500,12 @@ fn sidebar_navigation_suite() {
         .media_type_list
         .get()
         .select_row(Some(&media_type_row));
+    drain_main_context();
     assert!(
         nav.visible_page()
             .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
             .is_some(),
-        "selecting a media type row should push AlbumDetailPage directly",
+        "selecting a media type row should push AlbumDetailPage after idle dispatch",
     );
 
     // Trash is in its own stable bottom nav list. Selecting it pushes the Trash
@@ -638,11 +668,12 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
         .row_at_index(target_idx as i32)
         .expect("target album row should exist");
     album_list.select_row(Some(&row));
+    drain_main_context();
     assert!(
         nav.visible_page()
             .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
             .is_some(),
-        "selecting the target album should open AlbumDetailPage",
+        "selecting the target album should open AlbumDetailPage after idle dispatch",
     );
 
     window.toggle_albums_expanded();

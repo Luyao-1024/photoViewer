@@ -28,6 +28,7 @@ pub mod trash;
 pub use album_ops::{add_to_album, AlbumOpMode};
 pub use albums::{refresh as refresh_albums, Album};
 pub use backend::local::LocalBackend;
+pub use db::SearchField;
 pub use db::{init_pool, run_migrations, DbPool};
 pub use edit::{
     CropRect, EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation,
@@ -39,7 +40,6 @@ pub use media::{MediaItem, NewMediaItem};
 pub use media_change_notifier::MediaChangeNotifier;
 pub use metadata::{extract as extract_metadata, RawMetadata};
 pub use refresh::RefreshCoordinator;
-pub use db::SearchField;
 pub use repository::{FavoriteSummary, MediaMutation, MediaPage, MediaQuery, MediaRepository};
 pub use section_model::{group_items, GroupBy, MediaSection, SectionKey};
 pub use thumbnails::{ThumbnailLoader, ThumbnailSize};

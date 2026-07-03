@@ -728,9 +728,7 @@ impl MediaGrid {
             child = c.next_sibling();
         }
         if let Some(flow) = last_flow {
-            let flow_child = gtk::FlowBoxChild::builder()
-                .child(widget)
-                .build();
+            let flow_child = gtk::FlowBoxChild::builder().child(widget).build();
             flow.append(&flow_child);
         }
     }
@@ -2576,9 +2574,7 @@ fn format_tile_duration(secs: f64) -> Option<String> {
 }
 
 fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
-    std::fs::metadata(&item.path)
-        .and_then(|metadata| metadata.modified())
-        .unwrap_or_else(|_| std::time::SystemTime::from(item.file_mtime))
+    std::time::SystemTime::from(item.file_mtime)
 }
 
 /// 失败缩略图的占位：浅灰纯色 texture，明确表示"加载失败"，
@@ -2661,6 +2657,24 @@ mod tests {
             is_favorite: false,
             trashed_at: None,
         }
+    }
+
+    #[test]
+    fn thumbnail_request_mtime_uses_indexed_file_mtime_without_stat() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("photo.jpg");
+        std::fs::write(&path, b"image").unwrap();
+
+        let indexed_mtime = Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap();
+        let mut item = sample_item(99, "photo.jpg");
+        item.path = path;
+        item.file_mtime = indexed_mtime;
+
+        assert_eq!(
+            thumbnail_request_mtime(&item),
+            std::time::SystemTime::from(indexed_mtime),
+            "thumbnail requests should reuse the indexed mtime instead of stat-ing on the UI thread"
+        );
     }
 
     fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
@@ -2972,21 +2986,6 @@ mod tests {
             grid.imp().stats_refresh_source.borrow().is_none(),
             "completed thumbnail generation should not start a stats refresh timeout"
         );
-    }
-
-    #[test]
-    fn thumbnail_request_mtime_prefers_file_modified_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rotated.png");
-        std::fs::write(&path, b"metadata").unwrap();
-
-        let mut item = sample_item(1, "rotated.png");
-        item.path = path;
-        item.file_mtime = chrono::DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH);
-
-        let mtime = thumbnail_request_mtime(&item);
-
-        assert!(mtime > std::time::SystemTime::UNIX_EPOCH);
     }
 
     #[test]
