@@ -33,6 +33,8 @@ Overlay controls should have stable dimensions. Hidden panels should not leave c
 
 Original image decode must apply orientation metadata before creating the display texture. Rotate from the editor changes metadata only, so the viewer must not rely on pixel dimensions from `image::open` to infer display direction.
 
+Animated images open on the image stage, not the video stage. The scanner persists `media_attributes.animated` for known animated sources, but the viewer also probes the current file's GIF header when opening a single image so stale DB rows or GIF content with a `.jpg` suffix can still play. Grid and filmstrip thumbnails remain static previews. Viewer playback starts automatically, loops, and holds the last frame for an extra 500 ms before starting the next loop.
+
 Videos use the `GtkVideo` layer in `viewer-page.blp`, backed by `GtkMediaFile`. When switching away from a video, pause and detach the previous stream so audio/playback does not continue behind an image. While a video stream is loading, keep the `GtkPicture` layer visible with the current video's preview thumbnail; reveal `GtkVideo` only after the stream reports `prepared` and the navigation token still matches. Outside that loading handoff, the image `GtkPicture` and video `GtkVideo` are mutually exclusive for the current item.
 
 The image, video, and loading surfaces use the shared `viewer-media-surface`

@@ -82,6 +82,29 @@ fn scan_marks_gif_as_animated_media_attribute() {
 }
 
 #[test]
+fn scan_marks_gif_content_with_jpg_extension_as_animated() {
+    let dir = tmp_dir();
+    let root = dir.path();
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/media/gif_with_jpg_extension.jpg");
+    let dst = root.join("misnamed.jpg");
+    std::fs::copy(src, &dst).unwrap();
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    let items = backend.scan_dir(root).unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].mime_type, "image/gif");
+    assert!(
+        items[0].media_attributes.contains(r#""animated":true"#),
+        "GIF content with a .jpg suffix should persist animated=true, got {}",
+        items[0].media_attributes
+    );
+}
+
+#[test]
 fn upsert_inserts_and_updates_by_uri() {
     let dir = tmp_dir();
     let root = dir.path();

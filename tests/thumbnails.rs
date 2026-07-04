@@ -242,6 +242,47 @@ fn visible_media_request_marks_thumbnail_generated() {
     );
 }
 
+#[test]
+fn gif_without_exif_generates_thumbnail_and_marks_media() {
+    ensure_gtk();
+    let dir = tempdir().unwrap();
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/media/animated_source.gif");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    let item = backend
+        .upsert_from_path(&src)
+        .unwrap()
+        .expect("test gif should be inserted");
+
+    assert_eq!(item.mime_type, "image/gif");
+
+    let runtime = rt();
+    let _guard = runtime.enter();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    loader.spawn_workers(1);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    loader.request_for_media(
+        item.id,
+        item.uri.clone(),
+        ThumbnailSize::Small,
+        Some(std::time::SystemTime::from(item.file_mtime)),
+        tx,
+        TIER_NORMAL,
+    );
+    let loaded = runtime.block_on(async { rx.await.unwrap() });
+    drop(_guard);
+
+    assert!(loaded.texture.width() > 0);
+    assert_eq!(
+        loader.generated_count(),
+        1,
+        "GIF thumbnail generation should not fail just because GIF has no EXIF orientation"
+    );
+}
+
 /// Regression for the first-load "blank thumbnails" bug.
 ///
 /// Three PhotosPage grids (Year/Month/Day) used to fire one request per tile

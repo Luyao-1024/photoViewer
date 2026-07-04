@@ -408,9 +408,13 @@ impl LocalBackend {
         let t_motion = Instant::now();
         // 有共享头部时复用它做动图检测；否则（HEIC/视频）回退到 detect(path)，但二者
         // 都非 JPEG，is_motion_candidate_mime 立即返回 None，不会触发额外读盘。
-        let motion_photo = match head.as_deref() {
-            Some(h) => motion_photo::detect_with_head(path, h, file_meta.len()),
-            None => motion_photo::detect(path),
+        let motion_photo = if meta.mime_type == "image/jpeg" {
+            match head.as_deref() {
+                Some(h) => motion_photo::detect_with_head(path, h, file_meta.len()),
+                None => motion_photo::detect(path),
+            }
+        } else {
+            None
         };
         SCAN_MOTION_MS.fetch_add(t_motion.elapsed().as_millis() as u64, Ordering::Relaxed);
 
@@ -461,7 +465,11 @@ impl LocalBackend {
         let file_time = file_index_time(&file_meta).unwrap_or_else(std::time::SystemTime::now);
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
         let hash = stream_file_hash(source)?;
-        let motion_photo = motion_photo::detect(source);
+        let motion_photo = if meta.mime_type == "image/jpeg" {
+            motion_photo::detect(source)
+        } else {
+            None
+        };
         let mut media_attributes = motion_photo
             .map(|info| MediaAttributes {
                 motion_photo: Some(info),

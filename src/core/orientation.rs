@@ -116,6 +116,7 @@ fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
     match exif::Reader::new().read_from_container(&mut cursor) {
         Ok(exif) => Ok(Some(exif)),
         Err(exif::Error::NotFound(_)) => Ok(None),
+        Err(exif::Error::InvalidFormat("Unknown image format")) => Ok(None),
         Err(e) => Err(AppError::Exif(e.to_string())),
     }
 }

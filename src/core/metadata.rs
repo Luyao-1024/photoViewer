@@ -1,6 +1,8 @@
 //! Image metadata extraction: dimensions, EXIF DateTimeOriginal, MIME type.
 use crate::core::error::{AppError, Result};
-use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
+use crate::core::media::{
+    media_kind_from_mime, mime_from_extension, mime_from_extension_or_head, MediaKind,
+};
 use chrono::{DateTime, TimeZone, Utc};
 use gdk_pixbuf;
 use serde_json::Value;
@@ -250,7 +252,19 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
 /// HEIC ignores `head`: its EXIF item can live anywhere in the file, so it needs
 /// the whole file (read once) and is not a motion-photo candidate.
 pub fn extract_with_head(path: &Path, head: Option<&[u8]>) -> Result<RawMetadata> {
-    let Some(mime_type) = mime_from_extension(path).map(str::to_string) else {
+    let extension_mime = mime_from_extension(path);
+    let owned_head;
+    let head_for_mime = if head.is_none()
+        && extension_mime.is_some_and(|mime| media_kind_from_mime(mime) == Some(MediaKind::Image))
+        && extension_mime != Some("image/heic")
+    {
+        owned_head = read_image_head(path).ok();
+        owned_head.as_deref()
+    } else {
+        head
+    };
+    let Some(mime_type) = mime_from_extension_or_head(path, head_for_mime).map(str::to_string)
+    else {
         return Err(AppError::Decode(format!(
             "unknown extension: {}",
             path.display()

@@ -42,6 +42,17 @@ pub fn mime_from_extension(path: &Path) -> Option<&'static str> {
     })
 }
 
+pub fn mime_from_extension_or_head(path: &Path, head: Option<&[u8]>) -> Option<&'static str> {
+    if head.is_some_and(is_gif_head) {
+        return Some("image/gif");
+    }
+    mime_from_extension(path)
+}
+
+pub fn is_gif_head(head: &[u8]) -> bool {
+    head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a")
+}
+
 pub fn media_kind_from_mime(mime_type: &str) -> Option<MediaKind> {
     if mime_type.starts_with("image/") {
         Some(MediaKind::Image)
