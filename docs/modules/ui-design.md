@@ -213,8 +213,13 @@ Design intent:
   compact bare pair in the bottom-right corner of the stage — no capsule
   container, each button draws its own glass surface only on hover/focus —
   minimizing coverage of the media.
-- The bottom filmstrip is a secondary navigation aid. It should stay low,
-  bounded, horizontally scrollable, and centered on the active item after layout.
+- The bottom filmstrip is a secondary navigation aid rendered as a low raised
+  glass carousel. It should stay bounded, horizontally scrollable, and centered
+  on the active item after layout. When the live thumbnail window reaches its
+  cap, it should slide and trim from the opposite edge so browsing continues
+  without accumulating the whole album in GTK widgets. The active thumbnail
+  should read larger through transform/outline/shadow only, never through
+  margin or padding changes that alter row allocation.
 - The built-in `GtkVideo` controls own video playback and seeking. Do not add a
   duplicate progress control above the filmstrip.
 - When editing is active, visible viewer navigation controls are hidden so the

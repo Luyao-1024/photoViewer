@@ -53,11 +53,48 @@ Keep `Gtk.Video` template autoplay disabled. `show_video_stage` attaches the `Gt
 
 ## Thumbnail Strip
 
-The thumbnail strip should initialize centered on the active image. If centering only happens after user interaction, the adjustment is being applied before the widget has a final allocation; schedule the centering after layout or after the thumbnail model is populated.
+The thumbnail strip is a low raised-glass carousel surface and should initialize centered on the active image. If centering only happens after user interaction, the adjustment is being applied before the widget has a final allocation; schedule the centering after layout or after the thumbnail model is populated.
 
 Filmstrip thumbnails crop with `ContentFit::Cover` inside a bounded aspect-ratio frame. Displayed thumbnails must not be more extreme than 21:9 horizontally or 9:21 vertically, and the minimum width still preserves a usable click target.
 
+When media dimensions are available, the filmstrip button should reserve the
+final clamped thumbnail width before the async thumbnail texture arrives. Do
+not start every item at the minimum placeholder width and then resize on load;
+that changes total carousel width after first paint and causes a visible
+recentering twitch.
+
+The active filmstrip thumbnail may be emphasized with transform, outline,
+shadow, opacity, or background paint only. It must not change margins, padding,
+minimum size, or any other layout-affecting property; otherwise the selected
+state pushes neighboring thumbnails and creates visible strip jitter while
+navigation moves.
+
+The filmstrip content keeps a fixed internal edge inset so thumbnails do not
+touch the rounded carousel edges while navigation or scroll animation is in
+progress. Keep the CSS `.viewer-thumb-strip` horizontal padding and the Rust
+`THUMB_EDGE_INSET` geometry constant in sync.
+
 The filmstrip `ScrolledWindow` must keep `propagate-natural-width: false` and use horizontal policy `external`, not `never`. `external` hides the scrollbar while preserving a real horizontal adjustment; `never` lets the loaded thumbnail row's minimum width propagate upward and can make the viewer window grow as more thumbnails are loaded.
+
+The carousel keeps only a bounded live GTK widget window around the current region. Reaching `THUMB_WINDOW_MAX` must not stop loading later or earlier thumbnails; extending at the cap slides the `[start, end)` window in the requested direction and trims the opposite edge. This keeps large libraries feeling continuous without letting the filmstrip accumulate unbounded buttons.
+
+When the thumbnail window grows without sliding, update it incrementally:
+append right-side items or prepend left-side items. Do not rebuild the whole
+strip for ordinary lazy growth, because GTK briefly reallocates every recreated
+child to tiny sizes and the selected thumbnail can visibly flash. Full rebuilds
+are reserved for initial load, current index outside the live window, and
+sliding windows where the existing indices genuinely change.
+
+After rebuilding or extending the carousel, do not compute centering from
+transient tiny child allocations. GTK can briefly report near-zero widths before
+the new buttons settle; centering should retry on later frames and coalesce
+bursts of thumbnail-loaded callbacks into a single pending scroll update.
+
+When the carousel has a real horizontal adjustment range, moving the active
+thumbnail into view should animate the adjustment over a short ease-out window
+instead of jumping directly to the target value. A newer navigation target must
+cancel the previous animation and continue from the current adjustment value, so
+rapid key presses feel continuous rather than queued.
 
 Thumbnail generation applies the same orientation metadata as the original viewer decode. Because the thumbnail cache key includes source mtime, orientation-only edits must update the in-memory `MediaItem.file_mtime` before refreshing the strip; waiting for the filesystem watcher leaves the current viewer session using the old cache key and can show a stale direction.
 

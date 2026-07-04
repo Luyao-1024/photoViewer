@@ -638,20 +638,31 @@ video.viewer-media-surface controls scale slider {
   border-color: alpha(@window_fg_color, 0.28);
 }
 
-/* ── Viewer filmstrip — 缩略图预览栏 ────────────────────────────────────
-   The bottom overlay in ViewerPage. The bar is layout-only so the thumbnails
-   float without a capsule background; these rules own per-item emphasis.
-   Items keep original aspect ratio (set via width-request after texture load
-   in viewer_page.rs).
-   ViewerPage 底部缩略图预览栏。容器只负责布局,不绘制背景胶囊；这里只管
-   单项强调。缩略图保持原始宽高比。 */
+/* ── Viewer filmstrip carousel — 缩略图预览栏 ────────────────────────────
+   The bottom strip is a low glass carousel surface. The live item window stays
+   bounded in viewer_page.rs; CSS owns the carousel motion, edge fade, and
+   current-item emphasis. Items keep original aspect ratio (set via
+   width-request after texture load).
+   ViewerPage 底部缩略图预览栏。Rust 只保留有限窗口; CSS 负责 carousel
+   位移、边缘渐隐与当前项强调。缩略图保持原始宽高比。 */
 .viewer-thumb-bar {
-  padding: 10px 8px;
+  padding: 11px 16px;
+  border-radius: 18px;
+  min-height: 78px;
+}
+
+.viewer-thumb-carousel.glass-raised {
+  box-shadow:
+    inset 34px 0 24px -30px alpha(@window_bg_color, 0.72),
+    inset -34px 0 24px -30px alpha(@window_bg_color, 0.72),
+    inset 0 1px alpha(@window_fg_color, 0.22),
+    0 12px 34px alpha(black, 0.30);
 }
 
 .viewer-thumb-strip {
-  padding: 0;
-  /* 让 strip 内 65 个按钮的 min-width 之和不再撑大 viewer ——
+  padding: 0 24px;
+  transition: transform 220ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  /* 让 strip 内 live buttons 的 min-width 之和不再撑大 viewer ——
      GTK widget 的 min-width 默认继承子节点,设 0 切断累积 */
   min-width: 0;
 }
@@ -665,9 +676,13 @@ button.viewer-thumb-item {
   background-image: none;
   border: 0;
   outline: none;
-  transition: background-color 120ms ease, opacity 120ms ease, outline-color 120ms ease, transform 120ms ease;
+  transition:
+    background-color 150ms ease,
+    opacity 160ms ease,
+    outline-color 160ms ease,
+    transform 180ms cubic-bezier(0.2, 0.0, 0.2, 1);
   box-shadow: none;
-  opacity: 0.42;
+  opacity: 0.54;
 }
 
 button.viewer-thumb-item:hover,
@@ -683,11 +698,8 @@ button.viewer-thumb-item:checked {
 }
 
 button.viewer-thumb-item.viewer-thumb-current {
-  margin-left: 12px;
-  margin-right: 12px;
-  padding: 4px;
-  transform: scale(1.30);
-  background: alpha(@window_fg_color, 0.10);
+  transform: translateY(-3px) scale(1.24);
+  background: alpha(@window_fg_color, 0.12);
   outline: 2px solid alpha(@window_fg_color, 0.55);
   outline-offset: 2px;
   box-shadow:
@@ -2275,15 +2287,32 @@ mod tests {
     fn current_viewer_thumbnail_is_prominently_enlarged() {
         let css = build_css(true);
         assert!(
+            css.contains(".viewer-thumb-carousel"),
+            "viewer filmstrip should expose a carousel surface class",
+        );
+        assert!(
+            css.contains("transition: transform 220ms cubic-bezier(0.2, 0.0, 0.2, 1)"),
+            "viewer filmstrip should animate carousel position changes",
+        );
+        assert!(
+            css.contains(".viewer-thumb-strip {\n  padding: 0 24px;"),
+            "viewer filmstrip should keep internal edge inset so thumbnails do not touch rounded carousel edges",
+        );
+        assert!(
+            css.contains("inset 34px 0 24px -30px alpha(@window_bg_color, 0.72)")
+                && css.contains("inset -34px 0 24px -30px alpha(@window_bg_color, 0.72)"),
+            "carousel surface should draw subtle edge fades without extra layout widgets",
+        );
+        assert!(
             css.contains(".viewer-thumb-item.viewer-thumb-current"),
             "CSS must define the current filmstrip thumbnail state",
         );
         assert!(
-            css.contains("transform: scale(1.30)"),
+            css.contains("transform: translateY(-3px) scale(1.24)"),
             "current filmstrip thumbnail should be prominently enlarged",
         );
         assert!(
-            css.contains("opacity: 0.42"),
+            css.contains("opacity: 0.54"),
             "non-current filmstrip thumbnails should be visually de-emphasized",
         );
         assert!(
@@ -2291,11 +2320,20 @@ mod tests {
             "current filmstrip thumbnail should stay fully bright",
         );
         assert!(
-            css.contains("margin-left: 12px") && css.contains("margin-right: 12px"),
-            "current filmstrip thumbnail should reserve fixed side breathing room",
+            !css.contains("margin 180ms ease"),
+            "viewer thumbnail transitions must not animate layout-affecting margins",
         );
         assert!(
-            css.contains("background: alpha(@window_fg_color, 0.10)"),
+            !css.contains("margin-left: 10px") && !css.contains("margin-right: 10px"),
+            "current filmstrip thumbnail must not change button allocation with margins",
+        );
+        assert!(
+            !css.contains("button.viewer-thumb-item.viewer-thumb-current {\n  margin-left")
+                && !css.contains("button.viewer-thumb-item.viewer-thumb-current {\n  padding: 4px"),
+            "current filmstrip thumbnail must emphasize visually without changing padding",
+        );
+        assert!(
+            css.contains("background: alpha(@window_fg_color, 0.12)"),
             "current filmstrip thumbnail should use the shared glass selection veil",
         );
         assert!(
