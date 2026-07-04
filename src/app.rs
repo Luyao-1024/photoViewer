@@ -289,53 +289,6 @@ where
     Ok((pool, items))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::media::{NewMediaItem, MEDIA_SUBKIND_STANDARD};
-    use chrono::{TimeZone, Utc};
-
-    fn sample_new_media(path: &std::path::Path) -> NewMediaItem {
-        let dt = Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap();
-        NewMediaItem {
-            uri: format!("file://{}", path.display()),
-            path: path.to_path_buf(),
-            folder_path: path.parent().unwrap().to_path_buf(),
-            mime_type: "image/png".into(),
-            media_subkind: MEDIA_SUBKIND_STANDARD.into(),
-            media_attributes: "{}".into(),
-            width: Some(64),
-            height: Some(48),
-            video_duration_secs: None,
-            taken_at: Some(dt),
-            file_mtime: dt,
-            file_size: 123,
-            blake3_hash: String::new(),
-        }
-    }
-
-    #[test]
-    fn startup_preload_reconcile_runs_before_initial_live_page_query() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("photos.db");
-        let media_path = dir.path().join("camera.png");
-
-        let pool = init_pool(&db_path).unwrap();
-        let id = crate::core::db::insert_media_item(&pool, &sample_new_media(&media_path)).unwrap();
-        drop(pool);
-
-        let (_pool, items) = initialize_db_once_blocking_with_preload(db_path, 500, |pool| {
-            crate::core::db::mark_trashed(pool, id)
-        })
-        .unwrap();
-
-        assert!(
-            items.is_empty(),
-            "startup reconcile/preload work must happen before the first live media page is read"
-        );
-    }
-}
-
 async fn initialize_db_once_with_retry(
     path: PathBuf,
     page_size: u32,
@@ -454,4 +407,51 @@ fn start_background_startup_work(
         // 大图库里很慢；预热是拉模型且 worker 总是先处理视口队列，不需要等分页。
         crate::core::thumbnail_prewarm::start_background_prewarm(&loader);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::media::{NewMediaItem, MEDIA_SUBKIND_STANDARD};
+    use chrono::{TimeZone, Utc};
+
+    fn sample_new_media(path: &std::path::Path) -> NewMediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 7, 3, 12, 0, 0).unwrap();
+        NewMediaItem {
+            uri: format!("file://{}", path.display()),
+            path: path.to_path_buf(),
+            folder_path: path.parent().unwrap().to_path_buf(),
+            mime_type: "image/png".into(),
+            media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+            media_attributes: "{}".into(),
+            width: Some(64),
+            height: Some(48),
+            video_duration_secs: None,
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 123,
+            blake3_hash: String::new(),
+        }
+    }
+
+    #[test]
+    fn startup_preload_reconcile_runs_before_initial_live_page_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("photos.db");
+        let media_path = dir.path().join("camera.png");
+
+        let pool = init_pool(&db_path).unwrap();
+        let id = crate::core::db::insert_media_item(&pool, &sample_new_media(&media_path)).unwrap();
+        drop(pool);
+
+        let (_pool, items) = initialize_db_once_blocking_with_preload(db_path, 500, |pool| {
+            crate::core::db::mark_trashed(pool, id)
+        })
+        .unwrap();
+
+        assert!(
+            items.is_empty(),
+            "startup reconcile/preload work must happen before the first live media page is read"
+        );
+    }
 }
