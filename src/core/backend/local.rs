@@ -163,6 +163,18 @@ impl LocalBackend {
         self.scan_and_upsert_dir_with(root, excluded_roots, on_upserted)
     }
 
+    #[tracing::instrument(
+        name = "scan:upsert_dir",
+        skip(self, excluded_roots, on_upserted),
+        fields(
+            root = %root.display(),
+            snapshot_ms,
+            extract_ms,
+            hash_ms,
+            motion_ms,
+            upsert_ms
+        )
+    )]
     fn scan_and_upsert_dir_with<F>(
         &self,
         root: &Path,
@@ -179,7 +191,6 @@ impl LocalBackend {
         let _ = SCAN_HASH_MS.swap(0, Ordering::Relaxed);
         let _ = SCAN_MOTION_MS.swap(0, Ordering::Relaxed);
         let _ = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
-        let started = Instant::now();
         let mut errors = 0u64; // 元数据/upsert 失败，或解析 panic
         let mut none_mime = 0u64; // process_file 返回 None（不支持 MIME）
         let mut indexed = 0usize; // 实际写入 DB 的新增/更新行
@@ -343,22 +354,26 @@ impl LocalBackend {
         let hash_ms = SCAN_HASH_MS.swap(0, Ordering::Relaxed);
         let motion_ms = SCAN_MOTION_MS.swap(0, Ordering::Relaxed);
         let upsert_ms = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
+        // Per-phase totals are recorded as fields on the `scan:upsert_dir` span.
+        // The accumulators aggregate across the producer/consumer threads (a
+        // per-call span can't), while the span's own duration is the wall-clock
+        // total — together they replace the old SCAN_SUMMARY timing log.
+        let span = tracing::Span::current();
+        span.record("snapshot_ms", snap_ms);
+        span.record("extract_ms", extract_ms);
+        span.record("hash_ms", hash_ms);
+        span.record("motion_ms", motion_ms);
+        span.record("upsert_ms", upsert_ms);
         tracing::debug!(
             target: crate::core::log_targets::STORAGE,
-            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={} elapsed_ms={} | phases_ms snapshot={} extract={} hash={} motion={} upsert={}",
+            "SCAN_SUMMARY root={} visited={} supported={} unchanged={} errors={} none_mime={} indexed={}",
             root.display(),
             visited,
             supported,
             unchanged,
             errors,
             none_mime,
-            indexed,
-            started.elapsed().as_millis(),
-            snap_ms,
-            extract_ms,
-            hash_ms,
-            motion_ms,
-            upsert_ms,
+            indexed
         );
         Ok(indexed)
     }

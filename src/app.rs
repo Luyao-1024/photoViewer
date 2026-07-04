@@ -160,18 +160,16 @@ pub fn build_app() -> adw::Application {
                                         }
                                     };
                                     let list_len_before = media_list.n_items();
-                                    let apply_started = std::time::Instant::now();
                                     crate::ui::apply_to_media_list::apply_to_media_list(
                                         &media_list,
                                         &event,
                                     );
                                     tracing::info!(
                                         target: crate::core::log_targets::BROWSING,
-                                        "UI_CHANGE_APPLY event={} list_len_before={} list_len_after={} elapsed_ms={}",
+                                        "UI_CHANGE_APPLY event={} list_len_before={} list_len_after={}",
                                         event_label,
                                         list_len_before,
-                                        media_list.n_items(),
-                                        apply_started.elapsed().as_millis()
+                                        media_list.n_items()
                                     );
                                     // 文件系统监视器已更新 DB（albums::refresh），
                                     // 此处同步刷新侧栏相册行，使新增/删除的相册

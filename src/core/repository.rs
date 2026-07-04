@@ -6,7 +6,6 @@ use crate::core::refresh::LibraryStats;
 use crate::core::section_model::{counts_from_date_groups, GroupBy, SectionKey};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaQuery {
@@ -100,14 +99,10 @@ impl MediaRepository {
             .map_err(|_| AppError::Backend(format!("media count does not fit u32: {count}")))
     }
 
+    #[tracing::instrument(name = "repo:page", skip(self))]
     pub fn page(&self, query: MediaQuery, start: u32, limit: u32) -> Result<MediaPage> {
-        let total_start = Instant::now();
-        let count_start = Instant::now();
         let total = self.count(query.clone())?;
-        let count_ms = count_start.elapsed().as_millis();
-        let fetch_start = Instant::now();
         let items = self.items(query.clone(), start, limit)?;
-        let fetch_ms = fetch_start.elapsed().as_millis();
         if !matches!(query, MediaQuery::LiveAll) {
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
@@ -116,9 +111,6 @@ impl MediaRepository {
                 limit,
                 total,
                 item_count = items.len(),
-                count_ms,
-                fetch_ms,
-                total_ms = total_start.elapsed().as_millis(),
                 "media_repository_page: loaded"
             );
         }

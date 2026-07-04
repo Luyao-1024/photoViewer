@@ -1137,50 +1137,50 @@ impl MediaGrid {
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
+            // `grid:page_query` spans the async page load; the DB fetch runs in
+            // a `spawn_blocking` worker and is nested as `grid:db_page`.
+            let page_span = tracing::info_span!(
+                "grid:page_query",
+                generation,
+                target_start,
+                page_size = virtual_page_size
+            );
+            let _page = page_span.enter();
             let pool = loader.pool().clone();
-            let page_started = std::time::Instant::now();
             let result = gtk::gio::spawn_blocking(move || {
-                let db_started = std::time::Instant::now();
-                let result = MediaRepository::new(pool)
+                let db_span = tracing::info_span!("grid:db_page");
+                let _db = db_span.enter();
+                MediaRepository::new(pool)
                     .page(MediaQuery::LiveAll, target_start, virtual_page_size)
-                    .map(|page| page.items);
-                (result, db_started.elapsed())
+                    .map(|page| page.items)
             })
             .await;
             let items = match result {
-                Ok((Ok(items), db_elapsed)) => {
+                Ok(Ok(items)) => {
                     tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
-                        "VIRTUAL_TIMING db_page_loaded generation={} target_start={} limit={} rows={} db_ms={} await_ms={}",
+                        "VIRTUAL db_page_loaded generation={} target_start={} rows={}",
                         generation,
                         target_start,
-                        virtual_page_size,
-                        items.len(),
-                        db_elapsed.as_millis(),
-                        page_started.elapsed().as_millis()
+                        items.len()
                     );
                     items
                 }
-                Ok((Err(err), db_elapsed)) => {
+                Ok(Err(err)) => {
                     tracing::warn!(
                         target: crate::core::log_targets::BROWSING,
-                        "VIRTUAL_TIMING db_page_failed generation={} target_start={} limit={} db_ms={} await_ms={} error={err}",
+                        "VIRTUAL db_page_failed generation={} target_start={} error={err}",
                         generation,
-                        target_start,
-                        virtual_page_size,
-                        db_elapsed.as_millis(),
-                        page_started.elapsed().as_millis()
+                        target_start
                     );
                     Vec::new()
                 }
                 Err(err) => {
                     tracing::warn!(
                         target: crate::core::log_targets::BROWSING,
-                        "VIRTUAL_TIMING db_page_join_failed generation={} target_start={} limit={} await_ms={} error={err:?}",
+                        "VIRTUAL db_page_join_failed generation={} target_start={} error={err:?}",
                         generation,
-                        target_start,
-                        virtual_page_size,
-                        page_started.elapsed().as_millis()
+                        target_start
                     );
                     Vec::new()
                 }
@@ -1212,7 +1212,6 @@ impl MediaGrid {
                 return;
             }
             this.imp().virtual_window_start.set(target_start);
-            let apply_started = std::time::Instant::now();
             let additions: Vec<glib::BoxedAnyObject> =
                 items.into_iter().map(glib::BoxedAnyObject::new).collect();
             let list = this.imp().media_list.borrow().as_ref().cloned();
@@ -1225,12 +1224,11 @@ impl MediaGrid {
                 this.rebuild_immediately(list);
                 tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
-                    "VIRTUAL_TIMING page_applied generation={} target_start={} old_len={} new_len={} apply_rebuild_ms={}",
+                    "VIRTUAL page_applied generation={} target_start={} old_len={} new_len={}",
                     generation,
                     target_start,
                     old_len,
-                    new_len,
-                    apply_started.elapsed().as_millis()
+                    new_len
                 );
             }
             this.imp().virtual_query_in_flight.set(false);
@@ -1325,8 +1323,8 @@ impl MediaGrid {
     }
 
     /// Tear down the current sections and rebuild them for `mode`.
+    #[tracing::instrument(name = "grid:rebuild", skip(self, media_list), fields(source_len = media_list.n_items()))]
     fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
-        let rebuild_started = std::time::Instant::now();
         let source_len = media_list.n_items();
         let loader = self
             .imp()
@@ -1389,9 +1387,11 @@ impl MediaGrid {
         self.imp().displayed_items.borrow_mut().clear();
 
         // Extract MediaItems + a uri→global-index lookup from the store.
-        let extract_started = std::time::Instant::now();
-        let mut items = extract_items(&media_list);
-        let extract_elapsed = extract_started.elapsed();
+        let mut items = {
+            let extract_span = tracing::info_span!("grid:extract_items");
+            let _extract = extract_span.enter();
+            extract_items(&media_list)
+        };
         let max_items = self.imp().rendered_limit.get();
         if items.len() > max_items {
             tracing::debug!(
@@ -1878,14 +1878,12 @@ impl MediaGrid {
 
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "MediaGrid::rebuild mode={:?} source_len={} sections={} photos={} spec.pixel_size={} extract_ms={} total_ms={}",
+            "MediaGrid::rebuild mode={:?} source_len={} sections={} photos={} spec.pixel_size={}",
             mode,
             source_len,
             section_count,
             photo_count,
-            spec.pixel_size,
-            extract_elapsed.as_millis(),
-            rebuild_started.elapsed().as_millis()
+            spec.pixel_size
         );
 
         // 下一帧 layout 完成后立即请求/提权视口附近缩略图；滚动期间仍走去抖路径。
@@ -2533,14 +2531,13 @@ fn build_photo_picture(
             let item_uri = current_item.uri.clone();
             let item_mtime = thumbnail_request_mtime(&current_item);
             let cache_key = ThumbnailLoader::cache_key_for(&item_uri, size, Some(item_mtime));
-            let request_started = std::time::Instant::now();
             if let Some(tile) = tile_weak.upgrade() {
                 tile.set_cache_key(cache_key.clone());
             }
 
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "THUMB_TIMING grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} queue_len={} in_flight={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
+                "THUMB grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} queue_len={} in_flight={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
                 current_item.id,
                 item_name,
                 item_uri,
@@ -2567,15 +2564,16 @@ fn build_photo_picture(
             let on_background_changed = on_background_changed.clone();
             let item_name = item_name.clone();
             let item_uri = item_uri.clone();
+            let thumb_span = tracing::info_span!("grid:thumb_request");
             gtk::glib::spawn_future_local(async move {
+                let _thumb = thumb_span.enter();
                 match rx.await {
                     Ok(loaded) => {
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
-                            "THUMB_TIMING grid_loaded item_name={} uri={} elapsed_ms={} texture={}x{}",
+                            "THUMB grid_loaded item_name={} uri={} texture={}x{}",
                             item_name,
                             item_uri,
-                            request_started.elapsed().as_millis(),
                             loaded.texture.width(),
                             loaded.texture.height()
                         );
@@ -2591,10 +2589,9 @@ fn build_photo_picture(
                     Err(_) => {
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
-                            "THUMB_TIMING grid_dropped_placeholder item_name={} uri={} elapsed_ms={}",
+                            "THUMB grid_dropped_placeholder item_name={} uri={}",
                             item_name,
-                            item_uri,
-                            request_started.elapsed().as_millis()
+                            item_uri
                         );
                         if let Some(t) = tile_weak.upgrade() {
                             t.set_paintable(Some(&gray_placeholder_texture()));

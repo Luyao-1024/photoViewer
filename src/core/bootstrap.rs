@@ -98,10 +98,9 @@ fn scan_and_aggregate_with_notifier_blocking(
                         let batch_len = batch.len();
                         tracing::info!(
                             target: crate::core::log_targets::BROWSING,
-                            "STARTUP_SCAN_NOTIFY interval_flush root={} batch_len={} elapsed_ms={} first_batch={} total_scanned={} interval_secs={}",
+                            "STARTUP_SCAN_NOTIFY interval_flush root={} batch_len={} first_batch={} total_scanned={} interval_secs={}",
                             root.display(),
                             batch_len,
-                            last_notify.elapsed().as_millis(),
                             !sent_first_batch,
                             total_scanned,
                             notify_interval(total_scanned).as_secs()

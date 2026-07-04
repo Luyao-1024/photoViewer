@@ -753,6 +753,7 @@ impl ViewerPage {
         }
     }
 
+    #[tracing::instrument(name = "viewer:navigate", skip(self))]
     fn navigate_by_delta(&self, delta: NavDelta) {
         if delta == NAV_POP {
             self.fire_nav(delta);
@@ -773,9 +774,6 @@ impl ViewerPage {
             return;
         }
 
-        // Anchor for the full switch latency (neighbour lookup + thumbnail
-        // ready wait + show_at), reported at the deferred-settle milestone.
-        let nav_start = std::time::Instant::now();
         // Bump the nav token so any in-flight prefetch / thumbnail-wait from a
         // previous press is discarded: latest press wins, rapid presses chain.
         let token = {
@@ -802,19 +800,23 @@ impl ViewerPage {
                 // favorite, filmstrip, editor all read) stays synced to the
                 // display via show_at.
                 self.imp().current_media_id.set(neighbor_id);
-                self.switch_when_thumb_ready(index, item, token, nav_start);
+                self.switch_when_thumb_ready(index, item, token);
                 return;
             }
         }
 
         let weak = self.downgrade();
         let (tx, rx) = tokio::sync::oneshot::channel();
+        // `viewer:nav_db_query` spans the async neighbour-lookup wait, the
+        // trace replacement for the old `db_query_ms` timing log.
+        let nav_db_span = tracing::info_span!("viewer:nav_db_query", token);
         gio::spawn_blocking(move || {
             let repo = MediaRepository::new(pool);
             let result = repo.neighbor(query, MediaId::from(current_id), delta);
             let _ = tx.send(result);
         });
         glib::spawn_future_local(async move {
+            let _nav_db_span = nav_db_span.enter();
             let result = match rx.await {
                 Ok(r) => r,
                 Err(_) => return,
@@ -832,14 +834,13 @@ impl ViewerPage {
                     let index = this.ensure_media_item_in_window(item.clone());
                     tracing::debug!(
                         target: crate::core::log_targets::VIEWER,
-                        "VIEWER_SWITCH nav resolved delta={} target_index={} db_query_ms={} neighbor_id={}",
+                        "VIEWER_SWITCH nav resolved delta={} target_index={} neighbor_id={}",
                         delta,
                         index,
-                        nav_start.elapsed().as_millis(),
                         neighbor_id
                     );
                     this.imp().current_media_id.set(neighbor_id);
-                    this.switch_when_thumb_ready(index, item, token, nav_start);
+                    this.switch_when_thumb_ready(index, item, token);
                 }
                 Ok(None) => {}
                 Err(err) => {
@@ -878,20 +879,14 @@ impl ViewerPage {
     /// never hang on the old frame; if there is no loader or the item is a
     /// video, we switch immediately (show_at keeps the old frame until its
     /// own preview/stream lands).
-    fn switch_when_thumb_ready(
-        &self,
-        index: u32,
-        item: MediaItem,
-        token: u64,
-        nav_start: std::time::Instant,
-    ) {
+    fn switch_when_thumb_ready(&self, index: u32, item: MediaItem, token: u64) {
         let item_id = item.id;
         let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
-            self.settle_nav_switch(index, token, nav_start, "no_loader");
+            self.settle_nav_switch(index, token, "no_loader");
             return;
         };
         if item.is_video() {
-            self.settle_nav_switch(index, token, nav_start, "video");
+            self.settle_nav_switch(index, token, "video");
             return;
         }
 
@@ -919,20 +914,19 @@ impl ViewerPage {
                     };
                     tracing::debug!(
                         target: crate::core::log_targets::VIEWER,
-                        "VIEWER_SWITCH ready_before_switch token={} item_id={} wait_ms={} texture={}x{}",
+                        "VIEWER_SWITCH ready_before_switch token={} item_id={} texture={}x{}",
                         token,
                         item_id,
-                        nav_start.elapsed().as_millis(),
                         loaded.texture.width(),
                         loaded.texture.height()
                     );
-                    this.settle_nav_switch(index, token, nav_start, "thumb_ready");
+                    this.settle_nav_switch(index, token, "thumb_ready");
                 }
                 Err(_) => {
                     // Sender dropped (queue full / generation failed): switch
                     // anyway rather than holding the old frame forever.
                     if let Some(this) = weak.upgrade() {
-                        this.settle_nav_switch(index, token, nav_start, "thumb_send_failed");
+                        this.settle_nav_switch(index, token, "thumb_send_failed");
                     }
                 }
             }
@@ -945,7 +939,7 @@ impl ViewerPage {
             std::time::Duration::from_millis(NAV_READY_TIMEOUT_MS),
             move || {
                 if let Some(this) = weak.upgrade() {
-                    this.settle_nav_switch(index, token, nav_start, "timeout");
+                    this.settle_nav_switch(index, token, "timeout");
                 }
             },
         );
@@ -955,13 +949,7 @@ impl ViewerPage {
     /// thumb-ready, timeout, and error fallback paths all funnel here; after
     /// the first settles, later callers for the same token (or a stale token)
     /// are no-ops.
-    fn settle_nav_switch(
-        &self,
-        index: u32,
-        token: u64,
-        nav_start: std::time::Instant,
-        reason: &str,
-    ) {
+    fn settle_nav_switch(&self, index: u32, token: u64, reason: &str) {
         if self.imp().nav_token.get() != token {
             return; // superseded by a newer press
         }
@@ -971,11 +959,10 @@ impl ViewerPage {
         self.imp().nav_settled_token.set(token);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
-            "VIEWER_SWITCH nav_settled token={} index={} reason={} total_wait_ms={}",
+            "VIEWER_SWITCH nav_settled token={} index={} reason={}",
             token,
             index,
-            reason,
-            nav_start.elapsed().as_millis()
+            reason
         );
         self.show_at(index);
     }

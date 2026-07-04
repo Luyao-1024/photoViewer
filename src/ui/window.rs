@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gdk_pixbuf::Pixbuf;
 use glib::subclass::types::ObjectSubclassIsExt;
@@ -372,16 +372,17 @@ impl MainWindow {
         self.rebuild_media_type_rows();
     }
 
+    #[tracing::instrument(name = "sidebar:rebuild_album_rows", skip(self))]
     fn rebuild_album_rows(&self) {
-        let started = std::time::Instant::now();
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
         let albums = list_with_favorites(&pool).unwrap_or_default();
-        self.apply_album_rows(albums, started);
+        self.apply_album_rows(albums);
     }
 
-    fn apply_album_rows(&self, albums: Vec<Album>, started: std::time::Instant) {
+    #[tracing::instrument(name = "sidebar:apply_album_rows", skip(self, albums))]
+    fn apply_album_rows(&self, albums: Vec<Album>) {
         let album_list = self.imp().album_list.get();
 
         while let Some(child) = album_list.first_child() {
@@ -407,9 +408,8 @@ impl MainWindow {
         self.reselect_active_album_row();
         tracing::info!(
             target: crate::core::log_targets::BROWSING,
-            "SIDEBAR_ALBUM_REBUILD rows={} elapsed_ms={}",
-            album_count,
-            started.elapsed().as_millis()
+            "SIDEBAR_ALBUM_REBUILD rows={}",
+            album_count
         );
     }
 
@@ -450,12 +450,12 @@ impl MainWindow {
         self.reselect_active_album_row();
     }
 
+    #[tracing::instrument(name = "sidebar:apply_album_snapshot", skip(self, snapshot))]
     fn apply_sidebar_album_snapshot(&self, snapshot: SidebarAlbumSnapshot) {
-        let started = std::time::Instant::now();
         if let Some(live_count) = snapshot.live_count {
             self.set_photos_count_label(live_count);
         }
-        self.apply_album_rows(snapshot.albums, started);
+        self.apply_album_rows(snapshot.albums);
         self.apply_media_type_rows(snapshot.media_type_albums);
     }
 
@@ -1035,8 +1035,8 @@ impl MainWindow {
         );
     }
 
+    #[tracing::instrument(name = "album:open", skip(self, nav_view, album))]
     pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
-        let total_start = Instant::now();
         let album_name = album.display_name();
         let album_path = album.folder_path.to_string_lossy().into_owned();
         let album_is_virtual = album.is_virtual;
@@ -1051,7 +1051,6 @@ impl MainWindow {
 
         // Already viewing this album → no-op (avoids rebuilding/pushing a
         // duplicate detail page on a re-select).
-        let visible_check_start = Instant::now();
         let already_visible = nav_view
             .visible_page()
             .and_then(|page| page.downcast::<AlbumDetailPage>().ok())
@@ -1063,8 +1062,6 @@ impl MainWindow {
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
                 album_path = %album_path,
-                visible_check_ms = visible_check_start.elapsed().as_millis(),
-                total_ms = total_start.elapsed().as_millis(),
                 "album_switch: already_visible"
             );
             return;
@@ -1101,54 +1098,60 @@ impl MainWindow {
         // Albums are top-level destinations: drop any stacked pages back to the
         // Photos root, then push a fresh detail page so the back stack stays
         // shallow and consistent.
-        let pop_start = Instant::now();
-        pop_to_photos_root(nav_view);
-        let pop_ms = pop_start.elapsed().as_millis();
+        {
+            let pop_span = tracing::info_span!("album:pop");
+            let _pop = pop_span.enter();
+            pop_to_photos_root(nav_view);
+        }
 
         // 文件夹相册和虚拟相册都从数据库加载，不受 UI_MEDIA_LIST_CAP
         // 或启动时 master GTK 列表窗口限制。切换路径只同步加载首个可渲染窗口；
         // 大相册剩余项后台补齐，避免打开相册时阻塞主线程。
-        let load_start = Instant::now();
         let query = media_query_for_album(&album);
         let initial_limit = album_initial_load_limit(album.photo_count);
-        let page_result = crate::core::repository::MediaRepository::new(pool.clone()).page(
-            query.clone(),
-            0,
-            initial_limit,
-        );
-        let (items, total_items) = match page_result {
-            Ok(page) => {
-                let total = page.total;
-                (page.items, total)
-            }
-            Err(err) => {
-                tracing::warn!(
-                    target: crate::core::log_targets::ALBUMS,
-                    album_name = %album_name,
-                    album_path = %album_path,
-                    ?query,
-                    "album_switch: initial_page_failed error={err}"
-                );
-                (Vec::new(), 0)
+        let (items, total_items) = {
+            let load_span = tracing::info_span!("album:load");
+            let _load = load_span.enter();
+            match crate::core::repository::MediaRepository::new(pool.clone()).page(
+                query.clone(),
+                0,
+                initial_limit,
+            ) {
+                Ok(page) => (page.items, page.total),
+                Err(err) => {
+                    tracing::warn!(
+                        target: crate::core::log_targets::ALBUMS,
+                        album_name = %album_name,
+                        album_path = %album_path,
+                        ?query,
+                        "album_switch: initial_page_failed error={err}"
+                    );
+                    (Vec::new(), 0)
+                }
             }
         };
-        let load_ms = load_start.elapsed().as_millis();
         let item_count = items.len();
 
-        let store_start = Instant::now();
         let filtered = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-        for item in items {
-            filtered.append(&glib::BoxedAnyObject::new(item));
+        {
+            let store_span = tracing::info_span!("album:store");
+            let _store = store_span.enter();
+            for item in items {
+                filtered.append(&glib::BoxedAnyObject::new(item));
+            }
         }
-        let store_ms = store_start.elapsed().as_millis();
 
-        let page_start = Instant::now();
-        let page = AlbumDetailPage::new(album, filtered.clone(), master, pool.clone(), loader);
-        let page_ms = page_start.elapsed().as_millis();
+        let page = {
+            let page_span = tracing::info_span!("album:page_build");
+            let _page = page_span.enter();
+            AlbumDetailPage::new(album, filtered.clone(), master, pool.clone(), loader)
+        };
         page.set_nav_target(nav_view);
-        let push_start = Instant::now();
-        nav_view.push(&page);
-        let push_ms = push_start.elapsed().as_millis();
+        {
+            let push_span = tracing::info_span!("album:push");
+            let _push = push_span.enter();
+            nav_view.push(&page);
+        }
 
         tracing::info!(
             target: crate::core::log_targets::ALBUMS,
@@ -1156,12 +1159,6 @@ impl MainWindow {
             album_path = %album_path,
             is_virtual = album_is_virtual,
             item_count,
-            pop_ms,
-            load_ms,
-            store_ms,
-            page_ms,
-            push_ms,
-            total_ms = total_start.elapsed().as_millis(),
             "album_switch: end"
         );
 
@@ -2231,8 +2228,9 @@ fn backfill_album_media_list(
         return;
     }
     glib::spawn_future_local(async move {
+        let fetch_span = tracing::info_span!("album:backfill_fetch", start, limit);
+        let _fetch = fetch_span.enter();
         let query_for_worker = query.clone();
-        let fetch_started = Instant::now();
         let result = gtk::gio::spawn_blocking(move || {
             crate::core::repository::MediaRepository::new(pool)
                 .page(query_for_worker, start, limit)
@@ -2251,7 +2249,6 @@ fn backfill_album_media_list(
                     start,
                     total,
                     limit,
-                    fetch_ms = fetch_started.elapsed().as_millis(),
                     "album_backfill: fetch_failed error={err}"
                 );
                 return;
@@ -2265,7 +2262,6 @@ fn backfill_album_media_list(
                     start,
                     total,
                     limit,
-                    fetch_ms = fetch_started.elapsed().as_millis(),
                     "album_backfill: join_failed error={err:?}"
                 );
                 return;
@@ -2281,7 +2277,6 @@ fn backfill_album_media_list(
             total,
             limit,
             fetched = items.len(),
-            fetch_ms = fetch_started.elapsed().as_millis(),
             "album_backfill: fetched"
         );
         append_album_items_in_chunks(list, items, album_name, album_path, start, total);
@@ -2297,7 +2292,6 @@ fn append_album_items_in_chunks(
     total: u32,
 ) {
     const CHUNK_SIZE: usize = 500;
-    let append_started = Instant::now();
     let mut chunks = items.into_iter();
     let mut appended = 0usize;
     glib::idle_add_local(move || {
@@ -2315,7 +2309,6 @@ fn append_album_items_in_chunks(
                 total,
                 appended,
                 list_items = list.n_items(),
-                append_ms = append_started.elapsed().as_millis(),
                 "album_backfill: appended"
             );
             return glib::ControlFlow::Break;

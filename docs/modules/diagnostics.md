@@ -51,13 +51,16 @@ The four layers above always run. A separate **opt-in** layer captures per-flow 
 | Span name | Where |
 |---|---|
 | `scan:scan_and_aggregate`, `scan:notify_blocking` | `core/bootstrap.rs` startup scan |
-| `thumb:generate` | `core/thumbnails.rs` per-image thumbnail decode |
-| `grid:load_metadata` | `ui/media_grid.rs` grid DB metadata query |
-| `viewer:show_at` | `ui/viewer_page.rs` viewer item switch (sync portion: resolve, dispatch) |
-| `viewer:orig_decode`, `viewer:thumb_preview` | `ui/viewer_page.rs` async original-image decode / preview-thumbnail load → paint |
+| `thumb:generate` (nests `thumb:pb_decode`/`pb_scale`/`pb_save`), `thumb:process` | `core/thumbnails.rs` per-image decode (decode/scale/save sub-phases) + worker per-item envelope |
+| `grid:load_metadata`, `grid:rebuild`, `grid:extract_items`, `grid:page_query` (+ `grid:db_page`), `grid:thumb_request` | `ui/media_grid.rs` grid metadata, rebuild, virtual-scroll page load, per-tile thumb request |
+| `viewer:show_at`, `viewer:orig_decode`, `viewer:thumb_preview`, `viewer:navigate`, `viewer:nav_db_query` | `ui/viewer_page.rs` viewer switch, async decode/preview, navigation |
 | `editor:save_as_copy`, `editor:save_overwrite` | `core/edit/save.rs` |
+| `ui:apply_upserted_batch`, `ui:apply_startup_insertions` | `ui/apply_to_media_list.rs` shared list-store batch apply |
+| `sidebar:rebuild_album_rows`, `sidebar:apply_album_rows`, `sidebar:apply_album_snapshot` | `ui/window.rs` sidebar album rows |
+| `album:open` (+ `album:pop`/`load`/`store`/`page_build`/`push`), `album:backfill_fetch` | `ui/window.rs` album open, page-build phases, background backfill |
+| `album_detail:new` (+ `empty_state`/`grid_build`/`splice`), `album_detail:refresh_virtual`, `album_detail:filter_items` | `ui/album_detail_page.rs` album-detail page build + virtual refresh |
 
-**Coverage caveat:** a span captures wall-clock of the function body on the calling thread. The viewer's original-image decode runs on a `spawn_blocking` worker and resolves *after* `show_at` returns, so it gets its own `viewer:orig_decode` span entered in the async completion (likewise `viewer:thumb_preview` for the preview thumbnail). Read the full per-switch latency as the sequence of `viewer:show_at` → `viewer:orig_decode`/`viewer:thumb_preview` spans on the timeline.
+**Coverage caveat:** a span captures wall-clock of the function body on the calling thread. Work that escapes the function — a `spawn_blocking` DB query or an async decode that resolves *after* the caller returns — gets its own dedicated span entered in the async completion (e.g. `grid:db_page` inside the page-query worker, `viewer:orig_decode` for the original-image decode, `album:backfill_fetch`). Read end-to-end latency as the sequence of spans on the timeline.
 
 **Release gating:** `tracing` is built with `release_max_level_info`, so in release builds `#[instrument]` spans plus `info!`/`warn!`/`error!` events are compiled in (flow timing available on demand), while `debug!`/`trace!` events compile out (zero overhead, zero log noise). The Chrome layer itself attaches only when the env var is set, so a normal release run pays nothing extra. To capture `debug!`-level detail in a trace, rebuild with `release_max_level_debug` (or trace in a debug build) and raise `RUST_LOG`, e.g. `RUST_LOG=photo_viewer=trace`.
 

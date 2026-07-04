@@ -51,6 +51,7 @@ fn remove_by_uri(list: &gtk::gio::ListStore, uri: &str) {
     }
 }
 
+#[tracing::instrument(name = "ui:apply_upserted_batch", skip(list, items), fields(source = ?source, incoming = items.len()))]
 fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
@@ -68,7 +69,6 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
         return;
     }
 
-    let started = std::time::Instant::now();
     let incoming_len = items.len();
     let list_len_before = list.n_items();
     let mut by_uri = std::collections::HashMap::with_capacity(list.n_items() as usize);
@@ -101,11 +101,10 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
     list.splice(0, list.n_items(), &additions);
     tracing::info!(
         target: crate::core::log_targets::BROWSING,
-        "UI_LIST_BATCH_MERGE incoming_len={} list_len_before={} list_len_after={} elapsed_ms={}",
+        "UI_LIST_BATCH_MERGE incoming_len={} list_len_before={} list_len_after={}",
         incoming_len,
         list_len_before,
-        list.n_items(),
-        started.elapsed().as_millis()
+        list.n_items()
     );
 }
 
@@ -133,6 +132,7 @@ fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
     list.n_items()
 }
 
+#[tracing::instrument(name = "ui:apply_startup_insertions", skip(list, items), fields(incoming = items.len()))]
 fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]) -> bool {
     let mut existing_uris = std::collections::HashSet::with_capacity(list.n_items() as usize);
     for i in 0..list.n_items() {
@@ -144,7 +144,6 @@ fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]
         return false;
     }
 
-    let started = std::time::Instant::now();
     let mut incoming = items.to_vec();
     incoming.sort_by(compare_media_order);
     let cap = ui_media_list_cap() as u32;
@@ -164,11 +163,10 @@ fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]
 
     tracing::info!(
         target: crate::core::log_targets::BROWSING,
-        "UI_LIST_STARTUP_INSERT incoming_len={} inserted={} list_len_after={} elapsed_ms={}",
+        "UI_LIST_STARTUP_INSERT incoming_len={} inserted={} list_len_after={}",
         items.len(),
         inserted,
-        list.n_items(),
-        started.elapsed().as_millis()
+        list.n_items()
     );
     true
 }

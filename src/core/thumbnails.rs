@@ -391,7 +391,7 @@ impl ThumbnailLoader {
             // 源文件不存在 / 无法 stat：无法去重，按"生成失败"处理。
             warn!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING request_cache_key_failed uri={} size={:?}",
+                "THUMB request_cache_key_failed uri={} size={:?}",
                 uri,
                 size
             );
@@ -399,7 +399,7 @@ impl ThumbnailLoader {
         };
         debug!(
             target: crate::core::log_targets::THUMBNAILS,
-            "THUMB_TIMING request_start uri={} size={:?} tier={} supplied_mtime={:?} cache_key={}",
+            "THUMB request_start uri={} size={:?} tier={} supplied_mtime={:?} cache_key={}",
             uri,
             size,
             tier,
@@ -415,11 +415,10 @@ impl ThumbnailLoader {
         if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING mem_cache_hit uri={} size={:?} tier={} elapsed_ms={} cache_key={}",
+                "THUMB mem_cache_hit uri={} size={:?} tier={} cache_key={}",
                 uri,
                 size,
                 tier,
-                requested_at.elapsed().as_millis(),
                 cache_key
             );
             drop(st);
@@ -430,11 +429,10 @@ impl ThumbnailLoader {
         if let Some(waiters) = st.in_flight.get_mut(&cache_key) {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING in_flight_join uri={} size={:?} tier={} elapsed_ms={} cache_key={} waiters_before={}",
+                "THUMB in_flight_join uri={} size={:?} tier={} cache_key={} waiters_before={}",
                 uri,
                 size,
                 tier,
-                requested_at.elapsed().as_millis(),
                 cache_key,
                 waiters.len()
             );
@@ -489,11 +487,10 @@ impl ThumbnailLoader {
         if enqueued {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING enqueued uri={} size={:?} tier={} elapsed_ms={} queue_len={} in_flight={} cache_key={}",
+                "THUMB enqueued uri={} size={:?} tier={} queue_len={} in_flight={} cache_key={}",
                 uri,
                 size,
                 tier,
-                requested_at.elapsed().as_millis(),
                 self.queue_len(),
                 self.in_flight_len(),
                 cache_key
@@ -506,11 +503,10 @@ impl ThumbnailLoader {
             }
             warn!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING enqueue_failed uri={} size={:?} tier={} elapsed_ms={} queue_capacity={} cache_key={}",
+                "THUMB enqueue_failed uri={} size={:?} tier={} queue_capacity={} cache_key={}",
                 uri,
                 size,
                 tier,
-                requested_at.elapsed().as_millis(),
                 self.queue_capacity,
                 cache_key
             );
@@ -569,7 +565,7 @@ impl ThumbnailLoader {
         if changed {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB_TIMING reprioritize changed=true requested_keys={}",
+                "THUMB reprioritize changed=true requested_keys={}",
                 keys.len()
             );
             cvar.notify_all();
@@ -628,35 +624,22 @@ fn worker_loop(
     stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
-        let queue_wait_ms = req.enqueued_at.elapsed().as_millis();
-        let worker_started = Instant::now();
-        debug!(
-            target: crate::core::log_targets::THUMBNAILS,
-            "THUMB_TIMING worker_start uri={} size={:?} tier={} media_id={} queue_wait_ms={} cache_key={}",
-            req.uri,
-            req.size,
-            req.tier,
-            req.media_id,
-            queue_wait_ms,
-            req.cache_key
+        // `thumb:process` spans the worker's per-item work (queue pickup →
+        // result), with `queue_wait_ms` recorded as a field. It parents the
+        // `thumb:generate` span created inside `generate`.
+        let process_span = tracing::info_span!(
+            "thumb:process",
+            uri = %req.uri,
+            size = ?req.size,
+            tier = req.tier,
+            media_id = req.media_id,
+            queue_wait_ms = req.enqueued_at.elapsed().as_millis(),
         );
+        let _process_guard = process_span.enter();
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
             Ok(pb) => {
                 // 带 media_id 的请求生成成功后立刻标记，避免统计落后于可见缩略图。
                 let generated_media_id = (req.media_id != 0).then_some(req.media_id);
-                debug!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING worker_done uri={} size={:?} tier={} media_id={} queue_wait_ms={} worker_ms={} cache_key={} texture={}x{}",
-                    req.uri,
-                    req.size,
-                    req.tier,
-                    req.media_id,
-                    queue_wait_ms,
-                    worker_started.elapsed().as_millis(),
-                    req.cache_key,
-                    pb.width(),
-                    pb.height()
-                );
                 let is_light = pixbuf_is_light(&pb);
                 let texture = Texture::for_pixbuf(&pb);
                 let loaded = LoadedThumb {
@@ -693,12 +676,10 @@ fn worker_loop(
                 }
                 warn!(
                     target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING worker_failed uri={} size={:?} tier={} queue_wait_ms={} worker_ms={} error={}",
+                    "THUMB worker_failed uri={} size={:?} tier={} error={}",
                     req.uri,
                     req.size,
                     req.tier,
-                    queue_wait_ms,
-                    worker_started.elapsed().as_millis(),
                     e
                 );
             }
@@ -1446,7 +1427,7 @@ fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option
         let msg = String::from_utf8_lossy(&errbuf);
         warn!(
             target: crate::core::log_targets::THUMBNAILS,
-            "THUMB_TIMING jpeg_shim_decode_failed path={} error={}",
+            "THUMB jpeg_shim_decode_failed path={} error={}",
             src_path.display(),
             msg.trim_end_matches('\0').trim()
         );
@@ -1506,113 +1487,66 @@ fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option
 ///
 /// JPEG 格式优先走 turbojpeg IDCT 缩放解码（快速路径），失败时回退到 gdk-pixbuf。
 fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
-    let t_start = Instant::now();
-    // 只读一次 EXIF 方向：日志和 turbojpeg 路径都复用这个值，避免对同一文件多次全量读 EXIF。
+    // 只读一次 EXIF 方向：turbojpeg 路径与 orientation 应用都复用这个值。
     let orientation = orientation::read_orientation(src_path).unwrap_or(1);
-
-    // JPEG 快速路径：turbojpeg IDCT 缩放解码
     let is_jpeg = mime_from_extension(src_path) == Some("image/jpeg");
-    let pb = if is_jpeg {
-        match decode_jpeg_scaled(src_path, max_dim, orientation) {
-            Some(pb) => {
-                let decode_ms = t_start.elapsed().as_millis();
-                debug!(
-                    "THUMB_TRACE turbojpeg_decode path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
-                    src_path.display(),
-                    orientation,
-                    pb.width(),
-                    pb.height(),
-                    max_dim,
-                    decode_ms
-                );
-                pb
+
+    // decode 阶段（最耗时）：JPEG 优先走 turbojpeg IDCT 缩放解码，失败/非 JPEG
+    // 回退 gdk-pixbuf。阶段耗时由 `thumb:pb_decode` span 承载（父级 `thumb:generate`）。
+    let pb = {
+        let decode_span = tracing::info_span!("thumb:pb_decode");
+        let _decode = decode_span.enter();
+        if is_jpeg {
+            match decode_jpeg_scaled(src_path, max_dim, orientation) {
+                Some(pb) => pb,
+                None => {
+                    // turbojpeg 失败（CMYK/渐进式/损坏），回退到 gdk-pixbuf。
+                    warn!(
+                        target: crate::core::log_targets::THUMBNAILS,
+                        "THUMB turbojpeg_fallback path={}",
+                        src_path.display()
+                    );
+                    orientation::load_oriented_pixbuf(src_path)
+                        .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?
+                }
             }
-            None => {
-                // turbojpeg 失败（CMYK/渐进式/损坏），回退到 gdk-pixbuf
-                warn!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING turbojpeg_fallback path={}",
-                    src_path.display()
-                );
-                let pb = orientation::load_oriented_pixbuf(src_path)
-                    .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
-                let decode_ms = t_start.elapsed().as_millis();
-                debug!(
-                    "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
-                    src_path.display(),
-                    orientation,
-                    pb.width(),
-                    pb.height(),
-                    max_dim,
-                    decode_ms
-                );
-                pb
-            }
+        } else {
+            orientation::load_oriented_pixbuf(src_path)
+                .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?
         }
-    } else {
-        let pb = orientation::load_oriented_pixbuf(src_path)
-            .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?;
-        let decode_ms = t_start.elapsed().as_millis();
-        debug!(
-            "THUMB_TRACE decode_source path={} orientation={:?} decoded={}x{} max_dim={} decode_ms={}",
-            src_path.display(),
-            orientation,
-            pb.width(),
-            pb.height(),
-            max_dim,
-            decode_ms
-        );
-        pb
     };
 
-    let t_decoded = Instant::now();
-    let decode_ms = t_decoded.duration_since(t_start).as_millis();
-    let scaled = scale_pixbuf_to_fit(&pb, max_dim);
-    let t_scaled = Instant::now();
-    let scale_ms = t_scaled.duration_since(t_decoded).as_millis();
+    // scale 阶段：等比缩放到目标尺寸。
+    let scaled = {
+        let scale_span = tracing::info_span!("thumb:pb_scale");
+        let _scale = scale_span.enter();
+        scale_pixbuf_to_fit(&pb, max_dim)
+    };
+
+    // save 阶段：写磁盘缓存（有透明度用 webp，否则 jpeg）。
     if pixbuf_has_transparency(&scaled) {
         let cache_path = cache_stem.with_extension("webp");
-        save_pixbuf_as_webp(&scaled, &cache_path)?;
-        let t_saved = Instant::now();
-        let save_ms = t_saved.duration_since(t_scaled).as_millis();
-        info!(
-            target: crate::core::log_targets::THUMBNAILS,
-            "THUMB_TIMING phase_breakdown source={} size={}x{} target={} decode_ms={} scale_ms={} save_webp_ms={} total_ms={}",
-            src_path.display(),
-            pb.width(),
-            pb.height(),
-            max_dim,
-            decode_ms,
-            scale_ms,
-            save_ms,
-            t_saved.duration_since(t_start).as_millis()
-        );
+        {
+            let save_span = tracing::info_span!("thumb:pb_save");
+            let _save = save_span.enter();
+            save_pixbuf_as_webp(&scaled, &cache_path)?;
+        }
         return Ok(scaled);
     }
 
     let cache_path = cache_stem.with_extension("jpg");
     let thumb = ensure_opaque(&scaled);
-    thumb.savev(cache_path, "jpeg", &[]).map_err(|e| {
-        anyhow::anyhow!(
-            "gdk-pixbuf JPEG 保存失败 {:?}: {}",
-            cache_stem.with_extension("jpg"),
-            e
-        )
-    })?;
-    let t_saved = Instant::now();
-    let save_ms = t_saved.duration_since(t_scaled).as_millis();
-    info!(
-        target: crate::core::log_targets::THUMBNAILS,
-        "THUMB_TIMING phase_breakdown source={} size={}x{} target={} decode_ms={} scale_ms={} save_jpg_ms={} total_ms={}",
-        src_path.display(),
-        pb.width(),
-        pb.height(),
-        max_dim,
-        decode_ms,
-        scale_ms,
-        save_ms,
-        t_saved.duration_since(t_start).as_millis()
-    );
+    {
+        let save_span = tracing::info_span!("thumb:pb_save");
+        let _save = save_span.enter();
+        thumb.savev(cache_path, "jpeg", &[]).map_err(|e| {
+            anyhow::anyhow!(
+                "gdk-pixbuf JPEG 保存失败 {:?}: {}",
+                cache_stem.with_extension("jpg"),
+                e
+            )
+        })?;
+    }
     Ok(thumb)
 }
 

@@ -1,6 +1,5 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
 use std::sync::Arc;
-use std::time::Instant;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -74,6 +73,10 @@ gtk::glib::wrapper! {
 impl AlbumDetailPage {
     /// Build an `AlbumDetailPage` populated with a pre-filtered media list.
     /// The grid uses the same `MediaGrid` Day grouping as `PhotosPage`.
+    #[tracing::instrument(
+        name = "album_detail:new",
+        skip(album, media_list, master_media_list, pool, loader)
+    )]
     pub fn new(
         album: Album,
         media_list: gtk::gio::ListStore,
@@ -81,7 +84,6 @@ impl AlbumDetailPage {
         pool: DbPool,
         loader: Arc<ThumbnailLoader>,
     ) -> Self {
-        let total_start = Instant::now();
         let album_name = album.display_name();
         let album_path = album.folder_path.to_string_lossy().into_owned();
         let initial_items = media_list.n_items();
@@ -103,7 +105,8 @@ impl AlbumDetailPage {
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
         if media_list.n_items() == 0 {
-            let empty_start = Instant::now();
+            let empty_span = tracing::info_span!("album_detail:empty_state");
+            let _empty = empty_span.enter();
             let empty = empty_states::no_album_photos();
             empty.set_hexpand(true);
             empty.set_vexpand(true);
@@ -112,12 +115,11 @@ impl AlbumDetailPage {
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
                 album_path = %album_path,
-                empty_ms = empty_start.elapsed().as_millis(),
-                total_ms = total_start.elapsed().as_millis(),
                 "album_detail_page: empty_state_built"
             );
         } else {
-            let grid_start = Instant::now();
+            let grid_span = tracing::info_span!("album_detail:grid_build");
+            let _grid = grid_span.enter();
             let on_activate: Rc<dyn Fn(MediaId)> = {
                 let weak = obj.downgrade();
                 Rc::new(move |media_id| {
@@ -162,8 +164,6 @@ impl AlbumDetailPage {
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
                 album_path = %album_path,
-                grid_ms = grid_start.elapsed().as_millis(),
-                total_ms = total_start.elapsed().as_millis(),
                 "album_detail_page: grid_built"
             );
         }
@@ -173,7 +173,6 @@ impl AlbumDetailPage {
             album_name = %album_name,
             album_path = %album_path,
             item_count = initial_items,
-            total_ms = total_start.elapsed().as_millis(),
             "album_detail_page: build_end"
         );
 
@@ -326,6 +325,7 @@ impl AlbumDetailPage {
         nav.push(&viewer);
     }
 
+    #[tracing::instrument(name = "album_detail:refresh_virtual", skip(self))]
     fn refresh_virtual_album_media_list(&self) {
         let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
             return;
@@ -344,28 +344,26 @@ impl AlbumDetailPage {
             return;
         };
 
-        let refresh_start = Instant::now();
         // Re-evaluate the per-album predicate (shared with the sidebar) against
         // the current DB/favorites state and splice it into the live store so
         // the grid + open viewer track the new membership without a page rebuild.
         let limit = album_refresh_load_limit(album.photo_count);
         let items = filtered_items_for_album_limited(&album, &master_list, &pool, limit);
-        let query_ms = refresh_start.elapsed().as_millis();
-        let splice_start = Instant::now();
-        while media_list.n_items() > 0 {
-            media_list.remove(media_list.n_items() - 1);
-        }
-        for item in items {
-            media_list.append(&glib::BoxedAnyObject::new(item));
+        {
+            let splice_span = tracing::info_span!("album_detail:splice");
+            let _splice = splice_span.enter();
+            while media_list.n_items() > 0 {
+                media_list.remove(media_list.n_items() - 1);
+            }
+            for item in items {
+                media_list.append(&glib::BoxedAnyObject::new(item));
+            }
         }
         tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album.display_name(),
             album_path = %album.folder_path.display(),
             item_count = media_list.n_items(),
-            query_ms,
-            splice_ms = splice_start.elapsed().as_millis(),
-            total_ms = refresh_start.elapsed().as_millis(),
             "album_detail_page: refreshed_virtual_media_list"
         );
     }
@@ -380,13 +378,13 @@ impl AlbumDetailPage {
 /// bounded startup GTK model. The sidebar builds an `AlbumDetailPage` from
 /// this, and virtual album refreshes splice the already-attached media list via
 /// [`AlbumDetailPage::refresh_virtual_album_media_list`].
+#[tracing::instrument(name = "album_detail:filter_items", skip(album, master, pool))]
 pub(crate) fn filtered_items_for_album_limited(
     album: &Album,
     master: &gtk::gio::ListStore,
     pool: &DbPool,
     limit: u32,
 ) -> Vec<crate::core::media::MediaItem> {
-    let start = Instant::now();
     let album_name = album.display_name();
     let album_path = album.folder_path.to_string_lossy().into_owned();
     if album.is_virtual {
@@ -401,7 +399,6 @@ pub(crate) fn filtered_items_for_album_limited(
             is_virtual = true,
             master_items = master.n_items(),
             result_items = result.len(),
-            elapsed_ms = start.elapsed().as_millis(),
             "album_filter: loaded_virtual_from_repository"
         );
         return result;
@@ -430,7 +427,6 @@ pub(crate) fn filtered_items_for_album_limited(
         is_virtual = false,
         master_items = master.n_items(),
         result_items = items.len(),
-        elapsed_ms = start.elapsed().as_millis(),
         "album_filter: filtered_master_list"
     );
     items
