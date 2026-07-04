@@ -871,13 +871,13 @@ fn load_pixbuf_sync(path: &Path) -> anyhow::Result<Pixbuf> {
         .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", path, e))
 }
 
+#[tracing::instrument(name = "thumb:generate", skip(cache_dir))]
 fn generate(
     cache_dir: &Path,
     uri: &str,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<Pixbuf> {
-    let started = Instant::now();
     let (src_path, mtime) = resolve_src(uri, mtime)?;
     let key = format!("thumb-v2:{}{:?}", src_path.display(), mtime);
     let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
@@ -896,11 +896,10 @@ fn generate(
         }
         info!(
             target: crate::core::log_targets::THUMBNAILS,
-            "THUMB_TIMING disk_cache_hit source_uri={} source_path={} size={:?} elapsed_ms={} cache_path={}",
+            "THUMB disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
             uri,
             src_path.display(),
             size,
-            started.elapsed().as_millis(),
             cache_path.display()
         );
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
@@ -923,11 +922,10 @@ fn generate(
                     .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
                 info!(
                     target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING video_generated source_uri={} source_path={} size={:?} elapsed_ms={} cache_path={}",
+                    "THUMB video_generated source_uri={} source_path={} size={:?} cache_path={}",
                     uri,
                     src_path.display(),
                     size,
-                    started.elapsed().as_millis(),
                     cache_path.display()
                 );
                 return Ok(thumb);
@@ -935,35 +933,25 @@ fn generate(
             Err(e) => {
                 warn!(
                     target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING video_extract_failed source_uri={} source_path={} size={:?} elapsed_ms={} error={}",
+                    "THUMB video_extract_failed source_uri={} source_path={} size={:?} error={}",
                     uri,
                     src_path.display(),
                     size,
-                    started.elapsed().as_millis(),
                     e
                 );
                 let placeholder = generate_video_placeholder(size.max_dim(), &cache_stem)?;
                 info!(
                     target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_TIMING video_placeholder_generated source_uri={} source_path={} size={:?} elapsed_ms={}",
+                    "THUMB video_placeholder_generated source_uri={} source_path={} size={:?}",
                     uri,
                     src_path.display(),
-                    size,
-                    started.elapsed().as_millis()
+                    size
                 );
                 return Ok(placeholder);
             }
         }
     }
 
-    info!(
-        target: crate::core::log_targets::THUMBNAILS,
-        "THUMB_TIMING image_generate_start source_uri={} source_path={} size={:?} cache_stem={}",
-        uri,
-        src_path.display(),
-        size,
-        cache_stem.display()
-    );
     // 统一用 gdk-pixbuf 解码 + 缩放：覆盖面广（JPEG/PNG/WebP/TIFF，flatpak
     // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
     // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
@@ -971,11 +959,10 @@ fn generate(
     let pixbuf = generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)?;
     info!(
         target: crate::core::log_targets::THUMBNAILS,
-        "THUMB_TIMING image_generated source_uri={} source_path={} size={:?} elapsed_ms={} cache_stem={}",
+        "THUMB image_generated source_uri={} source_path={} size={:?} cache_stem={}",
         uri,
         src_path.display(),
         size,
-        started.elapsed().as_millis(),
         cache_stem.display()
     );
     Ok(pixbuf)

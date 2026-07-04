@@ -36,7 +36,14 @@ const APP_LOG_NAME: &str = "app.log";
 const APP_LOG_TAIL_BYTES: i64 = 32 * 1024;
 
 /// Install all four diagnostics layers. Must be the first call in `main()`.
-pub fn init() -> Result<()> {
+///
+/// Returns an optional Chrome trace `FlushGuard` when the
+/// `PHOTOVIEWER_CHROME_TRACE` env var is set. `main()` must hold this binding
+/// for the whole process lifetime: the trace file (`<log_dir>/trace.json`) is
+/// only finalized (closing bracket written) when the guard is dropped on normal
+/// exit. A crashed/`SIGKILL`ed process will leave an unfinished trace — that is
+/// expected; crashes are diagnosed via the crash-log layers, not the trace.
+pub fn init() -> Result<Option<tracing_chrome::FlushGuard>> {
     let log_dir = make_log_dir()?;
 
     // Start each session with an empty `app.log`. The previous session's
@@ -45,7 +52,8 @@ pub fn init() -> Result<()> {
     let _ = std::fs::remove_file(log_dir.join(APP_LOG_NAME));
 
     // Layer 1 first, so the hook/redirect layers below can log their own setup.
-    install_subscriber(&log_dir);
+    // The returned guard is the optional Chrome trace flush handle (see fn doc).
+    let chrome_flush_guard = install_subscriber(&log_dir);
     install_panic_hook(log_dir.clone());
     install_glib_log_redirect();
     install_signal_handler(&log_dir);
@@ -61,7 +69,15 @@ pub fn init() -> Result<()> {
         CRASH_FILE_PREFIX,
         CRASH_FILE_SUFFIX
     );
-    Ok(())
+    if chrome_flush_guard.is_some() {
+        tracing::info!(
+            target: log_targets::APP,
+            "diagnostics: chrome trace layer enabled -> {}/trace.json  \
+             (raise detail with RUST_LOG=photo_viewer=trace)",
+            log_dir.display()
+        );
+    }
+    Ok(chrome_flush_guard)
 }
 
 fn make_log_dir() -> Result<PathBuf> {
@@ -73,12 +89,11 @@ fn make_log_dir() -> Result<PathBuf> {
 
 // ---- Layer 1: subscriber + file writer -------------------------------------
 
-fn install_subscriber(log_dir: &Path) {
+fn install_subscriber(log_dir: &Path) -> Option<tracing_chrome::FlushGuard> {
     use tracing_subscriber::fmt;
     use tracing_subscriber::prelude::*;
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let stderr_layer = fmt::layer().with_writer(std::io::stderr);
 
@@ -90,11 +105,55 @@ fn install_subscriber(log_dir: &Path) {
     std::mem::forget(guard);
     let file_layer = fmt::layer().with_ansi(false).with_writer(file_writer);
 
+    // Optional Layer 5: Chrome/Perfetto trace layer. Off by default; enabled only
+    // when PHOTOVIEWER_CHROME_TRACE is set (see `chrome_trace_requested`), so
+    // release builds pay no extra overhead unless a flow trace is requested. The
+    // default EnvFilter ("info") already admits every `#[instrument]` span
+    // (info-level), so flow timing is captured out of the box; raise RUST_LOG
+    // (e.g. photo_viewer=trace) for finer detail. The FlushGuard is returned to
+    // `main()` so the trace finalizes on normal exit (see `init` doc).
+    let (chrome_layer, chrome_guard) = match chrome_trace_requested() {
+        true => {
+            let path = log_dir.join("trace.json");
+            match std::fs::File::create(&path) {
+                Ok(file) => {
+                    let (layer, flush_guard) = tracing_chrome::ChromeLayerBuilder::new()
+                        .writer(file)
+                        .build();
+                    (Some(layer), Some(flush_guard))
+                }
+                // Rare (logs dir is already writable); fall back to no chrome layer.
+                Err(_) => (None, None),
+            }
+        }
+        false => (None, None),
+    };
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(stderr_layer)
         .with(file_layer)
+        .with(chrome_layer)
         .init();
+
+    chrome_guard
+}
+
+/// Whether the optional Chrome trace layer should be enabled this session.
+/// Treated as an opt-in flag: any value other than the obvious falsey forms
+/// (`0`, `false`, `off`, `no`, empty) enables it; unset disables it.
+fn chrome_trace_requested() -> bool {
+    match std::env::var("PHOTOVIEWER_CHROME_TRACE") {
+        Ok(v) => {
+            let v = v.trim();
+            !v.is_empty()
+                && !v.eq_ignore_ascii_case("0")
+                && !v.eq_ignore_ascii_case("false")
+                && !v.eq_ignore_ascii_case("off")
+                && !v.eq_ignore_ascii_case("no")
+        }
+        Err(_) => false,
+    }
 }
 
 // ---- Layer 2: panic hook ---------------------------------------------------
@@ -327,7 +386,10 @@ mod tests {
 
     #[test]
     fn crash_filename_timestamp_parsing() {
-        assert_eq!(parse_crash_timestamp("crash-1751000000.log"), Some(1751000000));
+        assert_eq!(
+            parse_crash_timestamp("crash-1751000000.log"),
+            Some(1751000000)
+        );
         assert_eq!(parse_crash_timestamp("crash-1.log"), Some(1));
         // Non-numeric timestamps and unrelated files are ignored.
         assert_eq!(parse_crash_timestamp("crash-x.log"), None);
@@ -378,8 +440,14 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let path_str = path.to_string_lossy().into_owned();
         let dir_str = dir.path().to_string_lossy().into_owned();
-        assert!(path_str.starts_with(&dir_str), "crash file must live in logs dir");
-        assert!(path_str.contains("crash-"), "crash file name must carry the prefix");
+        assert!(
+            path_str.starts_with(&dir_str),
+            "crash file must live in logs dir"
+        );
+        assert!(
+            path_str.contains("crash-"),
+            "crash file name must carry the prefix"
+        );
         assert!(content.contains(&format!("{} ", config::APP_ID)));
         assert!(content.contains("panic"));
         assert!(content.contains("payload: diag-probe panic"));

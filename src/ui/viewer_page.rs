@@ -3713,12 +3713,8 @@ impl ViewerPage {
     /// Display the item at `index`, decode the **original** image off the
     /// main thread, and preload its immediate neighbours. Safe to call
     /// multiple times.
+    #[tracing::instrument(name = "viewer:show_at", skip(self))]
     pub fn show_at(&self, index: u32) {
-        // Anchor for per-switch latency. Measured from the moment show_at is
-        // entered (i.e. after the navigation DB round-trip for left/right) to
-        // each milestone: thumbnail dispatch, thumbnail painted, original
-        // painted. Carried by Copy into the async completions below.
-        let switch_start = std::time::Instant::now();
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
             "VIEWER_DEBUG show_at requested_index={} current_before={} details_revealed={}",
@@ -3795,7 +3791,7 @@ impl ViewerPage {
             // Intentionally not clearing the picture: the previous frame stays
             // visible until the video preview thumbnail (or stream) replaces
             // it, so there is no blank/spinner gap.
-            self.request_current_preview_thumbnail(&item, token, switch_start);
+            self.request_current_preview_thumbnail(&item, token);
             // If the resolved item is the same video we are already playing,
             // reuse the live stream instead of tearing it down and rebuilding.
             // The startup scan re-anchors the render index onto the same item
@@ -3825,25 +3821,8 @@ impl ViewerPage {
             self.play_current_motion_photo();
         }
         let path = strip_file_uri(&item.uri);
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG viewer decode_start index={} item_id={} item_name={} source_uri={} decode_path={}",
-            index,
-            item.id,
-            item.display_name(),
-            item.uri,
-            path.display()
-        );
 
-        self.request_current_preview_thumbnail(&item, token, switch_start);
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_SWITCH thumb_dispatch index={} item_id={} item_name={} dispatch_offset_ms={}",
-            index,
-            item.id,
-            item.display_name(),
-            switch_start.elapsed().as_millis()
-        );
+        self.request_current_preview_thumbnail(&item, token);
 
         // Warm the OS page cache for the ±1 neighbours so the next original
         // decode does not stall on disk I/O. This only `read`s the bytes
@@ -3870,11 +3849,17 @@ impl ViewerPage {
         // `tokio::task::spawn_blocking`. Pixbuf itself is `!Send`, so the
         // worker converts it to a `gdk::Texture` (which IS Send) before
         // returning — that way we can hand the texture across the oneshot.
+        //
+        // `viewer:orig_decode` spans the async wait from dispatch to paint, so
+        // the trace carries the original-decode latency that `viewer:show_at`
+        // (which returns at dispatch) cannot cover on its own.
         let (tx, rx) = tokio::sync::oneshot::channel();
         let decode_item_name = item.display_name().to_string();
-        let decode_source_uri = item.uri.clone();
-        let decode_path = path.clone();
-        let decode_dispatch_at = std::time::Instant::now();
+        let decode_span = tracing::info_span!(
+            "viewer:orig_decode",
+            token,
+            item_name = %decode_item_name,
+        );
         gio::spawn_blocking(move || {
             let result = orientation::load_oriented_pixbuf(&path)
                 .map(|pb| gdk::Texture::for_pixbuf(&pb))
@@ -3884,6 +3869,7 @@ impl ViewerPage {
 
         let viewer_weak = self.downgrade();
         glib::spawn_future_local(async move {
+            let _decode_span = decode_span.enter();
             let texture = match rx.await {
                 Ok(Ok(t)) => t,
                 Ok(Err(e)) => {
@@ -3904,39 +3890,13 @@ impl ViewerPage {
             if this.imp().current_token.get() != token {
                 return;
             }
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG viewer decode_loaded token={} item_name={} source_uri={} decode_path={} texture={}x{}",
-                token,
-                decode_item_name,
-                decode_source_uri,
-                decode_path.display(),
-                texture.width(),
-                texture.height()
-            );
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_SWITCH orig_loaded token={} item_name={} source_uri={} switch_to_orig_ms={} decode_dispatch_to_orig_ms={} texture={}x{}",
-                token,
-                decode_item_name,
-                decode_source_uri,
-                switch_start.elapsed().as_millis(),
-                decode_dispatch_at.elapsed().as_millis(),
-                texture.width(),
-                texture.height()
-            );
             this.imp().picture.get().set_paintable(Some(&texture));
             this.imp().spinner.get().set_visible(false);
             this.imp().edit_btn.get().set_sensitive(true);
         });
     }
 
-    fn request_current_preview_thumbnail(
-        &self,
-        item: &MediaItem,
-        token: u64,
-        switch_start: std::time::Instant,
-    ) {
+    fn request_current_preview_thumbnail(&self, item: &MediaItem, token: u64) {
         let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
             return;
         };
@@ -3948,18 +3908,21 @@ impl ViewerPage {
         let item_uri = item.uri.clone();
         let item_name = item.display_name().to_string();
         let size = viewer_preview_thumbnail_size();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        loader.request_for_media(
+        // `viewer:thumb_preview` spans the async wait from request to paint —
+        // the trace replacement for the old `switch_to_thumb_ms` timing log.
+        let thumb_span = tracing::info_span!(
+            "viewer:thumb_preview",
+            token,
             item_id,
-            item_uri.clone(),
-            size,
-            Some(item_mtime),
-            tx,
-            TIER_BOOST,
+            item_name = %item_name,
+            size = ?size,
         );
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request_for_media(item_id, item_uri, size, Some(item_mtime), tx, TIER_BOOST);
 
         let viewer_weak = self.downgrade();
         glib::spawn_future_local(async move {
+            let _thumb_span = thumb_span.enter();
             let Ok(loaded) = rx.await else {
                 return;
             };
@@ -3970,28 +3933,6 @@ impl ViewerPage {
                 return;
             }
             let texture = loaded.texture;
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG viewer preview_loaded token={} item_id={} item_name={} source_uri={} size={:?} texture={}x{}",
-                token,
-                item_id,
-                item_name,
-                item_uri,
-                size,
-                texture.width(),
-                texture.height()
-            );
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_SWITCH thumb_loaded token={} item_id={} item_name={} source_uri={} switch_to_thumb_ms={} texture={}x{}",
-                token,
-                item_id,
-                item_name,
-                item_uri,
-                switch_start.elapsed().as_millis(),
-                texture.width(),
-                texture.height()
-            );
             if this.imp().animated_image_source.borrow().is_some() {
                 return;
             }

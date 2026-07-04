@@ -118,6 +118,7 @@ struct GridMetadataSnapshot {
     section_counts: Option<HashMap<SectionKey, u32>>,
 }
 
+#[tracing::instrument(name = "grid:load_metadata", skip(pool), fields(mode = ?mode))]
 fn load_grid_metadata(pool: crate::core::db::DbPool, mode: GroupBy) -> GridMetadataSnapshot {
     let repo = MediaRepository::new(pool);
     GridMetadataSnapshot {

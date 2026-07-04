@@ -35,6 +35,7 @@ fn notify_interval(scanned: usize) -> Duration {
 
 /// 同步扫描所有 root_path 并刷新 albums 物化视图。
 /// 替代 app.rs 里直接调 spawn_scan + ignore 的写法。
+#[tracing::instrument(name = "scan:scan_and_aggregate", skip(pool, roots), fields(root_count = roots.len()))]
 pub async fn scan_and_aggregate(pool: &DbPool, roots: &[PathBuf]) -> Result<()> {
     let pool = pool.clone();
     let roots = roots.to_vec();
@@ -69,6 +70,7 @@ pub async fn scan_and_aggregate_with_notifier(
     .map_err(|e| AppError::Backend(format!("scan_and_aggregate_with_notifier join error: {e}")))?
 }
 
+#[tracing::instrument(name = "scan:notify_blocking", skip(pool, roots, notifier), fields(root_count = roots.len()))]
 fn scan_and_aggregate_with_notifier_blocking(
     pool: DbPool,
     roots: Vec<PathBuf>,

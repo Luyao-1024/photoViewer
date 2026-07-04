@@ -22,6 +22,7 @@ use crate::core::orientation;
 
 /// 保存为副本：渲染到 `{原名}_edited_{毫秒时间戳}.{ext}`，插入新 DB 行。
 /// 返回新行对应的 `MediaItem`（含新分配的 `id`）。
+#[tracing::instrument(name = "editor:save_as_copy", skip(source, state, pool, registry), fields(source_id = source.id))]
 pub fn save_as_copy(
     source: &MediaItem,
     state: &EditState,
@@ -66,6 +67,7 @@ pub fn save_as_copy(
 }
 
 /// 覆盖原图：备份到 `.{ext}.bak` → 渲染 → 写回原文件 → 更新 DB 元数据。
+#[tracing::instrument(name = "editor:save_overwrite", skip(source, state, pool, registry), fields(source_id = source.id))]
 pub fn save_overwrite(
     source: &MediaItem,
     state: &EditState,

@@ -6,7 +6,10 @@ fn main() -> anyhow::Result<()> {
     // log redirect, and the native signal handler. Runs before anything that
     // can panic or log, and owns the tracing subscriber init (stderr + file).
     // See `core::diagnostics`.
-    photo_viewer::core::diagnostics::init()?;
+    //
+    // `_chrome_flush_guard` is None unless PHOTOVIEWER_CHROME_TRACE is set, in
+    // which case holding it until `main` returns finalizes `<logs>/trace.json`.
+    let _chrome_flush_guard = photo_viewer::core::diagnostics::init()?;
 
     // Register GResource (must be before any GTK operations)
     gio::resources_register_include!("photo_viewer_resources.gresource")

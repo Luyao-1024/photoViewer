@@ -125,9 +125,7 @@ fn install_altstack() -> Result<()> {
 extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
     // Re-entrancy: if we faulted while already inside this handler, bail to the
     // default disposition and re-raise rather than looping.
-    if HANDLING
-        .swap(true, std::sync::atomic::Ordering::SeqCst)
-    {
+    if HANDLING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         unsafe { reset_default_and_raise(sig) };
         return;
     }
@@ -225,7 +223,11 @@ unsafe fn append_app_log_tail(fd: libc::c_int, log_dir: &'static CStr) {
         if afd < 0 {
             return;
         }
-        libc::write(fd, TAIL_HEADER.as_ptr() as *const libc::c_void, TAIL_HEADER.len());
+        libc::write(
+            fd,
+            TAIL_HEADER.as_ptr() as *const libc::c_void,
+            TAIL_HEADER.len(),
+        );
 
         let len = libc::lseek(afd, 0, libc::SEEK_END);
         let from = if len > APP_LOG_TAIL_BYTES {
@@ -282,7 +284,10 @@ mod tests {
         for &sig in HANDLED_SIGNALS {
             let name = signal_name(sig);
             assert!(name.ends_with(b"\0"), "signal name must be NUL-terminated");
-            assert!(name.len() > 1, "signal {sig} must have a real name, not bare ?");
+            assert!(
+                name.len() > 1,
+                "signal {sig} must have a real name, not bare ?"
+            );
         }
         // Unknown signal falls back without panicking.
         assert_eq!(signal_name(999), b"?\0");
