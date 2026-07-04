@@ -3661,10 +3661,26 @@ impl ViewerPage {
     /// `BoxedAnyObject<MediaItem>` store. Returns `None` if the index is
     /// out of range or the item can't be downcast.
     fn current_media_item(&self) -> Option<MediaItem> {
+        if self.imp().current_media_id.get() != 0 && self.sync_current_index_to_media_id().is_none()
+        {
+            return None;
+        }
         let list = self.imp().media_list.borrow();
         let list = list.as_ref()?;
         let idx = self.imp().current_index.get();
         crate::ui::media_list::media_item_at(list, idx)
+    }
+
+    fn sync_current_index_to_media_id(&self) -> Option<u32> {
+        let current_id = self.imp().current_media_id.get();
+        if current_id == 0 {
+            return Some(self.imp().current_index.get());
+        }
+        let list = self.imp().media_list.borrow();
+        let list = list.as_ref()?;
+        let index = find_media_index_by_id(list, current_id)?;
+        self.imp().current_index.set(index);
+        Some(index)
     }
 
     /// Display the item at `index`, decode the **original** image off the
@@ -3704,10 +3720,22 @@ impl ViewerPage {
             t
         };
 
-        let Some(item) = self.current_media_item() else {
-            return;
+        let item = {
+            let list = self.imp().media_list.borrow();
+            let Some(list) = list.as_ref() else {
+                return;
+            };
+            let Some(item) = crate::ui::media_list::media_item_at(list, index) else {
+                return;
+            };
+            item
         };
-        self.imp().current_media_id.set(item.id);
+        if self.imp().current_index.get() != index {
+            self.imp().current_index.set(index);
+        }
+        if self.imp().current_media_id.get() != item.id {
+            self.imp().current_media_id.set(item.id);
+        }
         self.set_title(item.display_name());
         self.sync_favorite_state(item.id);
         tracing::debug!(
@@ -6124,6 +6152,32 @@ mod tests {
 
         assert_eq!(find_media_index_by_id(&list, 20), Some(1));
         assert_eq!(find_media_index_by_id(&list, 30), None);
+    }
+
+    #[gtk::test]
+    fn current_media_item_stays_anchored_when_startup_scan_inserts_before_it() {
+        init_viewer_test();
+        let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let mut opened = sample_media_item();
+        opened.id = 20;
+        opened.uri = "file:///tmp/opened.jpg".into();
+        opened.path = PathBuf::from("/tmp/opened.jpg");
+        list.append(&glib::BoxedAnyObject::new(opened));
+
+        let viewer =
+            ViewerPage::new_for_query(MediaQuery::LiveAll, MediaId::from(20), list.clone());
+
+        let mut inserted = sample_media_item();
+        inserted.id = 10;
+        inserted.uri = "file:///tmp/inserted.jpg".into();
+        inserted.path = PathBuf::from("/tmp/inserted.jpg");
+        list.insert(0, &glib::BoxedAnyObject::new(inserted));
+
+        let current = viewer
+            .current_media_item()
+            .expect("viewer should still resolve the opened item");
+        assert_eq!(current.id, 20);
+        assert_eq!(viewer.current_index(), 1);
     }
 
     #[gtk::test]
