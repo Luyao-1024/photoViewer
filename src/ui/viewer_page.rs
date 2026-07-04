@@ -95,6 +95,7 @@ pub const NAV_POP: NavDelta = i32::MIN;
 /// generation/queue — the current frame is held meanwhile, never a spinner.
 const NAV_READY_TIMEOUT_MS: u64 = 400;
 const ANIMATED_IMAGE_LOOP_PAUSE_MS: u64 = 500;
+pub(crate) const VIEWER_OPEN_POP_GUARD_MS: u64 = 350;
 
 /// Callback the host registers for keyboard navigation. Shared via `Rc` so
 /// closures capturing owned state can be cloned into GTK signal handlers.
@@ -617,6 +618,11 @@ impl ViewerPage {
                     self.stop_editing();
                 } else if self.imp().details_split_view.get().shows_sidebar() {
                     self.set_details_revealed(false, "keyboard action");
+                } else if !self.can_pop() {
+                    tracing::debug!(
+                        target: crate::core::log_targets::VIEWER,
+                        "ViewerPage: ignoring keyboard close while navigation pop is guarded"
+                    );
                 } else {
                     self.fire_nav(NAV_POP);
                 }
@@ -694,6 +700,24 @@ impl ViewerPage {
 
     pub fn connect_favorite_state_changed<F: Fn(i64, bool) + 'static>(&self, f: F) {
         *self.imp().favorite_state_cb.borrow_mut() = Some(Rc::new(f));
+    }
+
+    pub(crate) fn guard_initial_navigation_pop(&self) {
+        self.set_can_pop(false);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
+            move || {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                if !this.imp().details_split_view.get().shows_sidebar()
+                    && !this.imp().editor_split_view.get().shows_sidebar()
+                {
+                    this.set_can_pop(true);
+                }
+            },
+        );
     }
 
     /// Inject the shared thumbnail loader. Must be called before `show_at`
@@ -3389,6 +3413,11 @@ impl ViewerPage {
                 this.stop_editing();
             } else if details_split_view.shows_sidebar() {
                 this.set_details_revealed(false, "navigation.pop");
+            } else if !this.can_pop() {
+                tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
+                    "ViewerPage: ignoring navigation.pop while pop is guarded"
+                );
             } else {
                 this.fire_nav(NAV_POP);
             }
@@ -6017,6 +6046,60 @@ mod tests {
         assert!(
             viewer.can_pop(),
             "viewer should allow navigation pop again after the guard delay"
+        );
+    }
+
+    #[gtk::test]
+    fn initial_open_guard_ignores_navigation_pop_action() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let nav = adw::NavigationView::new();
+        nav.push(&viewer);
+        let nav_weak = nav.downgrade();
+        viewer.connect_navigation(move |delta| {
+            if delta == NAV_POP {
+                if let Some(nav) = nav_weak.upgrade() {
+                    nav.pop();
+                }
+            }
+        });
+
+        viewer.guard_initial_navigation_pop();
+        let _ = viewer.activate_action("navigation.pop", None);
+
+        assert_eq!(
+            nav.visible_page().map(|page| page.title()).as_deref(),
+            Some(viewer.title().as_str()),
+            "initial open guard should swallow immediate navigation.pop events"
+        );
+    }
+
+    #[gtk::test]
+    fn initial_open_guard_ignores_keyboard_cancel() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let pop_count = Rc::new(Cell::new(0));
+        let pop_count_for_cb = pop_count.clone();
+        viewer.connect_navigation(move |delta| {
+            if delta == NAV_POP {
+                pop_count_for_cb.set(pop_count_for_cb.get() + 1);
+            }
+        });
+
+        viewer.guard_initial_navigation_pop();
+        assert_eq!(
+            viewer.handle_keyboard_action(KeyboardAction::CancelOrClose),
+            KeyboardResult::Handled
+        );
+
+        assert_eq!(
+            pop_count.get(),
+            0,
+            "initial open guard should swallow immediate keyboard close events"
         );
     }
 

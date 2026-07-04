@@ -656,6 +656,7 @@ impl SearchPage {
             }
         });
 
+        viewer.guard_initial_navigation_pop();
         nav.push(&viewer);
     }
 }

@@ -32,7 +32,7 @@ use crate::ui::empty_states;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
-use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::window::refresh_albums_sidebar;
 
 mod imp {
@@ -1168,13 +1168,17 @@ impl PhotosPage {
             }
         });
 
+        viewer.guard_initial_navigation_pop();
         self.imp().viewer_open_pending.set(true);
         let weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(350), move || {
-            if let Some(this) = weak.upgrade() {
-                this.imp().viewer_open_pending.set(false);
-            }
-        });
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.imp().viewer_open_pending.set(false);
+                }
+            },
+        );
 
         // Push the new viewer. While the transition settles, duplicate
         // activations are ignored so rapid double-clicks cannot stack viewer
@@ -1261,6 +1265,43 @@ mod tests {
         assert!(
             nav.visible_page().and_downcast::<ViewerPage>().is_some(),
             "the single pushed page should be a ViewerPage"
+        );
+    }
+
+    #[gtk::test]
+    fn opening_viewer_temporarily_disables_initial_navigation_pop() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+
+        let nav = adw::NavigationView::new();
+        let page = PhotosPage::new(media_list, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
+
+        page.open_viewer(MediaId::from(1));
+
+        let viewer = nav
+            .visible_page()
+            .and_downcast::<ViewerPage>()
+            .expect("photo activation should open viewer");
+        assert!(
+            !viewer.can_pop(),
+            "viewer should ignore immediate second-click/back events while the open debounce is active"
+        );
+
+        let ctx = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while std::time::Instant::now() < deadline && !viewer.can_pop() {
+            ctx.iteration(true);
+        }
+
+        assert!(
+            viewer.can_pop(),
+            "viewer should allow normal navigation again after the open debounce"
         );
     }
 }

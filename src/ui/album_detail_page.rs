@@ -322,6 +322,7 @@ impl AlbumDetailPage {
             }
         });
 
+        viewer.guard_initial_navigation_pop();
         nav.push(&viewer);
     }
 
