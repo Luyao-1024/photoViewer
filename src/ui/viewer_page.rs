@@ -12,7 +12,7 @@
 use crate::core::db::DbPool;
 use crate::core::i18n::{tr, trf};
 use crate::core::identity::MediaId;
-use crate::core::media::MediaItem;
+use crate::core::media::{is_gif_head, MediaItem};
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
 use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
@@ -30,6 +30,7 @@ use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
+use image::AnimationDecoder;
 use libadwaita as adw;
 use libadwaita::prelude::{
     ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt,
@@ -37,9 +38,11 @@ use libadwaita::prelude::{
 };
 use libadwaita::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
 
 /// On-screen thumbnail height in the viewer filmstrip. Deliberately smaller
@@ -91,11 +94,18 @@ pub const NAV_POP: NavDelta = i32::MIN;
 /// `prefetch_neighbors`), so this is a pure safety net against a stuck
 /// generation/queue — the current frame is held meanwhile, never a spinner.
 const NAV_READY_TIMEOUT_MS: u64 = 400;
+const ANIMATED_IMAGE_LOOP_PAUSE_MS: u64 = 500;
 
 /// Callback the host registers for keyboard navigation. Shared via `Rc` so
 /// closures capturing owned state can be cloned into GTK signal handlers.
 pub type NavCallback = Rc<dyn Fn(NavDelta)>;
 type ItemCallback = Rc<dyn Fn(i64)>;
+
+#[derive(Clone)]
+struct AnimatedImageFrame {
+    texture: gdk::Texture,
+    delay: Duration,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ImageRect {
@@ -191,6 +201,78 @@ fn should_toggle_video_from_stage_click(y: f64, height: f64) -> bool {
         && y < height - VIDEO_CONTROLS_CLICK_EXCLUSION_PX
 }
 
+fn should_play_animated_image(item: &MediaItem) -> bool {
+    if !item.is_image() || item.is_motion_photo() {
+        return false;
+    }
+    item.is_animated() || item.mime_type == "image/gif" || file_starts_with_gif_header(&item.path)
+}
+
+fn file_starts_with_gif_header(path: &Path) -> bool {
+    let mut head = [0_u8; 6];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut head))
+        .is_ok()
+        && is_gif_head(&head)
+}
+
+fn animated_image_frame_delay(delay: Option<Duration>) -> Duration {
+    match delay {
+        Some(delay) if delay >= Duration::from_millis(20) => delay,
+        _ => Duration::from_millis(100),
+    }
+}
+
+fn animated_image_next_delay(frames: &[AnimatedImageFrame], current_index: usize) -> Duration {
+    let frame_delay = frames
+        .get(current_index)
+        .map(|frame| frame.delay)
+        .unwrap_or_else(|| Duration::from_millis(100));
+    let next_index = (current_index + 1) % frames.len();
+    if next_index == 0 {
+        frame_delay + Duration::from_millis(ANIMATED_IMAGE_LOOP_PAUSE_MS)
+    } else {
+        frame_delay
+    }
+}
+
+fn image_delay_to_duration(delay: image::Delay) -> Duration {
+    let (numerator, denominator) = delay.numer_denom_ms();
+    if denominator == 0 || numerator == 0 {
+        return animated_image_frame_delay(None);
+    }
+    animated_image_frame_delay(Some(Duration::from_millis(
+        (numerator as u64).div_ceil(denominator as u64),
+    )))
+}
+
+fn load_animated_image_frames(path: &Path) -> anyhow::Result<Vec<AnimatedImageFrame>> {
+    let file = std::fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let decoder = image::codecs::gif::GifDecoder::new(reader)?;
+    let frames = decoder.into_frames().collect_frames()?;
+    frames
+        .into_iter()
+        .map(|frame| {
+            let delay = image_delay_to_duration(frame.delay());
+            let image = frame.into_buffer();
+            let width = image.width();
+            let height = image.height();
+            let rowstride = (width * 4) as usize;
+            let bytes = glib::Bytes::from_owned(image.into_raw());
+            let texture = gdk::MemoryTexture::new(
+                width as i32,
+                height as i32,
+                gdk::MemoryFormat::R8g8b8a8,
+                &bytes,
+                rowstride,
+            )
+            .upcast();
+            Ok(AnimatedImageFrame { texture, delay })
+        })
+        .collect()
+}
+
 fn motion_video_cache_path(item: &MediaItem) -> PathBuf {
     // Key on the db id only: it's already unique per motion photo, and
     // blake3_hash is no longer computed at scan time.
@@ -247,6 +329,8 @@ mod imp {
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         /// Original texture saved before editing starts; restored on cancel.
         pub original_texture: RefCell<Option<gdk::Texture>>,
+        /// Pending frame timer for animated image playback.
+        pub animated_image_source: RefCell<Option<glib::SourceId>>,
         /// True while the editor side-panel is open (prevents nav gestures).
         pub is_editing: Cell<bool>,
         /// Dynamic camera-parameter rows appended to `file_group`.
@@ -2022,6 +2106,65 @@ impl ViewerPage {
             .set_media_stream(gtk::MediaStream::NONE);
     }
 
+    fn stop_animated_image_playback(&self) {
+        if let Some(source) = self.imp().animated_image_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
+    fn start_animated_image_playback(&self, path: &Path, token: u64) -> bool {
+        self.stop_animated_image_playback();
+        let frames = match load_animated_image_frames(path) {
+            Ok(frames) => frames,
+            Err(err) => {
+                tracing::warn!(
+                    "ViewerPage: failed to load animated image {}: {err}",
+                    path.display()
+                );
+                return false;
+            }
+        };
+        if frames.len() < 2 {
+            return false;
+        }
+
+        let frames = Rc::new(frames);
+        self.imp()
+            .picture
+            .get()
+            .set_paintable(Some(&frames[0].texture));
+        self.imp().spinner.get().set_visible(false);
+        self.imp().edit_btn.get().set_sensitive(true);
+        self.schedule_animated_image_frame(frames, 0, token);
+        true
+    }
+
+    fn schedule_animated_image_frame(
+        &self,
+        frames: Rc<Vec<AnimatedImageFrame>>,
+        current_index: usize,
+        token: u64,
+    ) {
+        let delay = animated_image_next_delay(&frames, current_index);
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local_once(delay, move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
+            }
+
+            let next_index = (current_index + 1) % frames.len();
+            this.imp()
+                .picture
+                .get()
+                .set_paintable(Some(&frames[next_index].texture));
+            this.schedule_animated_image_frame(frames, next_index, token);
+        });
+        *self.imp().animated_image_source.borrow_mut() = Some(source);
+    }
+
     fn toggle_video_playback(&self) -> bool {
         let imp = self.imp();
         let video = imp.video.get();
@@ -2044,6 +2187,7 @@ impl ViewerPage {
     }
 
     fn show_video_stage(&self, item: &MediaItem, token: u64) {
+        self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
         self.imp().motion_play_btn.get().set_visible(false);
@@ -2077,6 +2221,7 @@ impl ViewerPage {
     }
 
     fn show_motion_video_stage(&self, video_path: PathBuf, token: u64) {
+        self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
         self.imp().picture.get().set_visible(true);
@@ -3510,6 +3655,7 @@ impl ViewerPage {
             self.imp().details_split_view.get().shows_sidebar()
         );
         self.imp().current_index.set(index);
+        self.stop_animated_image_playback();
         // Keep the previous frame on screen until a new texture arrives — no
         // proactive spinner on navigation. The spinner only appears when there
         // is genuinely nothing to show (first viewer open, or the previous
@@ -3611,6 +3757,10 @@ impl ViewerPage {
 
         // Update the bottom filmstrip (highlight or rebuild + scroll).
         self.refresh_thumb_strip();
+
+        if should_play_animated_image(&item) && self.start_animated_image_playback(&path, token) {
+            return;
+        }
 
         // Decode the current image off the main thread. `Pixbuf::from_file`
         // dispatches via gdk-pixbuf loaders (JPEG/PNG/HEIC/AVIF/...) and is
@@ -3741,6 +3891,9 @@ impl ViewerPage {
                 texture.width(),
                 texture.height()
             );
+            if this.imp().animated_image_source.borrow().is_some() {
+                return;
+            }
             this.imp().picture.get().set_paintable(Some(&texture));
             this.imp().spinner.get().set_visible(false);
         });
@@ -5575,6 +5728,61 @@ mod tests {
     #[test]
     fn viewer_preview_uses_medium_thumbnail() {
         assert_eq!(viewer_preview_thumbnail_size(), ThumbnailSize::Medium);
+    }
+
+    #[test]
+    fn animated_image_adds_half_second_pause_before_looping() {
+        let texture = test_texture();
+        let frames = vec![
+            AnimatedImageFrame {
+                texture: texture.clone(),
+                delay: Duration::from_millis(80),
+            },
+            AnimatedImageFrame {
+                texture,
+                delay: Duration::from_millis(120),
+            },
+        ];
+
+        assert_eq!(
+            animated_image_next_delay(&frames, 0),
+            Duration::from_millis(80)
+        );
+        assert_eq!(
+            animated_image_next_delay(&frames, 1),
+            Duration::from_millis(120 + ANIMATED_IMAGE_LOOP_PAUSE_MS)
+        );
+    }
+
+    #[test]
+    fn viewer_plays_misnamed_gif_even_when_db_row_is_stale() {
+        let mut item = sample_media_item();
+        item.path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/media/gif_with_jpg_extension.jpg");
+        item.uri = format!("file://{}", item.path.display());
+        item.mime_type = "image/jpeg".into();
+        item.media_attributes = "{}".into();
+
+        assert!(
+            should_play_animated_image(&item),
+            "viewer should probe the current file header so unchanged stale DB rows still animate"
+        );
+    }
+
+    #[gtk::test]
+    fn viewer_starts_frame_timer_for_animated_gif() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/media/gif_with_jpg_extension.jpg");
+
+        assert!(viewer.start_animated_image_playback(&path, 1));
+        assert!(viewer.imp().picture.get().paintable().is_some());
+        assert!(viewer.imp().animated_image_source.borrow().is_some());
+
+        viewer.stop_animated_image_playback();
     }
 
     #[test]
