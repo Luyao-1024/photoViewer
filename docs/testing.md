@@ -13,6 +13,25 @@ Use focused integration tests during development, then broaden when touching sha
 
 Run `cargo test --test ux_click_flows` before pushing/uploading a branch with UI interaction changes. Local edits and commits do not require this gate, but upstream handoff does.
 
+## Pre-Submission CI Policy
+
+Before pushing or otherwise handing off a change, make sure the same categories
+covered by CI have run for the exact commit being handed off:
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
+cargo build --all-targets
+xvfb-run -a cargo test --all
+```
+
+If GitHub Actions has already run these checks successfully for the exact
+commit, use that CI result as the verification record instead of rerunning the
+same full local commands. Do not duplicate expensive local test runs when the
+remote CI result already covers the change. Run extra local commands only when
+they cover something CI does not, such as a narrower reproduction, an
+environment-specific Flatpak visual check, or a manual debugging path.
+
 ## Test Layout
 
 - `tests/common/mod.rs`: shared test fixtures and helpers.

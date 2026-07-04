@@ -27,6 +27,11 @@ cargo run
 
 `cargo build` runs `build.rs`, which compiles `data/ui/*.blp` to `.ui` and bundles resources. `meson.build` is for install-time desktop integration; the normal inner loop is Cargo.
 
+Before pushing or handing off changes, follow the CI policy in
+[`docs/testing.md`](testing.md): verify the CI-equivalent commands for the exact
+commit, or rely on a successful GitHub Actions result for that same commit
+instead of rerunning the same full local checks.
+
 ## Flatpak Visual Checks
 
 Liquid Glass depends on GTK runtime support for `backdrop-filter`. The host GTK may be older than the target runtime, so visual checks for blur/refraction-style surfaces should run through the Flatpak GNOME 50 runtime.
