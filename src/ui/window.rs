@@ -3407,6 +3407,8 @@ mod tests {
             "Modal Escape must not pop the page underneath"
         );
         window.imp().root_overlay.get().remove_overlay(&layer);
+        window.close();
+        while glib::MainContext::default().iteration(false) {}
     }
 
     #[gtk::test]

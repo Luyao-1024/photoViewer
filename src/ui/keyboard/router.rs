@@ -82,6 +82,8 @@ mod tests {
             scope_for_focus(window.upcast_ref()),
             KeyboardScope::TextInput
         );
+        window.close();
+        while glib::MainContext::default().iteration(false) {}
     }
 
     #[gtk::test]
@@ -98,5 +100,7 @@ mod tests {
         button.grab_focus();
 
         assert_eq!(scope_for_focus(window.upcast_ref()), KeyboardScope::Modal);
+        window.close();
+        while glib::MainContext::default().iteration(false) {}
     }
 }
