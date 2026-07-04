@@ -332,6 +332,13 @@ mod imp {
         pub original_texture: RefCell<Option<gdk::Texture>>,
         /// Pending frame timer for animated image playback.
         pub animated_image_source: RefCell<Option<glib::SourceId>>,
+        /// Previously playing video stream retained for one idle cycle after
+        /// it is detached from the `GtkVideo`. Dropping the only reference
+        /// synchronously (via `set_media_stream(NONE)`) finalized the
+        /// `GtkMediaFile` while its GstPlay thread was still emitting
+        /// state-changed signals, which crashed that thread with a
+        /// use-after-free inside libgobject. See `stop_video_playback`.
+        pub retired_video_stream: RefCell<Option<gtk::MediaStream>>,
         /// True while the editor side-panel is open (prevents nav gestures).
         pub is_editing: Cell<bool>,
         /// Dynamic camera-parameter rows appended to `file_group`.
@@ -2118,16 +2125,36 @@ impl ViewerPage {
     }
 
     fn stop_video_playback(&self) {
-        // Pause the in-flight stream so audio/playback does not continue behind
-        // an image, then detach it. The GtkVideo keeps its own built-in
-        // play/pause + progress controls, so there is no separate slider to reset.
-        if let Some(stream) = self.imp().video.get().media_stream() {
-            stream.pause();
-        }
+        // The GtkVideo keeps its own built-in play/pause + progress controls,
+        // so there is no separate slider to reset. We pause and detach the
+        // in-flight stream so audio/playback does not continue behind an image.
+        //
+        // Detach happens first (the picture switches away and audio stops
+        // immediately), but we keep our own strong reference a little longer:
+        // releasing the *only* reference synchronously finalized the
+        // GtkMediaFile while its GstPlay thread was still emitting
+        // state-changed signals, crashing that thread with a use-after-free
+        // inside libgobject's signal dispatch. The retire slot holds the
+        // stream across one idle cycle so GstPlay's terminal signal lands on a
+        // live object; the previous retiree (if any) has now had its grace and
+        // is released here.
+        let stream = self.imp().video.get().media_stream();
         self.imp()
             .video
             .get()
             .set_media_stream(gtk::MediaStream::NONE);
+        let Some(stream) = stream else {
+            return;
+        };
+        stream.pause();
+        *self.imp().retired_video_stream.borrow_mut() = Some(stream);
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            *this.imp().retired_video_stream.borrow_mut() = None;
+        });
     }
 
     fn stop_animated_image_playback(&self) {
@@ -3699,6 +3726,7 @@ impl ViewerPage {
             self.imp().current_index.get(),
             self.imp().details_split_view.get().shows_sidebar()
         );
+        let prev_media_id = self.imp().current_media_id.get();
         self.imp().current_index.set(index);
         self.stop_animated_image_playback();
         // Keep the previous frame on screen until a new texture arrives — no
@@ -3768,6 +3796,22 @@ impl ViewerPage {
             // visible until the video preview thumbnail (or stream) replaces
             // it, so there is no blank/spinner gap.
             self.request_current_preview_thumbnail(&item, token, switch_start);
+            // If the resolved item is the same video we are already playing,
+            // reuse the live stream instead of tearing it down and rebuilding.
+            // The startup scan re-anchors the render index onto the same item
+            // when media is inserted before it; rebuilding here would destroy a
+            // live GstPlay mid-flight for no reason (and race the teardown
+            // crash fixed in `stop_video_playback`).
+            if prev_media_id == item.id && self.imp().video.get().media_stream().is_some() {
+                tracing::debug!(
+                    target: crate::core::log_targets::VIEWER,
+                    "VIEWER_TRACE video_stage_reused index={} item_id={} prev_media_id={} (startup-scan re-anchor, no rebuild)",
+                    index,
+                    item.id,
+                    prev_media_id
+                );
+                return;
+            }
             self.show_video_stage(&item, token);
             return;
         }
@@ -6192,5 +6236,92 @@ mod tests {
 
         assert!(stream.is_muted(), "video should respect default muted pref");
         assert_eq!(stream.volume(), 0.42);
+    }
+
+    #[gtk::test]
+    fn stop_video_playback_retires_stream_until_next_idle() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        let stream = gtk::MediaFile::for_filename("/tmp/photo-viewer-test.mp4");
+        viewer.imp().video.get().set_media_stream(Some(&stream));
+        assert!(
+            viewer.imp().video.get().media_stream().is_some(),
+            "precondition: a stream is attached"
+        );
+
+        viewer.stop_video_playback();
+
+        // Detached from the widget at once, but NOT finalized: the retire slot
+        // holds the only remaining reference so GstPlay can finish its terminal
+        // state-changed signal against a live object. Releasing it synchronously
+        // here is exactly what crashed the GstPlay thread.
+        assert!(
+            viewer.imp().video.get().media_stream().is_none(),
+            "stream must detach from the video widget right away"
+        );
+        assert!(
+            viewer.imp().retired_video_stream.borrow().is_some(),
+            "stream must be retained past teardown to avoid the GstPlay-thread UAF"
+        );
+
+        // Pumping the default main context fires the idle callback that drops it.
+        while glib::MainContext::default().iteration(false) {}
+        assert!(
+            viewer.imp().retired_video_stream.borrow().is_none(),
+            "retired stream is released after the idle cycle"
+        );
+    }
+
+    #[gtk::test]
+    fn show_at_keeps_video_stream_when_startup_scan_re_anchors_same_item() {
+        init_viewer_test();
+        let dir = tempfile::tempdir().unwrap();
+        let video_path = dir.path().join("clip.mp4");
+        std::fs::write(&video_path, b"fake mp4").unwrap();
+
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let mut video = sample_media_item();
+        video.id = 20;
+        video.mime_type = "video/mp4".into();
+        video.uri = format!("file://{}", video_path.display());
+        video.path = video_path;
+        media_list.append(&glib::BoxedAnyObject::new(video));
+
+        let viewer =
+            ViewerPage::new_for_query(MediaQuery::LiveAll, MediaId::from(20), media_list.clone());
+
+        viewer.show_at(0);
+        assert!(
+            viewer.imp().video.get().media_stream().is_some(),
+            "first show_at for a video should attach a stream"
+        );
+        assert!(
+            viewer.imp().retired_video_stream.borrow().is_none(),
+            "precondition: nothing retired on first show"
+        );
+
+        // Startup scan inserts a media row before the current one. The viewer
+        // re-resolves the render index to 1, but the media id is unchanged, so
+        // show_at must reuse the live stream instead of rebuilding it.
+        let mut inserted = sample_media_item();
+        inserted.id = 10;
+        media_list.insert(0, &glib::BoxedAnyObject::new(inserted));
+        viewer.show_at(1);
+
+        // If show_video_stage had rebuilt, its first call (stop_video_playback)
+        // would have moved the previous stream into retired_video_stream, which
+        // is only released on a later idle this test never pumps. An empty slot
+        // plus a still-attached stream proves the live stream was reused.
+        assert!(
+            viewer.imp().video.get().media_stream().is_some(),
+            "the live video stream should still be attached"
+        );
+        assert!(
+            viewer.imp().retired_video_stream.borrow().is_none(),
+            "same-id re-show must not tear down and rebuild the live GstPlay stream"
+        );
     }
 }

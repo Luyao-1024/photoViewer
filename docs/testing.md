@@ -50,6 +50,10 @@ Some host GTK versions print parser warnings for `backdrop-filter`. This is expe
 
 The accessibility CSS block is intentionally empty unless implemented through GTK-supported settings or runtime classes. Do not reintroduce unsupported `@media` feature queries or `@keyframes`.
 
+## GstPlay Teardown Criticals
+
+Unit tests that drop a `GtkMediaFile` (e.g. `video_audio_preferences_are_applied_to_media_stream`, `stop_video_playback_retires_stream_until_next_idle`) print `GLib-GObject-CRITICAL: g_object_unref: assertion 'G_IS_OBJECT (object)' failed`. This is GstPlay's async internal cleanup running against the test's non-existent/fake media and is pre-existing; do not chase it. The production crash it resembles (SEGV in the `GstPlay` thread) is fixed by `stop_video_playback` retiring the stream for one idle cycle before releasing the last reference — see [`modules/viewer.md`](modules/viewer.md).
+
 ## GTK Allocation Warnings
 
 Warnings such as negative width or height allocation usually mean hidden chrome is still participating in layout, a fixed-size area is being over-constrained, or an overlay child is measured while collapsed. Fix the layout cause rather than filtering logs.
