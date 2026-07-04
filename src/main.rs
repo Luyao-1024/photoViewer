@@ -2,13 +2,11 @@ use gtk4::gio;
 use gtk4::prelude::ApplicationExtManual;
 
 fn main() -> anyhow::Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    // Diagnostics first: file logging (`app.log`), Rust panic hook, GLib/GTK
+    // log redirect, and the native signal handler. Runs before anything that
+    // can panic or log, and owns the tracing subscriber init (stderr + file).
+    // See `core::diagnostics`.
+    photo_viewer::core::diagnostics::init()?;
 
     // Register GResource (must be before any GTK operations)
     gio::resources_register_include!("photo_viewer_resources.gresource")
