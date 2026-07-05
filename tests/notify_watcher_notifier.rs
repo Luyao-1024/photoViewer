@@ -52,33 +52,36 @@ fn spawn_watcher(
     )
 }
 
-/// Drain `rx` until we see an event whose uri matches `uri`, or the deadline
-/// passes. Returns the event on success.
-fn wait_for_uri(
+fn event_references_uri(event: &DomainEvent, uri: &str) -> bool {
+    match event {
+        DomainEvent::MediaUpserted { items, .. } | DomainEvent::MediaUpdated { items, .. } => {
+            items.iter().any(|item| item.uri == uri)
+        }
+        DomainEvent::MediaRemoved { uris, .. } => uris.iter().any(|u| u == uri),
+        DomainEvent::TrashChanged { .. }
+        | DomainEvent::MediaMovedToTrash { .. }
+        | DomainEvent::MediaRestored { .. }
+        | DomainEvent::AlbumsChanged { .. }
+        | DomainEvent::AlbumCoverChanged { .. }
+        | DomainEvent::AlbumsDirty { .. }
+        | DomainEvent::ThumbnailStatsDirty
+        | DomainEvent::LiveCountDirty => false,
+    }
+}
+
+/// Drain `rx` until we see an accepted event whose uri matches `uri`, or the
+/// deadline passes. Returns the event on success.
+fn wait_for_uri_matching(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
     uri: &str,
     timeout: Duration,
+    mut accept: impl FnMut(&DomainEvent) -> bool,
 ) -> Option<DomainEvent> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match rx.try_recv() {
             Ok(event) => {
-                let matches = match &event {
-                    DomainEvent::MediaUpserted { items, .. }
-                    | DomainEvent::MediaUpdated { items, .. } => {
-                        items.iter().any(|item| item.uri == uri)
-                    }
-                    DomainEvent::MediaRemoved { uris, .. } => uris.iter().any(|u| u == uri),
-                    DomainEvent::TrashChanged { .. }
-                    | DomainEvent::MediaMovedToTrash { .. }
-                    | DomainEvent::MediaRestored { .. }
-                    | DomainEvent::AlbumsChanged { .. }
-                    | DomainEvent::AlbumCoverChanged { .. }
-                    | DomainEvent::AlbumsDirty { .. }
-                    | DomainEvent::ThumbnailStatsDirty
-                    | DomainEvent::LiveCountDirty => false,
-                };
-                if matches {
+                if event_references_uri(&event, uri) && accept(&event) {
                     return Some(event);
                 }
                 // Skip non-matching events.
@@ -87,6 +90,26 @@ fn wait_for_uri(
         }
     }
     None
+}
+
+fn wait_for_upserted_uri(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    uri: &str,
+    timeout: Duration,
+) -> Option<DomainEvent> {
+    wait_for_uri_matching(rx, uri, timeout, |event| {
+        matches!(event, DomainEvent::MediaUpserted { .. })
+    })
+}
+
+fn wait_for_removed_uri(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    uri: &str,
+    timeout: Duration,
+) -> Option<DomainEvent> {
+    wait_for_uri_matching(rx, uri, timeout, |event| {
+        matches!(event, DomainEvent::MediaRemoved { .. })
+    })
 }
 
 #[test]
@@ -98,7 +121,7 @@ fn watcher_emits_upserted_for_new_file() {
     let path = write_plain_jpeg(&root, "watched.jpg");
     let uri = format!("file://{}", path.display());
 
-    let event = wait_for_uri(&mut rx, &uri, Duration::from_secs(5));
+    let event = wait_for_upserted_uri(&mut rx, &uri, Duration::from_secs(5));
     assert!(
         matches!(event, Some(DomainEvent::MediaUpserted { .. })),
         "expected Upserted for {uri}, got {event:?}"
@@ -115,12 +138,12 @@ fn watcher_emits_removed_for_deleted_file() {
     let uri = format!("file://{}", path.display());
     // Let the upsert settle before removing.
     assert!(
-        wait_for_uri(&mut rx, &uri, Duration::from_secs(5)).is_some(),
+        wait_for_upserted_uri(&mut rx, &uri, Duration::from_secs(5)).is_some(),
         "expected upsert before delete"
     );
 
     std::fs::remove_file(&path).unwrap();
-    let event = wait_for_uri(&mut rx, &uri, Duration::from_secs(5));
+    let event = wait_for_removed_uri(&mut rx, &uri, Duration::from_secs(5));
     assert!(
         matches!(event, Some(DomainEvent::MediaRemoved { .. })),
         "expected Removed for {uri}, got {event:?}"
@@ -137,7 +160,7 @@ fn watcher_emits_upserted_for_modified_file() {
     let uri = format!("file://{}", path.display());
     // First upsert.
     assert!(
-        wait_for_uri(&mut rx, &uri, Duration::from_secs(5)).is_some(),
+        wait_for_upserted_uri(&mut rx, &uri, Duration::from_secs(5)).is_some(),
         "expected initial upsert"
     );
 
