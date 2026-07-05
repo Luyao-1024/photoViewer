@@ -21,7 +21,7 @@ use crate::core::runtime_config;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
-use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
+use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 
 const SEARCH_PREVIEW_FALLBACK_COLUMNS: usize = 8;
 const SEARCH_PREVIEW_MIN_ROWS: usize = 2;
@@ -50,6 +50,10 @@ mod imp {
         pub preview_capacity: Cell<usize>,
         pub search_generation: Cell<u64>,
         pub search_field: Cell<SearchField>,
+        /// Debounces result activation while NavigationView is pushing the
+        /// viewer. Search result grids can live on the search page or on a
+        /// separate "more results" page, so this state belongs to SearchPage.
+        pub viewer_open_pending: Cell<bool>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -634,9 +638,27 @@ impl SearchPage {
         media_kind: &'static str,
         media_list: gtk::gio::ListStore,
     ) {
+        if self.imp().viewer_open_pending.get() {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "SearchPage: ignoring duplicate viewer activation while push is pending"
+            );
+            return;
+        }
+
         let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
             return;
         };
+        if nav
+            .visible_page()
+            .is_some_and(|visible| visible.clone().downcast::<ViewerPage>().is_ok())
+        {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "SearchPage: ignoring viewer activation because a ViewerPage is already visible"
+            );
+            return;
+        }
         let Some(index) = index_for_media_id(&media_list, media_id) else {
             return;
         };
@@ -690,6 +712,16 @@ impl SearchPage {
         });
 
         viewer.guard_initial_navigation_pop();
+        self.imp().viewer_open_pending.set(true);
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.imp().viewer_open_pending.set(false);
+                }
+            },
+        );
         nav.push(&viewer);
     }
 
