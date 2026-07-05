@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -43,6 +44,8 @@ struct SidebarAlbumSnapshot {
     media_type_albums: Vec<Album>,
     live_count: Option<u32>,
 }
+
+static SIDEBAR_SNAPSHOT_TRACE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What a sidebar row navigates to. The top list uses `targets[index]`, while
 /// the stable bottom Trash list uses `trash_targets[index]`. The albums group
@@ -103,6 +106,8 @@ mod imp {
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
+        /// Guard so diagnostic sidebar layout notify logging is connected once.
+        pub sidebar_layout_trace_installed: Cell<bool>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub root_overlay: TemplateChild<gtk::Overlay>,
@@ -387,7 +392,105 @@ impl MainWindow {
     #[tracing::instrument(name = "sidebar:apply_album_rows", skip(self, albums))]
     fn apply_album_rows(&self, albums: Vec<Album>) {
         let album_list = self.imp().album_list.get();
+        let current_targets = self.imp().album_targets.borrow().clone();
+        let current_rows = self.imp().album_rows.borrow().clone();
+        let same_identities = same_sidebar_album_identities(&current_targets, &albums);
+        let ordered_subset = current_rows.len() == current_targets.len()
+            && sidebar_album_identities_are_ordered_subset(&current_targets, &albums);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE album_rows_begin current_targets={} current_rows={} list_children={} incoming={} same_identities={} ordered_subset={} expanded={} scroll_visible={} scroll_height={} wrapper_height={} current=[{}] incoming=[{}]",
+            current_targets.len(),
+            current_rows.len(),
+            sidebar_list_child_count(&album_list),
+            albums.len(),
+            same_identities,
+            ordered_subset,
+            self.imp().albums_expanded.get(),
+            self.imp().album_scroll.is_visible(),
+            self.imp().album_scroll.height(),
+            self.imp().album_trash_wrapper.height(),
+            sidebar_album_summary(&current_targets),
+            sidebar_album_summary(&albums)
+        );
+        if same_identities && current_rows.len() == albums.len() {
+            let loader = self.imp().loader.borrow().as_ref().cloned();
+            for ((row, previous), album) in current_rows
+                .iter()
+                .zip(current_targets.iter())
+                .zip(albums.iter())
+            {
+                update_album_row_in_place(row, previous, album, loader.clone());
+            }
+            let album_count = albums.len();
+            *self.imp().album_targets.borrow_mut() = albums;
+            self.reselect_active_album_row();
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_ALBUM_UPDATE_IN_PLACE rows={}",
+                album_count
+            );
+            self.log_sidebar_layout_state("album_rows_same_identities_after");
+            self.log_sidebar_layout_state_next_idle("album_rows_same_identities_after");
+            return;
+        }
+        if ordered_subset {
+            let loader = self.imp().loader.borrow().as_ref().cloned();
+            let mut next_rows = Vec::with_capacity(albums.len());
+            let mut previous_targets = Vec::with_capacity(albums.len());
+            for album in &albums {
+                if let Some(index) = find_sidebar_album_identity_index(&current_targets, album) {
+                    next_rows.push(current_rows[index].clone());
+                    previous_targets.push(current_targets[index].clone());
+                }
+            }
+            for ((row, previous), album) in next_rows
+                .iter()
+                .zip(previous_targets.iter())
+                .zip(albums.iter())
+            {
+                update_album_row_in_place(row, previous, album, loader.clone());
+            }
+            for (index, row) in current_rows.iter().enumerate().rev() {
+                if !albums
+                    .iter()
+                    .any(|album| same_sidebar_album_identity(&current_targets[index], album))
+                {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        "SIDEBAR_TRACE album_rows_remove_missing index={} identity={}",
+                        index,
+                        sidebar_album_identity_for_log(&current_targets[index])
+                    );
+                    album_list.remove(row);
+                }
+            }
+            let album_count = albums.len();
+            *self.imp().album_rows.borrow_mut() = next_rows;
+            *self.imp().album_targets.borrow_mut() = albums;
+            self.reselect_active_album_row();
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_ALBUM_REMOVE_IN_PLACE rows={}",
+                album_count
+            );
+            self.log_sidebar_layout_state("album_rows_ordered_subset_after");
+            self.log_sidebar_layout_state_next_idle("album_rows_ordered_subset_after");
+            return;
+        }
 
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE album_rows_rebuild_clear begin list_children={} current_rows={} incoming={} expanded={} scroll_visible_before={} scroll_height_before={} reason=identity_insert_or_reorder current=[{}] incoming=[{}]",
+            sidebar_list_child_count(&album_list),
+            current_rows.len(),
+            albums.len(),
+            self.imp().albums_expanded.get(),
+            self.imp().album_scroll.is_visible(),
+            self.imp().album_scroll.height(),
+            sidebar_album_summary(&current_targets),
+            sidebar_album_summary(&albums)
+        );
         while let Some(child) = album_list.first_child() {
             album_list.remove(&child);
         }
@@ -414,6 +517,8 @@ impl MainWindow {
             "SIDEBAR_ALBUM_REBUILD rows={}",
             album_count
         );
+        self.log_sidebar_layout_state("album_rows_rebuild_after");
+        self.log_sidebar_layout_state_next_idle("album_rows_rebuild_after");
     }
 
     fn rebuild_media_type_rows(&self) {
@@ -427,20 +532,114 @@ impl MainWindow {
     fn apply_media_type_rows(&self, albums: Vec<Album>) {
         let media_type_list = self.imp().media_type_list.get();
 
-        while let Some(child) = media_type_list.first_child() {
-            media_type_list.remove(&child);
-        }
-        self.imp().media_type_rows.borrow_mut().clear();
-        self.imp().media_type_targets.borrow_mut().clear();
-
         let has_media_types = !albums.is_empty();
         let expanded = self.imp().media_types_expanded.get();
+        let header_visible_before = self.imp().media_type_header_list.is_visible();
+        let scroll_visible_before = self.imp().media_type_scroll.is_visible();
         self.imp()
             .media_type_header_list
             .set_visible(has_media_types);
         self.imp()
             .media_type_scroll
             .set_visible(has_media_types && expanded);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE media_type_visibility has_media_types={} expanded={} header_visible_before={} header_visible_after={} scroll_visible_before={} scroll_visible_after={} scroll_height={}",
+            has_media_types,
+            expanded,
+            header_visible_before,
+            self.imp().media_type_header_list.is_visible(),
+            scroll_visible_before,
+            self.imp().media_type_scroll.is_visible(),
+            self.imp().media_type_scroll.height()
+        );
+
+        let current_targets = self.imp().media_type_targets.borrow().clone();
+        let current_rows = self.imp().media_type_rows.borrow().clone();
+        let same_identities = same_sidebar_album_identities(&current_targets, &albums);
+        let ordered_subset = current_rows.len() == current_targets.len()
+            && sidebar_album_identities_are_ordered_subset(&current_targets, &albums);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE media_type_rows_begin current_targets={} current_rows={} list_children={} incoming={} same_identities={} ordered_subset={} current=[{}] incoming=[{}]",
+            current_targets.len(),
+            current_rows.len(),
+            sidebar_list_child_count(&media_type_list),
+            albums.len(),
+            same_identities,
+            ordered_subset,
+            sidebar_album_summary(&current_targets),
+            sidebar_album_summary(&albums)
+        );
+        if same_identities && current_rows.len() == albums.len() {
+            let loader = self.imp().loader.borrow().as_ref().cloned();
+            for ((row, previous), album) in current_rows
+                .iter()
+                .zip(current_targets.iter())
+                .zip(albums.iter())
+            {
+                update_album_row_in_place(row, previous, album, loader.clone());
+            }
+            *self.imp().media_type_targets.borrow_mut() = albums;
+            self.reselect_active_album_row();
+            self.log_sidebar_layout_state("media_type_rows_same_identities_after");
+            self.log_sidebar_layout_state_next_idle("media_type_rows_same_identities_after");
+            return;
+        }
+        if ordered_subset {
+            let loader = self.imp().loader.borrow().as_ref().cloned();
+            let mut next_rows = Vec::with_capacity(albums.len());
+            let mut previous_targets = Vec::with_capacity(albums.len());
+            for album in &albums {
+                if let Some(index) = find_sidebar_album_identity_index(&current_targets, album) {
+                    next_rows.push(current_rows[index].clone());
+                    previous_targets.push(current_targets[index].clone());
+                }
+            }
+            for ((row, previous), album) in next_rows
+                .iter()
+                .zip(previous_targets.iter())
+                .zip(albums.iter())
+            {
+                update_album_row_in_place(row, previous, album, loader.clone());
+            }
+            for (index, row) in current_rows.iter().enumerate().rev() {
+                if !albums
+                    .iter()
+                    .any(|album| same_sidebar_album_identity(&current_targets[index], album))
+                {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        "SIDEBAR_TRACE media_type_rows_remove_missing index={} identity={}",
+                        index,
+                        sidebar_album_identity_for_log(&current_targets[index])
+                    );
+                    media_type_list.remove(row);
+                }
+            }
+            *self.imp().media_type_rows.borrow_mut() = next_rows;
+            *self.imp().media_type_targets.borrow_mut() = albums;
+            self.reselect_active_album_row();
+            self.log_sidebar_layout_state("media_type_rows_ordered_subset_after");
+            self.log_sidebar_layout_state_next_idle("media_type_rows_ordered_subset_after");
+            return;
+        }
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE media_type_rows_rebuild_clear begin list_children={} current_rows={} incoming={} scroll_visible={} scroll_height={} reason=identity_insert_or_reorder current=[{}] incoming=[{}]",
+            sidebar_list_child_count(&media_type_list),
+            current_rows.len(),
+            albums.len(),
+            self.imp().media_type_scroll.is_visible(),
+            self.imp().media_type_scroll.height(),
+            sidebar_album_summary(&current_targets),
+            sidebar_album_summary(&albums)
+        );
+        while let Some(child) = media_type_list.first_child() {
+            media_type_list.remove(&child);
+        }
+        self.imp().media_type_rows.borrow_mut().clear();
+        self.imp().media_type_targets.borrow_mut().clear();
 
         for album in albums {
             let row = build_album_row(&album, self.imp().loader.borrow().as_ref().cloned());
@@ -451,15 +650,145 @@ impl MainWindow {
         }
 
         self.reselect_active_album_row();
+        self.log_sidebar_layout_state("media_type_rows_rebuild_after");
+        self.log_sidebar_layout_state_next_idle("media_type_rows_rebuild_after");
     }
 
     #[tracing::instrument(name = "sidebar:apply_album_snapshot", skip(self, snapshot))]
     fn apply_sidebar_album_snapshot(&self, snapshot: SidebarAlbumSnapshot) {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE snapshot_apply_begin live_count={:?} albums={} media_types={} albums_summary=[{}] media_types_summary=[{}]",
+            snapshot.live_count,
+            snapshot.albums.len(),
+            snapshot.media_type_albums.len(),
+            sidebar_album_summary(&snapshot.albums),
+            sidebar_album_summary(&snapshot.media_type_albums)
+        );
+        self.log_sidebar_layout_state("snapshot_apply_begin");
         if let Some(live_count) = snapshot.live_count {
             self.set_photos_count_label(live_count);
         }
         self.apply_album_rows(snapshot.albums);
         self.apply_media_type_rows(snapshot.media_type_albums);
+        self.log_sidebar_layout_state("snapshot_apply_end");
+        self.log_sidebar_layout_state_next_idle("snapshot_apply_end");
+    }
+
+    fn install_sidebar_layout_trace(&self) {
+        if self.imp().sidebar_layout_trace_installed.replace(true) {
+            return;
+        }
+        self.connect_sidebar_widget_trace(
+            "album_trash_wrapper",
+            self.imp().album_trash_wrapper.upcast_ref(),
+        );
+        self.connect_sidebar_widget_trace("album_scroll", self.imp().album_scroll.upcast_ref());
+        self.connect_sidebar_widget_trace("album_list", self.imp().album_list.upcast_ref());
+        self.connect_sidebar_widget_trace(
+            "media_type_header_list",
+            self.imp().media_type_header_list.upcast_ref(),
+        );
+        self.connect_sidebar_widget_trace(
+            "media_type_scroll",
+            self.imp().media_type_scroll.upcast_ref(),
+        );
+        self.connect_sidebar_widget_trace(
+            "media_type_list",
+            self.imp().media_type_list.upcast_ref(),
+        );
+        self.connect_sidebar_widget_trace("trash_list", self.imp().trash_list.upcast_ref());
+        self.connect_sidebar_widget_trace("sidebar_spacer", self.imp().sidebar_spacer.upcast_ref());
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE layout_trace_installed"
+        );
+        self.log_sidebar_layout_state("layout_trace_installed");
+    }
+
+    fn connect_sidebar_widget_trace(&self, name: &'static str, widget: &gtk::Widget) {
+        widget.connect_notify_local(
+            Some("height"),
+            glib::clone!(@weak self as window => move |widget, _| {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE widget_height name={} visible={} mapped={} width={} height={}",
+                    name,
+                    widget.is_visible(),
+                    widget.is_mapped(),
+                    widget.width(),
+                    widget.height()
+                );
+                window.log_sidebar_layout_state(&format!("height_notify:{name}"));
+            }),
+        );
+        widget.connect_notify_local(
+            Some("visible"),
+            glib::clone!(@weak self as window => move |widget, _| {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE widget_visible name={} visible={} mapped={} width={} height={}",
+                    name,
+                    widget.is_visible(),
+                    widget.is_mapped(),
+                    widget.width(),
+                    widget.height()
+                );
+                window.log_sidebar_layout_state(&format!("visible_notify:{name}"));
+                window.log_sidebar_layout_state_next_idle(format!("visible_notify:{name}"));
+            }),
+        );
+    }
+
+    fn log_sidebar_layout_state_next_idle(&self, stage: impl Into<String>) {
+        let stage = stage.into();
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(window) = weak.upgrade() {
+                window.log_sidebar_layout_state(&format!("{stage}:idle"));
+            }
+        });
+    }
+
+    fn log_sidebar_layout_state(&self, stage: &str) {
+        let active_album = self
+            .imp()
+            .active_album
+            .borrow()
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".into());
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE layout stage={} albums_expanded={} media_types_expanded={} album_scroll_visible={} album_scroll_mapped={} album_scroll_wh={}x{} album_list_children={} album_list_wh={}x{} album_targets={} media_type_header_visible={} media_type_scroll_visible={} media_type_scroll_mapped={} media_type_scroll_wh={}x{} media_type_list_children={} media_type_targets={} wrapper_vexpand={} wrapper_wh={}x{} spacer_vexpand={} spacer_visible={} spacer_wh={}x{} trash_children={} active_album={}",
+            stage,
+            self.imp().albums_expanded.get(),
+            self.imp().media_types_expanded.get(),
+            self.imp().album_scroll.is_visible(),
+            self.imp().album_scroll.is_mapped(),
+            self.imp().album_scroll.width(),
+            self.imp().album_scroll.height(),
+            sidebar_list_child_count(&self.imp().album_list),
+            self.imp().album_list.width(),
+            self.imp().album_list.height(),
+            self.imp().album_targets.borrow().len(),
+            self.imp().media_type_header_list.is_visible(),
+            self.imp().media_type_scroll.is_visible(),
+            self.imp().media_type_scroll.is_mapped(),
+            self.imp().media_type_scroll.width(),
+            self.imp().media_type_scroll.height(),
+            sidebar_list_child_count(&self.imp().media_type_list),
+            self.imp().media_type_targets.borrow().len(),
+            self.imp().album_trash_wrapper.vexpands(),
+            self.imp().album_trash_wrapper.width(),
+            self.imp().album_trash_wrapper.height(),
+            self.imp().sidebar_spacer.vexpands(),
+            self.imp().sidebar_spacer.is_visible(),
+            self.imp().sidebar_spacer.width(),
+            self.imp().sidebar_spacer.height(),
+            sidebar_list_child_count(&self.imp().trash_list),
+            active_album
+        );
     }
 
     fn reselect_active_album_row(&self) {
@@ -504,6 +833,12 @@ impl MainWindow {
     /// scrolled window sizes to content (no vexpand). When collapsed, the
     /// spacer expands so Settings stays pinned to the bottom.
     pub fn toggle_albums_expanded(&self) {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE toggle_albums_expanded begin current_expanded={}",
+            self.imp().albums_expanded.get()
+        );
+        self.log_sidebar_layout_state("toggle_albums_expanded_before");
         let expanded = !self.imp().albums_expanded.get();
         self.imp().albums_expanded.set(expanded);
         if let Some(arrow) = self.imp().albums_arrow.borrow().clone() {
@@ -516,9 +851,22 @@ impl MainWindow {
         self.imp().album_scroll.set_visible(expanded);
         self.imp().album_trash_wrapper.set_vexpand(expanded);
         self.imp().sidebar_spacer.set_vexpand(!expanded);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE toggle_albums_expanded end expanded={}",
+            expanded
+        );
+        self.log_sidebar_layout_state("toggle_albums_expanded_after");
+        self.log_sidebar_layout_state_next_idle("toggle_albums_expanded_after");
     }
 
     pub fn toggle_media_types_expanded(&self) {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE toggle_media_types_expanded begin current_expanded={}",
+            self.imp().media_types_expanded.get()
+        );
+        self.log_sidebar_layout_state("toggle_media_types_expanded_before");
         let expanded = !self.imp().media_types_expanded.get();
         self.imp().media_types_expanded.set(expanded);
         if let Some(arrow) = self.imp().media_types_arrow.borrow().clone() {
@@ -529,14 +877,28 @@ impl MainWindow {
             });
         }
         self.imp().media_type_scroll.set_visible(expanded);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE toggle_media_types_expanded end expanded={}",
+            expanded
+        );
+        self.log_sidebar_layout_state("toggle_media_types_expanded_after");
+        self.log_sidebar_layout_state_next_idle("toggle_media_types_expanded_after");
     }
 
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
     pub fn refresh_album_rows(&self) {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE refresh_album_rows_sync_begin"
+        );
+        self.log_sidebar_layout_state("refresh_album_rows_sync_begin");
         self.update_photos_count_label_from_db();
         self.rebuild_album_rows();
         self.rebuild_media_type_rows();
+        self.log_sidebar_layout_state("refresh_album_rows_sync_end");
+        self.log_sidebar_layout_state_next_idle("refresh_album_rows_sync_end");
     }
 
     pub fn enter_album_selection_mode(&self) {
@@ -869,14 +1231,49 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
+        let trace_id = SIDEBAR_SNAPSHOT_TRACE_ID.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE snapshot_request id={} album_targets={} media_type_targets={}",
+            trace_id,
+            self.imp().album_targets.borrow().len(),
+            self.imp().media_type_targets.borrow().len()
+        );
+        self.log_sidebar_layout_state(&format!("snapshot_request#{trace_id}"));
+        self.log_sidebar_layout_state_next_idle(format!("snapshot_request#{trace_id}"));
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(move || load_sidebar_album_snapshot(&pool)).await;
+            let result = gtk::gio::spawn_blocking(move || {
+                let snapshot = load_sidebar_album_snapshot(&pool);
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE snapshot_loaded id={} live_count={:?} albums={} media_types={} albums_summary=[{}] media_types_summary=[{}]",
+                    trace_id,
+                    snapshot.live_count,
+                    snapshot.albums.len(),
+                    snapshot.media_type_albums.len(),
+                    sidebar_album_summary(&snapshot.albums),
+                    sidebar_album_summary(&snapshot.media_type_albums)
+                );
+                snapshot
+            })
+            .await;
             let Some(window) = weak.upgrade() else {
                 return;
             };
             match result {
-                Ok(snapshot) => window.apply_sidebar_album_snapshot(snapshot),
+                Ok(snapshot) => {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        "SIDEBAR_TRACE snapshot_deliver id={}",
+                        trace_id
+                    );
+                    window.apply_sidebar_album_snapshot(snapshot);
+                    window.log_sidebar_layout_state(&format!("snapshot_deliver#{trace_id}_after"));
+                    window.log_sidebar_layout_state_next_idle(format!(
+                        "snapshot_deliver#{trace_id}_after"
+                    ));
+                }
                 Err(err) => tracing::warn!("sidebar snapshot refresh failed: {err:?}"),
             }
         });
@@ -895,6 +1292,7 @@ impl MainWindow {
     /// Requires `set_resources` to have been called first; if the resources are
     /// missing the closures silently no-op.
     pub fn connect_sidebar(&self, nav_view: &adw::NavigationView) {
+        self.install_sidebar_layout_trace();
         let list = self.imp().sidebar_list.get();
         let trash_list = self.imp().trash_list.get();
         let album_list = self.imp().album_list.get();
@@ -1338,6 +1736,13 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE delete_albums_to_trash_ui_begin albums={} summary=[{}]",
+            albums.len(),
+            sidebar_album_summary(&albums)
+        );
+        self.log_sidebar_layout_state("delete_albums_to_trash_ui_begin");
 
         let weak = self.downgrade();
         let retry_pool = pool.clone();
@@ -1378,6 +1783,15 @@ impl MainWindow {
     }
 
     fn apply_album_delete_ui_result(&self, result: &AlbumDeleteUiResult) {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE apply_album_delete_result begin deleted_paths={} remaining_live_uris={} remaining_live_folders={} unknown_remaining_live_paths={}",
+            result.deleted_paths.len(),
+            result.remaining_live_uris.len(),
+            result.remaining_live_folder_paths.len(),
+            result.unknown_remaining_live_paths.len()
+        );
+        self.log_sidebar_layout_state("apply_album_delete_result_before_media_remove");
         if let Some(media_list) = self.imp().media_list.borrow().as_ref() {
             remove_deleted_album_media_from_media_list(
                 media_list,
@@ -1386,6 +1800,7 @@ impl MainWindow {
                 &result.unknown_remaining_live_paths,
             );
         }
+        self.log_sidebar_layout_state("apply_album_delete_result_before_refresh_album_rows");
         self.refresh_album_rows();
 
         let active_should_close = self
@@ -1400,6 +1815,11 @@ impl MainWindow {
                         .iter()
                         .any(|path| path == active)
             });
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE apply_album_delete_result active_should_close={}",
+            active_should_close
+        );
         if active_should_close {
             *self.imp().active_album.borrow_mut() = None;
             self.imp().album_list.get().unselect_all();
@@ -1411,6 +1831,8 @@ impl MainWindow {
             self.imp().selecting_programmatically.set(false);
             pop_to_photos_root(&self.imp().nav_view.get());
         }
+        self.log_sidebar_layout_state("apply_album_delete_result_end");
+        self.log_sidebar_layout_state_next_idle("apply_album_delete_result_end");
     }
 
     fn prompt_album_trash_backend_fallback(&self, pool: DbPool, albums: Vec<Album>, error: String) {
@@ -3038,6 +3460,141 @@ fn build_album_row(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> gtk::
     row
 }
 
+fn same_sidebar_album_identities(current: &[Album], next: &[Album]) -> bool {
+    current.len() == next.len()
+        && current
+            .iter()
+            .zip(next)
+            .all(|(current, next)| same_sidebar_album_identity(current, next))
+}
+
+fn same_sidebar_album_identity(current: &Album, next: &Album) -> bool {
+    current.folder_path == next.folder_path && current.is_virtual == next.is_virtual
+}
+
+fn sidebar_album_identities_are_ordered_subset(current: &[Album], next: &[Album]) -> bool {
+    if next.len() > current.len() {
+        return false;
+    }
+    let mut search_from = 0;
+    for next_album in next {
+        let Some(offset) = current[search_from..]
+            .iter()
+            .position(|current_album| same_sidebar_album_identity(current_album, next_album))
+        else {
+            return false;
+        };
+        search_from += offset + 1;
+    }
+    true
+}
+
+fn find_sidebar_album_identity_index(albums: &[Album], needle: &Album) -> Option<usize> {
+    albums
+        .iter()
+        .position(|album| same_sidebar_album_identity(album, needle))
+}
+
+fn sidebar_list_child_count(list: &gtk::ListBox) -> u32 {
+    list.observe_children().n_items()
+}
+
+fn sidebar_album_summary(albums: &[Album]) -> String {
+    const MAX_ITEMS: usize = 8;
+    let mut parts = albums
+        .iter()
+        .take(MAX_ITEMS)
+        .map(sidebar_album_identity_for_log)
+        .collect::<Vec<_>>();
+    if albums.len() > MAX_ITEMS {
+        parts.push(format!("...(+{})", albums.len() - MAX_ITEMS));
+    }
+    parts.join(" | ")
+}
+
+fn sidebar_album_identity_for_log(album: &Album) -> String {
+    let kind = if album.is_virtual {
+        "virtual"
+    } else {
+        "folder"
+    };
+    format!(
+        "{}:{} count={} name={}",
+        kind,
+        album.folder_path.display(),
+        album.photo_count,
+        album.display_name()
+    )
+}
+
+fn update_album_row_in_place(
+    row: &gtk::ListBoxRow,
+    previous: &Album,
+    album: &Album,
+    loader: Option<Arc<ThumbnailLoader>>,
+) {
+    if let Some(name) = find_label_with_css_class(row.upcast_ref(), "glass-sidebar-label") {
+        name.set_label(&album.display_name());
+    }
+    if let Some(count) = find_label_with_css_class(row.upcast_ref(), "glass-sidebar-count") {
+        count.set_label(&trf(
+            "album.count",
+            &[("count", &album.photo_count.to_string())],
+        ));
+    }
+    if previous.cover_uri != album.cover_uri || previous.last_modified != album.last_modified {
+        replace_sidebar_album_cover(row, album, loader);
+    }
+}
+
+fn replace_sidebar_album_cover(
+    row: &gtk::ListBoxRow,
+    album: &Album,
+    loader: Option<Arc<ThumbnailLoader>>,
+) {
+    let Some(cover) = find_sidebar_album_cover(row.upcast_ref()) else {
+        return;
+    };
+    let Some(parent) = cover.parent().and_downcast::<gtk::Box>() else {
+        return;
+    };
+    let replacement = build_sidebar_album_cover(album, loader);
+    parent.remove(&cover);
+    parent.prepend(&replacement);
+}
+
+fn find_label_with_css_class(widget: &gtk::Widget, class_name: &str) -> Option<gtk::Label> {
+    if widget.has_css_class(class_name) {
+        if let Ok(label) = widget.clone().downcast::<gtk::Label>() {
+            return Some(label);
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = find_label_with_css_class(&current, class_name) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
+}
+
+fn find_sidebar_album_cover(widget: &gtk::Widget) -> Option<SquareTile> {
+    if widget.has_css_class("glass-sidebar-cover") {
+        if let Ok(tile) = widget.clone().downcast::<SquareTile>() {
+            return Some(tile);
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if let Some(found) = find_sidebar_album_cover(&current) {
+            return Some(found);
+        }
+        child = current.next_sibling();
+    }
+    None
+}
+
 fn build_sidebar_album_cover(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(24);
@@ -3375,6 +3932,17 @@ mod tests {
         }
     }
 
+    fn sidebar_album(path: &str, name: &str, photo_count: i64) -> Album {
+        Album {
+            folder_path: PathBuf::from(path),
+            name: name.into(),
+            cover_uri: None,
+            photo_count,
+            last_modified: Utc::now(),
+            is_virtual: false,
+        }
+    }
+
     fn keyboard_media_item(id: i64) -> MediaItem {
         MediaItem {
             id,
@@ -3454,6 +4022,168 @@ mod tests {
         assert_eq!(
             key_controllers[0].propagation_phase(),
             gtk::PropagationPhase::Capture
+        );
+    }
+
+    #[gtk::test]
+    fn sidebar_album_snapshot_updates_stable_rows_in_place() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.SidebarStableAlbumRows")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        let window = MainWindow::new(&app);
+
+        let albums = vec![
+            sidebar_album("/tmp/camera", "Camera", 2),
+            sidebar_album("/tmp/screenshots", "Screenshots", 1),
+        ];
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: albums.clone(),
+            media_type_albums: Vec::new(),
+            live_count: Some(3),
+        });
+        let album_list = window.imp().album_list.get();
+        let first_before = album_list
+            .row_at_index(0)
+            .expect("first album row should exist");
+        let second_before = album_list
+            .row_at_index(1)
+            .expect("second album row should exist");
+
+        let mut refreshed = albums;
+        refreshed[0].photo_count = 1;
+        refreshed[1].photo_count = 1;
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: refreshed,
+            media_type_albums: Vec::new(),
+            live_count: Some(2),
+        });
+
+        assert!(
+            album_list.row_at_index(0).as_ref() == Some(&first_before),
+            "same album/order refresh should update the first row in place instead of replacing it"
+        );
+        assert!(
+            album_list.row_at_index(1).as_ref() == Some(&second_before),
+            "same album/order refresh should update the second row in place instead of replacing it"
+        );
+        assert_eq!(
+            window.imp().album_targets.borrow()[0].photo_count,
+            1,
+            "target snapshot should still update to the latest count"
+        );
+    }
+
+    #[gtk::test]
+    fn sidebar_album_snapshot_removes_missing_row_without_replacing_survivors() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.SidebarStableAlbumRemoval")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        let window = MainWindow::new(&app);
+
+        let albums = vec![
+            sidebar_album("/tmp/camera", "Camera", 2),
+            sidebar_album("/tmp/downloads", "Downloads", 1),
+            sidebar_album("/tmp/screenshots", "Screenshots", 3),
+        ];
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: albums.clone(),
+            media_type_albums: Vec::new(),
+            live_count: Some(6),
+        });
+        let album_list = window.imp().album_list.get();
+        let first_before = album_list
+            .row_at_index(0)
+            .expect("first album row should exist");
+        let third_before = album_list
+            .row_at_index(2)
+            .expect("third album row should exist");
+
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: vec![
+                sidebar_album("/tmp/camera", "Camera", 1),
+                sidebar_album("/tmp/screenshots", "Screenshots", 3),
+            ],
+            media_type_albums: Vec::new(),
+            live_count: Some(4),
+        });
+
+        assert!(
+            album_list.row_at_index(0).as_ref() == Some(&first_before),
+            "removing one album should keep the first surviving row mounted"
+        );
+        assert!(
+            album_list.row_at_index(1).as_ref() == Some(&third_before),
+            "removing one album should keep the later surviving row mounted"
+        );
+        assert_eq!(
+            window.imp().album_targets.borrow().len(),
+            2,
+            "target snapshot should remove only the missing album"
+        );
+        assert_eq!(
+            window.imp().album_targets.borrow()[0].photo_count,
+            1,
+            "surviving row targets should still update to latest counts"
+        );
+    }
+
+    #[gtk::test]
+    fn sidebar_media_type_snapshot_removes_missing_row_without_replacing_survivors() {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.SidebarStableMediaTypeRemoval")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+        let window = MainWindow::new(&app);
+
+        let mut dynamic = sidebar_album("/virtual/dynamic", "Dynamic Photos", 2);
+        dynamic.is_virtual = true;
+        let mut raw = sidebar_album("/virtual/raw", "Raw", 1);
+        raw.is_virtual = true;
+        let mut panoramas = sidebar_album("/virtual/panoramas", "Panoramas", 3);
+        panoramas.is_virtual = true;
+
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: Vec::new(),
+            media_type_albums: vec![dynamic.clone(), raw, panoramas.clone()],
+            live_count: Some(6),
+        });
+        let media_type_list = window.imp().media_type_list.get();
+        let first_before = media_type_list
+            .row_at_index(0)
+            .expect("first media type row should exist");
+        let third_before = media_type_list
+            .row_at_index(2)
+            .expect("third media type row should exist");
+
+        dynamic.photo_count = 1;
+        window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+            albums: Vec::new(),
+            media_type_albums: vec![dynamic, panoramas],
+            live_count: Some(4),
+        });
+
+        assert!(
+            media_type_list.row_at_index(0).as_ref() == Some(&first_before),
+            "removing one media type should keep the first surviving row mounted"
+        );
+        assert!(
+            media_type_list.row_at_index(1).as_ref() == Some(&third_before),
+            "removing one media type should keep the later surviving row mounted"
+        );
+        assert_eq!(
+            window.imp().media_type_targets.borrow().len(),
+            2,
+            "target snapshot should remove only the missing media type"
+        );
+        assert_eq!(
+            window.imp().media_type_targets.borrow()[0].photo_count,
+            1,
+            "surviving media type targets should still update to latest counts"
         );
     }
 

@@ -168,9 +168,33 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         .unwrap_or(false)),
         "clicking the batch favorite button should persist favorite state"
     );
+    assert!(
+        wait_until(Duration::from_secs(2), || !fixture
+            .page
+            .imp()
+            .favorite_btn
+            .get()
+            .is_visible()),
+        "favorite action should clear the previous selection before the next batch action"
+    );
 
+    let first_tile =
+        first_flowbox_child(grid.upcast_ref()).expect("rendered thumbnail remains in Day grid");
+    let flow = first_tile
+        .parent()
+        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
+        .expect("thumbnail child should still belong to a FlowBox");
     grid.set_multi_select_mode(true);
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    assert!(
+        wait_until(Duration::from_secs(2), || fixture
+            .page
+            .imp()
+            .add_to_album_btn
+            .get()
+            .is_visible()),
+        "selecting a tile after favorite should expose the batch add-to-album action"
+    );
     click_button(&fixture.page.imp().add_to_album_btn.get());
     assert_eq!(
         fixture.nav.navigation_stack().n_items(),

@@ -53,9 +53,18 @@ impl RefreshCoordinator {
 
     pub fn mark_albums_dirty(&self) -> bool {
         if self.album_refresh_running.get() {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE album_refresh_mark_sync action=queue running=true pending_before={}",
+                self.album_refresh_pending.get()
+            );
             self.album_refresh_pending.set(true);
             return false;
         }
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE album_refresh_mark_sync action=start"
+        );
         self.album_refresh_running.set(true);
         if let Err(err) = (self.album_job)() {
             tracing::warn!("album refresh failed: {err}");
@@ -73,31 +82,67 @@ impl RefreshCoordinator {
 
     pub fn mark_albums_dirty_async(&self) {
         if self.album_refresh_running.get() {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE album_refresh_mark_async action=queue running=true pending_before={}",
+                self.album_refresh_pending.get()
+            );
             self.album_refresh_pending.set(true);
             return;
         }
         let Some(pool) = self.album_pool.clone() else {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE album_refresh_mark_async fallback=sync_no_pool"
+            );
             self.mark_albums_dirty();
             return;
         };
         let Some(on_albums_refreshed) = self.on_albums_refreshed.clone() else {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE album_refresh_mark_async fallback=sync_no_callback"
+            );
             self.mark_albums_dirty();
             return;
         };
 
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "SIDEBAR_TRACE album_refresh_mark_async action=start"
+        );
         self.album_refresh_running.set(true);
         let this = self.clone();
         glib::MainContext::default().spawn_local(async move {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE album_refresh_worker_start"
+            );
             let result =
                 gtk4::gio::spawn_blocking(move || crate::core::albums::refresh(&pool)).await;
             match result {
-                Ok(Ok(())) => on_albums_refreshed(),
+                Ok(Ok(())) => {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        "SIDEBAR_TRACE album_refresh_worker_ok invoking_callback"
+                    );
+                    on_albums_refreshed();
+                }
                 Ok(Err(err)) => tracing::warn!("album refresh failed: {err}"),
                 Err(err) => tracing::warn!("album refresh join failed: {err:?}"),
             }
             this.album_refresh_running.set(false);
             if this.album_refresh_pending.replace(false) {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE album_refresh_worker_done pending=true rerun"
+                );
                 this.mark_albums_dirty_async();
+            } else {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE album_refresh_worker_done pending=false"
+                );
             }
         });
     }

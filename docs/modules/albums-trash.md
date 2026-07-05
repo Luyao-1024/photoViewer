@@ -32,12 +32,23 @@ single-flight and repeated startup/watch events coalesce. UI pages should avoid
 adding new direct `albums::refresh` calls; trash and favorite mutations should
 go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
+`albums::refresh` must rebuild the materialized folder-album table inside one
+SQLite transaction. Sidebar snapshots can run on another pooled connection; if
+the refresh exposes the post-`DELETE`/pre-`INSERT` state, the sidebar briefly
+sees only virtual albums and the Albums group shrinks before expanding again.
 
 Startup must not synchronously block on sidebar album projections. The window
 initially shows the Photos row count from the already-loaded GTK model window,
 then `MainWindow::refresh_sidebar_snapshot_async()` refreshes the true live
 count, folder albums, virtual album counts, and media-type rows from a blocking
 worker after the Photos page is usable.
+When a refreshed sidebar snapshot has the same album/media-type identities in
+the same order, update existing row labels/counts/covers in place. Do not clear
+and append every row for a count-only favorite/trash change; that makes every
+left-sidebar album flash. When a refreshed snapshot only removes album or
+media-type identities and preserves the relative order of the survivors, remove
+only the missing rows and update the surviving rows in place so the group does
+not momentarily collapse before expanding again.
 
 Album covers are persisted separately from the `albums` materialized view in
 `album_covers(folder_path, cover_uri)`. `albums::refresh` applies the same

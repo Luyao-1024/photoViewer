@@ -104,6 +104,10 @@ pub fn build_app() -> adw::Application {
                             let window = window.downgrade();
                             move || {
                                 if let Some(window) = window.upgrade() {
+                                    tracing::info!(
+                                        target: crate::core::log_targets::BROWSING,
+                                        "SIDEBAR_TRACE album_refresh_callback_refresh_sidebar_snapshot"
+                                    );
                                     window.refresh_sidebar_snapshot_async();
                                 }
                             }
@@ -199,14 +203,30 @@ fn apply_domain_event_to_legacy_ui(
     window: &glib::WeakRef<MainWindow>,
     album_refresh: &crate::core::refresh::RefreshCoordinator,
 ) {
+    let event_label = domain_event_label(event);
+    tracing::info!(
+        target: crate::core::log_targets::BROWSING,
+        "SIDEBAR_TRACE domain_event_received event={} media_list_len={}",
+        event_label,
+        media_list.n_items()
+    );
     match event {
         DomainEvent::TrashChanged { .. } => {
             if let Some(window) = window.upgrade() {
                 window.refresh_visible_trash_page();
             }
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE schedule_album_refresh reason=trash_changed"
+            );
             album_refresh.mark_albums_dirty_async();
         }
         DomainEvent::AlbumsChanged { .. } | DomainEvent::AlbumCoverChanged { .. } => {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "SIDEBAR_TRACE schedule_album_refresh reason={}",
+                event_label
+            );
             album_refresh.mark_albums_dirty_async();
         }
         _ => {
@@ -217,7 +237,6 @@ fn apply_domain_event_to_legacy_ui(
                     ..
                 }
             );
-            let event_label = domain_event_label(event);
             let list_len_before = media_list.n_items();
             crate::ui::apply_to_media_list::apply_to_media_list(media_list, event);
             tracing::info!(
@@ -228,6 +247,11 @@ fn apply_domain_event_to_legacy_ui(
                 media_list.n_items()
             );
             if !is_startup_scan_batch {
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "SIDEBAR_TRACE schedule_album_refresh reason={} after_media_list_apply",
+                    event_label
+                );
                 album_refresh.mark_albums_dirty_async();
             } else {
                 tracing::debug!(
