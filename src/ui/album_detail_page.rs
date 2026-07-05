@@ -20,8 +20,8 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
-use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP};
-use std::cell::RefCell;
+use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod imp {
@@ -37,6 +37,9 @@ mod imp {
         pub album: RefCell<Option<Album>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        /// Debounces media activation while NavigationView is pushing the
+        /// viewer, matching PhotosPage's grid behavior.
+        pub viewer_open_pending: Cell<bool>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -343,6 +346,14 @@ impl AlbumDetailPage {
     }
 
     fn open_viewer(&self, media_id: MediaId, global_index: u32) {
+        if self.imp().viewer_open_pending.get() {
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                "AlbumDetailPage: ignoring duplicate viewer activation while push is pending"
+            );
+            return;
+        }
+
         let media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
@@ -351,6 +362,17 @@ impl AlbumDetailPage {
             Some(n) => n.clone(),
             None => return,
         };
+        let self_page: adw::NavigationPage = self.clone().upcast();
+        if nav
+            .visible_page()
+            .is_some_and(|visible| visible != self_page)
+        {
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                "AlbumDetailPage: ignoring viewer activation because AlbumDetailPage is not visible"
+            );
+            return;
+        }
 
         let query = self
             .imp()
@@ -418,6 +440,23 @@ impl AlbumDetailPage {
         });
 
         viewer.guard_initial_navigation_pop();
+        self.imp().viewer_open_pending.set(true);
+        let source_page = nav.visible_page();
+        if let Some(page) = source_page.as_ref() {
+            page.set_sensitive(false);
+        }
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    this.imp().viewer_open_pending.set(false);
+                }
+                if let Some(page) = source_page {
+                    page.set_sensitive(true);
+                }
+            },
+        );
         nav.push(&viewer);
     }
 

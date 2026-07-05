@@ -16,7 +16,7 @@ use photo_viewer::core::thumbnails::ThumbnailLoader;
 use photo_viewer::core::{albums, db};
 use photo_viewer::ui::{
     album_picker, AlbumBrowserPage, AlbumDetailPage, MainWindow, MediaGrid, ModeSelector,
-    PhotosPage, TrashPage, ViewerPage,
+    PhotosPage, SearchPage, TrashPage, ViewerPage,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -42,6 +42,7 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
 
     mode_selector_click_switches_photos_view();
     thumbnail_activation_opens_one_viewer();
+    search_result_activation_opens_one_viewer_while_pending();
     photos_batch_toolbar_clicks_select_favorite_and_album();
     viewer_chrome_clicks_drive_visible_operations();
     sidebar_clicks_drive_top_level_navigation();
@@ -50,6 +51,48 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
     album_pages_clicks_open_album_and_viewer();
     album_browser_reorder_persists_full_album_order();
     trash_page_clicks_selection_cancel_restore_and_delete();
+}
+
+fn search_result_activation_opens_one_viewer_while_pending() {
+    let fixture = build_photos_page_with_nav();
+    let page = SearchPage::new(fixture.pool.clone(), fixture.loader.clone());
+    page.set_nav_target(&fixture.nav);
+    fixture.nav.push(&page);
+
+    page.imp().search_entry.get().set_text("one");
+    assert!(
+        wait_until(Duration::from_secs(2), || first_flowbox_child(
+            page.upcast_ref()
+        )
+        .is_some()),
+        "SearchPage should render a result tile for the fixture query"
+    );
+
+    let first_tile = first_flowbox_child(page.upcast_ref()).expect("search result tile exists");
+    let flow = first_tile
+        .parent()
+        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
+        .expect("search result tile should belong to a FlowBox");
+    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    assert!(
+        !page.is_sensitive(),
+        "SearchPage should ignore pointer input while viewer push is guarded"
+    );
+    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+
+    assert_eq!(
+        fixture.nav.navigation_stack().n_items(),
+        3,
+        "rapid repeated Search result activation should push only one viewer page"
+    );
+    assert!(
+        fixture
+            .nav
+            .visible_page()
+            .and_downcast::<ViewerPage>()
+            .is_some(),
+        "search result activation should open the viewer page"
+    );
 }
 
 fn mode_selector_click_switches_photos_view() {
@@ -576,12 +619,22 @@ fn album_pages_clicks_open_album_and_viewer() {
         .expect("Album detail tile should belong to a FlowBox");
     detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
     assert!(
+        !detail.is_sensitive(),
+        "AlbumDetailPage should ignore pointer input while viewer push is guarded"
+    );
+    detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
+    assert!(
         fixture
             .nav
             .visible_page()
             .and_downcast::<ViewerPage>()
             .is_some(),
         "activating an AlbumDetail tile should open the viewer"
+    );
+    assert_eq!(
+        fixture.nav.navigation_stack().n_items(),
+        3,
+        "rapid repeated AlbumDetail tile activation should push only one viewer page"
     );
 }
 

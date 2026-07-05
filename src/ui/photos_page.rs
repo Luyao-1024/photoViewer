@@ -1182,12 +1182,19 @@ impl PhotosPage {
 
         viewer.guard_initial_navigation_pop();
         self.imp().viewer_open_pending.set(true);
+        let source_page = nav.visible_page();
+        if let Some(page) = source_page.as_ref() {
+            page.set_sensitive(false);
+        }
         let weak = self.downgrade();
         glib::timeout_add_local_once(
             std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
             move || {
                 if let Some(this) = weak.upgrade() {
                     this.imp().viewer_open_pending.set(false);
+                }
+                if let Some(page) = source_page {
+                    page.set_sensitive(true);
                 }
             },
         );
@@ -1314,6 +1321,39 @@ mod tests {
         assert!(
             viewer.can_pop(),
             "viewer should allow normal navigation again after the open debounce"
+        );
+    }
+
+    #[gtk::test]
+    fn opening_viewer_temporarily_disables_photos_page_input() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+
+        let nav = adw::NavigationView::new();
+        let page = PhotosPage::new(media_list, loader);
+        page.set_nav_target(&nav);
+        nav.push(&page);
+
+        page.open_viewer(MediaId::from(1));
+
+        assert!(
+            !page.is_sensitive(),
+            "the source Photos page should ignore pointer input while viewer push is guarded"
+        );
+
+        let ctx = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+        while std::time::Instant::now() < deadline && !page.is_sensitive() {
+            ctx.iteration(true);
+        }
+
+        assert!(
+            page.is_sensitive(),
+            "Photos page input should be restored after the guarded push window"
         );
     }
 }
