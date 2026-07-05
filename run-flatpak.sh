@@ -31,7 +31,7 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: ./run-flatpak.sh [--clean|-c] [--release|-r] [--log-domain|-l <module[=level]> ...] [--log-domains|-L <comma list>] [--log-all|-a] [--no-audio]
+Usage: ./run-flatpak.sh [--clean|-c] [--release|-r] [--log-domain|-l <module[=level]> ...] [--log-domains|-L <comma list>] [--log-all|-a] [--chrome-trace|-t] [--no-audio]
 
 Options:
   --clean, -c                     Remove target/flatpak-debug before build
@@ -41,6 +41,10 @@ Options:
   --log-domain, -l <target>       Set one rust log domain (repeatable)
   --log-domains, -L <list>        Set multiple domains as comma-separated list
   --log-all, -a                   Print all logs at trace level
+  --chrome-trace, -t              Emit a Chrome/Perfetto trace to <cache>/logs/trace.json
+                                  this run (sets PHOTOVIEWER_CHROME_TRACE=1). Pair with
+                                  `-L photo_viewer=debug` to also capture startup markers
+                                  in app.log. Open trace.json in chrome://tracing or perfetto.dev.
   --no-audio                       Start app without pulseaudio socket binding
   -h, --help                      Show this help
 
@@ -63,6 +67,10 @@ TARGET_DIR="target/flatpak-debug"
 FLATPAK_APP_ID="io.github.luyao_1024.photoviewer"
 RUN_WITH_AUDIO=1
 RELEASE_BUILD=0
+# Emit a Chrome/Perfetto trace (<cache>/logs/trace.json) this run by setting
+# PHOTOVIEWER_CHROME_TRACE=1 inside the sandbox. Combine with `-L photo_viewer=debug`
+# so the textual startup markers (e.g. STARTUP_INITIAL_PAGE) land in app.log too.
+CHROME_TRACE=0
 
 mkdir -p "$CARGO_HOME_DIR"
 
@@ -74,6 +82,14 @@ while (( "$#" )); do
     case "$1" in
         --no-audio)
             RUN_WITH_AUDIO=0
+            shift
+            ;;
+        -t)
+            CHROME_TRACE=1
+            shift
+            ;;
+        --chrome-trace)
+            CHROME_TRACE=1
             shift
             ;;
         -c)
@@ -249,12 +265,30 @@ if (( RUN_WITH_AUDIO == 1 )); then
     RUN_CMD+=(--socket=pulseaudio)
 fi
 
+# Forward the Chrome trace opt-in into the sandbox. Must be a flatpak OPTION,
+# i.e. appear BEFORE the appid positional — anything after the appid is passed
+# as an argument to the app and silently ignored. The --chrome-trace flag is the
+# primary switch; an explicit host PHOTOVIEWER_CHROME_TRACE is also honoured.
+CHROME_TRACE_ARG=()
+if (( CHROME_TRACE )); then
+    CHROME_TRACE_ARG=(--env=PHOTOVIEWER_CHROME_TRACE=1)
+elif [[ -n "${PHOTOVIEWER_CHROME_TRACE:-}" ]]; then
+    CHROME_TRACE_ARG=(--env=PHOTOVIEWER_CHROME_TRACE="$PHOTOVIEWER_CHROME_TRACE")
+fi
+
 RUN_CMD+=(
     --env=RUST_LOG="$RUST_LOG_VALUE"
+    "${CHROME_TRACE_ARG[@]}"
     --filesystem="$PROJECT_DIR"
     --filesystem=home
     --command="$PROJECT_DIR/$TARGET_DIR/$CARGO_PROFILE/photo-viewer"
     "$FLATPAK_APP_ID"
 )
+
+if (( CHROME_TRACE )) || [[ -n "${PHOTOVIEWER_CHROME_TRACE:-}" ]]; then
+    echo "==> chrome trace enabled -> <XDG_CACHE_HOME>/$FLATPAK_APP_ID/logs/trace.json"
+    echo "    (note: custom-target markers need their target enabled; use -a to capture all)"
+    echo "    (trace finalizes on clean exit; if killed, repair by appending ']')"
+fi
 
 exec "${RUN_CMD[@]}"
