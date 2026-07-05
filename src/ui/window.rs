@@ -26,6 +26,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
+use crate::core::prefs::TrashBackend;
 use crate::core::repository::MediaMutation;
 use crate::core::repository::MediaQuery;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
@@ -1339,6 +1340,8 @@ impl MainWindow {
         };
 
         let weak = self.downgrade();
+        let retry_pool = pool.clone();
+        let retry_albums = albums.clone();
         glib::spawn_future_local(async move {
             let worker_result =
                 gtk::gio::spawn_blocking(move || delete_albums_to_trash_worker(pool, albums)).await;
@@ -1348,41 +1351,22 @@ impl MainWindow {
             };
             match worker_result {
                 Ok(result) => {
-                    if let Err(err) = &result.operation {
+                    let operation_error = result.operation.as_ref().err().cloned();
+                    window.apply_album_delete_ui_result(&result);
+                    if let Some(err) = operation_error {
                         tracing::warn!("failed to delete album to trash: {err}");
-                    }
-                    if let Some(media_list) = window.imp().media_list.borrow().as_ref() {
-                        remove_deleted_album_media_from_media_list(
-                            media_list,
-                            &result.deleted_paths,
-                            &result.remaining_live_uris,
-                            &result.unknown_remaining_live_paths,
-                        );
-                    }
-                    window.refresh_album_rows();
-
-                    let active_should_close = window
-                        .imp()
-                        .active_album
-                        .borrow()
-                        .as_ref()
-                        .is_some_and(|active| {
-                            result.deleted_paths.iter().any(|path| path == active)
-                                && !result
-                                    .remaining_live_folder_paths
-                                    .iter()
-                                    .any(|path| path == active)
-                        });
-                    if active_should_close {
-                        *window.imp().active_album.borrow_mut() = None;
-                        window.imp().album_list.get().unselect_all();
-                        window.imp().trash_list.get().unselect_all();
-                        window.imp().selecting_programmatically.set(true);
-                        if let Some(row) = window.imp().sidebar_list.get().row_at_index(0) {
-                            window.imp().sidebar_list.get().select_row(Some(&row));
+                        if prefs::trash_backend() == TrashBackend::System {
+                            window.prompt_album_trash_backend_fallback(
+                                retry_pool,
+                                retry_albums,
+                                err,
+                            );
+                        } else {
+                            show_trash_operation_error_dialog(
+                                window.upcast_ref(),
+                                &tr("trash.move_failed"),
+                            );
                         }
-                        window.imp().selecting_programmatically.set(false);
-                        pop_to_photos_root(&window.imp().nav_view.get());
                     }
                 }
                 Err(err) => {
@@ -1391,6 +1375,104 @@ impl MainWindow {
                 }
             }
         });
+    }
+
+    fn apply_album_delete_ui_result(&self, result: &AlbumDeleteUiResult) {
+        if let Some(media_list) = self.imp().media_list.borrow().as_ref() {
+            remove_deleted_album_media_from_media_list(
+                media_list,
+                &result.deleted_paths,
+                &result.remaining_live_uris,
+                &result.unknown_remaining_live_paths,
+            );
+        }
+        self.refresh_album_rows();
+
+        let active_should_close = self
+            .imp()
+            .active_album
+            .borrow()
+            .as_ref()
+            .is_some_and(|active| {
+                result.deleted_paths.iter().any(|path| path == active)
+                    && !result
+                        .remaining_live_folder_paths
+                        .iter()
+                        .any(|path| path == active)
+            });
+        if active_should_close {
+            *self.imp().active_album.borrow_mut() = None;
+            self.imp().album_list.get().unselect_all();
+            self.imp().trash_list.get().unselect_all();
+            self.imp().selecting_programmatically.set(true);
+            if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
+                self.imp().sidebar_list.get().select_row(Some(&row));
+            }
+            self.imp().selecting_programmatically.set(false);
+            pop_to_photos_root(&self.imp().nav_view.get());
+        }
+    }
+
+    fn prompt_album_trash_backend_fallback(&self, pool: DbPool, albums: Vec<Album>, error: String) {
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("trash.fallback.title"))
+            .body(trf("trash.fallback.album_body", &[("error", &error)]))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("cancel", &tr("dialog.cancel"));
+        dialog.add_response("switch", &tr("trash.fallback.switch_to_app"));
+        dialog.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("switch"));
+        dialog.set_close_response("cancel");
+
+        let weak = self.downgrade();
+        dialog.connect_response(Some("switch"), move |_, _| {
+            let pool = pool.clone();
+            let albums = albums.clone();
+            let weak = weak.clone();
+            glib::spawn_future_local(async move {
+                let worker_result = gtk::gio::spawn_blocking(move || {
+                    crate::core::trash::switch_trash_backend(&pool, TrashBackend::App)
+                        .map_err(|err| err.to_string())?;
+                    Ok::<_, String>(delete_albums_to_trash_worker(pool, albums))
+                })
+                .await;
+
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                match worker_result {
+                    Ok(Ok(result)) => {
+                        let operation_error = result.operation.as_ref().err().cloned();
+                        window.apply_album_delete_ui_result(&result);
+                        if let Some(err) = operation_error {
+                            tracing::warn!("failed to retry album trash delete: {err}");
+                            show_trash_operation_error_dialog(
+                                window.upcast_ref(),
+                                &tr("trash.move_failed"),
+                            );
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        show_trash_operation_error_dialog(
+                            window.upcast_ref(),
+                            &trf("trash.fallback.switch_failed", &[("error", &err)]),
+                        );
+                    }
+                    Err(err) => {
+                        show_trash_operation_error_dialog(
+                            window.upcast_ref(),
+                            &trf(
+                                "trash.fallback.switch_failed",
+                                &[("error", &format!("{err:?}"))],
+                            ),
+                        );
+                    }
+                }
+            });
+        });
+
+        dialog.present(self);
     }
 
     fn show_trash_page(&self, nav_view: &adw::NavigationView) {
@@ -1754,6 +1836,9 @@ impl MainWindow {
         let scan_paths_group = build_scan_paths_group(parent);
         content.append(&scan_paths_group);
 
+        // ── Trash backend: system/app fallback and migration ───────────────
+        content.append(&self.build_trash_settings_group(parent));
+
         // ── Storage: Clear Cache ────────────────────────────────────────────
         // Show current storage usage with action rows matching the project's
         // Adw.PreferencesGroup + Adw.ActionRow design pattern.
@@ -1965,6 +2050,116 @@ impl MainWindow {
 
         content
     }
+
+    fn build_trash_settings_group(&self, parent: &gtk::Widget) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.set_title(&tr("setting.section.trash"));
+        group.set_description(Some(&tr("setting.section.trash_description")));
+        group.add_css_class("settings-preferences-group");
+
+        let status_row = adw::ActionRow::new();
+        status_row.add_css_class("settings-action-row");
+        status_row.set_title(&tr("setting.trash.backend"));
+        status_row.set_subtitle(&trash_backend_subtitle(prefs::trash_backend(), None));
+        status_row.set_activatable(false);
+
+        let switch_button =
+            gtk::Button::with_label(&trash_backend_switch_label(prefs::trash_backend(), None));
+        switch_button.set_valign(gtk::Align::Center);
+        switch_button.add_css_class("glass-toolbar-button");
+        status_row.add_suffix(&switch_button);
+        group.add(&status_row);
+
+        let suggestion_row = adw::ActionRow::new();
+        suggestion_row.add_css_class("settings-action-row");
+        suggestion_row.set_title(&tr("setting.trash.system_available_title"));
+        suggestion_row.set_subtitle(&tr("setting.trash.system_available_subtitle"));
+        suggestion_row.set_activatable(false);
+        suggestion_row.set_visible(false);
+        let suggestion_button = gtk::Button::with_label(&tr("setting.trash.migrate_to_system"));
+        suggestion_button.set_valign(gtk::Align::Center);
+        suggestion_button.add_css_class("glass-toolbar-button");
+        suggestion_button.add_css_class("suggested-action");
+        suggestion_row.add_suffix(&suggestion_button);
+        group.add(&suggestion_row);
+
+        let pool = self.imp().pool.borrow().clone();
+        let parent_for_switch = parent.clone();
+        let status_for_switch = status_row.clone();
+        let switch_for_switch = switch_button.clone();
+        let suggestion_for_switch = suggestion_row.clone();
+        let suggestion_button_for_switch = suggestion_button.clone();
+        switch_button.connect_clicked(move |_| {
+            let Some(pool) = pool.clone() else {
+                show_settings_error_dialog(
+                    &parent_for_switch,
+                    &tr("setting.trash.switch_unavailable_without_database"),
+                );
+                return;
+            };
+            let current = prefs::trash_backend();
+            let target = match current {
+                TrashBackend::System => TrashBackend::App,
+                TrashBackend::App => TrashBackend::System,
+            };
+            run_trash_backend_switch(
+                &parent_for_switch,
+                pool,
+                target,
+                &status_for_switch,
+                &switch_for_switch,
+                &suggestion_for_switch,
+                &suggestion_button_for_switch,
+            );
+        });
+
+        let pool_for_suggestion = self.imp().pool.borrow().clone();
+        let parent_for_suggestion = parent.clone();
+        let status_for_suggestion = status_row.clone();
+        let switch_for_suggestion = switch_button.clone();
+        let suggestion_for_suggestion = suggestion_row.clone();
+        let suggestion_button_for_suggestion = suggestion_button.clone();
+        suggestion_button.connect_clicked(move |_| {
+            let Some(pool) = pool_for_suggestion.clone() else {
+                show_settings_error_dialog(
+                    &parent_for_suggestion,
+                    &tr("setting.trash.switch_unavailable_without_database"),
+                );
+                return;
+            };
+            run_trash_backend_switch(
+                &parent_for_suggestion,
+                pool,
+                TrashBackend::System,
+                &status_for_suggestion,
+                &switch_for_suggestion,
+                &suggestion_for_suggestion,
+                &suggestion_button_for_suggestion,
+            );
+        });
+
+        #[cfg(not(test))]
+        {
+            let status_for_probe = status_row.clone();
+            let switch_for_probe = switch_button.clone();
+            let suggestion_for_probe = suggestion_row.clone();
+            let suggestion_button_for_probe = suggestion_button.clone();
+            glib::spawn_future_local(async move {
+                let probe = gtk::gio::spawn_blocking(crate::core::trash::probe_system_trash).await;
+                let system_available = matches!(probe, Ok(Ok(())));
+                update_trash_settings_state(
+                    &status_for_probe,
+                    &switch_for_probe,
+                    &suggestion_for_probe,
+                    &suggestion_button_for_probe,
+                    Some(system_available),
+                    false,
+                );
+            });
+        }
+
+        group
+    }
 }
 
 fn add_close_on_backdrop_click(dialog: &adw::Dialog) {
@@ -1979,6 +2174,147 @@ fn add_close_on_backdrop_click(dialog: &adw::Dialog) {
         }
     }));
     dialog.add_controller(gesture);
+}
+
+fn trash_backend_label(backend: TrashBackend) -> String {
+    match backend {
+        TrashBackend::System => tr("setting.trash.backend.system"),
+        TrashBackend::App => tr("setting.trash.backend.app"),
+    }
+}
+
+fn trash_backend_subtitle(backend: TrashBackend, system_available: Option<bool>) -> String {
+    match (backend, system_available) {
+        (TrashBackend::System, Some(false)) => tr("setting.trash.system_unavailable"),
+        (TrashBackend::System, _) => tr("setting.trash.using_system"),
+        (TrashBackend::App, Some(true)) => tr("setting.trash.using_app_system_available"),
+        (TrashBackend::App, Some(false)) => tr("setting.trash.using_app_system_unavailable"),
+        (TrashBackend::App, None) => tr("setting.trash.checking_system"),
+    }
+}
+
+fn trash_backend_switch_label(backend: TrashBackend, system_available: Option<bool>) -> String {
+    match backend {
+        TrashBackend::System => tr("setting.trash.switch_to_app"),
+        TrashBackend::App if system_available == Some(false) => {
+            tr("setting.trash.system_unavailable_short")
+        }
+        TrashBackend::App => tr("setting.trash.switch_to_system"),
+    }
+}
+
+fn update_trash_settings_state(
+    status_row: &adw::ActionRow,
+    switch_button: &gtk::Button,
+    suggestion_row: &adw::ActionRow,
+    suggestion_button: &gtk::Button,
+    system_available: Option<bool>,
+    busy: bool,
+) {
+    let backend = prefs::trash_backend();
+    status_row.set_subtitle(&trash_backend_subtitle(backend, system_available));
+    switch_button.set_label(&trash_backend_switch_label(backend, system_available));
+    let switch_sensitive = !busy
+        && match backend {
+            TrashBackend::System => true,
+            TrashBackend::App => system_available.unwrap_or(false),
+        };
+    switch_button.set_sensitive(switch_sensitive);
+    suggestion_row.set_visible(backend == TrashBackend::App && system_available == Some(true));
+    suggestion_button.set_sensitive(!busy && system_available == Some(true));
+    if busy {
+        status_row.set_subtitle(&tr("setting.trash.migrating"));
+    }
+}
+
+fn run_trash_backend_switch(
+    parent: &gtk::Widget,
+    pool: DbPool,
+    target: TrashBackend,
+    status_row: &adw::ActionRow,
+    switch_button: &gtk::Button,
+    suggestion_row: &adw::ActionRow,
+    suggestion_button: &gtk::Button,
+) {
+    update_trash_settings_state(
+        status_row,
+        switch_button,
+        suggestion_row,
+        suggestion_button,
+        None,
+        true,
+    );
+    let parent = parent.clone();
+    let status_row = status_row.clone();
+    let switch_button = switch_button.clone();
+    let suggestion_row = suggestion_row.clone();
+    let suggestion_button = suggestion_button.clone();
+    glib::spawn_future_local(async move {
+        let result = gtk::gio::spawn_blocking(move || {
+            crate::core::trash::switch_trash_backend(&pool, target)
+        })
+        .await;
+        match result {
+            Ok(Ok(stats)) => {
+                let probe = gtk::gio::spawn_blocking(crate::core::trash::probe_system_trash).await;
+                let system_available = matches!(probe, Ok(Ok(())));
+                update_trash_settings_state(
+                    &status_row,
+                    &switch_button,
+                    &suggestion_row,
+                    &suggestion_button,
+                    Some(system_available),
+                    false,
+                );
+                show_settings_info_dialog(
+                    &parent,
+                    &trf(
+                        "setting.trash.switch_success",
+                        &[
+                            ("backend", &trash_backend_label(target)),
+                            ("count", &stats.moved.to_string()),
+                        ],
+                    ),
+                );
+            }
+            Ok(Err(err)) => {
+                let probe = gtk::gio::spawn_blocking(crate::core::trash::probe_system_trash).await;
+                let system_available = matches!(probe, Ok(Ok(())));
+                update_trash_settings_state(
+                    &status_row,
+                    &switch_button,
+                    &suggestion_row,
+                    &suggestion_button,
+                    Some(system_available),
+                    false,
+                );
+                show_settings_error_dialog(
+                    &parent,
+                    &trf(
+                        "setting.trash.switch_failed",
+                        &[("error", &err.to_string())],
+                    ),
+                );
+            }
+            Err(err) => {
+                update_trash_settings_state(
+                    &status_row,
+                    &switch_button,
+                    &suggestion_row,
+                    &suggestion_button,
+                    None,
+                    false,
+                );
+                show_settings_error_dialog(
+                    &parent,
+                    &trf(
+                        "setting.trash.switch_failed",
+                        &[("error", &format!("{err:?}"))],
+                    ),
+                );
+            }
+        }
+    });
 }
 
 fn widget_or_ancestor_has_class(widget: &gtk::Widget, class_name: &str) -> bool {
@@ -2425,6 +2761,30 @@ fn show_settings_restart_dialog(parent: &gtk::Widget, success: bool, error: Opti
 fn show_settings_error_dialog(parent: &gtk::Widget, body: &str) {
     let dialog = adw::AlertDialog::builder()
         .heading(tr("setting.save_failed"))
+        .body(body)
+        .build();
+    dialog.add_css_class("glass-alert-dialog");
+    dialog.add_response("ok", &tr("button.ok"));
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("ok");
+    dialog.present(parent);
+}
+
+fn show_trash_operation_error_dialog(parent: &gtk::Widget, body: &str) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("trash.operation_failed"))
+        .body(body)
+        .build();
+    dialog.add_css_class("glass-alert-dialog");
+    dialog.add_response("ok", &tr("button.ok"));
+    dialog.set_default_response(Some("ok"));
+    dialog.set_close_response("ok");
+    dialog.present(parent);
+}
+
+fn show_settings_info_dialog(parent: &gtk::Widget, body: &str) {
+    let dialog = adw::AlertDialog::builder()
+        .heading(tr("setting.done"))
         .body(body)
         .build();
     dialog.add_css_class("glass-alert-dialog");
@@ -3793,6 +4153,45 @@ mod tests {
                 .iter()
                 .any(|title| title == &tr("setting.scan_paths.excluded")),
             "settings page should expose excluded scan path management, got {titles:?}"
+        );
+    }
+
+    #[gtk::test]
+    fn settings_page_exposes_trash_backend_controls() {
+        let _ = gtk::init();
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.WindowTrashBackend")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
+
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+
+        let mut labels = Vec::new();
+        collect_labels(&page, &mut labels);
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == &tr("setting.section.trash")),
+            "settings page should expose the trash settings section, got {labels:?}"
+        );
+
+        let mut titles = Vec::new();
+        collect_preference_titles(&page, &mut titles);
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.trash.backend")),
+            "settings page should expose the trash backend row, got {titles:?}"
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|title| title == &tr("setting.trash.system_available_title")),
+            "settings page should include the system-trash migration recommendation row, got {titles:?}"
         );
     }
 

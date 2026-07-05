@@ -21,6 +21,7 @@ pub mod search_page;
 pub mod section_header;
 pub mod theme;
 pub mod toasts;
+pub mod trash_fallback;
 pub mod trash_page;
 pub mod viewer_page;
 pub mod window;

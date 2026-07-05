@@ -166,8 +166,8 @@ storage tasks in order, off the GTK thread:
    sequential pass in the same background startup worker and must not block
    foreground interaction.
 4. Refresh album projections/sidebar data after scan and prune have converged.
-5. Reconcile the system trash into the DB and emit `TrashChanged` so a visible
-   Trash view refreshes.
+5. Reconcile known trash roots into the DB and emit `TrashChanged` so a
+   visible Trash view refreshes.
 6. Start thumbnail prewarm after scan and trash reconciliation; viewport
    thumbnail requests still take priority over background work.
 
@@ -182,13 +182,13 @@ all stale rows have been pruned.
 
 **Re-indexing a present file clears `trashed_at` (external restore).** Restoring a photo from the system trash via the file manager makes it reappear at its original path; the app must notice. `LocalBackend::upsert` sets `trashed_at=NULL` on every existing-row update — a trashed row whose file is present was restored, so it becomes live again and the `DomainEvent::MediaUpserted` event re-adds it to the Photos grid. To keep the startup scan from short-circuiting such a row, `db::is_media_unchanged` also filters `AND trashed_at IS NULL`, so a restored file is re-upserted (not skipped) even when its mtime/size are unchanged. The Trash view itself is rebuilt fresh on each navigation, so a restored item disappears from it on next open.
 
-**Startup reconciles the system trash into the DB (`trash::reconcile_trash`), bidirectionally.** The Trash view is a DB projection (`trashed_at IS NOT NULL`), not a live mirror of `~/.local/share/Trash`. At startup, after the pictures scan (so externally-restored files are already live again), `reconcile_trash` makes the DB match the system trash:
+**Startup reconciles known trash roots into the DB (`trash::reconcile_trash`), bidirectionally.** The Trash view is a DB projection (`trashed_at IS NOT NULL`), not a live mirror of only `~/.local/share/Trash`. At startup, after the pictures scan (so externally-restored files are already live again), `reconcile_trash` makes the DB match the system trash roots and the app-owned fallback trash root:
 - **Add:** for each `info/*.trashinfo` whose decoded `Path=` is under the pictures dir and no longer present, insert a trashed row (metadata from the `Trash/files` copy via `LocalBackend::process_file_at`, recorded under the **original** uri/path) or mark an existing live row trashed. Files from outside the pictures library are ignored.
-- **Prune:** for each DB trashed row, if the original path is gone AND the system trash no longer has a matching entry (`find_trash_entry` is `None`), delete the row — it was emptied/permanently-deleted externally. Rows whose original file is present (restored) are never pruned here; the scan already turned them live.
+- **Prune:** for each DB trashed row, if the original path is gone AND no known trash root has a matching entry, delete the row — it was emptied/permanently-deleted externally. Rows whose original file is present (restored) are never pruned here; the scan already turned them live.
 
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.
 
-**The system trash is also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the trash roots. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
+**Trash roots are also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the system trash roots and app trash root. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 
 ## Thumbnails
 

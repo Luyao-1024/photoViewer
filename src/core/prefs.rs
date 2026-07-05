@@ -26,6 +26,7 @@ const VIDEO_VOLUME_KEY: &str = "video_volume";
 const AUTO_PLAY_MOTION_PHOTO_KEY: &str = "auto_play_motion_photo";
 const CUSTOM_SCAN_ROOTS_KEY: &str = "custom_scan_roots";
 const EXCLUDED_SCAN_ROOTS_KEY: &str = "excluded_scan_roots";
+const TRASH_BACKEND_KEY: &str = "trash_backend";
 
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
@@ -55,6 +56,28 @@ impl ThemePreference {
         match value {
             "light" => Self::Light,
             "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrashBackend {
+    System,
+    App,
+}
+
+impl TrashBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::App => "app",
+        }
+    }
+
+    fn from_str(value: &str) -> Self {
+        match value {
+            "app" => Self::App,
             _ => Self::System,
         }
     }
@@ -261,6 +284,18 @@ fn write_excluded_scan_roots_at(path: &Path, roots: &[PathBuf]) -> Result<(), St
     write_path_list_at(path, EXCLUDED_SCAN_ROOTS_KEY, roots)
 }
 
+fn read_trash_backend_at(path: &Path) -> TrashBackend {
+    let obj = read_object_at(path);
+    obj.get(TRASH_BACKEND_KEY)
+        .and_then(|v| v.as_str())
+        .map(TrashBackend::from_str)
+        .unwrap_or(TrashBackend::System)
+}
+
+fn write_trash_backend_at(path: &Path, backend: TrashBackend) -> Result<(), String> {
+    write_string_at(path, TRASH_BACKEND_KEY, backend.as_str())
+}
+
 fn write_video_volume_at(path: &Path, volume: f64) -> Result<(), String> {
     write_f64_at(path, VIDEO_VOLUME_KEY, clamp_video_volume(volume))
 }
@@ -361,6 +396,16 @@ pub fn excluded_scan_roots() -> Vec<PathBuf> {
 /// Persist scan exclusion directories.
 pub fn set_excluded_scan_roots(roots: &[PathBuf]) -> Result<(), String> {
     write_excluded_scan_roots_at(&settings_path(), roots)
+}
+
+/// Trash storage backend. Defaults to the system trash.
+pub fn trash_backend() -> TrashBackend {
+    read_trash_backend_at(&settings_path())
+}
+
+/// Persist the trash storage backend.
+pub fn set_trash_backend(backend: TrashBackend) -> Result<(), String> {
+    write_trash_backend_at(&settings_path(), backend)
 }
 
 #[cfg(test)]
@@ -482,6 +527,26 @@ mod tests {
             1.0,
             "missing video_volume should default to full volume"
         );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn trash_backend_defaults_to_system_and_round_trips() {
+        let path = tmp_path("trash-backend");
+        cleanup(&path);
+
+        assert_eq!(
+            read_trash_backend_at(&path),
+            TrashBackend::System,
+            "missing trash backend preference should default to the system trash"
+        );
+
+        write_trash_backend_at(&path, TrashBackend::App).unwrap();
+        assert_eq!(read_trash_backend_at(&path), TrashBackend::App);
+
+        write_trash_backend_at(&path, TrashBackend::System).unwrap();
+        assert_eq!(read_trash_backend_at(&path), TrashBackend::System);
 
         cleanup(&path);
     }

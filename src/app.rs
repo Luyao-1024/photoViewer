@@ -249,6 +249,11 @@ async fn initialize() -> anyhow::Result<(
 )> {
     let data_dir = crate::config::data_dir();
     std::fs::create_dir_all(&data_dir)?;
+    if let Err(err) =
+        gtk::gio::spawn_blocking(crate::core::trash::ensure_startup_trash_backend).await
+    {
+        tracing::warn!("startup trash backend probe worker failed: {err:?}");
+    }
     let db_path = data_dir.join("photos.db");
     let initial_media_page_size = runtime_config::initial_media_page_size();
     let pictures = crate::config::pictures_dir();

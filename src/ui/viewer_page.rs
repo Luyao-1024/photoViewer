@@ -20,7 +20,6 @@ use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
-use crate::core::trash;
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
@@ -1466,16 +1465,38 @@ impl ViewerPage {
                     let Some(item) = items.pop() else {
                         return;
                     };
-                    let item_uri = item.uri.clone();
-                    let move_result =
-                        gio::spawn_blocking(move || trash::move_to_trash(&item_uri)).await;
+                    let Some(this) = weak_after.upgrade() else {
+                        let _ = db_actor
+                            .execute(DbCommand::RollbackTrashed {
+                                ids: vec![MediaId::from(item_id)],
+                            })
+                            .await;
+                        return;
+                    };
+                    let Some(pool) = this.imp().pool.borrow().as_ref().cloned() else {
+                        let _ = db_actor
+                            .execute(DbCommand::RollbackTrashed {
+                                ids: vec![MediaId::from(item_id)],
+                            })
+                            .await;
+                        toasts::error(
+                            &this.imp().toast_overlay.get(),
+                            &tr("viewer.toast.move_to_trash_failed"),
+                        );
+                        return;
+                    };
 
-                    match move_result {
-                        Ok(Ok(())) => {
-                            let _ = db_actor
-                                .execute(DbCommand::CommitMovedToTrash { items: vec![item] })
-                                .await;
-                            if let Some(this) = weak_after.upgrade() {
+                    let weak_for_callback = this.downgrade();
+                    crate::ui::trash_fallback::move_marked_items_with_fallback(
+                        &this,
+                        pool,
+                        db_actor,
+                        vec![item],
+                        move |moved_ids| {
+                            if !moved_ids.iter().any(|id| id.get() == item_id) {
+                                return;
+                            }
+                            if let Some(this) = weak_for_callback.upgrade() {
                                 toasts::success(
                                     &this.imp().toast_overlay.get(),
                                     &tr("viewer.toast.moved_to_trash"),
@@ -1485,42 +1506,8 @@ impl ViewerPage {
                                     cb(item_id);
                                 }
                             }
-                        }
-                        Ok(Err(e)) => {
-                            let _ = db_actor
-                                .execute(DbCommand::RollbackTrashed {
-                                    ids: vec![MediaId::from(item_id)],
-                                })
-                                .await;
-                            tracing::warn!(
-                                target: crate::core::log_targets::VIEWER,
-                                "TRASH_TRACE viewer_gio_move_err id={item_id} err={e}"
-                            );
-                            if let Some(this) = weak_after.upgrade() {
-                                toasts::error(
-                                    &this.imp().toast_overlay.get(),
-                                    &format!("{}: {e}", &tr("viewer.toast.move_to_trash_failed")),
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            let _ = db_actor
-                                .execute(DbCommand::RollbackTrashed {
-                                    ids: vec![MediaId::from(item_id)],
-                                })
-                                .await;
-                            tracing::warn!(
-                                target: crate::core::log_targets::VIEWER,
-                                "TRASH_TRACE viewer_gio_worker_join_failed id={item_id}"
-                            );
-                            if let Some(this) = weak_after.upgrade() {
-                                toasts::error(
-                                    &this.imp().toast_overlay.get(),
-                                    &tr("viewer.toast.move_to_trash_failed"),
-                                );
-                            }
-                        }
-                    }
+                        },
+                    );
                 });
             });
             dialog.present(&this);

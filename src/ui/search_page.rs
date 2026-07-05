@@ -703,6 +703,15 @@ impl SearchPage {
             );
             return;
         };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE search_delete_no_pool count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
+            return;
+        };
         if ids.is_empty() {
             return;
         }
@@ -730,63 +739,24 @@ impl SearchPage {
                 );
                 return;
             };
-            let items_for_worker = items.clone();
-            let trash_result = gtk::gio::spawn_blocking(move || {
-                let mut moved = Vec::new();
-                let mut failed = Vec::new();
-                for item in items_for_worker {
-                    match crate::core::trash::move_to_trash(&item.uri) {
-                        Ok(()) => moved.push(item),
-                        Err(err) => {
-                            tracing::warn!(
-                                target: crate::core::log_targets::BROWSING,
-                                "TRASH_TRACE search_gio_move_err id={} uri={} err={err}",
-                                item.id,
-                                item.uri
-                            );
-                            failed.push(MediaId::from(item.id));
-                        }
-                    }
-                }
-                (moved, failed)
-            })
-            .await;
-
-            let Ok((moved, failed)) = trash_result else {
-                tracing::warn!(
-                    target: crate::core::log_targets::BROWSING,
-                    "TRASH_TRACE search_gio_worker_join_failed rollback_count={}",
-                    items.len()
-                );
-                let ids = items
-                    .iter()
-                    .map(|item| MediaId::from(item.id))
-                    .collect::<Vec<_>>();
-                let _ = db_actor.execute(DbCommand::RollbackTrashed { ids }).await;
-                return;
-            };
-            let moved_ids = moved
-                .iter()
-                .map(|item| MediaId::from(item.id))
-                .collect::<Vec<_>>();
-            if !moved.is_empty() {
-                let _ = db_actor
-                    .execute(DbCommand::CommitMovedToTrash { items: moved })
-                    .await;
-            }
-            if !failed.is_empty() {
-                let _ = db_actor
-                    .execute(DbCommand::RollbackTrashed { ids: failed })
-                    .await;
-            }
             if let Some(this) = weak.upgrade() {
-                this.remove_media_ids_from_results(&moved_ids);
-                if let Some(grid) = this.imp().image_grid.borrow().as_ref() {
-                    grid.clear_selection();
-                }
-                if let Some(grid) = this.imp().video_grid.borrow().as_ref() {
-                    grid.clear_selection();
-                }
+                crate::ui::trash_fallback::move_marked_items_with_fallback(
+                    &this,
+                    pool,
+                    db_actor,
+                    items,
+                    move |moved_ids| {
+                        if let Some(this) = weak.upgrade() {
+                            this.remove_media_ids_from_results(&moved_ids);
+                            if let Some(grid) = this.imp().image_grid.borrow().as_ref() {
+                                grid.clear_selection();
+                            }
+                            if let Some(grid) = this.imp().video_grid.borrow().as_ref() {
+                                grid.clear_selection();
+                            }
+                        }
+                    },
+                );
             }
         });
     }
