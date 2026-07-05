@@ -622,6 +622,9 @@ impl PhotosPage {
             return;
         };
         let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(&nav);
         nav.push(&page);
     }
@@ -861,11 +864,23 @@ impl PhotosPage {
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
         let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE photos_delete_requested_no_actor count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
             return;
         };
         if ids.is_empty() {
             return;
         }
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "TRASH_TRACE photos_delete_requested count={} ids={:?}",
+            ids.len(),
+            ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+        );
 
         let weak = self.downgrade();
         let ids_for_worker = ids.clone();
@@ -878,6 +893,10 @@ impl PhotosPage {
                 .ok();
 
             let Some(crate::core::DbCommandResult::MediaItems(items)) = prepared else {
+                tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE photos_mark_failed"
+                );
                 return;
             };
             let items_for_worker = items.clone();
@@ -888,7 +907,12 @@ impl PhotosPage {
                     match crate::core::trash::move_to_trash(&item.uri) {
                         Ok(()) => moved.push(item),
                         Err(err) => {
-                            tracing::warn!("failed to move {} to trash: {err}", item.uri);
+                            tracing::warn!(
+                                target: crate::core::log_targets::BROWSING,
+                                "TRASH_TRACE photos_gio_move_err id={} uri={} err={err}",
+                                item.id,
+                                item.uri
+                            );
                             failed.push(MediaId::from(item.id));
                         }
                     }
@@ -898,6 +922,11 @@ impl PhotosPage {
             .await;
 
             let Ok((moved, failed)) = trash_result else {
+                tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE photos_gio_worker_join_failed rollback_count={}",
+                    items.len()
+                );
                 let ids = items
                     .iter()
                     .map(|item| MediaId::from(item.id))

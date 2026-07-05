@@ -129,3 +129,8 @@ When touching trash flows, verify:
 - Restoring makes it visible again.
 - Permanent delete removes the expected record/file state.
 - Multi-select actions keep selection and empty states coherent.
+
+For Flatpak/Flathub trash regressions, reproduce with
+`tools/flatpak-trash-portal-repro.sh` instead of host `gio trash`. Host GIO does
+not exercise `org.freedesktop.portal.Trash.TrashFile`, so it can pass while the
+sandbox path fails.

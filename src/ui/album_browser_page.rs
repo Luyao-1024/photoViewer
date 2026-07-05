@@ -15,6 +15,7 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::{list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::media_grid::square_tile::SquareTile;
@@ -33,6 +34,7 @@ mod imp {
     pub struct AlbumBrowserPage {
         pub albums: RefCell<Vec<Album>>,
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub on_album_open: RefCell<Option<AlbumOpenCallback>>,
@@ -124,6 +126,10 @@ impl AlbumBrowserPage {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }
 
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
     pub(crate) fn open_search_page(&self) {
         let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
             return;
@@ -135,6 +141,9 @@ impl AlbumBrowserPage {
             return;
         };
         let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(&nav);
         nav.push(&page);
     }

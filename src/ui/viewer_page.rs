@@ -20,7 +20,7 @@ use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
-use crate::core::{albums, trash};
+use crate::core::trash;
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
@@ -1421,10 +1421,13 @@ impl ViewerPage {
                     return;
                 }
                 let Some(this) = weak2.upgrade() else { return };
-                let pool = match this.imp().pool.borrow().as_ref() {
-                    Some(p) => p.clone(),
+                let db_actor = match this.imp().db_actor.borrow().as_ref() {
+                    Some(actor) => actor.clone(),
                     None => {
-                        tracing::warn!("ViewerPage: Delete pressed but pool not set");
+                        tracing::warn!(
+                            target: crate::core::log_targets::VIEWER,
+                            "TRASH_TRACE viewer_delete_no_actor"
+                        );
                         return;
                     }
                 };
@@ -1434,21 +1437,44 @@ impl ViewerPage {
                 };
 
                 let item_id = item.id;
-                let item_uri = item.uri.clone();
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                gio::spawn_blocking(move || {
-                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
-                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
-                    let result = trash::move_to_trash_marked(&pool, item_id, &item_uri)
-                        .and_then(|_| albums::refresh(&pool));
-                    let _ = tx.send(result);
-                });
-
+                tracing::info!(
+                    target: crate::core::log_targets::VIEWER,
+                    "TRASH_TRACE viewer_delete_requested id={} uri={}",
+                    item.id,
+                    item.uri
+                );
                 let weak_after = this.downgrade();
                 glib::spawn_future_local(async move {
-                    let result = rx.await;
-                    match result {
+                    let prepared = db_actor
+                        .execute(DbCommand::MarkTrashed {
+                            ids: vec![MediaId::from(item_id)],
+                        })
+                        .await;
+                    let Ok(crate::core::DbCommandResult::MediaItems(mut items)) = prepared else {
+                        tracing::warn!(
+                            target: crate::core::log_targets::VIEWER,
+                            "TRASH_TRACE viewer_mark_failed id={item_id}"
+                        );
+                        if let Some(this) = weak_after.upgrade() {
+                            toasts::error(
+                                &this.imp().toast_overlay.get(),
+                                &tr("viewer.toast.move_to_trash_failed"),
+                            );
+                        }
+                        return;
+                    };
+                    let Some(item) = items.pop() else {
+                        return;
+                    };
+                    let item_uri = item.uri.clone();
+                    let move_result =
+                        gio::spawn_blocking(move || trash::move_to_trash(&item_uri)).await;
+
+                    match move_result {
                         Ok(Ok(())) => {
+                            let _ = db_actor
+                                .execute(DbCommand::CommitMovedToTrash { items: vec![item] })
+                                .await;
                             if let Some(this) = weak_after.upgrade() {
                                 toasts::success(
                                     &this.imp().toast_overlay.get(),
@@ -1461,7 +1487,15 @@ impl ViewerPage {
                             }
                         }
                         Ok(Err(e)) => {
-                            tracing::warn!("ViewerPage: Move to Trash failed: {e}");
+                            let _ = db_actor
+                                .execute(DbCommand::RollbackTrashed {
+                                    ids: vec![MediaId::from(item_id)],
+                                })
+                                .await;
+                            tracing::warn!(
+                                target: crate::core::log_targets::VIEWER,
+                                "TRASH_TRACE viewer_gio_move_err id={item_id} err={e}"
+                            );
                             if let Some(this) = weak_after.upgrade() {
                                 toasts::error(
                                     &this.imp().toast_overlay.get(),
@@ -1470,7 +1504,15 @@ impl ViewerPage {
                             }
                         }
                         Err(_) => {
-                            tracing::warn!("ViewerPage: Move to Trash worker dropped");
+                            let _ = db_actor
+                                .execute(DbCommand::RollbackTrashed {
+                                    ids: vec![MediaId::from(item_id)],
+                                })
+                                .await;
+                            tracing::warn!(
+                                target: crate::core::log_targets::VIEWER,
+                                "TRASH_TRACE viewer_gio_worker_join_failed id={item_id}"
+                            );
                             if let Some(this) = weak_after.upgrade() {
                                 toasts::error(
                                     &this.imp().toast_overlay.get(),

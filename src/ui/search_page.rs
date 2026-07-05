@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use libadwaita::prelude::{NavigationPageExt, WidgetExt};
 use libadwaita::subclass::prelude::*;
 
 use crate::core::db::{DbPool, SearchField};
+use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
@@ -34,6 +36,7 @@ mod imp {
     #[template(file = "../../data/ui/search-page.ui")]
     pub struct SearchPage {
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub image_list: RefCell<Option<gtk::gio::ListStore>>,
@@ -256,6 +259,10 @@ impl SearchPage {
         self.imp().search_entry.get().grab_focus();
     }
 
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
     }
@@ -321,6 +328,14 @@ impl SearchPage {
                 }
             })
         };
+        let on_move_to_trash: Rc<dyn Fn(Vec<MediaId>)> = {
+            let weak = self.downgrade();
+            Rc::new(move |ids| {
+                if let Some(this) = weak.upgrade() {
+                    this.delete_to_trash_for_ids(ids);
+                }
+            })
+        };
         let grid = MediaGrid::new_for_album(
             media_list,
             GroupBy::Year,
@@ -329,7 +344,7 @@ impl SearchPage {
                 on_activate,
                 on_background_changed: Rc::new(|| {}),
                 on_add_to_album: Rc::new(|_| {}),
-                on_move_to_trash: Rc::new(|_| {}),
+                on_move_to_trash,
                 on_set_favorite: Rc::new(|_, _| {}),
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                 on_set_album_cover: None,
@@ -581,6 +596,14 @@ impl SearchPage {
                 }
             })
         };
+        let on_move_to_trash: Rc<dyn Fn(Vec<MediaId>)> = {
+            let weak = self.downgrade();
+            Rc::new(move |ids| {
+                if let Some(this) = weak.upgrade() {
+                    this.delete_to_trash_for_ids(ids);
+                }
+            })
+        };
         let grid = MediaGrid::new_for_album(
             media_list,
             GroupBy::Year,
@@ -589,7 +612,7 @@ impl SearchPage {
                 on_activate,
                 on_background_changed: Rc::new(|| {}),
                 on_add_to_album: Rc::new(|_| {}),
-                on_move_to_trash: Rc::new(|_| {}),
+                on_move_to_trash,
                 on_set_favorite: Rc::new(|_, _| {}),
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                 on_set_album_cover: None,
@@ -631,10 +654,20 @@ impl SearchPage {
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool);
         }
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            viewer.set_db_actor(db_actor);
+        }
         if let Some(loader) = self.imp().loader.borrow().as_ref().cloned() {
             viewer.set_thumbnail_loader(loader);
         }
         viewer.show_at(index);
+
+        let weak_for_trash = self.downgrade();
+        viewer.connect_item_trashed(move |item_id| {
+            if let Some(this) = weak_for_trash.upgrade() {
+                this.remove_media_ids_from_results(&[MediaId::from(item_id)]);
+            }
+        });
 
         let viewer_weak = viewer.downgrade();
         let nav_weak = nav.downgrade();
@@ -658,6 +691,125 @@ impl SearchPage {
 
         viewer.guard_initial_navigation_pop();
         nav.push(&viewer);
+    }
+
+    fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE search_delete_no_actor count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
+            return;
+        };
+        if ids.is_empty() {
+            return;
+        }
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "TRASH_TRACE search_delete_requested count={} ids={:?}",
+            ids.len(),
+            ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+        );
+
+        let weak = self.downgrade();
+        let ids_for_worker = ids.clone();
+        glib::spawn_future_local(async move {
+            let prepared = db_actor
+                .execute(DbCommand::MarkTrashed {
+                    ids: ids_for_worker,
+                })
+                .await
+                .ok();
+
+            let Some(crate::core::DbCommandResult::MediaItems(items)) = prepared else {
+                tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE search_mark_failed"
+                );
+                return;
+            };
+            let items_for_worker = items.clone();
+            let trash_result = gtk::gio::spawn_blocking(move || {
+                let mut moved = Vec::new();
+                let mut failed = Vec::new();
+                for item in items_for_worker {
+                    match crate::core::trash::move_to_trash(&item.uri) {
+                        Ok(()) => moved.push(item),
+                        Err(err) => {
+                            tracing::warn!(
+                                target: crate::core::log_targets::BROWSING,
+                                "TRASH_TRACE search_gio_move_err id={} uri={} err={err}",
+                                item.id,
+                                item.uri
+                            );
+                            failed.push(MediaId::from(item.id));
+                        }
+                    }
+                }
+                (moved, failed)
+            })
+            .await;
+
+            let Ok((moved, failed)) = trash_result else {
+                tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE search_gio_worker_join_failed rollback_count={}",
+                    items.len()
+                );
+                let ids = items
+                    .iter()
+                    .map(|item| MediaId::from(item.id))
+                    .collect::<Vec<_>>();
+                let _ = db_actor.execute(DbCommand::RollbackTrashed { ids }).await;
+                return;
+            };
+            let moved_ids = moved
+                .iter()
+                .map(|item| MediaId::from(item.id))
+                .collect::<Vec<_>>();
+            if !moved.is_empty() {
+                let _ = db_actor
+                    .execute(DbCommand::CommitMovedToTrash { items: moved })
+                    .await;
+            }
+            if !failed.is_empty() {
+                let _ = db_actor
+                    .execute(DbCommand::RollbackTrashed { ids: failed })
+                    .await;
+            }
+            if let Some(this) = weak.upgrade() {
+                this.remove_media_ids_from_results(&moved_ids);
+                if let Some(grid) = this.imp().image_grid.borrow().as_ref() {
+                    grid.clear_selection();
+                }
+                if let Some(grid) = this.imp().video_grid.borrow().as_ref() {
+                    grid.clear_selection();
+                }
+            }
+        });
+    }
+
+    fn remove_media_ids_from_results(&self, ids: &[MediaId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let raw_ids = ids.iter().map(|id| id.get()).collect::<HashSet<_>>();
+        if let Some(list) = self.imp().image_list.borrow().as_ref() {
+            remove_media_items_by_ids(list, &raw_ids);
+        }
+        if let Some(list) = self.imp().video_list.borrow().as_ref() {
+            remove_media_items_by_ids(list, &raw_ids);
+        }
+        self.imp()
+            .image_full_results
+            .borrow_mut()
+            .retain(|item| !raw_ids.contains(&item.id));
+        self.imp()
+            .video_full_results
+            .borrow_mut()
+            .retain(|item| !raw_ids.contains(&item.id));
     }
 }
 
@@ -684,4 +836,20 @@ fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Op
         }
     }
     None
+}
+
+fn remove_media_items_by_ids(list: &gtk::gio::ListStore, ids: &HashSet<i64>) {
+    let mut idx = list.n_items();
+    while idx > 0 {
+        idx -= 1;
+        let Some(obj) = list.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if ids.contains(&boxed.borrow::<MediaItem>().id) {
+            list.remove(idx);
+        }
+    }
 }

@@ -85,6 +85,20 @@ flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
 
 Avoid using repository-local `.flatpak-builder` state as a routine install path while the known `rofiles-fuse` unmount hang is present.
 
+## Flatpak Trash Portal Check
+
+Trash failures must be reproduced from the app sandbox, not by running host
+`gio trash`, because host GIO bypasses the Flatpak Trash portal. Use:
+
+```bash
+tools/flatpak-trash-portal-repro.sh
+```
+
+The script creates a temporary file under `~/Pictures`, logs the installed app
+permissions, runs `gio info` and `gio trash` via
+`flatpak run --command=gio io.github.luyao_1024.photoviewer`, then cleans up the
+test file or trash entry.
+
 ## Documentation Workflow
 
 - Put module-specific behavior in `docs/modules/`.

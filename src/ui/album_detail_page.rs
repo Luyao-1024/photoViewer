@@ -1,4 +1,5 @@
 //! AlbumDetailPage — single-album day-grouped photo grid view.
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -11,6 +12,7 @@ use libadwaita::subclass::prelude::*;
 
 use crate::core::albums::{self, Album};
 use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
@@ -31,6 +33,7 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub master_media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub album: RefCell<Option<Album>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
@@ -144,6 +147,14 @@ impl AlbumDetailPage {
                     }
                 })
             };
+            let on_move_to_trash: Rc<dyn Fn(Vec<MediaId>)> = {
+                let weak = obj.downgrade();
+                Rc::new(move |ids| {
+                    if let Some(this) = weak.upgrade() {
+                        this.delete_to_trash_for_ids(ids);
+                    }
+                })
+            };
             let grid = MediaGrid::new_for_album_with_context_menu(
                 media_list,
                 GroupBy::Day,
@@ -152,7 +163,7 @@ impl AlbumDetailPage {
                     on_activate,
                     on_background_changed,
                     on_add_to_album: Rc::new(|_| {}),
-                    on_move_to_trash: Rc::new(|_| {}),
+                    on_move_to_trash,
                     on_set_favorite: Rc::new(|_, _| {}),
                     on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                     on_set_album_cover: Some(on_set_album_cover),
@@ -193,8 +204,117 @@ impl AlbumDetailPage {
         obj
     }
 
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::ALBUMS,
+                "TRASH_TRACE album_detail_delete_no_actor count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
+            return;
+        };
+        if ids.is_empty() {
+            return;
+        }
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            "TRASH_TRACE album_detail_delete_requested count={} ids={:?}",
+            ids.len(),
+            ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+        );
+
+        let weak = self.downgrade();
+        let ids_for_worker = ids.clone();
+        glib::spawn_future_local(async move {
+            let prepared = db_actor
+                .execute(DbCommand::MarkTrashed {
+                    ids: ids_for_worker,
+                })
+                .await
+                .ok();
+
+            let Some(crate::core::DbCommandResult::MediaItems(items)) = prepared else {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    "TRASH_TRACE album_detail_mark_failed"
+                );
+                return;
+            };
+            let items_for_worker = items.clone();
+            let trash_result = gtk::gio::spawn_blocking(move || {
+                let mut moved = Vec::new();
+                let mut failed = Vec::new();
+                for item in items_for_worker {
+                    match crate::core::trash::move_to_trash(&item.uri) {
+                        Ok(()) => moved.push(item),
+                        Err(err) => {
+                            tracing::warn!(
+                                target: crate::core::log_targets::ALBUMS,
+                                "TRASH_TRACE album_detail_gio_move_err id={} uri={} err={err}",
+                                item.id,
+                                item.uri
+                            );
+                            failed.push(MediaId::from(item.id));
+                        }
+                    }
+                }
+                (moved, failed)
+            })
+            .await;
+
+            let Ok((moved, failed)) = trash_result else {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    "TRASH_TRACE album_detail_gio_worker_join_failed rollback_count={}",
+                    items.len()
+                );
+                let ids = items
+                    .iter()
+                    .map(|item| MediaId::from(item.id))
+                    .collect::<Vec<_>>();
+                let _ = db_actor.execute(DbCommand::RollbackTrashed { ids }).await;
+                return;
+            };
+            let moved_ids = moved
+                .iter()
+                .map(|item| MediaId::from(item.id))
+                .collect::<Vec<_>>();
+            if !moved.is_empty() {
+                let _ = db_actor
+                    .execute(DbCommand::CommitMovedToTrash { items: moved })
+                    .await;
+            }
+            if !failed.is_empty() {
+                let _ = db_actor
+                    .execute(DbCommand::RollbackTrashed { ids: failed })
+                    .await;
+            }
+            if let Some(this) = weak.upgrade() {
+                this.remove_media_ids_from_lists(&moved_ids);
+            }
+        });
+    }
+
+    fn remove_media_ids_from_lists(&self, ids: &[MediaId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let raw_ids = ids.iter().map(|id| id.get()).collect::<HashSet<_>>();
+        if let Some(list) = self.imp().media_list.borrow().as_ref() {
+            remove_media_items_by_ids(list, &raw_ids);
+        }
+        if let Some(list) = self.imp().master_media_list.borrow().as_ref() {
+            remove_media_items_by_ids(list, &raw_ids);
+        }
     }
 
     pub(crate) fn open_search_page(&self) {
@@ -208,6 +328,9 @@ impl AlbumDetailPage {
             return;
         };
         let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(&nav);
         nav.push(&page);
     }
@@ -287,6 +410,9 @@ impl AlbumDetailPage {
                     }
                 }
             });
+        }
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            viewer.set_db_actor(db_actor);
         }
 
         // Inject the shared thumbnail loader for the filmstrip.
@@ -471,6 +597,22 @@ fn remove_media_item_by_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
         }
     }
     false
+}
+
+fn remove_media_items_by_ids(list: &gtk::gio::ListStore, ids: &HashSet<i64>) {
+    let mut idx = list.n_items();
+    while idx > 0 {
+        idx -= 1;
+        let Some(obj) = list.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if ids.contains(&boxed.borrow::<MediaItem>().id) {
+            list.remove(idx);
+        }
+    }
 }
 
 fn index_for_media_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {

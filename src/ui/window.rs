@@ -1152,6 +1152,9 @@ impl MainWindow {
             let _page = page_span.enter();
             AlbumDetailPage::new(album, filtered.clone(), master, pool.clone(), loader)
         };
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(nav_view);
         {
             let push_span = tracing::info_span!("album:push");
@@ -1437,6 +1440,9 @@ impl MainWindow {
             return false;
         };
         let page = SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(&nav);
         nav.push(&page);
         true
