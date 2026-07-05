@@ -76,6 +76,21 @@ Pure removal signals from the backing `ListStore` remove the affected
 single-photo trash/delete updates from flashing the whole Photos or album grid;
 only replacements, first non-empty loads, virtual page swaps, and inserted-item
 bursts should rebuild sections.
+Pure insertions into an existing section should insert only the new
+`GtkFlowBoxChild` and preserve existing tile widgets; rebuilding every tile
+makes already-visible thumbnails briefly return to their loading placeholder.
+Filesystem watcher upsert batches that contain only new URIs should be applied
+to the shared `ListStore` as sorted insertions, not by replacing the full
+visible model window; a single screenshot should emit an `items-changed` signal
+like `(position, removed=0, added=1)` so inactive pages do not gray out the
+currently visible grid when they later observe the shared model.
+When a tile is created for an item whose thumbnail cache already exists,
+`ThumbnailLoader::try_load_cached` should paint it immediately instead of first
+adding `thumb-loading`. Incremental insertions for newly added or updated media
+must not add a `GtkFlowBoxChild` until thumbnail generation finishes. If the
+request succeeds, insert the tile with the generated texture; if it fails,
+insert the final unavailable placeholder. Do not insert a transparent/loading
+tile first: local GTK/CSS backgrounds can still read visually as a gray image.
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded while the database remains the full source of truth. Startup loads the
@@ -133,6 +148,11 @@ must render from the already-loaded GTK model window only; it must not block on
 queries. Once loaded, the label should display the repository projection
 (`LibraryStats`) and not calculate thumbnail progress from `ThumbnailLoader`
 internals; stale thumbnail markers are filtered at the DB projection layer.
+While thumbnails are still pending, metadata invalidation from list refreshes
+or section-count reloads must keep the existing pending stats label visible
+rather than removing it temporarily. Hide the label only after a fresh
+repository projection confirms every live media item has a generated or
+unavailable thumbnail.
 Keep it as plain text, not a raised glass capsule, and size it slightly larger
 than the day section count text. Once every live media item has a current
 thumbnail, hide the Day grid statistics label entirely; the Photos sidebar row

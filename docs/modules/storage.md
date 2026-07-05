@@ -195,6 +195,13 @@ It is idempotent and runs before the first grid page loads, so added rows land i
 `ThumbnailLoader` owns a priority queue feeding blocking workers. Worker count, queue capacity, memory LRU size, disk cache size, and background prewarm wait intervals come from `runtime.json`.
 
 Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and a small in-memory LRU avoids unnecessary decoding near the current viewport. Keep the memory LRU conservative because Large textures are several MB each; disk cache, not RAM, is the durable thumbnail cache. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.
+Thumbnail cache files must be published atomically: write to a temporary sibling
+path, then rename into the final `.jpg`/`.webp` path only after encoding
+completes. Readers treat empty or undecodable cache files as corrupt, remove
+them, and regenerate instead of logging the same failure repeatedly. Background
+prewarm jobs must register their cache keys in `ThumbnailLoader`'s in-flight
+map just like visible tile requests; otherwise multiple workers can race on the
+same final cache path and readers can observe a partially-created file.
 
 After startup scan and trash reconciliation, `ThumbnailLoader` enters background prewarm mode without waiting for full-library DB pagination: idle workers pull live media rows whose `thumbnail_generated_at` is missing or older than `file_mtime`, generate the Medium thumbnail, and immediately mark the row generated. This DB marker is part of the pull loop's convergence condition; do not defer it behind a large batch threshold, or small libraries will repeatedly regenerate the same thumbnails before they are considered complete.
 

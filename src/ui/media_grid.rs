@@ -59,7 +59,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
+use chrono::Datelike;
 use gtk4 as gtk;
 use gtk4::gio;
 use gtk4::glib;
@@ -75,7 +77,7 @@ use crate::core::runtime_config;
 use crate::core::section_model::{
     apply_authoritative_counts, group_items, GroupBy, MediaSection, SectionKey,
 };
-use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::core::thumbnails::{LoadedThumb, ThumbnailLoader, ThumbnailSize};
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
@@ -628,8 +630,11 @@ impl MediaGrid {
             };
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "VIEWER_DEBUG grid model_changed mode={:?} position={} removed={} added={} list_len={}",
+                "GRID_MODEL_TRACE model_changed mode={:?} active={} dirty={} applying_virtual_page={} position={} removed={} added={} list_len={}",
                 this.mode(),
+                this.imp().active.get(),
+                this.imp().dirty_model.get(),
+                this.imp().applying_virtual_page.get(),
                 position,
                 removed,
                 added,
@@ -638,28 +643,90 @@ impl MediaGrid {
             *this.imp().media_list.borrow_mut() = Some(list.clone());
             if this.imp().active.get() {
                 if this.imp().applying_virtual_page.get() {
+                    tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
+                        "GRID_MODEL_TRACE action=ignore_virtual_page mode={:?} position={} removed={} added={} list_len={}",
+                        this.mode(),
+                        position,
+                        removed,
+                        added,
+                        list.n_items()
+                    );
                     return;
                 }
                 let was_empty = list.n_items().saturating_sub(added) == 0;
                 if removed > 0 && added == 0 {
+                    tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
+                        "GRID_MODEL_TRACE action=incremental_removal mode={:?} position={} removed={} list_len={}",
+                        this.mode(),
+                        position,
+                        removed,
+                        list.n_items()
+                    );
                     this.apply_incremental_removal(position, removed, list);
                 } else if removed > 0 {
                     this.invalidate_library_metadata();
+                    tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
+                        "GRID_MODEL_TRACE action=rebuild_immediate reason=replacement mode={:?} position={} removed={} added={} list_len={}",
+                        this.mode(),
+                        position,
+                        removed,
+                        added,
+                        list.n_items()
+                    );
                     // Replacements can reorder or remap existing children, so rebuild.
                     this.rebuild_immediately(list.clone());
                 } else if added > 0 && was_empty {
                     this.invalidate_library_metadata();
+                    tracing::debug!(
+                        target: crate::core::log_targets::BROWSING,
+                        "GRID_MODEL_TRACE action=rebuild_immediate reason=first_non_empty mode={:?} position={} added={} list_len={}",
+                        this.mode(),
+                        position,
+                        added,
+                        list.n_items()
+                    );
                     // 首次启动扫描从空库追加第一批媒体时，Day grid 已经按空列表
                     // 构建过；必须立即重建，否则空态切回 Day 后 tile/统计仍为空。
                     this.rebuild_immediately(list.clone());
                 } else if added > 0 {
                     this.invalidate_library_metadata();
-                    // 启动扫描和 watcher 的纯新增事件可能把较新的项目插入到当前窗口
-                    // 前部。去抖重建以吸收批量扫描突发，同时避免每个新增信号都同步
-                    // 拆/建 FlowBox。
-                    this.schedule_rebuild(list.clone());
+                    if this.apply_incremental_addition(position, added, list) {
+                        tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
+                            "GRID_MODEL_TRACE action=incremental_addition mode={:?} position={} added={} list_len={}",
+                            this.mode(),
+                            position,
+                            added,
+                            list.n_items()
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
+                            "GRID_MODEL_TRACE action=schedule_rebuild reason=pure_add_fallback mode={:?} position={} added={} list_len={}",
+                            this.mode(),
+                            position,
+                            added,
+                            list.n_items()
+                        );
+                        // 启动扫描和 watcher 的纯新增事件可能把较新的项目插入到当前窗口
+                        // 前部。去抖重建以吸收批量扫描突发，同时避免每个新增信号都同步
+                        // 拆/建 FlowBox。
+                        this.schedule_rebuild(list.clone());
+                    }
                 }
             } else {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "GRID_MODEL_TRACE action=mark_dirty_inactive mode={:?} position={} removed={} added={} list_len={}",
+                    this.mode(),
+                    position,
+                    removed,
+                    added,
+                    list.n_items()
+                );
                 this.imp().dirty_model.set(true);
             }
         });
@@ -1401,6 +1468,325 @@ impl MediaGrid {
         self.reprioritize_visible();
     }
 
+    fn apply_incremental_addition(
+        &self,
+        position: u32,
+        added: u32,
+        media_list: &gio::ListStore,
+    ) -> bool {
+        if added == 0 || self.imp().flat_sections.get() {
+            return false;
+        }
+
+        let mut inserted_items = Vec::with_capacity(added as usize);
+        for offset in 0..added {
+            let Some(obj) = media_list.item(position + offset) else {
+                return false;
+            };
+            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+                return false;
+            };
+            inserted_items.push((*boxed.borrow::<MediaItem>()).clone());
+        }
+        if inserted_items.is_empty() {
+            return false;
+        }
+
+        let mode = self.mode();
+        let section_key = section_key_for_item(&inserted_items[0], mode);
+        if inserted_items
+            .iter()
+            .any(|item| section_key_for_item(item, mode) != section_key)
+        {
+            return false;
+        }
+
+        let flow = {
+            let displayed = self.imp().displayed_items.borrow();
+            displayed
+                .iter()
+                .find(|item| item.section_key == section_key)
+                .and_then(|item| item.flow_child.parent())
+                .and_downcast::<gtk::FlowBox>()
+        };
+        let Some(flow) = flow else {
+            return false;
+        };
+
+        let insert_child_index = {
+            let displayed = self.imp().displayed_items.borrow();
+            displayed
+                .iter()
+                .filter(|item| item.section_key == section_key)
+                .filter(|item| item.window_index >= position)
+                .filter_map(|item| item.flow_child.index().try_into().ok())
+                .min()
+                .unwrap_or_else(|| flow.observe_children().n_items())
+        };
+
+        {
+            let mut displayed = self.imp().displayed_items.borrow_mut();
+            for item in displayed.iter_mut() {
+                if item.window_index >= position {
+                    item.window_index = item.window_index.saturating_add(added);
+                }
+            }
+        }
+
+        let spec = spec_for_mode(mode);
+        let loader = self
+            .imp()
+            .loader
+            .get()
+            .expect("MediaGrid::apply_incremental_addition called before new()")
+            .clone();
+        let on_bg = self
+            .imp()
+            .on_background_changed
+            .get()
+            .expect("MediaGrid::apply_incremental_addition called before new()")
+            .clone();
+
+        let mut new_displayed = Vec::with_capacity(inserted_items.len());
+        let mut inserted_ready = 0u32;
+        for (offset, item) in inserted_items.into_iter().enumerate() {
+            let window_index = position + offset as u32;
+            let media_id = MediaId::from(item.id);
+            let item_mtime = thumbnail_request_mtime(&item);
+            if loader
+                .try_load_cached(&item.uri, spec.thumb_size, Some(item_mtime))
+                .is_none()
+            {
+                self.defer_incremental_addition_until_thumbnail_ready(
+                    item,
+                    media_list.clone(),
+                    spec,
+                    loader.clone(),
+                    on_bg.clone(),
+                );
+                continue;
+            }
+            let picture = build_photo_picture(
+                spec,
+                item,
+                media_list.clone(),
+                window_index,
+                loader.clone(),
+                on_bg.clone(),
+            );
+            flow.insert(&picture, insert_child_index as i32 + inserted_ready as i32);
+            let Some(flow_child) = picture
+                .parent()
+                .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+            else {
+                return false;
+            };
+            sync_flow_child_visibility_for_tile(&picture, &flow_child);
+            new_displayed.push(DisplayedItem {
+                flow_child,
+                window_index,
+                media_id,
+                section_key: section_key.clone(),
+            });
+            inserted_ready = inserted_ready.saturating_add(1);
+        }
+
+        {
+            let mut displayed = self.imp().displayed_items.borrow_mut();
+            displayed.extend(new_displayed);
+            displayed.sort_by_key(|item| item.window_index);
+        }
+
+        self.increment_cached_metadata_after_addition(added, &section_key);
+        self.refresh_section_header_labels(media_list);
+        self.refresh_stats_label_after_cached_change();
+        self.apply_selection_mode();
+        self.reprioritize_visible();
+        true
+    }
+
+    fn defer_incremental_addition_until_thumbnail_ready(
+        &self,
+        item: MediaItem,
+        media_list: gio::ListStore,
+        spec: ViewSpec,
+        loader: Arc<ThumbnailLoader>,
+        on_background_changed: Rc<dyn Fn()>,
+    ) {
+        let item_uri = item.uri.clone();
+        let item_name = item.display_name().to_string();
+        let item_mtime = thumbnail_request_mtime(&item);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request_for_media(
+            item.id,
+            item_uri.clone(),
+            spec.thumb_size,
+            Some(item_mtime),
+            tx,
+            crate::core::thumbnails::TIER_BOOST,
+        );
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "THUMB_TILE_TRACE deferred_incremental_insert_wait item_id={} item_name={} uri={} mode={:?} size={:?}",
+            item.id,
+            item_name,
+            item_uri,
+            spec.mode,
+            spec.thumb_size
+        );
+
+        let weak = self.downgrade();
+        gtk::glib::spawn_future_local(async move {
+            let ready = rx.await.ok();
+            let Some(grid) = weak.upgrade() else {
+                return;
+            };
+            grid.insert_deferred_incremental_item(
+                media_list,
+                item_uri,
+                spec,
+                loader,
+                on_background_changed,
+                ready,
+            );
+        });
+    }
+
+    fn insert_deferred_incremental_item(
+        &self,
+        media_list: gio::ListStore,
+        item_uri: String,
+        spec: ViewSpec,
+        loader: Arc<ThumbnailLoader>,
+        on_background_changed: Rc<dyn Fn()>,
+        ready: Option<LoadedThumb>,
+    ) {
+        if !self.imp().active.get() {
+            self.imp().dirty_model.set(true);
+            return;
+        }
+        if self.imp().displayed_items.borrow().iter().any(|displayed| {
+            media_item_at_displayed_index(&media_list, displayed.window_index)
+                .is_some_and(|item| item.uri == item_uri)
+        }) {
+            return;
+        }
+
+        let Some((window_index, item)) = find_media_item_by_uri(&media_list, &item_uri) else {
+            return;
+        };
+        let section_key = section_key_for_item(&item, spec.mode);
+        let flow = {
+            let displayed = self.imp().displayed_items.borrow();
+            displayed
+                .iter()
+                .find(|item| item.section_key == section_key)
+                .and_then(|item| item.flow_child.parent())
+                .and_downcast::<gtk::FlowBox>()
+        };
+        let Some(flow) = flow else {
+            self.schedule_rebuild(media_list);
+            return;
+        };
+        let insert_child_index = {
+            let displayed = self.imp().displayed_items.borrow();
+            displayed
+                .iter()
+                .filter(|item| item.section_key == section_key)
+                .filter(|item| item.window_index >= window_index)
+                .filter_map(|item| item.flow_child.index().try_into().ok())
+                .min()
+                .unwrap_or_else(|| flow.observe_children().n_items())
+        };
+
+        let media_id = MediaId::from(item.id);
+        let picture = build_photo_picture(
+            spec,
+            item.clone(),
+            media_list.clone(),
+            window_index,
+            loader,
+            on_background_changed.clone(),
+        );
+        let insert_succeeded = ready.is_some();
+        match ready {
+            Some(loaded) => {
+                if let Some(is_light) = loaded.is_light {
+                    picture.set_background_is_light(is_light);
+                    on_background_changed();
+                }
+                picture.set_paintable(Some(&loaded.texture));
+            }
+            None => {
+                picture.set_paintable(Some(&gray_placeholder_texture()));
+            }
+        }
+        flow.insert(&picture, insert_child_index as i32);
+        let Some(flow_child) = picture
+            .parent()
+            .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+        else {
+            return;
+        };
+        sync_flow_child_visibility_for_tile(&picture, &flow_child);
+        {
+            let mut displayed = self.imp().displayed_items.borrow_mut();
+            if displayed.iter().any(|item| item.media_id == media_id) {
+                flow.remove(&flow_child);
+                return;
+            }
+            displayed.push(DisplayedItem {
+                flow_child,
+                window_index,
+                media_id,
+                section_key,
+            });
+            displayed.sort_by_key(|item| item.window_index);
+        }
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "THUMB_TILE_TRACE deferred_incremental_insert_ready item_id={} uri={} mode={:?} global_index={} success={}",
+            item.id,
+            item_uri,
+            spec.mode,
+            window_index,
+            insert_succeeded
+        );
+        self.apply_selection_mode();
+        self.refresh_stats_label_after_cached_change();
+        self.reprioritize_visible();
+    }
+
+    fn increment_cached_metadata_after_addition(&self, added: u32, section_key: &SectionKey) {
+        self.imp()
+            .virtual_total
+            .set(self.imp().virtual_total.get().saturating_add(added));
+        if let Some(total) = self.imp().library_total_snapshot.get() {
+            self.imp()
+                .library_total_snapshot
+                .set(Some(total.saturating_add(added)));
+        }
+        if let Some(mut stats) = self.imp().library_stats_snapshot.get() {
+            stats.live_total = stats.live_total.saturating_add(added as usize);
+            self.imp().library_stats_snapshot.set(Some(stats));
+        }
+
+        let mode = self.mode();
+        if let Some(counts) = self
+            .imp()
+            .section_count_snapshots
+            .borrow_mut()
+            .get_mut(&mode)
+        {
+            let next = counts
+                .get(section_key)
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(added);
+            counts.insert(section_key.clone(), next);
+        }
+    }
+
     fn decrement_cached_metadata_after_removal(
         &self,
         removed: u32,
@@ -1532,6 +1918,15 @@ impl MediaGrid {
     #[tracing::instrument(name = "grid:rebuild", skip(self, media_list), fields(source_len = media_list.n_items()))]
     fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
         let source_len = media_list.n_items();
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "GRID_MODEL_TRACE rebuild_start mode={:?} source_len={} active={} dirty={} rendered_limit={}",
+            mode,
+            source_len,
+            self.imp().active.get(),
+            self.imp().dirty_model.get(),
+            self.imp().rendered_limit.get()
+        );
         let loader = self
             .imp()
             .loader
@@ -1586,6 +1981,7 @@ impl MediaGrid {
             source.remove();
         }
         self.imp().stats_label.borrow_mut().take();
+        let mut reusable_tiles = self.detach_reusable_loaded_tiles();
         // Clear any previously built sections.
         while let Some(child) = content.first_child() {
             content.remove(&child);
@@ -1766,19 +2162,25 @@ impl MediaGrid {
                         .get()
                         .expect("MediaGrid::rebuild called before new()")
                         .clone();
-                    let picture = build_photo_picture(
-                        spec,
-                        item.clone(),
-                        media_list.clone(),
-                        gi,
-                        loader.clone(),
-                        on_bg,
-                    );
+                    let picture = if let Some(tile) = reusable_tiles.remove(&media_id) {
+                        prepare_reused_tile(&tile, spec, item);
+                        tile
+                    } else {
+                        build_photo_picture(
+                            spec,
+                            item.clone(),
+                            media_list.clone(),
+                            gi,
+                            loader.clone(),
+                            on_bg,
+                        )
+                    };
                     flow.append(&picture);
                     if let Some(flow_child) = flow
                         .last_child()
                         .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
                     {
+                        sync_flow_child_visibility_for_tile(&picture, &flow_child);
                         if gi != u32::MAX {
                             displayed_items.push(DisplayedItem {
                                 flow_child: flow_child.clone(),
@@ -2081,11 +2483,25 @@ impl MediaGrid {
             photo_count,
             spec.pixel_size
         );
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "GRID_MODEL_TRACE rebuild_finish mode={:?} source_len={} sections={} rendered_photos={} pixel_size={}",
+            mode,
+            source_len,
+            section_count,
+            photo_count,
+            spec.pixel_size
+        );
 
         // 下一帧 layout 完成后立即请求/提权视口附近缩略图；滚动期间仍走去抖路径。
         let weak = self.downgrade();
         gtk::glib::idle_add_local_once(move || {
             if let Some(this) = weak.upgrade() {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "GRID_MODEL_TRACE idle_reprioritize_after_rebuild mode={:?}",
+                    this.mode()
+                );
                 this.reprioritize_visible();
             }
         });
@@ -2154,13 +2570,23 @@ impl MediaGrid {
         if !self.imp().full_library_context.get() {
             return;
         }
+        let pending_thumbnail_stats = self
+            .imp()
+            .stats_label
+            .borrow()
+            .is_some()
+            .then(|| self.imp().library_stats_snapshot.get())
+            .flatten()
+            .filter(should_show_library_stats);
         if self.imp().library_metadata_loading.get() {
             self.imp().library_metadata_dirty_pending.set(true);
         } else {
             self.imp().library_metadata_dirty_pending.set(false);
         }
         self.imp().library_total_snapshot.set(None);
-        self.imp().library_stats_snapshot.set(None);
+        self.imp()
+            .library_stats_snapshot
+            .set(pending_thumbnail_stats);
         self.imp().section_count_snapshots.borrow_mut().clear();
     }
 
@@ -2229,15 +2655,33 @@ impl MediaGrid {
 
     fn schedule_rebuild(&self, media_list: gtk::gio::ListStore) {
         if self.imp().rebuild_debounce.borrow().is_some() {
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "GRID_MODEL_TRACE schedule_rebuild_coalesced mode={:?} list_len={}",
+                self.mode(),
+                media_list.n_items()
+            );
             return;
         }
 
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "GRID_MODEL_TRACE schedule_rebuild mode={:?} list_len={} delay_ms=750",
+            self.mode(),
+            media_list.n_items()
+        );
         let weak = self.downgrade();
         let source = glib::timeout_add_local_once(Duration::from_millis(750), move || {
             let Some(this) = weak.upgrade() else {
                 return;
             };
             this.imp().rebuild_debounce.borrow_mut().take();
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "GRID_MODEL_TRACE scheduled_rebuild_fire mode={:?} list_len={}",
+                this.mode(),
+                media_list.n_items()
+            );
             this.clear_selection();
             this.rebuild(media_list, this.mode());
         });
@@ -2248,9 +2692,68 @@ impl MediaGrid {
         if let Some(source) = self.imp().rebuild_debounce.borrow_mut().take() {
             source.remove();
         }
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "GRID_MODEL_TRACE rebuild_immediately mode={:?} list_len={}",
+            self.mode(),
+            media_list.n_items()
+        );
         self.clear_selection();
         self.rebuild(media_list, self.mode());
     }
+
+    fn detach_reusable_loaded_tiles(&self) -> HashMap<MediaId, SquareTile> {
+        let displayed = self.imp().displayed_items.borrow();
+        let mut reusable = HashMap::new();
+        for item in displayed.iter() {
+            let Some(tile) = item
+                .flow_child
+                .child()
+                .and_then(|child| child.downcast::<SquareTile>().ok())
+            else {
+                continue;
+            };
+            if tile.has_css_class("thumb-loading") {
+                continue;
+            }
+            if let Some(flow) = item.flow_child.parent().and_downcast::<gtk::FlowBox>() {
+                flow.remove(&item.flow_child);
+            }
+            reusable.insert(item.media_id, tile);
+        }
+        reusable
+    }
+}
+
+fn prepare_reused_tile(tile: &SquareTile, spec: ViewSpec, item: &MediaItem) {
+    tile.set_target(spec.pixel_size);
+    let is_day = spec.mode == GroupBy::Day;
+    tile.set_motion_badge_visible(is_day && item.is_motion_photo());
+    if is_day && item.is_video() {
+        let duration = item
+            .video_duration_secs
+            .and_then(format_tile_duration)
+            .unwrap_or_else(|| "--:--".to_string());
+        tile.set_video_duration(Some(&duration));
+    } else {
+        tile.set_video_duration(None);
+    }
+    tile.set_favorite_badge_visible(is_day && item.is_favorite);
+    let item_mtime = thumbnail_request_mtime(item);
+    tile.set_cache_key(ThumbnailLoader::cache_key_for(
+        &item.uri,
+        spec.thumb_size,
+        Some(item_mtime),
+    ));
+    tile.set_thumbnail_request(Rc::new(|| {}));
+}
+
+fn sync_flow_child_visibility_for_tile(tile: &SquareTile, flow_child: &gtk::FlowBoxChild) {
+    flow_child.set_opacity(if tile.has_css_class("thumb-loading") {
+        0.0
+    } else {
+        1.0
+    });
 }
 
 /// Square thumbnail: a `GtkWidget` subclass that reports a fixed square size
@@ -2485,6 +2988,10 @@ pub mod square_tile {
             }
             // 设入任意 paintable（真实 texture 或失败灰底）即停止骨架 shimmer。
             self.remove_css_class("thumb-loading");
+            self.set_opacity(1.0);
+            if let Some(parent) = self.parent() {
+                parent.set_opacity(1.0);
+            }
         }
 
         pub fn set_background_is_light(&self, is_light: bool) {
@@ -2698,14 +3205,49 @@ fn build_photo_picture(
     // B5：mtime 已在扫描/notify 时入库（MediaItem.file_mtime），直接复用，
     // 跳过 request 端的主线程 stat。DateTime<Utc> → SystemTime。
     let item_mtime = thumbnail_request_mtime(&item);
-    // B6：预算缓存键存到 tile，供可见区提权匹配队列项（带 file_mtime，无主线程 stat）。
-    tile.set_cache_key(ThumbnailLoader::cache_key_for(
-        &item.uri,
+    let initial_cache_key = ThumbnailLoader::cache_key_for(&item.uri, size, Some(item_mtime));
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "THUMB_TILE_TRACE tile_create item_id={} item_name={} uri={} mode={:?} global_index={} size={:?} target_px={} cache_key={:?}",
+        item.id,
+        item.display_name(),
+        item.uri,
+        spec.mode,
+        global_index,
         size,
-        Some(item_mtime),
-    ));
-    // 加载中骨架 shimmer；set_paintable 设入任意 paintable 时移除。
-    tile.add_css_class("thumb-loading");
+        target_px,
+        initial_cache_key
+    );
+    // B6：预算缓存键存到 tile，供可见区提权匹配队列项（带 file_mtime，无主线程 stat）。
+    tile.set_cache_key(initial_cache_key);
+    if let Some(loaded) = loader.try_load_cached(&item.uri, size, Some(item_mtime)) {
+        if let Some(is_light) = loaded.is_light {
+            tile.set_background_is_light(is_light);
+        }
+        tile.set_paintable(Some(&loaded.texture));
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "THUMB_TILE_TRACE tile_cached_paintable item_id={} uri={} mode={:?} global_index={} texture={}x{}",
+            item.id,
+            item.uri,
+            spec.mode,
+            global_index,
+            loaded.texture.width(),
+            loaded.texture.height()
+        );
+    } else {
+        // 加载中骨架 shimmer；set_paintable 设入任意 paintable 时移除。
+        tile.set_opacity(0.0);
+        tile.add_css_class("thumb-loading");
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "THUMB_TILE_TRACE tile_loading_class_added item_id={} uri={} mode={:?} global_index={} opacity=0",
+            item.id,
+            item.uri,
+            spec.mode,
+            global_index
+        );
+    }
 
     // 缩略图请求不由 `map` 触发：GtkFlowBox 会把当前虚拟 page 的大量 child
     // 都 map 掉。请求闭包注册在 tile 上，由 MediaGrid 的视口扫描按
@@ -2717,9 +3259,16 @@ fn build_photo_picture(
         let requested = std::cell::Cell::new(false);
         move || {
             if requested.get() {
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "THUMB_TILE_TRACE request_ignored_already_requested global_index={} size={:?}",
+                    global_index,
+                    size
+                );
                 return;
             }
             requested.set(true);
+            let request_started = Instant::now();
 
             let current_item = crate::ui::media_list::media_item_at(&media_list, global_index)
                 .unwrap_or_else(|| fallback_item.clone());
@@ -2731,6 +3280,19 @@ fn build_photo_picture(
                 tile.set_cache_key(cache_key.clone());
             }
 
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "THUMB_TILE_TRACE request_begin item_id={} item_name={} uri={} size={:?} global_index={} cache_key={:?} loading_class_present={}",
+                current_item.id,
+                item_name,
+                item_uri,
+                size,
+                global_index,
+                cache_key,
+                tile_weak
+                    .upgrade()
+                    .is_some_and(|tile| tile.has_css_class("thumb-loading"))
+            );
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "THUMB grid_request item_id={} item_name={} uri={} size={:?} target_px={} global_index={} queue_len={} in_flight={} media_item_mtime={} request_mtime={:?} cache_key={:?}",
@@ -2756,6 +3318,16 @@ fn build_photo_picture(
                 tx,
                 crate::core::thumbnails::TIER_BOOST,
             );
+            tracing::debug!(
+                target: crate::core::log_targets::BROWSING,
+                "THUMB_TILE_TRACE request_submitted item_id={} uri={} size={:?} global_index={} queue_len={} in_flight={}",
+                current_item.id,
+                item_uri,
+                size,
+                global_index,
+                loader.queue_len(),
+                loader.in_flight_len()
+            );
             let tile_weak = tile_weak.clone();
             let on_background_changed = on_background_changed.clone();
             let item_name = item_name.clone();
@@ -2765,6 +3337,7 @@ fn build_photo_picture(
                 let _thumb = thumb_span.enter();
                 match rx.await {
                     Ok(loaded) => {
+                        let elapsed_ms = request_started.elapsed().as_millis();
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
                             "THUMB grid_loaded item_name={} uri={} texture={}x{}",
@@ -2773,23 +3346,54 @@ fn build_photo_picture(
                             loaded.texture.width(),
                             loaded.texture.height()
                         );
+                        tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
+                            "THUMB_TILE_TRACE request_loaded item_name={} uri={} texture={}x{} elapsed_ms={}",
+                            item_name,
+                            item_uri,
+                            loaded.texture.width(),
+                            loaded.texture.height(),
+                            elapsed_ms
+                        );
                         if let Some(t) = tile_weak.upgrade() {
                             // 亮度判定已在 worker 端从 pixbuf 算好随结果回传，主线程不再 download。
                             if let Some(is_light) = loaded.is_light {
                                 t.set_background_is_light(is_light);
                                 on_background_changed();
                             }
+                            tracing::debug!(
+                                target: crate::core::log_targets::BROWSING,
+                                "THUMB_TILE_TRACE set_paintable_texture item_name={} uri={} loading_class_before={}",
+                                item_name,
+                                item_uri,
+                                t.has_css_class("thumb-loading")
+                            );
                             t.set_paintable(Some(&loaded.texture));
                         }
                     }
                     Err(_) => {
+                        let elapsed_ms = request_started.elapsed().as_millis();
                         tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
                             "THUMB grid_dropped_placeholder item_name={} uri={}",
                             item_name,
                             item_uri
                         );
+                        tracing::debug!(
+                            target: crate::core::log_targets::BROWSING,
+                            "THUMB_TILE_TRACE request_failed_placeholder item_name={} uri={} elapsed_ms={}",
+                            item_name,
+                            item_uri,
+                            elapsed_ms
+                        );
                         if let Some(t) = tile_weak.upgrade() {
+                            tracing::debug!(
+                                target: crate::core::log_targets::BROWSING,
+                                "THUMB_TILE_TRACE set_paintable_placeholder item_name={} uri={} loading_class_before={}",
+                                item_name,
+                                item_uri,
+                                t.has_css_class("thumb-loading")
+                            );
                             t.set_paintable(Some(&gray_placeholder_texture()));
                         }
                     }
@@ -2819,6 +3423,27 @@ fn format_tile_duration(secs: f64) -> Option<String> {
 
 fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
     std::time::SystemTime::from(item.file_mtime)
+}
+
+fn section_key_for_item(item: &MediaItem, mode: GroupBy) -> SectionKey {
+    let dt = item.sort_datetime();
+    match mode {
+        GroupBy::Year => SectionKey {
+            year: Some(dt.year()),
+            month: None,
+            day: None,
+        },
+        GroupBy::Month => SectionKey {
+            year: Some(dt.year()),
+            month: Some(dt.month()),
+            day: None,
+        },
+        GroupBy::Day => SectionKey {
+            year: Some(dt.year()),
+            month: Some(dt.month()),
+            day: Some(dt.day()),
+        },
+    }
 }
 
 /// 失败缩略图的占位：浅灰纯色 texture，明确表示"加载失败"，
@@ -2856,6 +3481,22 @@ fn uri_index_map(media_list: &gio::ListStore) -> std::collections::HashMap<Strin
         }
     }
     map
+}
+
+fn media_item_at_displayed_index(media_list: &gio::ListStore, index: u32) -> Option<MediaItem> {
+    crate::ui::media_list::media_item_at(media_list, index)
+}
+
+fn find_media_item_by_uri(media_list: &gio::ListStore, uri: &str) -> Option<(u32, MediaItem)> {
+    for index in 0..media_list.n_items() {
+        let Some(item) = media_item_at_displayed_index(media_list, index) else {
+            continue;
+        };
+        if item.uri == uri {
+            return Some((index, item));
+        }
+    }
+    None
 }
 
 impl Default for MediaGrid {
@@ -2969,6 +3610,43 @@ mod tests {
         None
     }
 
+    fn flow_child_at(flow: &gtk::FlowBox, index: u32) -> Option<gtk::FlowBoxChild> {
+        flow.child_at_index(index as i32)
+    }
+
+    fn first_square_tile(grid: &MediaGrid) -> Option<SquareTile> {
+        first_section_flow(grid)?
+            .first_child()
+            .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
+            .and_then(|child| child.child())
+            .and_then(|child| child.downcast::<SquareTile>().ok())
+    }
+
+    fn square_tiles(grid: &MediaGrid) -> Vec<SquareTile> {
+        let content = grid.imp().content.get();
+        let mut tiles = Vec::new();
+        let mut section = content.first_child();
+        while let Some(widget) = section {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                let mut child = flow.first_child();
+                while let Some(flow_child) = child {
+                    let next = flow_child.next_sibling();
+                    if let Some(tile) = flow_child
+                        .downcast::<gtk::FlowBoxChild>()
+                        .ok()
+                        .and_then(|child| child.child())
+                        .and_then(|child| child.downcast::<SquareTile>().ok())
+                    {
+                        tiles.push(tile);
+                    }
+                    child = next;
+                }
+            }
+            section = widget.next_sibling();
+        }
+        tiles
+    }
+
     fn section_flow_selection_modes(grid: &MediaGrid) -> Vec<gtk::SelectionMode> {
         let content = grid.imp().content.get();
         let mut modes = Vec::new();
@@ -3077,6 +3755,269 @@ mod tests {
         assert!(
             flow_before == flow_after,
             "a single backing-store removal should remove the child in place instead of rebuilding the whole section flow"
+        );
+    }
+
+    #[gtk::test]
+    fn grid_inserts_same_section_item_without_replacing_existing_tiles() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let cache_dir = dir.path().join("thumbs");
+        let loader = Arc::new(ThumbnailLoader::new(pool, cache_dir.clone()));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let existing_one = sample_item(1, "one.png");
+        let existing_two = sample_item(2, "two.png");
+        media_list.append(&glib::BoxedAnyObject::new(existing_one.clone()));
+        media_list.append(&glib::BoxedAnyObject::new(existing_two.clone()));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
+        let first_child_before =
+            flow_child_at(&flow_before, 0).expect("first tile should be rendered");
+
+        let inserted = sample_item(3, "inserted.png");
+        crate::core::thumbnails::generate_for_tests(
+            &cache_dir,
+            &inserted.uri,
+            ThumbnailSize::Medium,
+            Some(thumbnail_request_mtime(&inserted)),
+        )
+        .expect("test should pre-create thumbnail cache for the inserted item");
+        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
+
+        assert_eq!(
+            tile_count(&grid),
+            3,
+            "same-section pure insertion should update the visible grid immediately"
+        );
+        let flow_after = first_section_flow(&grid).expect("section flow should remain");
+        assert!(
+            flow_before == flow_after,
+            "same-section pure insertion should preserve the existing section flow"
+        );
+        let shifted_child = flow_child_at(&flow_after, 1).expect("old first tile should shift");
+        assert!(
+            first_child_before == shifted_child,
+            "same-section pure insertion should not recreate existing tile children"
+        );
+    }
+
+    #[gtk::test]
+    fn grid_defers_uncached_incremental_insert_until_thumbnail_ready() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
+        let first_child_before =
+            flow_child_at(&flow_before, 0).expect("first tile should be rendered");
+
+        let inserted = sample_item(3, "inserted.png");
+        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
+
+        assert_eq!(
+            tile_count(&grid),
+            2,
+            "uncached incremental inserts should wait for thumbnail success/failure before entering the grid"
+        );
+        let flow_after = first_section_flow(&grid).expect("section flow should remain");
+        assert!(
+            flow_before == flow_after,
+            "deferring the new tile should still preserve the existing section flow"
+        );
+        let first_child_after = flow_child_at(&flow_after, 0)
+            .expect("old first tile should remain first while pending");
+        assert!(
+            first_child_before == first_child_after,
+            "pending uncached insert should not insert a gray/transparent tile before the old first child"
+        );
+    }
+
+    #[gtk::test]
+    fn grid_inserts_deferred_item_after_thumbnail_failure() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader.clone(),
+            noop_callbacks(),
+            false,
+        );
+        let inserted = sample_item(3, "inserted.png");
+        let inserted_uri = inserted.uri.clone();
+        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
+        assert_eq!(tile_count(&grid), 2);
+
+        grid.insert_deferred_incremental_item(
+            media_list,
+            inserted_uri,
+            spec_for_mode(GroupBy::Day),
+            loader,
+            Rc::new(|| {}),
+            None,
+        );
+
+        assert_eq!(
+            tile_count(&grid),
+            3,
+            "thumbnail failure should insert the final failure placeholder only after the request completes"
+        );
+        let first_tile = first_square_tile(&grid).expect("deferred item should be visible");
+        assert!(
+            !first_tile.has_css_class("thumb-loading"),
+            "ready failure placeholder must not be inserted as a loading gray tile"
+        );
+        assert_eq!(first_tile.opacity(), 1.0);
+    }
+
+    #[gtk::test]
+    fn cached_thumbnail_tile_is_built_without_loading_class() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let cache_dir = dir.path().join("thumbs");
+        let loader = Arc::new(ThumbnailLoader::new(pool, cache_dir.clone()));
+        let src = dir.path().join("cached.png");
+        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 40, 60, 255]));
+        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
+        let mut item = sample_item(7, "cached.png");
+        item.uri = format!("file://{}", src.display());
+        item.path = src;
+        let mtime = thumbnail_request_mtime(&item);
+        crate::core::thumbnails::generate_for_tests(
+            &cache_dir,
+            &item.uri,
+            ThumbnailSize::Medium,
+            Some(mtime),
+        )
+        .expect("test should pre-create thumbnail cache");
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+
+        let tile = build_photo_picture(
+            spec_for_mode(GroupBy::Day),
+            item,
+            media_list,
+            0,
+            loader,
+            Rc::new(|| {}),
+        );
+
+        assert!(
+            !tile.has_css_class("thumb-loading"),
+            "cached thumbnails should paint immediately instead of flashing the loading placeholder"
+        );
+    }
+
+    #[gtk::test]
+    fn uncached_thumbnail_tile_stays_hidden_until_result_arrives() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let src = dir.path().join("uncached.png");
+        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 40, 60, 255]));
+        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
+        let mut item = sample_item(8, "uncached.png");
+        item.uri = format!("file://{}", src.display());
+        item.path = src;
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+
+        let tile = build_photo_picture(
+            spec_for_mode(GroupBy::Day),
+            item,
+            media_list,
+            0,
+            loader,
+            Rc::new(|| {}),
+        );
+
+        assert!(tile.has_css_class("thumb-loading"));
+        assert_eq!(
+            tile.opacity(),
+            0.0,
+            "uncached thumbnails should not show the gray loading surface before generation finishes"
+        );
+        let flow = gtk::FlowBox::new();
+        flow.append(&tile);
+        let flow_child = tile
+            .parent()
+            .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+            .expect("FlowBox should wrap tile in a FlowBoxChild");
+        sync_flow_child_visibility_for_tile(&tile, &flow_child);
+        assert_eq!(
+            flow_child.opacity(),
+            0.0,
+            "uncached thumbnails should hide the FlowBoxChild wrapper as well as the tile"
+        );
+        tile.set_paintable(Some(&gray_placeholder_texture()));
+        assert_eq!(
+            tile.opacity(),
+            1.0,
+            "thumbnail success or failure should reveal the tile"
+        );
+        assert_eq!(
+            flow_child.opacity(),
+            1.0,
+            "thumbnail success or failure should reveal the FlowBoxChild wrapper"
+        );
+    }
+
+    #[gtk::test]
+    fn rebuild_reuses_loaded_tiles_when_a_new_section_is_added() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let existing = sample_item(1, "one.png");
+        media_list.append(&glib::BoxedAnyObject::new(existing));
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        let existing_tile = first_square_tile(&grid).expect("existing tile should render");
+        existing_tile.set_paintable(Some(&gray_placeholder_texture()));
+
+        let mut inserted = sample_item(2, "new-day.png");
+        inserted.taken_at = Some(Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).unwrap());
+        inserted.file_mtime = inserted.taken_at.unwrap();
+        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
+        grid.rebuild(media_list, GroupBy::Day);
+
+        let tiles = square_tiles(&grid);
+        assert!(
+            tiles.iter().any(|tile| tile == &existing_tile),
+            "full rebuild fallback should reuse already-loaded tile widgets instead of making them gray again"
         );
     }
 
@@ -3253,6 +4194,47 @@ mod tests {
         assert!(
             first_child.has_css_class("library-stats"),
             "Day grid stats should be the first content child, above the first date header"
+        );
+    }
+
+    #[gtk::test]
+    fn pending_thumbnail_stats_survive_metadata_invalidation_rebuild() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            dir.path().join("thumbs"),
+        ));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let one = sample_item(1, "one.png");
+        insert_sample_item(&pool, &one);
+        media_list.append(&glib::BoxedAnyObject::new(one));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        grid.imp().library_total_snapshot.set(Some(1));
+        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
+            live_total: 1,
+            thumbnails_generated: 0,
+        }));
+        grid.rebuild(media_list.clone(), GroupBy::Day);
+        assert!(
+            grid.imp().stats_label.borrow().is_some(),
+            "pending thumbnail stats should be visible before invalidation"
+        );
+
+        grid.invalidate_library_metadata();
+        grid.rebuild(media_list, GroupBy::Day);
+
+        assert!(
+            grid.imp().stats_label.borrow().is_some(),
+            "metadata invalidation during thumbnail generation must not temporarily remove the stats prompt"
         );
     }
 

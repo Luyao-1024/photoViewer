@@ -1928,6 +1928,51 @@ impl MainWindow {
         }
     }
 
+    /// Refresh an already-open album detail page after live media membership
+    /// changes. Album rows and counts refresh through the sidebar snapshot;
+    /// this keeps the page's own filtered `ListStore` in sync while the user
+    /// stays on that album.
+    pub fn refresh_visible_album_detail_page(&self) {
+        let nav = self.imp().nav_view.get();
+        let Some(page) = nav.visible_page() else {
+            return;
+        };
+        if let Some(album_detail) = page.downcast_ref::<AlbumDetailPage>() {
+            album_detail.refresh_media_list_from_repository();
+        }
+    }
+
+    /// Reload the bounded live-media window backing the Photos page. This is
+    /// used by album operations that mutate DB rows outside the DB actor event
+    /// stream, such as Copy/Move from the album picker.
+    pub fn refresh_shared_media_list_from_repository(&self) {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
+            return;
+        };
+        let limit =
+            u32::try_from(crate::ui::apply_to_media_list::ui_media_list_cap()).unwrap_or(u32::MAX);
+        let items = crate::core::repository::MediaRepository::new(pool)
+            .items(crate::core::repository::MediaQuery::LiveAll, 0, limit)
+            .unwrap_or_default();
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE shared_refresh_loaded current_len={} refreshed_len={} limit={}",
+            media_list.n_items(),
+            items.len(),
+            limit
+        );
+        apply_media_projection_to_list(&media_list, items);
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE shared_refresh_applied final_len={}",
+            media_list.n_items()
+        );
+        self.update_photos_count_label_from_db();
+    }
+
     fn open_search_page(&self) -> bool {
         let nav = self.imp().nav_view.get();
         if let Some(search) = nav
@@ -2582,6 +2627,131 @@ impl MainWindow {
 
         group
     }
+}
+
+fn apply_media_projection_to_list(list: &gtk::gio::ListStore, refreshed: Vec<MediaItem>) {
+    let current_len = list.n_items();
+    if apply_pure_media_insertions(list, &refreshed) {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE projection_strategy=pure_insert before_len={} refreshed_len={} after_len={}",
+            current_len,
+            refreshed.len(),
+            list.n_items()
+        );
+        return;
+    }
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "PHOTO_REFRESH_TRACE projection_strategy=full_replace before_len={} refreshed_len={}",
+        current_len,
+        refreshed.len()
+    );
+    let additions: Vec<glib::BoxedAnyObject> = refreshed
+        .into_iter()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    list.splice(0, list.n_items(), &additions);
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "PHOTO_REFRESH_TRACE projection_full_replace_applied after_len={}",
+        list.n_items()
+    );
+}
+
+fn apply_pure_media_insertions(list: &gtk::gio::ListStore, refreshed: &[MediaItem]) -> bool {
+    let current = media_items_from_store(list);
+    if refreshed.len() <= current.len() {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE pure_insert_rejected reason=not_growth current_len={} refreshed_len={}",
+            current.len(),
+            refreshed.len()
+        );
+        return false;
+    }
+
+    let mut prefix = 0usize;
+    while prefix < current.len()
+        && prefix < refreshed.len()
+        && same_media_identity(&current[prefix], &refreshed[prefix])
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < current.len().saturating_sub(prefix)
+        && same_media_identity(
+            &current[current.len() - 1 - suffix],
+            &refreshed[refreshed.len() - 1 - suffix],
+        )
+    {
+        suffix += 1;
+    }
+
+    if prefix + suffix != current.len() {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE pure_insert_rejected reason=identity_mismatch current_len={} refreshed_len={} prefix={} suffix={}",
+            current.len(),
+            refreshed.len(),
+            prefix,
+            suffix
+        );
+        return false;
+    }
+
+    let insert_end = refreshed.len() - suffix;
+    if insert_end <= prefix {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            "PHOTO_REFRESH_TRACE pure_insert_rejected reason=empty_insert current_len={} refreshed_len={} prefix={} suffix={}",
+            current.len(),
+            refreshed.len(),
+            prefix,
+            suffix
+        );
+        return false;
+    }
+    let additions: Vec<glib::BoxedAnyObject> = refreshed[prefix..insert_end]
+        .iter()
+        .cloned()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    let inserted_ids: Vec<i64> = refreshed[prefix..insert_end]
+        .iter()
+        .take(8)
+        .map(|item| item.id)
+        .collect();
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "PHOTO_REFRESH_TRACE pure_insert_apply position={} added={} current_len={} refreshed_len={} inserted_ids_first8={:?}",
+        prefix,
+        insert_end - prefix,
+        current.len(),
+        refreshed.len(),
+        inserted_ids
+    );
+    list.splice(prefix as u32, 0, &additions);
+    true
+}
+
+fn media_items_from_store(list: &gtk::gio::ListStore) -> Vec<MediaItem> {
+    let mut items = Vec::with_capacity(list.n_items() as usize);
+    for idx in 0..list.n_items() {
+        let Some(obj) = list.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        items.push((*boxed.borrow::<MediaItem>()).clone());
+    }
+    items
+}
+
+fn same_media_identity(a: &MediaItem, b: &MediaItem) -> bool {
+    a.id == b.id && a.uri == b.uri
 }
 
 fn add_close_on_backdrop_click(dialog: &adw::Dialog) {
@@ -3712,6 +3882,26 @@ pub(crate) fn refresh_albums_sidebar(nav: &adw::NavigationView) {
     }
 }
 
+pub(crate) fn refresh_after_album_operation(nav: &adw::NavigationView) {
+    if let Some(window) = nav
+        .ancestor(MainWindow::static_type())
+        .and_downcast::<MainWindow>()
+    {
+        let visible_page_type = nav
+            .visible_page()
+            .map(|page| page.type_().name().to_string())
+            .unwrap_or_else(|| "<none>".to_string());
+        tracing::info!(
+            target: crate::core::log_targets::ALBUMS,
+            "PHOTO_REFRESH_TRACE refresh_after_album_operation visible_page_type={}",
+            visible_page_type
+        );
+        window.refresh_shared_media_list_from_repository();
+        window.refresh_visible_album_detail_page();
+        window.refresh_sidebar_snapshot_async();
+    }
+}
+
 fn load_sidebar_album_snapshot(pool: &DbPool) -> SidebarAlbumSnapshot {
     let live_count = crate::core::repository::MediaRepository::new(pool.clone())
         .count(crate::core::repository::MediaQuery::LiveAll)
@@ -3975,6 +4165,30 @@ mod tests {
         let pool = crate::core::db::init_pool(&tmp.path().join("keyboard-scope.db")).unwrap();
         let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
         (tmp, loader)
+    }
+
+    #[gtk::test]
+    fn shared_media_projection_refresh_emits_pure_addition_for_new_item() {
+        let _ = gtk::init();
+        let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let existing = media_item(1, "/tmp/shared-refresh", "one.jpg");
+        list.append(&glib::BoxedAnyObject::new(existing.clone()));
+        let changes = Rc::new(RefCell::new(Vec::<(u32, u32, u32)>::new()));
+        let changes_for_signal = changes.clone();
+        list.connect_items_changed(move |_, position, removed, added| {
+            changes_for_signal
+                .borrow_mut()
+                .push((position, removed, added));
+        });
+
+        let added = media_item(2, "/tmp/shared-refresh", "two.jpg");
+        apply_media_projection_to_list(&list, vec![added, existing]);
+
+        assert_eq!(
+            *changes.borrow(),
+            vec![(0, 0, 1)],
+            "shared Photos refresh should insert new media without replacing existing tiles"
+        );
     }
 
     fn emit_key_for_tests<W: IsA<gtk::Widget>>(

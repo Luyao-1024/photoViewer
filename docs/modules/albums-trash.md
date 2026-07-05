@@ -32,6 +32,14 @@ single-flight and repeated startup/watch events coalesce. UI pages should avoid
 adding new direct `albums::refresh` calls; trash and favorite mutations should
 go through `MediaRepository` so DB updates, filesystem side effects, and derived
 album refreshes stay behind one core boundary.
+Album picker copy/move operations are the exception because they perform
+blocking filesystem work through `album_ops::add_to_album`; after they return,
+the UI must refresh the shared Photos `ListStore`, any visible
+`AlbumDetailPage`, and the sidebar snapshot together so counts and grids do not
+diverge. When the refreshed Photos projection is only adding media, preserve
+the existing `ListStore` items and emit a pure insertion rather than replacing
+the whole model; otherwise hidden Photos grids destroy and recreate every
+thumbnail tile when the user returns to the page.
 `albums::refresh` must rebuild the materialized folder-album table inside one
 SQLite transaction. Sidebar snapshots can run on another pooled connection; if
 the refresh exposes the post-`DELETE`/pre-`INSERT` state, the sidebar briefly
