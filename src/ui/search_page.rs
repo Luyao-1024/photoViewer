@@ -713,12 +713,19 @@ impl SearchPage {
 
         viewer.guard_initial_navigation_pop();
         self.imp().viewer_open_pending.set(true);
+        let source_page = nav.visible_page();
+        if let Some(page) = source_page.as_ref() {
+            page.set_sensitive(false);
+        }
         let weak = self.downgrade();
         glib::timeout_add_local_once(
             std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
             move || {
                 if let Some(this) = weak.upgrade() {
                     this.imp().viewer_open_pending.set(false);
+                }
+                if let Some(page) = source_page {
+                    page.set_sensitive(true);
                 }
             },
         );

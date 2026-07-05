@@ -74,6 +74,10 @@ fn search_result_activation_opens_one_viewer_while_pending() {
         .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
         .expect("search result tile should belong to a FlowBox");
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    assert!(
+        !page.is_sensitive(),
+        "SearchPage should ignore pointer input while viewer push is guarded"
+    );
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
 
     assert_eq!(
@@ -614,6 +618,10 @@ fn album_pages_clicks_open_album_and_viewer() {
         .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
         .expect("Album detail tile should belong to a FlowBox");
     detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
+    assert!(
+        !detail.is_sensitive(),
+        "AlbumDetailPage should ignore pointer input while viewer push is guarded"
+    );
     detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
     assert!(
         fixture
