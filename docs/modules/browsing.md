@@ -122,6 +122,26 @@ model, hidden views, or FlowBox children grow with the full on-disk library;
 doing so drives GB-level memory use and blocks the main thread before the app
 is usable.
 
+Startup progressive render: the construction-active grid (the default Day view)
+does NOT build the whole first page on its first `rebuild`. Instead
+`MediaGrid::rebuild` caps `rendered_limit` at a viewport-sized seed for that
+first rebuild (the full page would block the main thread for ~850ms on a
+500-item library, gating both first paint and the sidebar snapshot). After the
+seed render, `schedule_startup_progressive_fill` paces the remainder of the
+first page: every tick (default 20ms) it raises `rendered_limit` by a batch
+(default 96) and re-runs `rebuild`, which reuses already-built tiles (keyed by
+`MediaId`) and only appends the new chunk, until the whole first page is
+rendered. The full page still ends up fully rendered — only its construction is
+deferred past first paint. This is armed only on the grid that is
+`initial_active` at construction; lazy Year/Month grids keep the original full
+rebuild when the user later switches to them. Mode/active changes bump a
+generation counter that cancels any in-flight fill. Tunable via `runtime.json`:
+`startup_progressive_render` (master switch, default true), `startup_render_seed`
+(48), `startup_render_batch` (96), `startup_render_interval_ms` (20),
+`startup_render_first_tick_delay_ms` (150 — longer than the per-tick interval so
+the seed render's thumbnails deliver before the fill competes for the main
+thread).
+
 Browsing identity is migrating from list indexes to stable `MediaId` values.
 `MediaGrid` activation and multi-select callbacks must pass media ids across
 widget/page boundaries; indexes are local to the current visible window only.

@@ -24,6 +24,14 @@ const THUMBNAIL_PREWARM_POLL_MS_KEY: &str = "thumbnail_prewarm_poll_ms";
 const THUMBNAIL_IDLE_WAIT_MS_KEY: &str = "thumbnail_idle_wait_ms";
 const NOTIFY_TRASH_DEBOUNCE_MS_KEY: &str = "notify_trash_debounce_ms";
 const NOTIFY_FILE_SETTLE_MS_KEY: &str = "notify_file_settle_ms";
+// Startup progressive render: render a viewport-sized seed of tiles first,
+// then fill the rest of the first page in paced background ticks so the window
+// is interactive long before all 500 tiles are built.
+const STARTUP_PROGRESSIVE_RENDER_KEY: &str = "startup_progressive_render";
+const STARTUP_RENDER_SEED_KEY: &str = "startup_render_seed";
+const STARTUP_RENDER_BATCH_KEY: &str = "startup_render_batch";
+const STARTUP_RENDER_INTERVAL_MS_KEY: &str = "startup_render_interval_ms";
+const STARTUP_RENDER_FIRST_TICK_DELAY_MS_KEY: &str = "startup_render_first_tick_delay_ms";
 
 pub const DEFAULT_INITIAL_MEDIA_PAGE_SIZE: u32 = 500;
 pub const DEFAULT_VIRTUAL_MEDIA_PAGE_SIZE: u32 = 500;
@@ -45,6 +53,22 @@ pub const DEFAULT_THUMBNAIL_PREWARM_POLL_MS: u64 = 500;
 pub const DEFAULT_THUMBNAIL_IDLE_WAIT_MS: u64 = 30_000;
 pub const DEFAULT_NOTIFY_TRASH_DEBOUNCE_MS: u64 = 400;
 pub const DEFAULT_NOTIFY_FILE_SETTLE_MS: u64 = 50;
+/// Master switch for startup progressive grid rendering.
+pub const DEFAULT_STARTUP_PROGRESSIVE_RENDER: bool = true;
+/// Number of tiles built on the first (seed) render — sized to roughly fill
+/// ~1.5× the Day-mode viewport (Day tiles are the largest, so this also
+/// comfortably fills Year/Month which show more tiles per row).
+pub const DEFAULT_STARTUP_RENDER_SEED: usize = 48;
+/// Tiles appended per progressive tick.
+pub const DEFAULT_STARTUP_RENDER_BATCH: usize = 96;
+/// Delay between progressive ticks — lets the compositor paint the newly added
+/// tiles and process input between chunks so the window stays responsive.
+pub const DEFAULT_STARTUP_RENDER_INTERVAL_MS: u64 = 20;
+/// Delay before the FIRST progressive tick — longer than `interval` so the
+/// seed render's thumbnails generate and deliver (set_paintable needs the main
+/// thread) before the fill starts competing for it. Directly lowers the
+/// launch→first-thumbnail time.
+pub const DEFAULT_STARTUP_RENDER_FIRST_TICK_DELAY_MS: u64 = 150;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
@@ -63,6 +87,11 @@ pub struct RuntimeConfig {
     pub thumbnail_idle_wait_ms: u64,
     pub notify_trash_debounce_ms: u64,
     pub notify_file_settle_ms: u64,
+    pub startup_progressive_render: bool,
+    pub startup_render_seed: usize,
+    pub startup_render_batch: usize,
+    pub startup_render_interval_ms: u64,
+    pub startup_render_first_tick_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +284,27 @@ fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
             NOTIFY_FILE_SETTLE_MS_KEY,
             DEFAULT_NOTIFY_FILE_SETTLE_MS,
         ),
+        startup_progressive_render: read_bool(
+            &obj,
+            STARTUP_PROGRESSIVE_RENDER_KEY,
+            DEFAULT_STARTUP_PROGRESSIVE_RENDER,
+        ),
+        startup_render_seed: read_usize(&obj, STARTUP_RENDER_SEED_KEY, DEFAULT_STARTUP_RENDER_SEED),
+        startup_render_batch: read_usize(
+            &obj,
+            STARTUP_RENDER_BATCH_KEY,
+            DEFAULT_STARTUP_RENDER_BATCH,
+        ),
+        startup_render_interval_ms: read_u64(
+            &obj,
+            STARTUP_RENDER_INTERVAL_MS_KEY,
+            DEFAULT_STARTUP_RENDER_INTERVAL_MS,
+        ),
+        startup_render_first_tick_delay_ms: read_u64(
+            &obj,
+            STARTUP_RENDER_FIRST_TICK_DELAY_MS_KEY,
+            DEFAULT_STARTUP_RENDER_FIRST_TICK_DELAY_MS,
+        ),
     }
 }
 
@@ -349,6 +399,40 @@ pub fn notify_file_settle_ms() -> u64 {
     load().notify_file_settle_ms
 }
 
+pub fn startup_progressive_render() -> bool {
+    load().startup_progressive_render
+}
+
+pub fn startup_render_seed() -> usize {
+    load().startup_render_seed
+}
+
+pub fn startup_render_batch() -> usize {
+    load().startup_render_batch
+}
+
+pub fn startup_render_interval_ms() -> u64 {
+    load().startup_render_interval_ms
+}
+
+pub fn startup_render_first_tick_delay_ms() -> u64 {
+    load().startup_render_first_tick_delay_ms
+}
+
+/// Decide whether the first (startup) rebuild should be seeded to a small
+/// viewport-sized tile count. Returns `Some(seed)` when progressive rendering
+/// is enabled and the source is larger than the seed; `None` otherwise (in
+/// which case the grid builds the whole first page upfront as before).
+///
+/// Pure (no I/O) so it can be unit-tested independently of `load()`.
+pub fn startup_seed_decision(enabled: bool, seed: usize, source_len: usize) -> Option<usize> {
+    if enabled && seed > 0 && source_len > seed {
+        Some(seed)
+    } else {
+        None
+    }
+}
+
 fn default_thumbnail_worker_count() -> usize {
     ThumbnailGenerationSpeed::Normal.worker_count()
 }
@@ -396,6 +480,10 @@ fn read_u64(obj: &Map<String, Value>, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn read_bool(obj: &Map<String, Value>, key: &str, default: bool) -> bool {
+    obj.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +529,11 @@ mod tests {
         assert_eq!(config.thumbnail_idle_wait_ms, 30_000);
         assert_eq!(config.notify_trash_debounce_ms, 400);
         assert_eq!(config.notify_file_settle_ms, 50);
+        assert!(config.startup_progressive_render);
+        assert_eq!(config.startup_render_seed, 48);
+        assert_eq!(config.startup_render_batch, 96);
+        assert_eq!(config.startup_render_interval_ms, 20);
+        assert_eq!(config.startup_render_first_tick_delay_ms, 150);
 
         cleanup(&path);
     }
@@ -466,7 +559,12 @@ mod tests {
               "thumbnail_prewarm_poll_ms": 750,
               "thumbnail_idle_wait_ms": 45000,
               "notify_trash_debounce_ms": 900,
-              "notify_file_settle_ms": 125
+              "notify_file_settle_ms": 125,
+              "startup_progressive_render": false,
+              "startup_render_seed": 24,
+              "startup_render_batch": 60,
+              "startup_render_interval_ms": 35,
+              "startup_render_first_tick_delay_ms": 200
             }"#,
         )
         .unwrap();
@@ -488,6 +586,11 @@ mod tests {
         assert_eq!(config.thumbnail_idle_wait_ms, 45000);
         assert_eq!(config.notify_trash_debounce_ms, 900);
         assert_eq!(config.notify_file_settle_ms, 125);
+        assert!(!config.startup_progressive_render);
+        assert_eq!(config.startup_render_seed, 24);
+        assert_eq!(config.startup_render_batch, 60);
+        assert_eq!(config.startup_render_interval_ms, 35);
+        assert_eq!(config.startup_render_first_tick_delay_ms, 200);
 
         cleanup(&path);
     }
@@ -513,7 +616,11 @@ mod tests {
               "thumbnail_prewarm_poll_ms": 0,
               "thumbnail_idle_wait_ms": 0,
               "notify_trash_debounce_ms": 0,
-              "notify_file_settle_ms": 0
+              "notify_file_settle_ms": 0,
+              "startup_render_seed": 0,
+              "startup_render_batch": 0,
+              "startup_render_interval_ms": 0,
+              "startup_render_first_tick_delay_ms": 0
             }"#,
         )
         .unwrap();
@@ -535,8 +642,38 @@ mod tests {
         assert_eq!(config.thumbnail_idle_wait_ms, 1);
         assert_eq!(config.notify_trash_debounce_ms, 1);
         assert_eq!(config.notify_file_settle_ms, 1);
+        // Numeric startup keys clamp to 1 like other counts; the bool switch
+        // is unchanged here (its default is true and 0 is not a JSON bool).
+        assert_eq!(config.startup_render_seed, 1);
+        assert_eq!(config.startup_render_batch, 1);
+        assert_eq!(config.startup_render_interval_ms, 1);
+        assert_eq!(config.startup_render_first_tick_delay_ms, 1);
+        assert!(config.startup_progressive_render);
 
         cleanup(&path);
+    }
+
+    #[test]
+    fn startup_bool_and_seed_decision_behaviour() {
+        let path = tmp_path("startup-bool");
+        cleanup(&path);
+        // Explicit bool values round-trip; non-bool (0/1 numbers) fall back to default.
+        std::fs::write(&path, r#"{"startup_progressive_render": false}"#).unwrap();
+        assert!(!read_runtime_config_at(&path).startup_progressive_render);
+        std::fs::write(&path, r#"{"startup_progressive_render": true}"#).unwrap();
+        assert!(read_runtime_config_at(&path).startup_progressive_render);
+        std::fs::write(&path, r#"{"startup_progressive_render": 0}"#).unwrap();
+        // 0 is a number, not a bool → default (true).
+        assert!(read_runtime_config_at(&path).startup_progressive_render);
+        cleanup(&path);
+
+        // startup_seed_decision: seed only when enabled AND source exceeds seed.
+        assert_eq!(startup_seed_decision(true, 48, 500), Some(48));
+        assert_eq!(startup_seed_decision(true, 48, 49), Some(48));
+        assert_eq!(startup_seed_decision(true, 48, 48), None); // not strictly greater
+        assert_eq!(startup_seed_decision(true, 48, 10), None); // small source: build all
+        assert_eq!(startup_seed_decision(false, 48, 500), None); // disabled
+        assert_eq!(startup_seed_decision(true, 0, 500), None); // seed 0 is invalid
     }
 
     #[test]
