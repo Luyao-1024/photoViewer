@@ -261,6 +261,23 @@ fn apply_domain_event_to_legacy_ui(
             }
         }
     }
+
+    if visible_album_detail_should_refresh(event) {
+        if let Some(window) = window.upgrade() {
+            window.refresh_visible_album_detail_page();
+        }
+    }
+}
+
+fn visible_album_detail_should_refresh(event: &DomainEvent) -> bool {
+    matches!(
+        event,
+        DomainEvent::MediaUpserted { .. }
+            | DomainEvent::MediaRemoved { .. }
+            | DomainEvent::MediaMovedToTrash { .. }
+            | DomainEvent::MediaRestored { .. }
+            | DomainEvent::MediaUpdated { .. }
+    )
 }
 
 async fn initialize() -> anyhow::Result<(

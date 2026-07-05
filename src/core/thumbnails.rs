@@ -377,6 +377,61 @@ impl ThumbnailLoader {
         self.request_inner(media_id, uri, size, mtime, reply, tier);
     }
 
+    pub fn try_load_cached(
+        &self,
+        uri: &str,
+        size: ThumbnailSize,
+        mtime: Option<SystemTime>,
+    ) -> Option<LoadedThumb> {
+        let cache_key = cache_key_str(uri, size, mtime)?;
+        if let Ok(mut st) = self.state.lock() {
+            if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
+                debug!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_LOADER_TRACE try_load_cached_mem_hit uri={} size={:?} cache_key={}",
+                    uri,
+                    size,
+                    cache_key
+                );
+                return Some(loaded);
+            }
+        }
+
+        let cache_path = existing_cache_path(&self.cache_dir, uri, size, mtime)
+            .ok()
+            .flatten()?;
+        let pb = match load_pixbuf_sync_or_remove(&cache_path) {
+            Ok(pb) => pb,
+            Err(e) => {
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_LOADER_TRACE try_load_cached_disk_failed uri={} size={:?} cache_path={} error={}",
+                    uri,
+                    size,
+                    cache_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+        let loaded = LoadedThumb {
+            texture: Texture::for_pixbuf(&pb),
+            is_light: pixbuf_is_light(&pb),
+        };
+        if let Ok(mut st) = self.state.lock() {
+            st.mem_cache.put(cache_key.clone(), loaded.clone());
+        }
+        debug!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_LOADER_TRACE try_load_cached_disk_hit uri={} size={:?} cache_path={} cache_key={}",
+            uri,
+            size,
+            cache_path.display(),
+            cache_key
+        );
+        Some(loaded)
+    }
+
     fn request_inner(
         &self,
         media_id: i64,
@@ -415,7 +470,7 @@ impl ThumbnailLoader {
         if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB mem_cache_hit uri={} size={:?} tier={} cache_key={}",
+                "THUMB_LOADER_TRACE mem_cache_hit uri={} size={:?} tier={} cache_key={}",
                 uri,
                 size,
                 tier,
@@ -429,7 +484,7 @@ impl ThumbnailLoader {
         if let Some(waiters) = st.in_flight.get_mut(&cache_key) {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB in_flight_join uri={} size={:?} tier={} cache_key={} waiters_before={}",
+                "THUMB_LOADER_TRACE in_flight_join uri={} size={:?} tier={} cache_key={} waiters_before={}",
                 uri,
                 size,
                 tier,
@@ -487,7 +542,7 @@ impl ThumbnailLoader {
         if enqueued {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
-                "THUMB enqueued uri={} size={:?} tier={} queue_len={} in_flight={} cache_key={}",
+                "THUMB_LOADER_TRACE enqueued uri={} size={:?} tier={} queue_len={} in_flight={} cache_key={}",
                 uri,
                 size,
                 tier,
@@ -623,7 +678,7 @@ fn worker_loop(
     bg: Arc<BackgroundPullState>,
     stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
-    while let Some(req) = next_request_or_pull(&queue, &pool, &bg) {
+    while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
         // `thumb:process` spans the worker's per-item work (queue pickup →
         // result), with `queue_wait_ms` recorded as a field. It parents the
         // `thumb:generate` span created inside `generate`.
@@ -657,10 +712,28 @@ fn worker_loop(
                     }
                     st.in_flight.remove(&req.cache_key).unwrap_or_default()
                 };
+                debug!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB_LOADER_TRACE worker_loaded uri={} size={:?} tier={} media_id={} texture={}x{} waiters={} cache_key={}",
+                    req.uri,
+                    req.size,
+                    req.tier,
+                    req.media_id,
+                    pb.width(),
+                    pb.height(),
+                    waiters.len(),
+                    req.cache_key
+                );
                 if let Some(media_id) = generated_media_id {
                     if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
                         warn!("更新缩略图状态失败: {}", e);
                     } else if let Ok(callback) = stats_dirty_callback.lock() {
+                        debug!(
+                            target: crate::core::log_targets::THUMBNAILS,
+                            "THUMB_LOADER_TRACE mark_generated media_id={} uri={}",
+                            media_id,
+                            req.uri
+                        );
                         if let Some(callback) = callback.as_ref() {
                             callback();
                         }
@@ -671,9 +744,7 @@ fn worker_loop(
                 }
             }
             Err(e) => {
-                if req.tier < TIER_BACKGROUND {
-                    drop_in_flight(&state, &req.cache_key);
-                }
+                drop_in_flight(&state, &req.cache_key);
                 warn!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB worker_failed uri={} size={:?} tier={} error={}",
@@ -693,6 +764,7 @@ fn next_request_or_pull(
     queue: &SharedQueue,
     pool: &DbPool,
     bg: &Arc<BackgroundPullState>,
+    state: &Arc<Mutex<LoaderState>>,
 ) -> Option<PriItem> {
     let (lock, cvar) = &**queue;
     loop {
@@ -715,7 +787,7 @@ fn next_request_or_pull(
 
         // 2) 队列空，从 DB 批量拉取需生成的项
         if bg.enabled.load(AtomicOrdering::Relaxed) {
-            if let Some(item) = pull_batch_and_enqueue(pool, bg, queue) {
+            if let Some(item) = pull_batch_and_enqueue(pool, bg, queue, state) {
                 return Some(item);
             }
         }
@@ -748,6 +820,7 @@ fn pull_batch_and_enqueue(
     pool: &DbPool,
     bg: &BackgroundPullState,
     queue: &SharedQueue,
+    state: &Mutex<LoaderState>,
 ) -> Option<PriItem> {
     let batch_size = *bg.worker_count.lock().ok()? as u32;
     let mut off = bg.offset.lock().ok()?;
@@ -782,13 +855,21 @@ fn pull_batch_and_enqueue(
         })
         .collect();
 
-    let first = items.first().cloned();
-
     let (lock, cvar) = &**queue;
-    if let Ok(mut q) = lock.lock() {
-        // 跳过 items[0]：它由 `first` 直接返回给当前 worker 处理，
-        // 不再入队，否则另一个被唤醒的 worker 会从堆里再次弹出它、重复生成。
-        for item in items.iter().skip(1) {
+    let mut st = state.lock().ok()?;
+    let mut q = lock.lock().ok()?;
+    let mut first = None;
+    for item in items {
+        if st.in_flight.contains_key(&item.cache_key) || q.queued.contains_key(&item.cache_key) {
+            continue;
+        }
+        if first.is_none() {
+            st.in_flight.insert(item.cache_key.clone(), Vec::new());
+            first = Some(item);
+            continue;
+        }
+        if q.queued.len() < runtime_config::thumbnail_queue_capacity() {
+            st.in_flight.insert(item.cache_key.clone(), Vec::new());
             q.queued.insert(
                 item.cache_key.clone(),
                 QueuedEntry {
@@ -800,9 +881,14 @@ fn pull_batch_and_enqueue(
                     media_id: item.media_id,
                 },
             );
-            q.heap.push(Reverse(item.clone()));
+            q.heap.push(Reverse(item));
         }
-        // 唤醒所有 sleep 的 worker 来消费刚入队的项
+    }
+    let queued_any = !q.heap.is_empty();
+    drop(q);
+    drop(st);
+    if queued_any {
+        // 唤醒所有 sleep 的 worker 来消费刚入队的项。
         cvar.notify_all();
     }
 
@@ -852,6 +938,64 @@ fn load_pixbuf_sync(path: &Path) -> anyhow::Result<Pixbuf> {
         .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", path, e))
 }
 
+fn load_pixbuf_sync_or_remove(path: &Path) -> anyhow::Result<Pixbuf> {
+    match load_pixbuf_sync(path) {
+        Ok(pb) => Ok(pb),
+        Err(e) => {
+            if let Err(remove_err) = std::fs::remove_file(path) {
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB invalid_cache_remove_failed cache_path={} error={}",
+                    path.display(),
+                    remove_err
+                );
+            } else {
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB invalid_cache_removed cache_path={} error={}",
+                    path.display(),
+                    e
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+fn existing_cache_path(
+    cache_dir: &Path,
+    uri: &str,
+    size: ThumbnailSize,
+    mtime: Option<SystemTime>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let cache_stem = cache_stem_for(cache_dir, uri, size, mtime)?;
+    let webp_path = cache_stem.with_extension("webp");
+    if webp_path.exists() {
+        return Ok(Some(webp_path));
+    }
+    let jpeg_path = cache_stem.with_extension("jpg");
+    if jpeg_path.exists() {
+        return Ok(Some(jpeg_path));
+    }
+    Ok(None)
+}
+
+fn cache_stem_for(
+    cache_dir: &Path,
+    uri: &str,
+    size: ThumbnailSize,
+    mtime: Option<SystemTime>,
+) -> anyhow::Result<PathBuf> {
+    let (src_path, mtime) = resolve_src(uri, mtime)?;
+    let key = format!("thumb-v3:{}{:?}", src_path.display(), mtime);
+    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
+    Ok(cache_dir
+        .join("thumbnails")
+        .join(size.subdir())
+        .join(&hash[..2])
+        .join(hash.as_str()))
+}
+
 #[tracing::instrument(name = "thumb:generate", skip(cache_dir))]
 fn generate(
     cache_dir: &Path,
@@ -860,14 +1004,7 @@ fn generate(
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<Pixbuf> {
     let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let key = format!("thumb-v3:{}{:?}", src_path.display(), mtime);
-    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
-
-    let cache_stem = cache_dir
-        .join("thumbnails")
-        .join(size.subdir())
-        .join(&hash[..2])
-        .join(hash.as_str());
+    let cache_stem = cache_stem_for(cache_dir, uri, size, Some(mtime))?;
     let jpeg_path = cache_stem.with_extension("jpg");
     let webp_path = cache_stem.with_extension("webp");
 
@@ -884,8 +1021,21 @@ fn generate(
             cache_path.display()
         );
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
-        // 使用同步读取确保文件完全写入后再解码。
-        return load_pixbuf_sync(cache_path);
+        // 使用同步读取确保文件完全写入后再解码。坏缓存会删除并继续重新生成。
+        match load_pixbuf_sync_or_remove(cache_path) {
+            Ok(pb) => return Ok(pb),
+            Err(e) => {
+                warn!(
+                    target: crate::core::log_targets::THUMBNAILS,
+                    "THUMB disk_cache_invalid source_uri={} source_path={} size={:?} cache_path={} error={}",
+                    uri,
+                    src_path.display(),
+                    size,
+                    cache_path.display(),
+                    e
+                );
+            }
+        }
     }
 
     if let Some(parent) = cache_stem.parent() {
@@ -898,8 +1048,7 @@ fn generate(
                 let scaled = scale_pixbuf_to_fit(&pb, size.max_dim());
                 let cache_path = cache_stem.with_extension("jpg");
                 let thumb = ensure_opaque(&scaled);
-                thumb
-                    .savev(&cache_path, "jpeg", &[])
+                save_pixbuf_as_jpeg_atomic(&thumb, &cache_path)
                     .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
                 info!(
                     target: crate::core::log_targets::THUMBNAILS,
@@ -962,6 +1111,16 @@ fn generate(
             generate_unavailable_placeholder(size.max_dim(), &cache_stem, false)
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn generate_for_tests(
+    cache_dir: &Path,
+    uri: &str,
+    size: ThumbnailSize,
+    mtime: Option<SystemTime>,
+) -> anyhow::Result<Pixbuf> {
+    generate(cache_dir, uri, size, mtime)
 }
 
 fn generate_unavailable_placeholder(
@@ -1031,7 +1190,7 @@ fn generate_unavailable_placeholder(
     }
 
     let cache_path = cache_stem.with_extension("jpg");
-    pb.savev(cache_path, "jpeg", &[]).map_err(|e| {
+    save_pixbuf_as_jpeg_atomic(&pb, &cache_path).map_err(|e| {
         anyhow::anyhow!(
             "unavailable thumbnail save failed {:?}: {}",
             cache_stem.with_extension("jpg"),
@@ -1589,7 +1748,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
     {
         let save_span = tracing::info_span!("thumb:pb_save");
         let _save = save_span.enter();
-        thumb.savev(cache_path, "jpeg", &[]).map_err(|e| {
+        save_pixbuf_as_jpeg_atomic(&thumb, &cache_path).map_err(|e| {
             anyhow::anyhow!(
                 "gdk-pixbuf JPEG 保存失败 {:?}: {}",
                 cache_stem.with_extension("jpg"),
@@ -1624,7 +1783,8 @@ fn pixbuf_has_transparency(pb: &Pixbuf) -> bool {
 
 fn save_pixbuf_as_webp(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
     let rgba = pixbuf_to_rgba_bytes(pb)?;
-    let file = File::create(cache_path)?;
+    let tmp_path = temporary_cache_path(cache_path);
+    let file = File::create(&tmp_path)?;
     let writer = BufWriter::new(file);
     image::codecs::webp::WebPEncoder::new_lossless(writer)
         .write_image(
@@ -1633,7 +1793,38 @@ fn save_pixbuf_as_webp(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
             pb.height() as u32,
             image::ExtendedColorType::Rgba8,
         )
-        .map_err(|e| anyhow::anyhow!("WebP 缩略图保存失败 {:?}: {}", cache_path, e))
+        .map_err(|e| anyhow::anyhow!("WebP 缩略图保存失败 {:?}: {}", cache_path, e))?;
+    std::fs::rename(&tmp_path, cache_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        anyhow::anyhow!("WebP 缩略图发布失败 {:?}: {}", cache_path, e)
+    })
+}
+
+fn save_pixbuf_as_jpeg_atomic(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
+    let tmp_path = temporary_cache_path(cache_path);
+    pb.savev(&tmp_path, "jpeg", &[])
+        .map_err(|e| anyhow::anyhow!("JPEG 缩略图保存失败 {:?}: {}", tmp_path, e))?;
+    std::fs::rename(&tmp_path, cache_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        anyhow::anyhow!("JPEG 缩略图发布失败 {:?}: {}", cache_path, e)
+    })
+}
+
+fn temporary_cache_path(cache_path: &Path) -> PathBuf {
+    let ext = cache_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("tmp");
+    let nonce = format!(
+        "{}-{:?}-{}",
+        std::process::id(),
+        std::thread::current().id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+    cache_path.with_extension(format!("{ext}.{nonce}.tmp"))
 }
 
 fn pixbuf_to_rgba_bytes(pb: &Pixbuf) -> anyhow::Result<Vec<u8>> {
@@ -1736,6 +1927,7 @@ fn pixbuf_is_light(pb: &Pixbuf) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::core::db;
+    use gtk4::prelude::TextureExt;
 
     #[test]
     fn request_for_missing_source_drops_gracefully() {
@@ -1853,6 +2045,109 @@ mod tests {
                 .iter()
                 .any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jpg")),
             "unavailable image thumbnail should be cached as JPEG"
+        );
+    }
+
+    #[test]
+    fn loader_returns_existing_disk_cache_without_queueing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("cached.png");
+        let img = image::RgbaImage::from_pixel(20, 20, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
+        let cache_dir = dir.path().join("cache");
+        let uri = format!("file://{}", src.display());
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+            .expect("test should pre-create a disk thumbnail cache");
+
+        let loader = ThumbnailLoader::new(pool, cache_dir);
+        let cached = loader
+            .try_load_cached(&uri, ThumbnailSize::Small, None)
+            .expect("existing disk cache should load synchronously");
+
+        assert!(cached.texture.width() <= 256);
+        assert!(cached.texture.height() <= 256);
+        assert_eq!(loader.queue_len(), 0);
+        assert_eq!(loader.in_flight_len(), 0);
+    }
+
+    #[test]
+    fn generate_replaces_empty_disk_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.png");
+        let img = image::RgbImage::from_pixel(80, 60, image::Rgb([10, 20, 30]));
+        image::DynamicImage::ImageRgb8(img).save(&src).unwrap();
+        let cache_dir = dir.path().join("cache");
+        let uri = format!("file://{}", src.display());
+        let cache_stem = cache_stem_for(&cache_dir, &uri, ThumbnailSize::Small, None).unwrap();
+        std::fs::create_dir_all(cache_stem.parent().unwrap()).unwrap();
+        let cache_path = cache_stem.with_extension("jpg");
+        File::create(&cache_path).unwrap();
+
+        let thumb = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+            .expect("empty cache files should be discarded and regenerated");
+
+        assert!(thumb.width() > 0);
+        assert!(
+            std::fs::metadata(&cache_path).unwrap().len() > 0,
+            "regenerated cache file should not be empty"
+        );
+    }
+
+    #[test]
+    fn background_pull_marks_returned_item_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+        let src = dir.path().join("source.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            80,
+            60,
+            image::Rgb([10, 20, 30]),
+        ))
+        .save(&src)
+        .unwrap();
+        let now = chrono::Utc::now();
+        let item = crate::core::media::NewMediaItem {
+            uri: format!("file://{}", src.display()),
+            path: src.clone(),
+            folder_path: dir.path().to_path_buf(),
+            mime_type: "image/png".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(80),
+            height: Some(60),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: now,
+            file_size: std::fs::metadata(&src).unwrap().len(),
+            blake3_hash: "hash".into(),
+        };
+        db::insert_media_item(&pool, &item).unwrap();
+        let loader = ThumbnailLoader::new(pool.clone(), dir.path().join("cache"));
+        loader
+            .background_pull
+            .enabled
+            .store(true, AtomicOrdering::Relaxed);
+        *loader.background_pull.worker_count.lock().unwrap() = 1;
+
+        let first =
+            pull_batch_and_enqueue(&pool, &loader.background_pull, &loader.queue, &loader.state)
+                .expect("first background pull should return the pending item");
+        let second =
+            pull_batch_and_enqueue(&pool, &loader.background_pull, &loader.queue, &loader.state);
+
+        assert!(
+            second.is_none(),
+            "a background item already returned to a worker must be considered in-flight"
+        );
+        assert!(
+            loader
+                .state
+                .lock()
+                .unwrap()
+                .in_flight
+                .contains_key(&first.cache_key),
+            "returned background key should be registered for duplicate suppression"
         );
     }
 

@@ -104,7 +104,10 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
         );
         return;
     }
-    if source == ChangeSource::StartupScan && apply_startup_scan_insertions(list, &items) {
+    if apply_absent_item_insertions(list, source, &items) {
+        return;
+    }
+    if apply_targeted_upserts(list, source, &items) {
         return;
     }
 
@@ -138,7 +141,7 @@ fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items:
     let additions: Vec<glib::BoxedAnyObject> =
         merged.into_iter().map(glib::BoxedAnyObject::new).collect();
     list.splice(0, list.n_items(), &additions);
-    tracing::info!(
+    tracing::debug!(
         target: crate::core::log_targets::BROWSING,
         "UI_LIST_BATCH_MERGE incoming_len={} list_len_before={} list_len_after={}",
         incoming_len,
@@ -171,8 +174,16 @@ fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
     list.n_items()
 }
 
-#[tracing::instrument(name = "ui:apply_startup_insertions", skip(list, items), fields(incoming = items.len()))]
-fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]) -> bool {
+#[tracing::instrument(
+    name = "ui:apply_absent_insertions",
+    skip(list, items),
+    fields(source = ?source, incoming = items.len())
+)]
+fn apply_absent_item_insertions(
+    list: &gtk::gio::ListStore,
+    source: ChangeSource,
+    items: &[MediaItem],
+) -> bool {
     let mut existing_uris = std::collections::HashSet::with_capacity(list.n_items() as usize);
     for i in 0..list.n_items() {
         if let Some(item) = item_at(list, i) {
@@ -200,10 +211,77 @@ fn apply_startup_scan_insertions(list: &gtk::gio::ListStore, items: &[MediaItem]
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         target: crate::core::log_targets::BROWSING,
-        "UI_LIST_STARTUP_INSERT incoming_len={} inserted={} list_len_after={}",
+        "UI_LIST_ABSENT_INSERT source={:?} incoming_len={} inserted={} list_len_after={}",
+        source,
         items.len(),
+        inserted,
+        list.n_items()
+    );
+    true
+}
+
+#[tracing::instrument(
+    name = "ui:apply_targeted_upserts",
+    skip(list, items),
+    fields(source = ?source, incoming = items.len())
+)]
+fn apply_targeted_upserts(
+    list: &gtk::gio::ListStore,
+    source: ChangeSource,
+    items: &[MediaItem],
+) -> bool {
+    if source == ChangeSource::StartupScan {
+        return false;
+    }
+
+    let cap = ui_media_list_cap() as u32;
+    let mut incoming = items.to_vec();
+    incoming.sort_by(compare_media_order);
+    let mut removed = 0u32;
+    let mut inserted = 0u32;
+
+    for item in incoming {
+        let mut existing_position = None;
+        let mut preserves_sort_position = false;
+        for index in 0..list.n_items() {
+            let Some(existing) = item_at(list, index) else {
+                continue;
+            };
+            if existing.uri == item.uri {
+                existing_position = Some(index);
+                preserves_sort_position = compare_media_order(&item, &existing).is_eq();
+                list.remove(index);
+                removed = removed.saturating_add(1);
+                break;
+            }
+        }
+
+        let position = if preserves_sort_position {
+            existing_position
+                .unwrap_or_else(|| list.n_items())
+                .min(list.n_items())
+        } else {
+            sorted_insert_position(list, &item)
+        };
+        if position >= cap {
+            continue;
+        }
+        list.insert(position, &glib::BoxedAnyObject::new(item));
+        inserted = inserted.saturating_add(1);
+        if list.n_items() > cap {
+            list.remove(list.n_items() - 1);
+            removed = removed.saturating_add(1);
+        }
+    }
+
+    tracing::debug!(
+        target: crate::core::log_targets::BROWSING,
+        "UI_LIST_TARGETED_UPSERT source={:?} incoming_len={} removed={} inserted={} list_len_after={}",
+        source,
+        items.len(),
+        removed,
         inserted,
         list.n_items()
     );
@@ -414,6 +492,35 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_watcher_new_items_insert_without_full_model_replacement() {
+        let list = list_with(vec![
+            item_at(1, "file:///tmp/existing-newer.jpg", 2026, 6, 25, 12),
+            item_at(2, "file:///tmp/existing-older.jpg", 2026, 6, 23, 12),
+        ]);
+        let signal = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let signal_for_cb = signal.clone();
+        list.connect_items_changed(move |_, position, removed, added| {
+            signal_for_cb.borrow_mut().push((position, removed, added));
+        });
+
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![item_at(3, "file:///tmp/newest.jpg", 2026, 6, 26, 12)],
+            },
+        );
+
+        assert_eq!(list.n_items(), 3);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/newest.jpg");
+        assert_eq!(
+            signal.borrow().as_slice(),
+            &[(0, 0, 1)],
+            "a watcher-only insert must not emit the full replacement that makes MediaGrid rebuild all tiles"
+        );
+    }
+
+    #[test]
     fn upserted_item_trims_ui_model_after_insert() {
         // cap 已提高至 10000；此测试验证在列表未满 cap 时插入新项不会被截断。
         let list = list_with(
@@ -455,6 +562,36 @@ mod tests {
         // Sanity: the new blake3 hash actually took effect.
         let boxed = list.item(1).and_downcast::<glib::BoxedAnyObject>().unwrap();
         assert_eq!(boxed.borrow::<MediaItem>().blake3_hash, "new-hash");
+    }
+
+    #[test]
+    fn upserted_existing_item_does_not_emit_full_model_replacement() {
+        let list = list_with(vec![
+            item(1, "file:///tmp/a.jpg"),
+            item(2, "file:///tmp/b.jpg"),
+            item(3, "file:///tmp/c.jpg"),
+        ]);
+        let signal = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let signal_for_cb = signal.clone();
+        list.connect_items_changed(move |_, position, removed, added| {
+            signal_for_cb.borrow_mut().push((position, removed, added));
+        });
+
+        let mut updated = item(2, "file:///tmp/b.jpg");
+        updated.blake3_hash = "new-hash".into();
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaUpserted {
+                source: ChangeSource::FilesystemWatcher,
+                items: vec![updated],
+            },
+        );
+
+        assert_eq!(
+            signal.borrow().as_slice(),
+            &[(1, 1, 0), (1, 0, 1)],
+            "updating one existing URI should remove/insert that row only, not replace the full visible model"
+        );
     }
 
     #[test]

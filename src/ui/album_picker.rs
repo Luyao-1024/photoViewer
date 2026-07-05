@@ -277,8 +277,8 @@ fn run_op(
                 };
                 tracing::info!("{} {} photo(s) to {}", verb, items.len(), folder_name);
                 // 操作已成功，DB 已由 add_to_album 内部调用 albums::refresh 更新。
-                // 此处刷新侧栏相册行，使照片计数即时反映。
-                super::window::refresh_albums_sidebar(&host_nav);
+                // 同步刷新共享照片列表、可见相册详情和侧栏计数。
+                super::window::refresh_after_album_operation(&host_nav);
                 // Pop the entire dialog (inner has 2 levels). Once the
                 // user is back at level 1 with no further navigation, the
                 // wrapper will be popped by the host's pop handler.

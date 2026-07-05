@@ -395,7 +395,7 @@ impl AlbumDetailPage {
             viewer.connect_favorite_state_changed(move |_, _| {
                 if is_favorite_album {
                     if let Some(this) = this.upgrade() {
-                        this.refresh_virtual_album_media_list();
+                        this.refresh_media_list_from_repository();
                     }
                     if let Some(nav) = nav_for_albums.upgrade() {
                         crate::ui::window::refresh_albums_sidebar(&nav);
@@ -460,59 +460,110 @@ impl AlbumDetailPage {
         nav.push(&viewer);
     }
 
-    #[tracing::instrument(name = "album_detail:refresh_virtual", skip(self))]
-    fn refresh_virtual_album_media_list(&self) {
+    #[tracing::instrument(name = "album_detail:refresh_media_list", skip(self))]
+    pub(crate) fn refresh_media_list_from_repository(&self) {
         let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
             return;
         };
-        if !album.is_virtual {
-            return;
-        }
 
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
-            return;
-        };
-        let Some(master_list) = self.imp().master_media_list.borrow().as_ref().cloned() else {
             return;
         };
         let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
             return;
         };
 
-        // Re-evaluate the per-album predicate (shared with the sidebar) against
-        // the current DB/favorites state and splice it into the live store so
-        // the grid + open viewer track the new membership without a page rebuild.
-        let limit = album_refresh_load_limit(album.photo_count);
-        let items = filtered_items_for_album_limited(&album, &master_list, &pool, limit);
+        // Re-evaluate the per-album query against the current DB state and
+        // splice it into the live store so the grid + open viewer track new
+        // membership without pushing a new page.
+        let repo = MediaRepository::new(pool);
+        let query = media_query_for_album(&album);
+        let total = repo
+            .count(query.clone())
+            .map(i64::from)
+            .unwrap_or(album.photo_count);
+        let limit = album_refresh_load_limit(total);
+        let items = repo.items(query, 0, limit).unwrap_or_default();
         {
             let splice_span = tracing::info_span!("album_detail:splice");
             let _splice = splice_span.enter();
-            while media_list.n_items() > 0 {
-                media_list.remove(media_list.n_items() - 1);
-            }
-            for item in items {
-                media_list.append(&glib::BoxedAnyObject::new(item));
+            if !apply_pure_insertions(&media_list, &items) {
+                let additions: Vec<glib::BoxedAnyObject> =
+                    items.into_iter().map(glib::BoxedAnyObject::new).collect();
+                media_list.splice(0, media_list.n_items(), &additions);
             }
         }
         tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album.display_name(),
             album_path = %album.folder_path.display(),
+            is_virtual = album.is_virtual,
             item_count = media_list.n_items(),
-            "album_detail_page: refreshed_virtual_media_list"
+            "album_detail_page: refreshed_media_list"
         );
     }
 }
 
-/// Build the per-album filtered media items.
-///
-/// Mirrors the album semantics established by `albums::list_with_favorites`:
-/// favorites album → the favorites id set; images/videos albums → `media_kind`;
-/// motion photos album → `media_subkind`; folder albums → equal `folder_path`.
-/// Virtual albums query the database directly so they are not limited by the
-/// bounded startup GTK model. The sidebar builds an `AlbumDetailPage` from
-/// this, and virtual album refreshes splice the already-attached media list via
-/// [`AlbumDetailPage::refresh_virtual_album_media_list`].
+fn apply_pure_insertions(list: &gtk::gio::ListStore, refreshed: &[MediaItem]) -> bool {
+    let current = media_items_from_store(list);
+    if refreshed.len() <= current.len() {
+        return false;
+    }
+
+    let mut prefix = 0usize;
+    while prefix < current.len()
+        && prefix < refreshed.len()
+        && same_media_identity(&current[prefix], &refreshed[prefix])
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < current.len().saturating_sub(prefix)
+        && same_media_identity(
+            &current[current.len() - 1 - suffix],
+            &refreshed[refreshed.len() - 1 - suffix],
+        )
+    {
+        suffix += 1;
+    }
+
+    if prefix + suffix != current.len() {
+        return false;
+    }
+
+    let insert_end = refreshed.len() - suffix;
+    if insert_end <= prefix {
+        return false;
+    }
+    let additions: Vec<glib::BoxedAnyObject> = refreshed[prefix..insert_end]
+        .iter()
+        .cloned()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    list.splice(prefix as u32, 0, &additions);
+    true
+}
+
+fn media_items_from_store(list: &gtk::gio::ListStore) -> Vec<MediaItem> {
+    let mut items = Vec::with_capacity(list.n_items() as usize);
+    for idx in 0..list.n_items() {
+        let Some(obj) = list.item(idx) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        items.push((*boxed.borrow::<MediaItem>()).clone());
+    }
+    items
+}
+
+fn same_media_identity(a: &MediaItem, b: &MediaItem) -> bool {
+    a.id == b.id && a.uri == b.uri
+}
+
+#[cfg(test)]
 #[tracing::instrument(name = "album_detail:filter_items", skip(album, master, pool))]
 pub(crate) fn filtered_items_for_album_limited(
     album: &Album,
@@ -780,5 +831,89 @@ mod tests {
         let items = filtered_items_for_album_limited(&album, &master, &pool, 2);
 
         assert_eq!(items.len(), 2);
+    }
+
+    #[gtk::test]
+    fn visible_real_album_refresh_loads_new_database_items() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("real-album-refresh.db")).unwrap();
+        let first = new_item(1, "image/jpeg");
+        crate::core::db::insert_media_item(&pool, &first).unwrap();
+        let initial =
+            crate::core::db::list_media_by_folder_page(&pool, &first.folder_path, 0, 10).unwrap();
+        assert_eq!(initial.len(), 1);
+
+        let album = crate::core::albums::Album {
+            folder_path: first.folder_path.clone(),
+            name: "tmp".into(),
+            cover_uri: None,
+            photo_count: 1,
+            last_modified: Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap(),
+            is_virtual: false,
+        };
+        let album_store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        album_store.append(&glib::BoxedAnyObject::new(initial[0].clone()));
+        let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        master.append(&glib::BoxedAnyObject::new(initial[0].clone()));
+        let loader = Arc::new(crate::core::thumbnails::ThumbnailLoader::new(
+            pool.clone(),
+            tmp.path().join("thumbs"),
+        ));
+        let page = AlbumDetailPage::new(album, album_store.clone(), master, pool.clone(), loader);
+
+        crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
+        page.refresh_media_list_from_repository();
+
+        assert_eq!(
+            album_store.n_items(),
+            2,
+            "refreshing a visible real album should use the database, not the stale Photos window"
+        );
+    }
+
+    #[gtk::test]
+    fn visible_real_album_refresh_emits_single_addition_change() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool =
+            crate::core::db::init_pool(&tmp.path().join("real-album-refresh-single.db")).unwrap();
+        let first = new_item(1, "image/jpeg");
+        crate::core::db::insert_media_item(&pool, &first).unwrap();
+        let initial =
+            crate::core::db::list_media_by_folder_page(&pool, &first.folder_path, 0, 10).unwrap();
+        let album = crate::core::albums::Album {
+            folder_path: first.folder_path.clone(),
+            name: "tmp".into(),
+            cover_uri: None,
+            photo_count: 1,
+            last_modified: Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap(),
+            is_virtual: false,
+        };
+        let album_store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        album_store.append(&glib::BoxedAnyObject::new(initial[0].clone()));
+        let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        master.append(&glib::BoxedAnyObject::new(initial[0].clone()));
+        let loader = Arc::new(crate::core::thumbnails::ThumbnailLoader::new(
+            pool.clone(),
+            tmp.path().join("thumbs"),
+        ));
+        let page = AlbumDetailPage::new(album, album_store.clone(), master, pool.clone(), loader);
+        let changes = Rc::new(RefCell::new(Vec::<(u32, u32, u32)>::new()));
+        let changes_for_signal = changes.clone();
+        album_store.connect_items_changed(move |_, position, removed, added| {
+            changes_for_signal
+                .borrow_mut()
+                .push((position, removed, added));
+        });
+
+        crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
+        page.refresh_media_list_from_repository();
+
+        assert_eq!(
+            *changes.borrow(),
+            vec![(0, 0, 1)],
+            "album refresh should emit one pure-addition change so MediaGrid can use its insertion path"
+        );
     }
 }
