@@ -17,6 +17,8 @@ pub struct MediaFields {
     pub metadata: bool,
     pub location: bool,
     pub trash: bool,
+    pub thumbnail: bool,
+    pub attributes: bool,
 }
 
 impl MediaFields {
@@ -25,6 +27,26 @@ impl MediaFields {
         metadata: false,
         location: false,
         trash: false,
+        thumbnail: false,
+        attributes: false,
+    };
+
+    pub const LOCATION: Self = Self {
+        favorite: false,
+        metadata: false,
+        location: true,
+        trash: false,
+        thumbnail: false,
+        attributes: false,
+    };
+
+    pub const TRASH: Self = Self {
+        favorite: false,
+        metadata: false,
+        location: false,
+        trash: true,
+        thumbnail: false,
+        attributes: false,
     };
 }
 
@@ -39,6 +61,14 @@ pub enum DomainEvent {
         ids: Vec<MediaId>,
         uris: Vec<String>,
     },
+    MediaMovedToTrash {
+        source: ChangeSource,
+        items: Vec<MediaItem>,
+    },
+    MediaRestored {
+        source: ChangeSource,
+        items: Vec<MediaItem>,
+    },
     MediaUpdated {
         source: ChangeSource,
         items: Vec<MediaItem>,
@@ -46,6 +76,16 @@ pub enum DomainEvent {
     },
     TrashChanged {
         source: ChangeSource,
+    },
+    AlbumsChanged {
+        source: ChangeSource,
+        affected_folders: Vec<std::path::PathBuf>,
+        affected_virtual: Vec<String>,
+        live_count_delta: i64,
+    },
+    AlbumCoverChanged {
+        folder_path: std::path::PathBuf,
+        cover_uri: String,
     },
     AlbumsDirty {
         source: ChangeSource,

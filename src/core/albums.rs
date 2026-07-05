@@ -337,9 +337,18 @@ pub fn favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
 
 /// 重新计算 albums 表（启动时 + 索引完成后调用）
 pub fn refresh(pool: &DbPool) -> Result<()> {
-    let conn = pool.get()?;
-    conn.execute("DELETE FROM albums", [])?;
-    conn.execute(
+    refresh_with_observer(pool, || Ok(()))
+}
+
+fn refresh_with_observer<F>(pool: &DbPool, after_clear: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM albums", [])?;
+    after_clear()?;
+    tx.execute(
         "INSERT INTO albums (folder_path, name, cover_uri, photo_count, last_modified)
          SELECT
              folder_path,
@@ -357,7 +366,16 @@ pub fn refresh(pool: &DbPool) -> Result<()> {
          GROUP BY folder_path",
         [],
     )?;
+    tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+fn refresh_with_observer_for_tests<F>(pool: &DbPool, after_clear: F) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    refresh_with_observer(pool, after_clear)
 }
 
 /// 列出所有相册，按最近修改排序
@@ -408,4 +426,67 @@ pub fn find_by_folder_path(pool: &DbPool, folder: &Path) -> Result<Option<Album>
     });
     // `QueryReturnedNoRows` → Ok(None),其它错误照旧上抛
     Ok(result.ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::media::NewMediaItem;
+    use chrono::TimeZone;
+    use tempfile::tempdir;
+
+    fn item(uri: &str, path: &str, folder: &str) -> NewMediaItem {
+        let mtime = Utc.with_ymd_and_hms(2026, 7, 5, 12, 0, 0).unwrap();
+        NewMediaItem {
+            uri: uri.into(),
+            path: path.into(),
+            folder_path: folder.into(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: Some(mtime),
+            file_mtime: mtime,
+            file_size: 1000,
+            blake3_hash: format!("hash-{uri}"),
+        }
+    }
+
+    #[test]
+    fn refresh_does_not_expose_empty_folder_album_projection_to_readers() {
+        let dir = tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("albums-refresh.db")).unwrap();
+        db::insert_media_item(
+            &pool,
+            &item("file:///pictures/a.jpg", "/pictures/a.jpg", "/pictures"),
+        )
+        .unwrap();
+        db::insert_media_item(
+            &pool,
+            &item(
+                "file:///screenshots/b.jpg",
+                "/screenshots/b.jpg",
+                "/screenshots",
+            ),
+        )
+        .unwrap();
+        refresh(&pool).unwrap();
+        assert_eq!(list(&pool).unwrap().len(), 2);
+
+        refresh_with_observer_for_tests(&pool, || {
+            let visible_folder_count = list_with_favorites(&pool)
+                .unwrap()
+                .into_iter()
+                .filter(|album| !album.is_virtual)
+                .count();
+            assert_eq!(
+                visible_folder_count, 2,
+                "readers must keep seeing the previous folder album projection while refresh is rebuilding"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
 }

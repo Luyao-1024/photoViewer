@@ -20,13 +20,14 @@ use gtk4::subclass::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
+use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
-use crate::core::{albums, db::DbPool};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
@@ -46,6 +47,7 @@ mod imp {
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         /// Tracks the three MediaGrids so we can clear their selections and
         /// react to their `selection-changed` callbacks uniformly.
         pub grids: RefCell<Vec<MediaGrid>>,
@@ -96,6 +98,7 @@ mod imp {
                 loader: RefCell::new(None),
                 nav_view: RefCell::new(None),
                 pool: RefCell::new(None),
+                db_actor: RefCell::new(None),
                 grids: RefCell::new(Vec::new()),
                 selected_ids: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
@@ -600,6 +603,10 @@ impl PhotosPage {
         *self.imp().pool.borrow_mut() = Some(pool);
     }
 
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
     }
@@ -615,6 +622,9 @@ impl PhotosPage {
             return;
         };
         let page = crate::ui::search_page::SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
         page.set_nav_target(&nav);
         nav.push(&page);
     }
@@ -852,68 +862,70 @@ impl PhotosPage {
         album_picker::AlbumPickerDialog::present(&nav, pool, raw_ids);
     }
 
-    fn remove_media_by_ids(&self, ids: &[i64]) {
-        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
-            return;
-        };
-        if ids.is_empty() {
-            return;
-        }
-
-        let id_set: HashSet<i64> = ids.iter().copied().collect();
-        let mut to_remove = Vec::new();
-        for idx in 0..list.n_items() {
-            let Some(obj) = list.item(idx) else {
-                continue;
-            };
-            let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            if id_set.contains(&boxed.borrow::<crate::core::media::MediaItem>().id) {
-                to_remove.push(idx);
-            }
-        }
-        for idx in to_remove.into_iter().rev() {
-            list.remove(idx);
-        }
-    }
-
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE photos_delete_requested_no_actor count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
+            return;
+        };
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            tracing::warn!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE photos_delete_requested_no_pool count={} ids={:?}",
+                ids.len(),
+                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            );
             return;
         };
         if ids.is_empty() {
             return;
         }
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            "TRASH_TRACE photos_delete_requested count={} ids={:?}",
+            ids.len(),
+            ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+        );
 
         let weak = self.downgrade();
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
-            let removed = gtk::gio::spawn_blocking(move || {
-                let repo = crate::core::repository::MediaRepository::new(pool.clone());
-                let mutation = repo.move_to_trash(&ids_for_worker).unwrap_or_default();
-                let _ = albums::refresh(&pool);
-                mutation
-                    .changed_ids
-                    .into_iter()
-                    .map(MediaId::get)
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
+            let prepared = db_actor
+                .execute(DbCommand::MarkTrashed {
+                    ids: ids_for_worker,
+                })
+                .await
+                .ok();
 
+            let Some(crate::core::DbCommandResult::MediaItems(items)) = prepared else {
+                tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE photos_mark_failed"
+                );
+                return;
+            };
             if let Some(this) = weak.upgrade() {
-                this.remove_media_by_ids(&removed);
-                this.clear_selection();
-                if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_sidebar(&nav);
-                }
+                crate::ui::trash_fallback::move_marked_items_with_fallback(
+                    &this,
+                    pool,
+                    db_actor,
+                    items,
+                    move |_| {
+                        if let Some(this) = weak.upgrade() {
+                            this.clear_selection();
+                        }
+                    },
+                );
             }
         });
     }
 
     fn set_favorite_for_ids(&self, ids: Vec<MediaId>, is_favorite: bool) {
-        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
             return;
         };
         if ids.is_empty() {
@@ -923,19 +935,16 @@ impl PhotosPage {
         let weak = self.downgrade();
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
-            let _ = gtk::gio::spawn_blocking(move || {
-                let repo = crate::core::repository::MediaRepository::new(pool.clone());
-                let _ = repo.set_favorite(&ids_for_worker, is_favorite);
-                let _ = albums::refresh(&pool);
-            })
-            .await;
+            let result = db_actor
+                .execute(DbCommand::SetFavorite {
+                    ids: ids_for_worker,
+                    is_favorite,
+                })
+                .await;
 
-            if let Some(this) = weak.upgrade() {
-                let raw_ids: Vec<i64> = ids.iter().map(|id| id.get()).collect();
-                this.update_media_favorite_flags(&raw_ids, is_favorite);
-                this.clear_selection();
-                if let Some(nav) = this.imp().nav_view.borrow().as_ref().cloned() {
-                    refresh_albums_sidebar(&nav);
+            if result.is_ok() {
+                if let Some(this) = weak.upgrade() {
+                    this.clear_selection();
                 }
             }
         });
@@ -1104,6 +1113,9 @@ impl PhotosPage {
         // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
         if let Some(pool) = self.imp().pool.borrow().as_ref() {
             viewer.set_edit_target(&nav, pool.clone());
+        }
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref() {
+            viewer.set_db_actor(db_actor.clone());
         }
 
         // Inject the shared thumbnail loader for the filmstrip.

@@ -71,6 +71,11 @@ any live media, hide the whole Media Types group instead of showing an empty
 header.
 
 `MediaGrid::spec_for_mode` owns per-view tile sizing. Section headers are separate GTK labels because the thumbnail grid cannot span a full-width header row by itself.
+Pure removal signals from the backing `ListStore` remove the affected
+`GtkFlowBoxChild` in place instead of rebuilding every section. This keeps
+single-photo trash/delete updates from flashing the whole Photos or album grid;
+only replacements, first non-empty loads, virtual page swaps, and inserted-item
+bursts should rebuild sections.
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded while the database remains the full source of truth. Startup loads the

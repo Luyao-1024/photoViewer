@@ -10,6 +10,7 @@
 //! M1-T10 / `app::initialize`). We unwrap via `BoxedAnyObject::borrow` rather
 //! than `downcast::<MediaItem>()`.
 use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::i18n::{tr, trf};
 use crate::core::identity::MediaId;
 use crate::core::media::{is_gif_head, MediaItem};
@@ -19,7 +20,6 @@ use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
-use crate::core::{albums, trash};
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel, SaveResultKind, ToastKind};
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
@@ -326,6 +326,8 @@ mod imp {
         pub favorite_state_cb: RefCell<Option<FavoriteStateCallback>>,
         /// DB pool injected by host (needed to construct the editor panel).
         pub pool: RefCell<Option<DbPool>>,
+        /// Single-thread DB mutation actor used for precise refresh events.
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         /// Navigation view (kept for album picker push; editor no longer pushes).
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         /// Original texture saved before editing starts; restored on cancel.
@@ -338,6 +340,7 @@ mod imp {
         /// `GtkMediaFile` while its GstPlay thread was still emitting
         /// state-changed signals, which crashed that thread with a
         /// use-after-free inside libgobject. See `stop_video_playback`.
+        pub attached_video_media_id: Cell<i64>,
         pub retired_video_stream: RefCell<Option<gtk::MediaStream>>,
         /// True while the editor side-panel is open (prevents nav gestures).
         pub is_editing: Cell<bool>,
@@ -414,6 +417,12 @@ mod imp {
         pub picture: TemplateChild<gtk::Picture>,
         #[template_child]
         pub video: TemplateChild<gtk::Video>,
+        #[template_child]
+        pub video_error_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub video_error_title: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub video_error_subtitle: TemplateChild<gtk::Label>,
         #[template_child]
         pub motion_play_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -580,6 +589,12 @@ impl ViewerPage {
         imp.motion_play_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.play_motion_photo")));
+        imp.video_error_title
+            .get()
+            .set_label(&tr("viewer.video_error.title"));
+        imp.video_error_subtitle
+            .get()
+            .set_label(&tr("viewer.video_error.subtitle"));
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an
@@ -594,6 +609,10 @@ impl ViewerPage {
         );
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
         *self.imp().pool.borrow_mut() = Some(pool);
+    }
+
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
     }
 
     /// Register a callback fired when the user presses ArrowLeft / ArrowRight /
@@ -1401,10 +1420,13 @@ impl ViewerPage {
                     return;
                 }
                 let Some(this) = weak2.upgrade() else { return };
-                let pool = match this.imp().pool.borrow().as_ref() {
-                    Some(p) => p.clone(),
+                let db_actor = match this.imp().db_actor.borrow().as_ref() {
+                    Some(actor) => actor.clone(),
                     None => {
-                        tracing::warn!("ViewerPage: Delete pressed but pool not set");
+                        tracing::warn!(
+                            target: crate::core::log_targets::VIEWER,
+                            "TRASH_TRACE viewer_delete_no_actor"
+                        );
                         return;
                     }
                 };
@@ -1414,22 +1436,67 @@ impl ViewerPage {
                 };
 
                 let item_id = item.id;
-                let item_uri = item.uri.clone();
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                gio::spawn_blocking(move || {
-                    // 先标记后移动（见 trash::move_to_trash_marked）：否则文件监听
-                    // 器会在 mark_trashed 提交前按 Remove 事件把行删掉。
-                    let result = trash::move_to_trash_marked(&pool, item_id, &item_uri)
-                        .and_then(|_| albums::refresh(&pool));
-                    let _ = tx.send(result);
-                });
-
+                tracing::info!(
+                    target: crate::core::log_targets::VIEWER,
+                    "TRASH_TRACE viewer_delete_requested id={} uri={}",
+                    item.id,
+                    item.uri
+                );
                 let weak_after = this.downgrade();
                 glib::spawn_future_local(async move {
-                    let result = rx.await;
-                    match result {
-                        Ok(Ok(())) => {
-                            if let Some(this) = weak_after.upgrade() {
+                    let prepared = db_actor
+                        .execute(DbCommand::MarkTrashed {
+                            ids: vec![MediaId::from(item_id)],
+                        })
+                        .await;
+                    let Ok(crate::core::DbCommandResult::MediaItems(mut items)) = prepared else {
+                        tracing::warn!(
+                            target: crate::core::log_targets::VIEWER,
+                            "TRASH_TRACE viewer_mark_failed id={item_id}"
+                        );
+                        if let Some(this) = weak_after.upgrade() {
+                            toasts::error(
+                                &this.imp().toast_overlay.get(),
+                                &tr("viewer.toast.move_to_trash_failed"),
+                            );
+                        }
+                        return;
+                    };
+                    let Some(item) = items.pop() else {
+                        return;
+                    };
+                    let Some(this) = weak_after.upgrade() else {
+                        let _ = db_actor
+                            .execute(DbCommand::RollbackTrashed {
+                                ids: vec![MediaId::from(item_id)],
+                            })
+                            .await;
+                        return;
+                    };
+                    let Some(pool) = this.imp().pool.borrow().as_ref().cloned() else {
+                        let _ = db_actor
+                            .execute(DbCommand::RollbackTrashed {
+                                ids: vec![MediaId::from(item_id)],
+                            })
+                            .await;
+                        toasts::error(
+                            &this.imp().toast_overlay.get(),
+                            &tr("viewer.toast.move_to_trash_failed"),
+                        );
+                        return;
+                    };
+
+                    let weak_for_callback = this.downgrade();
+                    crate::ui::trash_fallback::move_marked_items_with_fallback(
+                        &this,
+                        pool,
+                        db_actor,
+                        vec![item],
+                        move |moved_ids| {
+                            if !moved_ids.iter().any(|id| id.get() == item_id) {
+                                return;
+                            }
+                            if let Some(this) = weak_for_callback.upgrade() {
                                 toasts::success(
                                     &this.imp().toast_overlay.get(),
                                     &tr("viewer.toast.moved_to_trash"),
@@ -1439,26 +1506,8 @@ impl ViewerPage {
                                     cb(item_id);
                                 }
                             }
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("ViewerPage: Move to Trash failed: {e}");
-                            if let Some(this) = weak_after.upgrade() {
-                                toasts::error(
-                                    &this.imp().toast_overlay.get(),
-                                    &format!("{}: {e}", &tr("viewer.toast.move_to_trash_failed")),
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            tracing::warn!("ViewerPage: Move to Trash worker dropped");
-                            if let Some(this) = weak_after.upgrade() {
-                                toasts::error(
-                                    &this.imp().toast_overlay.get(),
-                                    &tr("viewer.toast.move_to_trash_failed"),
-                                );
-                            }
-                        }
-                    }
+                        },
+                    );
                 });
             });
             dialog.present(&this);
@@ -1481,10 +1530,10 @@ impl ViewerPage {
         let weak = self.downgrade();
         imp.favorite_btn.get().connect_clicked(move |button| {
             let Some(this) = weak.upgrade() else { return };
-            let pool = match this.imp().pool.borrow().as_ref() {
-                Some(p) => p.clone(),
+            let db_actor = match this.imp().db_actor.borrow().as_ref() {
+                Some(actor) => actor.clone(),
                 None => {
-                    tracing::warn!("ViewerPage: Favorite pressed but pool not set");
+                    tracing::warn!("ViewerPage: Favorite pressed but DB actor not set");
                     return;
                 }
             };
@@ -1496,33 +1545,28 @@ impl ViewerPage {
             let next_state = !this.imp().is_favorite.get();
             button.set_sensitive(false);
             let button_weak = button.downgrade();
-            let (tx, rx) = tokio::sync::oneshot::channel();
             let token = this.imp().current_token.get();
-            gio::spawn_blocking(move || {
-                let result = MediaRepository::new(pool)
-                    .set_favorite(&[MediaId::from(item_id)], next_state)
-                    .map(|_| ());
-                let _ = tx.send((result, next_state, token));
-            });
-
             let weak_after = this.downgrade();
             glib::spawn_future_local(async move {
-                let result = rx.await;
+                let db_result = db_actor
+                    .execute(DbCommand::SetFavorite {
+                        ids: vec![MediaId::from(item_id)],
+                        is_favorite: next_state,
+                    })
+                    .await
+                    .map(|_| ());
                 if let Some(button) = button_weak.upgrade() {
                     button.set_sensitive(true);
                 }
-                let Ok((db_result, target_state, token_expected)) = result else {
-                    return;
-                };
                 if let Some(this) = weak_after.upgrade() {
-                    if this.imp().current_token.get() != token_expected {
+                    if this.imp().current_token.get() != token {
                         return;
                     }
                     match db_result {
                         Ok(()) => {
-                            this.refresh_favorite_button(target_state);
+                            this.refresh_favorite_button(next_state);
                             if let Some(cb) = this.imp().favorite_state_cb.borrow().clone() {
-                                cb(item_id, target_state);
+                                cb(item_id, next_state);
                             }
                         }
                         Err(e) => {
@@ -1932,6 +1976,7 @@ impl ViewerPage {
             return;
         }
         self.stop_video_playback();
+        self.set_video_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(true);
@@ -2126,6 +2171,7 @@ impl ViewerPage {
         // live object; the previous retiree (if any) has now had its grace and
         // is released here.
         let stream = self.imp().video.get().media_stream();
+        self.imp().attached_video_media_id.set(0);
         self.imp()
             .video
             .get()
@@ -2218,6 +2264,7 @@ impl ViewerPage {
 
     fn show_image_stage(&self) {
         self.stop_video_playback();
+        self.set_video_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().edit_btn.get().set_sensitive(true);
@@ -2228,6 +2275,7 @@ impl ViewerPage {
         self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
+        self.set_video_error_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().video.get().set_visible(false);
@@ -2246,6 +2294,7 @@ impl ViewerPage {
         let persisted_volume = prefs::video_volume();
         self.connect_video_preview_reveal(&stream, token, false);
         self.imp().video.get().set_media_stream(Some(&stream));
+        self.imp().attached_video_media_id.set(item.id);
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
         stream.connect_volume_notify(persist_video_volume_from_stream);
         stream.set_playing(true);
@@ -2262,6 +2311,7 @@ impl ViewerPage {
         self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
+        self.set_video_error_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().video.get().set_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
@@ -2275,6 +2325,7 @@ impl ViewerPage {
         let persisted_volume = prefs::video_volume();
         self.connect_video_preview_reveal(&stream, token, true);
         self.imp().video.get().set_media_stream(Some(&stream));
+        self.imp().attached_video_media_id.set(0);
         apply_video_audio_preferences_to_stream(&stream, default_muted, persisted_volume);
         stream.connect_volume_notify(persist_video_volume_from_stream);
 
@@ -2325,8 +2376,21 @@ impl ViewerPage {
             this.imp().spinner.get().set_visible(false);
             if restore_motion_on_error {
                 this.restore_image_after_motion_video(token);
+            } else {
+                this.show_video_error_background();
             }
         });
+    }
+
+    fn set_video_error_visible(&self, visible: bool) {
+        self.imp().video_error_box.get().set_visible(visible);
+    }
+
+    fn show_video_error_background(&self) {
+        self.imp().video.get().set_visible(false);
+        self.imp().picture.get().set_visible(false);
+        self.imp().spinner.get().set_visible(false);
+        self.set_video_error_visible(true);
     }
 
     fn reveal_prepared_video_stage(
@@ -2339,6 +2403,8 @@ impl ViewerPage {
             self.imp().spinner.get().set_visible(false);
             if restore_motion_on_error {
                 self.restore_image_after_motion_video(token);
+            } else {
+                self.show_video_error_background();
             }
             return;
         }
@@ -2350,6 +2416,7 @@ impl ViewerPage {
             return;
         }
         self.imp().picture.get().set_visible(false);
+        self.set_video_error_visible(false);
         self.imp().video.get().set_visible(true);
         self.imp().spinner.get().set_visible(false);
         self.imp().video.get().grab_focus();
@@ -3709,7 +3776,6 @@ impl ViewerPage {
             self.imp().current_index.get(),
             self.imp().details_split_view.get().shows_sidebar()
         );
-        let prev_media_id = self.imp().current_media_id.get();
         self.imp().current_index.set(index);
         self.stop_animated_image_playback();
         // Keep the previous frame on screen until a new texture arrives — no
@@ -3785,13 +3851,15 @@ impl ViewerPage {
             // when media is inserted before it; rebuilding here would destroy a
             // live GstPlay mid-flight for no reason (and race the teardown
             // crash fixed in `stop_video_playback`).
-            if prev_media_id == item.id && self.imp().video.get().media_stream().is_some() {
+            let attached_video_media_id = self.imp().attached_video_media_id.get();
+            if attached_video_media_id == item.id && self.imp().video.get().media_stream().is_some()
+            {
                 tracing::debug!(
                     target: crate::core::log_targets::VIEWER,
-                    "VIEWER_TRACE video_stage_reused index={} item_id={} prev_media_id={} (startup-scan re-anchor, no rebuild)",
+                    "VIEWER_TRACE video_stage_reused index={} item_id={} attached_video_media_id={} (startup-scan re-anchor, no rebuild)",
                     index,
                     item.id,
-                    prev_media_id
+                    attached_video_media_id
                 );
                 return;
             }
@@ -5477,6 +5545,54 @@ mod tests {
     }
 
     #[gtk::test]
+    fn video_error_background_exists_in_viewer_overlay() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        assert!(
+            widget_tree_has_class(&viewer.imp().image_overlay.get(), "viewer-video-error"),
+            "viewer should provide an app-owned video error background instead of exposing GtkVideo's default broken frame"
+        );
+        assert!(
+            !viewer.imp().video_error_box.get().is_visible(),
+            "video error background should stay hidden until playback reports an error"
+        );
+        assert_eq!(
+            viewer.imp().video_error_title.get().label(),
+            tr("viewer.video_error.title")
+        );
+    }
+
+    #[gtk::test]
+    fn video_error_background_hides_default_video_error_surface() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+
+        viewer.imp().video.get().set_visible(true);
+        viewer.imp().picture.get().set_visible(true);
+        viewer.imp().spinner.get().set_visible(true);
+        viewer.show_video_error_background();
+
+        assert!(viewer.imp().video_error_box.get().is_visible());
+        assert!(
+            !viewer.imp().video.get().is_visible(),
+            "GtkVideo should be hidden so its default broken-frame graphic is not exposed"
+        );
+        assert!(!viewer.imp().picture.get().is_visible());
+        assert!(!viewer.imp().spinner.get().is_visible());
+
+        viewer.show_image_stage();
+        assert!(
+            !viewer.imp().video_error_box.get().is_visible(),
+            "leaving the failed video should clear the error background"
+        );
+    }
+
+    #[gtk::test]
     fn fullscreen_preview_opens_separate_window_without_changing_viewer_layout() {
         init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
@@ -6250,6 +6366,63 @@ mod tests {
         assert!(
             viewer.imp().retired_video_stream.borrow().is_none(),
             "same-id re-show must not tear down and rebuild the live GstPlay stream"
+        );
+    }
+
+    #[gtk::test]
+    fn show_at_rebuilds_video_stream_after_optimistic_navigation_to_different_video() {
+        init_viewer_test();
+        let dir = tempfile::tempdir().unwrap();
+        let first_path = dir.path().join("first.mp4");
+        let second_path = dir.path().join("second.mp4");
+        std::fs::write(&first_path, b"fake first mp4").unwrap();
+        std::fs::write(&second_path, b"fake second mp4").unwrap();
+
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let mut first = sample_media_item();
+        first.id = 20;
+        first.mime_type = "video/mp4".into();
+        first.uri = format!("file://{}", first_path.display());
+        first.path = first_path;
+        media_list.append(&glib::BoxedAnyObject::new(first));
+
+        let mut second = sample_media_item();
+        second.id = 30;
+        second.mime_type = "video/mp4".into();
+        second.uri = format!("file://{}", second_path.display());
+        second.path = second_path;
+        media_list.append(&glib::BoxedAnyObject::new(second));
+
+        let viewer =
+            ViewerPage::new_for_query(MediaQuery::LiveAll, MediaId::from(20), media_list.clone());
+        viewer.show_at(0);
+        let first_stream = viewer
+            .imp()
+            .video
+            .get()
+            .media_stream()
+            .expect("first video should attach a stream");
+
+        // navigate_by_delta advances current_media_id optimistically before
+        // the deferred show_at paints. show_at must still rebuild the video
+        // stage for the target video instead of treating that optimistic id as
+        // proof that the attached stream already belongs to the target.
+        viewer.imp().current_media_id.set(30);
+        viewer.show_at(1);
+
+        let second_stream = viewer
+            .imp()
+            .video
+            .get()
+            .media_stream()
+            .expect("second video should attach a stream");
+        assert!(
+            first_stream.as_ptr() != second_stream.as_ptr(),
+            "switching to a different video must replace the attached stream"
+        );
+        assert!(
+            viewer.imp().retired_video_stream.borrow().is_some(),
+            "old video stream should be retired when navigating to a different video"
         );
     }
 }

@@ -157,6 +157,14 @@ pub struct MediaGridCallbacks {
     pub on_set_album_cover: Option<CoverCallback>,
 }
 
+#[derive(Clone)]
+struct DisplayedItem {
+    flow_child: gtk::FlowBoxChild,
+    window_index: u32,
+    media_id: MediaId,
+    section_key: SectionKey,
+}
+
 mod imp {
     use super::*;
     use std::cell::{Cell, RefCell};
@@ -184,9 +192,8 @@ mod imp {
         pub on_query_favorite_state: std::cell::OnceCell<FavoriteStateCallback>,
         pub on_set_album_cover: std::cell::OnceCell<Option<CoverCallback>>,
         pub context_menu_overlay: RefCell<Option<gtk::Overlay>>,
-        /// Flattened `(flow_child, local_window_index, media_id)` for every
-        /// rendered tile in current mode.
-        pub displayed_items: RefCell<Vec<(gtk::FlowBoxChild, u32, MediaId)>>,
+        /// Flattened metadata for every rendered tile in current mode.
+        pub(super) displayed_items: RefCell<Vec<DisplayedItem>>,
         /// Stable media ids currently in the "selected" set.
         pub selected: RefCell<HashSet<MediaId>>,
         /// 当前渲染上限：初始 = `max_rendered_grid_items()`；
@@ -633,16 +640,20 @@ impl MediaGrid {
                 if this.imp().applying_virtual_page.get() {
                     return;
                 }
-                this.invalidate_library_metadata();
                 let was_empty = list.n_items().saturating_sub(added) == 0;
-                if removed > 0 {
-                    // 有项被移除或全量替换 → 必须重建。
+                if removed > 0 && added == 0 {
+                    this.apply_incremental_removal(position, removed, list);
+                } else if removed > 0 {
+                    this.invalidate_library_metadata();
+                    // Replacements can reorder or remap existing children, so rebuild.
                     this.rebuild_immediately(list.clone());
                 } else if added > 0 && was_empty {
+                    this.invalidate_library_metadata();
                     // 首次启动扫描从空库追加第一批媒体时，Day grid 已经按空列表
                     // 构建过；必须立即重建，否则空态切回 Day 后 tile/统计仍为空。
                     this.rebuild_immediately(list.clone());
                 } else if added > 0 {
+                    this.invalidate_library_metadata();
                     // 启动扫描和 watcher 的纯新增事件可能把较新的项目插入到当前窗口
                     // 前部。去抖重建以吸收批量扫描突发，同时避免每个新增信号都同步
                     // 拆/建 FlowBox。
@@ -790,8 +801,31 @@ impl MediaGrid {
             .displayed_items
             .borrow()
             .iter()
-            .map(|(_, gi, _)| *gi)
+            .map(|item| item.window_index)
             .collect()
+    }
+
+    fn displayed_item_for_child(&self, child: &gtk::FlowBoxChild) -> Option<DisplayedItem> {
+        self.imp()
+            .displayed_items
+            .borrow()
+            .iter()
+            .find(|item| item.flow_child == *child)
+            .cloned()
+    }
+
+    fn media_item_for_id(&self, media_id: MediaId) -> Option<MediaItem> {
+        let list = self.imp().media_list.borrow().as_ref().cloned()?;
+        for index in 0..list.n_items() {
+            let Some(obj) = list.item(index).and_downcast::<glib::BoxedAnyObject>() else {
+                continue;
+            };
+            let item = obj.borrow::<MediaItem>();
+            if item.id == media_id.get() {
+                return Some((*item).clone());
+            }
+        }
+        None
     }
 
     /// Select all rendered tiles and sync visible highlights.
@@ -802,13 +836,13 @@ impl MediaGrid {
         self.apply_selection_mode();
         let mut next = HashSet::new();
         let items = self.imp().displayed_items.borrow().clone();
-        for (flow_child, _, media_id) in items {
-            if let Some(parent) = flow_child.parent() {
+        for item in items {
+            if let Some(parent) = item.flow_child.parent() {
                 if let Ok(flow) = parent.downcast::<gtk::FlowBox>() {
-                    flow.select_child(&flow_child);
+                    flow.select_child(&item.flow_child);
                 }
             }
-            next.insert(media_id);
+            next.insert(item.media_id);
         }
 
         let mut changed = false;
@@ -872,8 +906,8 @@ impl MediaGrid {
         if displayed.is_empty() {
             return false;
         }
-        for (_, _, media_id) in displayed.iter() {
-            if !selected.contains(media_id) {
+        for item in displayed.iter() {
+            if !selected.contains(&item.media_id) {
                 return false;
             }
         }
@@ -1322,6 +1356,178 @@ impl MediaGrid {
         self.fire_selection_changed();
     }
 
+    fn apply_incremental_removal(&self, position: u32, removed: u32, media_list: &gio::ListStore) {
+        if removed == 0 {
+            return;
+        }
+
+        let removed_end = position.saturating_add(removed);
+        let mut removed_items = Vec::new();
+        {
+            let mut displayed = self.imp().displayed_items.borrow_mut();
+            let mut kept = Vec::with_capacity(displayed.len());
+            for mut item in displayed.drain(..) {
+                if item.window_index >= position && item.window_index < removed_end {
+                    removed_items.push(item);
+                } else {
+                    if item.window_index >= removed_end {
+                        item.window_index = item.window_index.saturating_sub(removed);
+                    }
+                    kept.push(item);
+                }
+            }
+            *displayed = kept;
+        }
+
+        let mut selection_changed = false;
+        {
+            let mut selected = self.imp().selected.borrow_mut();
+            for item in &removed_items {
+                selection_changed |= selected.remove(&item.media_id);
+            }
+        }
+
+        self.decrement_cached_metadata_after_removal(removed, &removed_items);
+
+        for item in &removed_items {
+            self.remove_displayed_child(&item.flow_child);
+        }
+        self.refresh_section_header_labels(media_list);
+        self.refresh_stats_label_after_cached_change();
+
+        if selection_changed {
+            self.fire_selection_changed();
+        }
+        self.reprioritize_visible();
+    }
+
+    fn decrement_cached_metadata_after_removal(
+        &self,
+        removed: u32,
+        removed_items: &[DisplayedItem],
+    ) {
+        self.imp()
+            .virtual_total
+            .set(self.imp().virtual_total.get().saturating_sub(removed));
+        if let Some(total) = self.imp().library_total_snapshot.get() {
+            self.imp()
+                .library_total_snapshot
+                .set(Some(total.saturating_sub(removed)));
+        }
+        if let Some(mut stats) = self.imp().library_stats_snapshot.get() {
+            stats.live_total = stats.live_total.saturating_sub(removed as usize);
+            stats.thumbnails_generated = stats.thumbnails_generated.min(stats.live_total);
+            self.imp().library_stats_snapshot.set(Some(stats));
+        }
+
+        let mode = self.mode();
+        if let Some(counts) = self
+            .imp()
+            .section_count_snapshots
+            .borrow_mut()
+            .get_mut(&mode)
+        {
+            for item in removed_items {
+                let next = counts
+                    .get(&item.section_key)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_sub(1);
+                if next == 0 {
+                    counts.remove(&item.section_key);
+                } else {
+                    counts.insert(item.section_key.clone(), next);
+                }
+            }
+        }
+    }
+
+    fn remove_displayed_child(&self, child: &gtk::FlowBoxChild) {
+        let Some(flow) = child.parent().and_downcast::<gtk::FlowBox>() else {
+            return;
+        };
+        flow.remove(child);
+        if flow.observe_children().n_items() > 0 {
+            return;
+        }
+
+        let header = flow.prev_sibling().and_then(|widget| {
+            widget
+                .downcast::<gtk::Label>()
+                .ok()
+                .filter(|label| label.has_css_class("heading"))
+                .map(|label| label.upcast::<gtk::Widget>())
+        });
+        let Some(content) = flow.parent().and_downcast::<gtk::Box>() else {
+            return;
+        };
+        content.remove(&flow);
+        if let Some(header) = header {
+            content.remove(&header);
+        }
+    }
+
+    fn refresh_section_header_labels(&self, media_list: &gio::ListStore) {
+        if self.imp().flat_sections.get() {
+            return;
+        }
+
+        let mut items = extract_items(media_list);
+        let max_items = self.imp().rendered_limit.get();
+        if items.len() > max_items {
+            items.truncate(max_items);
+        }
+        let mut sections = group_items(&items, self.mode());
+        if self.imp().full_library_context.get() {
+            if let Some(counts) = self
+                .imp()
+                .section_count_snapshots
+                .borrow()
+                .get(&self.mode())
+            {
+                apply_authoritative_counts(&mut sections, counts);
+            }
+        }
+
+        let mut section_iter = sections.into_iter();
+        let content = self.imp().content.get();
+        let mut child = content.first_child();
+        while let Some(widget) = child {
+            let next = widget.next_sibling();
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                if label.has_css_class("heading") {
+                    if let Some(section) = section_iter.next() {
+                        label.set_label(&section.label);
+                    }
+                }
+            }
+            child = next;
+        }
+    }
+
+    fn refresh_stats_label_after_cached_change(&self) {
+        let Some(stats) = self.imp().library_stats_snapshot.get() else {
+            return;
+        };
+        let Some(label) = self.imp().stats_label.borrow().as_ref().cloned() else {
+            return;
+        };
+        if should_show_library_stats(&stats) {
+            label.set_label(&library_stats_text(
+                stats.live_total,
+                stats.thumbnails_generated,
+            ));
+            return;
+        }
+        if let Some(parent) = label.parent().and_downcast::<gtk::Box>() {
+            parent.remove(&label);
+        }
+        self.imp().stats_label.borrow_mut().take();
+        if let Some(source) = self.imp().stats_refresh_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
     /// Tear down the current sections and rebuild them for `mode`.
     #[tracing::instrument(name = "grid:rebuild", skip(self, media_list), fields(source_len = media_list.n_items()))]
     fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
@@ -1548,21 +1754,12 @@ impl MediaGrid {
                 // highlight follows the keyboard focus, not the resting pointer.
                 crate::ui::grid_css::attach_kbd_nav(&flow);
 
-                // Build tiles + remember each child's global index for activation.
-                let mut global_indices: Vec<u32> = Vec::with_capacity(section.items.len());
-                let mut media_ids: Vec<MediaId> = Vec::with_capacity(section.items.len());
-                let mut activation_items: Vec<(i64, String, String)> =
-                    Vec::with_capacity(section.items.len());
+                // Build tiles and remember each child's stable id/current store
+                // index. Activation and context menus read this live mapping so
+                // incremental child removals cannot leave stale index arrays.
                 for item in &section.items {
                     let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
                     let media_id = MediaId::from(item.id);
-                    global_indices.push(gi);
-                    media_ids.push(media_id);
-                    activation_items.push((
-                        item.id,
-                        item.display_name().to_string(),
-                        item.uri.clone(),
-                    ));
                     let on_bg = self
                         .imp()
                         .on_background_changed
@@ -1583,7 +1780,12 @@ impl MediaGrid {
                         .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
                     {
                         if gi != u32::MAX {
-                            displayed_items.push((flow_child.clone(), gi, media_id));
+                            displayed_items.push(DisplayedItem {
+                                flow_child: flow_child.clone(),
+                                window_index: gi,
+                                media_id,
+                                section_key: section.key.clone(),
+                            });
                         }
                     }
                     photo_count += 1;
@@ -1594,29 +1796,27 @@ impl MediaGrid {
                 // toggles selection; otherwise the item opens in viewer.
                 let on_act = on_activate.clone();
                 let weak = self.downgrade();
-                let media_ids_for_activation = media_ids.clone();
-                let global_indices_for_activation = global_indices.clone();
-                let media_ids_for_context = media_ids;
                 let section_label_for_activation = section.label.clone();
                 flow.connect_child_activated(move |flow, child| {
-                let idx = child.index();
-                if idx < 0 {
-                    return;
-                }
-                let Some(&media_id) = media_ids_for_activation.get(idx as usize) else {
-                    return;
-                };
-                let gi = global_indices_for_activation
-                    .get(idx as usize)
-                    .copied()
-                    .unwrap_or(u32::MAX);
-                let (item_id, item_name, item_uri) = activation_items
-                    .get(idx as usize)
-                    .map(|(id, name, uri)| (*id, name.as_str(), uri.as_str()))
-                    .unwrap_or((-1, "(missing)", "(missing)"));
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
+                let idx = child.index();
+                let Some(displayed_item) = this.displayed_item_for_child(child) else {
+                    return;
+                };
+                let media_id = displayed_item.media_id;
+                let gi = displayed_item.window_index;
+                let current_item = this.media_item_for_id(media_id);
+                let item_id = current_item.as_ref().map(|item| item.id).unwrap_or(-1);
+                let item_name = current_item
+                    .as_ref()
+                    .map(|item| item.display_name().to_string())
+                    .unwrap_or_else(|| "(missing)".into());
+                let item_uri = current_item
+                    .as_ref()
+                    .map(|item| item.uri.clone())
+                    .unwrap_or_else(|| "(missing)".into());
                 let is_multi = this.is_multi_select_mode();
                 let displayed_indices = this.displayed_indices();
                 let displayed_pos = displayed_indices.iter().position(|index| *index == gi);
@@ -1632,8 +1832,8 @@ impl MediaGrid {
                     displayed_indices.first(),
                     displayed_indices.last(),
                     item_id,
-                    item_name,
-                    item_uri,
+                    item_name.as_str(),
+                    item_uri.as_str(),
                     is_multi
                 );
                 if is_multi {
@@ -1647,7 +1847,6 @@ impl MediaGrid {
                 if enable_context_menu {
                     let weak_for_context = self.downgrade();
                     let section_label_for_ctx = section.label.clone();
-                    let media_ids_for_context = media_ids_for_context.clone();
                     let flow_for_ctx = flow.clone();
                     let on_add_to_album_ctx = on_add_to_album.clone();
                     let on_move_to_trash_ctx = on_move_to_trash.clone();
@@ -1669,14 +1868,11 @@ impl MediaGrid {
                     let Some(flow_child_for_ctx) = flow_for_ctx.child_at_pos(x as i32, y as i32) else {
                         return;
                     };
-                    let hit_idx = match flow_child_for_ctx.index() {
-                        idx if idx >= 0 => idx as usize,
-                        _ => return,
-                    };
 
-                    let Some(media_id) = media_ids_for_context.get(hit_idx).copied() else {
+                    let Some(displayed_item) = this.displayed_item_for_child(&flow_child_for_ctx) else {
                         return;
                     };
+                    let media_id = displayed_item.media_id;
 
                     let in_multi_mode = this.is_multi_select_mode();
                     let target_indices = if in_multi_mode {
@@ -2761,6 +2957,18 @@ mod tests {
         count
     }
 
+    fn first_section_flow(grid: &MediaGrid) -> Option<gtk::FlowBox> {
+        let content = grid.imp().content.get();
+        let mut child = content.first_child();
+        while let Some(widget) = child {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                return Some(flow.clone());
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
     fn section_flow_selection_modes(grid: &MediaGrid) -> Vec<gtk::SelectionMode> {
         let content = grid.imp().content.get();
         let mut modes = Vec::new();
@@ -2839,6 +3047,36 @@ mod tests {
             tile_count(&grid),
             1,
             "MediaGrid must drop stale thumbnails when the shared ListStore changes"
+        );
+    }
+
+    #[gtk::test]
+    fn grid_removes_backing_store_item_without_replacing_section_flow() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(3, "three.png")));
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
+
+        media_list.remove(1);
+
+        assert_eq!(tile_count(&grid), 2);
+        let flow_after = first_section_flow(&grid).expect("section flow should remain");
+        assert!(
+            flow_before == flow_after,
+            "a single backing-store removal should remove the child in place instead of rebuilding the whole section flow"
         );
     }
 

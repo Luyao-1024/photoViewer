@@ -58,6 +58,19 @@ impl MediaChangeNotifier {
         }
     }
 
+    pub fn removed_batch(&self, source: ChangeSource, uris: Vec<String>) {
+        if uris.is_empty() {
+            return;
+        }
+        if let Err(e) = self.tx.send(DomainEvent::MediaRemoved {
+            source,
+            ids: Vec::new(),
+            uris,
+        }) {
+            tracing::warn!("MediaChangeNotifier::removed_batch send failed: {e}");
+        }
+    }
+
     /// Notify that the system trash changed and the DB has been re-reconciled.
     /// Consumers refresh any visible Trash view.
     pub fn trash_changed(&self) {

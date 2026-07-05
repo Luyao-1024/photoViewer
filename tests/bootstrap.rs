@@ -61,3 +61,32 @@ fn scan_and_aggregate_with_notifier_emits_upserted_items() {
         other => panic!("expected startup scan to emit UpsertedBatch, got {other:?}"),
     }
 }
+
+#[test]
+fn scan_and_aggregate_with_actor_emits_actor_events() {
+    let dir = tmp_dir();
+    write_plain_png(dir.path(), "actor-visible.png");
+
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let (sender, mut rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), sender);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        bootstrap::scan_and_aggregate_with_actor(
+            &pool,
+            &[dir.path().to_path_buf()],
+            db_actor.clone(),
+        )
+        .await
+        .unwrap();
+    });
+
+    match rx.try_recv() {
+        Ok(DomainEvent::MediaUpserted { source, items }) => {
+            assert_eq!(source, ChangeSource::StartupScan);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].display_name(), "actor-visible.png");
+        }
+        other => panic!("expected startup scan actor event, got {other:?}"),
+    }
+}

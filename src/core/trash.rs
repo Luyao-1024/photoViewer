@@ -1,9 +1,11 @@
-//! gio 系统回收站包装
+//! 回收站后端包装：优先使用 gio 系统回收站，并提供应用自有 fallback。
 //!
 //! gio crate 0.19 仅绑定了 `File::trash()`；`restore_from_trash` 与
 //! `delete_permanently` 在其公共 API 中未直接暴露。这里采用以下等价流程：
 //!
-//! * `move_to_trash(uri)`：gio `File::trash()` 处理原路径记录。
+//! * `move_to_system_trash(uri)`：gio `File::trash()` 处理原路径记录。
+//! * `move_to_app_trash(uri)`：移动到 App 数据目录下的 freedesktop-style
+//!   `Trash/files`，并写入 `Trash/info/*.trashinfo`。
 //! * `resolve_trash_entry(original_path)`：扫描候选回收站根下的 `info/*.trashinfo`，
 //!   按（percent-decode 后的）`Path=` 字段匹配原路径，得到 gio 实际使用的
 //!   `files/` 文件名（含冲突后缀）。
@@ -22,11 +24,15 @@
 //! `.trashinfo` 的 `Path=` 字段是 URL percent-encoded（如 `图片` →
 //! `%E5%9B%BE%E7%89%87`），且 gio 冲突后缀可能从 `.0` 开始，所以解析时
 //! **扫描所有 `.trashinfo`** 而不是按固定后缀猜文件名。
+use crate::config;
 use crate::core::backend::local::LocalBackend;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
+use crate::core::identity::MediaId;
+use crate::core::prefs::{self, TrashBackend};
 use gtk::gio::prelude::*;
 use gtk4 as gtk;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -35,7 +41,22 @@ use std::path::{Path, PathBuf};
 /// 见模块文档：Flatpak 下实际落点是 HOST `~/.local/share/Trash`，但同时保留
 /// per-app `$XDG_DATA_HOME/Trash` 作为候选，兼容非沙箱或自定义 `XDG_DATA_HOME`。
 pub fn trash_roots() -> Vec<PathBuf> {
+    let mut roots = system_trash_roots();
+    let app = app_trash_root();
+    if !roots.contains(&app) {
+        roots.push(app);
+    }
+    roots
+}
+
+/// System trash roots used by gio/gvfs and the freedesktop trash layout.
+pub fn system_trash_roots() -> Vec<PathBuf> {
     trash_roots_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+/// App-owned fallback trash root.
+pub fn app_trash_root() -> PathBuf {
+    config::data_dir().join("Trash")
 }
 
 /// [`trash_roots`] 的纯函数核心，便于单测（不读环境变量/文件系统）。
@@ -67,10 +88,6 @@ fn trash_roots_from(xdg_data_home: Option<OsString>, home: Option<OsString>) -> 
 /// 可直接推回 `files/` 文件名，**无需猜测后缀**。
 ///
 /// `Path=` 字段是 URL percent-encoded，比较前必须 [`percent_decode`]。
-fn find_trash_entry(original_path: &Path) -> Option<(String, PathBuf)> {
-    find_trash_entry_in(original_path, &trash_roots())
-}
-
 /// [`find_trash_entry`] 的可测试核心：显式传入候选回收站根。
 fn find_trash_entry_in(original_path: &Path, trash_roots: &[PathBuf]) -> Option<(String, PathBuf)> {
     for root in trash_roots {
@@ -109,13 +126,16 @@ fn find_trash_entry_in(original_path: &Path, trash_roots: &[PathBuf]) -> Option<
 /// [`find_trash_entry`] 的带兜底包装，供缩略图/还原/永久删除使用：找不到真实条目
 /// 时，用原始 basename + 第一个候选根构造一个（可能不存在的）路径，调用方拿到后
 /// 会优雅失败并报错。
-fn resolve_trash_entry(original_path: &Path) -> Result<(String, PathBuf)> {
-    if let Some(found) = find_trash_entry(original_path) {
+fn resolve_trash_entry_in_roots(
+    original_path: &Path,
+    trash_roots: &[PathBuf],
+) -> Result<(String, PathBuf)> {
+    if let Some(found) = find_trash_entry_in(original_path, trash_roots) {
         return Ok(found);
     }
-    let root = trash_roots()
-        .into_iter()
-        .next()
+    let root = trash_roots
+        .first()
+        .cloned()
         .unwrap_or_else(|| PathBuf::from("/tmp/Trash"));
     let basename = original_path
         .file_name()
@@ -149,6 +169,20 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn percent_encode_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    let mut out = String::new();
+    for &b in path.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
 fn hex_digit(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -165,11 +199,15 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// decoding, however, needs the actual file now stored under the trash root's
 /// `files/` directory (HOST `~/.local/share/Trash/files/` under Flatpak).
 pub fn trashed_file_uri(uri: &str) -> Result<String> {
+    trashed_file_uri_in_roots(uri, &trash_roots())
+}
+
+fn trashed_file_uri_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<String> {
     let file = gtk::gio::File::for_uri(uri);
     let path = file
         .path()
         .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
-    let (actual_name, info_path) = resolve_trash_entry(&path)?;
+    let (actual_name, info_path) = resolve_trash_entry_in_roots(&path, trash_roots)?;
     Ok(format!(
         "file://{}",
         files_dir_for(&info_path).join(actual_name).display()
@@ -178,10 +216,328 @@ pub fn trashed_file_uri(uri: &str) -> Result<String> {
 
 /// 将文件移至系统回收站（gio 自动处理原路径记录）
 pub fn move_to_trash(uri: &str) -> Result<()> {
+    move_to_system_trash(uri)
+}
+
+/// Move a file to the system trash through gio.
+pub fn move_to_system_trash(uri: &str) -> Result<()> {
     let file = gtk::gio::File::for_uri(uri);
     file.trash(gtk::gio::Cancellable::NONE)
         .map_err(AppError::Gio)?;
     Ok(())
+}
+
+/// Move a file to the app-owned fallback trash.
+pub fn move_to_app_trash(uri: &str) -> Result<()> {
+    let file = gtk::gio::File::for_uri(uri);
+    let path = file
+        .path()
+        .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
+    move_path_to_trash_root(&path, &app_trash_root())
+}
+
+/// Move a file using the currently configured backend.
+pub fn move_to_configured_trash(uri: &str) -> Result<()> {
+    move_to_backend(uri, prefs::trash_backend())
+}
+
+pub fn move_to_backend(uri: &str, backend: TrashBackend) -> Result<()> {
+    match backend {
+        TrashBackend::System => move_to_system_trash(uri),
+        TrashBackend::App => move_to_app_trash(uri),
+    }
+}
+
+fn move_path_to_trash_root(original_path: &Path, trash_root: &Path) -> Result<()> {
+    if !original_path.is_file() {
+        return Err(AppError::Backend(format!(
+            "file does not exist: {}",
+            original_path.display()
+        )));
+    }
+    let info_dir = trash_root.join("info");
+    let files_dir = trash_root.join("files");
+    std::fs::create_dir_all(&info_dir)?;
+    std::fs::create_dir_all(&files_dir)?;
+
+    let basename = original_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::Backend("orig path has no filename".into()))?;
+    let actual = unique_trash_name(&files_dir, &info_dir, basename);
+    let target = files_dir.join(&actual);
+    move_file(original_path, &target)?;
+
+    let trashinfo_path = info_dir.join(format!("{actual}.trashinfo"));
+    let trashinfo = trashinfo_for(original_path);
+    if let Err(err) = std::fs::write(&trashinfo_path, trashinfo) {
+        let _ = move_file(&target, original_path);
+        return Err(AppError::Io(err));
+    }
+    Ok(())
+}
+
+fn trashinfo_for(original_path: &Path) -> String {
+    format!(
+        "[Trash Info]\nPath={}\nDeletionDate={}\n",
+        percent_encode_path(original_path),
+        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
+    )
+}
+
+fn unique_trash_name(files_dir: &Path, info_dir: &Path, basename: &str) -> String {
+    if !files_dir.join(basename).exists()
+        && !info_dir.join(format!("{basename}.trashinfo")).exists()
+    {
+        return basename.to_string();
+    }
+
+    let path = Path::new(basename);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(basename);
+    let ext = path.extension().and_then(|e| e.to_str());
+    for n in 0..=9999 {
+        let candidate = match ext {
+            Some(ext) if !ext.is_empty() => format!("{stem}.{n}.{ext}"),
+            _ => format!("{stem}.{n}"),
+        };
+        if !files_dir.join(&candidate).exists()
+            && !info_dir.join(format!("{candidate}.trashinfo")).exists()
+        {
+            return candidate;
+        }
+    }
+    format!(
+        "{basename}.{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    )
+}
+
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) if err.raw_os_error() == Some(libc::EXDEV) => {
+            std::fs::copy(from, to)?;
+            std::fs::remove_file(from)?;
+            Ok(())
+        }
+        Err(err) => Err(AppError::Io(err)),
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TrashMigrationStats {
+    pub moved: usize,
+    pub skipped: usize,
+}
+
+struct MigratedTrashEntry {
+    old_file: PathBuf,
+    old_info: PathBuf,
+    old_info_content: String,
+    new_file: PathBuf,
+    new_info: PathBuf,
+}
+
+pub fn migrate_trash_backend(
+    pool: &DbPool,
+    from: TrashBackend,
+    to: TrashBackend,
+    excluded_ids: &[MediaId],
+) -> Result<TrashMigrationStats> {
+    if from == to {
+        return Ok(TrashMigrationStats::default());
+    }
+    let source_roots = match from {
+        TrashBackend::System => system_trash_roots(),
+        TrashBackend::App => vec![app_trash_root()],
+    };
+    let target_root = match to {
+        TrashBackend::System => system_trash_roots()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| PathBuf::from("/tmp/Trash")),
+        TrashBackend::App => app_trash_root(),
+    };
+    migrate_trash_entries_between_roots(pool, &source_roots, &target_root, excluded_ids)
+}
+
+pub fn switch_trash_backend(pool: &DbPool, target: TrashBackend) -> Result<TrashMigrationStats> {
+    let current = prefs::trash_backend();
+    if current == target {
+        return Ok(TrashMigrationStats::default());
+    }
+    if target == TrashBackend::System {
+        probe_system_trash()?;
+    }
+    let stats = migrate_trash_backend(pool, current, target, &[])?;
+    prefs::set_trash_backend(target).map_err(AppError::Backend)?;
+    Ok(stats)
+}
+
+pub fn probe_system_trash() -> Result<()> {
+    let roots = config::media_roots();
+    let probe_root = roots
+        .iter()
+        .find(|root| root.is_dir())
+        .cloned()
+        .unwrap_or_else(config::data_dir);
+    probe_system_trash_in(&probe_root)
+}
+
+pub fn ensure_startup_trash_backend() {
+    let configured = prefs::trash_backend();
+    let probe = if configured == TrashBackend::System {
+        probe_system_trash().map_err(|err| err.to_string())
+    } else {
+        Ok(())
+    };
+    let selected = startup_backend_after_probe(configured, probe);
+    if selected != configured {
+        if let Err(err) = prefs::set_trash_backend(selected) {
+            tracing::warn!("failed to persist startup trash backend fallback: {err}");
+        } else {
+            tracing::warn!("system trash is unavailable; using app trash fallback");
+        }
+    }
+}
+
+fn startup_backend_after_probe(
+    configured: TrashBackend,
+    system_probe: std::result::Result<(), String>,
+) -> TrashBackend {
+    match (configured, system_probe) {
+        (TrashBackend::System, Err(_)) => TrashBackend::App,
+        (backend, _) => backend,
+    }
+}
+
+fn probe_system_trash_in(root: &Path) -> Result<()> {
+    std::fs::create_dir_all(root)?;
+    let probe = root.join(format!(
+        ".photo-viewer-trash-probe-{}-{}.tmp",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    ));
+    std::fs::write(&probe, b"photo-viewer trash probe")?;
+    let uri = format!("file://{}", probe.display());
+    match move_to_system_trash(&uri) {
+        Ok(()) => {
+            if let Err(err) = delete_permanently_in_roots(&uri, &system_trash_roots()) {
+                tracing::warn!("failed to clean system trash probe: {err}");
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&probe);
+            Err(err)
+        }
+    }
+}
+
+fn migrate_trash_entries_between_roots(
+    pool: &DbPool,
+    source_roots: &[PathBuf],
+    target_root: &Path,
+    excluded_ids: &[MediaId],
+) -> Result<TrashMigrationStats> {
+    let excluded = excluded_ids
+        .iter()
+        .map(|id| id.get())
+        .collect::<HashSet<_>>();
+    let mut stats = TrashMigrationStats::default();
+    let mut migrated = Vec::new();
+
+    for row in db::list_trashed_media(pool)? {
+        if excluded.contains(&row.id) {
+            stats.skipped += 1;
+            continue;
+        }
+        if find_trash_entry_in(&row.path, std::slice::from_ref(&target_root.to_path_buf()))
+            .is_some()
+        {
+            stats.skipped += 1;
+            continue;
+        }
+        if find_trash_entry_in(&row.path, source_roots).is_none() {
+            stats.skipped += 1;
+            continue;
+        }
+
+        match move_trash_entry_to_root(&row.path, source_roots, target_root) {
+            Ok(entry) => {
+                migrated.push(entry);
+                stats.moved += 1;
+            }
+            Err(err) => {
+                for entry in migrated.iter().rev() {
+                    rollback_migrated_entry(entry);
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(stats)
+}
+
+fn move_trash_entry_to_root(
+    original_path: &Path,
+    source_roots: &[PathBuf],
+    target_root: &Path,
+) -> Result<MigratedTrashEntry> {
+    let (actual, old_info) = find_trash_entry_in(original_path, source_roots).ok_or_else(|| {
+        AppError::Backend(format!(
+            "no trash entry for {} in source backend",
+            original_path.display()
+        ))
+    })?;
+    let old_file = files_dir_for(&old_info).join(&actual);
+    let old_info_content = std::fs::read_to_string(&old_info)?;
+
+    let target_info_dir = target_root.join("info");
+    let target_files_dir = target_root.join("files");
+    std::fs::create_dir_all(&target_info_dir)?;
+    std::fs::create_dir_all(&target_files_dir)?;
+    let target_actual = unique_trash_name(&target_files_dir, &target_info_dir, &actual);
+    let new_file = target_files_dir.join(&target_actual);
+    let new_info = target_info_dir.join(format!("{target_actual}.trashinfo"));
+
+    move_file(&old_file, &new_file)?;
+    if let Err(err) = std::fs::write(&new_info, &old_info_content) {
+        let _ = move_file(&new_file, &old_file);
+        return Err(AppError::Io(err));
+    }
+    if let Err(err) = std::fs::remove_file(&old_info) {
+        tracing::warn!(
+            "failed to remove old trash metadata {} during migration: {err}",
+            old_info.display()
+        );
+    }
+
+    Ok(MigratedTrashEntry {
+        old_file,
+        old_info,
+        old_info_content,
+        new_file,
+        new_info,
+    })
+}
+
+fn rollback_migrated_entry(entry: &MigratedTrashEntry) {
+    if let Some(parent) = entry.old_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Some(parent) = entry.old_info.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if entry.new_file.exists() {
+        let _ = move_file(&entry.new_file, &entry.old_file);
+    }
+    let _ = std::fs::write(&entry.old_info, &entry.old_info_content);
+    let _ = std::fs::remove_file(&entry.new_info);
 }
 
 /// 把媒体项移到系统回收站并标记 DB 行为 trashed —— **先标记后移动**。
@@ -200,7 +556,7 @@ pub fn move_to_trash(uri: &str) -> Result<()> {
 /// 若移动失败则 [`db::unmark_trashed`] 回滚，行保持 live，照片回到列表。
 pub fn move_to_trash_marked(pool: &DbPool, id: i64, uri: &str) -> Result<()> {
     db::mark_trashed(pool, id)?;
-    match move_to_trash(uri) {
+    match move_to_configured_trash(uri) {
         Ok(()) => Ok(()),
         Err(e) => {
             let _ = db::unmark_trashed(pool, id);
@@ -361,12 +717,16 @@ fn files_dir_for(info_path: &Path) -> PathBuf {
 ///
 /// `uri` 必须是 `move_to_trash` 时传入的原文件 uri（`file://...`）。
 pub fn restore_from_trash(uri: &str) -> Result<()> {
+    restore_from_trash_in_roots(uri, &trash_roots())
+}
+
+fn restore_from_trash_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()> {
     let file = gtk::gio::File::for_uri(uri);
     let path = file
         .path()
         .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
 
-    let (actual_name, trashinfo_path) = resolve_trash_entry(&path)?;
+    let (actual_name, trashinfo_path) = resolve_trash_entry_in_roots(&path, trash_roots)?;
     let trash_child = gtk::gio::File::for_path(files_dir_for(&trashinfo_path).join(&actual_name));
     let target = gtk::gio::File::for_path(&path);
 
@@ -406,10 +766,14 @@ pub fn restore_from_trash(uri: &str) -> Result<()> {
 /// * `trash:///...` —— 直接删除 trash 项；如 basename 含 `.trashinfo` 信息，
 ///   也一并清理对应元数据文件。
 pub fn delete_permanently(uri: &str) -> Result<()> {
+    delete_permanently_in_roots(uri, &trash_roots())
+}
+
+fn delete_permanently_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()> {
     if let Some(rest) = uri.strip_prefix("file://") {
         // 提取 basename，再解析实际回收站文件名
         let path = Path::new(rest);
-        let (actual_name, trashinfo_path) = resolve_trash_entry(path)?;
+        let (actual_name, trashinfo_path) = resolve_trash_entry_in_roots(path, trash_roots)?;
         let trash_child =
             gtk::gio::File::for_path(files_dir_for(&trashinfo_path).join(&actual_name));
         trash_child
@@ -426,7 +790,7 @@ pub fn delete_permanently(uri: &str) -> Result<()> {
         // 若传入的是 trash:///...，同步清理可能的 .trashinfo（探测候选根）
         if uri.starts_with("trash:///") {
             if let Some(base) = uri.strip_prefix("trash:///") {
-                for root in trash_roots() {
+                for root in trash_roots {
                     let candidate = root.join("info").join(format!("{}.trashinfo", base));
                     if candidate.exists() {
                         let _ = std::fs::remove_file(&candidate);
@@ -602,6 +966,157 @@ mod tests {
             "failed move must roll back the trash marker so the row stays live"
         );
         assert_eq!(db::list_trashed_media(&pool).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn app_trash_root_entry_can_resolve_restore_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trash_root = tmp.path().join("AppTrash");
+        let original = tmp.path().join("pictures").join("app-trash.jpg");
+        std::fs::create_dir_all(original.parent().unwrap()).unwrap();
+        std::fs::write(&original, b"app trash data").unwrap();
+        let uri = format!("file://{}", original.display());
+
+        move_path_to_trash_root(&original, &trash_root).unwrap();
+        assert!(!original.exists(), "move should remove the original file");
+
+        let trashed = trashed_file_uri_in_roots(&uri, std::slice::from_ref(&trash_root)).unwrap();
+        assert!(
+            std::path::Path::new(trashed.strip_prefix("file://").unwrap()).exists(),
+            "trashed file URI should point at the app trash files directory"
+        );
+
+        restore_from_trash_in_roots(&uri, std::slice::from_ref(&trash_root)).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"app trash data");
+        assert!(
+            find_trash_entry_in(&original, std::slice::from_ref(&trash_root)).is_none(),
+            "restore should remove the app trashinfo entry"
+        );
+
+        move_path_to_trash_root(&original, &trash_root).unwrap();
+        delete_permanently_in_roots(&uri, std::slice::from_ref(&trash_root)).unwrap();
+        assert!(
+            find_trash_entry_in(&original, &[trash_root]).is_none(),
+            "permanent delete should remove app trash files and metadata"
+        );
+    }
+
+    #[test]
+    fn migrate_trashed_entries_moves_metadata_between_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let pictures = tmp.path().join("pictures");
+        std::fs::create_dir_all(&pictures).unwrap();
+        let original = pictures.join("migrated.jpg");
+        let system_root = tmp.path().join("SystemTrash");
+        let app_root = tmp.path().join("AppTrash");
+        plant_trash_entry(&system_root, "migrated.jpg", &original);
+
+        let id = db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: format!("file://{}", original.display()),
+                path: original.clone(),
+                folder_path: pictures,
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(1),
+                height: Some(1),
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: chrono::Utc::now(),
+                file_size: 1,
+                blake3_hash: "h".into(),
+            },
+        )
+        .unwrap();
+        db::mark_trashed(&pool, id).unwrap();
+
+        let stats = migrate_trash_entries_between_roots(
+            &pool,
+            std::slice::from_ref(&system_root),
+            &app_root,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(stats.moved, 1);
+        assert!(
+            find_trash_entry_in(&original, &[system_root]).is_none(),
+            "migration should remove the old system trash entry"
+        );
+        assert!(
+            find_trash_entry_in(&original, &[app_root]).is_some(),
+            "migration should create the app trash entry"
+        );
+    }
+
+    #[test]
+    fn migrate_trashed_entries_skips_missing_source_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let pictures = tmp.path().join("pictures");
+        std::fs::create_dir_all(&pictures).unwrap();
+        let original = pictures.join("missing-source.jpg");
+        let system_root = tmp.path().join("SystemTrash");
+        let app_root = tmp.path().join("AppTrash");
+
+        let id = db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: format!("file://{}", original.display()),
+                path: original.clone(),
+                folder_path: pictures,
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(1),
+                height: Some(1),
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: chrono::Utc::now(),
+                file_size: 1,
+                blake3_hash: "h".into(),
+            },
+        )
+        .unwrap();
+        db::mark_trashed(&pool, id).unwrap();
+
+        let stats = migrate_trash_entries_between_roots(
+            &pool,
+            std::slice::from_ref(&system_root),
+            &app_root,
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(stats.moved, 0);
+        assert_eq!(stats.skipped, 1);
+        assert!(
+            find_trash_entry_in(&original, &[app_root]).is_none(),
+            "missing source entries cannot be copied into the target backend"
+        );
+    }
+
+    #[test]
+    fn startup_backend_falls_back_to_app_only_when_system_is_configured_and_unavailable() {
+        assert_eq!(
+            startup_backend_after_probe(TrashBackend::System, Ok(())),
+            TrashBackend::System
+        );
+        assert_eq!(
+            startup_backend_after_probe(
+                TrashBackend::System,
+                Err("trash portal unavailable".to_string())
+            ),
+            TrashBackend::App
+        );
+        assert_eq!(
+            startup_backend_after_probe(TrashBackend::App, Ok(())),
+            TrashBackend::App,
+            "startup should not automatically migrate an explicit app-trash preference back to system"
+        );
     }
 
     // ── reconcile_trash 对账 ──────────────────────────────────────────────

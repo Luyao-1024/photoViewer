@@ -77,7 +77,7 @@ Design intent:
   width.
 - Right-click album actions use the shared glass menu treatment. Destructive
   album deletion is available only for real folder albums and communicates that
-  media is moved to system trash.
+  media is moved to trash.
 - Drag-to-reorder album rows should feel like a subtle in-place list operation:
   dim the dragged row and show an above/below drop cue without changing the
   sidebar's width or row height.
@@ -288,8 +288,8 @@ Design intent:
 - Empty trash state should clearly communicate that there are no items to
   restore, not that the app has no library.
 
-Trash UI must stay aligned with system trash reconciliation. Avoid designs that
-imply app-local deletion if the operation is actually backed by host trash.
+Trash UI must stay aligned with trash-root reconciliation. Avoid designs that
+hide which backend is active when system trash and app trash can both exist.
 
 ## Settings
 

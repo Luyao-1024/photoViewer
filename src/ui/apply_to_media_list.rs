@@ -33,7 +33,27 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
                 remove_by_uri(list, uri);
             }
         }
+        DomainEvent::MediaMovedToTrash { items, .. } => {
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE ui_apply_moved_to_trash_begin list_len={} count={} ids={:?}",
+                list.n_items(),
+                items.len(),
+                items.iter().map(|item| item.id).collect::<Vec<_>>()
+            );
+            for item in items {
+                remove_by_uri(list, &item.uri);
+            }
+            tracing::info!(
+                target: crate::core::log_targets::BROWSING,
+                "TRASH_TRACE ui_apply_moved_to_trash_done list_len={}",
+                list.n_items()
+            );
+        }
         DomainEvent::TrashChanged { .. }
+        | DomainEvent::MediaRestored { .. }
+        | DomainEvent::AlbumsChanged { .. }
+        | DomainEvent::AlbumCoverChanged { .. }
         | DomainEvent::AlbumsDirty { .. }
         | DomainEvent::ThumbnailStatsDirty
         | DomainEvent::LiveCountDirty => {}
@@ -41,14 +61,33 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
 }
 
 fn remove_by_uri(list: &gtk::gio::ListStore, uri: &str) {
+    let before = list.n_items();
     for i in 0..list.n_items() {
         if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-            if obj.borrow::<MediaItem>().uri == uri {
+            let item = obj.borrow::<MediaItem>();
+            if item.uri == uri {
+                let id = item.id;
+                drop(item);
                 list.remove(i);
+                tracing::info!(
+                    target: crate::core::log_targets::BROWSING,
+                    "TRASH_TRACE ui_remove_by_uri removed id={} index={} before={} after={} uri={}",
+                    id,
+                    i,
+                    before,
+                    list.n_items(),
+                    uri
+                );
                 return;
             }
         }
     }
+    tracing::warn!(
+        target: crate::core::log_targets::BROWSING,
+        "TRASH_TRACE ui_remove_by_uri not_found before={} uri={}",
+        before,
+        uri
+    );
 }
 
 #[tracing::instrument(name = "ui:apply_upserted_batch", skip(list, items), fields(source = ?source, incoming = items.len()))]

@@ -103,6 +103,44 @@ template $ViewerPage : Adw.NavigationPage {
               }
 
               [overlay]
+              Gtk.Box video_error_box {
+                visible: false;
+                vexpand: true;
+                hexpand: true;
+                orientation: vertical;
+                spacing: 10;
+                halign: fill;
+                valign: fill;
+                css-classes: ["viewer-media-surface", "viewer-image-frame", "viewer-video-error"];
+
+                Gtk.Image {
+                  icon-name: "video-x-generic-symbolic";
+                  pixel-size: 88;
+                  halign: center;
+                  valign: end;
+                  vexpand: true;
+                  css-classes: ["viewer-video-error-icon"];
+                }
+
+                Gtk.Label video_error_title {
+                  halign: center;
+                  valign: start;
+                  wrap: true;
+                  justify: center;
+                  css-classes: ["viewer-video-error-title"];
+                }
+
+                Gtk.Label video_error_subtitle {
+                  halign: center;
+                  valign: start;
+                  wrap: true;
+                  justify: center;
+                  margin-bottom: 96;
+                  css-classes: ["viewer-video-error-subtitle"];
+                }
+              }
+
+              [overlay]
               Gtk.Button motion_play_btn {
                 visible: false;
                 icon-name: "media-playback-start-symbolic";

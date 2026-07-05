@@ -168,9 +168,33 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         .unwrap_or(false)),
         "clicking the batch favorite button should persist favorite state"
     );
+    assert!(
+        wait_until(Duration::from_secs(2), || !fixture
+            .page
+            .imp()
+            .favorite_btn
+            .get()
+            .is_visible()),
+        "favorite action should clear the previous selection before the next batch action"
+    );
 
+    let first_tile =
+        first_flowbox_child(grid.upcast_ref()).expect("rendered thumbnail remains in Day grid");
+    let flow = first_tile
+        .parent()
+        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
+        .expect("thumbnail child should still belong to a FlowBox");
     grid.set_multi_select_mode(true);
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    assert!(
+        wait_until(Duration::from_secs(2), || fixture
+            .page
+            .imp()
+            .add_to_album_btn
+            .get()
+            .is_visible()),
+        "selecting a tile after favorite should expose the batch add-to-album action"
+    );
     click_button(&fixture.page.imp().add_to_album_btn.get());
     assert_eq!(
         fixture.nav.navigation_stack().n_items(),
@@ -183,7 +207,10 @@ fn viewer_chrome_clicks_drive_visible_operations() {
     photo_viewer::ui::grid_css::install();
     let fixture = build_photos_page_with_nav();
     let viewer = ViewerPage::new(fixture.media_list.clone(), 0);
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(fixture.pool.clone(), event_sender);
     viewer.set_edit_target(&fixture.nav, fixture.pool.clone());
+    viewer.set_db_actor(db_actor);
     viewer.set_thumbnail_loader(fixture.loader.clone());
     viewer.show_at(0);
 
@@ -674,8 +701,11 @@ fn build_photos_page_with_nav() -> PhotosFixture {
 
     let nav = adw::NavigationView::new();
     let page = PhotosPage::new(media_list.clone(), loader.clone());
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     page.set_nav_target(&nav);
     page.set_db_pool(pool.clone());
+    page.set_db_actor(db_actor);
     nav.push(&page);
 
     PhotosFixture {

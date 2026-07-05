@@ -2,6 +2,7 @@
 use crate::core::albums;
 use crate::core::backend::local::LocalBackend;
 use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 use crate::core::events::ChangeSource;
 use crate::core::media_change_notifier::MediaChangeNotifier;
@@ -48,6 +49,14 @@ pub async fn scan_and_aggregate(pool: &DbPool, roots: &[PathBuf]) -> Result<()> 
             let indexed = backend.scan_and_upsert_dir_with_exclusions(root, &excluded_roots)?;
             tracing::info!("扫描完成 {}: {} 张新增/更新", root.display(), indexed);
         }
+        let removed = backend.prune_missing_live_media_under_roots(&roots, &excluded_roots)?;
+        if !removed.is_empty() {
+            tracing::info!(
+                target: crate::core::log_targets::STORAGE,
+                "启动扫描清理不存在的 live 索引 {} 条",
+                removed.len()
+            );
+        }
         albums::refresh(&pool)
     })
     .await
@@ -68,6 +77,73 @@ pub async fn scan_and_aggregate_with_notifier(
     })
     .await
     .map_err(|e| AppError::Backend(format!("scan_and_aggregate_with_notifier join error: {e}")))?
+}
+
+pub async fn scan_and_aggregate_with_actor(
+    pool: &DbPool,
+    roots: &[PathBuf],
+    db_actor: DbActorHandle,
+) -> Result<()> {
+    let pool = pool.clone();
+    let roots = roots.to_vec();
+    tokio::task::spawn_blocking(move || {
+        scan_and_aggregate_with_actor_blocking(pool, roots, db_actor)
+    })
+    .await
+    .map_err(|e| AppError::Backend(format!("scan_and_aggregate_with_actor join error: {e}")))?
+}
+
+#[tracing::instrument(name = "scan:actor_blocking", skip(pool, roots, db_actor), fields(root_count = roots.len()))]
+fn scan_and_aggregate_with_actor_blocking(
+    pool: DbPool,
+    roots: Vec<PathBuf>,
+    db_actor: DbActorHandle,
+) -> Result<()> {
+    let backend = LocalBackend::new(pool);
+    let excluded_roots = prefs::excluded_scan_roots();
+    for root in &roots {
+        let indexed = backend.scan_and_submit_dir_notify_with_exclusions(
+            root,
+            &excluded_roots,
+            {
+                let db_actor = db_actor.clone();
+                move |items| match db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
+                    source: ChangeSource::StartupScan,
+                    items,
+                })? {
+                    DbCommandResult::MediaItems(items) => Ok(items),
+                    other => Err(AppError::Backend(format!(
+                        "unexpected startup scan upsert result: {other:?}"
+                    ))),
+                }
+            },
+            |_| {},
+        )?;
+        tracing::info!("扫描完成 {}: {} 张新增/更新", root.display(), indexed);
+    }
+
+    let removed = match db_actor.execute_blocking(DbCommand::PruneMissingLiveRows {
+        roots: roots.clone(),
+        excluded_roots,
+    })? {
+        DbCommandResult::RemovedUris(uris) => uris,
+        other => {
+            return Err(AppError::Backend(format!(
+                "unexpected startup prune result: {other:?}"
+            )))
+        }
+    };
+    if !removed.is_empty() {
+        tracing::info!(
+            target: crate::core::log_targets::STORAGE,
+            "STARTUP_SCAN_PRUNE removed_missing_live={}",
+            removed.len()
+        );
+    }
+    db_actor.execute_blocking(DbCommand::RefreshAlbums {
+        source: ChangeSource::StartupScan,
+    })?;
+    Ok(())
 }
 
 #[tracing::instrument(name = "scan:notify_blocking", skip(pool, roots, notifier), fields(root_count = roots.len()))]
@@ -122,12 +198,24 @@ fn scan_and_aggregate_with_notifier_blocking(
         notifier.upserted_batch(ChangeSource::StartupScan, std::mem::take(&mut batch));
         tracing::info!("扫描完成 {}: {} 张新增/更新", root.display(), indexed);
     }
+    let removed = backend.prune_missing_live_media_under_roots(&roots, &excluded_roots)?;
+    if !removed.is_empty() {
+        tracing::info!(
+            target: crate::core::log_targets::STORAGE,
+            "STARTUP_SCAN_PRUNE removed_missing_live={}",
+            removed.len()
+        );
+        notifier.removed_batch(ChangeSource::StartupScan, removed);
+    }
     albums::refresh(&pool)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::events::DomainEvent;
+    use crate::core::media::{NewMediaItem, MEDIA_SUBKIND_STANDARD};
+    use chrono::Utc;
 
     #[test]
     fn notify_interval_picks_tier_by_cumulative_count() {
@@ -140,5 +228,46 @@ mod tests {
         // >= 20 000 → 10s
         assert_eq!(notify_interval(20_000), NOTIFY_INTERVAL_LARGE);
         assert_eq!(notify_interval(500_000), NOTIFY_INTERVAL_LARGE);
+    }
+
+    #[test]
+    fn startup_scan_prunes_missing_live_rows_and_notifies_ui() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deleted-while-closed.jpg");
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let uri = format!("file://{}", path.display());
+        crate::core::db::insert_media_item(
+            &pool,
+            &NewMediaItem {
+                uri: uri.clone(),
+                path,
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: Utc::now(),
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap();
+
+        let (notifier, mut rx) = MediaChangeNotifier::new();
+        scan_and_aggregate_with_notifier_blocking(
+            pool.clone(),
+            vec![dir.path().to_path_buf()],
+            notifier,
+        )
+        .unwrap();
+
+        assert!(crate::core::db::list_all_media(&pool).unwrap().is_empty());
+        match rx.try_recv() {
+            Ok(DomainEvent::MediaRemoved { uris, .. }) => assert_eq!(uris, vec![uri]),
+            other => panic!("expected MediaRemoved for startup prune, got {other:?}"),
+        }
     }
 }
