@@ -163,6 +163,44 @@ impl LocalBackend {
         self.scan_and_upsert_dir_with(root, excluded_roots, on_upserted)
     }
 
+    pub fn scan_and_submit_dir_notify_with_exclusions<C, F>(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+        commit_batch: C,
+        on_upserted: F,
+    ) -> Result<usize>
+    where
+        C: FnMut(Vec<NewMediaItem>) -> Result<Vec<MediaItem>>,
+        F: FnMut(MediaItem),
+    {
+        self.scan_and_process_dir_with(root, excluded_roots, commit_batch, on_upserted)
+    }
+
+    pub fn prune_missing_live_media_under_roots(
+        &self,
+        roots: &[PathBuf],
+        excluded_roots: &[PathBuf],
+    ) -> Result<Vec<String>> {
+        let rows = db::list_live_media_locations(&self.pool)?;
+        let mut removed = Vec::new();
+        for (_id, uri, path) in rows {
+            if !roots.iter().any(|root| path.starts_with(root)) {
+                continue;
+            }
+            if is_excluded_path(&path, excluded_roots) {
+                continue;
+            }
+            if path.exists() {
+                continue;
+            }
+            if db::delete_media_by_path(&self.pool, &path)? > 0 {
+                removed.push(uri);
+            }
+        }
+        Ok(removed)
+    }
+
     #[tracing::instrument(
         name = "scan:upsert_dir",
         skip(self, excluded_roots, on_upserted),
@@ -179,9 +217,40 @@ impl LocalBackend {
         &self,
         root: &Path,
         excluded_roots: &[PathBuf],
+        on_upserted: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(MediaItem),
+    {
+        self.scan_and_process_dir_with(
+            root,
+            excluded_roots,
+            |items| db::upsert_media_items_batch(&self.pool, &items),
+            on_upserted,
+        )
+    }
+
+    #[tracing::instrument(
+        name = "scan:process_dir",
+        skip(self, excluded_roots, commit_batch, on_upserted),
+        fields(
+            root = %root.display(),
+            snapshot_ms,
+            extract_ms,
+            hash_ms,
+            motion_ms,
+            upsert_ms
+        )
+    )]
+    fn scan_and_process_dir_with<C, F>(
+        &self,
+        root: &Path,
+        excluded_roots: &[PathBuf],
+        mut commit_batch: C,
         mut on_upserted: F,
     ) -> Result<usize>
     where
+        C: FnMut(Vec<NewMediaItem>) -> Result<Vec<MediaItem>>,
         F: FnMut(MediaItem),
     {
         // 诊断计数器：定位「为什么扫不全」。SCAN_SUMMARY 会在每个 root 扫完时打印；
@@ -310,7 +379,9 @@ impl LocalBackend {
             }
             if last_flush.elapsed() >= UPSERT_FLUSH_INTERVAL && !pending.is_empty() {
                 let t = Instant::now();
-                match db::upsert_media_items_batch(&self.pool, &pending) {
+                let batch_len = pending.len();
+                let batch = std::mem::take(&mut pending);
+                match commit_batch(batch) {
                     Ok(upserted) => {
                         SCAN_UPSORT_MS.fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                         for m in upserted {
@@ -319,18 +390,19 @@ impl LocalBackend {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("批量 upsert 失败（{} 项）: {}", pending.len(), e);
-                        errors += pending.len() as u64;
+                        tracing::warn!("批量 upsert 失败（{} 项）: {}", batch_len, e);
+                        errors += batch_len as u64;
                     }
                 }
-                pending.clear();
                 last_flush = Instant::now();
             }
         }
         // 生产者已退出：把最后一批落库。
         if !pending.is_empty() {
             let t = Instant::now();
-            match db::upsert_media_items_batch(&self.pool, &pending) {
+            let batch_len = pending.len();
+            let batch = std::mem::take(&mut pending);
+            match commit_batch(batch) {
                 Ok(upserted) => {
                     SCAN_UPSORT_MS.fetch_add(t.elapsed().as_millis() as u64, Ordering::Relaxed);
                     for m in upserted {
@@ -339,8 +411,8 @@ impl LocalBackend {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("批量 upsert 失败（{} 项）: {}", pending.len(), e);
-                    errors += pending.len() as u64;
+                    tracing::warn!("批量 upsert 失败（{} 项）: {}", batch_len, e);
+                    errors += batch_len as u64;
                 }
             }
         }
@@ -383,6 +455,13 @@ impl LocalBackend {
     /// 合并后全程只 stat 1 次。
     fn process_file(
         &self,
+        path: &Path,
+        file_meta: &std::fs::Metadata,
+    ) -> Result<Option<NewMediaItem>> {
+        Self::process_file_static(path, file_meta)
+    }
+
+    fn process_file_static(
         path: &Path,
         file_meta: &std::fs::Metadata,
     ) -> Result<Option<NewMediaItem>> {
@@ -521,15 +600,23 @@ impl LocalBackend {
     ///   - upsert 成功时返回 `Ok(Some(MediaItem))`，调用方可以直接转发给
     ///     `MediaChangeNotifier` 而无需再次查询 DB。
     pub fn upsert_from_path(&self, path: &Path) -> Result<Option<MediaItem>> {
+        let Some(item) = Self::new_item_from_path(path)? else {
+            return Ok(None);
+        };
+        self.upsert(&item).map(Some)
+    }
+
+    /// 从单个文件路径提取元数据并生成待写入 DB 的 `NewMediaItem`。
+    ///
+    /// 该方法不访问数据库，供文件监听器在后台线程完成文件系统/解码工作后，
+    /// 将真正的 DB 提交交给 `DbActor` 单线程串行执行。
+    pub fn new_item_from_path(path: &Path) -> Result<Option<NewMediaItem>> {
         // 一次 stat 既判 is_file 又喂给 process_file，避免重复 stat。
         let file_meta = match std::fs::metadata(path) {
             Ok(m) if m.is_file() => m,
             _ => return Ok(None),
         };
-        let item = self.process_file(path, &file_meta)?.ok_or_else(|| {
-            AppError::Decode(format!("not a supported media: {}", path.display()))
-        })?;
-        self.upsert(&item).map(Some)
+        Self::process_file_static(path, &file_meta)
     }
 
     /// 删除指定路径对应的索引行，供文件监听的 remove/rename 事件使用。
@@ -839,6 +926,46 @@ mod tests {
         assert!(
             after.trashed_at.is_none(),
             "startup scan must re-index a restored (present) file and clear trashed_at"
+        );
+    }
+
+    #[test]
+    fn startup_prune_removes_live_row_for_file_deleted_while_app_was_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("externally-deleted.jpg");
+        std::fs::write(&path, b"not decoded in this test").unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+        let uri = format!("file://{}", path.display());
+        crate::core::db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: uri.clone(),
+                path: path.clone(),
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: chrono::Utc::now(),
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let backend = LocalBackend::new(pool.clone());
+        let removed = backend
+            .prune_missing_live_media_under_roots(&[dir.path().to_path_buf()], &[])
+            .unwrap();
+
+        assert_eq!(removed, vec![uri]);
+        assert!(
+            crate::core::db::list_all_media(&pool).unwrap().is_empty(),
+            "startup prune must remove live DB rows whose files disappeared while the app was closed"
         );
     }
 }

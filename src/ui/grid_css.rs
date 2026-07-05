@@ -468,6 +468,30 @@ video.viewer-media-surface picture {
   background: @window_bg_color;
 }
 
+.viewer-video-error {
+  background:
+    radial-gradient(circle at 50% 42%, alpha(@accent_bg_color, 0.16), transparent 30%),
+    radial-gradient(circle at 50% 44%, alpha(@window_fg_color, 0.06), transparent 54%),
+    alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.76);
+}
+
+.viewer-video-error-icon {
+  color: alpha(@window_fg_color, 0.54);
+  -gtk-icon-shadow: 0 10px 28px alpha(black, 0.22);
+}
+
+.viewer-video-error-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: alpha(@window_fg_color, 0.82);
+}
+
+.viewer-video-error-subtitle {
+  font-size: 13px;
+  color: alpha(@window_fg_color, 0.58);
+}
+
 video.viewer-media-surface controls {
   padding: 7px 10px 6px;
   background: alpha(@window_bg_color, 0.72);
@@ -2094,6 +2118,23 @@ mod tests {
         assert!(
             !block.contains("alpha(") && !block.contains("radial-gradient"),
             "GtkVideo child picture must not use translucent/radial material for playback letterboxing, got {block}",
+        );
+    }
+
+    #[test]
+    fn viewer_video_error_background_has_dedicated_visual_style() {
+        let css = build_css(true);
+        let block = css_block(&css, ".viewer-video-error")
+            .expect("video error background should have a dedicated CSS block");
+        assert!(
+            block.contains("radial-gradient") && block.contains("@accent_bg_color"),
+            "video error background should use a distinct themed visual treatment, got {block}",
+        );
+        assert!(
+            css.contains(".viewer-video-error-icon")
+                && css.contains(".viewer-video-error-title")
+                && css.contains(".viewer-video-error-subtitle"),
+            "video error icon and text should have dedicated CSS rules"
         );
     }
 

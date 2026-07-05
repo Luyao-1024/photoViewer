@@ -6,7 +6,6 @@ mod common;
 use common::*;
 use photo_viewer::core::db;
 use photo_viewer::core::events::DomainEvent;
-use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
 use photo_viewer::core::notify_watcher;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -35,17 +34,11 @@ fn spawn_watcher(
 ) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let pool = db::init_pool(&root.join("test.db")).unwrap();
-    let (notifier, rx) = MediaChangeNotifier::new();
+    let (event_sender, rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     let h = {
         let _guard = rt.enter();
-        notify_watcher::start_watching(
-            pool.clone(),
-            vec![root.clone()],
-            vec![],
-            vec![],
-            root,
-            notifier,
-        )
+        notify_watcher::start_watching(db_actor, vec![root.clone()], vec![], vec![], root)
     };
     // Give the watcher a moment to call `watcher.watch(...)`.
     std::thread::sleep(Duration::from_millis(300));
@@ -77,6 +70,10 @@ fn wait_for_uri(
                     }
                     DomainEvent::MediaRemoved { uris, .. } => uris.iter().any(|u| u == uri),
                     DomainEvent::TrashChanged { .. }
+                    | DomainEvent::MediaMovedToTrash { .. }
+                    | DomainEvent::MediaRestored { .. }
+                    | DomainEvent::AlbumsChanged { .. }
+                    | DomainEvent::AlbumCoverChanged { .. }
                     | DomainEvent::AlbumsDirty { .. }
                     | DomainEvent::ThumbnailStatsDirty
                     | DomainEvent::LiveCountDirty => false,

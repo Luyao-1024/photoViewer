@@ -860,7 +860,7 @@ fn generate(
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<Pixbuf> {
     let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let key = format!("thumb-v2:{}{:?}", src_path.display(), mtime);
+    let key = format!("thumb-v3:{}{:?}", src_path.display(), mtime);
     let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
 
     let cache_stem = cache_dir
@@ -920,7 +920,8 @@ fn generate(
                     size,
                     e
                 );
-                let placeholder = generate_video_placeholder(size.max_dim(), &cache_stem)?;
+                let placeholder =
+                    generate_unavailable_placeholder(size.max_dim(), &cache_stem, true)?;
                 info!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB video_placeholder_generated source_uri={} source_path={} size={:?}",
@@ -937,44 +938,93 @@ fn generate(
     // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
     // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
     // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
-    let pixbuf = generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem)?;
-    info!(
-        target: crate::core::log_targets::THUMBNAILS,
-        "THUMB image_generated source_uri={} source_path={} size={:?} cache_stem={}",
-        uri,
-        src_path.display(),
-        size,
-        cache_stem.display()
-    );
-    Ok(pixbuf)
+    match generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem) {
+        Ok(pixbuf) => {
+            info!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB image_generated source_uri={} source_path={} size={:?} cache_stem={}",
+                uri,
+                src_path.display(),
+                size,
+                cache_stem.display()
+            );
+            Ok(pixbuf)
+        }
+        Err(e) => {
+            warn!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB image_decode_failed source_uri={} source_path={} size={:?} error={}",
+                uri,
+                src_path.display(),
+                size,
+                e
+            );
+            generate_unavailable_placeholder(size.max_dim(), &cache_stem, false)
+        }
+    }
 }
 
-fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
+fn generate_unavailable_placeholder(
+    max_dim: u32,
+    cache_stem: &Path,
+    is_video: bool,
+) -> anyhow::Result<Pixbuf> {
     let width = max_dim as i32;
-    let height = ((max_dim as f64) * 9.0 / 16.0).round().max(1.0) as i32;
+    let height = if is_video {
+        ((max_dim as f64) * 9.0 / 16.0).round().max(1.0) as i32
+    } else {
+        width
+    };
     let pb = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height)
-        .ok_or_else(|| anyhow::anyhow!("failed to allocate video thumbnail"))?;
-    pb.fill(0x20242cff);
+        .ok_or_else(|| anyhow::anyhow!("failed to allocate unavailable thumbnail"))?;
+    pb.fill(0x242932ff);
 
     let rowstride = pb.rowstride() as usize;
     let channels = pb.n_channels() as usize;
     let cx = width / 2;
     let cy = height / 2;
-    let tri_w = (width / 5).max(18);
-    let tri_h = (height / 3).max(18);
+    let icon = (width.min(height) / 3).clamp(28, 140);
+    let left = (cx - icon / 2).max(0);
+    let right = (cx + icon / 2).min(width - 1);
+    let top = (cy - icon / 2).max(0);
+    let bottom = (cy + icon / 2).min(height - 1);
+    let stroke = (icon / 12).clamp(3, 10);
+
     unsafe {
         let pixels = pb.pixels();
-        for y in (cy - tri_h / 2).max(0)..(cy + tri_h / 2).min(height) {
-            let rel_y = y - (cy - tri_h / 2);
-            let half_height = tri_h.max(1);
-            let right = cx - tri_w / 3 + (tri_w * rel_y / half_height);
-            let left = cx - tri_w / 3;
-            for x in left.max(0)..right.min(width) {
+        for y in 0..height {
+            for x in 0..width {
                 let i = y as usize * rowstride + x as usize * channels;
                 if i + 2 < pixels.len() {
-                    pixels[i] = 238;
-                    pixels[i + 1] = 242;
-                    pixels[i + 2] = 247;
+                    let vignette = (((x - cx).abs() + (y - cy).abs()) * 22 / width.max(1)) as u8;
+                    pixels[i] = 36_u8.saturating_add(vignette);
+                    pixels[i + 1] = 41_u8.saturating_add(vignette);
+                    pixels[i + 2] = 50_u8.saturating_add(vignette);
+                }
+            }
+        }
+
+        for y in top..=bottom {
+            for x in left..=right {
+                let border = x < left + stroke
+                    || x > right - stroke
+                    || y < top + stroke
+                    || y > bottom - stroke;
+                let slash = ((x - left) - (y - top)).abs() <= stroke;
+                if !border && !slash {
+                    continue;
+                }
+                let i = y as usize * rowstride + x as usize * channels;
+                if i + 2 < pixels.len() {
+                    if slash {
+                        pixels[i] = 239;
+                        pixels[i + 1] = 99;
+                        pixels[i + 2] = 88;
+                    } else {
+                        pixels[i] = 154;
+                        pixels[i + 1] = 163;
+                        pixels[i + 2] = 176;
+                    }
                 }
             }
         }
@@ -983,7 +1033,7 @@ fn generate_video_placeholder(max_dim: u32, cache_stem: &Path) -> anyhow::Result
     let cache_path = cache_stem.with_extension("jpg");
     pb.savev(cache_path, "jpeg", &[]).map_err(|e| {
         anyhow::anyhow!(
-            "video placeholder thumbnail save failed {:?}: {}",
+            "unavailable thumbnail save failed {:?}: {}",
             cache_stem.with_extension("jpg"),
             e
         )
@@ -1750,19 +1800,60 @@ mod tests {
     }
 
     #[test]
-    fn video_placeholder_thumbnail_is_cached_as_jpeg() {
+    fn unavailable_video_thumbnail_is_cached_as_jpeg_without_play_triangle() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("video");
 
-        let thumb =
-            generate_video_placeholder(256, &out).expect("video placeholder should generate");
+        let thumb = generate_unavailable_placeholder(256, &out, true)
+            .expect("video unavailable placeholder should generate");
 
         assert!(
             out.with_extension("jpg").exists(),
             "placeholder should be cached"
         );
         assert_eq!(thumb.width(), 256);
-        assert!(thumb.height() > 0);
+        assert_eq!(thumb.height(), 144);
+
+        let bytes = thumb.read_pixel_bytes();
+        let buf: &[u8] = bytes.as_ref();
+        let rowstride = thumb.rowstride() as usize;
+        let channels = thumb.n_channels() as usize;
+        let center =
+            (thumb.height() as usize / 2) * rowstride + (thumb.width() as usize / 2) * channels;
+        assert!(
+            buf[center] > 180 && buf[center + 1] < 140 && buf[center + 2] < 130,
+            "center should carry the unavailable slash accent, not a white play triangle"
+        );
+    }
+
+    #[test]
+    fn image_decode_failure_generates_unavailable_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("broken.jpg");
+        std::fs::write(&src, b"not an image").unwrap();
+        let cache_dir = dir.path().join("cache");
+        let uri = format!("file://{}", src.display());
+
+        let thumb = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+            .expect("broken images should still return a visible unavailable thumbnail");
+
+        assert_eq!(thumb.width(), 256);
+        assert_eq!(thumb.height(), 256);
+        let cached: Vec<_> = std::fs::read_dir(cache_dir.join("thumbnails/small"))
+            .expect("thumbnail cache directory should exist")
+            .flat_map(|bucket| {
+                let bucket = bucket.expect("bucket entry should read");
+                std::fs::read_dir(bucket.path()).expect("bucket should read")
+            })
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect();
+        assert!(
+            cached
+                .iter()
+                .any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jpg")),
+            "unavailable image thumbnail should be cached as JPEG"
+        );
     }
 
     #[test]

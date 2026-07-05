@@ -16,6 +16,7 @@ pub mod mode_selector;
 pub mod models;
 pub mod photo_tile;
 pub mod photos_page;
+pub mod refresh_hub;
 pub mod search_page;
 pub mod section_header;
 pub mod theme;

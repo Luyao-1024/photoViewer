@@ -6,7 +6,6 @@ mod common;
 use common::*;
 use photo_viewer::core::db;
 use photo_viewer::core::events::DomainEvent;
-use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
 use photo_viewer::core::notify_watcher;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -19,16 +18,16 @@ fn watcher_emits_upserted_after_successful_upsert() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
-    let (notifier, mut rx) = MediaChangeNotifier::new();
+    let (event_sender, mut rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     let watcher = {
         let _guard = rt.enter();
         notify_watcher::start_watching(
-            pool.clone(),
+            db_actor,
             vec![dir.path().to_path_buf()],
             vec![],
             vec![],
             dir.path().to_path_buf(),
-            notifier,
         )
     };
 

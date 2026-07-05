@@ -183,7 +183,10 @@ fn viewer_chrome_clicks_drive_visible_operations() {
     photo_viewer::ui::grid_css::install();
     let fixture = build_photos_page_with_nav();
     let viewer = ViewerPage::new(fixture.media_list.clone(), 0);
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(fixture.pool.clone(), event_sender);
     viewer.set_edit_target(&fixture.nav, fixture.pool.clone());
+    viewer.set_db_actor(db_actor);
     viewer.set_thumbnail_loader(fixture.loader.clone());
     viewer.show_at(0);
 
@@ -674,8 +677,11 @@ fn build_photos_page_with_nav() -> PhotosFixture {
 
     let nav = adw::NavigationView::new();
     let page = PhotosPage::new(media_list.clone(), loader.clone());
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     page.set_nav_target(&nav);
     page.set_db_pool(pool.clone());
+    page.set_db_actor(db_actor);
     nav.push(&page);
 
     PhotosFixture {

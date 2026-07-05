@@ -33,7 +33,15 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
                 remove_by_uri(list, uri);
             }
         }
+        DomainEvent::MediaMovedToTrash { items, .. } => {
+            for item in items {
+                remove_by_uri(list, &item.uri);
+            }
+        }
         DomainEvent::TrashChanged { .. }
+        | DomainEvent::MediaRestored { .. }
+        | DomainEvent::AlbumsChanged { .. }
+        | DomainEvent::AlbumCoverChanged { .. }
         | DomainEvent::AlbumsDirty { .. }
         | DomainEvent::ThumbnailStatsDirty
         | DomainEvent::LiveCountDirty => {}

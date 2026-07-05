@@ -330,6 +330,21 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
         .map_err(AppError::from)
 }
 
+pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, PathBuf)>> {
+    let conn = pool.get()?;
+    let mut stmt =
+        conn.prepare("SELECT id, uri, path FROM media_items WHERE trashed_at IS NULL")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            PathBuf::from(row.get::<_, String>(2)?),
+        ))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
 /// 为现有 DB 补齐 `thumbnail_generated_at` 列（忽略已存在错误）。
 pub fn ensure_thumbnail_generated_column(pool: &DbPool) -> Result<()> {
     let conn = pool.get()?;

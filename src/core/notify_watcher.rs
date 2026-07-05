@@ -1,9 +1,9 @@
 //! 文件系统通知监听（增量更新）
 //!
 //! 启动一个阻塞线程，监听指定路径下的文件变化（创建 / 修改 / 删除 / 重命名）。
-//! 当事件命中受支持的图片扩展名时，调用 [`LocalBackend::upsert_from_path`] 把最新
-//! 的元数据写回 SQLite，并通过 [`MediaChangeNotifier`] 发出 domain event
-//! 给 GTK 主线程消费者（消费者负责把变更同步到 `media_list`）。
+//! 当事件命中受支持的图片扩展名时，先在 watcher 后台线程提取元数据，再把 DB 提交
+//! 发送给 [`crate::core::db_actor::DbActorHandle`]。actor 串行写 SQLite 并发出
+//! domain event 给 GTK 主线程消费者（消费者负责把变更同步到 `media_list`）。
 //!
 //! 除了相册目录，还会监听**系统回收站根**：外部（文件管理器）对回收站的操作
 //!（还原 / 清空 / 从回收站删除）只动回收站目录、不动相册目录，必须单独监听才能
@@ -13,13 +13,11 @@
 //! 该模块与 [`crate::core::backend::scan_worker`] 互补：
 //!   - `scan_worker` 在启动时做全量扫描；
 //!   - `notify_watcher` 在运行期做增量更新。
-use crate::core::albums;
 use crate::core::backend::local::LocalBackend;
-use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
+use crate::core::events::ChangeSource;
 use crate::core::media::is_supported_media_path;
-use crate::core::media_change_notifier::MediaChangeNotifier;
 use crate::core::runtime_config;
-use crate::core::trash;
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -34,32 +32,29 @@ use tokio::task::JoinHandle;
 ///
 /// 监听在独立的阻塞线程中运行（`spawn_blocking`），不会阻塞 tokio / GTK 主循环。
 pub fn start_watching(
-    pool: DbPool,
+    db_actor: DbActorHandle,
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
     pictures_root: PathBuf,
-    notifier: MediaChangeNotifier,
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         run_watcher_loop(
-            pool,
+            db_actor,
             watch_paths,
             trash_roots,
             excluded_roots,
             pictures_root,
-            notifier,
         )
     })
 }
 
 fn run_watcher_loop(
-    pool: DbPool,
+    db_actor: DbActorHandle,
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
     pictures_root: PathBuf,
-    notifier: MediaChangeNotifier,
 ) {
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = match notify::recommended_watcher(tx) {
@@ -79,14 +74,12 @@ fn run_watcher_loop(
     }
 
     // 持有 watcher —— 离开作用域时它会被 drop，所有监听自动停止。
-    let backend = LocalBackend::new(pool.clone());
     let mut trash_dirty = false;
 
     while let Ok(evt) = rx.recv() {
         dispatch_event(
-            &backend,
+            &db_actor,
             evt,
-            &notifier,
             &trash_roots,
             &excluded_roots,
             &mut trash_dirty,
@@ -98,18 +91,17 @@ fn run_watcher_loop(
             runtime_config::notify_trash_debounce_ms(),
         )) {
             dispatch_event(
-                &backend,
+                &db_actor,
                 e,
-                &notifier,
                 &trash_roots,
                 &excluded_roots,
                 &mut trash_dirty,
             );
         }
-        flush_trash_reconcile(&pool, &pictures_root, &notifier, &mut trash_dirty);
+        flush_trash_reconcile(&db_actor, &pictures_root, &mut trash_dirty);
     }
     // 通道关闭（停监）：把挂起的回收站变化最后冲刷一次再退出。
-    flush_trash_reconcile(&pool, &pictures_root, &notifier, &mut trash_dirty);
+    flush_trash_reconcile(&db_actor, &pictures_root, &mut trash_dirty);
     drop(watcher);
 }
 
@@ -118,9 +110,8 @@ fn run_watcher_loop(
 /// 路径落在任一回收站根下 → 回收站事件（只置脏位，等防抖后批量对账）；否则按相册
 /// 事件走 [`handle_event`]。
 fn dispatch_event(
-    backend: &LocalBackend,
+    db_actor: &DbActorHandle,
     evt: Result<notify::Event, notify::Error>,
-    notifier: &MediaChangeNotifier,
     trash_roots: &[PathBuf],
     excluded_roots: &[PathBuf],
     trash_dirty: &mut bool,
@@ -144,7 +135,7 @@ fn dispatch_event(
     {
         return;
     }
-    handle_event(backend, Ok(evt), notifier);
+    handle_event(db_actor, Ok(evt));
 }
 
 fn is_under_trash(path: &Path, trash_roots: &[PathBuf]) -> bool {
@@ -167,27 +158,19 @@ fn is_under_effective_excluded(
 /// 若有挂起的回收站事件：跑一次对账（add + prune 收敛 DB），并广播 TrashChanged
 /// 让可见的回收站页面刷新。始终广播——还原等操作的 DB 变更可能由相册监听器完成，
 /// 对账本身未必改库，但回收站视图仍需重读。
-fn flush_trash_reconcile(
-    pool: &DbPool,
-    pictures_root: &Path,
-    notifier: &MediaChangeNotifier,
-    trash_dirty: &mut bool,
-) {
+fn flush_trash_reconcile(db_actor: &DbActorHandle, pictures_root: &Path, trash_dirty: &mut bool) {
     if !*trash_dirty {
         return;
     }
     *trash_dirty = false;
-    if let Err(e) = trash::reconcile_trash(pool, pictures_root) {
+    if let Err(e) = db_actor.execute_blocking(DbCommand::ReconcileTrash {
+        pictures_root: pictures_root.to_path_buf(),
+    }) {
         tracing::warn!("watcher 触发的回收站对账失败: {e}");
     }
-    notifier.trash_changed();
 }
 
-fn handle_event(
-    backend: &LocalBackend,
-    evt: Result<notify::Event, notify::Error>,
-    notifier: &MediaChangeNotifier,
-) {
+fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Error>) {
     let evt = match evt {
         Ok(e) => e,
         Err(e) => {
@@ -208,14 +191,15 @@ fn handle_event(
                 std::thread::sleep(Duration::from_millis(
                     runtime_config::notify_file_settle_ms(),
                 ));
-                match backend.upsert_from_path(path) {
+                match LocalBackend::new_item_from_path(path) {
                     Ok(Some(item)) => {
                         tracing::debug!(target: crate::core::log_targets::STORAGE, "增量 upsert 成功: {}", path.display());
-                        // albums 物化视图同步刷新（与 on_change 时机一致）。
-                        if let Err(e) = albums::refresh(backend.pool()) {
-                            tracing::warn!("albums::refresh after upsert failed: {}", e);
+                        if let Err(e) = db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
+                            source: ChangeSource::FilesystemWatcher,
+                            items: vec![item],
+                        }) {
+                            tracing::warn!("actor upsert 失败 {}: {}", path.display(), e);
                         }
-                        notifier.upserted(item);
                     }
                     Ok(None) => {
                         // 非文件 / 已消失；不通知 UI。
@@ -229,14 +213,14 @@ fn handle_event(
                 if !is_supported_media_path(path) {
                     continue;
                 }
-                let uri = format!("file://{}", path.display());
-                match backend.delete_path(path) {
-                    Ok(changed) if changed > 0 => {
+                match db_actor.execute_blocking(DbCommand::DeleteLiveByPath {
+                    source: ChangeSource::FilesystemWatcher,
+                    path: path.clone(),
+                }) {
+                    Ok(crate::core::db_actor::DbCommandResult::RemovedUris(removed))
+                        if !removed.is_empty() =>
+                    {
                         tracing::debug!(target: crate::core::log_targets::STORAGE, "增量删除成功: {}", path.display());
-                        if let Err(e) = albums::refresh(backend.pool()) {
-                            tracing::warn!("albums::refresh after delete failed: {}", e);
-                        }
-                        notifier.removed(uri);
                     }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("增量删除失败 {}: {}", path.display(), e),
@@ -252,25 +236,32 @@ fn handle_event(
                     std::thread::sleep(Duration::from_millis(
                         runtime_config::notify_file_settle_ms(),
                     ));
-                    match backend.upsert_from_path(path) {
+                    match LocalBackend::new_item_from_path(path) {
                         Ok(Some(item)) => {
                             tracing::debug!(target: crate::core::log_targets::STORAGE, "rename upsert 成功: {}", path.display());
-                            if let Err(e) = albums::refresh(backend.pool()) {
-                                tracing::warn!("albums::refresh after rename upsert failed: {}", e);
+                            if let Err(e) = db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
+                                source: ChangeSource::FilesystemWatcher,
+                                items: vec![item],
+                            }) {
+                                tracing::warn!(
+                                    "actor rename upsert 失败 {}: {}",
+                                    path.display(),
+                                    e
+                                );
                             }
-                            notifier.upserted(item);
                         }
                         Ok(None) => {}
                         Err(e) => tracing::warn!("rename upsert 失败 {}: {}", path.display(), e),
                     }
                 } else {
-                    let uri = format!("file://{}", path.display());
-                    match backend.delete_path(path) {
-                        Ok(changed) if changed > 0 => {
-                            if let Err(e) = albums::refresh(backend.pool()) {
-                                tracing::warn!("albums::refresh after rename delete failed: {}", e);
-                            }
-                            notifier.removed(uri);
+                    match db_actor.execute_blocking(DbCommand::DeleteLiveByPath {
+                        source: ChangeSource::FilesystemWatcher,
+                        path: path.clone(),
+                    }) {
+                        Ok(crate::core::db_actor::DbCommandResult::RemovedUris(removed))
+                            if !removed.is_empty() =>
+                        {
+                            tracing::debug!(target: crate::core::log_targets::STORAGE, "rename delete 成功: {}", path.display());
                         }
                         Ok(_) => {}
                         Err(e) => tracing::warn!("rename delete 失败 {}: {}", path.display(), e),
@@ -290,6 +281,16 @@ mod tests {
     use crate::core::media::NewMediaItem;
     use chrono::Utc;
     use notify::{event::RemoveKind, Event};
+
+    fn actor_for(
+        pool: db::DbPool,
+    ) -> (
+        DbActorHandle,
+        tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    ) {
+        let (sender, rx) = crate::core::events::DomainEventSender::new();
+        (crate::core::db_actor::start_db_actor(pool, sender), rx)
+    }
 
     #[test]
     fn remove_event_deletes_media_row_and_emits_removed_event() {
@@ -319,16 +320,14 @@ mod tests {
         .unwrap();
         std::fs::remove_file(&path).unwrap();
 
-        let backend = LocalBackend::new(pool.clone());
-        let (notifier, mut rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
+        let (db_actor, mut rx) = actor_for(pool.clone());
         handle_event(
-            &backend,
+            &db_actor,
             Ok(Event {
                 kind: EventKind::Remove(RemoveKind::File),
                 paths: vec![path],
                 attrs: Default::default(),
             }),
-            &notifier,
         );
 
         assert!(db::list_all_media(&pool).unwrap().is_empty());
@@ -366,16 +365,14 @@ mod tests {
         .unwrap();
         std::fs::remove_file(&path).unwrap();
 
-        let backend = LocalBackend::new(pool.clone());
-        let (notifier, mut rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
+        let (db_actor, mut rx) = actor_for(pool.clone());
         handle_event(
-            &backend,
+            &db_actor,
             Ok(Event {
                 kind: EventKind::Remove(RemoveKind::File),
                 paths: vec![path],
                 attrs: Default::default(),
             }),
-            &notifier,
         );
 
         assert!(db::list_all_media(&pool).unwrap().is_empty());
@@ -420,16 +417,14 @@ mod tests {
         // gio 已把文件移走 → watcher 看到原路径的 Remove 事件
         std::fs::remove_file(&path).unwrap();
 
-        let backend = LocalBackend::new(pool.clone());
-        let (notifier, mut rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
+        let (db_actor, mut rx) = actor_for(pool.clone());
         handle_event(
-            &backend,
+            &db_actor,
             Ok(Event {
                 kind: EventKind::Remove(RemoveKind::File),
                 paths: vec![path],
                 attrs: Default::default(),
             }),
-            &notifier,
         );
 
         // 回收站行必须保留，回收站页面才看得见
@@ -472,19 +467,17 @@ mod tests {
     fn dispatch_event_marks_trash_dirty_without_running_handle_event() {
         let dir = tempfile::tempdir().unwrap();
         let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
-        let backend = LocalBackend::new(pool);
-        let (notifier, mut rx) = MediaChangeNotifier::new();
+        let (db_actor, mut rx) = actor_for(pool);
         let trash_roots = vec![dir.path().join("Trash")];
         let mut dirty = false;
 
         dispatch_event(
-            &backend,
+            &db_actor,
             Ok(Event {
                 kind: EventKind::Remove(RemoveKind::File),
                 paths: vec![dir.path().join("Trash").join("files").join("x.jpg")],
                 attrs: Default::default(),
             }),
-            &notifier,
             &trash_roots,
             &[],
             &mut dirty,
@@ -501,20 +494,18 @@ mod tests {
     fn scan_excluded_events_are_ignored_without_media_notifications() {
         let dir = tempfile::tempdir().unwrap();
         let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
-        let backend = LocalBackend::new(pool);
-        let (notifier, mut rx) = MediaChangeNotifier::new();
+        let (db_actor, mut rx) = actor_for(pool);
         let trash_roots = Vec::new();
         let excluded_roots = vec![dir.path().join("Private")];
         let mut dirty = false;
 
         dispatch_event(
-            &backend,
+            &db_actor,
             Ok(Event {
                 kind: EventKind::Remove(RemoveKind::File),
                 paths: vec![dir.path().join("Private").join("x.jpg")],
                 attrs: Default::default(),
             }),
-            &notifier,
             &trash_roots,
             &excluded_roots,
             &mut dirty,

@@ -82,22 +82,21 @@ fn upsert_from_path_skips_unsupported_extension() {
 #[test]
 fn watcher_picks_up_new_file() {
     // 端到端：启动 watcher，丢一个文件进去，等待 upsert 出现在 DB 中。
-    use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     let pool = db::init_pool(&dir.path().join("watch.db")).unwrap();
-    let (notifier, _rx) = MediaChangeNotifier::new();
+    let (event_sender, _rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     let watcher = {
         let _guard = rt.enter();
         photo_viewer::core::notify_watcher::start_watching(
-            pool.clone(),
+            db_actor,
             vec![root.clone()],
             vec![],
             vec![],
             root.clone(),
-            notifier,
         )
     };
 

@@ -46,6 +46,8 @@
     "viewer.details.modified": "Modified",
     "viewer.details.captured": "Captured",
     "viewer.not_available": "Not available",
+    "viewer.video_error.title": "Video can't be played",
+    "viewer.video_error.subtitle": "The file may be damaged or use an unsupported codec.",
     "viewer.menu.add_to_album": "Add to Album...",
     "viewer.toast.moved_to_trash": "Moved to trash",
     "viewer.toast.move_to_trash_failed": "Failed to move to trash",

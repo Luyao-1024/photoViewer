@@ -44,6 +44,14 @@ scanner/watcher producer facade, but its channel emits domain events directly.
 UI projections such as the bounded `gio::ListStore` consume those domain
 events through explicit adapters rather than through a second event vocabulary.
 
+DB mutations are moving behind `core::db_actor::DbActor`. New mutation paths
+should send a `DbCommand` through `DbActorHandle` and let the actor emit
+`DomainEvent` values; UI pages should subscribe through `ui::refresh_hub` or
+the current legacy hub bridge instead of manually deciding which views to
+refresh. During migration, repository reads and unmigrated mutation call sites
+still exist, but do not add new direct UI calls to `core::db`, `albums::refresh`,
+or repository mutation methods.
+
 Derived refresh work belongs in `core::refresh::RefreshCoordinator`. Album
 refreshes are single-flight with pending replay. Thumbnail/library statistics
 are read through `MediaRepository::library_stats()` so widgets consume a
@@ -144,6 +152,30 @@ sending each actually upserted live `MediaItem` through
 `DomainEvent::MediaUpserted` and can merge it into the shared `media_list`
 without letting UI memory grow with the full library.
 
+After the first page is shown, startup background work must complete these
+storage tasks in order, off the GTK thread:
+
+1. Start runtime filesystem watchers for media roots and existing trash roots.
+2. Scan every configured media root with excluded directories pruned, upserting
+   new or changed live media and batching `DomainEvent::MediaUpserted` events to
+   the UI.
+3. Reconcile indexed live rows against disk for the scanned roots: if a row is
+   `trashed_at IS NULL`, is not under an excluded root, and its `path` no longer
+   exists, delete that DB row and emit `DomainEvent::MediaRemoved`. This covers
+   files deleted outside the app while it was closed; it must run as a single
+   sequential pass in the same background startup worker and must not block
+   foreground interaction.
+4. Refresh album projections/sidebar data after scan and prune have converged.
+5. Reconcile the system trash into the DB and emit `TrashChanged` so a visible
+   Trash view refreshes.
+6. Start thumbnail prewarm after scan and trash reconciliation; viewport
+   thumbnail requests still take priority over background work.
+
+Do not move the missing-file reconciliation into the synchronous first-page
+startup path. It can touch many rows and filesystem paths, so the foreground
+contract is eventual convergence via domain events, not blocking startup until
+all stale rows have been pruned.
+
 **Watcher must not hard-delete trashed rows.** When the app moves a photo to trash, `gio::File::trash()` relocates the file out of the watched directory, so the watcher sees the original path disappear. `db::delete_media_by_path` therefore filters with `AND trashed_at IS NULL`: a row the app has flagged via `mark_trashed` is preserved even though its original path is gone, so `list_trashed_media` keeps returning it for the Trash page. Removing that clause reintroduces "trash page shows nothing after deleting to trash."
 
 **Trash flow must mark the DB row before moving the file.** Both deletion entry points go through `trash::move_to_trash_marked`, which runs `db::mark_trashed` *first* and then `gio::File::trash()`. This ordering is what makes the `AND trashed_at IS NULL` guard effective: gio's move is slow (writes `.trashinfo` + rename) and fires the watcher's Remove event before a separate `mark_trashed` would commit, so "move then mark" lets the watcher delete the still-un-trashed row — seen as "deleted several photos but Trash only shows one." If the move fails, `move_to_trash_marked` rolls back with `db::unmark_trashed`. Do not inline a move-then-mark sequence elsewhere.
@@ -166,4 +198,6 @@ Cache keys include path and mtime, hashed with blake3, so file modifications inv
 
 After startup scan and trash reconciliation, `ThumbnailLoader` enters background prewarm mode without waiting for full-library DB pagination: idle workers pull live media rows whose `thumbnail_generated_at` is missing or older than `file_mtime`, generate the Medium thumbnail, and immediately mark the row generated. This DB marker is part of the pull loop's convergence condition; do not defer it behind a large batch threshold, or small libraries will repeatedly regenerate the same thumbnails before they are considered complete.
 
-**Video thumbnails use `ffmpegthumbnailer` with a GStreamer fallback.** Most phone/camera video is limited-range (TV) YUV (16–235); the original `videoconvert → RGB` pipeline passed that through unexpanded, producing washed-out, low-saturation thumbnails (verified: black floor stuck at Y≈18, white ceiling at ≈227 instead of 0/255). `extract_video_frame` now prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), decoding its PNG output, compositing the bottom-left play icon, and returning a `Pixbuf`. If `ffmpegthumbnailer` is missing or fails, it falls back to `extract_video_frame_gst` — the previous `uridecodebin → videoflip(auto) → videoconvert → appsink` pipeline, but with the output caps pinned to `colorimetry=sRGB` so the fallback also expands to full-range RGB. Only if both fail does it draw the synthetic `generate_video_placeholder`. `videoflip video-direction=auto` (GStreamer path) and ffmpegthumbnailer both auto-apply rotation from all sources (MP4 tkhd matrix, codec SEI, tags). All three paths cache the result as JPEG.
+**Decode failures use a shared unavailable thumbnail.** If an image cannot be decoded, or if both video frame extraction paths fail, the thumbnail worker returns and caches a themed unavailable placeholder instead of dropping the request. The placeholder must not look like a playable video frame: normal extracted video thumbnails get the bottom-left play badge, while unavailable thumbnails use a slashed media glyph.
+
+**Video thumbnails use `ffmpegthumbnailer` with a GStreamer fallback.** Most phone/camera video is limited-range (TV) YUV (16–235); the original `videoconvert → RGB` pipeline passed that through unexpanded, producing washed-out, low-saturation thumbnails (verified: black floor stuck at Y≈18, white ceiling at ≈227 instead of 0/255). `extract_video_frame` now prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), decoding its PNG output, compositing the bottom-left play icon, and returning a `Pixbuf`. If `ffmpegthumbnailer` is missing or fails, it falls back to `extract_video_frame_gst` — the previous `uridecodebin → videoflip(auto) → videoconvert → appsink` pipeline, but with the output caps pinned to `colorimetry=sRGB` so the fallback also expands to full-range RGB. Only if both fail does it draw the synthetic unavailable placeholder. `videoflip video-direction=auto` (GStreamer path) and ffmpegthumbnailer both auto-apply rotation from all sources (MP4 tkhd matrix, codec SEI, tags). All three paths cache the result as JPEG.

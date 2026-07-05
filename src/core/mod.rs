@@ -5,6 +5,7 @@ pub mod bootstrap;
 pub mod cache;
 pub mod crash_signal;
 pub mod db;
+pub mod db_actor;
 pub mod diagnostics;
 pub mod edit;
 pub mod error;
@@ -32,6 +33,7 @@ pub use albums::{refresh as refresh_albums, Album};
 pub use backend::local::LocalBackend;
 pub use db::SearchField;
 pub use db::{init_pool, run_migrations, DbPool};
+pub use db_actor::{start_db_actor, DbActorHandle, DbCommand, DbCommandResult};
 pub use edit::{
     CropRect, EditCategory, EditOperation, EditRegistry, EditState, ParamValue, Rotation,
 };

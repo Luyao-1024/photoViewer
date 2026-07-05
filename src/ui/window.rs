@@ -23,6 +23,7 @@ use serde_json::{Map, Value};
 use crate::config;
 use crate::core::albums::{list_media_type_albums, list_with_favorites, set_album_order, Album};
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaMutation;
@@ -62,6 +63,7 @@ mod imp {
     #[template(file = "../../data/ui/window.ui")]
     pub struct MainWindow {
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         /// Index→target mirror of the sidebar ListBox, so the `row-selected`
@@ -815,6 +817,10 @@ impl MainWindow {
         *self.imp().loader.borrow_mut() = Some(loader);
         *self.imp().media_list.borrow_mut() = Some(media_list);
         self.update_photos_count_label();
+    }
+
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
     }
 
     fn update_photos_count_label(&self) {
