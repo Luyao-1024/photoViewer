@@ -36,6 +36,8 @@ use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::window::refresh_albums_sidebar;
 
+const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
+
 mod imp {
     use super::*;
     use adw::subclass::prelude::*;
@@ -644,10 +646,8 @@ impl PhotosPage {
             .borrow()
             .iter()
             .any(|g| g.is_multi_select_mode());
-        let all_displayed_selected = self
-            .current_grid()
-            .is_some_and(|grid| grid.is_all_displayed_selected());
         *self.imp().selected_ids.borrow_mut() = union;
+        let select_all_limit_reached = self.selected_reaches_select_all_limit();
         self.imp().select_all_btn.get().set_visible(has_any);
         self.imp().add_to_album_btn.get().set_visible(has_any);
         self.imp().delete_to_trash_btn.get().set_visible(has_any);
@@ -659,7 +659,7 @@ impl PhotosPage {
             .get()
             .set_visible(any_multi);
         // select_all_btn keeps a text label that toggles 全选/取消全选.
-        if all_displayed_selected {
+        if select_all_limit_reached {
             self.imp()
                 .select_all_btn
                 .get()
@@ -787,13 +787,46 @@ impl PhotosPage {
     }
 
     fn select_all_in_current_mode(&self) {
-        if let Some(grid) = self.current_grid() {
-            if grid.is_all_displayed_selected() {
-                grid.clear_selection();
-            } else {
+        if self.selected_reaches_select_all_limit() {
+            self.clear_selection();
+            return;
+        }
+
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            if let Some(grid) = self.current_grid() {
                 grid.select_all();
             }
+            return;
+        };
+        let repo = crate::core::repository::MediaRepository::new(pool);
+        let Ok(items) = repo.items(MediaQuery::LiveAll, 0, PHOTOS_SELECT_ALL_LIMIT) else {
+            return;
+        };
+        let ids = items
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        for grid in self.imp().grids.borrow().iter() {
+            grid.select_ids(&ids);
         }
+    }
+
+    fn selected_reaches_select_all_limit(&self) -> bool {
+        let selected_count = self.imp().selected_ids.borrow().len();
+        if selected_count == 0 {
+            return false;
+        }
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return self
+                .current_grid()
+                .is_some_and(|grid| grid.is_all_displayed_selected());
+        };
+        let repo = crate::core::repository::MediaRepository::new(pool);
+        let Ok(total) = repo.count(MediaQuery::LiveAll) else {
+            return false;
+        };
+        let target = total.min(PHOTOS_SELECT_ALL_LIMIT) as usize;
+        target > 0 && selected_count >= target
     }
 
     fn open_album_picker_for_current_selection(&self) {
@@ -1257,6 +1290,57 @@ mod tests {
             is_favorite: false,
             trashed_at: None,
         }
+    }
+
+    fn sample_new_item(name: &str, ts: i64) -> crate::core::media::NewMediaItem {
+        let path = PathBuf::from(format!("/tmp/{name}.jpg"));
+        crate::core::media::NewMediaItem {
+            uri: format!("file:///tmp/{name}.jpg"),
+            path: path.clone(),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc.timestamp_opt(ts, 0).unwrap(),
+            file_size: 100,
+            blake3_hash: format!("hash-{name}"),
+        }
+    }
+
+    #[gtk::test]
+    fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
+        let _ = gtk::init();
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            tmp.path().join("thumbs"),
+        ));
+        let items = (0..2_500)
+            .map(|idx| sample_new_item(&format!("photo-{idx:03}"), 10_000 - idx))
+            .collect::<Vec<_>>();
+        crate::core::db::upsert_media_items_batch(&pool, &items).unwrap();
+
+        let repo = crate::core::repository::MediaRepository::new(pool.clone());
+        let first_window = repo.items(MediaQuery::LiveAll, 0, 500).unwrap();
+        let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        for item in first_window {
+            media_list.append(&glib::BoxedAnyObject::new(item));
+        }
+
+        let page = PhotosPage::new(media_list, loader);
+        page.set_db_pool(pool);
+        page.select_all_in_current_mode();
+
+        assert_eq!(
+            page.selected_count_for_tests(),
+            2_000,
+            "Photos select-all should select the first 2000 live media ids, not only the loaded 500-item window"
+        );
     }
 
     #[gtk::test]

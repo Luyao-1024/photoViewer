@@ -193,6 +193,12 @@ must not remain the authoritative count after background metadata lands.
 Media activation is debounced while opening `ViewerPage` on the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page. Every viewer entry point, including Photos, album details, and search results, must also arm the viewer's initial navigation-pop guard so a second click or immediate back event cannot close the viewer during the push transition.
 
 Multi-select selection state is owned by each section `GtkFlowBox`. Its `selection-mode` tracks the multi-select flag — `None` by default, switched to `Multiple` only while multi-select is active (kept in sync by `MediaGrid::apply_selection_mode`, called from `set_multi_select_mode` / `select_all` / `clear_selection`). `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state — this only takes effect because multi-select first flips the FlowBox to `Multiple`. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; tying selection to `None`-by-default means the checkmark can never appear unless the user explicitly enters multi-select. Do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
+Photos page "Select All" is intentionally capped at 2,000 live media items. For
+large virtualized libraries it loads the first 2,000 ids from the database's
+canonical live ordering, not from the current 500-item GTK window or the
+currently rendered seed tiles. `MediaGrid` may therefore hold a selected
+`MediaId` set larger than the rendered FlowBox children; it only mirrors
+`flowboxchild:selected` onto children that are currently visible.
 
 Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
 than `GtkPopover`, so they render through the same page-overlay path as the

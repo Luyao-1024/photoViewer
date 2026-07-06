@@ -949,6 +949,29 @@ impl MediaGrid {
         }
     }
 
+    /// Replace selection with stable media ids and sync any currently rendered
+    /// children. The id set can be larger than the virtual GTK window; only
+    /// visible children receive `flowboxchild:selected` state.
+    pub fn select_ids(&self, ids: &[MediaId]) {
+        self.imp().is_multi_select_mode.set(!ids.is_empty());
+        self.apply_selection_mode();
+
+        let next = ids.iter().copied().collect::<HashSet<_>>();
+        let changed = {
+            let mut selected = self.imp().selected.borrow_mut();
+            if *selected == next {
+                false
+            } else {
+                *selected = next;
+                true
+            }
+        };
+        self.sync_visible_selection();
+        if changed {
+            self.fire_selection_changed();
+        }
+    }
+
     /// Enable/disable explicit multi-select mode.
     /// Disabling clears selection for a clean single-select state.
     pub fn set_multi_select_mode(&self, enabled: bool) {
@@ -987,6 +1010,23 @@ impl MediaGrid {
                 flow.set_selection_mode(mode);
             }
             child = c.next_sibling();
+        }
+    }
+
+    fn sync_visible_selection(&self) {
+        let selected = self.imp().selected.borrow();
+        for item in self.imp().displayed_items.borrow().iter() {
+            let Some(parent) = item.flow_child.parent() else {
+                continue;
+            };
+            let Ok(flow) = parent.downcast::<gtk::FlowBox>() else {
+                continue;
+            };
+            if selected.contains(&item.media_id) {
+                flow.select_child(&item.flow_child);
+            } else {
+                flow.unselect_child(&item.flow_child);
+            }
         }
     }
 
@@ -2497,6 +2537,7 @@ impl MediaGrid {
             content.append(&virtual_spacer(bottom_spacer_height));
         }
         *self.imp().displayed_items.borrow_mut() = displayed_items;
+        self.sync_visible_selection();
 
         // 重建后恢复滚动位置：用 idle 回调等下一帧 layout 完成后再设值，
         // 否则 adj.upper 仍为零，会被 clamp 吞掉。
