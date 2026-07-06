@@ -645,13 +645,6 @@ video.viewer-media-surface controls scale slider {
   border: 1px solid alpha(@window_fg_color, 0.10);
 }
 
-/* The favorite heart recolors (grey↔translucent-red) when the favorite-active
-   class is added/removed. The transition lives on this BASE rule so it animates
-   in BOTH directions — adding the class fades to red, removing it fades back. */
-.viewer-favorite-btn {
-  transition: color 120ms ease;
-}
-
 /* Viewer favorite button active state. Class is added/removed by
    ViewerPage::refresh_favorite_button. Only the heart ICON recolors to a
    translucent red — the button itself stays bare (no capsule), matching the
@@ -2176,21 +2169,6 @@ mod tests {
         assert!(
             css.contains(".viewer-favorite-btn.favorite-active:hover"),
             "CSS must define a :hover override so the red heart brightens on pointer-over",
-        );
-    }
-
-    /// The favorite heart eases grey↔red via a CSS color transition. The
-    /// transition must live on the BASE .viewer-favorite-btn rule (not the
-    /// .favorite-active rule) so that REMOVING the class also animates back to
-    /// grey, not just adding it.
-    #[test]
-    fn favorite_heart_transitions_color_both_ways() {
-        let css = build_css(true);
-        let base = css_block(&css, ".viewer-favorite-btn")
-            .expect("base .viewer-favorite-btn rule must exist to host the color transition");
-        assert!(
-            base.contains("transition: color 120ms ease"),
-            "base .viewer-favorite-btn must define a color transition so the heart eases in both directions, got {base}"
         );
     }
 
