@@ -1,20 +1,22 @@
 //! ModeSelector: 3-cell 年/月/日 switcher used by `PhotosPage`.
 //!
-//! Visual: a vertical pair of rows (labels, then a dot strip). The
-//! currently-active mode has its label fully opaque and its `dot_inner`
-//! visible. The widget is meant to be added as an overlay child of a
-//! `GtkOverlay` containing the `ViewStack` it drives.
+//! Visual: a vertical pair of rows (labels, then a single sliding indicator
+//! bar). The currently-active mode has its label fully opaque, and the
+//! indicator slides beneath the active label with a smooth decelerating
+//! transition that stops exactly on the active label (no overshoot), driven by
+//! a runtime CssProvider that writes `translateX`. The widget is meant to be
+//! added as an overlay child of a `GtkOverlay` containing the `GtkStack` it
+//! drives.
 //!
 //! Active index is the single source of truth. `set_stack` wires
-//! `ViewStack::visible-child` → `active_index` to keep the selector in
-//! sync if the stack is changed externally.
+//! `GtkStack::visible-child` → `active_index` to keep the selector in sync if
+//! the stack is changed externally.
 
 use crate::core::i18n::tr;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use libadwaita as adw;
 
 /// Loop-guard state machine for the bound ViewStack sync.
 ///
@@ -44,6 +46,16 @@ impl Default for LastSync {
     }
 }
 
+/// Indicator translateX (px) that centers the bar under label `active_index`,
+/// given one label cell's width and the indicator's own width. Pure so it can
+/// be unit-tested without a widget allocation. Label N's center is at
+/// `(N + 0.5) * cell_width`; the indicator (left-aligned at rest) reaches that
+/// center by translating to `center - indicator_width / 2`.
+fn indicator_x_for(active_index: u32, cell_width: i32, indicator_width: i32) -> i32 {
+    let center = (active_index as i32 * 2 + 1) * cell_width / 2;
+    center - indicator_width / 2
+}
+
 mod imp {
     use super::*;
     use std::cell::Cell;
@@ -58,7 +70,7 @@ mod imp {
         /// alongside the stack lets `set_stack` disconnect the old
         /// handler before installing a new one when the bound stack
         /// is swapped (rebind).
-        pub stack: std::cell::RefCell<Option<(adw::ViewStack, glib::SignalHandlerId)>>,
+        pub stack: std::cell::RefCell<Option<(gtk::Stack, glib::SignalHandlerId)>>,
         #[template_child]
         pub label_0: TemplateChild<gtk::Label>,
         #[template_child]
@@ -66,11 +78,19 @@ mod imp {
         #[template_child]
         pub label_2: TemplateChild<gtk::Label>,
         #[template_child]
-        pub dot_inner_0: TemplateChild<gtk::Box>,
+        pub dot_row: TemplateChild<gtk::Box>,
+        /// The single sliding indicator bar under the labels. It is dot_row's
+        /// only child, left-aligned at rest; `update_indicator_position`
+        /// translates it to the active label's center.
         #[template_child]
-        pub dot_inner_1: TemplateChild<gtk::Box>,
-        #[template_child]
-        pub dot_inner_2: TemplateChild<gtk::Box>,
+        pub mode_dot_indicator: TemplateChild<gtk::Box>,
+        /// Runtime CssProvider that writes the indicator's `transform:
+        /// translateX(...)`. Reloading it with a new value retriggers the CSS
+        /// transition (same pattern as the viewer filmstrip).
+        pub indicator_provider: std::cell::RefCell<Option<gtk::CssProvider>>,
+        /// Last computed indicator translateX (px). Stored for testability —
+        /// the CssProvider itself isn't inspectable from a headless test.
+        pub indicator_target_x: Cell<i32>,
     }
 
     #[gtk::glib::object_subclass]
@@ -93,6 +113,19 @@ mod imp {
             self.parent_constructed();
             // Sync template defaults to the current active_index.
             self.apply_state();
+
+            // Sliding indicator: a runtime CssProvider writes its translateX
+            // (scoped to the indicator's style context), and we recompute on
+            // every dot_row resize so the bar stays centered under the active
+            // label at any width. apply_state's call above is a no-op until the
+            // first allocation; this handler then positions it.
+            let provider = gtk::CssProvider::new();
+            self.mode_dot_indicator
+                .get()
+                .style_context()
+                .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            *self.indicator_provider.borrow_mut() = Some(provider);
+
             self.obj().set_labels_i18n();
 
             // Click on any of the 3 label cells → switch to that mode.
@@ -147,7 +180,14 @@ mod imp {
             // repeatedly capturing and CPU-warping the grid in a tick callback.
         }
     }
-    impl WidgetImpl for ModeSelector {}
+    impl WidgetImpl for ModeSelector {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            // Run the default GtkBox layout first so dot_row (and the indicator)
+            // receive their allocations, then recenter the sliding indicator.
+            self.parent_size_allocate(width, height, baseline);
+            self.update_indicator_position();
+        }
+    }
     impl BoxImpl for ModeSelector {}
 
     impl ModeSelector {
@@ -163,7 +203,6 @@ mod imp {
         /// invoking `set_visible_child_name`.
         pub(super) fn apply_state(&self) {
             let labels = [&self.label_0, &self.label_1, &self.label_2];
-            let dots = [&self.dot_inner_0, &self.dot_inner_1, &self.dot_inner_2];
             let active = self.active_index.get();
             for (i, lbl) in labels.iter().enumerate() {
                 let l = lbl.get();
@@ -173,10 +212,30 @@ mod imp {
                     l.remove_css_class("active");
                 }
             }
-            for (i, dot) in dots.iter().enumerate() {
-                dot.get().set_visible(i == active as usize);
-            }
+            // The single indicator slides to the active label (no per-dot
+            // show/hide). No-op until dot_row is allocated; WidgetImpl::
+            // size_allocate re-runs it on every resize.
+            self.update_indicator_position();
             self.last_sync.set(LastSync::Synced(active));
+        }
+
+        /// Recompute and write the indicator's translateX so it sits centered
+        /// under the active label. No-op until dot_row has been allocated
+        /// (cell_width 0). Called from apply_state and from the size_allocate
+        /// vfunc so the bar recenters at any width.
+        fn update_indicator_position(&self) {
+            let row_width = self.dot_row.get().allocation().width();
+            if row_width <= 0 {
+                return;
+            }
+            let cell_width = row_width / 3;
+            let indicator_width = self.mode_dot_indicator.get().allocation().width().max(1);
+            let x = indicator_x_for(self.active_index.get(), cell_width, indicator_width);
+            self.indicator_target_x.set(x);
+            if let Some(provider) = self.indicator_provider.borrow().as_ref() {
+                provider
+                    .load_from_data(&format!("box.mode-dot {{ transform: translateX({x}px); }}"));
+            }
         }
     }
 }
@@ -254,16 +313,17 @@ impl ModeSelector {
         }
     }
 
-    /// Bind a ViewStack. The selector's active index seeds from the
-    /// stack's current visible child, and subsequent stack changes
-    /// (whether from us or elsewhere) keep the selector in sync.
+    /// Bind a GtkStack (with `transition-type: crossfade` so year/month/day
+    /// grids crossfade). The selector's active index seeds from the stack's
+    /// current visible child, and subsequent stack changes (whether from us or
+    /// elsewhere) keep the selector in sync.
     ///
     /// Idempotent for the same `stack` (no-op on repeat calls with
     /// the same pointer). Rebinding to a different stack is
     /// supported: the previous stack's `notify::visible-child`
     /// subscription is disconnected before the new one is installed,
     /// so no stale handler can fire against the new binding.
-    pub fn set_stack(&self, stack: &adw::ViewStack) {
+    pub fn set_stack(&self, stack: &gtk::Stack) {
         let imp = self.imp();
         // Same-pointer early return. Comparing the ViewStack by
         // pointer identity (not by value) makes the rebind contract
@@ -376,15 +436,6 @@ mod tests {
         [imp.label_0.get(), imp.label_1.get(), imp.label_2.get()]
     }
 
-    fn dots(sel: &ModeSelector) -> [gtk::Box; 3] {
-        let imp = sel.imp();
-        [
-            imp.dot_inner_0.get(),
-            imp.dot_inner_1.get(),
-            imp.dot_inner_2.get(),
-        ]
-    }
-
     #[gtk::test]
     fn default_active_index_is_zero() {
         let sel = ModeSelector::new();
@@ -418,22 +469,14 @@ mod tests {
         assert!(ls[2].has_css_class("active"));
     }
 
-    #[gtk::test]
-    fn set_active_index_toggles_dot_visibility() {
-        let sel = ModeSelector::new();
-        let ds = dots(&sel);
-
-        // Initial: only dot 0 visible — `active_index` defaults to 0 and
-        // `constructed()` calls `apply_state()` to sync the template children
-        // to the canonical source of truth.
-        assert!(ds[0].is_visible());
-        assert!(!ds[1].is_visible());
-        assert!(!ds[2].is_visible());
-
-        sel.set_active_index(1);
-        assert!(!ds[0].is_visible());
-        assert!(ds[1].is_visible());
-        assert!(!ds[2].is_visible());
+    #[test]
+    fn indicator_x_centers_under_active_label() {
+        // Pure formula: the sliding indicator's translateX centers the bar
+        // under label N = (N + 0.5) * cell_width - indicator_width / 2.
+        // With cell_width 120 and indicator_width 24 the centers are 60/180/300.
+        assert_eq!(indicator_x_for(0, 120, 24), 48);
+        assert_eq!(indicator_x_for(1, 120, 24), 168);
+        assert_eq!(indicator_x_for(2, 120, 24), 288);
     }
 
     #[gtk::test]
@@ -465,8 +508,8 @@ mod tests {
 
     /// Build a 3-page ViewStack with names "year"/"month"/"day" so the
     /// selector can resolve them.
-    fn build_stack() -> (adw::ViewStack, [gtk::Label; 3]) {
-        let stack = adw::ViewStack::new();
+    fn build_stack() -> (gtk::Stack, [gtk::Label; 3]) {
+        let stack = gtk::Stack::new();
         let a = gtk::Label::new(Some("Year"));
         let b = gtk::Label::new(Some("Month"));
         let c = gtk::Label::new(Some("Day"));

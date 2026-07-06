@@ -99,8 +99,8 @@ fn mode_selector_click_switches_photos_view() {
     let fixture = build_photos_page_with_nav();
     let selector = find_descendant::<ModeSelector>(fixture.page.upcast_ref())
         .expect("PhotosPage should contain a ModeSelector");
-    let stack = find_descendant::<adw::ViewStack>(fixture.page.upcast_ref())
-        .expect("PhotosPage should contain a ViewStack");
+    let stack = find_descendant::<gtk::Stack>(fixture.page.upcast_ref())
+        .expect("PhotosPage should contain a GtkStack");
 
     assert_eq!(
         stack.visible_child_name().as_deref(),
@@ -159,8 +159,8 @@ fn thumbnail_activation_opens_one_viewer() {
 
 fn photos_batch_toolbar_clicks_select_favorite_and_album() {
     let fixture = build_photos_page_with_nav();
-    let stack = find_descendant::<adw::ViewStack>(fixture.page.upcast_ref())
-        .expect("PhotosPage should contain a ViewStack");
+    let stack = find_descendant::<gtk::Stack>(fixture.page.upcast_ref())
+        .expect("PhotosPage should contain a GtkStack");
     let grid = stack
         .visible_child()
         .and_downcast::<MediaGrid>()
@@ -176,16 +176,26 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
 
     assert!(
-        fixture.page.imp().add_to_album_btn.get().is_visible(),
-        "selecting a tile should expose the batch add-to-album action"
+        fixture
+            .page
+            .imp()
+            .add_to_album_revealer
+            .get()
+            .reveals_child(),
+        "selecting a tile should reveal the batch add-to-album action"
     );
     assert!(
-        fixture.page.imp().favorite_btn.get().is_visible(),
-        "selecting a tile should expose the batch favorite action"
+        fixture.page.imp().favorite_revealer.get().reveals_child(),
+        "selecting a tile should reveal the batch favorite action"
     );
     assert!(
-        fixture.page.imp().delete_to_trash_btn.get().is_visible(),
-        "selecting a tile should expose the batch trash action"
+        fixture
+            .page
+            .imp()
+            .delete_to_trash_revealer
+            .get()
+            .reveals_child(),
+        "selecting a tile should reveal the batch trash action"
     );
 
     click_button(&fixture.page.imp().select_all_btn.get());
@@ -195,7 +205,7 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
     );
     click_button(&fixture.page.imp().select_all_btn.get());
     assert!(
-        !fixture.page.imp().favorite_btn.get().is_visible(),
+        !fixture.page.imp().favorite_revealer.get().reveals_child(),
         "clicking the toggled Select All button clears selection and hides batch actions"
     );
 
@@ -215,9 +225,9 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         wait_until(Duration::from_secs(2), || !fixture
             .page
             .imp()
-            .favorite_btn
+            .favorite_revealer
             .get()
-            .is_visible()),
+            .reveals_child()),
         "favorite action should clear the previous selection before the next batch action"
     );
 

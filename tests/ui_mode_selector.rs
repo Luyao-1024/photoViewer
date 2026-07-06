@@ -14,7 +14,6 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
-use libadwaita as adw;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::ui::{ModeSelector, PhotosPage};
 
@@ -29,7 +28,7 @@ fn mode_selector_integration_suite() {
     assert!(sel.first_child().is_some(), "row child present");
 
     // --- Test 2: set_stack seeds active_index from current visible child ---
-    let stack = adw::ViewStack::new();
+    let stack = gtk::Stack::new();
     stack.add_titled(&gtk::Label::new(Some("A")), Some("year"), "年");
     stack.add_titled(&gtk::Label::new(Some("B")), Some("month"), "月");
     stack.add_titled(&gtk::Label::new(Some("C")), Some("day"), "日");
@@ -41,7 +40,7 @@ fn mode_selector_integration_suite() {
 
     // --- Test 3: clicking a label cell updates the bound stack ---
     let sel3 = ModeSelector::new();
-    let stack3 = adw::ViewStack::new();
+    let stack3 = gtk::Stack::new();
     stack3.add_titled(&gtk::Label::new(Some("A")), Some("year"), "年");
     stack3.add_titled(&gtk::Label::new(Some("B")), Some("month"), "月");
     stack3.add_titled(&gtk::Label::new(Some("C")), Some("day"), "日");

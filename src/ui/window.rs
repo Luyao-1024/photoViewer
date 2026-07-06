@@ -842,11 +842,14 @@ impl MainWindow {
         let expanded = !self.imp().albums_expanded.get();
         self.imp().albums_expanded.set(expanded);
         if let Some(arrow) = self.imp().albums_arrow.borrow().clone() {
-            arrow.set_icon_name(if expanded {
-                Some("pan-down-symbolic")
+            // Animate the disclosure arrow via CSS rotation instead of an icon
+            // swap (which snaps). The icon stays pan-down-symbolic; the
+            // .collapsed class rotates it -90deg (see grid_css.rs).
+            if expanded {
+                arrow.remove_css_class("collapsed");
             } else {
-                Some("pan-end-symbolic")
-            });
+                arrow.add_css_class("collapsed");
+            }
         }
         self.imp().album_scroll.set_visible(expanded);
         self.imp().album_trash_wrapper.set_vexpand(expanded);
@@ -870,11 +873,13 @@ impl MainWindow {
         let expanded = !self.imp().media_types_expanded.get();
         self.imp().media_types_expanded.set(expanded);
         if let Some(arrow) = self.imp().media_types_arrow.borrow().clone() {
-            arrow.set_icon_name(if expanded {
-                Some("pan-down-symbolic")
+            // CSS rotation drives the arrow animation (see
+            // toggle_albums_expanded for the rationale).
+            if expanded {
+                arrow.remove_css_class("collapsed");
             } else {
-                Some("pan-end-symbolic")
-            });
+                arrow.add_css_class("collapsed");
+            }
         }
         self.imp().media_type_scroll.set_visible(expanded);
         tracing::info!(

@@ -162,6 +162,15 @@ box.mode-dot,
   margin-top: 2px;
 }
 
+/* The single sliding indicator under the labels. Its translateX is written by a
+   runtime CssProvider (see ModeSelector::update_indicator_position). The curve
+   is a pure decelerate (no overshoot) so the bar stops exactly on the active
+   label — same decelerate curve as the viewer filmstrip. `transform` is
+   paint-only, so it never disturbs the dot_row layout. */
+box.mode-dot {
+  transition: transform 300ms cubic-bezier(0.2, 0.0, 0.2, 1);
+}
+
 /* glass-toolbar-button — individual buttons in glass header bars.
    This base rule owns only geometry; the actual material lives in the
    Liquid/Plain material blocks so Settings can switch every button at once. */
@@ -171,6 +180,23 @@ box.mode-dot,
   border-radius: 10px;
   padding: 0 14px;
   color: inherit;
+}
+
+/* Hover/active/checked/selected motion — one material-independent transition
+   so every glass chrome surface eases between states instead of snapping.
+   Property-only (background/border-color/box-shadow/color): never changes
+   allocation, so it is safe on hover-only chrome (viewer-chrome reveal,
+   overlay nav arrows, sidebar settings) as well as always-on toolbar buttons.
+   Durations mirror .search-more-tile. Defined here in BASE_CSS because the
+   transition itself is the same in Liquid and Plain mode — only the rest/
+   hover/active *values* live in the material blocks. */
+.glass-toolbar-button,
+.glass-menu-item,
+.glass-context-menu-item,
+.glass-sidebar-row,
+.sidebar-settings-button,
+.viewer-overlay-nav-btn {
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
 }
 
 .glass-toolbar-button.round-search-button {
@@ -283,6 +309,18 @@ box.mode-dot,
   padding: 8px 12px;
   border-radius: 24px;
   min-width: 128px;
+  /* Entrance reveal: glass_context_menu::show mounts the panel with
+     .glass-context-menu-entering (opacity 0 + slight scale) and removes the
+     class on the next idle, so this transition fades/scales the menu in.
+     `transform` is paint-only, so it never disturbs the Fixed-based
+     positioning of the panel. */
+  transition: opacity 140ms ease, transform 140ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  transform-origin: top center;
+}
+
+.glass-context-menu-entering {
+  opacity: 0;
+  transform: scale(0.96);
 }
 
 .glass-context-menu-item {
@@ -419,6 +457,15 @@ box.mode-dot,
 
 .glass-sidebar-arrow {
   opacity: 0.6;
+  transition: transform 180ms ease;
+}
+
+/* Collapsed groups rotate the disclosure arrow -90deg so pan-down-symbolic
+   points right. Toggled from toggle_albums_expanded / toggle_media_types_expanded;
+   the icon itself stays pan-down-symbolic so the rotation animates instead of an
+   icon swap that would snap. */
+.glass-sidebar-arrow.collapsed {
+  transform: rotate(-90deg);
 }
 
 /* Drag-to-reorder an album row. The dragged row is dimmed while held, and the
@@ -462,6 +509,32 @@ box.mode-dot,
     alpha(@window_bg_color, 0.82);
   background-clip: padding-box;
   border: 1px solid alpha(@window_fg_color, 0.08);
+}
+
+/* Fullscreen preview entrance fade. The preview picture mounts at opacity 0 and
+   fades in when open_fullscreen_preview_window adds .fade-shown on the next idle
+   (after window.present()). EXIF rotation/zoom `transform` is written by a
+   runtime CssProvider on this same selector; `opacity` is a separate property,
+   so the two compose without conflict. */
+picture.viewer-fullscreen-preview-picture {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+picture.viewer-fullscreen-preview-picture.fade-shown {
+  opacity: 1;
+}
+
+/* The viewer loading spinner fades in/out via opacity (kept `visible: true`;
+   it lives in an overlay slot of the media stage, so visibility never reshapes
+   the Picture's allocation). `set_spinner_visible` toggles this class and
+   `set_spinning` so a hidden spinner stops its rotation work. */
+.viewer-spinner {
+  transition: opacity 180ms ease;
+}
+
+.viewer-spinner.viewer-spinner-hidden {
+  opacity: 0;
 }
 
 video.viewer-media-surface picture {
@@ -572,6 +645,13 @@ video.viewer-media-surface controls scale slider {
   border: 1px solid alpha(@window_fg_color, 0.10);
 }
 
+/* The favorite heart recolors (grey↔translucent-red) when the favorite-active
+   class is added/removed. The transition lives on this BASE rule so it animates
+   in BOTH directions — adding the class fades to red, removing it fades back. */
+.viewer-favorite-btn {
+  transition: color 120ms ease;
+}
+
 /* Viewer favorite button active state. Class is added/removed by
    ViewerPage::refresh_favorite_button. Only the heart ICON recolors to a
    translucent red — the button itself stays bare (no capsule), matching the
@@ -592,6 +672,11 @@ video.viewer-media-surface controls scale slider {
   border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
+  /* Thumbnail fade-in. Opacity is CSS-driven (not widget.set_opacity) so the
+     transition actually fires, mirroring the proven .thumb-checkmark pattern:
+     .glass-thumb-card.thumb-loading holds opacity:0 while the texture loads;
+     SquareTile::set_paintable removes the class and the tile fades 0→1. */
+  transition: opacity 200ms ease;
 }
 
 .thumb-image {
@@ -630,6 +715,15 @@ video.viewer-media-surface controls scale slider {
    在 set_paintable 里移除该 class。 */
 .thumb-loading {
   background-color: alpha(@window_fg_color, 0.05);
+}
+
+/* Loading tiles are fully hidden (opacity 0) until their texture arrives,
+   then fade in via the .glass-thumb-card opacity transition when the class
+   is removed. Excludes .thumb-placeholder (the startup skeleton tiles built
+   by build_virtual_placeholder_flow, which stay visible on purpose) and is
+   scoped to thumb cards so the class never blanks an unrelated widget. */
+.glass-thumb-card.thumb-loading:not(.thumb-placeholder) {
+  opacity: 0;
 }
 
 .thumb-placeholder {
@@ -1028,6 +1122,7 @@ row.settings-action-row:hover {
 
 .settings-background-blur {
   opacity: 0.82;
+  transition: opacity 200ms ease;
 }
 
 .settings-dialog-backdrop .background {
@@ -1432,6 +1527,7 @@ row.settings-action-row:hover {
 
 .settings-background-blur {
   opacity: 0.72;
+  transition: opacity 200ms ease;
 }
 
 .settings-dialog-backdrop .background {
@@ -2083,6 +2179,21 @@ mod tests {
         );
     }
 
+    /// The favorite heart eases grey↔red via a CSS color transition. The
+    /// transition must live on the BASE .viewer-favorite-btn rule (not the
+    /// .favorite-active rule) so that REMOVING the class also animates back to
+    /// grey, not just adding it.
+    #[test]
+    fn favorite_heart_transitions_color_both_ways() {
+        let css = build_css(true);
+        let base = css_block(&css, ".viewer-favorite-btn")
+            .expect("base .viewer-favorite-btn rule must exist to host the color transition");
+        assert!(
+            base.contains("transition: color 120ms ease"),
+            "base .viewer-favorite-btn must define a color transition so the heart eases in both directions, got {base}"
+        );
+    }
+
     #[test]
     fn viewer_media_surface_uses_theme_adaptive_background() {
         let css = build_css(true);
@@ -2300,6 +2411,31 @@ mod tests {
         }
     }
 
+    /// Hover/active/checked/selected state changes on glass chrome — toolbar
+    /// buttons, menu items, context-menu items, sidebar rows, and the hover-only
+    /// viewer/footer chrome — must ease via a shared CSS transition instead of
+    /// snapping. The transition is material-independent (defined once in
+    /// BASE_CSS) and property-only, so it never changes allocation.
+    #[test]
+    fn glass_chrome_eases_on_state_change() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+
+            assert!(
+                css.contains(
+                    ".glass-toolbar-button,\n.glass-menu-item,\n.glass-context-menu-item,\n.glass-sidebar-row,\n.sidebar-settings-button,\n.viewer-overlay-nav-btn"
+                ),
+                "glass chrome classes must share one transition selector ({liquid} mode)"
+            );
+            assert!(
+                css.contains(
+                    "transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease"
+                ),
+                "glass chrome must ease background/border/shadow/color on state change ({liquid} mode)"
+            );
+        }
+    }
+
     /// Each thumbnail carries a translucent-white checkmark pinned to its
     /// bottom-right; it is invisible at rest and revealed only when the
     /// wrapping FlowBoxChild is selected. This is the primary selected-state
@@ -2321,6 +2457,130 @@ mod tests {
                 "flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {\n  opacity: 1;"
             ),
             "thumb checkmark must be revealed (opacity 1) on flowboxchild:selected"
+        );
+    }
+
+    /// A loading thumbnail — a `.glass-thumb-card` carrying `.thumb-loading`
+    /// but NOT the startup `.thumb-placeholder` skeleton — is held at opacity 0
+    /// and fades in via the `.glass-thumb-card` opacity transition when
+    /// `SquareTile::set_paintable` removes `.thumb-loading`. Startup skeleton
+    /// placeholders (which carry both classes) must stay visible. This mirrors
+    /// the `.thumb-checkmark` CSS-driven opacity pattern, so the fade does NOT
+    /// rely on `widget.set_opacity` (which would bypass the CSS transition).
+    #[test]
+    fn thumbnail_fades_in_when_loaded() {
+        let css = build_css(true);
+
+        // The card owns the opacity transition that drives the fade.
+        assert!(
+            css.contains("transition: opacity 200ms ease;"),
+            "glass-thumb-card must define an opacity transition for thumbnail fade-in"
+        );
+
+        // Loading tiles (excluding the startup placeholders) are hidden until
+        // their texture arrives; the :not(.thumb-placeholder) scope is what
+        // keeps the startup skeleton visible.
+        assert!(
+            css.contains(".glass-thumb-card.thumb-loading:not(.thumb-placeholder)"),
+            "loading thumb cards must exclude .thumb-placeholder so the startup skeleton stays visible"
+        );
+        assert!(
+            !css.contains(".glass-thumb-card.thumb-loading {\n  opacity: 0;"),
+            "the opacity:0 loading rule must NOT apply to unscoped .thumb-loading (would hide the startup skeleton)"
+        );
+    }
+
+    /// The right-click context menu eases in (opacity + scale) instead of
+    /// appearing at full opacity. glass_context_menu::show tags the panel with
+    /// .glass-context-menu-entering and drops it on the next idle.
+    #[test]
+    fn context_menu_eases_in_on_show() {
+        let css = build_css(true);
+        assert!(
+            css.contains(".glass-context-menu {\n  padding: 8px 12px;"),
+            "glass-context-menu base rule must exist"
+        );
+        assert!(
+            css.contains("transition: opacity 140ms ease, transform 140ms cubic-bezier"),
+            "context menu must ease opacity + transform on entrance"
+        );
+        assert!(
+            css.contains(
+                ".glass-context-menu-entering {\n  opacity: 0;\n  transform: scale(0.96);"
+            ),
+            "context menu entering state must start hidden + scaled down"
+        );
+    }
+
+    /// The settings dialog backdrop (a class toggled on the persistent nav_view)
+    /// fades opacity in/out rather than snapping. Works because the class is
+    /// toggled on an already-mounted widget.
+    #[test]
+    fn settings_backdrop_fades_opacity() {
+        for liquid in [true, false] {
+            let css = build_css(liquid);
+            let block = css_block(&css, ".settings-background-blur")
+                .expect("settings-background-blur rule must exist");
+            assert!(
+                block.contains("transition: opacity 200ms ease"),
+                "settings backdrop must fade opacity in both material modes ({liquid} mode), got {block}"
+            );
+        }
+    }
+
+    /// The year/month/day indicator is a single bar that slides between the
+    /// three labels and stops exactly on the active one — a pure decelerate
+    /// curve with no overshoot. Its translateX is written by a runtime
+    /// CssProvider; the transition lives on the box.mode-dot rule.
+    #[test]
+    fn mode_selector_indicator_slides_to_target_without_overshoot() {
+        let css = build_css(true);
+        assert!(
+            css.contains("transition: transform 300ms cubic-bezier(0.2, 0.0, 0.2, 1)"),
+            "the indicator must decelerate onto the target with no overshoot"
+        );
+        // Guard against the overshoot back-out curve sneaking back in: a y
+        // value > 1 would make the bar bounce past the target.
+        assert!(
+            !css.contains("cubic-bezier(0.34, 1.56, 0.64, 1)"),
+            "the indicator must NOT use the overshoot back-out curve"
+        );
+        assert!(
+            !css.contains("box.mode-dot.active"),
+            "no per-dot active opacity rule — the indicator is a single sliding bar now"
+        );
+    }
+
+    /// The fullscreen preview picture fades in on present (opacity 0 → 1 via a
+    /// .fade-shown class added on the next idle). `transform` for EXIF
+    /// rotation lives on a runtime CssProvider on the same selector; opacity is
+    /// a separate property and must not conflict.
+    #[test]
+    fn fullscreen_preview_picture_fades_in() {
+        let css = build_css(true);
+        assert!(
+            css.contains("picture.viewer-fullscreen-preview-picture {\n  opacity: 0;"),
+            "fullscreen preview picture must start at opacity 0 for the entrance fade"
+        );
+        assert!(
+            css.contains("picture.viewer-fullscreen-preview-picture.fade-shown {\n  opacity: 1;"),
+            "fullscreen preview picture must reach opacity 1 via .fade-shown"
+        );
+    }
+
+    /// The viewer loading spinner fades via CSS opacity (kept visible: true in
+    /// its overlay slot) instead of show/hide. set_spinner_visible toggles
+    /// .viewer-spinner-hidden.
+    #[test]
+    fn viewer_spinner_fades_via_opacity() {
+        let css = build_css(true);
+        assert!(
+            css.contains(".viewer-spinner {\n  transition: opacity 180ms ease;"),
+            "viewer spinner must define an opacity transition"
+        );
+        assert!(
+            css.contains(".viewer-spinner.viewer-spinner-hidden {\n  opacity: 0;"),
+            "viewer spinner hidden state must drop opacity to 0"
         );
     }
 

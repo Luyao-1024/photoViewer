@@ -18,18 +18,40 @@ template $PhotosPage : Adw.NavigationPage {
       show-end-title-buttons: true;
       css-classes: ["glass-header"];
 
+      // Select-all (text) stays on the left (`[start]`); the batch actions live
+      // on the right (`[end]`). The batch-action buttons use the shared always-on
+      // `.glass-toolbar-button` glass (they only appear in selection mode, so a
+      // persistent capsule helps them stand out). Adw.HeaderBar packs `[end]`
+      // children edge-first (first declared = rightmost), so the right group is
+      // declared in reverse of its left-to-right order:
+      // add_to_album, favorite, delete_to_trash.
+      //
+      // Each selection-gated button is wrapped in a Gtk.Revealer so entering/
+      // leaving selection mode slides it in/out instead of snapping. A
+      // horizontal slide transition collapses the revealer to zero width when
+      // not revealed, so the header never reserves empty space. `[start]`
+      // revealers use slide_right, `[end]` revealers use slide_left.
+
       [start]
-      Gtk.Button select_all_btn {
-        visible: false;
-        css-classes: ["glass-toolbar-button"];
+      Gtk.Revealer select_all_revealer {
+        transition-type: slide_right;
+        reveal-child: false;
+
+        Gtk.Button select_all_btn {
+          css-classes: ["glass-toolbar-button"];
+        }
       }
 
       // Exit multi-select. Visible only while multi-select is active — even
       // with zero selection — so the user is never stuck in multi-select.
       [start]
-      Gtk.Button exit_multi_select_btn {
-        visible: false;
-        css-classes: ["glass-toolbar-button"];
+      Gtk.Revealer exit_multi_select_revealer {
+        transition-type: slide_right;
+        reveal-child: false;
+
+        Gtk.Button exit_multi_select_btn {
+          css-classes: ["glass-toolbar-button"];
+        }
       }
 
       [start]
@@ -40,31 +62,43 @@ template $PhotosPage : Adw.NavigationPage {
       }
 
       [end]
-      Gtk.Button delete_to_trash_btn {
-        icon-name: "user-trash-symbolic";
-        tooltip-text: "";
-        visible: false;
-        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+      Gtk.Revealer delete_to_trash_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Button delete_to_trash_btn {
+          icon-name: "user-trash-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+        }
       }
 
       [end]
-      Gtk.Button favorite_btn {
-        // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
-        // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
-        // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
-        icon-name: "emblem-favorite-symbolic";
-        tooltip-text: "";
-        visible: false;
-        css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+      Gtk.Revealer favorite_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Button favorite_btn {
+          // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
+          // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
+          // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
+          icon-name: "emblem-favorite-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+        }
       }
 
       [end]
-      Gtk.Button add_to_album_btn {
-        icon-name: "list-add-symbolic";
-        tooltip-text: "";
-        visible: false;
-        // Hidden until user has selected one or more photos.
-        css-classes: ["glass-toolbar-button"];
+      Gtk.Revealer add_to_album_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Button add_to_album_btn {
+          icon-name: "list-add-symbolic";
+          tooltip-text: "";
+          // Hidden until user has selected one or more photos.
+          css-classes: ["glass-toolbar-button"];
+        }
       }
     }
 
@@ -72,9 +106,14 @@ template $PhotosPage : Adw.NavigationPage {
       vexpand: true;
       hexpand: true;
 
-      child: Adw.ViewStack view_stack {
+      child: Gtk.Stack view_stack {
         vexpand: true;
         hexpand: true;
+        // Crossfade year/month/day grids (and the empty-state child) on switch.
+        // GtkStack owns transition-type; AdwViewStack (the previous type) does
+        // not, which is why this is a GtkStack now.
+        transition-type: crossfade;
+        transition-duration: 200;
       };
 
       [overlay]

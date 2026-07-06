@@ -3184,8 +3184,14 @@ pub mod square_tile {
                 p.set_paintable(paintable);
             }
             // 设入任意 paintable（真实 texture 或失败灰底）即停止骨架 shimmer。
+            // 透明度由 CSS 驱动（.glass-thumb-card 的 opacity transition +
+            // .glass-thumb-card.thumb-loading 的 opacity:0）：移除 thumb-loading
+            // class 时 tile 由 0→1 淡入。不要在此处 widget.set_opacity，否则会
+            // 绕过 CSS transition 直接跳变。
             self.remove_css_class("thumb-loading");
-            self.set_opacity(1.0);
+            // 父 FlowBoxChild 在 sync_flow_child_visibility_for_tile 里随
+            // thumb-loading 同步成 opacity:0；纹理到位时立刻把它恢复可见，
+            // 好让上面的 tile 淡入能被看到。
             if let Some(parent) = self.parent() {
                 parent.set_opacity(1.0);
             }
@@ -3434,7 +3440,9 @@ fn build_photo_picture(
         );
     } else {
         // 加载中骨架 shimmer；set_paintable 设入任意 paintable 时移除。
-        tile.set_opacity(0.0);
+        // 透明度由 CSS .glass-thumb-card.thumb-loading { opacity:0 } 控制，
+        // 缩略图到位移除 class 时经 opacity transition 淡入；不要在此
+        // widget.set_opacity，否则会与 CSS 打架并跳变。
         tile.add_css_class("thumb-loading");
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
@@ -4155,11 +4163,14 @@ mod tests {
             Rc::new(|| {}),
         );
 
-        assert!(tile.has_css_class("thumb-loading"));
-        assert_eq!(
-            tile.opacity(),
-            0.0,
-            "uncached thumbnails should not show the gray loading surface before generation finishes"
+        // The tile is hidden via CSS (`.glass-thumb-card.thumb-loading` sets
+        // opacity:0 in grid_css), not via widget.set_opacity — that lets the
+        // fade-in transition fire when set_paintable drops the class. So this
+        // headless test asserts the CSS hook (.thumb-loading) is present rather
+        // than a widget opacity value.
+        assert!(
+            tile.has_css_class("thumb-loading"),
+            "uncached thumbnails must carry .thumb-loading so CSS hides them until generation finishes"
         );
         let flow = gtk::FlowBox::new();
         flow.append(&tile);
@@ -4174,10 +4185,9 @@ mod tests {
             "uncached thumbnails should hide the FlowBoxChild wrapper as well as the tile"
         );
         tile.set_paintable(Some(&gray_placeholder_texture()));
-        assert_eq!(
-            tile.opacity(),
-            1.0,
-            "thumbnail success or failure should reveal the tile"
+        assert!(
+            !tile.has_css_class("thumb-loading"),
+            "thumbnail success or failure should drop .thumb-loading so CSS reveals (and fades in) the tile"
         );
         assert_eq!(
             flow_child.opacity(),

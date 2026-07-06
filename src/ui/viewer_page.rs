@@ -1193,7 +1193,7 @@ impl ViewerPage {
         let weak = self.downgrade();
         panel.connect_spinner(move |visible| {
             if let Some(this) = weak.upgrade() {
-                this.imp().spinner.get().set_visible(visible);
+                this.set_spinner_visible(visible);
             }
         });
 
@@ -1668,6 +1668,11 @@ impl ViewerPage {
         picture.add_css_class("viewer-fullscreen-preview-picture");
         overlay.set_child(Some(&picture));
 
+        // Capture a weak ref now (before `picture` is moved into the
+        // transform-update closure below) so the entrance fade at present() can
+        // tag it. See picture.viewer-fullscreen-preview-picture in grid_css.rs.
+        let pic_for_fade = picture.downgrade();
+
         let preview_provider = Rc::new(gtk::CssProvider::new());
         gtk::style_context_add_provider_for_display(
             &gtk::prelude::WidgetExt::display(&picture),
@@ -1885,6 +1890,14 @@ impl ViewerPage {
         window.present();
         window.set_fullscreened(true);
         window.fullscreen();
+        // Entrance fade: the picture starts at opacity 0 (CSS); adding
+        // .fade-shown on the next idle lets GTK paint the hidden state first,
+        // then the CSS transition fades the preview in.
+        let _ = glib::idle_add_local_once(move || {
+            if let Some(p) = pic_for_fade.upgrade() {
+                p.add_css_class("fade-shown");
+            }
+        });
         *self.imp().fullscreen_preview_window.borrow_mut() = Some(window);
     }
 
@@ -1999,7 +2012,7 @@ impl ViewerPage {
         let token = self.imp().current_token.get();
         let source = item.path.clone();
         let dest = motion_video_cache_path(&item);
-        self.imp().spinner.get().set_visible(true);
+        self.set_spinner_visible(true);
         self.imp().motion_play_btn.get().set_visible(false);
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2017,7 +2030,7 @@ impl ViewerPage {
                 Ok(Err(err)) => {
                     tracing::warn!("ViewerPage: failed to extract motion photo video: {err}");
                     if let Some(this) = weak.upgrade() {
-                        this.imp().spinner.get().set_visible(false);
+                        this.set_spinner_visible(false);
                         if let Some(item) = this.current_media_item() {
                             this.set_motion_play_button_for_item(&item);
                         }
@@ -2217,7 +2230,7 @@ impl ViewerPage {
             .picture
             .get()
             .set_paintable(Some(&frames[0].texture));
-        self.imp().spinner.get().set_visible(false);
+        self.set_spinner_visible(false);
         self.imp().edit_btn.get().set_sensitive(true);
         self.schedule_animated_image_frame(frames, 0, token);
         true
@@ -2280,7 +2293,7 @@ impl ViewerPage {
         self.imp().picture.get().set_visible(true);
         self.imp().video.get().set_visible(false);
         self.set_zoom_controls_visible(false);
-        self.imp().spinner.get().set_visible(true);
+        self.set_spinner_visible(true);
         self.imp().edit_btn.get().set_sensitive(false);
         self.set_crop_overlay(CropOverlayUpdate {
             active: false,
@@ -2316,7 +2329,7 @@ impl ViewerPage {
         self.imp().video.get().set_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
         self.set_zoom_controls_visible(false);
-        self.imp().spinner.get().set_visible(true);
+        self.set_spinner_visible(true);
         self.imp().edit_btn.get().set_sensitive(false);
 
         let stream = gtk::MediaFile::for_filename(&video_path);
@@ -2373,7 +2386,7 @@ impl ViewerPage {
             if this.imp().current_token.get() != token {
                 return;
             }
-            this.imp().spinner.get().set_visible(false);
+            this.set_spinner_visible(false);
             if restore_motion_on_error {
                 this.restore_image_after_motion_video(token);
             } else {
@@ -2386,10 +2399,26 @@ impl ViewerPage {
         self.imp().video_error_box.get().set_visible(visible);
     }
 
+    /// Show/hide the viewer loading spinner with a CSS opacity fade. The spinner
+    /// stays `visible: true` (it sits in an overlay slot of the media stage, so
+    /// visibility never affects the Picture's allocation); the
+    /// `.viewer-spinner-hidden` class drives opacity, and `set_spinning` is
+    /// toggled so a hidden spinner stops its rotation work.
+    fn set_spinner_visible(&self, visible: bool) {
+        let spinner = self.imp().spinner.get();
+        if visible {
+            spinner.remove_css_class("viewer-spinner-hidden");
+            spinner.set_spinning(true);
+        } else {
+            spinner.add_css_class("viewer-spinner-hidden");
+            spinner.set_spinning(false);
+        }
+    }
+
     fn show_video_error_background(&self) {
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(false);
-        self.imp().spinner.get().set_visible(false);
+        self.set_spinner_visible(false);
         self.set_video_error_visible(true);
     }
 
@@ -2400,7 +2429,7 @@ impl ViewerPage {
         restore_motion_on_error: bool,
     ) {
         if stream.error().is_some() {
-            self.imp().spinner.get().set_visible(false);
+            self.set_spinner_visible(false);
             if restore_motion_on_error {
                 self.restore_image_after_motion_video(token);
             } else {
@@ -2418,7 +2447,7 @@ impl ViewerPage {
         self.imp().picture.get().set_visible(false);
         self.set_video_error_visible(false);
         self.imp().video.get().set_visible(true);
-        self.imp().spinner.get().set_visible(false);
+        self.set_spinner_visible(false);
         self.imp().video.get().grab_focus();
     }
 
@@ -3786,7 +3815,7 @@ impl ViewerPage {
         // in `navigate_by_delta` guarantees the new preview is already warm
         // before we even get here.
         let had_paintable = self.imp().picture.get().paintable().is_some();
-        self.imp().spinner.get().set_visible(!had_paintable);
+        self.set_spinner_visible(!had_paintable);
         self.reset_viewer_transform();
 
         // Bump token so a stale response from a previous show_at() doesn't
@@ -3931,7 +3960,7 @@ impl ViewerPage {
                     tracing::warn!("ViewerPage: {e}");
                     if let Some(this) = viewer_weak.upgrade() {
                         if this.imp().current_token.get() == token {
-                            this.imp().spinner.get().set_visible(false);
+                            this.set_spinner_visible(false);
                         }
                     }
                     return;
@@ -3946,7 +3975,7 @@ impl ViewerPage {
                 return;
             }
             this.imp().picture.get().set_paintable(Some(&texture));
-            this.imp().spinner.get().set_visible(false);
+            this.set_spinner_visible(false);
             this.imp().edit_btn.get().set_sensitive(true);
         });
     }
@@ -3992,7 +4021,7 @@ impl ViewerPage {
                 return;
             }
             this.imp().picture.get().set_paintable(Some(&texture));
-            this.imp().spinner.get().set_visible(false);
+            this.set_spinner_visible(false);
         });
     }
 
@@ -5574,7 +5603,7 @@ mod tests {
 
         viewer.imp().video.get().set_visible(true);
         viewer.imp().picture.get().set_visible(true);
-        viewer.imp().spinner.get().set_visible(true);
+        viewer.set_spinner_visible(true);
         viewer.show_video_error_background();
 
         assert!(viewer.imp().video_error_box.get().is_visible());
@@ -5583,7 +5612,14 @@ mod tests {
             "GtkVideo should be hidden so its default broken-frame graphic is not exposed"
         );
         assert!(!viewer.imp().picture.get().is_visible());
-        assert!(!viewer.imp().spinner.get().is_visible());
+        assert!(
+            viewer
+                .imp()
+                .spinner
+                .get()
+                .has_css_class("viewer-spinner-hidden"),
+            "spinner should be opacity-hidden (not removed from layout) so it fades"
+        );
 
         viewer.show_image_stage();
         assert!(

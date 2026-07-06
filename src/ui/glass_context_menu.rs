@@ -1,5 +1,6 @@
 use gtk4 as gtk;
 use gtk4::gdk;
+use gtk4::glib;
 use gtk4::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -153,6 +154,19 @@ pub fn show(
     let x = (point.x() as i32).clamp(0, (overlay_width - panel_min).max(0));
     let y = (point.y() as i32).clamp(0, (overlay_height - panel_height).max(0));
     layer.move_(&panel, x as f64, y as f64);
+
+    // Entrance reveal: tag the panel with .glass-context-menu-entering (opacity
+    // 0 + scale 0.96) so its first paint is the hidden state, then drop the
+    // class on the next idle so the CSS transition on .glass-context-menu fades
+    // and scales it in. The class is added before show() returns, so no paint
+    // can occur in the visible (opacity 1) state before the transition starts.
+    panel.add_css_class("glass-context-menu-entering");
+    let panel_for_anim = panel.downgrade();
+    let _ = glib::idle_add_local_once(move || {
+        if let Some(panel) = panel_for_anim.upgrade() {
+            panel.remove_css_class("glass-context-menu-entering");
+        }
+    });
 }
 
 fn remember_open_menu(overlay: &gtk::Overlay, layer: &gtk::Fixed) {

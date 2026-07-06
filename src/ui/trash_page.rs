@@ -73,6 +73,10 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
+        /// Crossfade Stack (inside grid_viewport) holding the grid content and
+        /// the empty-state page, so empty<->content swaps crossfade instead of
+        /// snapping. Built in ObjectImpl::constructed.
+        pub content_stack: RefCell<Option<gtk::Stack>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -110,7 +114,46 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for TrashPage {}
+    impl ObjectImpl for TrashPage {
+        fn constructed(&self) {
+            self.parent_constructed();
+            let obj = self.obj();
+            // Wrap the grid content in a crossfade Stack that also holds the
+            // empty-state page, so empty<->content swaps crossfade. The Stack
+            // lives INSIDE grid_viewport: the Viewport stays scrolled's child
+            // (so the grid keeps scrolling — GtkStack is not Scrollable and
+            // cannot be scrolled's direct child), and the Stack crossfades its
+            // two children. We reparent the existing grid_content Box (the
+            // flow_box's parent) into it rather than restructuring the BLP.
+            let grid_viewport = obj.imp().grid_viewport.get();
+            // flow_box's parent is the grid_content Box (grid_viewport's child).
+            // Hold a strong ref so unparenting it below does not free it.
+            let grid_content = obj
+                .imp()
+                .flow_box
+                .get()
+                .parent()
+                .and_then(|p| p.downcast::<gtk::Box>().ok());
+            let content_stack = gtk::Stack::builder()
+                .transition_type(gtk::StackTransitionType::Crossfade)
+                .transition_duration(200)
+                .build();
+            // Set the Stack as grid_viewport's child FIRST: this unparents
+            // grid_content (the Viewport's previous child) so the add_named
+            // below does not trip gtk_widget_set_parent's "already has a
+            // parent" critical. grid_content stays alive via the local ref.
+            grid_viewport.set_child(Some(&content_stack));
+            if let Some(grid_content) = grid_content.as_ref() {
+                content_stack.add_named(grid_content, Some("content"));
+            }
+            let empty = empty_states::empty_trash();
+            empty.set_hexpand(true);
+            empty.set_vexpand(true);
+            content_stack.add_named(&empty, Some("empty"));
+            content_stack.set_visible_child_name("content");
+            *obj.imp().content_stack.borrow_mut() = Some(content_stack);
+        }
+    }
     impl WidgetImpl for TrashPage {}
     impl NavigationPageImpl for TrashPage {}
 }
@@ -346,10 +389,9 @@ fn render_trash_items_for_page(
     }
 
     *page.imp().visible_items.borrow_mut() = items.clone();
-    page.imp()
-        .scrolled
-        .get()
-        .set_child(Some(&page.imp().grid_viewport.get()));
+    if let Some(stack) = page.imp().content_stack.borrow().as_ref() {
+        stack.set_visible_child_name("content");
+    }
     for item in items {
         let tile = build_trash_tile(item, loader.clone());
         flow.append(&tile);
@@ -424,14 +466,14 @@ fn selected_ids_for_indices(
         .collect()
 }
 
-/// Replace the scrolled window's child with an empty-state `AdwStatusPage`.
-/// Keeps the action bar (Empty All button) revealed in the header so the
-/// user can still see the page is the Trash.
+/// Crossfade the trash grid out and the empty-state `AdwStatusPage` in. The
+/// empty page was added to the content Stack at construction; here we just flip
+/// the visible child. Keeps the action bar (Empty All button) revealed in the
+/// header so the user can still see the page is the Trash.
 fn show_empty_trash(page: &TrashPage) {
-    let empty = empty_states::empty_trash();
-    empty.set_hexpand(true);
-    empty.set_vexpand(true);
-    page.imp().scrolled.get().set_child(Some(&empty));
+    if let Some(stack) = page.imp().content_stack.borrow().as_ref() {
+        stack.set_visible_child_name("empty");
+    }
 }
 
 impl Default for TrashPage {
@@ -487,12 +529,15 @@ mod tests {
         let page = TrashPage::default();
         let flow = page.imp().flow_box.get();
 
+        // grid_viewport now wraps a crossfade Stack (holding the grid content +
+        // empty-state page); the flow_box still lives inside the grid_content Box
+        // that is the Stack's "content" child.
         assert!(page
             .imp()
             .grid_viewport
             .get()
             .child()
-            .and_then(|child| child.downcast::<gtk::Box>().ok())
+            .and_then(|child| child.downcast::<gtk::Stack>().ok())
             .is_some());
         assert!(flow
             .parent()

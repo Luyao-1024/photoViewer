@@ -49,47 +49,21 @@ template $ModeSelector : Gtk.Box {
     }
   }
 
+  // A single sliding indicator (not three dots). It is dot_row's only child,
+  // left-aligned at rest; ModeSelector translates it to the active label's
+  // center via a runtime CssProvider, and the CSS `transition: transform`
+  // (an overshoot / elastic curve) gives the slide a bouncy landing. dot_row is
+  // the same width as the label row above (both hexpand/fill in the vertical
+  // ModeSelector box), so cell_width = dot_row width / 3 keeps the indicator
+  // centered under each of the three labels.
   Gtk.Box dot_row {
     orientation: horizontal;
     halign: fill;
     hexpand: true;
-    homogeneous: true;
 
-    Gtk.Box dot_cell_0 {
-      css-classes: ["mode-cell"];
-      halign: fill;
-      hexpand: true;
-
-      Gtk.Box dot_inner_0 {
-        visible: false;
-        halign: center;
-        hexpand: true;
-        css-classes: ["mode-dot"];
-      }
-    }
-    Gtk.Box dot_cell_1 {
-      css-classes: ["mode-cell"];
-      halign: fill;
-      hexpand: true;
-
-      Gtk.Box dot_inner_1 {
-        visible: false;
-        halign: center;
-        hexpand: true;
-        css-classes: ["mode-dot"];
-      }
-    }
-    Gtk.Box dot_cell_2 {
-      css-classes: ["mode-cell"];
-      halign: fill;
-      hexpand: true;
-
-      Gtk.Box dot_inner_2 {
-        visible: true;
-        halign: center;
-        hexpand: true;
-        css-classes: ["mode-dot"];
-      }
+    Gtk.Box mode_dot_indicator {
+      halign: start;
+      css-classes: ["mode-dot"];
     }
   }
 }

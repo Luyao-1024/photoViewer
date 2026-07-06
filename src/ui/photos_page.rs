@@ -73,7 +73,7 @@ mod imp {
         #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
-        pub view_stack: TemplateChild<adw::ViewStack>,
+        pub view_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub mode_selector: TemplateChild<ModeSelector>,
         #[template_child]
@@ -91,6 +91,21 @@ mod imp {
         pub unfavorite_item_btn: RefCell<Option<gtk::Button>>,
         #[template_child]
         pub delete_to_trash_btn: TemplateChild<gtk::Button>,
+        // Selection-gated header buttons are wrapped in Revealers (see
+        // photos-page.blp) so they slide in/out of the header instead of
+        // snapping when selection mode toggles. The button TemplateChildren
+        // above stay valid — Blueprint ids are global within the template
+        // regardless of nesting.
+        #[template_child]
+        pub select_all_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub exit_multi_select_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub delete_to_trash_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub favorite_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub add_to_album_revealer: TemplateChild<gtk::Revealer>,
     }
 
     impl Default for PhotosPage {
@@ -118,6 +133,11 @@ mod imp {
                 favorite_item_btn: RefCell::new(None),
                 unfavorite_item_btn: RefCell::new(None),
                 delete_to_trash_btn: TemplateChild::default(),
+                select_all_revealer: TemplateChild::default(),
+                exit_multi_select_revealer: TemplateChild::default(),
+                delete_to_trash_revealer: TemplateChild::default(),
+                favorite_revealer: TemplateChild::default(),
+                add_to_album_revealer: TemplateChild::default(),
             }
         }
     }
@@ -344,7 +364,7 @@ impl PhotosPage {
         let empty_page = empty_states::no_photos();
         empty_page.set_hexpand(true);
         empty_page.set_vexpand(true);
-        stack.add(&empty_page); // untitled → won't appear in the switcher bar
+        stack.add_child(&empty_page); // untitled → won't appear in the switcher bar
 
         // Decide initial visible child based on data size.
         if is_empty {
@@ -648,16 +668,25 @@ impl PhotosPage {
             .any(|g| g.is_multi_select_mode());
         *self.imp().selected_ids.borrow_mut() = union;
         let select_all_limit_reached = self.selected_reaches_select_all_limit();
-        self.imp().select_all_btn.get().set_visible(has_any);
-        self.imp().add_to_album_btn.get().set_visible(has_any);
-        self.imp().delete_to_trash_btn.get().set_visible(has_any);
+        self.imp()
+            .select_all_revealer
+            .get()
+            .set_reveal_child(has_any);
+        self.imp()
+            .add_to_album_revealer
+            .get()
+            .set_reveal_child(has_any);
+        self.imp()
+            .delete_to_trash_revealer
+            .get()
+            .set_reveal_child(has_any);
         // Exit-multi-select is bound to multi-select *mode*, not to having a
         // selection, so the user can always leave multi-select even after
         // deselecting everything (otherwise they'd be stuck with no toolbar).
         self.imp()
-            .exit_multi_select_btn
+            .exit_multi_select_revealer
             .get()
-            .set_visible(any_multi);
+            .set_reveal_child(any_multi);
         // select_all_btn keeps a text label that toggles 全选/取消全选.
         if select_all_limit_reached {
             self.imp()
@@ -693,7 +722,7 @@ impl PhotosPage {
         // opens the popover (handled in the click handler).
         let all_favorited = has_any && !state.can_favorite && state.can_unfavorite;
         let fav_btn = self.imp().favorite_btn.get();
-        fav_btn.set_visible(has_any);
+        self.imp().favorite_revealer.get().set_reveal_child(has_any);
         if all_favorited {
             fav_btn.add_css_class("favorite-active");
             fav_btn.set_tooltip_text(Some(&tr("photos.batch.unfavorite")));
@@ -1008,11 +1037,20 @@ impl PhotosPage {
             grid.clear_selection();
         }
         *self.imp().selected_ids.borrow_mut() = HashSet::new();
-        self.imp().select_all_btn.get().set_visible(false);
-        self.imp().add_to_album_btn.get().set_visible(false);
-        self.imp().favorite_btn.get().set_visible(false);
-        self.imp().delete_to_trash_btn.get().set_visible(false);
-        self.imp().exit_multi_select_btn.get().set_visible(false);
+        self.imp().select_all_revealer.get().set_reveal_child(false);
+        self.imp()
+            .add_to_album_revealer
+            .get()
+            .set_reveal_child(false);
+        self.imp().favorite_revealer.get().set_reveal_child(false);
+        self.imp()
+            .delete_to_trash_revealer
+            .get()
+            .set_reveal_child(false);
+        self.imp()
+            .exit_multi_select_revealer
+            .get()
+            .set_reveal_child(false);
     }
 
     fn open_viewer(&self, media_id: MediaId) {
