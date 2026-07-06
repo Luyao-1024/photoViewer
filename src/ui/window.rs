@@ -3902,6 +3902,7 @@ pub(crate) fn refresh_after_album_operation(nav: &adw::NavigationView) {
     }
 }
 
+#[tracing::instrument(name = "sidebar:load_album_snapshot", skip(pool))]
 fn load_sidebar_album_snapshot(pool: &DbPool) -> SidebarAlbumSnapshot {
     let live_count = crate::core::repository::MediaRepository::new(pool.clone())
         .count(crate::core::repository::MediaQuery::LiveAll)

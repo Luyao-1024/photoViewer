@@ -1538,6 +1538,26 @@ impl MediaGrid {
         added: u32,
         media_list: &gio::ListStore,
     ) -> bool {
+        self.apply_incremental_addition_inner(position, added, media_list, true, true)
+    }
+
+    fn apply_startup_progressive_addition(
+        &self,
+        position: u32,
+        added: u32,
+        media_list: &gio::ListStore,
+    ) -> bool {
+        self.apply_incremental_addition_inner(position, added, media_list, false, false)
+    }
+
+    fn apply_incremental_addition_inner(
+        &self,
+        position: u32,
+        added: u32,
+        media_list: &gio::ListStore,
+        update_cached_metadata: bool,
+        defer_uncached: bool,
+    ) -> bool {
         if added == 0 || self.imp().flat_sections.get() {
             return false;
         }
@@ -1617,9 +1637,10 @@ impl MediaGrid {
             let window_index = position + offset as u32;
             let media_id = MediaId::from(item.id);
             let item_mtime = thumbnail_request_mtime(&item);
-            if loader
-                .try_load_cached(&item.uri, spec.thumb_size, Some(item_mtime))
-                .is_none()
+            if defer_uncached
+                && loader
+                    .try_load_cached(&item.uri, spec.thumb_size, Some(item_mtime))
+                    .is_none()
             {
                 self.defer_incremental_addition_until_thumbnail_ready(
                     item,
@@ -1661,7 +1682,9 @@ impl MediaGrid {
             displayed.sort_by_key(|item| item.window_index);
         }
 
-        self.increment_cached_metadata_after_addition(added, &section_key);
+        if update_cached_metadata {
+            self.increment_cached_metadata_after_addition(added, &section_key);
+        }
         self.refresh_section_header_labels(media_list);
         self.refresh_stats_label_after_cached_change();
         self.apply_selection_mode();
@@ -2658,7 +2681,17 @@ impl MediaGrid {
                     cap
                 );
                 let mode = this.mode();
-                this.rebuild(list, mode);
+                let added = next.saturating_sub(cur) as u32;
+                if added > 0 && this.apply_startup_progressive_addition(cur as u32, added, &list) {
+                    tracing::info!(
+                        target: crate::core::log_targets::BROWSING,
+                        "STARTUP_PROGRESSIVE_RENDER append rendered_limit={} added={}",
+                        next,
+                        added
+                    );
+                } else {
+                    this.rebuild(list, mode);
+                }
             }
         });
     }
@@ -4182,6 +4215,51 @@ mod tests {
         assert!(
             tiles.iter().any(|tile| tile == &existing_tile),
             "full rebuild fallback should reuse already-loaded tile widgets instead of making them gray again"
+        );
+    }
+
+    #[gtk::test]
+    fn startup_progressive_addition_appends_without_rebuilding_existing_tiles() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        for id in 1..=4 {
+            media_list.append(&glib::BoxedAnyObject::new(sample_item(
+                id,
+                &format!("same-day-{id}.png"),
+            )));
+        }
+
+        let grid = MediaGrid::new(
+            media_list.clone(),
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+            false,
+        );
+        grid.imp().rendered_limit.set(2);
+        grid.rebuild(media_list.clone(), GroupBy::Day);
+        let before = square_tiles(&grid);
+        assert_eq!(before.len(), 2);
+        let first_tile = before[0].clone();
+
+        assert!(
+            grid.apply_startup_progressive_addition(2, 2, &media_list),
+            "same-section startup fill should append instead of forcing a full rebuild"
+        );
+
+        let after = square_tiles(&grid);
+        assert_eq!(after.len(), 4);
+        assert_eq!(
+            after[0], first_tile,
+            "startup progressive append must preserve already-rendered tile widgets"
+        );
+        assert_eq!(
+            grid.imp().virtual_total.get(),
+            4,
+            "rendering more of the same model must not inflate full-library totals"
         );
     }
 

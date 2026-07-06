@@ -129,10 +129,12 @@ first rebuild (the full page would block the main thread for ~850ms on a
 500-item library, gating both first paint and the sidebar snapshot). After the
 seed render, `schedule_startup_progressive_fill` paces the remainder of the
 first page: every tick (default 20ms) it raises `rendered_limit` by a batch
-(default 96) and re-runs `rebuild`, which reuses already-built tiles (keyed by
-`MediaId`) and only appends the new chunk, until the whole first page is
-rendered. The full page still ends up fully rendered — only its construction is
-deferred past first paint. This is armed only on the grid that is
+(default 96). When the next chunk remains inside an existing date section, the
+grid appends those tiles incrementally and preserves already-built FlowBox
+children. If the chunk crosses a section boundary, it falls back to a full
+`rebuild` for that tick so headers and section structure stay correct. The full
+page still ends up fully rendered — only its construction is deferred past first
+paint. This is armed only on the grid that is
 `initial_active` at construction; lazy Year/Month grids keep the original full
 rebuild when the user later switches to them. Mode/active changes bump a
 generation counter that cancels any in-flight fill. Tunable via `runtime.json`:

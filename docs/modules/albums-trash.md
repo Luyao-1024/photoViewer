@@ -26,6 +26,14 @@ trash backend with restore and delete flows.
 
 Albums are mostly folder-derived rather than a separate user-authored collection model. Keep album counts derived from media rows so scanner/database state remains the source of truth.
 
+Sidebar album projections are cached in the `albums` materialized table. This
+includes real folder albums and the virtual rows shown in the sidebar
+(Favorites, Images, Videos, Motion Photos, Animated, HDR). Startup sidebar
+snapshots should read these cached rows instead of rescanning `media_items` for
+large-library virtual counts; the startup scan / album refresh path rewrites the
+cache after filesystem changes converge so the sidebar catches up to the latest
+state.
+
 Album rows are a derived projection over media rows. New refresh paths should
 route through `core::refresh::RefreshCoordinator` so album rebuilds are
 single-flight and repeated startup/watch events coalesce. UI pages should avoid
