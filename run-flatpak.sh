@@ -41,10 +41,10 @@ Options:
   --log-domain, -l <target>       Set one rust log domain (repeatable)
   --log-domains, -L <list>        Set multiple domains as comma-separated list
   --log-all, -a                   Print all logs at trace level
-  --chrome-trace, -t              Emit a Chrome/Perfetto trace to <cache>/logs/trace.json
-                                  this run (sets PHOTOVIEWER_CHROME_TRACE=1). Pair with
-                                  `-L photo_viewer=debug` to also capture startup markers
-                                  in app.log. Open trace.json in chrome://tracing or perfetto.dev.
+  --chrome-trace, -t              Emit a Chrome/Perfetto trace this run
+                                  (sets PHOTOVIEWER_CHROME_TRACE=1). The script
+                                  prints the host trace.json/app.log paths before launch.
+                                  Open trace.json in chrome://tracing or perfetto.dev.
   --no-audio                       Start app without pulseaudio socket binding
   -h, --help                      Show this help
 
@@ -65,6 +65,7 @@ CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/io.github.luyao_1024.photoviewer"
 CARGO_HOME_DIR="$CACHE_ROOT/cargo-home"
 TARGET_DIR="target/flatpak-debug"
 FLATPAK_APP_ID="io.github.luyao_1024.photoviewer"
+FLATPAK_LOG_DIR="$HOME/.var/app/$FLATPAK_APP_ID/cache/$FLATPAK_APP_ID/logs"
 RUN_WITH_AUDIO=1
 RELEASE_BUILD=0
 # Emit a Chrome/Perfetto trace (<cache>/logs/trace.json) this run by setting
@@ -276,8 +277,13 @@ elif [[ -n "${PHOTOVIEWER_CHROME_TRACE:-}" ]]; then
     CHROME_TRACE_ARG=(--env=PHOTOVIEWER_CHROME_TRACE="$PHOTOVIEWER_CHROME_TRACE")
 fi
 
+RUST_LOG_ARG=()
+if [[ -n "$RUST_LOG_VALUE" ]]; then
+    RUST_LOG_ARG=(--env=RUST_LOG="$RUST_LOG_VALUE")
+fi
+
 RUN_CMD+=(
-    --env=RUST_LOG="$RUST_LOG_VALUE"
+    "${RUST_LOG_ARG[@]}"
     "${CHROME_TRACE_ARG[@]}"
     --filesystem="$PROJECT_DIR"
     --filesystem=home
@@ -286,7 +292,8 @@ RUN_CMD+=(
 )
 
 if (( CHROME_TRACE )) || [[ -n "${PHOTOVIEWER_CHROME_TRACE:-}" ]]; then
-    echo "==> chrome trace enabled -> <XDG_CACHE_HOME>/$FLATPAK_APP_ID/logs/trace.json"
+    echo "==> chrome trace enabled -> $FLATPAK_LOG_DIR/trace.json"
+    echo "    app log -> $FLATPAK_LOG_DIR/app.log"
     echo "    (note: custom-target markers need their target enabled; use -a to capture all)"
     echo "    (trace finalizes on clean exit; if killed, repair by appending ']')"
 fi

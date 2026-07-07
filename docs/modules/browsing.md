@@ -134,10 +134,11 @@ grid appends those tiles incrementally and preserves already-built FlowBox
 children. If the chunk crosses a section boundary, it falls back to a full
 `rebuild` for that tick so headers and section structure stay correct. The full
 page still ends up fully rendered — only its construction is deferred past first
-paint. This is armed only on the grid that is
-`initial_active` at construction; lazy Year/Month grids keep the original full
-rebuild when the user later switches to them. Mode/active changes bump a
-generation counter that cancels any in-flight fill. Tunable via `runtime.json`:
+paint. This is armed for each full-library grid: the construction-active Day
+grid uses it at startup, while lazy Year/Month grids keep it pending until
+their first activation so mode switching does not synchronously build the full
+visible window. Mode/active changes bump a generation counter that cancels any
+in-flight fill. Tunable via `runtime.json`:
 `startup_progressive_render` (master switch, default true), `startup_render_seed`
 (48), `startup_render_batch` (96), `startup_render_interval_ms` (20),
 `startup_render_first_tick_delay_ms` (150 — longer than the per-tick interval so
@@ -217,6 +218,11 @@ The Year/Month/Day control is both navigation and the canonical Liquid Glass seg
 - No per-segment active background block.
 
 Reusable segmented classes are documented in [`ui-liquid-glass.md`](ui-liquid-glass.md).
+
+Mode switching is instrumented for Chrome/Perfetto traces from selector input
+through stack notification, active-grid sync, grid activation, and coarse
+`MediaGrid::rebuild` phases. See [`diagnostics.md`](diagnostics.md) for the
+span names and how to enable `PHOTOVIEWER_CHROME_TRACE`.
 
 ## Layout Pitfalls
 

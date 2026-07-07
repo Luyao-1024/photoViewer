@@ -300,12 +300,20 @@ impl ThumbnailLoader {
     /// 设置后台预热的缩略图尺寸（跟随当前视图模式: Year→Small, Month→Medium, Day→Medium）。
     /// 切换时重置 DB 拉取偏移，让新尺寸从头扫。
     pub fn set_prewarm_thumbnail_size(&self, size: ThumbnailSize) {
+        let span = tracing::info_span!(
+            "thumb:set_prewarm_thumbnail_size",
+            size = ?size,
+            changed = tracing::field::Empty
+        );
+        let _trace = span.enter();
         if let Ok(mut s) = self.background_pull.size.lock() {
             if *s == size {
+                span.record("changed", false);
                 return;
             }
             *s = size;
         }
+        span.record("changed", true);
         if let Ok(mut off) = self.background_pull.offset.lock() {
             *off = 0;
         }
@@ -823,15 +831,20 @@ fn pull_batch_and_enqueue(
     state: &Mutex<LoaderState>,
 ) -> Option<PriItem> {
     let batch_size = *bg.worker_count.lock().ok()? as u32;
-    let mut off = bg.offset.lock().ok()?;
-    let page = crate::core::db::list_media_needing_thumbnail(pool, *off, batch_size).ok()?;
+    let start_offset = {
+        let mut off = bg.offset.lock().ok()?;
+        let start = *off;
+        *off = off.saturating_add(batch_size);
+        start
+    };
+    let page =
+        crate::core::db::list_media_needing_thumbnail(pool, start_offset, batch_size).ok()?;
     if page.is_empty() {
-        *off = 0;
+        if let Ok(mut off) = bg.offset.lock() {
+            *off = 0;
+        }
         return None;
     }
-    let count = page.len();
-    *off += count as u32;
-    drop(off);
 
     let size = *bg.size.lock().ok()?;
 

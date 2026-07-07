@@ -584,10 +584,13 @@ impl MediaGrid {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
         obj.imp().active.set(initial_active);
-        // Arm startup progressive rendering only on the grid that is active at
-        // construction (the default Day view). Lazy grids (initial_active=false)
-        // keep today's full rebuild when the user later switches to them.
-        obj.imp().startup_progressive_pending.set(initial_active);
+        // Arm progressive first render for every full-library grid. The
+        // construction-active Day grid uses it at startup; lazy Year/Month
+        // grids keep it pending until their first activation so switching modes
+        // does not synchronously build the entire visible window.
+        obj.imp()
+            .startup_progressive_pending
+            .set(full_library_context);
         obj.imp().full_library_context.set(full_library_context);
         obj.imp()
             .loader
@@ -783,6 +786,26 @@ impl MediaGrid {
     }
 
     pub fn set_active(&self, active: bool) {
+        let from = self.imp().active.get();
+        let dirty_model = self.imp().dirty_model.get();
+        let list_len = self
+            .imp()
+            .media_list
+            .borrow()
+            .as_ref()
+            .map(|list| list.n_items())
+            .unwrap_or(0);
+        let span = tracing::info_span!(
+            target: crate::core::log_targets::BROWSING,
+            "grid:set_active",
+            mode = ?self.mode(),
+            from,
+            to = active,
+            dirty_model,
+            list_len,
+            outcome = tracing::field::Empty
+        );
+        let _trace = span.enter();
         let prev = self.imp().active.replace(active);
         // Only cancel an in-flight startup fill on an ACTUAL visibility change.
         // `sync_active_grid_rebuilds` calls set_active on every grid for each
@@ -794,8 +817,15 @@ impl MediaGrid {
         }
         if active && self.imp().dirty_model.replace(false) {
             if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
+                span.record("outcome", "activate_rebuild");
                 self.rebuild_immediately(media_list);
+            } else {
+                span.record("outcome", "activate_no_list");
             }
+        } else if prev != active {
+            span.record("outcome", "active_changed_no_rebuild");
+        } else {
+            span.record("outcome", "no_change");
         }
     }
 
@@ -1434,22 +1464,20 @@ impl MediaGrid {
         let mut section_child = content.first_child();
         while let Some(child) = section_child {
             if let Some(flow) = child.downcast_ref::<gtk::FlowBox>() {
-                let mut flow_child = flow.first_child();
-                while let Some(c) = flow_child {
-                    let next = c.next_sibling();
-                    if let Some(bounds) = c.compute_bounds(self) {
-                        let contains_center = selector_mid_x >= bounds.x()
-                            && selector_mid_x <= bounds.x() + bounds.width()
-                            && selector_mid_y >= bounds.y()
-                            && selector_mid_y <= bounds.y() + bounds.height();
-                        if contains_center {
-                            return c
-                                .first_child()
-                                .and_then(|tile| tile.downcast::<SquareTile>().ok())
-                                .and_then(|tile| tile.background_is_light());
-                        }
+                if let Some(bounds) = flow.compute_bounds(self) {
+                    let contains_center = selector_mid_x >= bounds.x()
+                        && selector_mid_x <= bounds.x() + bounds.width()
+                        && selector_mid_y >= bounds.y()
+                        && selector_mid_y <= bounds.y() + bounds.height();
+                    if contains_center {
+                        let local_x = (selector_mid_x - bounds.x()).floor() as i32;
+                        let local_y = (selector_mid_y - bounds.y()).floor() as i32;
+                        return flow
+                            .child_at_pos(local_x, local_y)
+                            .and_then(|child| child.first_child())
+                            .and_then(|tile| tile.downcast::<SquareTile>().ok())
+                            .and_then(|tile| tile.background_is_light());
                     }
-                    flow_child = next;
                 }
             }
             section_child = child.next_sibling();
@@ -2093,9 +2121,17 @@ impl MediaGrid {
         }
         self.imp().stats_label.borrow_mut().take();
         let mut reusable_tiles = self.detach_reusable_loaded_tiles();
-        // Clear any previously built sections.
-        while let Some(child) = content.first_child() {
-            content.remove(&child);
+        {
+            let clear_span = tracing::info_span!(
+                target: crate::core::log_targets::BROWSING,
+                "grid:clear_content",
+                mode = ?mode
+            );
+            let _clear = clear_span.enter();
+            // Clear any previously built sections.
+            while let Some(child) = content.first_child() {
+                content.remove(&child);
+            }
         }
         self.imp().displayed_items.borrow_mut().clear();
 
@@ -2177,140 +2213,162 @@ impl MediaGrid {
         let mut section_count = 0u32;
         let mut photo_count = 0u32;
         let mut displayed_items = Vec::new();
-        if loading_placeholder_count > 0 {
-            content.append(&build_virtual_placeholder_flow(
-                spec,
-                loading_placeholder_count,
-            ));
-            section_count = 1;
-            photo_count = loading_placeholder_count;
-            tracing::debug!(
+        let flat_sections = self.imp().flat_sections.get();
+        {
+            let build_sections_span = tracing::info_span!(
                 target: crate::core::log_targets::BROWSING,
-                "VIRTUAL_SCROLL placeholder_window mode={:?} start={} count={} total={}",
-                mode,
-                window_start,
+                "grid:build_sections",
+                mode = ?mode,
+                flat_sections,
                 loading_placeholder_count,
-                total_media_count
+                sections = tracing::field::Empty,
+                photos = tracing::field::Empty
             );
-        } else {
-            let flat_sections = self.imp().flat_sections.get();
-            let mut sections = if flat_sections {
-                vec![MediaSection {
-                    key: SectionKey {
-                        year: None,
-                        month: None,
-                        day: None,
-                    },
-                    label: String::new(),
-                    items,
-                }]
+            let _build_sections = build_sections_span.enter();
+            if loading_placeholder_count > 0 {
+                content.append(&build_virtual_placeholder_flow(
+                    spec,
+                    loading_placeholder_count,
+                ));
+                section_count = 1;
+                photo_count = loading_placeholder_count;
+                tracing::debug!(
+                    target: crate::core::log_targets::BROWSING,
+                    "VIRTUAL_SCROLL placeholder_window mode={:?} start={} count={} total={}",
+                    mode,
+                    window_start,
+                    loading_placeholder_count,
+                    total_media_count
+                );
             } else {
-                group_items(&items, mode)
-            };
-            // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
-            // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
-            // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
-            if !flat_sections && self.imp().full_library_context.get() {
-                if let Some(counts) = self.imp().section_count_snapshots.borrow().get(&mode) {
-                    apply_authoritative_counts(&mut sections, counts);
-                }
-            }
-            for section in sections {
-                if section.items.is_empty() {
-                    continue;
-                }
-
-                if !flat_sections {
-                    // Full-width section header.
-                    let header = gtk::Label::builder()
-                        .label(&section.label)
-                        .halign(gtk::Align::Start)
-                        .margin_start(12)
-                        .margin_top(12)
-                        .margin_bottom(6)
-                        .xalign(0.0)
-                        .css_classes(["heading"])
-                        .build();
-                    content.append(&header);
-                }
-
-                // FlowBox of square thumbnails. `homogeneous` makes every cell the
-                // same size; with each picture's `set_size_request(target)` the
-                // cells become target×target squares. `column/row spacing` is the
-                // thin separator (≤3px); hover styling lives in grid_css.
-                //
-                // `selection_mode` starts at `None` and is flipped to
-                // `Multiple` only while multi-select is active (see
-                // `apply_selection_mode`). `None` stops the FlowBox from
-                // tracking its own selection, so no child can become
-                // `:selected` — and reveal the `.thumb-checkmark` — outside
-                // explicit multi-select. We mirror selection into
-                // `imp.selected` for our own bookkeeping; the focus ring
-                // (driven by `:hover` / `:focus` in grid_css) is unchanged.
-                let flow = gtk::FlowBox::builder()
-                    .orientation(gtk::Orientation::Horizontal)
-                    .homogeneous(true)
-                    .column_spacing(8)
-                    .row_spacing(8)
-                    .max_children_per_line(100)
-                    .selection_mode(gtk::SelectionMode::None)
-                    .build();
-                flow.set_activate_on_single_click(true);
-                flow.add_css_class("thumb-grid");
-                // While arrow-keying between tiles, hide the `:hover` hint so the
-                // highlight follows the keyboard focus, not the resting pointer.
-                crate::ui::grid_css::attach_kbd_nav(&flow);
-
-                // Build tiles and remember each child's stable id/current store
-                // index. Activation and context menus read this live mapping so
-                // incremental child removals cannot leave stale index arrays.
-                for item in &section.items {
-                    let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
-                    let media_id = MediaId::from(item.id);
-                    let on_bg = self
-                        .imp()
-                        .on_background_changed
-                        .get()
-                        .expect("MediaGrid::rebuild called before new()")
-                        .clone();
-                    let picture = if let Some(tile) = reusable_tiles.remove(&media_id) {
-                        prepare_reused_tile(&tile, spec, item);
-                        tile
+                let input_len = items.len();
+                let group_span = tracing::info_span!(
+                    target: crate::core::log_targets::BROWSING,
+                    "grid:group_sections",
+                    mode = ?mode,
+                    flat_sections,
+                    input_len
+                );
+                let mut sections = {
+                    let _group = group_span.enter();
+                    if flat_sections {
+                        vec![MediaSection {
+                            key: SectionKey {
+                                year: None,
+                                month: None,
+                                day: None,
+                            },
+                            label: String::new(),
+                            items,
+                        }]
                     } else {
-                        build_photo_picture(
-                            spec,
-                            item.clone(),
-                            media_list.clone(),
-                            gi,
-                            loader.clone(),
-                            on_bg,
-                        )
-                    };
-                    flow.append(&picture);
-                    if let Some(flow_child) = flow
-                        .last_child()
-                        .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
-                    {
-                        sync_flow_child_visibility_for_tile(&picture, &flow_child);
-                        if gi != u32::MAX {
-                            displayed_items.push(DisplayedItem {
-                                flow_child: flow_child.clone(),
-                                window_index: gi,
-                                media_id,
-                                section_key: section.key.clone(),
-                            });
-                        }
+                        group_items(&items, mode)
                     }
-                    photo_count += 1;
+                };
+                // section 头部计数改用整个库的 DB 聚合，而非当前虚拟分页窗口切片。
+                // 窗口受 virtual_media_page_size（默认 500）截断，否则一个实际几千张的
+                // 年份只会显示窗口里的 500。窗口只决定渲染哪些缩略图，不影响真实计数。
+                if !flat_sections && self.imp().full_library_context.get() {
+                    if let Some(counts) = self.imp().section_count_snapshots.borrow().get(&mode) {
+                        apply_authoritative_counts(&mut sections, counts);
+                    }
                 }
+                for section in sections {
+                    if section.items.is_empty() {
+                        continue;
+                    }
 
-                // Activation: FlowBox child-activated → look up stable media id.
-                // Only explicit multi-select mode (entered via right-click “Multi-select”)
-                // toggles selection; otherwise the item opens in viewer.
-                let on_act = on_activate.clone();
-                let weak = self.downgrade();
-                let section_label_for_activation = section.label.clone();
-                flow.connect_child_activated(move |flow, child| {
+                    if !flat_sections {
+                        // Full-width section header.
+                        let header = gtk::Label::builder()
+                            .label(&section.label)
+                            .halign(gtk::Align::Start)
+                            .margin_start(12)
+                            .margin_top(12)
+                            .margin_bottom(6)
+                            .xalign(0.0)
+                            .css_classes(["heading"])
+                            .build();
+                        content.append(&header);
+                    }
+
+                    // FlowBox of square thumbnails. `homogeneous` makes every cell the
+                    // same size; with each picture's `set_size_request(target)` the
+                    // cells become target×target squares. `column/row spacing` is the
+                    // thin separator (≤3px); hover styling lives in grid_css.
+                    //
+                    // `selection_mode` starts at `None` and is flipped to
+                    // `Multiple` only while multi-select is active (see
+                    // `apply_selection_mode`). `None` stops the FlowBox from
+                    // tracking its own selection, so no child can become
+                    // `:selected` — and reveal the `.thumb-checkmark` — outside
+                    // explicit multi-select. We mirror selection into
+                    // `imp.selected` for our own bookkeeping; the focus ring
+                    // (driven by `:hover` / `:focus` in grid_css) is unchanged.
+                    let flow = gtk::FlowBox::builder()
+                        .orientation(gtk::Orientation::Horizontal)
+                        .homogeneous(true)
+                        .column_spacing(8)
+                        .row_spacing(8)
+                        .max_children_per_line(100)
+                        .selection_mode(gtk::SelectionMode::None)
+                        .build();
+                    flow.set_activate_on_single_click(true);
+                    flow.add_css_class("thumb-grid");
+                    // While arrow-keying between tiles, hide the `:hover` hint so the
+                    // highlight follows the keyboard focus, not the resting pointer.
+                    crate::ui::grid_css::attach_kbd_nav(&flow);
+
+                    // Build tiles and remember each child's stable id/current store
+                    // index. Activation and context menus read this live mapping so
+                    // incremental child removals cannot leave stale index arrays.
+                    for item in &section.items {
+                        let gi = uri_to_index.get(&item.uri).copied().unwrap_or(u32::MAX);
+                        let media_id = MediaId::from(item.id);
+                        let on_bg = self
+                            .imp()
+                            .on_background_changed
+                            .get()
+                            .expect("MediaGrid::rebuild called before new()")
+                            .clone();
+                        let picture = if let Some(tile) = reusable_tiles.remove(&media_id) {
+                            prepare_reused_tile(&tile, spec, item);
+                            tile
+                        } else {
+                            build_photo_picture(
+                                spec,
+                                item.clone(),
+                                media_list.clone(),
+                                gi,
+                                loader.clone(),
+                                on_bg,
+                            )
+                        };
+                        flow.append(&picture);
+                        if let Some(flow_child) = flow
+                            .last_child()
+                            .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+                        {
+                            sync_flow_child_visibility_for_tile(&picture, &flow_child);
+                            if gi != u32::MAX {
+                                displayed_items.push(DisplayedItem {
+                                    flow_child: flow_child.clone(),
+                                    window_index: gi,
+                                    media_id,
+                                    section_key: section.key.clone(),
+                                });
+                            }
+                        }
+                        photo_count += 1;
+                    }
+
+                    // Activation: FlowBox child-activated → look up stable media id.
+                    // Only explicit multi-select mode (entered via right-click “Multi-select”)
+                    // toggles selection; otherwise the item opens in viewer.
+                    let on_act = on_activate.clone();
+                    let weak = self.downgrade();
+                    let section_label_for_activation = section.label.clone();
+                    flow.connect_child_activated(move |flow, child| {
                 let Some(this) = weak.upgrade() else {
                     return;
                 };
@@ -2357,20 +2415,20 @@ impl MediaGrid {
                 }
             });
 
-                if enable_context_menu {
-                    let weak_for_context = self.downgrade();
-                    let section_label_for_ctx = section.label.clone();
-                    let flow_for_ctx = flow.clone();
-                    let on_add_to_album_ctx = on_add_to_album.clone();
-                    let on_move_to_trash_ctx = on_move_to_trash.clone();
-                    let on_set_favorite_ctx = on_set_favorite.clone();
-                    let on_query_favorite_state_ctx = on_query_favorite_state.clone();
-                    let on_set_album_cover_ctx = on_set_album_cover.clone();
-                    let gesture = gtk::GestureClick::new();
-                    gesture.set_button(3);
-                    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+                    if enable_context_menu {
+                        let weak_for_context = self.downgrade();
+                        let section_label_for_ctx = section.label.clone();
+                        let flow_for_ctx = flow.clone();
+                        let on_add_to_album_ctx = on_add_to_album.clone();
+                        let on_move_to_trash_ctx = on_move_to_trash.clone();
+                        let on_set_favorite_ctx = on_set_favorite.clone();
+                        let on_query_favorite_state_ctx = on_query_favorite_state.clone();
+                        let on_set_album_cover_ctx = on_set_album_cover.clone();
+                        let gesture = gtk::GestureClick::new();
+                        gesture.set_button(3);
+                        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
 
-                    gesture.connect_released(move |gesture, _n_press, x, y| {
+                        gesture.connect_released(move |gesture, _n_press, x, y| {
                     if gesture.current_button() != 3 {
                         return;
                     }
@@ -2540,12 +2598,15 @@ impl MediaGrid {
                     );
                 });
 
-                    flow.add_controller(gesture);
-                }
+                        flow.add_controller(gesture);
+                    }
 
-                content.append(&flow);
-                section_count += 1;
+                    content.append(&flow);
+                    section_count += 1;
+                }
             }
+            build_sections_span.record("sections", section_count);
+            build_sections_span.record("photos", photo_count);
         }
         let rendered_window_len = if loading_placeholder_count > 0 {
             loading_placeholder_count
@@ -2851,27 +2912,47 @@ impl MediaGrid {
     }
 
     fn schedule_rebuild(&self, media_list: gtk::gio::ListStore) {
+        let mode = self.mode();
+        let list_len = media_list.n_items();
+        let span = tracing::info_span!(
+            target: crate::core::log_targets::BROWSING,
+            "grid:schedule_rebuild",
+            mode = ?mode,
+            list_len,
+            delay_ms = 750u64,
+            outcome = tracing::field::Empty
+        );
+        let _trace = span.enter();
         if self.imp().rebuild_debounce.borrow().is_some() {
+            span.record("outcome", "coalesced");
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "GRID_MODEL_TRACE schedule_rebuild_coalesced mode={:?} list_len={}",
-                self.mode(),
-                media_list.n_items()
+                mode,
+                list_len
             );
             return;
         }
 
+        span.record("outcome", "scheduled");
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "GRID_MODEL_TRACE schedule_rebuild mode={:?} list_len={} delay_ms=750",
-            self.mode(),
-            media_list.n_items()
+            mode,
+            list_len
         );
         let weak = self.downgrade();
         let source = glib::timeout_add_local_once(Duration::from_millis(750), move || {
             let Some(this) = weak.upgrade() else {
                 return;
             };
+            let span = tracing::info_span!(
+                target: crate::core::log_targets::BROWSING,
+                "grid:scheduled_rebuild",
+                mode = ?this.mode(),
+                list_len = media_list.n_items()
+            );
+            let _trace = span.enter();
             this.imp().rebuild_debounce.borrow_mut().take();
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
@@ -2886,9 +2967,22 @@ impl MediaGrid {
     }
 
     fn rebuild_immediately(&self, media_list: gtk::gio::ListStore) {
-        if let Some(source) = self.imp().rebuild_debounce.borrow_mut().take() {
+        let span = tracing::info_span!(
+            target: crate::core::log_targets::BROWSING,
+            "grid:rebuild_immediately",
+            mode = ?self.mode(),
+            list_len = media_list.n_items(),
+            canceled_pending = tracing::field::Empty
+        );
+        let _trace = span.enter();
+        let canceled_pending = if let Some(source) = self.imp().rebuild_debounce.borrow_mut().take()
+        {
             source.remove();
-        }
+            true
+        } else {
+            false
+        };
+        span.record("canceled_pending", canceled_pending);
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "GRID_MODEL_TRACE rebuild_immediately mode={:?} list_len={}",
@@ -4304,6 +4398,47 @@ mod tests {
             tile_count(&grid),
             2,
             "activating a dirty grid should build tiles from the current model"
+        );
+    }
+
+    #[gtk::test]
+    fn inactive_full_library_grid_uses_progressive_seed_on_first_activation() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let seed = runtime_config::startup_render_seed();
+        let expected_seed = seed as u32;
+        let source_len = seed + 12;
+        for id in 1..=source_len {
+            media_list.append(&glib::BoxedAnyObject::new(sample_item(
+                id as i64,
+                &format!("lazy-full-library-{id}.png"),
+            )));
+        }
+
+        let grid = MediaGrid::new_with_initial_active(
+            media_list,
+            GroupBy::Month,
+            loader,
+            noop_callbacks(),
+            false,
+            false,
+        );
+
+        assert_eq!(
+            tile_count(&grid),
+            0,
+            "inactive full-library grids should not build hidden tiles at startup"
+        );
+
+        grid.set_active(true);
+
+        assert_eq!(
+            tile_count(&grid),
+            expected_seed,
+            "first activation should render only the progressive seed, not the full model"
         );
     }
 

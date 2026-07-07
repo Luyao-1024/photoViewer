@@ -38,6 +38,21 @@ use crate::ui::window::refresh_albums_sidebar;
 
 const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
 
+fn group_mode_name(mode: GroupBy) -> &'static str {
+    match mode {
+        GroupBy::Year => "year",
+        GroupBy::Month => "month",
+        GroupBy::Day => "day",
+    }
+}
+
+fn stack_visible_child_name(stack: &gtk::Stack) -> String {
+    stack
+        .visible_child_name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
 mod imp {
     use super::*;
     use adw::subclass::prelude::*;
@@ -397,8 +412,32 @@ impl PhotosPage {
             let weak = obj.downgrade();
             let prewarm_loader = obj.imp().loader.borrow().clone();
             stack.connect_notify_local(Some("visible-child"), move |stack, _| {
-                if let Some(this) = weak.upgrade() {
+                let this = weak.upgrade();
+                let visible_child = stack_visible_child_name(stack);
+                let list_len = this
+                    .as_ref()
+                    .and_then(|page| {
+                        page.imp()
+                            .media_list
+                            .borrow()
+                            .as_ref()
+                            .map(|list| list.n_items())
+                    })
+                    .unwrap_or(0);
+                let span = tracing::info_span!(
+                    target: crate::core::log_targets::BROWSING,
+                    "photos:mode_stack_switch",
+                    visible_child = %visible_child,
+                    list_len
+                );
+                let _trace = span.enter();
+                if let Some(this) = this {
                     this.sync_active_grid_rebuilds();
+                    let contrast_span = tracing::info_span!(
+                        target: crate::core::log_targets::BROWSING,
+                        "photos:mode_contrast_schedule",
+                    );
+                    let _contrast = contrast_span.enter();
                     this.schedule_mode_selector_contrast_update();
                 }
                 // 同步后台预热缩略图尺寸到当前视图模式
@@ -408,6 +447,12 @@ impl PhotosPage {
                         Some("month" | "day") => ThumbnailSize::Medium,
                         _ => return,
                     };
+                    let prewarm_span = tracing::info_span!(
+                        target: crate::core::log_targets::BROWSING,
+                        "photos:mode_prewarm_size",
+                        size = ?size,
+                    );
+                    let _prewarm = prewarm_span.enter();
                     loader.set_prewarm_thumbnail_size(size);
                 }
             });
@@ -808,11 +853,27 @@ impl PhotosPage {
     }
 
     fn sync_active_grid_rebuilds(&self) {
+        let stack = self.imp().view_stack.get();
+        let visible_child = stack_visible_child_name(&stack);
         let current = self.current_grid();
-        for grid in self.imp().grids.borrow().iter() {
+        let grids = self.imp().grids.borrow();
+        let span = tracing::info_span!(
+            target: crate::core::log_targets::BROWSING,
+            "photos:sync_active_grid_rebuilds",
+            visible_child = %visible_child,
+            grid_count = grids.len(),
+            active_mode = tracing::field::Empty
+        );
+        let _trace = span.enter();
+        let mut active_mode = "none";
+        for grid in grids.iter() {
             let active = current.as_ref().is_some_and(|visible| visible == grid);
+            if active {
+                active_mode = group_mode_name(grid.mode());
+            }
             grid.set_active(active);
         }
+        span.record("active_mode", active_mode);
     }
 
     fn select_all_in_current_mode(&self) {
@@ -881,8 +942,6 @@ impl PhotosPage {
     }
 
     fn schedule_mode_selector_contrast_update(&self) {
-        self.update_mode_selector_contrast();
-
         if self.imp().contrast_update_pending.replace(true) {
             return;
         }

@@ -51,8 +51,9 @@ The four layers above always run. A separate **opt-in** layer captures per-flow 
 | Span name | Where |
 |---|---|
 | `scan:scan_and_aggregate`, `scan:notify_blocking` | `core/bootstrap.rs` startup scan |
-| `thumb:generate` (nests `thumb:pb_decode`/`pb_scale`/`pb_save`), `thumb:process` | `core/thumbnails.rs` per-image decode (decode/scale/save sub-phases) + worker per-item envelope |
-| `grid:load_metadata`, `grid:rebuild`, `grid:extract_items`, `grid:page_query` (+ `grid:db_page`), `grid:thumb_request` | `ui/media_grid.rs` grid metadata, rebuild, virtual-scroll page load, per-tile thumb request |
+| `thumb:generate` (nests `thumb:pb_decode`/`pb_scale`/`pb_save`), `thumb:process`, `thumb:set_prewarm_thumbnail_size` | `core/thumbnails.rs` per-image decode (decode/scale/save sub-phases), worker per-item envelope, and background-prewarm size changes |
+| `photos:mode_selector_set_active`, `photos:mode_selector_stack_notify`, `photos:mode_stack_switch`, `photos:sync_active_grid_rebuilds`, `photos:mode_contrast_schedule`, `photos:mode_prewarm_size` | `ui/mode_selector.rs` and `ui/photos_page.rs` Year/Month/Day selector → stack notify → active-grid handoff → floating-selector contrast scheduling and thumbnail-prewarm size sync |
+| `grid:load_metadata`, `grid:set_active`, `grid:rebuild_immediately`, `grid:scheduled_rebuild`, `grid:rebuild`, `grid:clear_content`, `grid:extract_items`, `grid:group_sections`, `grid:build_sections`, `grid:page_query` (+ `grid:db_page`), `grid:thumb_request` | `ui/media_grid.rs` grid activation, rebuild trigger, coarse rebuild phases, virtual-scroll page load, per-tile thumb request |
 | `viewer:show_at`, `viewer:orig_decode`, `viewer:thumb_preview`, `viewer:navigate`, `viewer:nav_db_query` | `ui/viewer_page.rs` viewer switch, async decode/preview, navigation |
 | `editor:save_as_copy`, `editor:save_overwrite` | `core/edit/save.rs` |
 | `ui:apply_upserted_batch`, `ui:apply_startup_insertions` | `ui/apply_to_media_list.rs` shared list-store batch apply |

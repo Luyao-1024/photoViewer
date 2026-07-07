@@ -56,6 +56,15 @@ fn indicator_x_for(active_index: u32, cell_width: i32, indicator_width: i32) -> 
     center - indicator_width / 2
 }
 
+fn mode_name_for_index(idx: u32) -> &'static str {
+    match idx {
+        0 => "year",
+        1 => "month",
+        2 => "day",
+        _ => "unknown",
+    }
+}
+
 mod imp {
     use super::*;
     use std::cell::Cell;
@@ -317,21 +326,32 @@ impl ModeSelector {
     /// consumes the pending write (when the change came from us) or
     /// treats it as external (when it didn't).
     pub fn set_active_index(&self, idx: u32) {
+        let from = self.imp().active_index.get();
+        let stack_bound = self.imp().stack.borrow().is_some();
+        let span = tracing::info_span!(
+            target: crate::core::log_targets::BROWSING,
+            "photos:mode_selector_set_active",
+            from_index = from,
+            from = mode_name_for_index(from),
+            to_index = idx,
+            to = mode_name_for_index(idx),
+            stack_bound,
+            outcome = tracing::field::Empty
+        );
+        let _trace = span.enter();
         if idx > 2 {
+            span.record("outcome", "out_of_range");
             return;
         }
         let imp = self.imp();
         if imp.active_index.get() == idx {
+            span.record("outcome", "already_active");
             return;
         }
         imp.active_index.set(idx);
         imp.apply_state();
         if let Some((stack, _)) = imp.stack.borrow().as_ref() {
-            let name = match idx {
-                0 => "year",
-                1 => "month",
-                _ => "day",
-            };
+            let name = mode_name_for_index(idx);
             // Mark the write as self-pending *before* dispatching so
             // the notify handler can recognize and consume it. In the
             // current GTK build the notify fires synchronously from
@@ -339,7 +359,10 @@ impl ModeSelector {
             // against an async-dispatch change as well — see
             // `race_double_set_active_index_probe` in the test module.
             imp.last_sync.set(LastSync::SelfPending(idx));
+            span.record("outcome", "set_stack_child");
             stack.set_visible_child_name(name);
+        } else {
+            span.record("outcome", "selector_only");
         }
     }
 
@@ -394,19 +417,39 @@ impl ModeSelector {
         let weak = self.downgrade();
         let handler_id = stack.connect_notify_local(Some("visible-child"), move |stack, _| {
             let Some(sel) = weak.upgrade() else { return };
-            let name = stack.visible_child_name();
-            let new_idx = match name.as_deref() {
-                Some("year") => 0,
-                Some("month") => 1,
-                Some("day") => 2,
-                _ => return,
-            };
+            let visible_child = stack
+                .visible_child_name()
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| "(none)".to_string());
             let imp = sel.imp();
-            match imp.last_sync.get() {
+            let last_sync = imp.last_sync.get();
+            let span = tracing::info_span!(
+                target: crate::core::log_targets::BROWSING,
+                "photos:mode_selector_stack_notify",
+                visible_child = %visible_child,
+                new_index = tracing::field::Empty,
+                new = tracing::field::Empty,
+                last_sync = ?last_sync,
+                outcome = tracing::field::Empty
+            );
+            let _trace = span.enter();
+            let new_idx = match visible_child.as_str() {
+                "year" => 0,
+                "month" => 1,
+                "day" => 2,
+                _ => {
+                    span.record("outcome", "unsupported_child");
+                    return;
+                }
+            };
+            span.record("new_index", new_idx);
+            span.record("new", mode_name_for_index(new_idx));
+            match last_sync {
                 LastSync::SelfPending(idx) if idx == new_idx => {
                     // Self-induced change echoed back. Consume and
                     // promote to Synced so the next external change
                     // still syncs.
+                    span.record("outcome", "self_echo");
                     imp.last_sync.set(LastSync::Synced(new_idx));
                 }
                 LastSync::SelfPending(_) => {
@@ -414,13 +457,16 @@ impl ModeSelector {
                     // dispatches notify synchronously, so this branch
                     // shouldn't fire). Drop the write to avoid
                     // clobbering active_index.
+                    span.record("outcome", "stale_self_pending");
                 }
                 LastSync::Synced(idx) if idx == new_idx => {
                     // External "no-op echo" (e.g. someone set the
                     // same child again). Ignore.
+                    span.record("outcome", "synced_echo");
                 }
                 LastSync::Synced(_) => {
                     // Genuine external change.
+                    span.record("outcome", "external_change");
                     imp.active_index.set(new_idx);
                     imp.apply_state();
                 }
