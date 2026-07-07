@@ -281,6 +281,13 @@ fn glib_writer(level: glib::LogLevel, fields: &[glib::LogField]) -> glib::LogWri
     glib::LogWriterOutput::Handled
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GlibLogDisposition {
+    Error,
+    Warn,
+    Debug,
+}
+
 fn glib_log_to_tracing(level: glib::LogLevel, fields: &[glib::LogField]) {
     let mut domain = "glib";
     let mut message = "";
@@ -299,19 +306,46 @@ fn glib_log_to_tracing(level: glib::LogLevel, fields: &[glib::LogField]) {
             _ => {}
         }
     }
+    let Some(disposition) = glib_log_disposition(level, domain, message) else {
+        return;
+    };
     // tracing's `target:` field wants a literal; embed the domain in the
     // message and emit on a fixed target. tracing writes via stdio/file, never
     // GLib, so there is no redirect recursion.
     let line = format!("[{domain}] {message}");
-    match level {
-        glib::LogLevel::Error | glib::LogLevel::Critical => {
+    match disposition {
+        GlibLogDisposition::Error => {
             tracing::error!(target: "glib", "{line}")
         }
-        glib::LogLevel::Warning => tracing::warn!(target: "glib", "{line}"),
+        GlibLogDisposition::Warn => tracing::warn!(target: "glib", "{line}"),
+        GlibLogDisposition::Debug => tracing::debug!(target: "glib", "{line}"),
+    }
+}
+
+fn glib_log_disposition(
+    level: glib::LogLevel,
+    domain: &str,
+    message: &str,
+) -> Option<GlibLogDisposition> {
+    if is_known_noisy_glib_log(level, domain, message) {
+        return None;
+    }
+
+    match level {
+        glib::LogLevel::Error | glib::LogLevel::Critical => Some(GlibLogDisposition::Error),
+        glib::LogLevel::Warning => Some(GlibLogDisposition::Warn),
         glib::LogLevel::Message | glib::LogLevel::Info | glib::LogLevel::Debug => {
-            tracing::info!(target: "glib", "{line}")
+            Some(GlibLogDisposition::Debug)
         }
     }
+}
+
+fn is_known_noisy_glib_log(level: glib::LogLevel, domain: &str, message: &str) -> bool {
+    matches!(
+        level,
+        glib::LogLevel::Message | glib::LogLevel::Info | glib::LogLevel::Debug
+    ) && domain == "Gtk"
+        && message == "snapshot symbolic icon as texture using mask"
 }
 
 // ---- Layer 4: native signal handler wiring ---------------------------------
@@ -396,6 +430,48 @@ mod tests {
         assert_eq!(parse_crash_timestamp("crash-12.txt"), None);
         assert_eq!(parse_crash_timestamp("app.log"), None);
         assert_eq!(parse_crash_timestamp("crash-1751000000"), None);
+    }
+
+    #[test]
+    fn glib_writer_filters_known_gtk_render_noise() {
+        assert_eq!(
+            glib_log_disposition(
+                glib::LogLevel::Info,
+                "Gtk",
+                "snapshot symbolic icon as texture using mask"
+            ),
+            None,
+            "high-frequency GTK icon snapshot info is render noise"
+        );
+        assert_eq!(
+            glib_log_disposition(
+                glib::LogLevel::Warning,
+                "Gtk",
+                "snapshot symbolic icon as texture using mask"
+            ),
+            Some(GlibLogDisposition::Warn),
+            "warnings must still be retained even when the text matches a noisy info message"
+        );
+    }
+
+    #[test]
+    fn glib_writer_keeps_low_severity_messages_out_of_default_info_logs() {
+        assert_eq!(
+            glib_log_disposition(glib::LogLevel::Info, "Gtk", "some gtk info"),
+            Some(GlibLogDisposition::Debug)
+        );
+        assert_eq!(
+            glib_log_disposition(glib::LogLevel::Debug, "GStreamer", "pipeline detail"),
+            Some(GlibLogDisposition::Debug)
+        );
+        assert_eq!(
+            glib_log_disposition(glib::LogLevel::Warning, "GStreamer", "decode failed"),
+            Some(GlibLogDisposition::Warn)
+        );
+        assert_eq!(
+            glib_log_disposition(glib::LogLevel::Critical, "Gtk", "critical failure"),
+            Some(GlibLogDisposition::Error)
+        );
     }
 
     #[test]

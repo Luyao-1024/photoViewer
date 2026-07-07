@@ -28,7 +28,7 @@ The launch log prints the resolved logs dir via `tracing::info!(target: "app", .
 
 1. **File + stderr subscriber.** `tracing_appender::non_blocking` layered under the existing `EnvFilter`, writing `app.log` (ANSI disabled). The worker guard is forgotten — the worker drains the channel for the process lifetime; crash paths flush their own files independently.
 2. **Panic hook** writes `crash-<ts>.log` with payload, location, thread, `Backtrace::force_capture()`, and the `app.log` tail, then prints a short summary + the path to stderr.
-3. **GLib log redirect** via `glib::log_set_writer_func`: every GObject/GTK/GStreamer message is re-emitted on tracing target `"glib"` (domain embedded in the message) and `Handled` is returned so GLib's own stderr writer doesn't duplicate it.
+3. **GLib log redirect** via `glib::log_set_writer_func`: GObject/GTK/GStreamer warnings and errors are re-emitted on tracing target `"glib"` (domain embedded in the message), while message/info/debug entries are downgraded to `debug` and high-frequency known render noise is dropped. `Handled` is returned so GLib's own stderr writer doesn't duplicate retained messages.
 4. **Native signal handler** for `SIGSEGV`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGBUS`, `SIGTRAP`, installed with `SA_SIGINFO | SA_ONSTACK` plus `sigaltstack` (so a stack-exhaustion `SIGSEGV` can still run the handler).
 5. **Optional Chrome trace layer** (off unless `PHOTOVIEWER_CHROME_TRACE` is set) — see [Flow tracing](#flow-tracing-chromeperfetto). Not a crash-diagnostic layer; it captures per-flow timing for performance work.
 

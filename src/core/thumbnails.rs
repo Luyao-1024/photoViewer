@@ -1074,7 +1074,7 @@ fn generate(
                 return Ok(thumb);
             }
             Err(e) => {
-                warn!(
+                debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB video_extract_failed source_uri={} source_path={} size={:?} error={}",
                     uri,
@@ -1084,7 +1084,7 @@ fn generate(
                 );
                 let placeholder =
                     generate_unavailable_placeholder(size.max_dim(), &cache_stem, true)?;
-                info!(
+                debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB video_placeholder_generated source_uri={} source_path={} size={:?}",
                     uri,

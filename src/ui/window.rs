@@ -1450,7 +1450,7 @@ impl MainWindow {
         let album_name = album.display_name();
         let album_path = album.folder_path.to_string_lossy().into_owned();
         let album_is_virtual = album.is_virtual;
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album_name,
             album_path = %album_path,
@@ -1468,7 +1468,7 @@ impl MainWindow {
                 detail.album_folder_path().as_deref() == Some(album.folder_path.as_path())
             });
         if already_visible {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
                 album_path = %album_path,
@@ -1566,7 +1566,7 @@ impl MainWindow {
             nav_view.push(&page);
         }
 
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album_name,
             album_path = %album_path,
