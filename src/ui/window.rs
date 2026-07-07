@@ -8,7 +8,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gdk_pixbuf::Pixbuf;
 use glib::subclass::types::ObjectSubclassIsExt;
@@ -1383,9 +1383,7 @@ impl MainWindow {
                 // Defer open_album to idle so navigation (pop/push) cannot
                 // re-enter these row-selected handlers and panic on a
                 // double RefCell borrow.
-                glib::idle_add_local_once(glib::clone!(@weak window, @weak nav_view => move || {
-                    window.open_album(&nav_view, album);
-                }));
+                window.schedule_album_open_from_sidebar(&nav_view, album, "album_list", row.index());
             }),
         );
 
@@ -1411,9 +1409,12 @@ impl MainWindow {
                 // Defer open_album to idle so navigation (pop/push) cannot
                 // re-enter these row-selected handlers and panic on a
                 // double RefCell borrow.
-                glib::idle_add_local_once(glib::clone!(@weak window, @weak nav_view => move || {
-                    window.open_album(&nav_view, album);
-                }));
+                window.schedule_album_open_from_sidebar(
+                    &nav_view,
+                    album,
+                    "media_type_list",
+                    row.index(),
+                );
             }),
         );
 
@@ -1445,6 +1446,51 @@ impl MainWindow {
         );
     }
 
+    fn schedule_album_open_from_sidebar(
+        &self,
+        nav_view: &adw::NavigationView,
+        album: Album,
+        source: &'static str,
+        row_index: i32,
+    ) {
+        let selected_at = Instant::now();
+        let album_name = album.display_name();
+        let album_path = album.folder_path.to_string_lossy().into_owned();
+        let is_virtual = album.is_virtual;
+        let expected_count = album.photo_count;
+        let select_span = tracing::info_span!(
+            "album:select_row",
+            source,
+            row_index,
+            album_name = %album_name,
+            album_path = %album_path,
+            is_virtual,
+            expected_count
+        );
+        let _select = select_span.enter();
+
+        let weak = self.downgrade();
+        let nav_view = nav_view.clone();
+        glib::idle_add_local_once(move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let idle_wait_ms = selected_at.elapsed().as_millis() as u64;
+            let idle_span = tracing::info_span!(
+                "album:open_idle",
+                source,
+                row_index,
+                album_name = %album_name,
+                album_path = %album_path,
+                is_virtual,
+                expected_count,
+                idle_wait_ms
+            );
+            let _idle = idle_span.enter();
+            window.open_album(&nav_view, album);
+        });
+    }
+
     #[tracing::instrument(name = "album:open", skip(self, nav_view, album))]
     pub(crate) fn open_album(&self, nav_view: &adw::NavigationView, album: Album) {
         let album_name = album.display_name();
@@ -1461,12 +1507,20 @@ impl MainWindow {
 
         // Already viewing this album → no-op (avoids rebuilding/pushing a
         // duplicate detail page on a re-select).
-        let already_visible = nav_view
-            .visible_page()
-            .and_then(|page| page.downcast::<AlbumDetailPage>().ok())
-            .is_some_and(|detail| {
-                detail.album_folder_path().as_deref() == Some(album.folder_path.as_path())
-            });
+        let already_visible = {
+            let check_span = tracing::info_span!(
+                "album:already_visible_check",
+                album_name = %album_name,
+                album_path = %album_path
+            );
+            let _check = check_span.enter();
+            nav_view
+                .visible_page()
+                .and_then(|page| page.downcast::<AlbumDetailPage>().ok())
+                .is_some_and(|detail| {
+                    detail.album_folder_path().as_deref() == Some(album.folder_path.as_path())
+                })
+        };
         if already_visible {
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
@@ -1509,7 +1563,11 @@ impl MainWindow {
         // Photos root, then push a fresh detail page so the back stack stays
         // shallow and consistent.
         {
-            let pop_span = tracing::info_span!("album:pop");
+            let pop_span = tracing::info_span!(
+                "album:pop",
+                album_name = %album_name,
+                album_path = %album_path
+            );
             let _pop = pop_span.enter();
             pop_to_photos_root(nav_view);
         }
@@ -1520,14 +1578,35 @@ impl MainWindow {
         let query = media_query_for_album(&album);
         let initial_limit = album_initial_load_limit(album.photo_count);
         let (items, total_items) = {
-            let load_span = tracing::info_span!("album:load");
+            let load_span = tracing::info_span!(
+                "album:load",
+                album_name = %album_name,
+                album_path = %album_path,
+                is_virtual = album_is_virtual,
+                expected_count = album.photo_count,
+                initial_limit,
+                ?query
+            );
             let _load = load_span.enter();
             match crate::core::repository::MediaRepository::new(pool.clone()).page(
                 query.clone(),
                 0,
                 initial_limit,
             ) {
-                Ok(page) => (page.items, page.total),
+                Ok(page) => {
+                    tracing::info!(
+                        target: crate::core::log_targets::ALBUMS,
+                        album_name = %album_name,
+                        album_path = %album_path,
+                        is_virtual = album_is_virtual,
+                        expected_count = album.photo_count,
+                        initial_limit,
+                        item_count = page.items.len(),
+                        total_items = page.total,
+                        "album_switch: initial_page_loaded"
+                    );
+                    (page.items, page.total)
+                }
                 Err(err) => {
                     tracing::warn!(
                         target: crate::core::log_targets::ALBUMS,
@@ -1544,7 +1623,13 @@ impl MainWindow {
 
         let filtered = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         {
-            let store_span = tracing::info_span!("album:store");
+            let store_span = tracing::info_span!(
+                "album:store",
+                album_name = %album_name,
+                album_path = %album_path,
+                item_count,
+                total_items
+            );
             let _store = store_span.enter();
             for item in items {
                 filtered.append(&glib::BoxedAnyObject::new(item));
@@ -1552,16 +1637,36 @@ impl MainWindow {
         }
 
         let page = {
-            let page_span = tracing::info_span!("album:page_build");
+            let page_span = tracing::info_span!(
+                "album:page_build",
+                album_name = %album_name,
+                album_path = %album_path,
+                item_count,
+                total_items
+            );
             let _page = page_span.enter();
             AlbumDetailPage::new(album, filtered.clone(), master, pool.clone(), loader)
         };
-        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
-            page.set_db_actor(db_actor);
-        }
-        page.set_nav_target(nav_view);
         {
-            let push_span = tracing::info_span!("album:push");
+            let bind_span = tracing::info_span!(
+                "album:bind_page",
+                album_name = %album_name,
+                album_path = %album_path
+            );
+            let _bind = bind_span.enter();
+            if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+                page.set_db_actor(db_actor);
+            }
+            page.set_nav_target(nav_view);
+        }
+        {
+            let push_span = tracing::info_span!(
+                "album:push",
+                album_name = %album_name,
+                album_path = %album_path,
+                item_count,
+                total_items
+            );
             let _push = push_span.enter();
             nav_view.push(&page);
         }
@@ -3159,6 +3264,15 @@ fn backfill_album_media_list(
     album_name: String,
     album_path: String,
 ) {
+    let schedule_span = tracing::info_span!(
+        "album:backfill_schedule",
+        album_name = %album_name,
+        album_path = %album_path,
+        ?query,
+        start,
+        total
+    );
+    let _schedule = schedule_span.enter();
     let limit = album_backfill_fetch_limit(start, total);
     if limit == 0 {
         tracing::info!(
@@ -3173,7 +3287,15 @@ fn backfill_album_media_list(
         return;
     }
     glib::spawn_future_local(async move {
-        let fetch_span = tracing::info_span!("album:backfill_fetch", start, limit);
+        let fetch_span = tracing::info_span!(
+            "album:backfill_fetch",
+            album_name = %album_name,
+            album_path = %album_path,
+            ?query,
+            start,
+            total,
+            limit
+        );
         let _fetch = fetch_span.enter();
         let query_for_worker = query.clone();
         let result = gtk::gio::spawn_blocking(move || {
@@ -4086,6 +4208,27 @@ mod tests {
         while let Some(current) = child {
             child = current.next_sibling();
             collect_preference_titles(&current, titles);
+        }
+    }
+
+    #[test]
+    fn album_switch_trace_points_cover_selection_to_backfill() {
+        let source = include_str!("window.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("window.rs must contain production code");
+        for trace_name in [
+            "album:select_row",
+            "album:open_idle",
+            "album:already_visible_check",
+            "album:bind_page",
+            "album:backfill_schedule",
+        ] {
+            assert!(
+                production_source.contains(trace_name),
+                "missing album switch trace point {trace_name}"
+            );
         }
     }
 

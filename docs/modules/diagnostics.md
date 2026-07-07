@@ -58,10 +58,12 @@ The four layers above always run. A separate **opt-in** layer captures per-flow 
 | `editor:save_as_copy`, `editor:save_overwrite` | `core/edit/save.rs` |
 | `ui:apply_upserted_batch`, `ui:apply_startup_insertions` | `ui/apply_to_media_list.rs` shared list-store batch apply |
 | `sidebar:rebuild_album_rows`, `sidebar:apply_album_rows`, `sidebar:apply_album_snapshot` | `ui/window.rs` sidebar album rows |
-| `album:open` (+ `album:pop`/`load`/`store`/`page_build`/`push`), `album:backfill_fetch` | `ui/window.rs` album open, page-build phases, background backfill |
+| `album:select_row`, `album:open_idle`, `album:open` (+ `album:already_visible_check`/`pop`/`load`/`store`/`page_build`/`bind_page`/`push`), `album:backfill_schedule`, `album:backfill_fetch` | `ui/window.rs` sidebar album selection → idle handoff → album open/page-build phases → background backfill |
 | `album_detail:new` (+ `empty_state`/`grid_build`/`splice`), `album_detail:refresh_virtual`, `album_detail:filter_items` | `ui/album_detail_page.rs` album-detail page build + virtual refresh |
 
 **Coverage caveat:** a span captures wall-clock of the function body on the calling thread. Work that escapes the function — a `spawn_blocking` DB query or an async decode that resolves *after* the caller returns — gets its own dedicated span entered in the async completion (e.g. `grid:db_page` inside the page-query worker, `viewer:orig_decode` for the original-image decode, `album:backfill_fetch`). Read end-to-end latency as the sequence of spans on the timeline.
+
+For album-switch jank, launch with `PHOTOVIEWER_CHROME_TRACE=1`, reproduce several rapid album changes, close the app normally, then inspect `<cache-dir>/logs/trace.json` in Perfetto. Use the sequence `album:select_row` → `album:open_idle` → `album:load` → `album_detail:grid_build` → `album:push` to distinguish row-selection/idling, synchronous DB loading, grid construction, and navigation-push cost.
 
 **Release gating:** `tracing` is built with `release_max_level_info`, so in release builds `#[instrument]` spans plus `info!`/`warn!`/`error!` events are compiled in (flow timing available on demand), while `debug!`/`trace!` events compile out (zero overhead, zero log noise). The Chrome layer itself attaches only when the env var is set, so a normal release run pays nothing extra. To capture `debug!`-level detail in a trace, rebuild with `release_max_level_debug` (or trace in a debug build) and raise `RUST_LOG`, e.g. `RUST_LOG=photo_viewer=trace`.
 
