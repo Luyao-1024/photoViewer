@@ -111,14 +111,11 @@ mod imp {
     impl ObjectImpl for ModeSelector {
         fn constructed(&self) {
             self.parent_constructed();
-            // Sync template defaults to the current active_index.
-            self.apply_state();
 
             // Sliding indicator: a runtime CssProvider writes its translateX
             // (scoped to the indicator's style context), and we recompute on
             // every dot_row resize so the bar stays centered under the active
-            // label at any width. apply_state's call above is a no-op until the
-            // first allocation; this handler then positions it.
+            // label at any width.
             let provider = gtk::CssProvider::new();
             self.mode_dot_indicator
                 .get()
@@ -127,6 +124,10 @@ mod imp {
             *self.indicator_provider.borrow_mut() = Some(provider);
 
             self.obj().set_labels_i18n();
+            // Sync template defaults after labels/provider exist, so the
+            // first transform can be seeded from natural row width before GTK
+            // assigns the widget its first allocation.
+            self.apply_state();
 
             // Click on any of the 3 label cells → switch to that mode.
             // The gesture is owned by its cell, so it lives as long
@@ -220,22 +221,51 @@ mod imp {
         }
 
         /// Recompute and write the indicator's translateX so it sits centered
-        /// under the active label. No-op until dot_row has been allocated
-        /// (cell_width 0). Called from apply_state and from the size_allocate
-        /// vfunc so the bar recenters at any width.
+        /// under the active label. Before the first allocation, fall back to
+        /// the label row's natural width so the initial active state is already
+        /// positioned for first paint. Called from apply_state and from the
+        /// size_allocate vfunc so the bar recenters at any width.
         fn update_indicator_position(&self) {
-            let row_width = self.dot_row.get().allocation().width();
+            let row_width = self.indicator_row_width();
             if row_width <= 0 {
                 return;
             }
             let cell_width = row_width / 3;
-            let indicator_width = self.mode_dot_indicator.get().allocation().width().max(1);
+            let indicator = self.mode_dot_indicator.get();
+            let indicator_width = indicator
+                .allocation()
+                .width()
+                .max(indicator.measure(gtk::Orientation::Horizontal, -1).1)
+                .max(1);
             let x = indicator_x_for(self.active_index.get(), cell_width, indicator_width);
             self.indicator_target_x.set(x);
             if let Some(provider) = self.indicator_provider.borrow().as_ref() {
                 provider
                     .load_from_data(&format!("box.mode-dot {{ transform: translateX({x}px); }}"));
             }
+        }
+
+        fn indicator_row_width(&self) -> i32 {
+            let allocated = self.dot_row.get().allocation().width();
+            if allocated > 0 {
+                return allocated;
+            }
+
+            if let Some(label_row) = self
+                .obj()
+                .first_child()
+                .and_then(|child| child.downcast::<gtk::Box>().ok())
+            {
+                let natural = label_row.measure(gtk::Orientation::Horizontal, -1).1;
+                if natural > 0 {
+                    return natural;
+                }
+            }
+
+            self.dot_row
+                .get()
+                .measure(gtk::Orientation::Horizontal, -1)
+                .1
         }
     }
 }
@@ -477,6 +507,28 @@ mod tests {
         assert_eq!(indicator_x_for(0, 120, 24), 48);
         assert_eq!(indicator_x_for(1, 120, 24), 168);
         assert_eq!(indicator_x_for(2, 120, 24), 288);
+    }
+
+    #[gtk::test]
+    fn day_seeded_indicator_is_positioned_before_first_allocation() {
+        let sel = ModeSelector::new();
+        let (stack, _labels) = build_stack();
+        stack.set_visible_child_name("day");
+
+        sel.set_stack(&stack);
+
+        assert_eq!(sel.active_index(), 2);
+        assert!(
+            sel.imp().indicator_target_x.get() > 0,
+            "binding to an already-Day stack should seed a Day-side indicator target before the first allocation"
+        );
+        assert!(
+            !sel.imp()
+                .mode_dot_indicator
+                .get()
+                .has_css_class("mode-dot-position-pending"),
+            "the indicator should not need startup hiding once the initial Day transform is seeded"
+        );
     }
 
     #[gtk::test]

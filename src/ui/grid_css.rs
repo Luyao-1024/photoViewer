@@ -2529,6 +2529,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mode_selector_indicator_is_not_hidden_while_positioning() {
+        let css = build_css(true);
+        assert!(
+            !css.contains("mode-dot-position-pending"),
+            "the indicator should be positioned before first paint instead of hidden during startup"
+        );
+    }
+
     /// The fullscreen preview picture fades in on present (opacity 0 → 1 via a
     /// .fade-shown class added on the next idle). `transform` for EXIF
     /// rotation lives on a runtime CssProvider on the same selector; opacity is
