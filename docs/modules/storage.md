@@ -164,7 +164,14 @@ storage tasks in order, off the GTK thread:
    exists, delete that DB row and emit `DomainEvent::MediaRemoved`. This covers
    files deleted outside the app while it was closed; it must run as a single
    sequential pass in the same background startup worker and must not block
-   foreground interaction.
+   foreground interaction. The reconcile batches by the stored `folder_path`
+   column rather than per file: when a whole folder is gone (e.g. an album
+   deleted outside the app), one `delete_live_media_by_folder` DELETE removes
+   every live row under it; when the folder still exists but individual files
+   are missing, their ids are collected and removed via chunked
+   `delete_media_by_ids`. Both paths keep the `trashed_at IS NULL` guard and the
+   root/excluded scope filter, so a 100k-row deleted album converges in ~1 stat
+   + 1 DELETE instead of one transaction per file.
 4. Refresh album projections/sidebar data after scan and prune have converged.
 5. Reconcile known trash roots into the DB and emit `TrashChanged` so a
    visible Trash view refreshes.

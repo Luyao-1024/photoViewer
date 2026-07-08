@@ -330,15 +330,19 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
         .map_err(AppError::from)
 }
 
-pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, PathBuf)>> {
+/// 返回所有 live 行的 `(id, uri, path, folder_path)`（已过滤 `trashed_at IS NULL`）。
+/// `folder_path` 取自存储列，供启动对账按目录分桶做批量清理，而非依赖
+/// 「`folder_path == path.parent()`」不变量（move 路径并非处处成立）。
+pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, PathBuf, PathBuf)>> {
     let conn = pool.get()?;
-    let mut stmt =
-        conn.prepare("SELECT id, uri, path FROM media_items WHERE trashed_at IS NULL")?;
+    let mut stmt = conn
+        .prepare("SELECT id, uri, path, folder_path FROM media_items WHERE trashed_at IS NULL")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             PathBuf::from(row.get::<_, String>(2)?),
+            PathBuf::from(row.get::<_, String>(3)?),
         ))
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1053,6 +1057,28 @@ pub fn delete_live_media_by_folder(pool: &DbPool, folder_path: &Path) -> Result<
         rusqlite::params![folder_path.to_string_lossy()],
     )?;
     Ok(changed)
+}
+
+/// 按 id 批量删除 live 媒体索引（自动分块，避开 SQLite 参数上限）。
+/// 只删 `trashed_at IS NULL` 的行，并发 `mark_trashed` 的行不会被误删。
+/// 返回实际删除的行数。供启动对账「目录仍在、仅个别文件消失」场景批量清理。
+pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    // SQLite 默认 SQLITE_MAX_VARIABLE_NUMBER=999，留余量按 500 一块。
+    const CHUNK: usize = 500;
+    let conn = pool.get()?;
+    let mut total = 0usize;
+    for chunk in ids.chunks(CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql =
+            format!("DELETE FROM media_items WHERE id IN ({placeholders}) AND trashed_at IS NULL");
+        total += conn.execute(&sql, params_from_iter(chunk.iter()))?;
+    }
+    Ok(total)
 }
 
 /// 清空所有媒体记录。返回删除的记录数。

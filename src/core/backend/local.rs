@@ -8,6 +8,7 @@ use crate::core::media::{
 use crate::core::metadata;
 use crate::core::motion_photo::{self, MediaAttributes};
 use chrono::Utc;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -182,20 +183,49 @@ impl LocalBackend {
         roots: &[PathBuf],
         excluded_roots: &[PathBuf],
     ) -> Result<Vec<String>> {
+        // 启动对账：清理「DB 仍为 live、但磁盘上已消失」的索引行。按存储列
+        // `folder_path` 分桶后做两层批量，避免逐行 stat + 逐行事务：
+        //   - 整目录消失 → 一条 `delete_live_media_by_folder` 删光该目录全部 live 行
+        //     （「整个相册被删」从 N 次 stat + N 次事务收敛成 1 次 stat + 1 条 DELETE）。
+        //   - 目录仍在、仅个别文件消失 → 收集缺失 id，按 `delete_media_by_ids` 分块批量删。
+        // 保留 root 作用域、excluded 过滤与 `trashed_at IS NULL` 守卫。
         let rows = db::list_live_media_locations(&self.pool)?;
-        let mut removed = Vec::new();
-        for (_id, uri, path) in rows {
+        let mut by_dir: HashMap<PathBuf, Vec<(i64, String, PathBuf)>> = HashMap::new();
+        for (id, uri, path, folder) in rows {
             if !roots.iter().any(|root| path.starts_with(root)) {
                 continue;
             }
             if is_excluded_path(&path, excluded_roots) {
                 continue;
             }
-            if path.exists() {
+            by_dir.entry(folder).or_default().push((id, uri, path));
+        }
+
+        let mut removed = Vec::new();
+        for (dir, entries) in by_dir {
+            if !dir.exists() {
+                // 整目录消失：folder_path 精确匹配本桶，一条 DELETE 删光全部 live 行。
+                db::delete_live_media_by_folder(&self.pool, &dir)?;
+                removed.extend(entries.into_iter().map(|(_, uri, _)| uri));
                 continue;
             }
-            if db::delete_media_by_path(&self.pool, &path)? > 0 {
-                removed.push(uri);
+            // 目录仍在：仅对真正缺失的文件按 id 分块批量删。
+            let missing: Vec<i64> = entries
+                .iter()
+                .filter(|(_, _, path)| !path.exists())
+                .map(|(id, _, _)| *id)
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let deleted = db::delete_media_by_ids(&self.pool, &missing)?;
+            // `delete_media_by_ids` 带 `trashed_at IS NULL` 守卫；并发 trash 的极小窗口下
+            // 实际删除数可能少于 missing，按 deleted 截断避免向 UI 多报已删 uri。
+            let mut missing_entries = entries.into_iter().filter(|(_, _, path)| !path.exists());
+            for _ in 0..deleted {
+                if let Some((_, uri, _)) = missing_entries.next() {
+                    removed.push(uri);
+                }
             }
         }
         Ok(removed)
@@ -966,6 +996,122 @@ mod tests {
         assert!(
             crate::core::db::list_all_media(&pool).unwrap().is_empty(),
             "startup prune must remove live DB rows whose files disappeared while the app was closed"
+        );
+    }
+
+    #[test]
+    fn startup_prune_batches_whole_missing_folder() {
+        // 整目录消失：一条 `delete_live_media_by_folder` 应删光该目录全部 live 行，
+        // 而非逐行 stat/事务。验证批量路径返回的 uri 数 == 文件数、DB 清空。
+        let dir = tempfile::tempdir().unwrap();
+        let album = dir.path().join("大相册");
+        std::fs::create_dir_all(&album).unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+
+        for i in 0..5 {
+            let path = album.join(format!("img{i}.jpg"));
+            std::fs::write(&path, b"x").unwrap();
+            crate::core::db::insert_media_item(
+                &pool,
+                &crate::core::media::NewMediaItem {
+                    uri: format!("file://{}", path.display()),
+                    path,
+                    folder_path: album.clone(),
+                    mime_type: "image/jpeg".into(),
+                    media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+                    media_attributes: "{}".into(),
+                    width: None,
+                    height: None,
+                    video_duration_secs: None,
+                    taken_at: None,
+                    file_mtime: chrono::Utc::now(),
+                    file_size: 1,
+                    blake3_hash: String::new(),
+                },
+            )
+            .unwrap();
+        }
+        // 整个相册目录被外部删除
+        std::fs::remove_dir_all(&album).unwrap();
+
+        let backend = LocalBackend::new(pool.clone());
+        let removed = backend
+            .prune_missing_live_media_under_roots(&[dir.path().to_path_buf()], &[])
+            .unwrap();
+
+        assert_eq!(
+            removed.len(),
+            5,
+            "all rows under the gone folder must be pruned in one batch"
+        );
+        assert!(
+            crate::core::db::list_all_media(&pool).unwrap().is_empty(),
+            "whole-album-gone prune must delete every live row under it"
+        );
+    }
+
+    #[test]
+    fn startup_prune_batches_missing_files_in_present_folder() {
+        // 目录仍在、仅个别文件消失：走 `delete_media_by_ids` 批量路径。
+        // 缺失文件被删，存在的文件保留。
+        let dir = tempfile::tempdir().unwrap();
+        let album = dir.path().join("album");
+        std::fs::create_dir_all(&album).unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+
+        let keep = album.join("keep.jpg");
+        let gone_a = album.join("gone-a.jpg");
+        let gone_b = album.join("gone-b.jpg");
+        for path in [&keep, &gone_a, &gone_b] {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let insert = |path: &std::path::Path| {
+            crate::core::db::insert_media_item(
+                &pool,
+                &crate::core::media::NewMediaItem {
+                    uri: format!("file://{}", path.display()),
+                    path: path.to_path_buf(),
+                    folder_path: album.clone(),
+                    mime_type: "image/jpeg".into(),
+                    media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+                    media_attributes: "{}".into(),
+                    width: None,
+                    height: None,
+                    video_duration_secs: None,
+                    taken_at: None,
+                    file_mtime: chrono::Utc::now(),
+                    file_size: 1,
+                    blake3_hash: String::new(),
+                },
+            )
+            .unwrap();
+        };
+        insert(&keep);
+        insert(&gone_a);
+        insert(&gone_b);
+        // 删两个文件，目录保留
+        std::fs::remove_file(&gone_a).unwrap();
+        std::fs::remove_file(&gone_b).unwrap();
+
+        let backend = LocalBackend::new(pool.clone());
+        let removed = backend
+            .prune_missing_live_media_under_roots(&[dir.path().to_path_buf()], &[])
+            .unwrap();
+
+        assert_eq!(
+            removed.len(),
+            2,
+            "only the two missing files must be pruned"
+        );
+        let remaining = crate::core::db::list_all_media(&pool).unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the present file must survive the prune"
+        );
+        assert_eq!(
+            remaining[0].path, keep,
+            "the surviving row must be the kept file"
         );
     }
 }

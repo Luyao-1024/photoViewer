@@ -159,3 +159,54 @@ fn unique_uri_constraint() {
 // Avoid unused import warning when other tests use MediaItem directly.
 #[allow(dead_code)]
 fn _type_check(_: MediaItem) {}
+
+#[test]
+fn delete_media_by_ids_removes_rows_across_chunks() {
+    // 插入 >CHUNK(500) 行，验证分块累加删除不丢行。
+    let pool = fresh_pool();
+    let mut ids = Vec::new();
+    for i in 0..600 {
+        let mut item = sample_new_item();
+        item.uri = format!("file:///test/IMG_{i:03}.jpg");
+        item.path = format!("/test/IMG_{i:03}.jpg").into();
+        item.blake3_hash = format!("hash{i:03}");
+        ids.push(db::insert_media_item(&pool, &item).unwrap());
+    }
+
+    let removed = db::delete_media_by_ids(&pool, &ids).unwrap();
+    assert_eq!(removed, 600, "chunked delete must remove every id");
+    assert!(
+        db::list_all_media(&pool).unwrap().is_empty(),
+        "no rows should remain after deleting all ids"
+    );
+}
+
+#[test]
+fn delete_media_by_ids_skips_trashed_rows() {
+    // trashed_at IS NULL 守卫：trashed 行不被批量删除误伤。
+    let pool = fresh_pool();
+    let live_id = db::insert_media_item(&pool, &sample_new_item()).unwrap();
+
+    let mut trashed = sample_new_item();
+    trashed.uri = "file:///test/trashed.jpg".into();
+    trashed.path = "/test/trashed.jpg".into();
+    let trashed_id = db::insert_media_item(&pool, &trashed).unwrap();
+    db::mark_trashed(&pool, trashed_id).unwrap();
+
+    let removed = db::delete_media_by_ids(&pool, &[live_id, trashed_id]).unwrap();
+    assert_eq!(removed, 1, "only the live row should be deleted");
+    assert!(
+        db::get_media_item(&pool, live_id).is_err(),
+        "live row must be gone"
+    );
+    assert!(
+        db::get_media_item(&pool, trashed_id).is_ok(),
+        "trashed row must be preserved by the guard"
+    );
+}
+
+#[test]
+fn delete_media_by_ids_empty_is_noop() {
+    let pool = fresh_pool();
+    assert_eq!(db::delete_media_by_ids(&pool, &[]).unwrap(), 0);
+}

@@ -29,9 +29,7 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             apply_upserted_batch(list, ChangeSource::UserInteractive, items.clone());
         }
         DomainEvent::MediaRemoved { uris, .. } => {
-            for uri in uris {
-                remove_by_uri(list, uri);
-            }
+            remove_uris_batch(list, uris);
         }
         DomainEvent::MediaMovedToTrash { items, .. } => {
             tracing::info!(
@@ -41,9 +39,8 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
                 items.len(),
                 items.iter().map(|item| item.id).collect::<Vec<_>>()
             );
-            for item in items {
-                remove_by_uri(list, &item.uri);
-            }
+            let uris: Vec<String> = items.iter().map(|item| item.uri.clone()).collect();
+            remove_uris_batch(list, &uris);
             tracing::info!(
                 target: crate::core::log_targets::BROWSING,
                 "TRASH_TRACE ui_apply_moved_to_trash_done list_len={}",
@@ -60,33 +57,58 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
     }
 }
 
-fn remove_by_uri(list: &gtk::gio::ListStore, uri: &str) {
-    let before = list.n_items();
-    for i in 0..list.n_items() {
-        if let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() {
-            let item = obj.borrow::<MediaItem>();
-            if item.uri == uri {
-                let id = item.id;
-                drop(item);
-                list.remove(i);
-                tracing::info!(
-                    target: crate::core::log_targets::BROWSING,
-                    "TRASH_TRACE ui_remove_by_uri removed id={} index={} before={} after={} uri={}",
-                    id,
-                    i,
-                    before,
-                    list.n_items(),
-                    uri
-                );
-                return;
-            }
+/// 一次性从 `list` 移除所有 uri 命中 `uris` 的项。
+///
+/// 旧实现逐 uri 线性扫描整个 list（O(uris × list_len)），并每次 miss 都打一条
+/// WARN：一个携带数万 uri 的 `MediaRemoved`（如整个相册被删后启动 prune）会触发
+/// 数千万次比较 + 海量 WARN。这里改成一趟扫描：先把 `uris` 装进 HashSet，再对
+/// list 做一次遍历收集命中位置，最后把**连续位置合并成区间**逆序 `splice` 删除——
+/// 复杂度 O(list_len + removed)，连续块只发一条 items-changed，且整批只打一条汇总日志。
+fn remove_uris_batch(list: &gtk::gio::ListStore, uris: &[String]) {
+    if uris.is_empty() || list.n_items() == 0 {
+        return;
+    }
+    let uri_set: std::collections::HashSet<&str> = uris.iter().map(String::as_str).collect();
+    let n = list.n_items();
+    let positions: Vec<u32> = (0..n)
+        .filter(|&i| {
+            list.item(i)
+                .and_downcast::<glib::BoxedAnyObject>()
+                .map(|obj| uri_set.contains(obj.borrow::<MediaItem>().uri.as_str()))
+                .unwrap_or(false)
+        })
+        .collect();
+    if positions.is_empty() {
+        return;
+    }
+    let before = n;
+    let removed = positions.len() as u32;
+    // 合并连续位置为 (start, len) 区间，逆序 splice 删除以保持索引有效，
+    // 并把 items-changed 通知压到「每个连续块一条」。
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    let mut start = positions[0];
+    let mut end = positions[0];
+    for &pos in positions.iter().skip(1) {
+        if pos == end + 1 {
+            end = pos;
+        } else {
+            ranges.push((start, end - start + 1));
+            start = pos;
+            end = pos;
         }
     }
-    tracing::warn!(
+    ranges.push((start, end - start + 1));
+    let empty: &[glib::BoxedAnyObject] = &[];
+    for (position, n_removals) in ranges.into_iter().rev() {
+        list.splice(position, n_removals, empty);
+    }
+    tracing::info!(
         target: crate::core::log_targets::BROWSING,
-        "TRASH_TRACE ui_remove_by_uri not_found before={} uri={}",
+        "TRASH_TRACE ui_remove_uris_batch removed={} before={} after={} requested={}",
+        removed,
         before,
-        uri
+        list.n_items(),
+        uris.len()
     );
 }
 
@@ -651,5 +673,105 @@ mod tests {
         );
         assert_eq!(list.n_items(), 1);
         assert_eq!(nth_uri(&list, 0), "file:///tmp/a.jpg");
+    }
+
+    #[test]
+    fn removed_batch_deletes_contiguous_block_with_one_splice() {
+        // 整块连续命中应合并成一次 splice：items-changed 只发一条，
+        // 而不是每个 uri 一条（这是「整相册被删」时避免刷屏/重建的关键）。
+        let list = list_with(vec![
+            item(1, "file:///tmp/a.jpg"),
+            item(2, "file:///tmp/b.jpg"),
+            item(3, "file:///tmp/c.jpg"),
+            item(4, "file:///tmp/d.jpg"),
+        ]);
+        let signal = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let signal_for_cb = signal.clone();
+        list.connect_items_changed(move |_, position, removed, added| {
+            signal_for_cb.borrow_mut().push((position, removed, added));
+        });
+
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaRemoved {
+                source: ChangeSource::StartupScan,
+                ids: Vec::new(),
+                uris: vec![
+                    "file:///tmp/b.jpg".into(),
+                    "file:///tmp/c.jpg".into(),
+                    // 一个未命中项，确保它不造成额外扫描或日志
+                    "file:///tmp/elsewhere.jpg".into(),
+                ],
+            },
+        );
+
+        assert_eq!(list.n_items(), 2);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/a.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/d.jpg");
+        assert_eq!(
+            signal.borrow().as_slice(),
+            &[(1, 2, 0)],
+            "a contiguous removal block must coalesce into one items-changed emission"
+        );
+    }
+
+    #[test]
+    fn removed_batch_deletes_scattered_items_preserving_order() {
+        let list = list_with(vec![
+            item(1, "file:///tmp/a.jpg"),
+            item(2, "file:///tmp/b.jpg"),
+            item(3, "file:///tmp/c.jpg"),
+            item(4, "file:///tmp/d.jpg"),
+            item(5, "file:///tmp/e.jpg"),
+        ]);
+
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaRemoved {
+                source: ChangeSource::FilesystemWatcher,
+                ids: Vec::new(),
+                uris: vec![
+                    "file:///tmp/a.jpg".into(),
+                    "file:///tmp/c.jpg".into(),
+                    "file:///tmp/e.jpg".into(),
+                ],
+            },
+        );
+
+        assert_eq!(list.n_items(), 2);
+        assert_eq!(nth_uri(&list, 0), "file:///tmp/b.jpg");
+        assert_eq!(nth_uri(&list, 1), "file:///tmp/d.jpg");
+    }
+
+    #[test]
+    fn removed_batch_is_noop_and_emits_nothing_when_none_match() {
+        // 大批量 MediaRemoved 但可见 list 里一个都不命中：必须零修改、零 items-changed。
+        let list = list_with(vec![
+            item(1, "file:///tmp/a.jpg"),
+            item(2, "file:///tmp/b.jpg"),
+        ]);
+        let signal = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let signal_for_cb = signal.clone();
+        list.connect_items_changed(move |_, position, removed, added| {
+            signal_for_cb.borrow_mut().push((position, removed, added));
+        });
+
+        let uris: Vec<String> = (0..50_000)
+            .map(|i| format!("file:///tmp/gone/{i}.jpg"))
+            .collect();
+        apply_to_media_list(
+            &list,
+            &DomainEvent::MediaRemoved {
+                source: ChangeSource::StartupScan,
+                ids: Vec::new(),
+                uris,
+            },
+        );
+
+        assert_eq!(list.n_items(), 2, "no visible item matched, list unchanged");
+        assert!(
+            signal.borrow().is_empty(),
+            "a no-op removal must not emit any items-changed (no per-uri churn)"
+        );
     }
 }
