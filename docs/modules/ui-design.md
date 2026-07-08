@@ -5,6 +5,11 @@ future UI work. It complements the behavior-focused module docs: read this file
 for layout, visual hierarchy, and interaction intent, then read the matching
 module document before changing code.
 
+For the canonical widget/region names — what to call each piece of the UI — see
+the visual naming map at [`docs/ui-naming-reference.html`](../ui-naming-reference.html)
+(open in a browser; hover a label to see its implementation type). Keep that map
+in sync with these screens when the UI structure changes.
+
 ## Scope
 
 The app is a GNOME desktop photo manager. Its UI should feel quiet, direct, and

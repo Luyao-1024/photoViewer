@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhotoViewer UI 命名参考 — PhotoViewer UI Naming Reference</title>
+<style>
+  :root {
+    --bg-0: #0b0d12;
+    --bg-1: #11141b;
+    --bg-2: #161a23;
+    --glass: rgba(255,255,255,0.055);
+    --glass-strong: rgba(255,255,255,0.09);
+    --glass-border: rgba(255,255,255,0.12);
+    --glass-border-strong: rgba(255,255,255,0.22);
+    --fg: #e6e9ef;
+    --fg-dim: #a8adbb;
+    --fg-faint: #6b7280;
+    --accent: #62a0ea;
+    --accent-2: #57c7a3;
+    --danger: #e67e7e;
+    --warn: #f5c26b;
+    --code-bg: rgba(0,0,0,0.32);
+    --shadow: 0 8px 30px rgba(0,0,0,0.45);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background:
+      radial-gradient(1200px 700px at 80% -10%, rgba(98,160,234,0.10), transparent 60%),
+      radial-gradient(900px 600px at 0% 110%, rgba(87,199,163,0.08), transparent 60%),
+      var(--bg-0);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  code, .mono {
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+    font-size: 0.86em;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 36px 28px 96px; }
+
+  h1 {
+    font-size: 30px; font-weight: 700; margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  .subtitle { color: var(--fg-dim); margin: 0 0 28px; font-size: 15px; }
+  h2 {
+    font-size: 21px; margin: 46px 0 16px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--glass-border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .num {
+    font-size: 13px; color: var(--accent); font-weight: 600;
+    font-family: "SF Mono", monospace;
+  }
+  h3 { font-size: 16px; margin: 22px 0 10px; color: var(--fg); }
+
+  /* Glass panel base */
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    box-shadow: var(--shadow);
+  }
+
+  /* Legend table */
+  table.legend {
+    width: 100%; border-collapse: collapse; overflow: hidden;
+    border-radius: 14px;
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(18px) saturate(1.2);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    font-size: 14px;
+  }
+  table.legend th, table.legend td {
+    text-align: left; padding: 10px 14px; vertical-align: top;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  table.legend thead th {
+    background: rgba(255,255,255,0.05);
+    color: var(--fg-dim);
+    font-weight: 600; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  table.legend tbody tr:last-child td { border-bottom: none; }
+  table.legend td.cn { font-weight: 600; white-space: nowrap; }
+  table.legend td.can code {
+    background: var(--code-bg); padding: 2px 6px; border-radius: 5px;
+    color: #cfe3ff; white-space: nowrap;
+  }
+  table.legend td.role { color: var(--fg-dim); }
+
+  /* Callout box — unmissable */
+  .callout {
+    margin: 30px 0 8px;
+    padding: 22px 26px;
+    border-radius: 16px;
+    border: 1.5px solid var(--warn);
+    background:
+      linear-gradient(180deg, rgba(245,194,107,0.10), rgba(245,194,107,0.03)),
+      var(--glass);
+    box-shadow: 0 0 0 1px rgba(245,194,107,0.25), 0 10px 36px rgba(0,0,0,0.4);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .callout h2 {
+    margin: 0 0 6px; padding: 0; border: none;
+    color: var(--warn); font-size: 20px;
+  }
+  .callout .lede { color: var(--fg); margin: 0 0 14px; }
+  .callout table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .callout th { text-align: left; color: var(--fg-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+  .callout td { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+  .callout td code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; color: #ffd9a0; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.yes { background: rgba(87,199,163,0.18); color: #8fe3c5; border: 1px solid rgba(87,199,163,0.35); }
+  .pill.no  { background: rgba(230,126,126,0.16); color: #f3b4b4; border: 1px solid rgba(230,126,126,0.35); }
+  .pill.fixed { background: rgba(230,126,126,0.16); color: #f3b4b4; border: 1px solid rgba(230,126,126,0.35); }
+
+  /* Screen mockup frame */
+  .screen {
+    border-radius: 16px; overflow: hidden;
+    border: 1px solid var(--glass-border-strong);
+    background: var(--bg-1);
+    box-shadow: var(--shadow);
+    margin-bottom: 8px;
+  }
+  .screen-titlebar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid var(--glass-border);
+    font-size: 13px; color: var(--fg-dim);
+  }
+  .screen-titlebar .dots { display: flex; gap: 6px; }
+  .screen-titlebar .dot { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,0.16); }
+  .screen-body { display: flex; min-height: 440px; }
+
+  /* Generic region */
+  .region {
+    position: relative;
+    border: 1px dashed transparent;
+  }
+  .sidebar-region {
+    width: 240px; flex: 0 0 240px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.025));
+    border-right: 1px solid var(--glass-border);
+    padding: 10px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .content-region { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  /* Label tag pinned to a region */
+  .tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(0,0,0,0.42);
+    border: 1px solid var(--glass-border);
+    color: var(--fg);
+    padding: 3px 8px;
+    border-radius: 7px;
+    font-size: 12px; line-height: 1.3;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .tag .cn { font-weight: 600; color: #eef1f7; }
+  /* Mockup tags show only the region name by default; the implementation
+     type appears inline on hover so the structure view stays uncluttered. */
+  .tag { cursor: help; }
+  .tag code {
+    display: none;
+    background: rgba(98,160,234,0.16); color: #bcd9ff;
+    padding: 1px 5px; border-radius: 4px; font-size: 11px;
+  }
+  .tag:hover code { display: inline-block; }
+  .tag.accent code { background: rgba(87,199,163,0.18); color: #a6ecd0; }
+  .tag.warn code { background: rgba(245,194,107,0.18); color: #ffd9a0; }
+  .tag.danger code { background: rgba(230,126,126,0.18); color: #f3b4b4; }
+  .tag-rotate { writing-mode: horizontal-tb; }
+
+  .lbl {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-faint); margin: 0 0 4px; font-weight: 600;
+  }
+
+  /* Sidebar list rows */
+  .navlist { display: flex; flex-direction: column; gap: 4px; }
+  .navrow {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid transparent;
+    font-size: 13px; color: var(--fg-dim);
+  }
+  .navrow.active {
+    background: rgba(98,160,234,0.16);
+    border-color: rgba(98,160,234,0.35);
+    color: var(--fg);
+  }
+  .navrow .ico { width: 14px; height: 14px; border-radius: 4px; background: rgba(255,255,255,0.18); flex: 0 0 auto; }
+  .navrow .count { margin-left: auto; font-size: 11px; color: var(--fg-faint); }
+  .albumrow { padding-left: 22px; }
+  .albumrow .thumb { width: 18px; height: 18px; border-radius: 4px; background: linear-gradient(135deg,#5e72e4,#8a94e8); flex:0 0 auto; }
+  .header-row { color: var(--fg); font-weight: 600; }
+  .header-row .arrow { margin-left: auto; color: var(--fg-faint); font-size: 11px; }
+
+  /* Photos content */
+  .headerbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid var(--glass-border);
+    min-height: 40px;
+  }
+  .headerbar .title { font-size: 13px; color: var(--fg-dim); margin-right: auto; }
+  .hb-btn {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--glass-border);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; color: var(--fg-dim);
+  }
+  .hb-btn.danger { color: var(--danger); }
+  .hb-btn.search { border-radius: 50%; width: 28px; height: 28px; }
+
+  .grid-area { position: relative; flex: 1; min-height: 280px; padding: 12px; overflow: hidden; }
+  .grid-bg {
+    position: absolute; inset: 12px;
+    border-radius: 10px;
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 86px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.04) 0 1px, transparent 1px 86px);
+    opacity: 0.6;
+  }
+  .section-hdr { position: absolute; left: 16px; top: 16px; font-size: 12px; color: var(--fg-dim); font-weight: 600; }
+  .tile-float {
+    position: absolute;
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+    left: 16px; top: 40px; right: 16px;
+  }
+  .tile {
+    aspect-ratio: 1 / 1; border-radius: 8px;
+    background: linear-gradient(135deg, rgba(94,114,228,0.35), rgba(154,164,232,0.18));
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .tile.b { background: linear-gradient(135deg, rgba(87,199,163,0.30), rgba(140,220,190,0.15)); }
+  .tile.c { background: linear-gradient(135deg, rgba(245,194,107,0.28), rgba(250,215,150,0.12)); }
+  .tile.d { background: linear-gradient(135deg, rgba(230,126,126,0.28), rgba(240,170,170,0.12)); }
+
+  /* Floating mode selector */
+  .mode-sel {
+    position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: 5px;
+    background: rgba(255,255,255,0.10);
+    border: 1px solid var(--glass-border-strong);
+    border-radius: 12px;
+    padding: 7px 10px;
+    box-shadow: 0 6px 22px rgba(0,0,0,0.45);
+    backdrop-filter: blur(14px);
+  }
+  .mode-sel .labels { display: flex; gap: 2px; }
+  .mode-sel .seg { padding: 3px 14px; font-size: 12px; color: var(--fg-dim); border-radius: 6px; }
+  .mode-sel .seg.on { color: var(--fg); font-weight: 600; }
+  .mode-sel .indicator-row { display: flex; }
+  .mode-sel .indicator {
+    width: 22px; height: 3px; border-radius: 3px; background: var(--accent);
+    margin-left: 28px;
+  }
+
+  /* Trash banner + flowbox */
+  .banner {
+    margin: 10px 12px; padding: 8px 12px; border-radius: 8px;
+    background: rgba(245,194,107,0.10); border: 1px solid rgba(245,194,107,0.25);
+    font-size: 12px; color: #ffd9a0;
+  }
+  .flowbox {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+    padding: 12px;
+  }
+  .flowbox .tile { aspect-ratio: 1/1; }
+  .actionbar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: rgba(255,255,255,0.05); border-top: 1px solid var(--glass-border);
+  }
+  .actionbar .ab-btn { padding: 5px 12px; border-radius: 7px; font-size: 12px; background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border); color: var(--fg); }
+  .actionbar .ab-btn.suggested { background: rgba(98,160,234,0.22); border-color: rgba(98,160,234,0.4); color: #cfe3ff; }
+  .actionbar .ab-btn.destructive { background: rgba(230,126,126,0.2); border-color: rgba(230,126,126,0.4); color: #f3b4b4; }
+
+  /* Search */
+  .search-panel { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .search-entry { padding: 7px 12px; border-radius: 8px; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); font-size: 13px; color: var(--fg-dim); }
+  .field-bar { display: flex; gap: 2px; align-self: center; }
+  .field-bar .fb { padding: 4px 14px; font-size: 12px; background: rgba(255,255,255,0.04); border:1px solid var(--glass-border); color: var(--fg-dim); }
+  .field-bar .fb.on { background: rgba(98,160,234,0.22); color: #cfe3ff; }
+  .field-bar .fb:first-child { border-radius: 7px 0 0 7px; }
+  .field-bar .fb:last-child { border-radius: 0 7px 7px 0; }
+  .results { display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
+  .result-sec { display: flex; flex-direction: column; gap: 6px; }
+  .result-sec .rh { font-size: 12px; color: var(--fg-dim); font-weight: 600; }
+  .result-sec .rgrid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+
+  /* Viewer */
+  .viewer-wrap { display: flex; flex: 1; min-height: 440px; position: relative; }
+  .viewer-stage {
+    flex: 1; position: relative;
+    background:
+      radial-gradient(circle at 50% 45%, rgba(98,160,234,0.18), transparent 60%),
+      #0a0c11;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .viewer-photo {
+    width: 56%; aspect-ratio: 3/2; border-radius: 10px;
+    background: linear-gradient(135deg,#3a4a8a,#6b86c8 60%,#9fb0e0);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  }
+  .viewer-overlay-tl { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; }
+  .viewer-overlay-tr { position: absolute; top: 10px; right: 10px; display: flex; gap: 4px; }
+  .viewer-overlay-br { position: absolute; bottom: 14px; right: 10px; display: flex; gap: 4px; }
+  .v-btn { width: 26px; height: 26px; border-radius: 7px; background: rgba(0,0,0,0.3); border: 1px solid var(--glass-border); display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:var(--fg-dim);}
+  .filmstrip {
+    position: absolute; left: 24px; right: 24px; bottom: 10px;
+    height: 56px; border-radius: 10px;
+    background: rgba(255,255,255,0.06); border: 1px solid var(--glass-border);
+    display: flex; align-items: center; padding: 0 8px; gap: 6px; overflow: hidden;
+  }
+  .filmstrip .ft { width: 44px; height: 44px; border-radius: 6px; background: linear-gradient(135deg,#5e72e4,#8a94e8); flex: 0 0 auto; }
+  .filmstrip .ft.on { outline: 2px solid var(--accent); }
+
+  /* Side panels */
+  .side-panel {
+    width: 200px; flex: 0 0 200px;
+    background: rgba(255,255,255,0.06);
+    border-left: 1px solid var(--glass-border);
+    padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    backdrop-filter: blur(12px);
+  }
+  .side-panel .phead { display:flex; align-items:center; gap:6px; }
+  .side-panel .phead .pt { font-size: 13px; font-weight: 600; margin-right: auto; }
+  .prow { font-size: 12px; color: var(--fg-dim); padding: 5px 8px; background: rgba(0,0,0,0.18); border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
+  .prow .scale { display:block; height:4px; border-radius:3px; background: rgba(98,160,234,0.5); margin-top:5px; }
+  .rotate-box { display: flex; gap: 6px; }
+  .rotate-box .rb { flex:1; height:30px; border-radius:7px; background: rgba(255,255,255,0.06); border:1px solid var(--glass-border); }
+  .paction { display:flex; gap:6px; margin-top: auto; }
+  .paction .pa { flex:1; text-align:center; font-size:11px; padding:6px 4px; border-radius:7px; }
+  .paction .pa.s { background: rgba(98,160,234,0.22); border:1px solid rgba(98,160,234,0.4); color:#cfe3ff;}
+  .paction .pa.d { background: rgba(230,126,126,0.2); border:1px solid rgba(230,126,126,0.4); color:#f3b4b4;}
+  .paction .pa.n { background: rgba(255,255,255,0.06); border:1px solid var(--glass-border); color: var(--fg-dim);}
+
+  /* Resize handles */
+  .handle {
+    position: relative;
+  }
+  .handle::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 4px;
+    background: transparent;
+  }
+  .handle-r::after { right: -2px; cursor: ew-resize; }
+  .handle-fixed::after { background: repeating-linear-gradient(180deg, var(--danger) 0 4px, transparent 4px 8px); opacity: 0.6; }
+  .handle-rz::after { background: repeating-linear-gradient(180deg, var(--accent-2) 0 4px, transparent 4px 8px); opacity: 0.6; }
+
+  /* Collapsed overlay sidebar (narrow window) */
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.5); }
+  .overlay-sidebar {
+    position: absolute; top: 0; left: 0; bottom: 0; width: 240px;
+    background: linear-gradient(180deg, rgba(20,24,33,0.96), rgba(15,18,25,0.96));
+    border-right: 1px solid var(--glass-border-strong);
+    padding: 10px; display: flex; flex-direction: column; gap: 10px;
+    box-shadow: 8px 0 30px rgba(0,0,0,0.6);
+  }
+  .overlay-sidebar .navlist { margin-top: 6px; }
+  .menu-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: 8px; background: rgba(255,255,255,0.06);
+    border: 1px solid var(--glass-border); font-size: 12px; color: var(--fg-dim);
+  }
+
+  /* Tag layer over regions */
+  .tagcol { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+  .tagrow { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .label-pin { position: absolute; z-index: 5; }
+
+  .note { font-size: 13px; color: var(--fg-dim); margin: 8px 0 0; }
+  .note code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; color: #cfe3ff; }
+
+  .footer { margin-top: 60px; color: var(--fg-faint); font-size: 12px; text-align: center; }
+
+  hr.sep { border: none; border-top: 1px solid var(--glass-border); margin: 36px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>PhotoViewer UI 命名参考</h1>
+  <p class="subtitle">
+    本页是该 Rust + GTK/libadwaita 相册应用的真实 UI 组件命名图谱。<b>界面结构图上的标签默认只显示
+    「这块区域该怎么称呼」</b>，把鼠标悬停到标签上才会显示其具体实现类型（控件类型 + 模板
+    <code>child-id</code> / Rust 结构体名，取自 <code>data/ui/*.blp</code> 与 <code>src/ui/*.rs</code>）。
+    完整的中文名 ↔ 标识符对照见下方「图例」表；先看「可拖动 / 可缩放」醒目提示框。
+  </p>
+
+  <!-- =========================== LEGEND =========================== -->
+  <h2 id="legend"><span class="num">00</span> 图例 / Glossary</h2>
+  <table class="legend">
+    <thead>
+      <tr><th style="width:18%">中文友好名</th><th style="width:34%">规范标识符 (canonical)</th><th>角色 / Role</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="cn">应用窗口</td><td class="can"><code>Adw.ApplicationWindow $PhotoViewerWindow</code></td><td class="role">顶层窗口；Rust 结构体 <code>MainWindow</code>，imp NAME = <code>"PhotoViewerWindow"</code>。</td></tr>
+      <tr><td class="cn">根叠加层</td><td class="can"><code>Gtk.Overlay root_overlay</code></td><td class="role">承载主 split_view 与右键菜单浮层 (<code>GlassContextMenu</code>)。</td></tr>
+      <tr><td class="cn">主分隔视图（侧栏+内容）</td><td class="can"><code>Adw.OverlaySplitView split_view</code></td><td class="role">侧栏与内容的分界；<b>min==max==240，不可缩放</b>。窄窗自动折叠为浮层。</td></tr>
+      <tr><td class="cn">侧栏页</td><td class="can"><code>Adw.NavigationPage sidebar_page</code></td><td class="role">侧栏外壳；<code>.glass-sidebar-page</code>。</td></tr>
+      <tr><td class="cn">侧栏玻璃面</td><td class="can"><code>Gtk.Box .glass-sidebar-surface.glass-base</code></td><td class="role">侧栏唯一玻璃材质承载者（含导航列表与设置页脚）。</td></tr>
+      <tr><td class="cn">主导航列表</td><td class="can"><code>Gtk.ListBox sidebar_list</code></td><td class="role"><code>.glass-sidebar-main</code>；含 Photos 行与「相册」分组头。</td></tr>
+      <tr><td class="cn">相册/类型/回收站容器</td><td class="can"><code>Gtk.Box album_trash_wrapper</code></td><td class="role">纵向容器，承载相册滚动窗、选择条、媒体类型列表、回收站列表。</td></tr>
+      <tr><td class="cn">相册滚动窗</td><td class="can"><code>Gtk.ScrolledWindow album_scroll</code></td><td class="role">相册行的固定高度滚动区，<code>propagate-natural-height:true</code>。</td></tr>
+      <tr><td class="cn">相册列表（可拖拽排序）</td><td class="can"><code>Gtk.ListBox album_list</code></td><td class="role"><code>.glass-sidebar-album-list</code>；行可拖拽重排（DragSource+DropTarget，<b>仅落点提交</b>，详见下方提示框）。</td></tr>
+      <tr><td class="cn">相册批量选择条</td><td class="can"><code>Gtk.ActionBar album_selection_bar</code></td><td class="role">批量删除相册时显示；<code>album_selection_cancel_btn / album_selection_delete_btn</code>。</td></tr>
+      <tr><td class="cn">媒体类型分组头</td><td class="can"><code>Gtk.ListBox media_type_header_list</code></td><td class="role"><code>.glass-sidebar-main</code>；图片/视频等虚拟分组头（可折叠）。</td></tr>
+      <tr><td class="cn">媒体类型滚动窗</td><td class="can"><code>Gtk.ScrolledWindow media_type_scroll</code></td><td class="role">媒体类型行的滚动容器。</td></tr>
+      <tr><td class="cn">媒体类型列表</td><td class="can"><code>Gtk.ListBox media_type_list</code></td><td class="role"><code>.glass-sidebar-album-list</code>；虚拟相册（图片/视频）行。</td></tr>
+      <tr><td class="cn">回收站导航列表</td><td class="can"><code>Gtk.ListBox trash_list</code></td><td class="role">稳定底部导航；Trash 行。</td></tr>
+      <tr><td class="cn">侧栏弹簧</td><td class="can"><code>Gtk.Box sidebar_spacer</code></td><td class="role"><code>.glass-sidebar-spacer</code>；折叠相册时撑开以固定设置按钮在底部。</td></tr>
+      <tr><td class="cn">侧栏页脚 / 设置按钮</td><td class="can"><code>Gtk.Box .glass-sidebar-footer → Gtk.Button settings_button</code></td><td class="role">齿轮按钮 <code>preferences-system-symbolic</code>，<code>.sidebar-settings-button</code>，弹出设置 Dialog。</td></tr>
+      <tr><td class="cn">内容导航栈</td><td class="can"><code>Adw.NavigationView nav_view</code></td><td class="role">push Photos / AlbumDetail / Trash / Viewer / Search 页面。</td></tr>
+
+      <tr><td class="cn">照片页</td><td class="can"><code>$PhotosPage : Adw.NavigationPage</code></td><td class="role">Rust <code>PhotosPage</code>；根浏览页。</td></tr>
+      <tr><td class="cn">照片页顶栏</td><td class="can"><code>Adw.HeaderBar header_bar</code></td><td class="role"><code>.glass-header</code>；左：全选/退出多选/搜索；右：加相册/收藏/删到回收站。</td></tr>
+      <tr><td class="cn">批量动作容器</td><td class="can"><code>Gtk.Revealer *_revealer → Gtk.Button *_btn</code></td><td class="role"><code>select_all / exit_multi_select / delete_to_trash / favorite / add_to_album</code>，滑入滑出。</td></tr>
+      <tr><td class="cn">搜索按钮</td><td class="can"><code>Gtk.Button search_btn</code></td><td class="role"><code>.round-search-button</code>；push 搜索页。</td></tr>
+      <tr><td class="cn">网格叠加层</td><td class="can"><code>Gtk.Overlay grid_overlay</code></td><td class="role">承载 view_stack 与悬浮 mode_selector。</td></tr>
+      <tr><td class="cn">年/月/日网格栈</td><td class="can"><code>Gtk.Stack view_stack</code></td><td class="role">crossfade 切换 Year/Month/Day 三套网格。</td></tr>
+      <tr><td class="cn">年/月/日模式选择器</td><td class="can"><code>$ModeSelector mode_selector</code></td><td class="role">Rust <code>ModeSelector</code>；规范 Liquid Glass 分段控件，悬浮在网格底部居中。</td></tr>
+
+      <tr><td class="cn">媒体网格（按日期段）</td><td class="can"><code>$MediaGrid : Gtk.Box</code> → <code>Gtk.ScrolledWindow scroller</code> → <code>Gtk.Viewport viewport</code> → <code>Gtk.Box content</code></td><td class="role">Rust <code>MediaGrid</code>；<code>content</code> 内每个日期段 = 全宽 <code>Gtk.Label</code> 标题 + 一个 <code>Gtk.FlowBox</code>(<code>.thumb-grid</code>)。瓦片为 <code>SquareTile</code>(NAME <code>PvSquareTile</code>，包 <code>Gtk.Picture</code> cover)。<b>非</b> <code>Gtk.ListView</code>。</td></tr>
+      <tr><td class="cn">网格滚动窗</td><td class="can"><code>Gtk.ScrolledWindow scroller → Gtk.Viewport viewport → Gtk.Box content</code></td><td class="role">MediaGrid 内部纵向滚动；<code>Viewport</code> 必需，因为 <code>content</code> 不是 <code>Scrollable</code>。</td></tr>
+      <tr><td class="cn">日期段标题</td><td class="can"><code>Gtk.Label</code>（<code>.heading</code>，全宽）</td><td class="role">在 <code>MediaGrid::rebuild</code> 内联构建，置于该段 <code>Gtk.FlowBox</code> 之上。非 ListView 行、非 FlowBoxChild。</td></tr>
+
+      <tr><td class="cn">相册详情页</td><td class="can"><code>$AlbumDetailPage : Adw.NavigationPage</code></td><td class="role">Rust <code>AlbumDetailPage</code>；其内部为 MediaGrid。</td></tr>
+      <tr><td class="cn">回收站页</td><td class="can"><code>$TrashPage : Adw.NavigationPage</code></td><td class="role">Rust <code>TrashPage</code>。</td></tr>
+      <tr><td class="cn">回收站横幅</td><td class="can"><code>Adw.Banner trash_banner</code></td><td class="role">解释回收站行为。</td></tr>
+      <tr><td class="cn">回收站缩略图网格</td><td class="can"><code>Gtk.FlowBox flow_box</code></td><td class="role"><code>.thumb-grid</code>；多选模式。</td></tr>
+      <tr><td class="cn">回收站动作条</td><td class="can"><code>Gtk.ActionBar action_bar</code></td><td class="role"><code>cancel_btn / restore_btn (.suggested) / delete_btn (.destructive)</code>。</td></tr>
+      <tr><td class="cn">清空回收站</td><td class="can"><code>Gtk.Button empty_btn</code></td><td class="role"><code>.destructive-action</code>。</td></tr>
+
+      <tr><td class="cn">搜索页</td><td class="can"><code>$SearchPage : Adw.NavigationPage</code></td><td class="role">Rust <code>SearchPage</code>。</td></tr>
+      <tr><td class="cn">搜索输入框</td><td class="can"><code>Gtk.SearchEntry search_entry</code></td><td class="role">聚焦输入。</td></tr>
+      <tr><td class="cn">搜索字段切换</td><td class="can"><code>Gtk.Box search_field_bar → ToggleButton field_all/name/date</code></td><td class="role">全部/文件名/日期，<code>.linked</code>。</td></tr>
+
+      <tr><td class="cn">查看器页</td><td class="can"><code>$ViewerPage : Adw.NavigationPage</code></td><td class="role">Rust <code>ViewerPage</code>；全屏媒体舞台。</td></tr>
+      <tr><td class="cn">查看器 Toast 叠加</td><td class="can"><code>Adw.ToastOverlay toast_overlay</code></td><td class="role">查看器内 toast。</td></tr>
+      <tr><td class="cn">查看器顶栏</td><td class="can"><code>Adw.HeaderBar header_bar</code></td><td class="role"><code>.glass-header .viewer-toolbar .viewer-chrome</code>；悬浮态玻璃（hover-only）。</td></tr>
+      <tr><td class="cn">查看器顶栏动作</td><td class="can"><code>favorite_btn / edit_btn / delete_btn / details_btn</code></td><td class="role">右起顺序：favorite → edit → delete → details。</td></tr>
+      <tr><td class="cn">编辑面板分隔视图</td><td class="can"><code>Adw.OverlaySplitView editor_split_view</code></td><td class="role">sidebar-position:end，<b>min 340 / max 420 — 可缩放</b>。</td></tr>
+      <tr><td class="cn">详情面板分隔视图</td><td class="can"><code>Adw.OverlaySplitView details_split_view</code></td><td class="role"><code>collapsed:true, pin-sidebar:true</code>（min 320 / max 420，<code>details_panel</code> <code>width-request:380</code>）；详情面板浮于图上，不可调宽。</td></tr>
+      <tr><td class="cn">图片舞台</td><td class="can"><code>Gtk.Overlay image_overlay (.viewer-stage)</code></td><td class="role">承载 picture / video / 各类 overlay 控件。</td></tr>
+      <tr><td class="cn">图片控件</td><td class="can"><code>Gtk.Picture picture</code></td><td class="role"><code>content-fit:contain</code>，<code>.viewer-image-frame</code>。</td></tr>
+      <tr><td class="cn">视频控件</td><td class="can"><code>Gtk.Video video</code></td><td class="role">视频播放（含 GtkVideo 内置控制条）。</td></tr>
+      <tr><td class="cn">上一张/下一张</td><td class="can"><code>Gtk.Box viewer_nav_buttons → prev_btn / next_btn</code></td><td class="role"><code>.viewer-overlay-nav-btn</code>，右下角悬浮对。</td></tr>
+      <tr><td class="cn">缩放/旋转控件组</td><td class="can"><code>Gtk.Box viewer_zoom_controls → zoom_in/out/reset, rotate_left/right, fullscreen_btn</code></td><td class="role">右上角悬浮。</td></tr>
+      <tr><td class="cn">胶片条</td><td class="can"><code>Gtk.ScrolledWindow thumb_scrolled → Gtk.Box thumb_strip</code></td><td class="role"><code>.viewer-thumb-carousel</code>，底部低玻璃胶片条。</td></tr>
+      <tr><td class="cn">详情面板</td><td class="can"><code>Gtk.Box details_panel (.viewer-floating-panel)</code></td><td class="role">含 details_header + <code>Adw.PreferencesPage details_page</code>（name/folder/mime/dimensions/size/taken_row）。</td></tr>
+      <tr><td class="cn">编辑面板</td><td class="can"><code>$EditorPanel editor_panel</code></td><td class="role">Rust <code>EditorPanel</code>；旋转/亮度对比度饱和度/裁剪 + Cancel/Save Copy/Save Overwrite。</td></tr>
+      <tr><td class="cn">裁剪叠加</td><td class="can"><code>Gtk.DrawingArea crop_overlay</code></td><td class="role">直接画在图片上的裁剪选区。</td></tr>
+    </tbody>
+  </table>
+
+  <!-- =========================== CALLOUT =========================== -->
+  <div class="callout" id="drag-resize">
+    <h2>可拖动 / 可缩放元素 — Draggable & Resizable Elements</h2>
+    <p class="lede">
+      这是整份参考的核心。<b>“看起来像分隔条就能拖”是错的。</b>
+      下表列出每个可拖动 / 可缩放元素及其在代码中的<b>真实</b>行为。务必用这里的规范名沟通，避免再说“那个侧栏”。
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:24%">规范标识符</th>
+          <th style="width:16%">中文 / 位置</th>
+          <th style="width:14%">能否拖动/缩放</th>
+          <th>真实行为（取自代码）</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>Adw.OverlaySplitView split_view</code><br><span style="color:var(--fg-faint)">window.blp · 主窗口侧栏分隔</span></td>
+          <td>主分隔条 / 侧栏与内容之间</td>
+          <td><span class="pill fixed">不可缩放 (FIXED)</span></td>
+          <td>
+            <code>min-sidebar-width: 240</code> <b>且</b> <code>max-sidebar-width: 240</code> —— min==max，<b>拖动分隔条什么都不会发生</b>。
+            侧栏宽度恒为 240px，仅在窄窗折叠为浮层时整体显隐。不要把它当成可调宽度的分隔条。
+          </td>
+        </tr>
+        <tr>
+          <td><code>Gtk.ListBox album_list</code> 的行<br><span style="color:var(--fg-faint)">window.rs · <code>attach_album_dnd()</code></span></td>
+          <td>侧栏相册行（相册顺序）</td>
+          <td><span class="pill yes">可拖动重排</span></td>
+          <td>
+            通过 <code>Gtk.DragSource</code>（载荷 = <code>folder_path</code>，<code>MOVE</code>）+ <code>Gtk.DropTarget</code>（<code>attach_album_dnd</code>）实现 <b>仅落点提交</b>的拖拽排序：
+            拖动时被拖行变暗 (<code>.glass-sidebar-row-dragging</code>)，<code>DropTarget::motion</code> 只切换上方/下方插入指示
+            (<code>.glass-sidebar-row-drop-above</code>/<code>below</code>)——<b>拖动过程中不实时重排</b>；仅 <code>drop</code> 时调用
+            <code>reorder_album</code>，经 <code>albums::set_album_order</code> 写入 DB 并 <code>rebuild_album_rows</code> 重建。
+            普通点击不会触发拖动（需越过拖动阈值）。
+          </td>
+        </tr>
+        <tr>
+          <td><code>Adw.OverlaySplitView editor_split_view</code><br><span style="color:var(--fg-faint)">viewer-page.blp · 查看器右侧编辑面板</span></td>
+          <td>编辑面板分隔（查看器右侧）</td>
+          <td><span class="pill yes">可缩放 340–420</span></td>
+          <td>
+            <code>sidebar-position: end</code>（面板在右），<code>min-sidebar-width: 340</code> / <code>max-sidebar-width: 420</code>。
+            <b>这是查看器里真正可拖动调宽的分隔条</b>。内嵌 <code>$EditorPanel editor_panel</code>。
+          </td>
+        </tr>
+        <tr>
+          <td><code>Adw.OverlaySplitView details_split_view</code><br><span style="color:var(--fg-faint)">viewer-page.blp · 查看器右侧详情面板</span></td>
+          <td>详情面板分隔（查看器右侧）</td>
+          <td><span class="pill no">不可缩放 (pinned/overlay)</span></td>
+          <td>
+            <code>collapsed: true</code> + <code>pin-sidebar: true</code> —— 详情面板 <code>details_panel</code>
+            以浮层形式叠加在图片之上（不挤压舞台），<b>无分隔条</b>，宽度由 <code>width-request</code> 固定，仅靠 <code>show-sidebar</code> 滑入滑出。
+          </td>
+        </tr>
+        <tr>
+          <td><code>Gtk.Scale brightness/contrast/saturation_scale</code><br><span style="color:var(--fg-faint)">editor-panel.blp</span></td>
+          <td>编辑面板里的滑块</td>
+          <td><span class="pill yes">可拖动（滑块）</span></td>
+          <td>调节亮度/对比度/饱和度；<code>reset_btn</code> 仅在有未保存编辑时可点。</td>
+        </tr>
+        <tr>
+          <td><code>Gtk.DrawingArea crop_overlay</code><br><span style="color:var(--fg-faint)">viewer-page.blp</span></td>
+          <td>图片上的裁剪选区</td>
+          <td><span class="pill yes">可拖动/缩放（选区）</span></td>
+          <td>裁剪矩形直接画在图片上，<code>crop_ratio_box</code> 选择比例。</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:14px">
+      <b>一句话记忆：</b>侧栏那条 240 分隔线是<b>死的</b>；相册行能<b>拖拽排序（仅落点提交，拖动中只显示插入指示）</b>；查看器<b>编辑面板</b>那条 340–420 是<b>唯一可调宽的分隔条</b>；详情面板是<b>浮层</b>不可调宽。
+    </p>
+  </div>
+
+  <!-- =========================== SCREEN 1: PHOTOS =========================== -->
+  <h2 id="photos"><span class="num">01</span> 主浏览 — Photos</h2>
+  <p class="note">
+    <code>nav_view</code> 顶层为 <code>$PhotosPage</code>。左侧为固定 240 侧栏；右侧内容 = 顶栏 + Year/Month/Day 网格栈 + 悬浮模式选择器。
+    网格本体是 <code>MediaGrid</code>：其 <code>Gtk.Box content</code> 内每个日期段 = 全宽 <code>Gtk.Label</code>(<code>.heading</code>) 标题 + 一个 <code>Gtk.FlowBox</code>(<code>.thumb-grid</code>)，瓦片为 <code>SquareTile</code>(包 <code>Gtk.Picture</code> cover)。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>Adw.ApplicationWindow $PhotoViewerWindow · MainWindow</span>
+    </div>
+    <div class="screen-body">
+      <!-- SIDEBAR -->
+      <div class="sidebar-region handle handle-r handle-fixed region">
+        <div class="tagcol">
+          <span class="tag"><span class="cn">侧栏页</span><code>Adw.NavigationPage sidebar_page</code></span>
+        </div>
+        <div>
+          <div class="lbl">主导航</div>
+          <div class="navlist">
+            <div class="navrow active"><span class="ico"></span>照片<span class="count">1.2k</span></div>
+            <div class="navrow header-row">相册 <span class="arrow">▾</span></div>
+          </div>
+          <div style="margin-top:4px"><span class="tag"><span class="cn">主导航列表</span><code>Gtk.ListBox sidebar_list</code></span></div>
+        </div>
+        <div>
+          <div class="lbl">相册区</div>
+          <div class="navlist">
+            <div class="navrow albumrow"><span class="thumb"></span>2024 旅行</div>
+            <div class="navrow albumrow"><span class="thumb" style="background:linear-gradient(135deg,#57c7a3,#8fe3c5)"></span>家庭</div>
+          </div>
+          <div style="margin-top:4px" class="tagrow">
+            <span class="tag warn"><span class="cn">相册列表·可拖拽</span><code>Gtk.ListBox album_list</code></span>
+          </div>
+          <div style="margin-top:4px"><span class="tag"><span class="cn">相册滚动窗</span><code>Gtk.ScrolledWindow album_scroll</code></span></div>
+          <div style="margin-top:4px"><span class="tag"><span class="cn">选择条</span><code>Gtk.ActionBar album_selection_bar</code></span></div>
+        </div>
+        <div>
+          <div class="lbl">媒体类型</div>
+          <span class="tag"><span class="cn">类型头</span><code>Gtk.ListBox media_type_header_list</code></span>
+          <div style="margin-top:4px"><span class="tag"><span class="cn">类型列表</span><code>Gtk.ListBox media_type_list</code></span></div>
+        </div>
+        <div>
+          <div class="lbl">底部</div>
+          <div class="navlist"><div class="navrow"><span class="ico" style="background:rgba(230,126,126,0.5)"></span>回收站</div></div>
+          <div style="margin-top:4px"><span class="tag"><span class="cn">回收站导航</span><code>Gtk.ListBox trash_list</code></span></div>
+        </div>
+        <div style="margin-top:auto" class="tagrow">
+          <span class="tag"><span class="cn">设置按钮</span><code>Gtk.Button settings_button</code></span>
+        </div>
+        <div class="label-pin" style="right:-10px; top:50%; transform:translateY(-50%)">
+          <span class="tag warn"><span class="cn">240 固定·不可拖</span><code>split_view (min=max=240)</code></span>
+        </div>
+      </div>
+
+      <!-- CONTENT -->
+      <div class="content-region">
+        <div class="headerbar" style="position:relative">
+          <span class="hb-btn search">⌕</span>
+          <span class="hb-btn">≡</span>
+          <span class="title">照片</span>
+          <span class="hb-btn">＋</span>
+          <span class="hb-btn">♥</span>
+          <span class="hb-btn danger">🗑</span>
+          <div class="label-pin" style="left:50%; top:-12px; transform:translateX(-50%)">
+            <span class="tag"><span class="cn">照片页顶栏</span><code>Adw.HeaderBar header_bar (.glass-header)</code></span>
+          </div>
+        </div>
+        <div class="grid-area">
+          <div class="grid-bg"></div>
+          <div class="section-hdr">2024 · 七月</div>
+          <div class="tile-float">
+            <div class="tile"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div><div class="tile d"></div><div class="tile b"></div>
+            <div class="tile c"></div><div class="tile"></div><div class="tile d"></div><div class="tile b"></div><div class="tile"></div><div class="tile c"></div>
+          </div>
+          <div class="mode-sel">
+            <div class="labels">
+              <span class="seg on">年</span><span class="seg">月</span><span class="seg">日</span>
+            </div>
+            <div class="indicator-row"><span class="indicator"></span></div>
+          </div>
+          <div class="label-pin" style="left:12px; top:36px">
+            <span class="tag accent"><span class="cn">日期段标题</span><code>Gtk.Label (.heading)</code></span>
+          </div>
+          <div class="label-pin" style="right:12px; top:8px">
+            <span class="tag"><span class="cn">媒体网格(FlowBox)</span><code>Gtk.FlowBox / MediaGrid</code></span>
+          </div>
+          <div class="label-pin" style="left:50%; bottom:-12px; transform:translateX(-50%)">
+            <span class="tag accent"><span class="cn">年/月/日选择器</span><code>$ModeSelector mode_selector</code></span>
+          </div>
+          <div class="label-pin" style="left:12px; bottom:8px">
+            <span class="tag"><span class="cn">网格栈</span><code>Gtk.Stack view_stack</code></span>
+          </div>
+        </div>
+        <div class="label-pin" style="right:14px; top:50px">
+          <span class="tag"><span class="cn">内容页</span><code>$PhotosPage</code></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== SCREEN 2: ALBUM DETAIL =========================== -->
+  <h2 id="album-detail"><span class="num">02</span> 相册详情 — Album Detail</h2>
+  <p class="note">
+    点击 <code>album_list</code> 中某个相册 → <code>nav_view</code> push <code>$AlbumDetailPage</code>。构造时即用<b>已预过滤的 media_list</b> 同步构建
+    <code>MediaGrid</code>(<code>GroupBy::Day</code>) 挂入 <code>Gtk.Box content_box</code>（空相册显示空态）；<b>无异步分页加载</b>。侧栏不变（仍为固定 240）。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>nav_view.push($AlbumDetailPage)</span>
+    </div>
+    <div class="screen-body">
+      <div class="sidebar-region handle handle-r handle-fixed region">
+        <div class="tagcol">
+          <span class="tag"><span class="cn">侧栏（同上）</span><code>sidebar_page / album_list …</code></span>
+        </div>
+        <div class="navlist">
+          <div class="navrow"><span class="ico"></span>照片</div>
+          <div class="navrow header-row">相册 <span class="arrow">▾</span></div>
+          <div class="navrow albumrow active"><span class="thumb"></span>2024 旅行</div>
+          <div class="navrow albumrow"><span class="thumb" style="background:linear-gradient(135deg,#57c7a3,#8fe3c5)"></span>家庭</div>
+        </div>
+        <div class="label-pin" style="right:-10px; top:50%; transform:translateY(-50%)">
+          <span class="tag warn"><span class="cn">仍固定 240</span><code>split_view</code></span>
+        </div>
+      </div>
+      <div class="content-region">
+        <div class="headerbar" style="position:relative">
+          <span class="hb-btn search">⌕</span>
+          <span class="title">2024 旅行</span>
+          <div class="label-pin" style="left:50%; top:-12px; transform:translateX(-50%)">
+            <span class="tag"><span class="cn">相册详情顶栏</span><code>Adw.HeaderBar header_bar</code></span>
+          </div>
+        </div>
+        <div class="grid-area">
+          <div class="grid-bg"></div>
+          <div class="tile-float">
+            <div class="tile b"></div><div class="tile"></div><div class="tile c"></div><div class="tile d"></div><div class="tile"></div><div class="tile b"></div>
+            <div class="tile"></div><div class="tile d"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div><div class="tile b"></div>
+          </div>
+          <div class="label-pin" style="right:12px; top:8px">
+            <span class="tag accent"><span class="cn">相册内媒体网格</span><code>MediaGrid (content_box 内)</code></span>
+          </div>
+          <div class="label-pin" style="left:14px; top:8px">
+            <span class="tag"><span class="cn">相册详情页</span><code>$AlbumDetailPage</code></span>
+          </div>
+          <div class="label-pin" style="left:14px; bottom:8px">
+            <span class="tag"><span class="cn">网格叠加层</span><code>Gtk.Overlay grid_overlay</code></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== SCREEN 3: TRASH =========================== -->
+  <h2 id="trash"><span class="num">03</span> 回收站 — Trash</h2>
+  <p class="note">
+    点击 <code>trash_list</code> 的 Trash 行 → push <code>$TrashPage</code>。
+    注意：回收站用的是 <code>Gtk.FlowBox flow_box</code>（非 ListView），多选；底部 <code>Gtk.ActionBar action_bar</code> 提供还原/永久删除。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>nav_view.push($TrashPage)</span>
+    </div>
+    <div class="screen-body">
+      <div class="sidebar-region handle handle-r handle-fixed region">
+        <div class="tagcol">
+          <span class="tag"><span class="cn">侧栏（同上）</span><code>sidebar_page …</code></span>
+        </div>
+        <div class="navlist">
+          <div class="navrow"><span class="ico"></span>照片</div>
+          <div class="navrow header-row">相册 <span class="arrow">▾</span></div>
+        </div>
+        <div style="margin-top:auto">
+          <div class="navlist"><div class="navrow active"><span class="ico" style="background:rgba(230,126,126,0.5)"></span>回收站</div></div>
+        </div>
+        <div class="label-pin" style="right:-10px; top:50%; transform:translateY(-50%)">
+          <span class="tag warn"><span class="cn">仍固定 240</span><code>split_view</code></span>
+        </div>
+      </div>
+      <div class="content-region">
+        <div class="headerbar" style="position:relative">
+          <span class="title">回收站</span>
+          <span class="hb-btn danger" style="width:auto;padding:0 10px;font-size:12px">清空</span>
+          <div class="label-pin" style="left:50%; top:-12px; transform:translateX(-50%)">
+            <span class="tag"><span class="cn">回收站顶栏</span><code>Adw.HeaderBar header_bar</code></span>
+          </div>
+          <div class="label-pin" style="right:6px; top:36px">
+            <span class="tag danger"><span class="cn">清空回收站</span><code>Gtk.Button empty_btn</code></span>
+          </div>
+        </div>
+        <div class="banner">回收站中的项目将在 N 天后永久删除 · trash_banner</div>
+        <div style="position:relative; padding:0 12px">
+          <div class="flowbox" style="padding-top:0">
+            <div class="tile d"></div><div class="tile"></div><div class="tile b"></div><div class="tile c"></div><div class="tile d"></div><div class="tile"></div><div class="tile b"></div>
+            <div class="tile c"></div><div class="tile d"></div><div class="tile"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div><div class="tile d"></div>
+          </div>
+          <div class="label-pin" style="right:18px; top:6px">
+            <span class="tag"><span class="cn">缩略图网格(FlowBox)</span><code>Gtk.FlowBox flow_box (.thumb-grid)</code></span>
+          </div>
+          <div class="label-pin" style="left:18px; top:-6px">
+            <span class="tag"><span class="cn">横幅</span><code>Adw.Banner trash_banner</code></span>
+          </div>
+        </div>
+        <div class="actionbar" style="position:relative">
+          <span class="ab-btn">取消</span>
+          <span style="margin-left:auto; display:flex; gap:8px">
+            <span class="ab-btn suggested">还原</span>
+            <span class="ab-btn destructive">永久删除</span>
+          </span>
+          <div class="label-pin" style="left:50%; bottom:-12px; transform:translateX(-50%)">
+            <span class="tag"><span class="cn">动作条</span><code>Gtk.ActionBar action_bar (cancel/restore/delete_btn)</code></span>
+          </div>
+        </div>
+        <div class="label-pin" style="right:14px; top:50px">
+          <span class="tag"><span class="cn">回收站页</span><code>$TrashPage</code></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="sep">
+
+  <!-- =========================== SCREEN 4: VIEWER =========================== -->
+  <h2 id="viewer"><span class="num">04</span> 全屏查看器 — Viewer</h2>
+  <p class="note">
+    双击照片 → push <code>$ViewerPage</code>。注意这是<b>双层 OverlaySplitView</b>：
+    外层 <code>editor_split_view</code>（可调 340–420）持有内层 <code>details_split_view</code>（浮层 pinned）。
+    编辑面板 <code>$EditorPanel</code> 与详情面板 <code>Gtk.Box details_panel</code> 分别挂在这两个 split view 的 sidebar 槽。
+    顶栏动作用 <code>.viewer-chrome</code>（悬浮态玻璃）。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>nav_view.push($ViewerPage)</span>
+    </div>
+    <div class="screen-body" style="flex-direction:column">
+      <!-- Viewer Header -->
+      <div class="headerbar" style="position:relative; border-bottom:1px solid var(--glass-border)">
+        <span class="title">查看器</span>
+        <span style="margin-left:auto; display:flex; gap:6px">
+          <span class="hb-btn">♥</span>
+          <span class="hb-btn">✎</span>
+          <span class="hb-btn danger">🗑</span>
+          <span class="hb-btn">ⓘ</span>
+        </span>
+        <div class="label-pin" style="left:50%; top:-12px; transform:translateX(-50%)">
+          <span class="tag"><span class="cn">查看器顶栏(悬浮玻璃)</span><code>Adw.HeaderBar header_bar (.viewer-chrome)</code></span>
+        </div>
+        <div class="label-pin" style="right:8px; top:36px">
+          <span class="tag"><span class="cn">动作·右起</span><code>favorite / edit / delete / details_btn</code></span>
+        </div>
+      </div>
+
+      <!-- Viewer double split -->
+      <div class="viewer-wrap">
+        <!-- details_split_view content (the stage) -->
+        <div class="viewer-stage region" style="position:relative">
+          <div class="viewer-photo"></div>
+
+          <!-- zoom/rotate top-right -->
+          <div class="viewer-overlay-tr">
+            <span class="v-btn">⤢</span><span class="v-btn">－</span><span class="v-btn">↺</span><span class="v-btn">↻</span><span class="v-btn">⛶</span><span class="v-btn">＋</span>
+          </div>
+          <!-- prev/next bottom-right -->
+          <div class="viewer-overlay-br">
+            <span class="v-btn">‹</span><span class="v-btn">›</span>
+          </div>
+          <!-- filmstrip -->
+          <div class="filmstrip">
+            <div class="ft"></div><div class="ft"></div><div class="ft on"></div><div class="ft"></div><div class="ft"></div><div class="ft"></div><div class="ft"></div>
+          </div>
+
+          <div class="label-pin" style="left:10px; top:8px">
+            <span class="tag"><span class="cn">图片舞台</span><code>Gtk.Overlay image_overlay (.viewer-stage)</code></span>
+          </div>
+          <div class="label-pin" style="left:50%; top:38%; transform:translate(-50%,-50%)">
+            <span class="tag"><span class="cn">图片/视频</span><code>Gtk.Picture picture / Gtk.Video video</code></span>
+          </div>
+          <div class="label-pin" style="right:8px; top:42px">
+            <span class="tag"><span class="cn">缩放/旋转组</span><code>Gtk.Box viewer_zoom_controls</code></span>
+          </div>
+          <div class="label-pin" style="right:8px; bottom:54px">
+            <span class="tag"><span class="cn">上一张/下一张</span><code>Gtk.Box viewer_nav_buttons (prev/next_btn)</code></span>
+          </div>
+          <div class="label-pin" style="left:50%; bottom:74px; transform:translateX(-50%)">
+            <span class="tag"><span class="cn">胶片条</span><code>thumb_scrolled → Gtk.Box thumb_strip</code></span>
+          </div>
+        </div>
+
+        <!-- details panel (overlay/pinned) -->
+        <div class="side-panel region" style="position:relative">
+          <div class="phead"><span class="pt">详情</span><span class="v-btn">✕</span></div>
+          <div class="prow">文件名: IMG_0123.jpg</div>
+          <div class="prow">文件夹: /photos/2024</div>
+          <div class="prow">尺寸: 4032×3024</div>
+          <div class="prow">大小: 4.2 MB</div>
+          <div class="prow">拍摄: 2024-07-08</div>
+          <div class="label-pin" style="left:-6px; top:-12px">
+            <span class="tag danger"><span class="cn">详情面板(浮层·不可调宽)</span><code>Gtk.Box details_panel (.viewer-floating-panel)</code></span>
+          </div>
+          <div class="label-pin" style="right:-6px; top:50%; transform:translateY(-50%)">
+            <span class="tag danger"><span class="cn">pinned 分隔</span><code>details_split_view (collapsed+pin-sidebar)</code></span>
+          </div>
+        </div>
+
+        <!-- editor panel (resizable) -->
+        <div class="side-panel region handle handle-rz" style="position:relative; width:210px; flex-basis:210px;">
+          <div class="phead"><span class="pt">编辑</span><span class="v-btn">↺</span><span class="v-btn">✕</span></div>
+          <div>
+            <div class="lbl" style="margin-bottom:4px">旋转</div>
+            <div class="rotate-box"><div class="rb">↻90</div><div class="rb">180</div><div class="rb">↺90</div></div>
+          </div>
+          <div>
+            <div class="lbl" style="margin-bottom:4px">调整</div>
+            <div class="prow">亮度<span class="scale"></span></div>
+            <div class="prow">对比度<span class="scale"></span></div>
+            <div class="prow">饱和度<span class="scale"></span></div>
+          </div>
+          <div class="paction">
+            <span class="pa n">取消</span>
+            <span class="pa s">存副本</span>
+            <span class="pa d">覆盖</span>
+          </div>
+          <div class="label-pin" style="left:-6px; top:-12px">
+            <span class="tag accent"><span class="cn">编辑面板·可调宽 340–420</span><code>$EditorPanel editor_panel</code></span>
+          </div>
+          <div class="label-pin" style="right:-6px; top:50%; transform:translateY(-50%)">
+            <span class="tag accent"><span class="cn">可拖动分隔条</span><code>Adw.OverlaySplitView editor_split_view</code></span>
+          </div>
+        </div>
+      </div>
+      <div class="label-pin" style="left:14px; bottom:8px">
+        <span class="tag"><span class="cn">查看器页</span><code>$ViewerPage (toast_overlay → root_box)</code></span>
+      </div>
+      <div class="note" style="padding:8px 14px; margin:0; border-top:1px solid var(--glass-border)">
+        <b>层级：</b> <code>editor_split_view</code> (外层, sidebar=end, 可调 340–420)
+        ▸ content = <code>details_split_view</code> (内层, collapsed+pin)
+        ▸ content = <code>image_overlay</code> 舞台；
+        <code>editor_split_view</code> 的 sidebar = <code>$EditorPanel</code>，<code>details_split_view</code> 的 sidebar = <code>details_panel</code>。
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== SCREEN 5: SEARCH =========================== -->
+  <h2 id="search"><span class="num">05</span> 搜索 — Search</h2>
+  <p class="note">
+    顶栏 <code>search_btn</code> → push <code>$SearchPage</code>。含搜索框、字段切换（全部/文件名/日期）、图片与视频结果分区。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>nav_view.push($SearchPage)</span>
+    </div>
+    <div class="screen-body" style="flex-direction:column">
+      <div class="headerbar" style="position:relative">
+        <span class="title">搜索</span>
+        <div class="label-pin" style="left:50%; top:-12px; transform:translateX(-50%)">
+          <span class="tag"><span class="cn">搜索页顶栏</span><code>Adw.HeaderBar header_bar</code></span>
+        </div>
+      </div>
+      <div class="search-panel" style="position:relative">
+        <div class="search-entry">输入关键字…</div>
+        <div class="field-bar">
+          <span class="fb on">全部</span><span class="fb">文件名</span><span class="fb">日期</span>
+        </div>
+        <div class="label-pin" style="right:14px; top:14px">
+          <span class="tag"><span class="cn">搜索输入</span><code>Gtk.SearchEntry search_entry</code></span>
+        </div>
+        <div class="label-pin" style="right:14px; top:52px">
+          <span class="tag"><span class="cn">字段切换</span><code>Gtk.Box search_field_bar (field_all/name/date)</code></span>
+        </div>
+        <div class="label-pin" style="left:14px; top:-12px">
+          <span class="tag"><span class="cn">搜索面板</span><code>Gtk.Box search_panel</code></span>
+        </div>
+      </div>
+      <div class="results">
+        <div class="result-sec" style="position:relative">
+          <div class="rh">图片结果</div>
+          <div class="rgrid">
+            <div class="tile"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div><div class="tile d"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div>
+          </div>
+          <div class="label-pin" style="right:0; top:0">
+            <span class="tag"><span class="cn">图片结果区</span><code>Gtk.Box image_results_box</code></span>
+          </div>
+        </div>
+        <div class="result-sec" style="position:relative">
+          <div class="rh">视频结果</div>
+          <div class="rgrid">
+            <div class="tile d"></div><div class="tile"></div><div class="tile b"></div><div class="tile c"></div>
+          </div>
+          <div class="label-pin" style="right:0; top:0">
+            <span class="tag"><span class="cn">视频结果区</span><code>Gtk.Box video_results_box</code></span>
+          </div>
+        </div>
+        <div class="label-pin" style="left:0; bottom:-12px">
+          <span class="tag"><span class="cn">内容区</span><code>Gtk.Box content_box</code></span>
+        </div>
+      </div>
+      <div class="label-pin" style="right:14px; bottom:8px">
+        <span class="tag"><span class="cn">搜索页</span><code>$SearchPage</code></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== SCREEN 6: COLLAPSED =========================== -->
+  <h2 id="collapsed"><span class="num">06</span> 窄窗口折叠态 — Collapsed (Overlay Sidebar)</h2>
+  <p class="note">
+    窗口变窄到折叠阈值，<code>Adw.OverlaySplitView split_view</code> 自动 <code>collapsed</code>：
+    侧栏不再占布局，而是作为<b>浮层</b>叠加，通过 <code>show-sidebar</code> 显隐（通常由顶栏菜单按钮触发）。<b>此时仍不可调宽</b>。
+  </p>
+  <div class="screen">
+    <div class="screen-titlebar">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span>Adw.OverlaySplitView split_view · collapsed=true</span>
+    </div>
+    <div class="screen-body" style="position:relative">
+      <!-- Full-width content -->
+      <div class="content-region" style="flex:1">
+        <div class="headerbar" style="position:relative">
+          <span class="menu-btn">☰ 菜单</span>
+          <span class="title">照片</span>
+          <span class="hb-btn">♥</span>
+        </div>
+        <div class="grid-area">
+          <div class="grid-bg"></div>
+          <div class="tile-float">
+            <div class="tile"></div><div class="tile b"></div><div class="tile c"></div><div class="tile"></div><div class="tile d"></div><div class="tile b"></div>
+            <div class="tile c"></div><div class="tile"></div><div class="tile d"></div><div class="tile b"></div><div class="tile"></div><div class="tile c"></div>
+          </div>
+          <div class="mode-sel">
+            <div class="labels"><span class="seg on">年</span><span class="seg">月</span><span class="seg">日</span></div>
+            <div class="indicator-row"><span class="indicator"></span></div>
+          </div>
+          <div class="label-pin" style="left:12px; top:8px">
+            <span class="tag"><span class="cn">内容铺满(无侧栏占位)</span><code>content: nav_view</code></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overlay sidebar with scrim -->
+      <div class="scrim"></div>
+      <div class="overlay-sidebar region" style="position:relative">
+        <div class="tagcol">
+          <span class="tag accent"><span class="cn">侧栏(浮层)</span><code>sidebar_page · show-sidebar=true</code></span>
+        </div>
+        <div class="navlist">
+          <div class="navrow active"><span class="ico"></span>照片</div>
+          <div class="navrow header-row">相册 <span class="arrow">▾</span></div>
+          <div class="navrow albumrow"><span class="thumb"></span>2024 旅行</div>
+        </div>
+        <div>
+          <span class="tag warn"><span class="cn">仍可拖拽排序</span><code>album_list</code></span>
+        </div>
+        <div style="margin-top:auto"><span class="tag"><span class="cn">设置</span><code>settings_button</code></span></div>
+      </div>
+      <div class="label-pin" style="right:14px; bottom:8px">
+        <span class="tag danger"><span class="cn">浮层·仍不可调宽</span><code>split_view (collapsed)</code></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    PhotoViewer UI 命名参考 · 标识符取自 <code>data/ui/*.blp</code> 与 <code>src/ui/*.rs</code> · 单文件自包含 HTML。<br>
+    <b>维护契约：</b>这是项目长期维护的产物，不是一次性工具。凡是改动 UI 结构——新增/重命名/删除控件、
+    改动模板 <code>child-id</code>、调整拖拽/缩放交互——必须同步更新本文件，使其与
+    <code>data/ui/*.blp</code>、<code>src/ui/*.rs</code> 保持一致（事实来源以这两个目录为准）。
+    文字伴侣：<code>docs/modules/ui-design.md</code>。
+  </div>
+
+</div>
+</body>
+</html>
