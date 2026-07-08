@@ -1454,6 +1454,10 @@ impl MediaGrid {
                 return;
             }
             this.imp().virtual_window_start.set(target_start);
+            // 预热跟随当前浏览位置：用户能用滚动条瞬间跳到任意（可能冷的）
+            // 区域，落地后把屏外预热起点移到该区间，使其先于无关的最新批次被
+            // 暖。可见 tile 仍走 BOOST 最高优先级；这里只决定屏外预热的位置。
+            loader.redirect_prewarm_to_offset(target_start);
             let additions: Vec<glib::BoxedAnyObject> =
                 items.into_iter().map(glib::BoxedAnyObject::new).collect();
             let list = this.imp().media_list.borrow().as_ref().cloned();

@@ -319,6 +319,33 @@ impl ThumbnailLoader {
         }
     }
 
+    /// 把后台预热的拉取起点重定向到 `offset`（全局 DESC 偏移，0 = 最新）。
+    ///
+    /// 预热默认从最新（offset 0）往最旧推进；但用户能用滚动条瞬间跳到任意
+    /// 区域。在虚拟分页落地时调用本方法，把预热起点移到用户当前浏览的区间，
+    /// 使**屏外邻域**（用户即将滚到的地方）先于无关的最新批次被暖。可见 tile
+    /// 仍走 `TIER_BOOST`（最高优先级），不受影响——这里只决定屏外预热工作的
+    /// 位置，不改预热的拉模型、DESC 顺序、tier 或限流（"预热的逻辑没问题"）。
+    ///
+    /// 仅改 `background_pull.offset` 并唤醒空闲 worker 立即按新起点拉取；线程
+    /// 安全（std mutex，从 GTK 线程调用），锁只在赋值期间持有，绝不在 DB 查询
+    /// 期间持有——与 `set_prewarm_thumbnail_size` 同一模式。
+    pub fn redirect_prewarm_to_offset(&self, offset: u32) {
+        debug!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "PREWARM redirect_to_offset={} enabled={}",
+            offset,
+            self.is_prewarm_active()
+        );
+        if let Ok(mut off) = self.background_pull.offset.lock() {
+            *off = offset;
+        }
+        // 唤醒可能在 cvar 上阻塞的 worker，让它们立刻从新起点拉取，
+        // 而不是等下一次 prewarm 轮询超时。
+        let (_, cvar) = &*self.queue;
+        cvar.notify_all();
+    }
+
     /// 启动 n 个 worker 消费请求
     pub fn spawn_workers(&self, n: usize) {
         if n == 0 {
@@ -2229,6 +2256,71 @@ mod tests {
                 .in_flight
                 .contains_key(&first.cache_key),
             "returned background key should be registered for duplicate suppression"
+        );
+    }
+
+    /// 重定向预热起点后，下一次后台拉取应从该全局 DESC 偏移取，而非默认 0。
+    /// 用户跳到任意区域时，预热要跟随当前浏览位置，而不是一直从最新推进。
+    #[test]
+    fn redirect_prewarm_to_offset_retargets_pull() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+        // 插入 5 张 taken_at 严格递增的图，使 DESC 全局顺序确定：
+        // offset 0 = 最新(i=4)，offset 4 = 最旧(i=0)。
+        let base = chrono::Utc::now();
+        let mut items = Vec::new();
+        for i in 0..5u32 {
+            let src = dir.path().join(format!("src{i}.png"));
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                8,
+                8,
+                image::Rgb([i as u8, 0, 0]),
+            ))
+            .save(&src)
+            .unwrap();
+            let len = std::fs::metadata(&src).unwrap().len();
+            let item = crate::core::media::NewMediaItem {
+                uri: format!("file://{}", src.display()),
+                path: src,
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/png".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(8),
+                height: Some(8),
+                video_duration_secs: None,
+                taken_at: Some(base + chrono::Duration::seconds(i as i64)),
+                file_mtime: base,
+                file_size: len,
+                blake3_hash: format!("hash{i}"),
+            };
+            db::insert_media_item(&pool, &item).unwrap();
+            items.push(item);
+        }
+
+        let loader = ThumbnailLoader::new(pool.clone(), dir.path().join("cache"));
+        loader
+            .background_pull
+            .enabled
+            .store(true, AtomicOrdering::Relaxed);
+        *loader.background_pull.worker_count.lock().unwrap() = 1;
+
+        // 重定向到 offset 3（即第 4 新 = i=1）。
+        loader.redirect_prewarm_to_offset(3);
+
+        let pulled =
+            pull_batch_and_enqueue(&pool, &loader.background_pull, &loader.queue, &loader.state)
+                .expect("重定向后应从 offset 3 拉到一条");
+
+        // offset 0 本会返回最新项 items[4]；重定向到 3 应返回 items[1]。
+        assert_ne!(
+            pulled.uri, items[4].uri,
+            "重定向后不应再从 offset 0（最新）拉取"
+        );
+        assert_eq!(
+            pulled.uri, items[1].uri,
+            "redirect_prewarm_to_offset(3) 应拉取全局 DESC offset 3 处的项"
         );
     }
 

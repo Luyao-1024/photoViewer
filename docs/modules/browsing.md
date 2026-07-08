@@ -115,6 +115,12 @@ loads the latest target rather than every intermediate position. Programmatic
 scroll restoration after a virtual page rebuild must not request another DB
 page, and the `ListStore` splice that applies a virtual page must be rebuilt
 exactly once instead of also going through the generic removal rebuild path.
+When a virtual DB page lands, the grid redirects thumbnail background prewarm to
+the landed window via `ThumbnailLoader::redirect_prewarm_to_offset(target_start)`.
+The scrollbar can jump to any (possibly cold) region instantly, so prewarm must
+follow the current browsing position rather than always warming newest-first;
+visible tiles still take `TIER_BOOST`, and the redirect only repositions the
+lower-priority off-screen prewarm work. See [`storage.md`](storage.md) "Thumbnails".
 The landing rebuild is a plain immediate `rebuild_immediately` (full page) — a
 deferred rebuild and a progressive (seed+fill) rebuild were both tried and
 reverted: deferral broke scroll-position restoration (the grid jumped to the top),
