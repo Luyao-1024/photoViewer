@@ -1594,7 +1594,7 @@ impl MainWindow {
                 initial_limit,
             ) {
                 Ok(page) => {
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::ALBUMS,
                         album_name = %album_name,
                         album_path = %album_path,
@@ -3238,9 +3238,14 @@ fn set_scan_paths(kind: ScanPathListKind, paths: &[PathBuf]) -> Result<(), Strin
 }
 
 fn album_initial_load_limit(total: i64) -> u32 {
-    let total = u32::try_from(total.max(0)).unwrap_or(u32::MAX);
-    let initial = crate::core::runtime_config::max_rendered_grid_items();
-    total.min(u32::try_from(initial).unwrap_or(u32::MAX))
+    let total = usize::try_from(total.max(0)).unwrap_or(usize::MAX);
+    let plan = crate::core::runtime_config::progressive_render_plan(
+        crate::core::runtime_config::startup_progressive_render(),
+        crate::core::runtime_config::startup_render_seed(),
+        total,
+        crate::core::runtime_config::max_rendered_grid_items(),
+    );
+    u32::try_from(plan.model_limit).unwrap_or(u32::MAX)
 }
 
 fn album_backfill_fetch_limit(current_len: u32, total: u32) -> u32 {
@@ -3275,7 +3280,7 @@ fn backfill_album_media_list(
     let _schedule = schedule_span.enter();
     let limit = album_backfill_fetch_limit(start, total);
     if limit == 0 {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album_name,
             album_path = %album_path,
@@ -3335,7 +3340,7 @@ fn backfill_album_media_list(
             }
         };
 
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             album_name = %album_name,
             album_path = %album_path,
@@ -3368,7 +3373,7 @@ fn append_album_items_in_chunks(
             .map(glib::BoxedAnyObject::new)
             .collect();
         if chunk.is_empty() {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
                 album_path = %album_path,
@@ -4228,6 +4233,37 @@ mod tests {
             assert!(
                 production_source.contains(trace_name),
                 "missing album switch trace point {trace_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_frequency_album_progress_logs_stay_debug() {
+        let source = include_str!("window.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("window.rs must contain production code");
+
+        for message in [
+            "album_switch: initial_page_loaded",
+            "album_backfill: skipped_at_cap",
+            "album_backfill: fetched",
+            "album_backfill: appended",
+        ] {
+            let message_index = production_source
+                .find(message)
+                .unwrap_or_else(|| panic!("missing log message {message}"));
+            let before = &production_source[..message_index];
+            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+                .iter()
+                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+                .max_by_key(|(index, _)| *index)
+                .map(|(_, candidate)| candidate)
+                .expect("log message should be inside a tracing macro");
+            assert_eq!(
+                actual_macro, "tracing::debug!(",
+                "{message} should stay out of default logs"
             );
         }
     }

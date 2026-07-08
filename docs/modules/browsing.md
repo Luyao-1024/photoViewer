@@ -122,22 +122,22 @@ model, hidden views, or FlowBox children grow with the full on-disk library;
 doing so drives GB-level memory use and blocks the main thread before the app
 is usable.
 
-Startup progressive render: the construction-active grid (the default Day view)
-does NOT build the whole first page on its first `rebuild`. Instead
-`MediaGrid::rebuild` caps `rendered_limit` at a viewport-sized seed for that
-first rebuild (the full page would block the main thread for ~850ms on a
-500-item library, gating both first paint and the sidebar snapshot). After the
-seed render, `schedule_startup_progressive_fill` paces the remainder of the
-first page: every tick (default 20ms) it raises `rendered_limit` by a batch
-(default 96). When the next chunk remains inside an existing date section, the
-grid appends those tiles incrementally and preserves already-built FlowBox
-children. If the chunk crosses a section boundary, it falls back to a full
-`rebuild` for that tick so headers and section structure stay correct. The full
-page still ends up fully rendered — only its construction is deferred past first
-paint. This is armed for each full-library grid: the construction-active Day
-grid uses it at startup, while lazy Year/Month grids keep it pending until
-their first activation so mode switching does not synchronously build the full
-visible window. Mode/active changes bump a generation counter that cancels any
+Progressive first-page render: eligible grids do NOT build the whole first page
+on their first `rebuild`. Instead `MediaGrid::rebuild` uses
+`runtime_config::progressive_render_plan` to cap `rendered_limit` at a
+viewport-sized seed for that first rebuild (the full page would block the main
+thread, gating first paint and later sidebar/navigation work). After the seed
+render, `schedule_progressive_render_fill` paces the remainder of the first
+page: every tick (default 20ms) it raises `rendered_limit` by a batch (default
+96). When the next chunk remains inside an existing date section, the grid
+appends those tiles incrementally and preserves already-built FlowBox children.
+If the chunk crosses a section boundary, it falls back to a full `rebuild` for
+that tick so headers and section structure stay correct. The full page still
+ends up fully rendered — only its construction is deferred past first paint.
+This is armed for full-library Photos grids and album detail grids. Album pages
+keep `full_library_context` disabled, so they reuse the first-render pacing
+without enabling Photos-only statistics, section-count snapshots, or virtual
+library paging. Mode/active changes bump a generation counter that cancels any
 in-flight fill. Tunable via `runtime.json`:
 `startup_progressive_render` (master switch, default true), `startup_render_seed`
 (48), `startup_render_batch` (96), `startup_render_interval_ms` (20),

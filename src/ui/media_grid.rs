@@ -251,15 +251,14 @@ mod imp {
         /// bursts and rebuild once after the model has had a short quiet
         /// window.
         pub rebuild_debounce: RefCell<Option<gtk::glib::SourceId>>,
-        /// Startup progressive render: armed `true` for the grid that is
-        /// `initial_active` at construction (the default Day view), consumed on
-        /// its first `rebuild`. When armed, that first rebuild builds only a
-        /// viewport-sized seed of tiles; `schedule_startup_progressive_fill`
+        /// Progressive first render: armed at construction, consumed on the
+        /// first `rebuild`. When armed, that first rebuild builds only a
+        /// viewport-sized seed of tiles; `schedule_progressive_render_fill`
         /// then paces the rest of the first page in background ticks.
-        pub startup_progressive_pending: Cell<bool>,
+        pub progressive_render_pending: Cell<bool>,
         /// Bumped on mode/active/model changes to cancel any in-flight
         /// progressive fill whose captured generation no longer matches.
-        pub startup_progressive_gen: Cell<u32>,
+        pub progressive_render_gen: Cell<u32>,
     }
 
     impl Default for MediaGrid {
@@ -310,8 +309,8 @@ mod imp {
                 library_stats_snapshot: Cell::new(None),
                 section_count_snapshots: RefCell::new(HashMap::new()),
                 rebuild_debounce: RefCell::new(None),
-                startup_progressive_pending: Cell::new(false),
-                startup_progressive_gen: Cell::new(0),
+                progressive_render_pending: Cell::new(false),
+                progressive_render_gen: Cell::new(0),
             }
         }
     }
@@ -551,6 +550,7 @@ impl MediaGrid {
             enable_context_menu,
             initial_active,
             true,
+            true,
         )
     }
 
@@ -560,7 +560,9 @@ impl MediaGrid {
         loader: Arc<ThumbnailLoader>,
         callbacks: MediaGridCallbacks,
     ) -> Self {
-        Self::new_with_options(media_list, mode, loader, callbacks, false, true, false)
+        Self::new_with_options(
+            media_list, mode, loader, callbacks, false, true, true, false,
+        )
     }
 
     pub fn new_for_album_with_context_menu(
@@ -569,7 +571,7 @@ impl MediaGrid {
         loader: Arc<ThumbnailLoader>,
         callbacks: MediaGridCallbacks,
     ) -> Self {
-        Self::new_with_options(media_list, mode, loader, callbacks, true, true, false)
+        Self::new_with_options(media_list, mode, loader, callbacks, true, true, true, false)
     }
 
     fn new_with_options(
@@ -579,18 +581,18 @@ impl MediaGrid {
         callbacks: MediaGridCallbacks,
         enable_context_menu: bool,
         initial_active: bool,
+        progressive_first_render: bool,
         full_library_context: bool,
     ) -> Self {
         let obj: Self = gtk::glib::Object::builder().build();
         obj.imp().mode.set(mode);
         obj.imp().active.set(initial_active);
-        // Arm progressive first render for every full-library grid. The
-        // construction-active Day grid uses it at startup; lazy Year/Month
-        // grids keep it pending until their first activation so switching modes
-        // does not synchronously build the entire visible window.
+        // Arm progressive first render for grids that should seed the first
+        // page. Photos uses it at startup and lazy mode activation; album pages
+        // use the same rule while keeping full-library metadata disabled.
         obj.imp()
-            .startup_progressive_pending
-            .set(full_library_context);
+            .progressive_render_pending
+            .set(progressive_first_render);
         obj.imp().full_library_context.set(full_library_context);
         obj.imp()
             .loader
@@ -779,7 +781,7 @@ impl MediaGrid {
     }
 
     pub fn set_mode(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
-        self.invalidate_startup_progressive_fill();
+        self.invalidate_progressive_render_fill();
         self.imp().mode.set(mode);
         *self.imp().media_list.borrow_mut() = Some(media_list.clone());
         self.rebuild(media_list, mode);
@@ -813,7 +815,7 @@ impl MediaGrid {
         // grid at startup — so bumping unconditionally would cancel the fill the
         // seed render just armed (leaving the grid stuck at the seed count).
         if prev != active {
-            self.invalidate_startup_progressive_fill();
+            self.invalidate_progressive_render_fill();
         }
         if active && self.imp().dirty_model.replace(false) {
             if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
@@ -1569,7 +1571,7 @@ impl MediaGrid {
         self.apply_incremental_addition_inner(position, added, media_list, true, true)
     }
 
-    fn apply_startup_progressive_addition(
+    fn apply_progressive_render_addition(
         &self,
         position: u32,
         added: u32,
@@ -2033,27 +2035,29 @@ impl MediaGrid {
     #[tracing::instrument(name = "grid:rebuild", skip(self, media_list), fields(source_len = media_list.n_items()))]
     fn rebuild(&self, media_list: gtk::gio::ListStore, mode: GroupBy) {
         let source_len = media_list.n_items();
-        // Startup progressive render: on this grid's FIRST rebuild (armed only
-        // for the construction-active grid), cap rendered_limit at a viewport-
-        // sized seed so the first paint builds only ~seed tiles. The remainder
-        // of the first page is filled by `schedule_startup_progressive_fill`.
-        // `startup_seed_decision` re-checks the config switch, so disabling the
-        // feature makes this a no-op (full rebuild, as before).
-        let mut startup_just_seeded = false;
-        if self.imp().startup_progressive_pending.replace(false) {
-            if let Some(seed) = runtime_config::startup_seed_decision(
+        // Progressive first render: on this grid's FIRST rebuild, cap
+        // rendered_limit at a viewport-sized seed so the first paint builds only
+        // ~seed tiles. The same runtime plan also controls the model-window cap
+        // used by album loading.
+        let mut progressive_just_seeded = false;
+        if self.imp().progressive_render_pending.replace(false) {
+            let steady_limit = self.imp().rendered_limit.get();
+            let plan = runtime_config::progressive_render_plan(
                 runtime_config::startup_progressive_render(),
                 runtime_config::startup_render_seed(),
                 source_len as usize,
-            ) {
-                self.imp().rendered_limit.set(seed);
-                startup_just_seeded = true;
-                tracing::info!(
+                steady_limit,
+            );
+            if plan.progressive {
+                self.imp().rendered_limit.set(plan.first_render_limit);
+                progressive_just_seeded = true;
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
-                    "STARTUP_PROGRESSIVE_RENDER seed mode={:?} seed={} source_len={}",
+                    "PROGRESSIVE_RENDER seed mode={:?} seed={} source_len={} model_limit={}",
                     mode,
-                    seed,
-                    source_len
+                    plan.first_render_limit,
+                    source_len,
+                    plan.model_limit
                 );
             }
         }
@@ -2679,11 +2683,11 @@ impl MediaGrid {
             }
         });
 
-        // First (startup) rebuild just built the viewport seed; pace the rest
-        // of the first page in background ticks so the window is interactive
-        // long before all tiles exist.
-        if startup_just_seeded {
-            self.schedule_startup_progressive_fill();
+        // The first rebuild just built the viewport seed; pace the rest of the
+        // first page in background ticks so the window is interactive long
+        // before all tiles exist.
+        if progressive_just_seeded {
+            self.schedule_progressive_render_fill();
         }
     }
 
@@ -2692,9 +2696,9 @@ impl MediaGrid {
     /// which reuses already-built tiles (keyed by media_id) and only appends the
     /// new chunk, until the whole first page is rendered. Cancels itself when
     /// the grid is dropped or a mode/active/model change bumps the generation.
-    fn schedule_startup_progressive_fill(&self) {
+    fn schedule_progressive_render_fill(&self) {
         let weak = self.downgrade();
-        let gen = self.imp().startup_progressive_gen.get();
+        let gen = self.imp().progressive_render_gen.get();
         let interval = Duration::from_millis(runtime_config::startup_render_interval_ms());
         // The first tick waits longer so the seed render's thumbnails can
         // generate and deliver (set_paintable runs on the main thread) before
@@ -2712,7 +2716,7 @@ impl MediaGrid {
                 first_tick = false;
                 glib::timeout_future(delay).await;
                 let Some(this) = weak.upgrade() else { break };
-                if this.imp().startup_progressive_gen.get() != gen {
+                if this.imp().progressive_render_gen.get() != gen {
                     break;
                 }
                 let Some(list) = this.imp().media_list.borrow().as_ref().cloned() else {
@@ -2725,9 +2729,9 @@ impl MediaGrid {
                     // Restore the steady-state limit so later scroll-expand and
                     // comparisons behave exactly as before this optimization.
                     this.imp().rendered_limit.set(ceiling);
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
-                        "STARTUP_PROGRESSIVE_RENDER done rendered_limit={} cap={}",
+                        "PROGRESSIVE_RENDER done rendered_limit={} cap={}",
                         ceiling,
                         cap
                     );
@@ -2735,18 +2739,18 @@ impl MediaGrid {
                 }
                 let next = cur.saturating_add(batch).min(cap);
                 this.imp().rendered_limit.set(next);
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
-                    "STARTUP_PROGRESSIVE_RENDER tick rendered_limit={} cap={}",
+                    "PROGRESSIVE_RENDER tick rendered_limit={} cap={}",
                     next,
                     cap
                 );
                 let mode = this.mode();
                 let added = next.saturating_sub(cur) as u32;
-                if added > 0 && this.apply_startup_progressive_addition(cur as u32, added, &list) {
-                    tracing::info!(
+                if added > 0 && this.apply_progressive_render_addition(cur as u32, added, &list) {
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
-                        "STARTUP_PROGRESSIVE_RENDER append rendered_limit={} added={}",
+                        "PROGRESSIVE_RENDER append rendered_limit={} added={}",
                         next,
                         added
                     );
@@ -2757,12 +2761,12 @@ impl MediaGrid {
         });
     }
 
-    /// Cancel any in-flight startup progressive fill by bumping its generation,
+    /// Cancel any in-flight progressive fill by bumping its generation,
     /// so the paced loop bails on its next tick (mode/active change, etc.).
-    fn invalidate_startup_progressive_fill(&self) {
+    fn invalidate_progressive_render_fill(&self) {
         self.imp()
-            .startup_progressive_gen
-            .set(self.imp().startup_progressive_gen.get().wrapping_add(1));
+            .progressive_render_gen
+            .set(self.imp().progressive_render_gen.get().wrapping_add(1));
     }
 
     fn ensure_library_metadata_async(&self, loader: Arc<ThumbnailLoader>, mode: GroupBy) {
@@ -4323,7 +4327,36 @@ mod tests {
     }
 
     #[gtk::test]
-    fn startup_progressive_addition_appends_without_rebuilding_existing_tiles() {
+    fn album_grid_uses_progressive_first_render_seed() {
+        let _ = gtk::init();
+        let dir = tempfile::tempdir().unwrap();
+        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let seed = crate::core::runtime_config::DEFAULT_STARTUP_RENDER_SEED;
+        for id in 1..=(seed + 12) {
+            media_list.append(&glib::BoxedAnyObject::new(sample_item(
+                id as i64,
+                &format!("album-{id}.png"),
+            )));
+        }
+
+        let grid = MediaGrid::new_for_album_with_context_menu(
+            media_list,
+            GroupBy::Day,
+            loader,
+            noop_callbacks(),
+        );
+
+        assert_eq!(
+            tile_count(&grid),
+            seed as u32,
+            "album grids should use the same progressive first-render seed as the Photos grid"
+        );
+    }
+
+    #[gtk::test]
+    fn progressive_render_addition_appends_without_rebuilding_existing_tiles() {
         let _ = gtk::init();
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
@@ -4350,21 +4383,52 @@ mod tests {
         let first_tile = before[0].clone();
 
         assert!(
-            grid.apply_startup_progressive_addition(2, 2, &media_list),
-            "same-section startup fill should append instead of forcing a full rebuild"
+            grid.apply_progressive_render_addition(2, 2, &media_list),
+            "same-section progressive fill should append instead of forcing a full rebuild"
         );
 
         let after = square_tiles(&grid);
         assert_eq!(after.len(), 4);
         assert_eq!(
             after[0], first_tile,
-            "startup progressive append must preserve already-rendered tile widgets"
+            "progressive append must preserve already-rendered tile widgets"
         );
         assert_eq!(
             grid.imp().virtual_total.get(),
             4,
             "rendering more of the same model must not inflate full-library totals"
         );
+    }
+
+    #[test]
+    fn progressive_render_progress_logs_stay_debug() {
+        let source = include_str!("media_grid.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("media_grid.rs must contain production code");
+
+        for message in [
+            "PROGRESSIVE_RENDER seed",
+            "PROGRESSIVE_RENDER done",
+            "PROGRESSIVE_RENDER tick",
+            "PROGRESSIVE_RENDER append",
+        ] {
+            let message_index = production_source
+                .find(message)
+                .unwrap_or_else(|| panic!("missing log message {message}"));
+            let before = &production_source[..message_index];
+            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+                .iter()
+                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+                .max_by_key(|(index, _)| *index)
+                .map(|(_, candidate)| candidate)
+                .expect("log message should be inside a tracing macro");
+            assert_eq!(
+                actual_macro, "tracing::debug!(",
+                "{message} should stay out of default logs"
+            );
+        }
     }
 
     #[gtk::test]

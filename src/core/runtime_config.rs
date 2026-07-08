@@ -24,9 +24,9 @@ const THUMBNAIL_PREWARM_POLL_MS_KEY: &str = "thumbnail_prewarm_poll_ms";
 const THUMBNAIL_IDLE_WAIT_MS_KEY: &str = "thumbnail_idle_wait_ms";
 const NOTIFY_TRASH_DEBOUNCE_MS_KEY: &str = "notify_trash_debounce_ms";
 const NOTIFY_FILE_SETTLE_MS_KEY: &str = "notify_file_settle_ms";
-// Startup progressive render: render a viewport-sized seed of tiles first,
+// Progressive first-page render: render a viewport-sized seed of tiles first,
 // then fill the rest of the first page in paced background ticks so the window
-// is interactive long before all 500 tiles are built.
+// is interactive long before all loaded tiles are built.
 const STARTUP_PROGRESSIVE_RENDER_KEY: &str = "startup_progressive_render";
 const STARTUP_RENDER_SEED_KEY: &str = "startup_render_seed";
 const STARTUP_RENDER_BATCH_KEY: &str = "startup_render_batch";
@@ -53,7 +53,7 @@ pub const DEFAULT_THUMBNAIL_PREWARM_POLL_MS: u64 = 500;
 pub const DEFAULT_THUMBNAIL_IDLE_WAIT_MS: u64 = 30_000;
 pub const DEFAULT_NOTIFY_TRASH_DEBOUNCE_MS: u64 = 400;
 pub const DEFAULT_NOTIFY_FILE_SETTLE_MS: u64 = 50;
-/// Master switch for startup progressive grid rendering.
+/// Master switch for progressive first-page grid rendering.
 pub const DEFAULT_STARTUP_PROGRESSIVE_RENDER: bool = true;
 /// Number of tiles built on the first (seed) render — sized to roughly fill
 /// ~1.5× the Day-mode viewport (Day tiles are the largest, so this also
@@ -92,6 +92,16 @@ pub struct RuntimeConfig {
     pub startup_render_batch: usize,
     pub startup_render_interval_ms: u64,
     pub startup_render_first_tick_delay_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressiveRenderPlan {
+    /// Number of items to load into the GTK-facing model window.
+    pub model_limit: usize,
+    /// Number of loaded items to build on the first grid rebuild.
+    pub first_render_limit: usize,
+    /// Whether remaining loaded items should be filled in paced ticks.
+    pub progressive: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,17 +429,25 @@ pub fn startup_render_first_tick_delay_ms() -> u64 {
     load().startup_render_first_tick_delay_ms
 }
 
-/// Decide whether the first (startup) rebuild should be seeded to a small
-/// viewport-sized tile count. Returns `Some(seed)` when progressive rendering
-/// is enabled and the source is larger than the seed; `None` otherwise (in
-/// which case the grid builds the whole first page upfront as before).
+/// Build the shared loading/rendering plan for a bounded first page.
 ///
 /// Pure (no I/O) so it can be unit-tested independently of `load()`.
-pub fn startup_seed_decision(enabled: bool, seed: usize, source_len: usize) -> Option<usize> {
-    if enabled && seed > 0 && source_len > seed {
-        Some(seed)
+pub fn progressive_render_plan(
+    enabled: bool,
+    seed: usize,
+    total_len: usize,
+    steady_limit: usize,
+) -> ProgressiveRenderPlan {
+    let model_limit = total_len.min(steady_limit);
+    let first_render_limit = if enabled && seed > 0 && model_limit > seed {
+        seed
     } else {
-        None
+        model_limit
+    };
+    ProgressiveRenderPlan {
+        model_limit,
+        first_render_limit,
+        progressive: first_render_limit < model_limit,
     }
 }
 
@@ -654,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_bool_and_seed_decision_behaviour() {
+    fn startup_bool_and_progressive_render_plan_behaviour() {
         let path = tmp_path("startup-bool");
         cleanup(&path);
         // Explicit bool values round-trip; non-bool (0/1 numbers) fall back to default.
@@ -667,13 +685,63 @@ mod tests {
         assert!(read_runtime_config_at(&path).startup_progressive_render);
         cleanup(&path);
 
-        // startup_seed_decision: seed only when enabled AND source exceeds seed.
-        assert_eq!(startup_seed_decision(true, 48, 500), Some(48));
-        assert_eq!(startup_seed_decision(true, 48, 49), Some(48));
-        assert_eq!(startup_seed_decision(true, 48, 48), None); // not strictly greater
-        assert_eq!(startup_seed_decision(true, 48, 10), None); // small source: build all
-        assert_eq!(startup_seed_decision(false, 48, 500), None); // disabled
-        assert_eq!(startup_seed_decision(true, 0, 500), None); // seed 0 is invalid
+        // The same plan controls the GTK model window and first rendered tile count.
+        assert_eq!(
+            progressive_render_plan(true, 48, 100_000, 800),
+            ProgressiveRenderPlan {
+                model_limit: 800,
+                first_render_limit: 48,
+                progressive: true
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(true, 48, 49, 800),
+            ProgressiveRenderPlan {
+                model_limit: 49,
+                first_render_limit: 48,
+                progressive: true
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(true, 48, 48, 800),
+            ProgressiveRenderPlan {
+                model_limit: 48,
+                first_render_limit: 48,
+                progressive: false
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(true, 48, 10, 800),
+            ProgressiveRenderPlan {
+                model_limit: 10,
+                first_render_limit: 10,
+                progressive: false
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(false, 48, 500, 800),
+            ProgressiveRenderPlan {
+                model_limit: 500,
+                first_render_limit: 500,
+                progressive: false
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(true, 0, 500, 800),
+            ProgressiveRenderPlan {
+                model_limit: 500,
+                first_render_limit: 500,
+                progressive: false
+            }
+        );
+        assert_eq!(
+            progressive_render_plan(true, 48, 500, 32),
+            ProgressiveRenderPlan {
+                model_limit: 32,
+                first_render_limit: 32,
+                progressive: false
+            }
+        );
     }
 
     #[test]

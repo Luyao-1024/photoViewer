@@ -94,11 +94,13 @@ startup GTK list window; real folder albums query the database by `folder_path`.
 These album detail loads must stay behind `MediaRepository` and use SQL-level
 filtering/counting; do not load the full live media table and filter in Rust
 when switching albums. Opening an album synchronously loads only the initial
-render window, then may backfill a bounded continuation window up to the UI
-media-list cap. Do not backfill the full album into the GTK `ListStore`; viewer
-navigation can resolve off-window neighbours through repository queries. A
-favorite/trash change refreshes the visible virtual-album window and sidebar
-counts without materializing the complete virtual album.
+model window chosen by the shared `runtime_config::progressive_render_plan`,
+then the `MediaGrid` renders a viewport-sized seed and progressively fills the
+rest of that loaded window. A bounded continuation window may be backfilled up
+to the UI media-list cap. Do not backfill the full album into the GTK
+`ListStore`; viewer navigation can resolve off-window neighbours through
+repository queries. A favorite/trash change refreshes the visible virtual-album
+window and sidebar counts without materializing the complete virtual album.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as

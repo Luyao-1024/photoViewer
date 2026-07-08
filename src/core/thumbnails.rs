@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// 缩略图尺寸档位
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1025,7 +1025,7 @@ fn generate(
         if !cache_path.exists() {
             continue;
         }
-        info!(
+        debug!(
             target: crate::core::log_targets::THUMBNAILS,
             "THUMB disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
             uri,
@@ -1063,7 +1063,7 @@ fn generate(
                 let thumb = ensure_opaque(&scaled);
                 save_pixbuf_as_jpeg_atomic(&thumb, &cache_path)
                     .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
-                info!(
+                debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB video_generated source_uri={} source_path={} size={:?} cache_path={}",
                     uri,
@@ -1102,7 +1102,7 @@ fn generate(
     // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
     match generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem) {
         Ok(pixbuf) => {
-            info!(
+            debug!(
                 target: crate::core::log_targets::THUMBNAILS,
                 "THUMB image_generated source_uri={} source_path={} size={:?} cache_stem={}",
                 uri,
@@ -1222,7 +1222,7 @@ fn extract_video_frame(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
     match extract_video_frame_ffmpeg(path, max_dim) {
         Ok(pb) => Ok(pb),
         Err(e) => {
-            warn!(
+            debug!(
                 "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer {}: {}",
                 path.display(),
                 e
@@ -1269,7 +1269,7 @@ fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbu
     let _ = std::fs::remove_file(&tmp);
     let pb = pb?;
     let pb = overlay_play_icon(&pb);
-    info!(
+    debug!(
         "VIDEO_THUMB ffmpegthumbnailer 提取成功 {}x{}",
         pb.width(),
         pb.height()
@@ -1290,7 +1290,7 @@ fn ffmpeg_thumbnail_temp_path(path: &Path, max_dim: u32) -> std::path::PathBuf {
 /// seek 到约 1 秒（或总时长 10%）处拉取一帧。输出 caps 显式指定 `colorimetry=sRGB`
 /// 以强制 videoconvert 做 limited→full 色彩范围扩展，修复 TV-range 视频发灰。
 fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
-    info!("VIDEO_THUMB 提取视频帧(GStreamer): {}", path.display());
+    debug!("VIDEO_THUMB 提取视频帧(GStreamer): {}", path.display());
     gst::init().map_err(|e| anyhow::anyhow!("GStreamer 初始化失败: {e}"))?;
 
     let uri =
@@ -1420,7 +1420,7 @@ fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf>
     // 旋转已由 GStreamer pipeline 中的 videoflip video-direction=auto 自动处理，
     // 无需手动读取容器元数据并应用方向校正。
 
-    info!("VIDEO_THUMB 提取成功 {}x{}", pb.width(), pb.height());
+    debug!("VIDEO_THUMB 提取成功 {}x{}", pb.width(), pb.height());
 
     // 在左下角叠加半透明播放图标。
     let pb = overlay_play_icon(&pb);
@@ -1941,6 +1941,45 @@ mod tests {
     use super::*;
     use crate::core::db;
     use gtk4::prelude::TextureExt;
+
+    fn assert_log_message_uses_macro(source: &str, message: &str, expected_macro: &str) {
+        let message_index = source
+            .find(message)
+            .unwrap_or_else(|| panic!("missing log message {message}"));
+        let before = &source[..message_index];
+        let candidates = ["debug!(", "info!(", "warn!("];
+        let actual_macro = candidates
+            .iter()
+            .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, candidate)| candidate)
+            .expect("log message should be inside a tracing macro");
+        assert_eq!(
+            actual_macro, expected_macro,
+            "{message} should use {expected_macro} to stay out of default logs"
+        );
+    }
+
+    #[test]
+    fn high_frequency_thumbnail_progress_logs_stay_debug() {
+        let source = include_str!("thumbnails.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("thumbnails.rs must contain production code");
+
+        for message in [
+            "THUMB disk_cache_hit",
+            "THUMB video_generated",
+            "THUMB image_generated",
+            "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer",
+            "VIDEO_THUMB ffmpegthumbnailer 提取成功",
+            "VIDEO_THUMB 提取视频帧(GStreamer)",
+            "VIDEO_THUMB 提取成功",
+        ] {
+            assert_log_message_uses_macro(production_source, message, "debug!(");
+        }
+    }
 
     #[test]
     fn request_for_missing_source_drops_gracefully() {
