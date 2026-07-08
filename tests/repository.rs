@@ -5,6 +5,7 @@ use photo_viewer::core::db::SearchField;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::NewMediaItem;
 use photo_viewer::core::repository::{MediaNeighbor, MediaQuery, MediaRepository};
+use photo_viewer::core::section_model::GroupBy;
 use std::path::Path;
 
 fn item(id_name: &str, ts: i64) -> NewMediaItem {
@@ -53,6 +54,117 @@ fn item_at(dir: &Path, file_name: &str, ts: i64) -> NewMediaItem {
         file_size: 1,
         blake3_hash: String::new(),
     }
+}
+
+fn item_at_with_attrs(dir: &Path, file_name: &str, ts: i64, attrs: &str) -> NewMediaItem {
+    let mut item = item_at(dir, file_name, ts);
+    item.media_attributes = attrs.into();
+    item
+}
+
+#[test]
+fn section_counts_for_folder_album_are_query_scoped() {
+    let root = common::tmp_dir();
+    let folder_a = root.path().join("a");
+    let folder_b = root.path().join("b");
+    std::fs::create_dir_all(&folder_a).unwrap();
+    std::fs::create_dir_all(&folder_b).unwrap();
+    let pool =
+        photo_viewer::core::db::init_pool(&root.path().join("repo-section-folder.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_at(&folder_a, "one.jpg", 1_800_000_000),
+            item_at(&folder_b, "two.jpg", 1_800_086_400),
+        ],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let counts = repo
+        .section_counts_for_query(MediaQuery::AlbumFolder(folder_a), GroupBy::Day)
+        .unwrap();
+
+    assert_eq!(counts.values().copied().sum::<u32>(), 1);
+}
+
+#[test]
+fn section_counts_for_media_kind_are_query_scoped() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-section-kind.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_at(dir.path(), "image.jpg", 1_800_000_000),
+            item_at(dir.path(), "video.mp4", 1_800_086_400),
+        ],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let counts = repo
+        .section_counts_for_query(MediaQuery::Videos, GroupBy::Day)
+        .unwrap();
+
+    assert_eq!(counts.values().copied().sum::<u32>(), 1);
+}
+
+#[test]
+fn section_counts_for_search_are_query_scoped() {
+    let dir = common::tmp_dir();
+    let pool =
+        photo_viewer::core::db::init_pool(&dir.path().join("repo-section-search.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_at(dir.path(), "cat.jpg", 1_800_000_000),
+            item_at(dir.path(), "dog.jpg", 1_800_086_400),
+        ],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let counts = repo
+        .section_counts_for_query(
+            MediaQuery::Search {
+                term: "cat".into(),
+                field: SearchField::Name,
+            },
+            GroupBy::Day,
+        )
+        .unwrap();
+
+    assert_eq!(counts.values().copied().sum::<u32>(), 1);
+}
+
+#[test]
+fn section_counts_for_attribute_are_query_scoped() {
+    let dir = common::tmp_dir();
+    let pool =
+        photo_viewer::core::db::init_pool(&dir.path().join("repo-section-attribute.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            item_at_with_attrs(
+                dir.path(),
+                "animated.jpg",
+                1_800_000_000,
+                r#"{"animated":true}"#,
+            ),
+            item_at(dir.path(), "plain.jpg", 1_800_086_400),
+        ],
+    )
+    .unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let counts = repo
+        .section_counts_for_query(
+            MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into()),
+            GroupBy::Day,
+        )
+        .unwrap();
+
+    assert_eq!(counts.values().copied().sum::<u32>(), 1);
 }
 
 #[test]

@@ -366,7 +366,7 @@ pub fn count_live_media(pool: &DbPool) -> Result<usize> {
     Ok(count as usize)
 }
 
-fn search_like_pattern(term: &str) -> String {
+pub(crate) fn search_like_pattern(term: &str) -> String {
     let mut pattern = String::from("%");
     let normalized = term
         .trim()
@@ -494,18 +494,27 @@ pub fn count_media_by_attribute(pool: &DbPool, attribute: &str) -> Result<usize>
 /// `file_mtime` 非空，故每条 live 行都会落入某个日期组。返回 `(年, 月, 日, 计数)`，
 /// 供 `section_model::counts_from_date_groups` 按 Year/Month/Day 折叠成 section 真实计数。
 pub fn count_live_media_by_date(pool: &DbPool) -> Result<Vec<(i32, u32, u32, u32)>> {
+    count_media_by_date_for_filter(pool, "trashed_at IS NULL", Vec::new())
+}
+
+pub fn count_media_by_date_for_filter(
+    pool: &DbPool,
+    where_clause: &str,
+    params: Vec<Value>,
+) -> Result<Vec<(i32, u32, u32, u32)>> {
     let conn = pool.get()?;
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT
                 CAST(strftime('%Y', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
                 CAST(strftime('%m', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
                 CAST(strftime('%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
                 COUNT(*)
          FROM media_items
-         WHERE trashed_at IS NULL
-         GROUP BY 1, 2, 3",
-    )?;
-    let rows = stmt.query_map([], |row| {
+         WHERE {where_clause}
+         GROUP BY 1, 2, 3"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params), |row| {
         let year: i64 = row.get(0)?;
         let month: i64 = row.get(1)?;
         let day: i64 = row.get(2)?;
