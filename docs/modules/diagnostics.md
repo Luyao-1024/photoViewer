@@ -81,6 +81,45 @@ Read end-to-end: if `thumb:process` spans keep completing but tiles do not paint
 
 **Complementary sampling profilers** (for CPU hotspots you did not instrument): `samply record ./target/release/photo-viewer` → <https://profiler.firefox.com>; or GNOME's `sysprof` for GSK/GLib-aware capture including render frames.
 
+## Trace-driven performance workflow
+
+The fast-scroll investigation followed a repeatable **capture → aggregate → diagnose → fix → re-capture** loop. Use it for any scroll/render perf regression.
+
+**1. Capture.** Always through the Flatpak runner — `cargo run` uses a separate cold thumbnail cache and will not reproduce real timing:
+
+```bash
+./run-flatpak.sh -r -t -a
+```
+
+`-r` release build (the production config; `release_max_level_info` still keeps the INFO spans), `-t` sets `PHOTOVIEWER_CHROME_TRACE=1` (the script places it as a Flatpak option before the appid, where it must be), `-a` raises `RUST_LOG=trace` so the custom-target (`browsing`/`thumbnails`/…) `debug!` events and span *fields* are captured — without `-a`, `photo_viewer=debug` does not see those targets and the span fields are absent. Reproduce the gesture, then **close the app normally** (window close / app quit). Killing it (`kill`/`pkill`/SIGTERM) drops the trace mid-write.
+
+The trace lands at `<cache-dir>/logs/trace.json` (`~/.var/app/io.github.luyao_1024.photoviewer/cache/io.github.luyao_1024.photoviewer/logs/trace.json` under Flatpak). It is a JSON array; a process killed mid-write is missing its closing `]` — repair by keeping the complete `{...}` lines and appending `]`. `app.log` (same dir) carries the `WARN`/`ERROR`/`[Gtk]` lines that often explain *why* a span produced a bad result (e.g. the `gtk_flow_box_child_set_child` assertion explained the "stuck tiles" case — spans showed rebuilds, the log showed the tiles came out blank).
+
+**2. Aggregate.** Drop `trace.json` into Perfetto for the timeline view, or summarize it programmatically. `tracing_chrome` emits each span as a begin/end pair (`ph:"B"`/`"E"`); this snippet pairs them per thread and reports count / total / avg / max per span name:
+
+```bash
+python3 - <<'PY'
+import json
+from collections import defaultdict
+ev = json.load(open("trace.json"))
+stack, spans = defaultdict(list), defaultdict(list)
+for e in ev:
+    k = (e.get("pid"), e.get("tid"))
+    if e.get("ph") == "B":      stack[k].append((e.get("name"), e.get("ts", 0)))
+    elif e.get("ph") == "E" and stack[k]:
+        n, t = stack[k].pop(); spans[n].append((e.get("ts", 0) - t, t))
+tmin = min(e.get("ts", 0) for e in ev); tmax = max(e.get("ts", 0) for e in ev)
+print(f"session {(tmax-tmin)/1000:.0f} ms")
+for nm, ds in sorted(spans.items(), key=lambda kv: -sum(d for d, _ in kv[1])):
+    tot = sum(d for d, _ in ds) / 1000
+    print(f"{nm:28}{len(ds):>5}{tot:>10.1f}ms  avg {tot/len(ds):>7.1f}  max {max(d for d,_ in ds)/1000:>7.1f}")
+PY
+```
+
+The span with the largest total time is the bottleneck. For main-thread saturation, merge the relevant intervals on tid `main` (the `thread_name` metadata event names it) and divide by the session length — this is how the "67 % of session in `grid:rebuild`" figure was derived.
+
+**3. Diagnose → 4. fix → re-capture.** Map the dominant span to a cause with the field/mechanism-A/B/C reading above, ship the smallest fix that targets *that* cause, then re-run step 1 and diff the aggregate against the baseline (rebuild count/total down, main-thread idle up) before declaring it fixed. Prefer the smallest safe change on the hot path — the fast-scroll work tried a deferred rebuild and a progressive fill that both regressed (scroll jump / tile destruction) before the real causes (a widget-parenting assertion, main-thread disk reads, a redundant skeleton rebuild) were found.
+
 ## Reading a crash file
 
 The crash file header points at the real backtrace:
