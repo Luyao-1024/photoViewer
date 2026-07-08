@@ -98,9 +98,14 @@ first configured live page (`initial_media_page_size`, default 500); after
 that, `MediaGrid` treats the scroll position as a ratio across the full
 live-media count and swaps in a configured DB page (`virtual_media_page_size`,
 default 500) around that global offset before the user reaches the end of the
-currently loaded window. While that DB page is loading, the grid immediately renders a
-non-interactive skeleton FlowBox for the target window instead of leaving the
-viewport inside blank spacer space. Top and bottom virtual spacer widgets
+currently loaded window. The DB page query is fast (~ms), so a retarget does NOT
+do a synchronous skeleton rebuild — the existing window's tiles stay in place
+until the page lands, then a single rebuild swaps in the new window (restoring
+scroll to `saved_scroll`, which for a centered retarget is already the correct
+global position). An earlier skeleton rebuild was removed: it cleared the old
+tiles, built placeholders, and restored scroll to the retarget ratio, which made
+the scrollbar jump up (to the retarget point) then down (to the landing) on every
+page swap. Top and bottom virtual spacer widgets
 approximate the height of unloaded rows, so the scrollbar thumb represents the
 full library rather than only the current page. Rapid drag retargets increment
 a virtual-page generation counter; stale DB page results are discarded rather
@@ -110,6 +115,20 @@ loads the latest target rather than every intermediate position. Programmatic
 scroll restoration after a virtual page rebuild must not request another DB
 page, and the `ListStore` splice that applies a virtual page must be rebuilt
 exactly once instead of also going through the generic removal rebuild path.
+The landing rebuild is a plain immediate `rebuild_immediately` (full page) — a
+deferred rebuild and a progressive (seed+fill) rebuild were both tried and
+reverted: deferral broke scroll-position restoration (the grid jumped to the top),
+and the progressive fill destroyed-and-rebuilt tiles faster than thumbnails could
+load, re-triggering the tile-reuse assertion below. Reducing per-landing rebuild
+cost remains open.
+
+**Tile reuse must detach cleanly.** `detach_reusable_loaded_tiles` rescues loaded
+tiles by MediaId to avoid a placeholder flash on same-content rebuilds, but it
+must `set_child(None)` to detach the tile from its old `FlowBoxChild` before
+clearing — otherwise GTK toggle-ref finalization timing can leave the tile
+parented, tripping `gtk_flow_box_child_set_child` and leaving the reused tile
+blank (the fast-scroll "stuck tiles" bug on overlapping pages). The build loop
+defensively skips any rescued tile that is still parented and builds it fresh.
 `apply_to_media_list::ui_media_list_cap()`
 (configurable via `runtime.json`, default 1500) remains a safety cap for live
 change merges, and `MediaGrid::max_rendered_grid_items()` (configurable via
@@ -162,6 +181,16 @@ visible thumbnails ahead of off-screen work while still making near-scroll
 content warm quickly. Thumbnail request cache keys use the `MediaItem`
 metadata already loaded from the database, including `file_mtime`; do not add
 per-tile filesystem `metadata()` calls on the GTK thread.
+
+Tile construction must not do synchronous thumbnail disk I/O. `build_photo_picture`
+calls `ThumbnailLoader::try_load_mem_cached` (in-memory LRU only) so a tile paints
+instantly only when its thumbnail is already resident; otherwise it stays on the
+`thumb-loading` placeholder and is filled by the viewport scan → async worker
+(whose `generate()` consults the disk cache off the main thread). The earlier
+`try_load_cached` (mem + disk) did a synchronous read + decode per tile, so
+building a ~500-tile virtual page froze the main thread on every landing — that
+was the fast-scroll freeze. `try_load_cached` (with disk) is still used for the
+sparse single-item incremental-insertion path, just not the bulk rebuild.
 
 The Day grid's library statistics label sits at the top of the grid content,
 above the first date section header with a small top inset, after the

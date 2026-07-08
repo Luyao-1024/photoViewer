@@ -1207,14 +1207,27 @@ impl MediaGrid {
         let Some(loader) = self.imp().loader.get() else {
             return;
         };
+        // 快速滚动热路径的主线程工作：`collect_visible_cache_keys` 遍历 FlowBox
+        // 子节点 + `compute_bounds`，`prioritize_keys` 重排队列。这段历史上只有
+        // debug 日志，release（release_max_level_info）下被编译掉，导致真实
+        // `-t` trace 看不到滚动提权。这里用 INFO 级 span 包住整段，并在每个去抖
+        // 点快照缩略图 queue_len / in_flight：队列空 + 卡住 = 请求没发出 / worker
+        // 空闲饥饿；in_flight 高 + 卡住 = worker 饱和或卡在生成里。
+        let span = tracing::info_span!(
+            "grid:reprioritize",
+            visible_keys = tracing::field::Empty,
+            scroll_y = tracing::field::Empty,
+            queue_len = tracing::field::Empty,
+            in_flight = tracing::field::Empty,
+        );
+        let _trace = span.enter();
+        let scroll_y = self.imp().scroller.get().vadjustment().value();
+        span.record("scroll_y", scroll_y);
         let keys = self.collect_visible_cache_keys();
+        span.record("visible_keys", keys.len());
+        span.record("queue_len", loader.queue_len());
+        span.record("in_flight", loader.in_flight_len());
         if !keys.is_empty() {
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "VIEWER_DEBUG reprioritize_visible count={} scroll_y={}",
-                keys.len(),
-                self.imp().scroller.get().vadjustment().value()
-            );
             loader.prioritize_keys(&keys);
         }
     }
@@ -1253,12 +1266,20 @@ impl MediaGrid {
         let new_limit = limit
             .saturating_add(runtime_config::grid_render_expand_step())
             .min(absolute);
-        self.imp().rendered_limit.set(new_limit);
-        tracing::debug!(
-            target: crate::core::log_targets::BROWSING,
-            "VIEWER_DEBUG expand_render_limit old={limit} new={new_limit} scroll_y={}",
-            adj.value()
+        // 仅在真正扩容时建 span：value_changed 每帧调用，但 no-op（已到上限 /
+        // 离底部还远）是常态，逐帧建 span 会淹没 trace。扩容会触发一次 rebuild，
+        // 快速连到底部时会连续扩容 + 重建，把它记进时间线才能定位这种链式卡顿。
+        let span = tracing::info_span!(
+            "grid:expand_render_limit",
+            limit = tracing::field::Empty,
+            new_limit = tracing::field::Empty,
+            scroll_y = tracing::field::Empty,
         );
+        let _trace = span.enter();
+        span.record("limit", limit);
+        span.record("new_limit", new_limit);
+        span.record("scroll_y", adj.value());
+        self.imp().rendered_limit.set(new_limit);
         // 触发 rebuild，让新 limit 生效
         if let Some(list) = self.imp().media_list.borrow().as_ref().cloned() {
             self.schedule_rebuild(list);
@@ -1296,11 +1317,33 @@ impl MediaGrid {
             return;
         };
         let generation = self.imp().virtual_page_generation.get().saturating_add(1);
+        // 真正的虚拟页重定向。上面的 guard 让常态（restoring / 预取带内 / 同一起点）
+        // 零成本早退，只有真正换页才建 span。这里只更新窗口状态并发起 DB 查询——
+        // 不再同步重建（旧骨架重建是滚动条抖动源，见下方注释）。
+        let span = tracing::info_span!(
+            "grid:try_virtual_page",
+            generation = tracing::field::Empty,
+            target_start = tracing::field::Empty,
+            current_start = tracing::field::Empty,
+            total = tracing::field::Empty,
+            ratio = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        let _trace = span.enter();
+        span.record("generation", generation);
+        span.record("target_start", target_start);
+        span.record("current_start", current_start);
+        span.record("total", total);
+        span.record("ratio", ratio);
+
         self.imp().virtual_page_generation.set(generation);
         self.imp().virtual_window_start.set(target_start);
         self.imp().virtual_page_loading.set(true);
-        self.imp().pending_scroll_ratio.set(Some(ratio));
-        self.rebuild_immediately(list.clone());
+        // 不做骨架重建，也不预置 pending_scroll_ratio（见上方注释）：DB 取页仅
+        // ~1.5ms，骨架重建（清空旧 tile + 建占位 + 把滚动恢复到翻页点的旧 ratio）
+        // 反而是滚动条抖动源——骨架恢复到翻页点（往上跳），落地又恢复到当前位置
+        // （往下跳），每次翻页一上一下。去掉后旧 tile 原地保留至落地，落地重建用
+        // saved_scroll（居中翻页下即正确的全局位置）恢复，单次过渡、无抖动。
 
         if self.imp().virtual_query_in_flight.get() {
             replace_pending_virtual_page(
@@ -1313,11 +1356,13 @@ impl MediaGrid {
                 target: crate::core::log_targets::BROWSING,
                 "VIRTUAL_SCROLL coalesce_page generation={generation} ratio={ratio:.4} desired_offset={desired_offset} current_start={current_start} current_len={current_len} target_start={target_start} total={total}"
             );
+            span.record("outcome", "coalesced");
             return;
         }
 
         self.imp().virtual_query_in_flight.set(true);
         self.spawn_virtual_page_query(loader, target_start, virtual_page_size, generation);
+        span.record("outcome", "triggered");
     }
 
     fn spawn_virtual_page_query(
@@ -2335,7 +2380,16 @@ impl MediaGrid {
                             .get()
                             .expect("MediaGrid::rebuild called before new()")
                             .clone();
-                        let picture = if let Some(tile) = reusable_tiles.remove(&media_id) {
+                        // Only reuse a rescued tile if it is fully detached. GTK
+                        // toggle-ref finalization of the old FlowBoxChild can lag,
+                        // leaving the tile parented when we re-append it — that
+                        // trips `gtk_flow_box_child_set_child` and the tile never
+                        // attaches (blank), which is the fast-scroll "stuck" bug.
+                        // A still-parented tile falls through to a fresh build.
+                        let reused = reusable_tiles
+                            .remove(&media_id)
+                            .filter(|t| t.parent().is_none());
+                        let picture = if let Some(tile) = reused {
                             prepare_reused_tile(&tile, spec, item);
                             tile
                         } else {
@@ -3014,6 +3068,12 @@ impl MediaGrid {
             if let Some(flow) = item.flow_child.parent().and_downcast::<gtk::FlowBox>() {
                 flow.remove(&item.flow_child);
             }
+            // Explicitly detach the tile from its (now floating) FlowBoxChild.
+            // Relying on the FlowBoxChild's later finalization to unparent the
+            // tile is racy under GTK toggle-ref timing; detaching here guarantees
+            // a clean floating widget the rebuild can re-append without tripping
+            // `gtk_flow_box_child_set_child`.
+            item.flow_child.set_child(None::<&gtk::Widget>);
             reusable.insert(item.media_id, tile);
         }
         reusable
@@ -3521,7 +3581,14 @@ fn build_photo_picture(
     );
     // B6：预算缓存键存到 tile，供可见区提权匹配队列项（带 file_mtime，无主线程 stat）。
     tile.set_cache_key(initial_cache_key);
-    if let Some(loaded) = loader.try_load_cached(&item.uri, size, Some(item_mtime)) {
+    // Memory-cache only: paint instantly when the thumbnail is already resident
+    // (recently viewed). Do NOT do a synchronous disk read here — building a
+    // ~500-tile page would otherwise perform ~500 main-thread thumbnail reads +
+    // decodes, freezing the UI on every virtual-page landing. Tiles not in the
+    // memory LRU stay on the `thumb-loading` placeholder and are loaded by the
+    // viewport scan → async worker (which consults the disk cache off the main
+    // thread), so they paint a few ms later without blocking the frame.
+    if let Some(loaded) = loader.try_load_mem_cached(&item.uri, size, Some(item_mtime)) {
         if let Some(is_light) = loaded.is_light {
             tile.set_background_is_light(is_light);
         }

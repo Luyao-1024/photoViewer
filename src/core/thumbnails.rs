@@ -440,6 +440,35 @@ impl ThumbnailLoader {
         Some(loaded)
     }
 
+    /// Memory-LRU-only lookup — no disk I/O, no main-thread thumbnail decode.
+    ///
+    /// Used on the GTK main thread while the grid builds tiles: a freshly-built
+    /// tile paints instantly only when its thumbnail is already resident in the
+    /// in-memory LRU (recently viewed). Everything else is left to the
+    /// viewport-driven async request path, whose worker consults the disk cache.
+    /// This keeps a rebuild off the disk — building a ~500-tile virtual page no
+    /// longer performs ~500 synchronous `try_load_cached` reads + pixbuf decodes
+    /// on the main thread, which was the fast-scroll freeze. The async path
+    /// still loads those thumbnails (worker disk-cache hit, off the main thread),
+    /// so thumbnails appear a few ms later instead of blocking the frame.
+    pub fn try_load_mem_cached(
+        &self,
+        uri: &str,
+        size: ThumbnailSize,
+        mtime: Option<SystemTime>,
+    ) -> Option<LoadedThumb> {
+        let cache_key = cache_key_str(uri, size, mtime)?;
+        let loaded = self.state.lock().ok()?.mem_cache.get(&cache_key).cloned()?;
+        debug!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_LOADER_TRACE try_load_mem_cached_hit uri={} size={:?} cache_key={}",
+            uri,
+            size,
+            cache_key
+        );
+        Some(loaded)
+    }
+
     fn request_inner(
         &self,
         media_id: i64,
