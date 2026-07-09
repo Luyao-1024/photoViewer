@@ -21,7 +21,7 @@ use lru::LruCache;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Read};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1707,7 +1707,7 @@ fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option
     };
     if rc != 0 {
         let msg = String::from_utf8_lossy(&errbuf);
-        warn!(
+        debug!(
             target: crate::core::log_targets::THUMBNAILS,
             "THUMB jpeg_shim_decode_failed path={} error={}",
             src_path.display(),
@@ -1764,6 +1764,18 @@ fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option
     ))
 }
 
+fn file_has_jpeg_signature(path: &Path) -> bool {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut head = [0u8; 3];
+    match file.read(&mut head) {
+        Ok(n) if n == head.len() => head == [0xff, 0xd8, 0xff],
+        _ => false,
+    }
+}
+
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
 /// 返回内存里已缩放好的 pixbuf，让调用方直接做成 Texture，省掉读盘重解码。
 ///
@@ -1771,19 +1783,20 @@ fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option
 fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
     // 只读一次 EXIF 方向：turbojpeg 路径与 orientation 应用都复用这个值。
     let orientation = orientation::read_orientation(src_path).unwrap_or(1);
-    let is_jpeg = mime_from_extension(src_path) == Some("image/jpeg");
+    let use_jpeg_fast_path =
+        mime_from_extension(src_path) == Some("image/jpeg") && file_has_jpeg_signature(src_path);
 
     // decode 阶段（最耗时）：JPEG 优先走 turbojpeg IDCT 缩放解码，失败/非 JPEG
     // 回退 gdk-pixbuf。阶段耗时由 `thumb:pb_decode` span 承载（父级 `thumb:generate`）。
     let pb = {
         let decode_span = tracing::debug_span!("thumb:pb_decode");
         let _decode = decode_span.enter();
-        if is_jpeg {
+        if use_jpeg_fast_path {
             match decode_jpeg_scaled(src_path, max_dim, orientation) {
                 Some(pb) => pb,
                 None => {
                     // turbojpeg 失败（CMYK/渐进式/损坏），回退到 gdk-pixbuf。
-                    warn!(
+                    debug!(
                         target: crate::core::log_targets::THUMBNAILS,
                         "THUMB turbojpeg_fallback path={}",
                         src_path.display()
@@ -2001,6 +2014,32 @@ mod tests {
     use super::*;
     use crate::core::db;
     use gtk4::prelude::TextureExt;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedLogWriter(self.0.clone())
+        }
+    }
 
     fn assert_log_message_uses_macro(source: &str, message: &str, expected_macro: &str) {
         let message_index = source
@@ -2158,6 +2197,36 @@ mod tests {
         let out = dir.path().join("out");
         generate_via_pixbuf(&src, 256, &out).expect("RGBA PNG 应能生成 WebP 缩略图");
         assert!(out.with_extension("webp").exists(), "应写出 WebP 缩略图");
+    }
+
+    #[test]
+    fn gif_content_with_jpg_suffix_skips_turbojpeg_warning() {
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/media/gif_with_jpg_extension.jpg");
+        assert_eq!(mime_from_extension(&src), Some("image/jpeg"));
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(CapturedLog(captured.clone()))
+            .finish();
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("misnamed-gif");
+        let thumb = tracing::subscriber::with_default(subscriber, || {
+            generate_via_pixbuf(&src, 256, &out)
+                .expect("GIF content with .jpg suffix should generate a thumbnail")
+        });
+
+        assert!(thumb.width() > 0);
+        let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logs.contains("THUMB jpeg_shim_decode_failed")
+                && !logs.contains("THUMB turbojpeg_fallback"),
+            "misnamed GIF should not enter JPEG fast-path fallback, got logs: {logs}"
+        );
     }
 
     #[test]
