@@ -191,6 +191,7 @@ all stale rows have been pruned.
 
 **Startup reconciles known trash roots into the DB (`trash::reconcile_trash`), bidirectionally.** The Trash view is a DB projection (`trashed_at IS NOT NULL`), not a live mirror of only `~/.local/share/Trash`. At startup, after the pictures scan (so externally-restored files are already live again), `reconcile_trash` makes the DB match the system trash roots and the app-owned fallback trash root:
 - **Add:** for each `info/*.trashinfo` whose decoded `Path=` is under the pictures dir and no longer present, insert a trashed row (metadata from the `Trash/files` copy via `LocalBackend::process_file_at`, recorded under the **original** uri/path) or mark an existing live row trashed. Files from outside the pictures library are ignored.
+- **Skip non-media:** trash entries whose original path has no supported image/video extension are ignored before metadata extraction. Host trash roots may contain `.txt`, documents, and other files unrelated to the app, and those should not emit default warning logs.
 - **Prune:** for each DB trashed row, if the original path is gone AND no known trash root has a matching entry, delete the row — it was emptied/permanently-deleted externally. Rows whose original file is present (restored) are never pruned here; the scan already turned them live.
 
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.

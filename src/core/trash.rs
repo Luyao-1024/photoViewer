@@ -29,6 +29,7 @@ use crate::core::backend::local::LocalBackend;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
+use crate::core::media::is_supported_media_path;
 use crate::core::prefs::{self, TrashBackend};
 use gtk::gio::prelude::*;
 use gtk4 as gtk;
@@ -642,6 +643,12 @@ fn reconcile_trash_in(
                 stats.skipped += 1;
                 continue;
             }
+            // HOST 回收站包含文档、文本等非本 App 索引的文件。先按媒体扩展
+            // 跳过，避免普通非媒体条目进入元数据解析并产生启动 warning。
+            if !is_supported_media_path(&original_path) {
+                stats.skipped += 1;
+                continue;
+            }
             // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
             if original_path.exists() {
                 stats.skipped += 1;
@@ -806,6 +813,32 @@ fn delete_permanently_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()>
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct CapturedLog(Arc<Mutex<Vec<u8>>>);
+
+    struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            CapturedLogWriter(self.0.clone())
+        }
+    }
 
     #[test]
     fn percent_decode_handles_utf8_and_passthrough() {
@@ -1144,6 +1177,51 @@ mod tests {
         )
         .unwrap();
         write_jpeg(&files_dir.join(actual));
+    }
+
+    #[test]
+    fn reconcile_skips_unsupported_trash_file_without_decode_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pictures = tmp.path().join("pictures");
+        std::fs::create_dir_all(pictures.join("Camera")).unwrap();
+        let trash_root = tmp.path().join("Trash");
+        let info_dir = trash_root.join("info");
+        let files_dir = trash_root.join("files");
+        std::fs::create_dir_all(&info_dir).unwrap();
+        std::fs::create_dir_all(&files_dir).unwrap();
+
+        let original = pictures.join("Camera").join("notes.txt");
+        std::fs::write(
+            info_dir.join("notes.txt.trashinfo"),
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate=2026-07-09T00:00:00\n",
+                original.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(files_dir.join("notes.txt"), b"not an indexed media file").unwrap();
+
+        let pool = db::init_pool(&tmp.path().join("t.db")).unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(CapturedLog(captured.clone()))
+            .finish();
+
+        let stats = tracing::subscriber::with_default(subscriber, || {
+            reconcile_trash_in(&pool, &pictures, &[trash_root]).unwrap()
+        });
+
+        assert_eq!(stats.inserted, 0);
+        assert_eq!(stats.skipped, 1);
+        assert!(db::list_trashed_media(&pool).unwrap().is_empty());
+        let logs = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logs.contains("回收站对账：解析"),
+            "unsupported trash entries should be skipped before decode, got logs: {logs}"
+        );
     }
 
     #[test]
