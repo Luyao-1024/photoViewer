@@ -98,6 +98,18 @@ fn viewer_focused_modules_exist() {
                 "pub(super) fn resize_from_edges",
             ][..],
         ),
+        (
+            "src/ui/viewer/editor.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) fn setup_edit_button",
+                "pub(super) fn start_editing",
+                "pub(super) fn stop_editing",
+                "pub(super) fn setup_editor_callbacks",
+                "fn present_save_result_dialog",
+                "fn save_result_closes_editor",
+            ][..],
+        ),
     ] {
         let module_path = Path::new(path);
         assert!(module_path.exists(), "{path} should exist");
@@ -115,6 +127,7 @@ fn viewer_focused_modules_exist() {
         "stage",
         "fullscreen",
         "crop",
+        "editor",
     ] {
         assert!(
             root.contains(&format!("mod {module};")),
@@ -201,6 +214,12 @@ fn viewer_focused_modules_exist() {
         "fn hit_crop_drag_mode(",
         "fn drag_rect(",
         "fn resize_from_edges(",
+        "fn setup_edit_button(",
+        "fn start_editing(",
+        "fn stop_editing(",
+        "fn setup_editor_callbacks(",
+        "fn present_save_result_dialog(",
+        "fn save_result_closes_editor(",
     ] {
         assert!(
             !root.contains(marker),
