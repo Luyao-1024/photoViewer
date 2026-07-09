@@ -56,6 +56,7 @@ modules:
     config-opts:
       - -DCMAKE_BUILD_TYPE=Release
       - -DCMAKE_INSTALL_PREFIX=/app
+      - -DCMAKE_INSTALL_LIBDIR=lib
       - -DENABLE_GIO=ON
       - -DENABLE_THUMBNAILER=OFF
     sources:

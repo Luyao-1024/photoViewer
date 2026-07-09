@@ -85,6 +85,10 @@ flatpak-builder --user --install --ccache --disable-rofiles-fuse --force-clean \
 
 Avoid using repository-local `.flatpak-builder` state as a routine install path while the known `rofiles-fuse` unmount hang is present.
 
+Video thumbnails in the installed Flatpak depend on the bundled
+`ffmpegthumbnailer` binary. Its shared library must install under `/app/lib`
+because the Flatpak runtime loader searches `/app/lib`, not `/app/lib64`.
+
 ## Flatpak Trash Portal Check
 
 Trash failures must be reproduced from the app sandbox, not by running host
