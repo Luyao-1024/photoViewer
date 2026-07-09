@@ -1,16 +1,19 @@
 # Contributing
 
-## 开发流程
+## Workflow
 
-1. Fork & clone
-2. 创建特性分支
-3. TDD：先写失败测试
-4. 实现到通过
-5. cargo fmt + cargo clippy
-6. PR 提交
+1. Create a focused branch.
+2. Read the relevant module document from [docs/README.md](docs/README.md).
+3. Add or update focused tests before implementation when the change affects behavior.
+4. Run the smallest useful verification during development.
+5. Before handoff, follow the CI policy in [docs/testing.md](docs/testing.md).
+6. Update module documentation in the same change when contracts, UI invariants, or workflow change.
 
-## 模块说明
+## Project Boundaries
 
-- `core/`：数据层（DB、扫描、元数据），与 UI 解耦
-- `ui/`：GTK widgets
-- `platform/`：XDG 集成
+- `src/core/`: database, scanner, metadata, thumbnails, albums, trash, preferences, edit pipeline
+- `src/ui/`: GTK widgets, pages, templates, CSS providers, navigation wiring
+- `src/platform/`: XDG and desktop integration
+- `data/ui/`: Blueprint source templates; edit `.blp`, not generated `.ui`
+
+For detailed architecture, build commands, testing expectations, and module ownership, use [docs/README.md](docs/README.md).

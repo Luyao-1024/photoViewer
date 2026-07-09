@@ -110,6 +110,6 @@ dialog may dim the gallery while open, but large-scene blur during dialog
 animations is too expensive; keep blur on bounded chrome surfaces such as the
 dialog card, menus, and side panels.
 
-## Legacy Document
+## Legacy Pointer
 
-The original detailed Liquid Glass notes are still available at [`../liquid-glass.md`](../liquid-glass.md). Prefer this module document for current navigation and keep both in sync when changing material contracts.
+[`../liquid-glass.md`](../liquid-glass.md) is kept only as a compatibility pointer for older links. This module document is the active source of truth for Liquid Glass material contracts.

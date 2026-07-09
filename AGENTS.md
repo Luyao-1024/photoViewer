@@ -22,6 +22,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Full-screen viewer and viewer chrome | [`docs/modules/viewer.md`](docs/modules/viewer.md) |
 | Albums and trash flows | [`docs/modules/albums-trash.md`](docs/modules/albums-trash.md) |
 | Editor operations and save paths | [`docs/modules/editor.md`](docs/modules/editor.md) |
+| Keyboard shortcut routing and keymap | [`docs/modules/keyboard.md`](docs/modules/keyboard.md) |
 | DB, scanner, filesystem watcher, thumbnails | [`docs/modules/storage.md`](docs/modules/storage.md) |
 | Crash logs, panic hook, signal handler | [`docs/modules/diagnostics.md`](docs/modules/diagnostics.md) |
 | Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
