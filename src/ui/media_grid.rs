@@ -1208,12 +1208,9 @@ impl MediaGrid {
             return;
         };
         // 快速滚动热路径的主线程工作：`collect_visible_cache_keys` 遍历 FlowBox
-        // 子节点 + `compute_bounds`，`prioritize_keys` 重排队列。这段历史上只有
-        // debug 日志，release（release_max_level_info）下被编译掉，导致真实
-        // `-t` trace 看不到滚动提权。这里用 INFO 级 span 包住整段，并在每个去抖
-        // 点快照缩略图 queue_len / in_flight：队列空 + 卡住 = 请求没发出 / worker
-        // 空闲饥饿；in_flight 高 + 卡住 = worker 饱和或卡在生成里。
-        let span = tracing::info_span!(
+        // 子节点 + `compute_bounds`，`prioritize_keys` 重排队列。它在滚动时高频
+        // 触发，保留为 debug 诊断，避免默认 INFO 日志被队列快照刷屏。
+        let span = tracing::debug_span!(
             "grid:reprioritize",
             visible_keys = tracing::field::Empty,
             scroll_y = tracing::field::Empty,
@@ -1361,7 +1358,13 @@ impl MediaGrid {
         }
 
         self.imp().virtual_query_in_flight.set(true);
-        self.spawn_virtual_page_query(loader, target_start, virtual_page_size, generation);
+        self.spawn_virtual_page_query(
+            loader,
+            target_start,
+            desired_offset,
+            virtual_page_size,
+            generation,
+        );
         span.record("outcome", "triggered");
     }
 
@@ -1369,12 +1372,13 @@ impl MediaGrid {
         &self,
         loader: Arc<ThumbnailLoader>,
         target_start: u32,
+        prewarm_offset: u32,
         virtual_page_size: u32,
         generation: u64,
     ) {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "VIRTUAL_SCROLL load_page generation={generation} target_start={target_start} page_size={virtual_page_size}"
+            "VIRTUAL_SCROLL load_page generation={generation} target_start={target_start} prewarm_offset={prewarm_offset} page_size={virtual_page_size}"
         );
 
         let weak = self.downgrade();
@@ -1385,6 +1389,7 @@ impl MediaGrid {
                 "grid:page_query",
                 generation,
                 target_start,
+                prewarm_offset,
                 page_size = virtual_page_size
             );
             let _page = page_span.enter();
@@ -1455,9 +1460,9 @@ impl MediaGrid {
             }
             this.imp().virtual_window_start.set(target_start);
             // 预热跟随当前浏览位置：用户能用滚动条瞬间跳到任意（可能冷的）
-            // 区域，落地后把屏外预热起点移到该区间，使其先于无关的最新批次被
-            // 暖。可见 tile 仍走 BOOST 最高优先级；这里只决定屏外预热的位置。
-            loader.redirect_prewarm_to_offset(target_start);
+            // 区域，落地后把屏外预热起点移到真实滚动落点附近，而不是居中页的
+            // 开头，使其先于无关的最新批次被暖。可见 tile 仍走 BOOST 最高优先级。
+            loader.redirect_prewarm_to_offset(prewarm_offset);
             let additions: Vec<glib::BoxedAnyObject> =
                 items.into_iter().map(glib::BoxedAnyObject::new).collect();
             let list = this.imp().media_list.borrow().as_ref().cloned();
@@ -1485,15 +1490,23 @@ impl MediaGrid {
         let Some(target_start) = self.imp().pending_virtual_page_start.take() else {
             return false;
         };
-        if let Some(ratio) = self.imp().pending_virtual_page_ratio.take() {
+        let pending_ratio = self.imp().pending_virtual_page_ratio.take();
+        if let Some(ratio) = pending_ratio {
             self.imp().pending_scroll_ratio.set(Some(ratio));
         }
         let generation = self.imp().virtual_page_generation.get();
         self.imp().virtual_query_in_flight.set(true);
+        let virtual_page_size = runtime_config::virtual_media_page_size();
+        let prewarm_offset = pending_ratio
+            .map(|ratio| {
+                virtual_offset_for_ratio(ratio, self.imp().virtual_total.get(), virtual_page_size)
+            })
+            .unwrap_or(target_start);
         self.spawn_virtual_page_query(
             loader,
             target_start,
-            runtime_config::virtual_media_page_size(),
+            prewarm_offset,
+            virtual_page_size,
             generation,
         );
         true
@@ -3706,10 +3719,11 @@ fn build_photo_picture(
             let on_background_changed = on_background_changed.clone();
             let item_name = item_name.clone();
             let item_uri = item_uri.clone();
-            let thumb_span = tracing::info_span!("grid:thumb_request");
+            let thumb_span = tracing::debug_span!("grid:thumb_request");
             gtk::glib::spawn_future_local(async move {
+                let result = rx.await;
                 let _thumb = thumb_span.enter();
-                match rx.await {
+                match result {
                     Ok(loaded) => {
                         let elapsed_ms = request_started.elapsed().as_millis();
                         tracing::debug!(
@@ -4270,7 +4284,7 @@ mod tests {
     }
 
     #[gtk::test]
-    fn cached_thumbnail_tile_is_built_without_loading_class() {
+    fn mem_cached_thumbnail_tile_is_built_without_loading_class() {
         let _ = gtk::init();
         let dir = tempfile::tempdir().unwrap();
         let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
@@ -4290,6 +4304,9 @@ mod tests {
             Some(mtime),
         )
         .expect("test should pre-create thumbnail cache");
+        loader
+            .try_load_cached(&item.uri, ThumbnailSize::Medium, Some(mtime))
+            .expect("test should load disk cache into the memory LRU");
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
         media_list.append(&glib::BoxedAnyObject::new(item.clone()));
 
@@ -4498,6 +4515,36 @@ mod tests {
             assert_eq!(
                 actual_macro, "tracing::debug!(",
                 "{message} should stay out of default logs"
+            );
+        }
+    }
+
+    #[test]
+    fn high_frequency_thumbnail_trace_spans_stay_debug() {
+        let source = include_str!("media_grid.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("media_grid.rs must contain production code");
+
+        for span_name in ["grid:reprioritize", "grid:thumb_request"] {
+            let span_index = production_source
+                .find(span_name)
+                .unwrap_or_else(|| panic!("missing trace span {span_name}"));
+            let before = &production_source[..span_index];
+            let actual_macro = [
+                "tracing::debug_span!(",
+                "tracing::info_span!(",
+                "tracing::warn_span!(",
+            ]
+            .iter()
+            .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, candidate)| candidate)
+            .expect("span should be inside a tracing span macro");
+            assert_eq!(
+                actual_macro, "tracing::debug_span!(",
+                "{span_name} is high-frequency diagnostic tracing and should stay out of default INFO logs"
             );
         }
     }

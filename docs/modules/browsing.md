@@ -84,13 +84,15 @@ to the shared `ListStore` as sorted insertions, not by replacing the full
 visible model window; a single screenshot should emit an `items-changed` signal
 like `(position, removed=0, added=1)` so inactive pages do not gray out the
 currently visible grid when they later observe the shared model.
-When a tile is created for an item whose thumbnail cache already exists,
-`ThumbnailLoader::try_load_cached` should paint it immediately instead of first
-adding `thumb-loading`. Incremental insertions for newly added or updated media
-must not add a `GtkFlowBoxChild` until thumbnail generation finishes. If the
-request succeeds, insert the tile with the generated texture; if it fails,
-insert the final unavailable placeholder. Do not insert a transparent/loading
-tile first: local GTK/CSS backgrounds can still read visually as a gray image.
+During bulk grid rebuilds, a tile paints immediately only when its thumbnail is
+already in `ThumbnailLoader`'s in-memory LRU; do not do synchronous disk-cache
+reads in that path. Sparse incremental insertions for newly added or updated
+media may use `ThumbnailLoader::try_load_cached` before insertion, but must not
+add a `GtkFlowBoxChild` until thumbnail generation finishes when the cache is
+missing. If the request succeeds, insert the tile with the generated texture; if
+it fails, insert the final unavailable placeholder. Do not insert a
+transparent/loading tile first: local GTK/CSS backgrounds can still read
+visually as a gray image.
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded while the database remains the full source of truth. Startup loads the
@@ -116,11 +118,14 @@ scroll restoration after a virtual page rebuild must not request another DB
 page, and the `ListStore` splice that applies a virtual page must be rebuilt
 exactly once instead of also going through the generic removal rebuild path.
 When a virtual DB page lands, the grid redirects thumbnail background prewarm to
-the landed window via `ThumbnailLoader::redirect_prewarm_to_offset(target_start)`.
-The scrollbar can jump to any (possibly cold) region instantly, so prewarm must
-follow the current browsing position rather than always warming newest-first;
-visible tiles still take `TIER_BOOST`, and the redirect only repositions the
-lower-priority off-screen prewarm work. See [`storage.md`](storage.md) "Thumbnails".
+the current full-library scroll offset via
+`ThumbnailLoader::redirect_prewarm_to_offset(prewarm_offset)`. The page itself is
+usually centered around the user's target, so use the desired live-media offset
+rather than the landed page start. The scrollbar can jump to any (possibly cold)
+region instantly, so prewarm must follow the current browsing position rather
+than always warming newest-first; visible tiles still take `TIER_BOOST`, and the
+redirect only repositions the lower-priority off-screen prewarm work. See
+[`storage.md`](storage.md) "Thumbnails".
 The landing rebuild is a plain immediate `rebuild_immediately` (full page) — a
 deferred rebuild and a progressive (seed+fill) rebuild were both tried and
 reverted: deferral broke scroll-position restoration (the grid jumped to the top),

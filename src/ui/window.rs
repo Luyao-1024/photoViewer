@@ -397,7 +397,7 @@ impl MainWindow {
         let same_identities = same_sidebar_album_identities(&current_targets, &albums);
         let ordered_subset = current_rows.len() == current_targets.len()
             && sidebar_album_identities_are_ordered_subset(&current_targets, &albums);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE album_rows_begin current_targets={} current_rows={} list_children={} incoming={} same_identities={} ordered_subset={} expanded={} scroll_visible={} scroll_height={} wrapper_height={} current=[{}] incoming=[{}]",
             current_targets.len(),
@@ -456,7 +456,7 @@ impl MainWindow {
                     .iter()
                     .any(|album| same_sidebar_album_identity(&current_targets[index], album))
                 {
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "SIDEBAR_TRACE album_rows_remove_missing index={} identity={}",
                         index,
@@ -479,7 +479,7 @@ impl MainWindow {
             return;
         }
 
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE album_rows_rebuild_clear begin list_children={} current_rows={} incoming={} expanded={} scroll_visible_before={} scroll_height_before={} reason=identity_insert_or_reorder current=[{}] incoming=[{}]",
             sidebar_list_child_count(&album_list),
@@ -542,7 +542,7 @@ impl MainWindow {
         self.imp()
             .media_type_scroll
             .set_visible(has_media_types && expanded);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE media_type_visibility has_media_types={} expanded={} header_visible_before={} header_visible_after={} scroll_visible_before={} scroll_visible_after={} scroll_height={}",
             has_media_types,
@@ -559,7 +559,7 @@ impl MainWindow {
         let same_identities = same_sidebar_album_identities(&current_targets, &albums);
         let ordered_subset = current_rows.len() == current_targets.len()
             && sidebar_album_identities_are_ordered_subset(&current_targets, &albums);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE media_type_rows_begin current_targets={} current_rows={} list_children={} incoming={} same_identities={} ordered_subset={} current=[{}] incoming=[{}]",
             current_targets.len(),
@@ -608,7 +608,7 @@ impl MainWindow {
                     .iter()
                     .any(|album| same_sidebar_album_identity(&current_targets[index], album))
                 {
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "SIDEBAR_TRACE media_type_rows_remove_missing index={} identity={}",
                         index,
@@ -624,7 +624,7 @@ impl MainWindow {
             self.log_sidebar_layout_state_next_idle("media_type_rows_ordered_subset_after");
             return;
         }
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE media_type_rows_rebuild_clear begin list_children={} current_rows={} incoming={} scroll_visible={} scroll_height={} reason=identity_insert_or_reorder current=[{}] incoming=[{}]",
             sidebar_list_child_count(&media_type_list),
@@ -656,7 +656,7 @@ impl MainWindow {
 
     #[tracing::instrument(name = "sidebar:apply_album_snapshot", skip(self, snapshot))]
     fn apply_sidebar_album_snapshot(&self, snapshot: SidebarAlbumSnapshot) {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE snapshot_apply_begin live_count={:?} albums={} media_types={} albums_summary=[{}] media_types_summary=[{}]",
             snapshot.live_count,
@@ -699,7 +699,7 @@ impl MainWindow {
         );
         self.connect_sidebar_widget_trace("trash_list", self.imp().trash_list.upcast_ref());
         self.connect_sidebar_widget_trace("sidebar_spacer", self.imp().sidebar_spacer.upcast_ref());
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE layout_trace_installed"
         );
@@ -710,7 +710,7 @@ impl MainWindow {
         widget.connect_notify_local(
             Some("height"),
             glib::clone!(@weak self as window => move |widget, _| {
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
                     "SIDEBAR_TRACE widget_height name={} visible={} mapped={} width={} height={}",
                     name,
@@ -725,7 +725,7 @@ impl MainWindow {
         widget.connect_notify_local(
             Some("visible"),
             glib::clone!(@weak self as window => move |widget, _| {
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
                     "SIDEBAR_TRACE widget_visible name={} visible={} mapped={} width={} height={}",
                     name,
@@ -758,7 +758,7 @@ impl MainWindow {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "none".into());
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE layout stage={} albums_expanded={} media_types_expanded={} album_scroll_visible={} album_scroll_mapped={} album_scroll_wh={}x{} album_list_children={} album_list_wh={}x{} album_targets={} media_type_header_visible={} media_type_scroll_visible={} media_type_scroll_mapped={} media_type_scroll_wh={}x{} media_type_list_children={} media_type_targets={} wrapper_vexpand={} wrapper_wh={}x{} spacer_vexpand={} spacer_visible={} spacer_wh={}x{} trash_children={} active_album={}",
             stage,
@@ -833,7 +833,7 @@ impl MainWindow {
     /// scrolled window sizes to content (no vexpand). When collapsed, the
     /// spacer expands so Settings stays pinned to the bottom.
     pub fn toggle_albums_expanded(&self) {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE toggle_albums_expanded begin current_expanded={}",
             self.imp().albums_expanded.get()
@@ -854,7 +854,7 @@ impl MainWindow {
         self.imp().album_scroll.set_visible(expanded);
         self.imp().album_trash_wrapper.set_vexpand(expanded);
         self.imp().sidebar_spacer.set_vexpand(!expanded);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE toggle_albums_expanded end expanded={}",
             expanded
@@ -864,7 +864,7 @@ impl MainWindow {
     }
 
     pub fn toggle_media_types_expanded(&self) {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE toggle_media_types_expanded begin current_expanded={}",
             self.imp().media_types_expanded.get()
@@ -882,7 +882,7 @@ impl MainWindow {
             }
         }
         self.imp().media_type_scroll.set_visible(expanded);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE toggle_media_types_expanded end expanded={}",
             expanded
@@ -894,7 +894,7 @@ impl MainWindow {
     /// Rebuild the sidebar album rows from the current DB snapshot so counts
     /// stay live after favorites/trash changes.
     pub fn refresh_album_rows(&self) {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE refresh_album_rows_sync_begin"
         );
@@ -1237,7 +1237,7 @@ impl MainWindow {
             return;
         };
         let trace_id = SIDEBAR_SNAPSHOT_TRACE_ID.fetch_add(1, Ordering::Relaxed);
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE snapshot_request id={} album_targets={} media_type_targets={}",
             trace_id,
@@ -1250,7 +1250,7 @@ impl MainWindow {
         glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
                 let snapshot = load_sidebar_album_snapshot(&pool);
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
                     "SIDEBAR_TRACE snapshot_loaded id={} live_count={:?} albums={} media_types={} albums_summary=[{}] media_types_summary=[{}]",
                     trace_id,
@@ -1268,7 +1268,7 @@ impl MainWindow {
             };
             match result {
                 Ok(snapshot) => {
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "SIDEBAR_TRACE snapshot_deliver id={}",
                         trace_id
@@ -1846,7 +1846,7 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE delete_albums_to_trash_ui_begin albums={} summary=[{}]",
             albums.len(),
@@ -1893,7 +1893,7 @@ impl MainWindow {
     }
 
     fn apply_album_delete_ui_result(&self, result: &AlbumDeleteUiResult) {
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE apply_album_delete_result begin deleted_paths={} remaining_live_uris={} remaining_live_folders={} unknown_remaining_live_paths={}",
             result.deleted_paths.len(),
@@ -1925,7 +1925,7 @@ impl MainWindow {
                         .iter()
                         .any(|path| path == active)
             });
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE apply_album_delete_result active_should_close={}",
             active_should_close
@@ -4265,6 +4265,32 @@ mod tests {
                 actual_macro, "tracing::debug!(",
                 "{message} should stay out of default logs"
             );
+        }
+    }
+
+    #[test]
+    fn sidebar_trace_logs_stay_debug() {
+        let source = include_str!("window.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("window.rs must contain production code");
+
+        let mut search_from = 0;
+        while let Some(relative_index) = production_source[search_from..].find("SIDEBAR_TRACE") {
+            let message_index = search_from + relative_index;
+            let before = &production_source[..message_index];
+            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+                .iter()
+                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+                .max_by_key(|(index, _)| *index)
+                .map(|(_, candidate)| candidate)
+                .expect("SIDEBAR_TRACE message should be inside a tracing macro");
+            assert_eq!(
+                actual_macro, "tracing::debug!(",
+                "SIDEBAR_TRACE messages are diagnostic noise and should stay out of default INFO logs"
+            );
+            search_from = message_index + "SIDEBAR_TRACE".len();
         }
     }
 

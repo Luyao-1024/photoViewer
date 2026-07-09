@@ -893,8 +893,12 @@ fn pull_batch_and_enqueue(
         *off = off.saturating_add(batch_size);
         start
     };
-    let page =
-        crate::core::db::list_media_needing_thumbnail(pool, start_offset, batch_size).ok()?;
+    let page = crate::core::db::list_media_needing_thumbnail_from_live_offset(
+        pool,
+        start_offset,
+        batch_size,
+    )
+    .ok()?;
     if page.is_empty() {
         if let Ok(mut off) = bg.offset.lock() {
             *off = 0;
@@ -2321,6 +2325,71 @@ mod tests {
         assert_eq!(
             pulled.uri, items[1].uri,
             "redirect_prewarm_to_offset(3) 应拉取全局 DESC offset 3 处的项"
+        );
+    }
+
+    /// 重定向使用的是全局 live-media offset，不应被解释成“待生成缩略图集合”的
+    /// offset。当前位置之前如果已有缩略图，预热仍应从当前位置附近的冷项开始。
+    #[test]
+    fn redirect_prewarm_to_offset_uses_live_media_offset_after_generated_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+        let base = chrono::Utc::now();
+        let mut items = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..5u32 {
+            let src = dir.path().join(format!("src{i}.png"));
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                8,
+                8,
+                image::Rgb([i as u8, 0, 0]),
+            ))
+            .save(&src)
+            .unwrap();
+            let len = std::fs::metadata(&src).unwrap().len();
+            let item = crate::core::media::NewMediaItem {
+                uri: format!("file://{}", src.display()),
+                path: src,
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/png".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(8),
+                height: Some(8),
+                video_duration_secs: None,
+                taken_at: Some(base + chrono::Duration::seconds(i as i64)),
+                file_mtime: base,
+                file_size: len,
+                blake3_hash: format!("hash{i}"),
+            };
+            let id = db::insert_media_item(&pool, &item).unwrap();
+            items.push(item);
+            ids.push(id);
+        }
+
+        // 全局 DESC 顺序为 i=4,3,2,1,0。把当前位置之前的 4/3/2 标记为已生成，
+        // 此时“待生成集合”的 offset 0 是 i=1；但全局 live offset 3 仍是 i=1。
+        for id in [ids[4], ids[3], ids[2]] {
+            db::set_thumbnail_generated_at_for_tests(&pool, id, base.timestamp() + 1).unwrap();
+        }
+
+        let loader = ThumbnailLoader::new(pool.clone(), dir.path().join("cache"));
+        loader
+            .background_pull
+            .enabled
+            .store(true, AtomicOrdering::Relaxed);
+        *loader.background_pull.worker_count.lock().unwrap() = 1;
+
+        loader.redirect_prewarm_to_offset(3);
+
+        let pulled =
+            pull_batch_and_enqueue(&pool, &loader.background_pull, &loader.queue, &loader.state)
+                .expect("全局 offset 3 附近仍有待生成缩略图");
+
+        assert_eq!(
+            pulled.uri, items[1].uri,
+            "redirect offset 应按全局 live-media 顺序定位，而不是按待生成集合重新 offset"
         );
     }
 

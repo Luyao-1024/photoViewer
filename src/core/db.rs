@@ -576,6 +576,52 @@ pub fn list_media_needing_thumbnail(
         .map_err(AppError::from)
 }
 
+/// 从全局 live-media DESC offset 附近列出需要生成缩略图的非回收站项。
+///
+/// `live_offset` 按完整 live-media 排序解释，而不是按“待生成缩略图”过滤后的集合
+/// 解释。这样用户跳到一个部分已预热的区域时，后台预热仍会从当前浏览位置附近的
+/// 冷项开始，而不会因为当前位置之前已有缩略图而被过滤集合的 OFFSET 推偏。
+pub fn list_media_needing_thumbnail_from_live_offset(
+    pool: &DbPool,
+    live_offset: u32,
+    limit: u32,
+) -> Result<Vec<MediaItem>> {
+    let conn = pool.get()?;
+    let anchor = conn
+        .query_row(
+            "SELECT COALESCE(taken_at, file_mtime), id
+             FROM media_items
+             WHERE trashed_at IS NULL
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 1 OFFSET ?1",
+            [live_offset as i64],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+
+    let Some((anchor_sort, anchor_id)) = anchor else {
+        return Ok(Vec::new());
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT id, uri, path, folder_path, mime_type, media_subkind,
+                media_attributes, width, height, video_duration_secs, taken_at,
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+         FROM media_items
+         WHERE trashed_at IS NULL
+           AND (thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
+           AND (
+                COALESCE(taken_at, file_mtime) < ?1
+                OR (COALESCE(taken_at, file_mtime) = ?1 AND id <= ?2)
+           )
+         ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map([anchor_sort, anchor_id, limit as i64], row_to_media_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+}
+
 /// 批量标记已生成缩略图的 media_items：写入 `thumbnail_generated_at = unixepoch()`。
 pub fn mark_thumbnails_generated(pool: &DbPool, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {

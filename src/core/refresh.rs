@@ -53,7 +53,7 @@ impl RefreshCoordinator {
 
     pub fn mark_albums_dirty(&self) -> bool {
         if self.album_refresh_running.get() {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_mark_sync action=queue running=true pending_before={}",
                 self.album_refresh_pending.get()
@@ -61,7 +61,7 @@ impl RefreshCoordinator {
             self.album_refresh_pending.set(true);
             return false;
         }
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE album_refresh_mark_sync action=start"
         );
@@ -82,7 +82,7 @@ impl RefreshCoordinator {
 
     pub fn mark_albums_dirty_async(&self) {
         if self.album_refresh_running.get() {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_mark_async action=queue running=true pending_before={}",
                 self.album_refresh_pending.get()
@@ -91,7 +91,7 @@ impl RefreshCoordinator {
             return;
         }
         let Some(pool) = self.album_pool.clone() else {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_mark_async fallback=sync_no_pool"
             );
@@ -99,7 +99,7 @@ impl RefreshCoordinator {
             return;
         };
         let Some(on_albums_refreshed) = self.on_albums_refreshed.clone() else {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_mark_async fallback=sync_no_callback"
             );
@@ -107,14 +107,14 @@ impl RefreshCoordinator {
             return;
         };
 
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE album_refresh_mark_async action=start"
         );
         self.album_refresh_running.set(true);
         let this = self.clone();
         glib::MainContext::default().spawn_local(async move {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_worker_start"
             );
@@ -122,7 +122,7 @@ impl RefreshCoordinator {
                 gtk4::gio::spawn_blocking(move || crate::core::albums::refresh(&pool)).await;
             match result {
                 Ok(Ok(())) => {
-                    tracing::info!(
+                    tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "SIDEBAR_TRACE album_refresh_worker_ok invoking_callback"
                     );
@@ -133,17 +133,46 @@ impl RefreshCoordinator {
             }
             this.album_refresh_running.set(false);
             if this.album_refresh_pending.replace(false) {
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
                     "SIDEBAR_TRACE album_refresh_worker_done pending=true rerun"
                 );
                 this.mark_albums_dirty_async();
             } else {
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::BROWSING,
                     "SIDEBAR_TRACE album_refresh_worker_done pending=false"
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sidebar_refresh_trace_logs_stay_debug() {
+        let source = include_str!("refresh.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("refresh.rs must contain production code");
+
+        let mut search_from = 0;
+        while let Some(relative_index) = production_source[search_from..].find("SIDEBAR_TRACE") {
+            let message_index = search_from + relative_index;
+            let before = &production_source[..message_index];
+            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+                .iter()
+                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+                .max_by_key(|(index, _)| *index)
+                .map(|(_, candidate)| candidate)
+                .expect("SIDEBAR_TRACE message should be inside a tracing macro");
+            assert_eq!(
+                actual_macro, "tracing::debug!(",
+                "SIDEBAR_TRACE refresh diagnostics should stay out of default INFO logs"
+            );
+            search_from = message_index + "SIDEBAR_TRACE".len();
+        }
     }
 }
