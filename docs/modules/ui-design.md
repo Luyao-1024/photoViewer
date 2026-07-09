@@ -6,9 +6,10 @@ for layout, visual hierarchy, and interaction intent, then read the matching
 module document before changing code.
 
 For the canonical widget/region names — what to call each piece of the UI — see
-the visual naming map at [`docs/ui-naming-reference.html`](../ui-naming-reference.html)
-(open in a browser; hover a label to see its implementation type). Keep that map
-in sync with these screens when the UI structure changes.
+the visual naming map at [`docs/ui-naming-reference/index.html`](../ui-naming-reference/index.html)
+(open in a browser; hover a UI region, button, tile, or panel to see its name,
+implementation type, and key properties). Keep that map in sync with these
+screens when the UI structure changes.
 
 ## Scope
 
