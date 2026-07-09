@@ -104,6 +104,81 @@ fn window_sidebar_helpers_live_in_sidebar_module() {
 }
 
 #[test]
+fn window_sidebar_stateful_flows_live_in_sidebar_module() {
+    let module = fs::read_to_string("src/ui/window/sidebar.rs").expect("sidebar module readable");
+    for marker in [
+        "impl MainWindow",
+        "pub fn populate_album_rows",
+        "fn rebuild_album_rows",
+        "fn apply_album_rows",
+        "fn rebuild_media_type_rows",
+        "fn apply_media_type_rows",
+        "fn apply_sidebar_album_snapshot",
+        "fn install_sidebar_layout_trace",
+        "fn log_sidebar_layout_state",
+        "pub fn toggle_albums_expanded",
+        "pub fn toggle_media_types_expanded",
+        "pub fn refresh_album_rows",
+        "pub fn refresh_sidebar_snapshot_async",
+    ] {
+        assert!(module.contains(marker), "sidebar.rs missing `{marker}`");
+    }
+
+    let root = fs::read_to_string("src/ui/window.rs").expect("window root readable");
+    for marker in [
+        "fn rebuild_album_rows(",
+        "fn apply_album_rows(",
+        "fn rebuild_media_type_rows(",
+        "fn apply_media_type_rows(",
+        "fn apply_sidebar_album_snapshot(",
+        "fn install_sidebar_layout_trace(",
+        "fn log_sidebar_layout_state(",
+        "fn update_photos_count_label(",
+        "fn refresh_sidebar_snapshot_async(",
+    ] {
+        assert!(
+            !root.contains(marker),
+            "sidebar stateful flow `{marker}` should move out of window.rs"
+        );
+    }
+}
+
+#[test]
+fn window_navigation_flows_live_in_navigation_module() {
+    let module_path = Path::new("src/ui/window/navigation.rs");
+    assert!(
+        module_path.exists(),
+        "navigation flows should live in src/ui/window/navigation.rs"
+    );
+    let module = fs::read_to_string(module_path).expect("navigation module readable");
+    for marker in [
+        "impl MainWindow",
+        "pub fn connect_sidebar",
+        "fn schedule_album_open_from_sidebar",
+        "pub(crate) fn open_album",
+        "pub fn refresh_visible_trash_page",
+        "pub fn refresh_visible_album_detail_page",
+    ] {
+        assert!(module.contains(marker), "navigation.rs missing `{marker}`");
+    }
+
+    let root = fs::read_to_string("src/ui/window.rs").expect("window root readable");
+    assert!(root.contains("mod navigation;"));
+    for marker in [
+        "fn connect_sidebar(",
+        "fn schedule_album_open_from_sidebar(",
+        "fn open_album(",
+        "fn refresh_visible_trash_page(",
+        "fn refresh_visible_album_detail_page(",
+    ] {
+        assert!(
+            !root.contains(marker),
+            "navigation flow `{marker}` should move out of window.rs"
+        );
+    }
+}
+
+#[test]
 fn window_album_flow_helpers_live_in_albums_module() {
     let module_path = Path::new("src/ui/window/albums.rs");
     assert!(

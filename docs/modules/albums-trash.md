@@ -12,9 +12,10 @@ trash backend with restore and delete flows.
 | `src/core/albums.rs` | Album query/model helpers |
 | `src/core/album_ops.rs` | Album operations |
 | `src/core/trash.rs` | Trash operations |
-| `src/ui/window.rs` | Sidebar: lists albums directly under the Albums group header |
+| `src/ui/window.rs` | MainWindow state, resource injection, keyboard routing, and root sidebar shell |
 | `src/ui/window/albums.rs` | Album sidebar loading limits and album ignore/delete worker helpers |
-| `src/ui/window/sidebar.rs` | Sidebar album identity diffing, cover loading, and snapshot helpers |
+| `src/ui/window/sidebar.rs` | Sidebar row widgets, album/media-type row diffing, sidebar snapshots, count labels, collapse state, and layout tracing |
+| `src/ui/window/navigation.rs` | Sidebar selection signal wiring, Photos/album/trash/search navigation, album page push, and visible page refresh hooks |
 | `src/ui/window/settings.rs` | Settings dialog, scan path UI, trash backend settings, restart prompts, and storage rows |
 | `src/ui/album_detail_page.rs` | Album detail grid + bounded album filtering helper |
 | `src/ui/trash_page.rs` | Trash UI and actions |

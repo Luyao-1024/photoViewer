@@ -1,3 +1,4 @@
+use super::sidebar::sidebar_album_summary;
 use super::*;
 use crate::core::albums::set_album_order;
 use crate::core::prefs::TrashBackend;
