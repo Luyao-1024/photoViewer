@@ -425,7 +425,7 @@ impl MainWindow {
             let album_count = albums.len();
             *self.imp().album_targets.borrow_mut() = albums;
             self.reselect_active_album_row();
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_ALBUM_UPDATE_IN_PLACE rows={}",
                 album_count
@@ -469,7 +469,7 @@ impl MainWindow {
             *self.imp().album_rows.borrow_mut() = next_rows;
             *self.imp().album_targets.borrow_mut() = albums;
             self.reselect_active_album_row();
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_ALBUM_REMOVE_IN_PLACE rows={}",
                 album_count
@@ -512,7 +512,7 @@ impl MainWindow {
         }
 
         self.reselect_active_album_row();
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_ALBUM_REBUILD rows={}",
             album_count
@@ -4023,7 +4023,7 @@ pub(crate) fn refresh_after_album_operation(nav: &adw::NavigationView) {
             .visible_page()
             .map(|page| page.type_().name().to_string())
             .unwrap_or_else(|| "<none>".to_string());
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             "PHOTO_REFRESH_TRACE refresh_after_album_operation visible_page_type={}",
             visible_page_type
@@ -4291,6 +4291,36 @@ mod tests {
                 "SIDEBAR_TRACE messages are diagnostic noise and should stay out of default INFO logs"
             );
             search_from = message_index + "SIDEBAR_TRACE".len();
+        }
+    }
+
+    #[test]
+    fn sidebar_album_row_summary_logs_stay_debug() {
+        let source = include_str!("window.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("window.rs must contain production code");
+
+        for message in [
+            "SIDEBAR_ALBUM_UPDATE_IN_PLACE",
+            "SIDEBAR_ALBUM_REMOVE_IN_PLACE",
+            "SIDEBAR_ALBUM_REBUILD",
+        ] {
+            let message_index = production_source
+                .find(message)
+                .unwrap_or_else(|| panic!("missing log message {message}"));
+            let before = &production_source[..message_index];
+            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+                .iter()
+                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+                .max_by_key(|(index, _)| *index)
+                .map(|(_, candidate)| candidate)
+                .expect("log message should be inside a tracing macro");
+            assert_eq!(
+                actual_macro, "tracing::debug!(",
+                "{message} is high-volume sidebar row diagnostics and should stay out of default INFO logs"
+            );
         }
     }
 

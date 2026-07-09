@@ -237,7 +237,7 @@ impl AlbumDetailPage {
         if ids.is_empty() {
             return;
         }
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::ALBUMS,
             "TRASH_TRACE album_detail_delete_requested count={} ids={:?}",
             ids.len(),

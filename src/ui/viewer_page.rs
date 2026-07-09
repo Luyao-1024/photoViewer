@@ -1436,7 +1436,7 @@ impl ViewerPage {
                 };
 
                 let item_id = item.id;
-                tracing::info!(
+                tracing::debug!(
                     target: crate::core::log_targets::VIEWER,
                     "TRASH_TRACE viewer_delete_requested id={} uri={}",
                     item.id,

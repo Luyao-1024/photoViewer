@@ -754,7 +754,7 @@ impl SearchPage {
         if ids.is_empty() {
             return;
         }
-        tracing::info!(
+        tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "TRASH_TRACE search_delete_requested count={} ids={:?}",
             ids.len(),

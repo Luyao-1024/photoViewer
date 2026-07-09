@@ -172,7 +172,7 @@ fn scan_and_aggregate_with_notifier_blocking(
                         sent_first_batch && last_notify.elapsed() >= notify_interval(total_scanned);
                     if should_flush_first || should_flush_later {
                         let batch_len = batch.len();
-                        tracing::info!(
+                        tracing::debug!(
                             target: crate::core::log_targets::BROWSING,
                             "STARTUP_SCAN_NOTIFY interval_flush root={} batch_len={} first_batch={} total_scanned={} interval_secs={}",
                             root.display(),

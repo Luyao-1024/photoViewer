@@ -746,7 +746,7 @@ fn worker_loop(
         // `thumb:process` spans the worker's per-item work (queue pickup →
         // result), with `queue_wait_ms` recorded as a field. It parents the
         // `thumb:generate` span created inside `generate`.
-        let process_span = tracing::info_span!(
+        let process_span = tracing::debug_span!(
             "thumb:process",
             uri = %req.uri,
             size = ?req.size,
@@ -1069,7 +1069,7 @@ fn cache_stem_for(
         .join(hash.as_str()))
 }
 
-#[tracing::instrument(name = "thumb:generate", skip(cache_dir))]
+#[tracing::instrument(name = "thumb:generate", skip(cache_dir), level = "debug")]
 fn generate(
     cache_dir: &Path,
     uri: &str,
@@ -1776,7 +1776,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
     // decode 阶段（最耗时）：JPEG 优先走 turbojpeg IDCT 缩放解码，失败/非 JPEG
     // 回退 gdk-pixbuf。阶段耗时由 `thumb:pb_decode` span 承载（父级 `thumb:generate`）。
     let pb = {
-        let decode_span = tracing::info_span!("thumb:pb_decode");
+        let decode_span = tracing::debug_span!("thumb:pb_decode");
         let _decode = decode_span.enter();
         if is_jpeg {
             match decode_jpeg_scaled(src_path, max_dim, orientation) {
@@ -1800,7 +1800,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
 
     // scale 阶段：等比缩放到目标尺寸。
     let scaled = {
-        let scale_span = tracing::info_span!("thumb:pb_scale");
+        let scale_span = tracing::debug_span!("thumb:pb_scale");
         let _scale = scale_span.enter();
         scale_pixbuf_to_fit(&pb, max_dim)
     };
@@ -1809,7 +1809,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
     if pixbuf_has_transparency(&scaled) {
         let cache_path = cache_stem.with_extension("webp");
         {
-            let save_span = tracing::info_span!("thumb:pb_save");
+            let save_span = tracing::debug_span!("thumb:pb_save");
             let _save = save_span.enter();
             save_pixbuf_as_webp(&scaled, &cache_path)?;
         }
@@ -1819,7 +1819,7 @@ fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyh
     let cache_path = cache_stem.with_extension("jpg");
     let thumb = ensure_opaque(&scaled);
     {
-        let save_span = tracing::info_span!("thumb:pb_save");
+        let save_span = tracing::debug_span!("thumb:pb_save");
         let _save = save_span.enter();
         save_pixbuf_as_jpeg_atomic(&thumb, &cache_path).map_err(|e| {
             anyhow::anyhow!(
@@ -2039,6 +2039,63 @@ mod tests {
         ] {
             assert_log_message_uses_macro(production_source, message, "debug!(");
         }
+    }
+
+    #[test]
+    fn per_thumbnail_trace_spans_stay_debug() {
+        let source = include_str!("thumbnails.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("thumbnails.rs must contain production code");
+
+        for span_name in [
+            "thumb:process",
+            "thumb:pb_decode",
+            "thumb:pb_scale",
+            "thumb:pb_save",
+        ] {
+            let quoted_span_name = format!("\"{span_name}\"");
+            let mut search_from = 0;
+            let mut found = false;
+            while let Some(relative_index) =
+                production_source[search_from..].find(&quoted_span_name)
+            {
+                found = true;
+                let span_index = search_from + relative_index;
+                let before = &production_source[..span_index];
+                let actual_macro = ["tracing::debug_span!(", "tracing::info_span!("]
+                    .iter()
+                    .filter_map(|candidate| {
+                        before.rfind(candidate).map(|index| (index, *candidate))
+                    })
+                    .max_by_key(|(index, _)| *index)
+                    .map(|(_, candidate)| candidate)
+                    .expect("span should be inside a tracing span macro");
+                assert_eq!(
+                    actual_macro, "tracing::debug_span!(",
+                    "{span_name} is per-thumbnail tracing and should stay out of default INFO logs"
+                );
+                search_from = span_index + quoted_span_name.len();
+            }
+            assert!(found, "missing thumbnail span {span_name}");
+        }
+
+        let generate_index = production_source
+            .find("name = \"thumb:generate\"")
+            .expect("missing thumb:generate instrumentation");
+        let attr_start = production_source[..generate_index]
+            .rfind("#[tracing::instrument")
+            .expect("thumb:generate should use tracing::instrument");
+        let attr_end = production_source[generate_index..]
+            .find(")]")
+            .map(|end| generate_index + end + ")]".len())
+            .expect("thumb:generate instrument attribute should close");
+        let attr = &production_source[attr_start..attr_end];
+        assert!(
+            attr.contains("level = \"debug\""),
+            "thumb:generate is per-thumbnail tracing and should be debug-level"
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             remove_uris_batch(list, uris);
         }
         DomainEvent::MediaMovedToTrash { items, .. } => {
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "TRASH_TRACE ui_apply_moved_to_trash_begin list_len={} count={} ids={:?}",
                 list.n_items(),
@@ -41,7 +41,7 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             );
             let uris: Vec<String> = items.iter().map(|item| item.uri.clone()).collect();
             remove_uris_batch(list, &uris);
-            tracing::info!(
+            tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "TRASH_TRACE ui_apply_moved_to_trash_done list_len={}",
                 list.n_items()
@@ -102,7 +102,7 @@ fn remove_uris_batch(list: &gtk::gio::ListStore, uris: &[String]) {
     for (position, n_removals) in ranges.into_iter().rev() {
         list.splice(position, n_removals, empty);
     }
-    tracing::info!(
+    tracing::debug!(
         target: crate::core::log_targets::BROWSING,
         "TRASH_TRACE ui_remove_uris_batch removed={} before={} after={} requested={}",
         removed,
@@ -112,7 +112,12 @@ fn remove_uris_batch(list: &gtk::gio::ListStore, uris: &[String]) {
     );
 }
 
-#[tracing::instrument(name = "ui:apply_upserted_batch", skip(list, items), fields(source = ?source, incoming = items.len()))]
+#[tracing::instrument(
+    name = "ui:apply_upserted_batch",
+    skip(list, items),
+    fields(source = ?source, incoming = items.len()),
+    level = "debug"
+)]
 fn apply_upserted_batch(list: &gtk::gio::ListStore, source: ChangeSource, items: Vec<MediaItem>) {
     if items.is_empty() {
         return;
@@ -199,7 +204,8 @@ fn sorted_insert_position(list: &gtk::gio::ListStore, item: &MediaItem) -> u32 {
 #[tracing::instrument(
     name = "ui:apply_absent_insertions",
     skip(list, items),
-    fields(source = ?source, incoming = items.len())
+    fields(source = ?source, incoming = items.len()),
+    level = "debug"
 )]
 fn apply_absent_item_insertions(
     list: &gtk::gio::ListStore,
@@ -247,7 +253,8 @@ fn apply_absent_item_insertions(
 #[tracing::instrument(
     name = "ui:apply_targeted_upserts",
     skip(list, items),
-    fields(source = ?source, incoming = items.len())
+    fields(source = ?source, incoming = items.len()),
+    level = "debug"
 )]
 fn apply_targeted_upserts(
     list: &gtk::gio::ListStore,
@@ -358,6 +365,37 @@ mod tests {
             .borrow::<MediaItem>()
             .uri
             .clone()
+    }
+
+    #[test]
+    fn high_volume_apply_spans_stay_debug() {
+        let source = include_str!("apply_to_media_list.rs");
+        let production_source = source
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("apply_to_media_list.rs must contain production code");
+
+        for span_name in [
+            "ui:apply_upserted_batch",
+            "ui:apply_absent_insertions",
+            "ui:apply_targeted_upserts",
+        ] {
+            let span_index = production_source
+                .find(&format!("name = \"{span_name}\""))
+                .unwrap_or_else(|| panic!("missing instrument span {span_name}"));
+            let attr_start = production_source[..span_index]
+                .rfind("#[tracing::instrument")
+                .expect("span should use tracing::instrument");
+            let attr_end = production_source[span_index..]
+                .find(")]")
+                .map(|end| span_index + end + ")]".len())
+                .expect("instrument attribute should close");
+            let attr = &production_source[attr_start..attr_end];
+            assert!(
+                attr.contains("level = \"debug\""),
+                "{span_name} scales with media-list batches and should stay out of default INFO logs"
+            );
+        }
     }
 
     #[test]
