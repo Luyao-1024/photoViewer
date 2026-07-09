@@ -25,7 +25,7 @@
           <div class="row group hotspot" tabindex="0" data-ui="album-group-row" data-name="相册分组头" data-impl="sidebar_list album header row" data-props="可折叠相册组；展开后下方 album_scroll 承载所有相册行。"><span>相册</span><span class="count">⌄</span></div>
         </div>
 
-        <div class="nav-group hotspot" tabindex="0" data-ui="album-list" data-name="相册列表" data-impl="Gtk.ScrolledWindow album_scroll → Gtk.ListBox album_list" data-props="相册行可拖拽重排；拖动时只显示上/下落点，drop 时提交排序。" data-source="data/ui/window.blp · src/ui/window.rs attach_album_dnd()">
+        <div class="nav-group hotspot" tabindex="0" data-ui="album-list" data-name="相册列表" data-impl="Gtk.ScrolledWindow album_scroll → Gtk.ListBox album_list" data-props="相册行可拖拽重排；拖动时只显示上/下落点，drop 时提交排序。" data-source="data/ui/window.blp · src/ui/window/albums.rs attach_album_dnd()">
           <div class="row indent hotspot" tabindex="0" data-ui="album-row" data-name="相册行" data-impl="album_list row" data-props="缩略封面固定尺寸，行高不因异步封面加载跳动。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
           <div class="row indent hotspot" tabindex="0" data-ui="album-row-family" data-name="相册行" data-impl="album_list row" data-props="同一列表内可排序；普通点击进入 AlbumDetailPage。"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
           <div class="row indent hotspot" tabindex="0" data-ui="album-row-fav" data-name="虚拟相册行" data-impl="album_list virtual album row" data-props="Favorites/Photos/Videos 等虚拟相册复用相册行视觉。"><span class="album-cover gold"></span><span>收藏</span><span class="count">18</span></div>
@@ -42,7 +42,7 @@
         </div>
 
         <div class="sidebar-footer">
-          <button class="button round bare hotspot" tabindex="0" data-ui="settings-button" data-name="设置按钮" data-impl="Gtk.Button settings_button" data-props="侧栏 footer 齿轮；hover-only glass；打开设置弹窗。" data-source="data/ui/window.blp · src/ui/window.rs">⚙</button>
+          <button class="button round bare hotspot" tabindex="0" data-ui="settings-button" data-name="设置按钮" data-impl="Gtk.Button settings_button" data-props="侧栏 footer 齿轮；hover-only glass；打开设置弹窗。" data-source="data/ui/window.blp · src/ui/window/navigation.rs click wiring · src/ui/window/settings.rs dialog implementation">⚙</button>
         </div>
         <div class="hotspot-outline split-handle-hitbox" tabindex="0" data-ui="main-split-view" data-name="主分隔视图" data-impl="Adw.OverlaySplitView split_view" data-props="min-sidebar-width:240 且 max-sidebar-width:240；主侧栏不可调宽。"></div>
       </aside>

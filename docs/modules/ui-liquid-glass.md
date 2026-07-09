@@ -16,7 +16,7 @@ This module owns the shared UI material system for glass chrome, including the u
 | `src/ui/theme.rs` | Maps persisted theme preference to libadwaita color schemes |
 | `src/ui/glass_context_menu.rs` | Overlay-backed right-click menu using raised glass material |
 | `src/core/prefs.rs` | `theme`, `liquid_glass`, and material transparency preference persistence |
-| `src/ui/window.rs` | Settings UI and live appearance toggle handling |
+| `src/ui/window/settings.rs` | Settings dialog UI and live appearance preference handling |
 | `data/ui/mode-selector.blp` | Canonical segmented glass control |
 | `src/ui/mode_selector.rs` | Mode selector behavior |
 | `tests/ui_grid_css_install.rs` | CSS provider/mode assertions |
