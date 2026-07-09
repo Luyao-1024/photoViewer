@@ -1,0 +1,175 @@
+use std::{fs, path::Path};
+
+#[test]
+fn viewer_focused_modules_exist() {
+    for (path, markers) in [
+        (
+            "src/ui/viewer/filmstrip.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) fn refresh_thumb_strip",
+                "pub(super) fn setup_thumb_strip_listener",
+                "pub(super) fn compute_thumb_scroll_and_residual",
+                "pub(super) fn clamped_thumb_width_for_texture",
+                "pub(super) fn compute_initial_thumb_window",
+                "fn load_initial_thumb_window",
+                "fn try_extend_thumb_window",
+                "fn rebuild_thumb_strip",
+                "fn make_thumb_button",
+                "fn update_thumb_scroll_position",
+                "fn animate_thumb_scroll_adjustment_to",
+                "fn scroll_thumb_to_current",
+                "fn schedule_scroll_thumb_to_current",
+            ][..],
+        ),
+        (
+            "src/ui/viewer/details.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) fn setup_details_panel",
+                "pub(super) fn set_details_revealed",
+                "pub(super) fn update_details",
+                "pub(super) fn action_row",
+                "pub(super) fn format_exposure",
+                "pub(super) fn format_file_size",
+                "fn load_camera_details",
+                "fn populate_camera_rows",
+                "fn load_video_details",
+                "fn populate_video_rows",
+            ][..],
+        ),
+        (
+            "src/ui/viewer/navigation.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) fn fire_nav",
+                "pub(super) fn navigate_by_delta",
+                "pub(super) fn setup_nav_buttons",
+                "pub(super) fn setup_navigation_pop_action",
+                "pub(super) fn current_media_item",
+                "pub(super) fn sync_current_index_to_media_id",
+                "pub(super) fn prefetch_neighbors",
+                "pub(super) fn preload_neighbor_pages",
+                "pub(super) fn find_media_index_by_id",
+                "pub(super) fn next_index_after_deleted_item",
+                "fn take_cached_neighbor",
+                "fn switch_when_thumb_ready",
+                "fn settle_nav_switch",
+                "fn ensure_media_item_in_window",
+                "fn warm_medium_thumbnail",
+            ][..],
+        ),
+        (
+            "src/ui/viewer/stage.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) fn setup_video_playback_interactions",
+                "pub(super) fn setup_motion_play_button",
+                "pub(super) fn show_image_stage",
+                "pub(super) fn show_video_stage",
+                "pub(super) fn request_current_preview_thumbnail",
+                "pub(super) fn request_current_original_image",
+                "pub(super) fn stop_animated_image_playback",
+                "pub(super) fn start_animated_image_playback",
+                "pub(super) fn stop_video_playback",
+                "pub(super) fn toggle_video_playback",
+                "pub(super) fn apply_video_audio_preferences_to_stream",
+                "pub(super) fn should_toggle_video_from_stage_click",
+            ][..],
+        ),
+        (
+            "src/ui/viewer/fullscreen.rs",
+            &["pub(super) fn viewer_overlay_button"][..],
+        ),
+    ] {
+        let module_path = Path::new(path);
+        assert!(module_path.exists(), "{path} should exist");
+        let module = fs::read_to_string(module_path).expect("viewer module readable");
+        for marker in markers {
+            assert!(module.contains(marker), "{path} missing `{marker}`");
+        }
+    }
+
+    let root = fs::read_to_string("src/ui/viewer_page.rs").expect("viewer root readable");
+    for module in ["navigation", "filmstrip", "details", "stage", "fullscreen"] {
+        assert!(
+            root.contains(&format!("mod {module};")),
+            "viewer_page.rs should declare mod {module}"
+        );
+    }
+    for marker in [
+        "fn compute_thumb_scroll_and_residual(",
+        "fn compute_thumb_animated_scroll_value(",
+        "fn compute_initial_thumb_window(",
+        "fn compute_extended_thumb_window(",
+        "fn clamped_thumb_width_for_texture(",
+        "fn refresh_thumb_strip(",
+        "fn setup_thumb_strip_listener(",
+        "fn load_initial_thumb_window(",
+        "fn try_extend_thumb_window(",
+        "fn try_extend_thumb_window_for_current(",
+        "fn rebuild_thumb_strip(",
+        "fn append_thumb_strip_items(",
+        "fn prepend_thumb_strip_items(",
+        "fn make_thumb_button(",
+        "fn update_thumb_highlight(",
+        "fn update_thumb_scroll_position(",
+        "fn set_thumb_scroll_adjustment_value(",
+        "fn animate_thumb_scroll_adjustment_to(",
+        "fn apply_thumb_strip_transform(",
+        "fn scroll_thumb_to_current(",
+        "fn schedule_scroll_thumb_to_current(",
+        "fn on_thumb_adj_changed(",
+        "fn action_row(",
+        "fn format_exposure(",
+        "fn format_file_size(",
+        "fn setup_details_panel(",
+        "fn update_details(",
+        "fn load_camera_details(",
+        "fn populate_camera_rows(",
+        "fn load_video_details(",
+        "fn populate_video_rows(",
+        "fn setup_video_playback_interactions(",
+        "fn setup_motion_play_button(",
+        "fn set_motion_play_button_for_item(",
+        "fn play_current_motion_photo(",
+        "fn restore_image_after_motion_video(",
+        "fn stop_video_playback(",
+        "fn stop_animated_image_playback(",
+        "fn start_animated_image_playback(",
+        "fn schedule_animated_image_frame(",
+        "fn toggle_video_playback(",
+        "fn show_image_stage(",
+        "fn show_video_stage(",
+        "fn show_motion_video_stage(",
+        "fn connect_video_preview_reveal(",
+        "fn set_video_error_visible(",
+        "fn show_video_error_background(",
+        "fn reveal_prepared_video_stage(",
+        "fn request_current_preview_thumbnail(",
+        "fn request_current_original_image(",
+        "fn fire_nav(",
+        "fn navigate_by_delta(",
+        "fn take_cached_neighbor(",
+        "fn switch_when_thumb_ready(",
+        "fn settle_nav_switch(",
+        "fn ensure_media_item_in_window(",
+        "fn warm_medium_thumbnail(",
+        "fn prefetch_neighbors(",
+        "fn preload_neighbor_pages(",
+        "fn setup_nav_buttons(",
+        "fn setup_navigation_pop_action(",
+        "fn current_media_item(",
+        "fn sync_current_index_to_media_id(",
+        "fn find_media_index_by_id(",
+        "fn next_index_after_deleted_item(",
+        "fn apply_video_audio_preferences_to_stream(",
+        "fn should_toggle_video_from_stage_click(",
+        "fn viewer_overlay_button(",
+    ] {
+        assert!(
+            !root.contains(marker),
+            "viewer helper `{marker}` should live in focused viewer modules"
+        );
+    }
+}

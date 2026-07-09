@@ -1,0 +1,877 @@
+
+flowbox.thumb-grid > flowboxchild { padding: 0; }
+/* 8px four-sided padding matches column/row spacing. Do NOT add a fixed
+   padding-bottom here or on the ScrolledWindow: the ModeSelector is a glass
+   overlay and should float over content instead of reserving a dark safe area.
+   每段或滚动容器 padding-bottom 会留出深色空隙,看起来像黑带。 */
+flowbox.thumb-grid { padding: 8px; background: transparent; }
+
+/* Hover — soft veil on the flowboxchild, no border. */
+flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
+  background: alpha(@window_fg_color, 0.08);
+  border-color: alpha(@window_fg_color, 0.18);
+}
+
+/* Keyboard focus — glass ring. Hidden once the pointer leaves the grid
+   (see .pointer-left rule below) so the ring doesn't linger on the
+   last-hovered tile after the mouse moves away. */
+flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
+  outline: 2px solid alpha(@window_fg_color, 0.55);
+  outline-offset: 2px;
+}
+
+/* Selected — luminous glass border + soft inner veil. Glass alone
+   communicates the selected state; no accent colour needed. */
+flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card {
+  background: alpha(@window_fg_color, 0.10);
+  border-color: alpha(@window_fg_color, 0.48);
+  box-shadow:
+    inset 0 1px alpha(@window_fg_color,0.35);
+}
+
+/* Pointer-left — hide the focus ring once the mouse exits the grid.
+   kbd-nav overrides this so keyboard users still see the cursor. */
+flowbox.thumb-grid.pointer-left:not(.kbd-nav) > flowboxchild:focus > .glass-thumb-card {
+  outline: none;
+}
+
+/* Kbd-nav neutralisation — see attach_kbd_nav comments; behaviour
+   preserved from the prior implementation. */
+flowbox.thumb-grid.kbd-nav > flowboxchild:hover:not(:focus) > .glass-thumb-card {
+  background: transparent;
+  border-color: transparent;
+  outline: none;
+}
+
+/* Selection checkmark — a translucent white tick pinned to each tile's
+   bottom-right corner. The checkmark widget is parented in every SquareTile
+   but kept invisible (opacity 0) until the wrapping FlowBoxChild becomes
+   :selected, so it appears only on selected photos. A subtle icon shadow
+   keeps it legible over bright thumbnails. This is the primary selected-state
+   affordance; the softer glass border on .glass-thumb-card is secondary. */
+.thumb-checkmark {
+  color: alpha(white, 0.92);
+  opacity: 0;
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.55);
+  transition: opacity 120ms ease;
+}
+
+flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {
+  opacity: 1;
+}
+
+/* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
+   Apply `glass-raised glass-segmented` to the outer container, `glass-segment`
+   to equal-width slots, `glass-segment-label` to labels, and
+   `glass-segment-indicator` to the active underline/dot. The existing
+   ModeSelector selectors stay here so its current implementation and visual
+   contract remain unchanged. */
+box.mode-selector,
+.glass-segmented {
+  padding: 8px 16px;
+  border-radius: 24px;
+  min-height: 58px;
+}
+
+box.mode-selector.on-light-background,
+.glass-segmented.on-light-background {
+  /* No material override — the .glass-raised rule already provides a
+     light/dark balanced fill. Kept as a hook in case we later want a
+     different border on bright photo backgrounds. */
+}
+
+/* 单个 label / dot 槽位 */
+box.mode-cell,
+.glass-segment {
+  min-width: 60px;
+  padding: 4px 12px;
+}
+
+/* 标签：默认半透明、title-3 字号。颜色跟随主题变量，与 glass-raised 容器
+   底配套，亮/暗主题下都可见。 */
+box.mode-selector label,
+.glass-segment-label {
+  font-size: 14pt;
+  font-weight: 700;
+  color: @window_fg_color;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+/* 激活态：标签全亮 */
+box.mode-selector label.active,
+.glass-segment-label.active {
+  opacity: 1.0;
+}
+
+/* 激活指示点 */
+box.mode-dot,
+.glass-segment-indicator {
+  background: @window_fg_color;
+  border-radius: 2px;
+  min-width: 24px;
+  min-height: 4px;
+  margin-top: 2px;
+}
+
+/* The single sliding indicator under the labels. Its translateX is written by a
+   runtime CssProvider (see ModeSelector::update_indicator_position). The curve
+   is a pure decelerate (no overshoot) so the bar stops exactly on the active
+   label — same decelerate curve as the viewer filmstrip. `transform` is
+   paint-only, so it never disturbs the dot_row layout. */
+box.mode-dot {
+  transition: transform 300ms cubic-bezier(0.2, 0.0, 0.2, 1);
+}
+
+/* glass-toolbar-button — individual buttons in glass header bars.
+   This base rule owns only geometry; the actual material lives in the
+   Liquid/Plain material blocks so Settings can switch every button at once. */
+.glass-toolbar-button {
+  min-height: 34px;
+  min-width: 34px;
+  border-radius: 10px;
+  padding: 0 14px;
+  color: inherit;
+}
+
+/* Hover/active/checked/selected motion — one material-independent transition
+   so every glass chrome surface eases between states instead of snapping.
+   Property-only (background/border-color/box-shadow/color): never changes
+   allocation, so it is safe on hover-only chrome (viewer-chrome reveal,
+   overlay nav arrows, sidebar settings) as well as always-on toolbar buttons.
+   Durations mirror .search-more-tile. Defined here in BASE_CSS because the
+   transition itself is the same in Liquid and Plain mode — only the rest/
+   hover/active *values* live in the material blocks. */
+.glass-toolbar-button,
+.glass-menu-item,
+.glass-context-menu-item,
+.glass-sidebar-row,
+.sidebar-settings-button,
+.viewer-overlay-nav-btn {
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+
+.glass-toolbar-button.round-search-button {
+  min-height: 38px;
+  min-width: 38px;
+  border-radius: 999px;
+  padding: 0;
+}
+
+/* Viewer chrome buttons (the viewer header) are square (1:1). The base
+   .glass-toolbar-button is shared by every header bar (photos, trash, albums,
+   editor), so this geometry override is scoped to .viewer-chrome, which the
+   viewer header carries. The floating prev/next arrows
+   (.viewer-overlay-nav-btn) are intentionally smaller and live in their own
+   compact bottom-right pair, so they do not match this. */
+.viewer-chrome .glass-toolbar-button {
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0;
+}
+
+.glass-toolbar-button.crop-ratio-arrow-button {
+  min-width: 28px;
+  min-height: 40px;
+  padding: 0 4px;
+  border-radius: 8px;
+}
+
+.glass-header windowcontrols button {
+  min-height: 28px;
+  min-width: 28px;
+  margin: 0 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: inherit;
+}
+
+.glass-header windowcontrols button image {
+  min-height: 24px;
+  min-width: 24px;
+  border-radius: 999px;
+  padding: 0;
+}
+
+.glass-toolbar-button:focus-visible,
+.glass-toolbar-button:focus,
+.glass-header windowcontrols button:focus-visible,
+.glass-header windowcontrols button:focus {
+  outline: none;
+}
+
+.glass-toolbar-button.glass-toolbar-danger,
+.glass-toolbar-danger {
+  background: alpha(#ff5449, 0.16);
+  border-color: alpha(#ffb4ab, 0.34);
+  color: #ffb4ab;
+}
+
+/* glass-toolbar-suggested — primary action accent (blue) for Save Copy,
+   Accept, and similar high-confidence buttons. Composes with
+   .glass-toolbar-button. Mirrors .glass-menu-item-suggested so the same
+   action language is shared between toolbar and menu surfaces.
+   用于工具栏主操作按钮(蓝色),与菜单项的 suggested 风格保持一致。 */
+.glass-toolbar-suggested { color: #a8d2ff; }
+
+/* glass-menu — popovers; GTK popovers are two-layer, style the inner
+   `> contents` so the visible background matches the rounded edge. The
+   `> contents` material lives in the per-mode material block below. */
+.glass-menu {
+  padding: 0;
+  min-width: 190px;
+}
+
+.glass-menu-list {
+  min-width: 190px;
+}
+
+.glass-menu-compact,
+.glass-menu-list-compact {
+  min-width: 150px;
+}
+
+.glass-menu-item {
+  min-height: 36px;
+  border-radius: 10px;
+  padding: 0 12px;
+  color: inherit;
+}
+
+.glass-menu-item:focus-visible,
+.glass-menu-item:focus {
+  outline: none;
+}
+
+.glass-menu-item:disabled {
+  color: alpha(currentColor, 0.45);
+}
+
+.glass-menu-item-suggested { color: #a8d2ff; }
+
+.glass-menu-item-danger { color: #ffb4ab; }
+
+.glass-context-menu-layer {
+  background: transparent;
+}
+
+.glass-context-menu {
+  padding: 8px 12px;
+  border-radius: 24px;
+  min-width: 128px;
+  /* Entrance reveal: glass_context_menu::show mounts the panel with
+     .glass-context-menu-entering (opacity 0 + slight scale) and removes the
+     class on the next idle, so this transition fades/scales the menu in.
+     `transform` is paint-only, so it never disturbs the Fixed-based
+     positioning of the panel. */
+  transition: opacity 140ms ease, transform 140ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  transform-origin: top center;
+}
+
+.glass-context-menu-entering {
+  opacity: 0;
+  transform: scale(0.96);
+}
+
+.glass-context-menu-item {
+  min-height: 36px;
+  border-radius: 14px;
+  padding: 0 12px;
+  color: @window_fg_color;
+  font-weight: 600;
+}
+
+.glass-context-menu-item:focus-visible,
+.glass-context-menu-item:focus {
+  outline: none;
+}
+
+.glass-context-menu-item-suggested { color: #a8d2ff; }
+
+.glass-context-menu-item-danger { color: #ffb4ab; }
+
+/* glass-sidebar — list/layout only. The sidebar surface itself is the parent
+   .glass-sidebar-surface.glass-base, so list and footer stay on one material. */
+.glass-sidebar-surface,
+.glass-sidebar,
+.glass-sidebar-footer {
+  background: transparent;
+  background-color: transparent;
+}
+
+.glass-sidebar {
+  padding: 3px 12px;
+  border: 0;
+}
+
+/* The main sidebar list (Photos + Albums header) lives above the album
+   scroll region. Keep its bottom padding at 3 px so the gap to the first
+   album row matches the inter-row margin. */
+.glass-sidebar-main {
+  padding-bottom: 3px;
+}
+
+.glass-sidebar row {
+  background: transparent;
+  background-color: transparent;
+}
+
+.glass-sidebar-page {
+  background: transparent;
+}
+
+.sidebar-settings-button {
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.glass-sidebar-row {
+  min-height: 40px;
+  border-radius: 12px;
+  margin-bottom: 3px;
+  padding: 0 10px;
+}
+
+.glass-sidebar-row:focus-visible,
+.glass-sidebar-row:focus {
+  outline: none;
+}
+
+.glass-sidebar-label {
+  color: inherit;
+  font-weight: 500;
+}
+
+/* Album sub-rows are nested under the Albums group header. They reuse the
+   glass-sidebar-row material (hover/selected veil lives in the per-mode
+   blocks); this only indents the content so the row reads as a child of the
+   group while keeping its rounded highlight full-width — matching the Honor
+   gallery tree layout in the reference screenshot.
+   相册子行缩进于「相册」分组头之下;选中/hover 玻璃材质复用 .glass-sidebar-row,
+   这里只做内容缩进,圆角高亮仍占满整行。 */
+.glass-sidebar-subrow {
+  padding-left: 28px;
+  min-height: 36px;
+}
+
+/* The album list sits inside a ScrolledWindow nested below the Albums
+   group header. Zero out vertical padding so the first album row sits
+   close to the header and the last row sits close to the trash list. */
+.glass-sidebar-album-list {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* Album cover thumbnail in sidebar rows. Fixed geometry keeps the rail stable
+   while async thumbnails load. The double-class selector overrides
+   .glass-thumb-card's border-radius (both are single-class; this one needs
+   higher specificity since .glass-thumb-card comes later in the sheet). */
+.glass-sidebar-cover.glass-thumb-card {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 0;
+}
+
+.glass-sidebar-cover .thumb-image {
+  border-radius: 0;
+}
+
+/* Right-aligned count badge on album rows. */
+.glass-sidebar-count {
+  color: inherit;
+  opacity: 0.72;
+  font-size: 0.92em;
+  font-weight: 500;
+}
+
+.glass-sidebar-row:selected .glass-sidebar-count {
+  opacity: 0.92;
+  font-weight: 600;
+}
+
+/* Albums group header — a non-selectable disclosure row. Bolder label, no
+   hover/selected veil (it never claims the selection), and a muted arrow. */
+.glass-sidebar-section {
+  min-height: 34px;
+  margin-top: 3px;
+}
+
+.glass-sidebar-section-label {
+  color: inherit;
+  font-weight: 700;
+  opacity: 0.78;
+}
+
+.glass-sidebar-arrow {
+  opacity: 0.6;
+  transition: transform 180ms ease;
+}
+
+/* Collapsed groups rotate the disclosure arrow -90deg so pan-down-symbolic
+   points right. Toggled from toggle_albums_expanded / toggle_media_types_expanded;
+   the icon itself stays pan-down-symbolic so the rotation animates instead of an
+   icon swap that would snap. */
+.glass-sidebar-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* Drag-to-reorder an album row. The dragged row is dimmed while held, and the
+   drop target shows an accent edge (top or bottom half) so the user sees where
+   the album will land. Inset shadow layers on top of the glass material, so it
+   reads correctly in both Liquid Glass and plain translucent modes. */
+.glass-sidebar-row-dragging {
+  opacity: 0.4;
+}
+.glass-sidebar-row-drop-above {
+  box-shadow: inset 0 2px 0 @accent_bg_color;
+}
+.glass-sidebar-row-drop-below {
+  box-shadow: inset 0 -2px 0 @accent_bg_color;
+}
+
+/* Album browser card drag sorting. These indicators sit on the card itself,
+   so they work regardless of how FlowBox wraps cards across columns. */
+.album-browser-card-dragging {
+  opacity: 0.45;
+}
+.album-browser-card-drop-before {
+  box-shadow: inset 0 3px 0 @accent_bg_color;
+}
+.album-browser-card-drop-after {
+  box-shadow: inset 0 -3px 0 @accent_bg_color;
+}
+
+/* viewer-stage — image content area; subtle radial wash that frames
+   the picture and separates it from app chrome. */
+.viewer-stage {
+  padding: 32px;
+  background:
+    radial-gradient(circle at center, alpha(@window_fg_color, 0.06), transparent 55%),
+    alpha(@window_bg_color, 0.10);
+}
+
+.viewer-media-surface {
+  background:
+    radial-gradient(circle at center, alpha(@window_fg_color, 0.03), transparent 62%),
+    alpha(@window_bg_color, 0.82);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.08);
+}
+
+/* Fullscreen preview entrance fade. The preview picture mounts at opacity 0 and
+   fades in when open_fullscreen_preview_window adds .fade-shown on the next idle
+   (after window.present()). EXIF rotation/zoom `transform` is written by a
+   runtime CssProvider on this same selector; `opacity` is a separate property,
+   so the two compose without conflict. */
+picture.viewer-fullscreen-preview-picture {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+picture.viewer-fullscreen-preview-picture.fade-shown {
+  opacity: 1;
+}
+
+/* The viewer loading spinner fades in/out via opacity (kept `visible: true`;
+   it lives in an overlay slot of the media stage, so visibility never reshapes
+   the Picture's allocation). `set_spinner_visible` toggles this class and
+   `set_spinning` so a hidden spinner stops its rotation work. */
+.viewer-spinner {
+  transition: opacity 180ms ease;
+}
+
+.viewer-spinner.viewer-spinner-hidden {
+  opacity: 0;
+}
+
+video.viewer-media-surface picture {
+  background: @window_bg_color;
+}
+
+.viewer-video-error {
+  background:
+    radial-gradient(circle at 50% 42%, alpha(@accent_bg_color, 0.16), transparent 30%),
+    radial-gradient(circle at 50% 44%, alpha(@window_fg_color, 0.06), transparent 54%),
+    alpha(@window_fg_color, 0.08);
+  color: alpha(@window_fg_color, 0.76);
+}
+
+.viewer-video-error-icon {
+  color: alpha(@window_fg_color, 0.54);
+  -gtk-icon-shadow: 0 10px 28px alpha(black, 0.22);
+}
+
+.viewer-video-error-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: alpha(@window_fg_color, 0.82);
+}
+
+.viewer-video-error-subtitle {
+  font-size: 13px;
+  color: alpha(@window_fg_color, 0.58);
+}
+
+video.viewer-media-surface controls {
+  padding: 7px 10px 6px;
+  background: alpha(@window_bg_color, 0.72);
+  color: alpha(@window_fg_color, 0.78);
+  border-top: 1px solid alpha(@window_fg_color, 0.12);
+}
+
+video.viewer-media-surface controls button {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: alpha(@window_fg_color, 0.74);
+  box-shadow: none;
+}
+
+video.viewer-media-surface controls button:hover {
+  background: alpha(@window_fg_color, 0.08);
+  color: @window_fg_color;
+}
+
+video.viewer-media-surface controls scale {
+  min-height: 18px;
+  padding: 0 4px;
+}
+
+video.viewer-media-surface controls scale trough {
+  min-height: 4px;
+  border-radius: 999px;
+  background: alpha(@window_fg_color, 0.16);
+  border: 0;
+}
+
+video.viewer-media-surface controls scale trough highlight {
+  min-height: 4px;
+  border-radius: 999px;
+  background: @accent_bg_color;
+}
+
+video.viewer-media-surface controls scale slider {
+  min-width: 14px;
+  min-height: 14px;
+  margin: -5px;
+  border-radius: 999px;
+  background: @window_bg_color;
+  border: 1px solid alpha(@window_fg_color, 0.14);
+  box-shadow:
+    0 2px 8px alpha(black, 0.24),
+    0 0 0 1px alpha(@accent_bg_color, 0.22);
+}
+
+.viewer-image-frame {
+  border-radius: 14px;
+  box-shadow:
+    0 24px 80px alpha(black, 0.38),
+    0 0 0 1px alpha(@window_fg_color, 0.10);
+}
+
+.viewer-details-name-row {
+  min-height: 68px;
+}
+
+.viewer-details-name-entry {
+  min-width: 180px;
+}
+
+/* glass-editor-preview — analogous to .viewer-stage, but calmer: the
+   editor's adjustment sliders occupy the same screen and need every
+   ounce of readable chrome, so this is a near-flat panel with a hairline
+   border, not a heavy glass stage.
+   比 viewer-stage 更克制:编辑器界面与调节滑块同屏,需要尽可能多的可读
+   chrome,所以这是近乎平坦的面板加一道细线边框,而不是沉重的玻璃舞台。 */
+.glass-editor-preview {
+  padding: 24px;
+  background: alpha(@window_bg_color, 0.06);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.10);
+}
+
+/* Viewer favorite button active state. Class is added/removed by
+   ViewerPage::refresh_favorite_button. Only the heart ICON recolors to a
+   translucent red — the button itself stays bare (no capsule), matching the
+   rest of the viewer chrome. 透明质感的半透明红,不是实心红。 */
+.viewer-favorite-btn.favorite-active {
+  color: alpha(#ff5e51, 0.92);
+}
+
+/* A touch brighter on hover so the red heart still reads against the lit
+   glass capsule that appears behind it on pointer-over. */
+.viewer-favorite-btn.favorite-active:hover {
+  color: alpha(#ff7a6e, 0.96);
+}
+
+/* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
+   would be too expensive at 10k–100k tiles and would blur the photo. */
+.glass-thumb-card {
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  /* Thumbnail fade-in. Opacity is CSS-driven (not widget.set_opacity) so the
+     transition actually fires, mirroring the proven .thumb-checkmark pattern:
+     .glass-thumb-card.thumb-loading holds opacity:0 while the texture loads;
+     SquareTile::set_paintable removes the class and the tile fades 0→1. */
+  transition: opacity 200ms ease;
+}
+
+.thumb-image {
+  border-radius: 10px;
+}
+
+.thumb-motion-badge {
+  color: alpha(white, 0.95);
+  background: alpha(black, 0.42);
+  border-radius: 999px;
+  padding: 5px;
+}
+
+.thumb-video-duration {
+  color: white;
+  background: alpha(black, 0.50);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-weight: 700;
+  font-size: 10pt;
+  text-shadow: 0 1px 2px alpha(black, 0.75);
+}
+
+.thumb-favorite-badge {
+  color: white;
+  -gtk-icon-shadow: 0 1px 3px alpha(black, 0.72);
+}
+
+.library-stats {
+  color: alpha(@window_fg_color, 0.68);
+  font-size: 12pt;
+  font-weight: 500;
+}
+
+/* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
+   在 set_paintable 里移除该 class。 */
+.thumb-loading {
+  background-color: alpha(@window_fg_color, 0.05);
+}
+
+/* Loading tiles are fully hidden (opacity 0) until their texture arrives,
+   then fade in via the .glass-thumb-card opacity transition when the class
+   is removed. Excludes .thumb-placeholder (the startup skeleton tiles built
+   by build_virtual_placeholder_flow, which stay visible on purpose) and is
+   scoped to thumb cards so the class never blanks an unrelated widget. */
+.glass-thumb-card.thumb-loading:not(.thumb-placeholder) {
+  opacity: 0;
+}
+
+.thumb-placeholder {
+  background-color: alpha(@window_fg_color, 0.08);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.10);
+}
+
+/* search-more-tile: show-more button styled as a grid tile */
+.search-more-tile {
+  min-width: 90px;
+  min-height: 90px;
+  border-radius: 10px;
+  padding: 0;
+  background: alpha(@window_fg_color, 0.06);
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  color: alpha(@window_fg_color, 0.52);
+  font-size: 11pt;
+  font-weight: 600;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.search-more-tile:hover {
+  background: alpha(@window_fg_color, 0.12);
+  border-color: alpha(@window_fg_color, 0.22);
+  color: @window_fg_color;
+}
+
+.search-more-tile:active {
+  background: alpha(@window_fg_color, 0.16);
+  border-color: alpha(@window_fg_color, 0.28);
+}
+
+/* ── Viewer filmstrip carousel — 缩略图预览栏 ────────────────────────────
+   The bottom strip is a low glass carousel surface. The live item window stays
+   bounded in viewer_page.rs; CSS owns the carousel motion, edge fade, and
+   current-item emphasis. Items keep original aspect ratio (set via
+   width-request after texture load).
+   ViewerPage 底部缩略图预览栏。Rust 只保留有限窗口; CSS 负责 carousel
+   位移、边缘渐隐与当前项强调。缩略图保持原始宽高比。 */
+.viewer-thumb-bar {
+  padding: 11px 16px;
+  border-radius: 18px;
+  min-height: 78px;
+}
+
+.viewer-thumb-carousel.glass-raised {
+  box-shadow:
+    inset 34px 0 24px -30px alpha(@window_bg_color, 0.72),
+    inset -34px 0 24px -30px alpha(@window_bg_color, 0.72),
+    inset 0 1px alpha(@window_fg_color, 0.22),
+    0 12px 34px alpha(black, 0.30);
+}
+
+.viewer-thumb-strip {
+  padding: 0 24px;
+  transition: transform 220ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  /* 让 strip 内 live buttons 的 min-width 之和不再撑大 viewer ——
+     GTK widget 的 min-width 默认继承子节点,设 0 切断累积 */
+  min-width: 0;
+}
+
+button.viewer-thumb-item {
+  padding: 1px;
+  min-width: 36px;
+  min-height: 56px;
+  border-radius: 8px;
+  background: transparent;
+  background-image: none;
+  border: 0;
+  outline: none;
+  transition:
+    background-color 150ms ease,
+    opacity 160ms ease,
+    outline-color 160ms ease,
+    transform 180ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  box-shadow: none;
+  opacity: 0.54;
+}
+
+button.viewer-thumb-item:hover,
+button.viewer-thumb-item:focus,
+button.viewer-thumb-item:focus-visible,
+button.viewer-thumb-item:active,
+button.viewer-thumb-item:checked {
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  outline: none;
+  border-color: transparent;
+}
+
+button.viewer-thumb-item.viewer-thumb-current {
+  transform: translateY(-3px) scale(1.24);
+  background: alpha(@window_fg_color, 0.12);
+  outline: 2px solid alpha(@window_fg_color, 0.55);
+  outline-offset: 2px;
+  box-shadow:
+    inset 0 1px alpha(@window_fg_color,0.35),
+    0 0 0 4px alpha(@window_fg_color, 0.12),
+    0 10px 24px alpha(black, 0.48);
+  opacity: 1.0;
+}
+
+button.viewer-thumb-item picture {
+  border-radius: 6px;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+button.viewer-thumb-item.viewer-thumb-current picture {
+  border: 2px solid alpha(@window_fg_color, 0.48);
+  box-shadow: 0 0 18px alpha(@window_fg_color, 0.20);
+}
+
+/* viewer-overlay-nav — layout box only for the prev/next overlay buttons.
+   It has NO capsule material: the container is bare and each button draws
+   its own glass surface on hover/focus (see the viewer-chrome hover rules in
+   the material blocks), so the pair reads as two light arrows floating over
+   the photo instead of a blocking chrome bar. */
+.viewer-overlay-nav {
+  padding: 0;
+}
+
+.viewer-overlay-nav-btn {
+  min-width: 36px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 10px;
+  /* These buttons float bare over the photo at rest and gain a theme-following
+     glass capsule on hover. The icon stays white in BOTH states so there is no
+     jarring light→dark jump on hover; the dark halo keeps it legible over any
+     photo and also over the light capsule a light theme produces on hover. */
+  color: #ffffff;
+  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.9), 0 0 6px alpha(black, 0.65);
+}
+
+/* viewer-floating-panel 内容链透明化 ─────────────────────────────
+   详情浮层叠在原图之上,但其内部 AdwPreferencesPage / AdwPreferencesGroup
+   的 .boxed-list 行默认带不透明卡片背景(libadwaita 默认样式),会盖住浮层
+   自身的半透明玻璃,导致看不到背后原图。这里把整条内容链强制透明、去掉卡片
+   投影,只保留行间细分隔,让 alpha(black) 材质(+ 运行时支持时的
+   backdrop-filter 模糊)成为可见面,原图能透出。两种玻璃模式共用,故置于此。
+   选择器以 .viewer-floating-panel 前缀提升优先级,盖过 libadwaita 的
+   `list.boxed-list > row` 等默认规则。 */
+.viewer-floating-panel preferencespage,
+.viewer-floating-panel preferencesgroup,
+.viewer-floating-panel scrolledwindow,
+.viewer-floating-panel viewport,
+.viewer-floating-panel list,
+.viewer-floating-panel .boxed-list {
+  background: transparent;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.viewer-floating-panel list row,
+.viewer-floating-panel .boxed-list > row,
+.viewer-floating-panel .boxed-list row {
+  background: transparent;
+  background-color: transparent;
+}
+
+/* details-split-view 内部 sidebar 容器透明化 ──────────────────────
+   Adw.OverlaySplitView wraps its sidebar child in an internal widget that
+   carries an opaque theme background (sidebar_bg_color). In collapsed
+   overlay mode this opaque wrapper sits between the photo and the
+   translucent glass panel, blocking the photo from showing through. Force
+   the wrapper layers transparent so the glass material on
+   .viewer-floating-panel becomes the visible surface.
+   OverlaySplitView 内部 sidebar 容器有不透明主题背景,会挡住玻璃浮层,
+   强制透明让原图能透出。 */
+.details-split-view {
+  background: transparent;
+  background-color: transparent;
+}
+.details-split-view > widget {
+  background: transparent;
+  background-color: transparent;
+}
+
+/* Settings content uses AdwPreferencesGroup rows for alignment, but the
+   default boxed-list card is too opaque inside the glass dialog. Keep the
+   content chain transparent and let the scoped material blocks below paint a
+   consistent translucent list surface. */
+.settings-dialog-content preferencesgroup,
+.settings-dialog-content list,
+.settings-dialog-content .boxed-list {
+  box-shadow: none;
+}
+
+.settings-dialog-content .boxed-list > row,
+.settings-dialog-content .boxed-list row,
+row.settings-action-row {
+  background: transparent;
+  background-color: transparent;
+}
+
+.settings-dialog-content label {
+  color: @window_fg_color;
+}
+
+.settings-dialog-content label.dim-label,
+.settings-dialog-content row.settings-action-row label.subtitle {
+  color: alpha(@window_fg_color, 0.62);
+}

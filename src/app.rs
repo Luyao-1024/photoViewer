@@ -601,8 +601,8 @@ mod tests {
                 &["TRASH_TRACE viewer_delete_requested id="],
             ),
             (
-                "ui/window.rs",
-                include_str!("ui/window.rs"),
+                "ui/window/albums.rs",
+                include_str!("ui/window/albums.rs"),
                 &["PHOTO_REFRESH_TRACE refresh_after_album_operation"],
             ),
             (
@@ -614,7 +614,7 @@ mod tests {
 
         for (path, source, messages) in cases {
             let production_source = source
-                .split("\n#[cfg(test)]")
+                .split("\n#[cfg(test)]\nmod tests")
                 .next()
                 .expect("source file must contain production code");
             for message in *messages {

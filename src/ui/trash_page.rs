@@ -33,7 +33,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::core::trash;
 use crate::ui::empty_states;
-use crate::ui::media_grid::square_tile::SquareTile;
+use crate::ui::square_tile::SquareTile;
 
 const TRASH_TILE_PX: i32 = 270;
 const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
@@ -557,7 +557,7 @@ mod tests {
         let _ = gtk::init();
         let tile = build_trash_tile(media_item(7), empty_loader());
 
-        assert!(tile.is::<crate::ui::media_grid::square_tile::SquareTile>());
+        assert!(tile.is::<crate::ui::square_tile::SquareTile>());
         assert_eq!(tile.target(), TRASH_TILE_PX);
         assert_eq!(TRASH_TILE_PX, 270);
         assert_eq!(TRASH_THUMB_SIZE, ThumbnailSize::Large);

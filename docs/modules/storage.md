@@ -16,7 +16,12 @@ Storage covers SQLite schema/migrations, media rows, filesystem scanning, metada
 | `src/core/metadata.rs` | EXIF metadata extraction |
 | `src/core/notify_watcher.rs` | Incremental filesystem watcher |
 | `src/core/media_change_notifier.rs` | Change notification plumbing |
-| `src/core/thumbnails.rs` | Thumbnail queue/cache/loader |
+| `src/core/thumbnails.rs` | Thumbnail loader public API, shared state, in-memory cache, and request entry points |
+| `src/core/thumbnails/queue.rs` | Thumbnail worker queue, priority pop, background pull, and in-flight tracking cleanup |
+| `src/core/thumbnails/decode.rs` | Thumbnail image decode, fallback placeholders, atomic cache writes, and brightness sampling |
+| `src/core/thumbnails/cache.rs` | Thumbnail cache keys, cache paths, and synchronous cache decoding |
+| `src/core/thumbnails/jpeg_turbo.rs` | JPEG signature checks and libjpeg-turbo scaled decode FFI |
+| `src/core/thumbnails/video.rs` | Video thumbnail extraction, ffmpegthumbnailer/GStreamer fallback, and play badge overlay |
 | `src/core/cache.rs` | Cache utilities |
 | `src/core/prefs.rs` | User preferences |
 | `src/core/runtime_config.rs` | Runtime sizing, loading, and worker strategy config |
@@ -94,7 +99,7 @@ instead of one adjacent row.
 
 User preferences are stored as JSON in `settings.json` under `config_dir()`. The file is a preserved-key object: writing one preference must keep unrelated keys intact. Current keys include `liquid_glass`, `liquid_glass_transparency` (clamped `0.0..=1.0`, default `0.0`; `0.0` is opaque and `1.0` is transparent), `video_default_muted` (default `true`), and `video_volume` (clamped `0.0..=1.0`, default `1.0`). Disabling `video_default_muted` also recovers `video_volume` to `1.0` when an earlier muted stream left a stale `0.0`, so "start unmuted" does not still produce silence; existing config files with `video_default_muted=false` and `video_volume=0.0` are treated the same way on read.
 
-Scan path preferences also live in `settings.json`. `custom_scan_roots` is an array of absolute directories added after the default Pictures/Videos roots. `excluded_scan_roots` is an array of absolute directories skipped by startup scans and runtime filesystem watching. These settings affect indexing only: excluding a folder must not delete files from disk, and must not call trash/delete operations.
+Scan path preferences also live in `settings.json`. `custom_scan_roots` is an array of absolute directories added after the default Pictures/Videos roots. `excluded_scan_roots` is an array of absolute directories skipped by startup scans and runtime filesystem watching. These settings affect indexing only: excluding a folder must not delete files from disk, and must not call trash/delete operations. The Settings dialog, scan path rows, restart prompts after scan/runtime changes, storage usage rows, and clear-cache/clear-database dialogs live in `src/ui/window/settings.rs`.
 
 Runtime sizing and loading strategy are stored separately in `runtime.json` under `config_dir()`. Missing or malformed files fall back to centralized defaults in `src/core/runtime_config.rs`; numeric values are clamped to at least `1`. Current runtime keys include `initial_media_page_size`, `virtual_media_page_size`, `ui_media_list_cap`, `max_rendered_grid_items`, `grid_render_absolute_cap`, `grid_render_expand_step`, `grid_reprioritize_debounce_ms`, `thumbnail_worker_count`, `thumbnail_speed_tier`, `thumbnail_queue_capacity`, `thumbnail_mem_cache_cap`, `thumbnail_disk_cache_bytes`, `thumbnail_prewarm_poll_ms`, `thumbnail_idle_wait_ms`, `notify_trash_debounce_ms`, and `notify_file_settle_ms`. The Settings page exposes the thumbnail generation speed as a horizontal radio selector with four tiers: slow = 1 worker, normal = 2 workers (the default), fast = 4 workers, fastest = CPU physical-core count. The selected tier is persisted as the `thumbnail_speed_tier` string (`slow`/`normal`/`fast`/`fastest`, unambiguous) alongside the derived `thumbnail_worker_count` (still read by the worker pool at startup); on read the tier string wins, falling back to `from_worker_count` for configs written by older versions that only stored the number. The worker pool reads `thumbnail_worker_count` when the app starts, so changing the tier takes effect after restart; after a successful change, Settings asks whether to restart immediately.
 

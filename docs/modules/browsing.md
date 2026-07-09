@@ -9,7 +9,14 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | File | Role |
 |---|---|
 | `src/ui/photos_page.rs` | Photos root page, view stack, shared store wiring |
-| `src/ui/media_grid.rs` | Grouped grid layout and tile sizing |
+| `src/ui/media_grid.rs` | MediaGrid widget state, constructors, public API shell, sizing specs, and shared grouping helpers |
+| `src/ui/media_grid/selection.rs` | Multi-select state, visible selection sync, context selection, and selection callbacks |
+| `src/ui/media_grid/updates.rs` | Incremental add/remove handling, deferred thumbnail-ready insertions, metadata cache adjustments, and grid rebuild implementation |
+| `src/ui/media_grid/viewport.rs` | Scroll-position viewport scan, visible thumbnail reprioritization, and scroll-triggered loading hooks |
+| `src/ui/media_grid/loading.rs` | Virtual page loading, progressive render fill, async library metadata/stats refresh, and rebuild scheduling |
+| `src/ui/media_grid/render.rs` | Tile construction, reused-tile preparation, and FlowBox child visibility sync |
+| `src/ui/media_grid/virtual_paging.rs` | Virtual scroll offset, spacer, and placeholder window helpers |
+| `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
 | `src/ui/photo_tile.rs` | Thumbnail tile widget |
 | `src/ui/section_header.rs` | Date/group section headers |

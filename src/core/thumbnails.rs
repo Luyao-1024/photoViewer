@@ -6,30 +6,41 @@
 //! - 内存 LRU 缓存已加载的 `Texture`，避免重复解码
 //! - **优先级队列**：可见 tile 可经 `prioritize_keys` 提到队首（BOOST），
 //!   先于普通（NORMAL）请求被 worker 取走，消除分页 rebuild / 滚动时的优先级倒置。
+mod cache;
+mod decode;
+mod jpeg_turbo;
+mod queue;
+mod video;
+
 use crate::core::db::DbPool;
-use crate::core::media::{media_kind_from_mime, mime_from_extension, MediaKind};
-use crate::core::orientation;
 use crate::core::runtime_config;
-use gdk_pixbuf::Pixbuf;
-use gstreamer as gst;
-use gstreamer::prelude::*;
-use gstreamer_app as gst_app;
-use gstreamer_video as gst_video;
+#[cfg(test)]
+use cache::cache_stem_for;
+#[cfg(test)]
+use cache::load_pixbuf_sync;
+use cache::{cache_key_str, existing_cache_path, load_pixbuf_sync_or_remove};
+use decode::pixbuf_is_light;
+#[cfg(test)]
+use decode::{
+    ensure_opaque, generate, generate_unavailable_placeholder, generate_via_pixbuf,
+    scale_pixbuf_to_fit,
+};
 use gtk4::gdk::Texture;
-use image::ImageEncoder;
 use lru::LruCache;
+use queue::worker_loop;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
-use std::fs::File;
-use std::io::{BufWriter, Read};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
+#[cfg(test)]
+use video::{
+    extract_video_frame_ffmpeg, ffmpeg_thumbnail_temp_path, overlay_play_icon, read_video_rotation,
+};
 
 /// 缩略图尺寸档位
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,7 +103,7 @@ const TIER_BACKGROUND: u8 = 2;
 /// `prioritize_keys` 提权时，只更新 `queued_tiers` 并 push 一条新 tier 的项；
 /// 旧 tier 的项在弹出时因 `tier` 与 `queued_tiers` 不符而被惰性丢弃。
 #[derive(Debug, Clone, Eq, PartialEq)]
-struct PriItem {
+pub(in crate::core::thumbnails) struct PriItem {
     tier: u8,
     seq: u64,
     cache_key: String,
@@ -133,7 +144,7 @@ impl PartialOrd for PriItem {
 /// 提权时无法从堆里就地改某条 `PriItem`，只能 push 新 tier 的堆项；但新堆项必须
 /// 携带**真实**的 uri/size/mtime（否则 worker 拿空 uri 去 generate 会失败）。所以
 /// 这些字段缓存在 `queued` 里，提权时据此重建 `PriItem`。
-struct QueuedEntry {
+pub(in crate::core::thumbnails) struct QueuedEntry {
     tier: u8,
     uri: String,
     size: ThumbnailSize,
@@ -143,7 +154,7 @@ struct QueuedEntry {
 }
 
 /// 优先级队列的可变状态。
-struct QueueState {
+pub(in crate::core::thumbnails) struct QueueState {
     /// 工作项堆（`Reverse` 让最大堆弹出最小 (tier, seq)）。
     heap: BinaryHeap<Reverse<PriItem>>,
     /// `cache_key` → 排队中的请求（含 tier 与生成参数）。弹出时据此校验堆项是否
@@ -157,9 +168,10 @@ struct QueueState {
 
 /// 队列 + 唤醒条件变量。worker（spawn_blocking OS 线程）在 `cvar` 上阻塞等待，
 /// 故用 **std `Condvar`**（不是 tokio 的——它需要 reactor，而 worker 不 `.await`）。
-type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
-type StatsDirtyCallback = Arc<dyn Fn() + Send + Sync>;
-type SharedStatsDirtyCallback = Arc<Mutex<Option<StatsDirtyCallback>>>;
+pub(in crate::core::thumbnails) type SharedQueue = Arc<(Mutex<QueueState>, Condvar)>;
+pub(in crate::core::thumbnails) type StatsDirtyCallback = Arc<dyn Fn() + Send + Sync>;
+pub(in crate::core::thumbnails) type SharedStatsDirtyCallback =
+    Arc<Mutex<Option<StatsDirtyCallback>>>;
 
 /// 加载器的可变缓存状态，用单一 Mutex 保护。
 ///
@@ -167,7 +179,7 @@ type SharedStatsDirtyCallback = Arc<Mutex<Option<StatsDirtyCallback>>>;
 /// "查 mem_cache → 查 in_flight → 登记并入队" 与 worker 端的
 /// "写 mem_cache → 取走等待者" 互斥执行，杜绝二者之间的竞态窗口
 /// （否则一个刚完成的 key 可能被新请求当作未生成而重复入队）。
-struct LoaderState {
+pub(in crate::core::thumbnails) struct LoaderState {
     mem_cache: LruCache<String, LoadedThumb>,
     /// `cache_key` → 正在生成的请求的等待者列表。
     ///
@@ -178,7 +190,7 @@ struct LoaderState {
 }
 
 /// 后台预热拉取状态：worker 在队列为空时据此从 DB 拉取下一个需生成的项。
-struct BackgroundPullState {
+pub(in crate::core::thumbnails) struct BackgroundPullState {
     enabled: AtomicBool,
     offset: Mutex<u32>,
     /// 预热缩略图尺寸（跟随当前视图模式，默认 Small）。
@@ -734,1286 +746,28 @@ impl Drop for ThumbnailLoader {
     }
 }
 
-fn worker_loop(
-    queue: SharedQueue,
-    pool: DbPool,
-    cache_dir: PathBuf,
-    state: Arc<Mutex<LoaderState>>,
-    bg: Arc<BackgroundPullState>,
-    stats_dirty_callback: SharedStatsDirtyCallback,
-) {
-    while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
-        // `thumb:process` spans the worker's per-item work (queue pickup →
-        // result), with `queue_wait_ms` recorded as a field. It parents the
-        // `thumb:generate` span created inside `generate`.
-        let process_span = tracing::debug_span!(
-            "thumb:process",
-            uri = %req.uri,
-            size = ?req.size,
-            tier = req.tier,
-            media_id = req.media_id,
-            queue_wait_ms = req.enqueued_at.elapsed().as_millis(),
-        );
-        let _process_guard = process_span.enter();
-        match generate(&cache_dir, &req.uri, req.size, req.mtime) {
-            Ok(pb) => {
-                // 带 media_id 的请求生成成功后立刻标记，避免统计落后于可见缩略图。
-                let generated_media_id = (req.media_id != 0).then_some(req.media_id);
-                let is_light = pixbuf_is_light(&pb);
-                let texture = Texture::for_pixbuf(&pb);
-                let loaded = LoadedThumb {
-                    texture: texture.clone(),
-                    is_light,
-                };
-                let is_bg = req.tier >= TIER_BACKGROUND;
-                let waiters = {
-                    let mut st = match state.lock() {
-                        Ok(s) => s,
-                        Err(_) => return,
-                    };
-                    if !is_bg {
-                        st.mem_cache.put(req.cache_key.clone(), loaded.clone());
-                    }
-                    st.in_flight.remove(&req.cache_key).unwrap_or_default()
-                };
-                debug!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_LOADER_TRACE worker_loaded uri={} size={:?} tier={} media_id={} texture={}x{} waiters={} cache_key={}",
-                    req.uri,
-                    req.size,
-                    req.tier,
-                    req.media_id,
-                    pb.width(),
-                    pb.height(),
-                    waiters.len(),
-                    req.cache_key
-                );
-                if let Some(media_id) = generated_media_id {
-                    if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
-                        warn!("更新缩略图状态失败: {}", e);
-                    } else if let Ok(callback) = stats_dirty_callback.lock() {
-                        debug!(
-                            target: crate::core::log_targets::THUMBNAILS,
-                            "THUMB_LOADER_TRACE mark_generated media_id={} uri={}",
-                            media_id,
-                            req.uri
-                        );
-                        if let Some(callback) = callback.as_ref() {
-                            callback();
-                        }
-                    }
-                }
-                for w in waiters {
-                    let _ = w.send(loaded.clone());
-                }
-            }
-            Err(e) => {
-                drop_in_flight(&state, &req.cache_key);
-                warn!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB worker_failed uri={} size={:?} tier={} error={}",
-                    req.uri,
-                    req.size,
-                    req.tier,
-                    e
-                );
-            }
-        }
-    }
-}
-
-/// 取下一个工作项：优先队列（网格请求），队列空时从 DB 批量拉取
-/// `worker_count` 条需生成的项一次性入队并唤醒所有 worker。
-fn next_request_or_pull(
-    queue: &SharedQueue,
-    pool: &DbPool,
-    bg: &Arc<BackgroundPullState>,
-    state: &Arc<Mutex<LoaderState>>,
-) -> Option<PriItem> {
-    let (lock, cvar) = &**queue;
-    loop {
-        // 1) 优先从队列弹（BOOST/NORMAL，网格可见请求）
-        let mut q = lock.lock().ok()?;
-        loop {
-            if q.closed {
-                return None;
-            }
-            if let Some(Reverse(item)) = q.heap.pop() {
-                if q.queued.get(&item.cache_key).map(|e| e.tier) == Some(item.tier) {
-                    q.queued.remove(&item.cache_key);
-                    return Some(item);
-                }
-                continue; // 过期项
-            }
-            break; // 堆空
-        }
-        drop(q);
-
-        // 2) 队列空，从 DB 批量拉取需生成的项
-        if bg.enabled.load(AtomicOrdering::Relaxed) {
-            if let Some(item) = pull_batch_and_enqueue(pool, bg, queue, state) {
-                return Some(item);
-            }
-        }
-
-        // 3) 无可做，阻塞等待。
-        let q = lock.lock().ok()?;
-        if q.closed {
-            return None;
-        }
-        if !q.heap.is_empty() {
-            continue;
-        }
-        let wait_dur = if bg.enabled.load(AtomicOrdering::Relaxed) {
-            std::time::Duration::from_millis(runtime_config::thumbnail_prewarm_poll_ms())
-        } else {
-            std::time::Duration::from_millis(runtime_config::thumbnail_idle_wait_ms())
-        };
-        let (q2, _timed_out) = cvar.wait_timeout(q, wait_dur).ok()?;
-        drop(q2);
-    }
-}
-
-/// 从 DB 批量拉取 `worker_count` 条需生成的项，全部入队并唤醒其他 worker，
-/// 返回一条给调用方自己处理（等价于调用方先从队里弹一条）。
-///
-/// 已缓存（`thumbnail_generated_at >= file_mtime`）的项由 DB 查询自动过滤，
-/// 不再需要磁盘 stat。拉取到末尾返回 `None`；下次超时重试时会因为已缓存项增加
-/// 而自然收敛。
-fn pull_batch_and_enqueue(
-    pool: &DbPool,
-    bg: &BackgroundPullState,
-    queue: &SharedQueue,
-    state: &Mutex<LoaderState>,
-) -> Option<PriItem> {
-    let batch_size = *bg.worker_count.lock().ok()? as u32;
-    let start_offset = {
-        let mut off = bg.offset.lock().ok()?;
-        let start = *off;
-        *off = off.saturating_add(batch_size);
-        start
-    };
-    let page = crate::core::db::list_media_needing_thumbnail_from_live_offset(
-        pool,
-        start_offset,
-        batch_size,
-    )
-    .ok()?;
-    if page.is_empty() {
-        if let Ok(mut off) = bg.offset.lock() {
-            *off = 0;
-        }
-        return None;
-    }
-
-    let size = *bg.size.lock().ok()?;
-
-    // 全部转成 PriItem，批量入队
-    let items: Vec<PriItem> = page
-        .iter()
-        .map(|item| {
-            let mtime = Some(std::time::SystemTime::from(item.file_mtime));
-            let cache_key =
-                cache_key_str(&item.uri, size, mtime).unwrap_or_else(|| format!("bg:{}", item.uri));
-            PriItem {
-                tier: TIER_BACKGROUND,
-                seq: 0,
-                cache_key,
-                uri: item.uri.clone(),
-                size,
-                mtime,
-                enqueued_at: Instant::now(),
-                media_id: item.id,
-            }
-        })
-        .collect();
-
-    let (lock, cvar) = &**queue;
-    let mut st = state.lock().ok()?;
-    let mut q = lock.lock().ok()?;
-    let mut first = None;
-    for item in items {
-        if st.in_flight.contains_key(&item.cache_key) || q.queued.contains_key(&item.cache_key) {
-            continue;
-        }
-        if first.is_none() {
-            st.in_flight.insert(item.cache_key.clone(), Vec::new());
-            first = Some(item);
-            continue;
-        }
-        if q.queued.len() < runtime_config::thumbnail_queue_capacity() {
-            st.in_flight.insert(item.cache_key.clone(), Vec::new());
-            q.queued.insert(
-                item.cache_key.clone(),
-                QueuedEntry {
-                    tier: TIER_BACKGROUND,
-                    uri: item.uri.clone(),
-                    size: item.size,
-                    mtime: item.mtime,
-                    enqueued_at: item.enqueued_at,
-                    media_id: item.media_id,
-                },
-            );
-            q.heap.push(Reverse(item));
-        }
-    }
-    let queued_any = !q.heap.is_empty();
-    drop(q);
-    drop(st);
-    if queued_any {
-        // 唤醒所有 sleep 的 worker 来消费刚入队的项。
-        cvar.notify_all();
-    }
-
-    first
-}
-
-/// 生成失败时移除在途项，让等待者的 `rx` 收到 `Err` 而非永久挂起。
-fn drop_in_flight(state: &Mutex<LoaderState>, cache_key: &str) {
-    if let Ok(mut st) = state.lock() {
-        st.in_flight.remove(cache_key);
-    }
-}
-
-/// 解析 uri → 源路径 + mtime。`mtime` 优先用调用方给的（来自 `MediaItem.file_mtime`，
-/// 避免主线程 stat）；否则现场 `metadata` + `modified()` 兜底。
-fn resolve_src(uri: &str, mtime: Option<SystemTime>) -> anyhow::Result<(PathBuf, SystemTime)> {
-    let path_str = uri.strip_prefix("file://").unwrap_or(uri);
-    let src_path = PathBuf::from(path_str);
-    let mtime = match mtime {
-        Some(m) => m,
-        None => std::fs::metadata(&src_path)?.modified()?,
-    };
-    Ok((src_path, mtime))
-}
-
-/// 与 worker 端一致的 mem-cache 键字符串（`{path:?}:{mtime:?}:{size:?}`）。
-/// 在 request 端提前算好，用于 mem_cache 查询与在途去重；`mtime=None` 且源文件
-/// 无法 stat 时返回 `None`（调用方据此把请求当作生成失败处理）。
-fn cache_key_str(uri: &str, size: ThumbnailSize, mtime: Option<SystemTime>) -> Option<String> {
-    let (path, mtime) = resolve_src(uri, mtime).ok()?;
-    Some(format!("{path:?}:{mtime:?}:{size:?}"))
-}
-
-/// 同步加载缩略图缓存文件，确保文件完全写入后再解码。
-///
-/// 使用 `std::fs::read` 读取整个文件到内存，然后从内存构造 Pixbuf。
-/// 这避免了 gdk-pixbuf 直接读取文件时可能遇到的竞态条件（文件被写入一半）。
-fn load_pixbuf_sync(path: &Path) -> anyhow::Result<Pixbuf> {
-    let data =
-        std::fs::read(path).map_err(|e| anyhow::anyhow!("读取缓存文件失败 {:?}: {}", path, e))?;
-    if data.is_empty() {
-        anyhow::bail!("缓存文件为空: {:?}", path);
-    }
-    let bytes = glib::Bytes::from(&data);
-    let stream = gtk4::gio::MemoryInputStream::from_bytes(&bytes);
-    Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)
-        .map_err(|e| anyhow::anyhow!("缓存缩略图解码失败 {:?}: {}", path, e))
-}
-
-fn load_pixbuf_sync_or_remove(path: &Path) -> anyhow::Result<Pixbuf> {
-    match load_pixbuf_sync(path) {
-        Ok(pb) => Ok(pb),
-        Err(e) => {
-            if let Err(remove_err) = std::fs::remove_file(path) {
-                warn!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB invalid_cache_remove_failed cache_path={} error={}",
-                    path.display(),
-                    remove_err
-                );
-            } else {
-                warn!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB invalid_cache_removed cache_path={} error={}",
-                    path.display(),
-                    e
-                );
-            }
-            Err(e)
-        }
-    }
-}
-
-fn existing_cache_path(
-    cache_dir: &Path,
-    uri: &str,
-    size: ThumbnailSize,
-    mtime: Option<SystemTime>,
-) -> anyhow::Result<Option<PathBuf>> {
-    let cache_stem = cache_stem_for(cache_dir, uri, size, mtime)?;
-    let webp_path = cache_stem.with_extension("webp");
-    if webp_path.exists() {
-        return Ok(Some(webp_path));
-    }
-    let jpeg_path = cache_stem.with_extension("jpg");
-    if jpeg_path.exists() {
-        return Ok(Some(jpeg_path));
-    }
-    Ok(None)
-}
-
-fn cache_stem_for(
-    cache_dir: &Path,
-    uri: &str,
-    size: ThumbnailSize,
-    mtime: Option<SystemTime>,
-) -> anyhow::Result<PathBuf> {
-    let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let key = format!("thumb-v3:{}{:?}", src_path.display(), mtime);
-    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
-    Ok(cache_dir
-        .join("thumbnails")
-        .join(size.subdir())
-        .join(&hash[..2])
-        .join(hash.as_str()))
-}
-
-#[tracing::instrument(name = "thumb:generate", skip(cache_dir), level = "debug")]
-fn generate(
-    cache_dir: &Path,
-    uri: &str,
-    size: ThumbnailSize,
-    mtime: Option<SystemTime>,
-) -> anyhow::Result<Pixbuf> {
-    let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let cache_stem = cache_stem_for(cache_dir, uri, size, Some(mtime))?;
-    let jpeg_path = cache_stem.with_extension("jpg");
-    let webp_path = cache_stem.with_extension("webp");
-
-    for cache_path in [&webp_path, &jpeg_path] {
-        if !cache_path.exists() {
-            continue;
-        }
-        debug!(
-            target: crate::core::log_targets::THUMBNAILS,
-            "THUMB disk_cache_hit source_uri={} source_path={} size={:?} cache_path={}",
-            uri,
-            src_path.display(),
-            size,
-            cache_path.display()
-        );
-        // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
-        // 使用同步读取确保文件完全写入后再解码。坏缓存会删除并继续重新生成。
-        match load_pixbuf_sync_or_remove(cache_path) {
-            Ok(pb) => return Ok(pb),
-            Err(e) => {
-                warn!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB disk_cache_invalid source_uri={} source_path={} size={:?} cache_path={} error={}",
-                    uri,
-                    src_path.display(),
-                    size,
-                    cache_path.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    if let Some(parent) = cache_stem.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    if mime_from_extension(&src_path).and_then(media_kind_from_mime) == Some(MediaKind::Video) {
-        match extract_video_frame(&src_path, size.max_dim()) {
-            Ok(pb) => {
-                let scaled = scale_pixbuf_to_fit(&pb, size.max_dim());
-                let cache_path = cache_stem.with_extension("jpg");
-                let thumb = ensure_opaque(&scaled);
-                save_pixbuf_as_jpeg_atomic(&thumb, &cache_path)
-                    .map_err(|e| anyhow::anyhow!("视频缩略图保存失败 {:?}: {}", cache_path, e))?;
-                debug!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB video_generated source_uri={} source_path={} size={:?} cache_path={}",
-                    uri,
-                    src_path.display(),
-                    size,
-                    cache_path.display()
-                );
-                return Ok(thumb);
-            }
-            Err(e) => {
-                debug!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB video_extract_failed source_uri={} source_path={} size={:?} error={}",
-                    uri,
-                    src_path.display(),
-                    size,
-                    e
-                );
-                let placeholder =
-                    generate_unavailable_placeholder(size.max_dim(), &cache_stem, true)?;
-                debug!(
-                    target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB video_placeholder_generated source_uri={} source_path={} size={:?}",
-                    uri,
-                    src_path.display(),
-                    size
-                );
-                return Ok(placeholder);
-            }
-        }
-    }
-
-    // 统一用 gdk-pixbuf 解码 + 缩放：覆盖面广（JPEG/PNG/WebP/TIFF，flatpak
-    // GNOME 50 runtime 还自带 libheif，能解 HEIC/AVIF），且其双线性缩放与 image
-    // crate 的面积滤波在缩略图尺寸下肉眼无差（已 A/B 对照确认），故走单一路径。
-    // 直接把缩放好的 pixbuf 返回给 worker 复用，省掉"写盘后再解码一次"的冗余。
-    match generate_via_pixbuf(&src_path, size.max_dim(), &cache_stem) {
-        Ok(pixbuf) => {
-            debug!(
-                target: crate::core::log_targets::THUMBNAILS,
-                "THUMB image_generated source_uri={} source_path={} size={:?} cache_stem={}",
-                uri,
-                src_path.display(),
-                size,
-                cache_stem.display()
-            );
-            Ok(pixbuf)
-        }
-        Err(e) => {
-            warn!(
-                target: crate::core::log_targets::THUMBNAILS,
-                "THUMB image_decode_failed source_uri={} source_path={} size={:?} error={}",
-                uri,
-                src_path.display(),
-                size,
-                e
-            );
-            generate_unavailable_placeholder(size.max_dim(), &cache_stem, false)
-        }
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn generate_for_tests(
-    cache_dir: &Path,
+    cache_dir: &std::path::Path,
     uri: &str,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
-) -> anyhow::Result<Pixbuf> {
+) -> anyhow::Result<gdk_pixbuf::Pixbuf> {
     generate(cache_dir, uri, size, mtime)
-}
-
-fn generate_unavailable_placeholder(
-    max_dim: u32,
-    cache_stem: &Path,
-    is_video: bool,
-) -> anyhow::Result<Pixbuf> {
-    let width = max_dim as i32;
-    let height = if is_video {
-        ((max_dim as f64) * 9.0 / 16.0).round().max(1.0) as i32
-    } else {
-        width
-    };
-    let pb = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height)
-        .ok_or_else(|| anyhow::anyhow!("failed to allocate unavailable thumbnail"))?;
-    pb.fill(0x242932ff);
-
-    let rowstride = pb.rowstride() as usize;
-    let channels = pb.n_channels() as usize;
-    let cx = width / 2;
-    let cy = height / 2;
-    let icon = (width.min(height) / 3).clamp(28, 140);
-    let left = (cx - icon / 2).max(0);
-    let right = (cx + icon / 2).min(width - 1);
-    let top = (cy - icon / 2).max(0);
-    let bottom = (cy + icon / 2).min(height - 1);
-    let stroke = (icon / 12).clamp(3, 10);
-
-    unsafe {
-        let pixels = pb.pixels();
-        for y in 0..height {
-            for x in 0..width {
-                let i = y as usize * rowstride + x as usize * channels;
-                if i + 2 < pixels.len() {
-                    let vignette = (((x - cx).abs() + (y - cy).abs()) * 22 / width.max(1)) as u8;
-                    pixels[i] = 36_u8.saturating_add(vignette);
-                    pixels[i + 1] = 41_u8.saturating_add(vignette);
-                    pixels[i + 2] = 50_u8.saturating_add(vignette);
-                }
-            }
-        }
-
-        for y in top..=bottom {
-            for x in left..=right {
-                let border = x < left + stroke
-                    || x > right - stroke
-                    || y < top + stroke
-                    || y > bottom - stroke;
-                let slash = ((x - left) - (y - top)).abs() <= stroke;
-                if !border && !slash {
-                    continue;
-                }
-                let i = y as usize * rowstride + x as usize * channels;
-                if i + 2 < pixels.len() {
-                    if slash {
-                        pixels[i] = 239;
-                        pixels[i + 1] = 99;
-                        pixels[i + 2] = 88;
-                    } else {
-                        pixels[i] = 154;
-                        pixels[i + 1] = 163;
-                        pixels[i + 2] = 176;
-                    }
-                }
-            }
-        }
-    }
-
-    let cache_path = cache_stem.with_extension("jpg");
-    save_pixbuf_as_jpeg_atomic(&pb, &cache_path).map_err(|e| {
-        anyhow::anyhow!(
-            "unavailable thumbnail save failed {:?}: {}",
-            cache_stem.with_extension("jpg"),
-            e
-        )
-    })?;
-    Ok(pb)
-}
-
-/// 用 GStreamer 从视频文件中提取一帧作为缩略图。
-///
-/// 提取视频封面帧：优先调用 [`extract_video_frame_ffmpeg`]（基于 libav，正确处理
-/// limited→full 色彩范围、HDR→SDR 色调映射与旋转），失败时回退到内置 GStreamer
-/// 管线 [`extract_video_frame_gst`]。两条路径返回的帧均已在左下角叠加播放图标。
-fn extract_video_frame(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
-    match extract_video_frame_ffmpeg(path, max_dim) {
-        Ok(pb) => Ok(pb),
-        Err(e) => {
-            debug!(
-                "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer {}: {}",
-                path.display(),
-                e
-            );
-            extract_video_frame_gst(path, max_dim)
-        }
-    }
-}
-
-/// 用外部 `ffmpegthumbnailer` 生成封面帧。它内部走 libav，会正确扩展 limited
-/// range（YUV 16–235 → RGB 0–255）并做 HDR→SDR 与旋转，避免手写管线把窄范围
-/// 原样塞进 RGB 导致缩略图发灰、低饱和。输出 PNG（无损，避免二次 JPEG 压缩），
-/// 解码后在左下角叠加播放图标。
-fn extract_video_frame_ffmpeg(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
-    let tmp = ffmpeg_thumbnail_temp_path(path, max_dim);
-
-    let out = Command::new("ffmpegthumbnailer")
-        .args([
-            "-i",
-            &path.to_string_lossy(),
-            "-o",
-            &tmp.to_string_lossy(),
-            "-s",
-            &max_dim.to_string(),
-            "-t",
-            "10%",
-            "-c",
-            "png",
-        ])
-        .output()
-        .map_err(|e| anyhow::anyhow!("启动 ffmpegthumbnailer 失败: {e}"))?;
-
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let _ = std::fs::remove_file(&tmp);
-        anyhow::bail!(
-            "ffmpegthumbnailer 退出码 {:?}: {}",
-            out.status.code(),
-            stderr.trim()
-        );
-    }
-
-    let pb = load_pixbuf_sync(&tmp);
-    let _ = std::fs::remove_file(&tmp);
-    let pb = pb?;
-    let pb = overlay_play_icon(&pb);
-    debug!(
-        "VIDEO_THUMB ffmpegthumbnailer 提取成功 {}x{}",
-        pb.width(),
-        pb.height()
-    );
-    Ok(pb)
-}
-
-fn ffmpeg_thumbnail_temp_path(path: &Path, max_dim: u32) -> std::path::PathBuf {
-    let key = format!("{}:{max_dim}", path.to_string_lossy());
-    std::env::temp_dir().join(format!(
-        "pvthumb-{}-{}.png",
-        std::process::id(),
-        blake3::hash(key.as_bytes()).to_hex()
-    ))
-}
-
-/// GStreamer fallback：`uridecodebin → videoflip(auto) → videoconvert → appsink`，
-/// seek 到约 1 秒（或总时长 10%）处拉取一帧。输出 caps 显式指定 `colorimetry=sRGB`
-/// 以强制 videoconvert 做 limited→full 色彩范围扩展，修复 TV-range 视频发灰。
-fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf> {
-    debug!("VIDEO_THUMB 提取视频帧(GStreamer): {}", path.display());
-    gst::init().map_err(|e| anyhow::anyhow!("GStreamer 初始化失败: {e}"))?;
-
-    let uri =
-        glib::filename_to_uri(path, None).map_err(|e| anyhow::anyhow!("路径转 URI 失败: {e}"))?;
-
-    // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
-    // videoflip video-direction=auto 从所有来源（容器 tkhd、编码 SEI、tags）自动检测并应用旋转。
-    // videoconvert 负责 YUV→RGB；显式 colorimetry=sRGB 强制输出 full-range sRGB，
-    // 避免 limited-range(TV) 视频黑/白点被压在 16/235 导致缩略图发灰低饱和。
-    let desc = format!(
-        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB,colorimetry=sRGB ! appsink name=sink",
-        uri
-    );
-    let pipeline =
-        gst::parse::launch(&desc).map_err(|e| anyhow::anyhow!("创建 pipeline 失败: {e}"))?;
-    let pipeline = pipeline
-        .downcast::<gst::Pipeline>()
-        .map_err(|_| anyhow::anyhow!("pipeline 类型转换失败"))?;
-
-    // 获取 appsink 元素。
-    let appsink_el = pipeline
-        .by_name("sink")
-        .ok_or_else(|| anyhow::anyhow!("找不到 appsink 元素"))?;
-    let appsink = appsink_el
-        .downcast_ref::<gst_app::AppSink>()
-        .ok_or_else(|| anyhow::anyhow!("appsink 类型转换失败"))?;
-
-    appsink.set_max_buffers(1);
-    appsink.set_drop(true);
-
-    // 启动 pipeline。
-    pipeline
-        .set_state(gst::State::Playing)
-        .map_err(|e| anyhow::anyhow!("设置 Playing 失败: {e}"))?;
-
-    // 等待 pipeline 进入 Playing（带超时）。
-    let bus = pipeline
-        .bus()
-        .ok_or_else(|| anyhow::anyhow!("pipeline 无 bus"))?;
-    let start = std::time::Instant::now();
-    loop {
-        let (_, state, _) = pipeline.state(gst::ClockTime::from_mseconds(100));
-        if state == gst::State::Playing {
-            break;
-        }
-        if start.elapsed().as_secs() >= 5 {
-            let (_, cur_state, _) = pipeline.state(gst::ClockTime::ZERO);
-            pipeline.set_state(gst::State::Null).ok();
-            anyhow::bail!("等待 Playing 超时，当前状态: {:?}", cur_state);
-        }
-        while let Some(msg) = bus.pop() {
-            if let gst::MessageView::Error(e) = msg.view() {
-                pipeline.set_state(gst::State::Null).ok();
-                anyhow::bail!("GStreamer 错误: {}", e.error().message());
-            }
-        }
-    }
-
-    // 查询时长并 seek 到合适位置。
-    let seek_pos = if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
-        let one_sec = gst::ClockTime::from_seconds(1);
-        let ten_pct = duration
-            .nseconds()
-            .checked_mul(10)
-            .and_then(|n| n.checked_div(100))
-            .map(gst::ClockTime::from_nseconds)
-            .unwrap_or(gst::ClockTime::ZERO);
-        let target = std::cmp::max(one_sec, ten_pct);
-        if target >= duration {
-            gst::ClockTime::ZERO
-        } else {
-            target
-        }
-    } else {
-        gst::ClockTime::from_seconds(1)
-    };
-
-    if !seek_pos.is_none() {
-        let _ = pipeline.seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, seek_pos);
-        // 等待 seek 完成。
-        let _ = bus.timed_pop_filtered(
-            gst::ClockTime::from_seconds(3),
-            &[gst::MessageType::AsyncDone, gst::MessageType::Error],
-        );
-    }
-
-    // 拉取一帧。
-    let sample = match appsink.try_pull_sample(gst::ClockTime::from_seconds(3)) {
-        Some(s) => s,
-        None => {
-            pipeline.set_state(gst::State::Null).ok();
-            anyhow::bail!("拉取视频帧超时或无数据");
-        }
-    };
-
-    let buffer = sample
-        .buffer()
-        .ok_or_else(|| anyhow::anyhow!("sample 无 buffer"))?;
-    let caps = sample
-        .caps()
-        .ok_or_else(|| anyhow::anyhow!("sample 无 caps"))?;
-    let vinfo = gst_video::VideoInfo::from_caps(caps)
-        .map_err(|e| anyhow::anyhow!("解析视频 caps 失败: {e}"))?;
-
-    let width = vinfo.width() as i32;
-    let height = vinfo.height() as i32;
-    let stride = vinfo.stride()[0] as i32;
-
-    let map = buffer
-        .map_readable()
-        .map_err(|e| anyhow::anyhow!("buffer 映射失败: {e}"))?;
-    let data = map.as_slice();
-
-    // 构造 Pixbuf（RGB，无 alpha，3 通道）。
-    let pb = Pixbuf::from_mut_slice(
-        data.to_vec().into_boxed_slice(),
-        gdk_pixbuf::Colorspace::Rgb,
-        false,
-        8,
-        width,
-        height,
-        stride,
-    );
-
-    pipeline.set_state(gst::State::Null).ok();
-
-    // 旋转已由 GStreamer pipeline 中的 videoflip video-direction=auto 自动处理，
-    // 无需手动读取容器元数据并应用方向校正。
-
-    debug!("VIDEO_THUMB 提取成功 {}x{}", pb.width(), pb.height());
-
-    // 在左下角叠加半透明播放图标。
-    let pb = overlay_play_icon(&pb);
-
-    Ok(pb)
-}
-
-/// 从 MP4/MOV 容器的 tkhd atom 中读取视频旋转角度（0/90/180/270）。
-///
-/// MP4 容器在 track header (tkhd) 中存储一个 3×3 仿射矩阵。
-/// 旋转信息编码在矩阵的 a,b,c,d 分量中（16.16 定点数）：
-///   - 0°:   a=1, b=0, c=0, d=1
-///   - 90°:  a=0, b=1, c=-1, d=0
-///   - 180°: a=-1, b=0, c=0, d=-1
-///   - 270°: a=0, b=-1, c=1, d=0
-///
-/// 递归搜索 tkhd atom 以处理嵌套的 box 结构（moov → trak → tkhd）。
-#[allow(dead_code)] // used in tests
-fn read_video_rotation(path: &Path) -> i32 {
-    let Ok(data) = std::fs::read(path) else {
-        return 0;
-    };
-
-    // 递归搜索 tkhd atom。
-    fn find_tkhd_rotation(data: &[u8], start: usize, end: usize) -> i32 {
-        let mut pos = start;
-        while pos + 8 <= end && pos + 8 <= data.len() {
-            let size = u32::from_be_bytes(data[pos..pos + 4].try_into().unwrap_or([0; 4])) as usize;
-            if size < 8 {
-                break;
-            }
-            let typ = &data[pos + 4..pos + 8];
-
-            // 递归进入容器 atom（moov, trak 等）。
-            if typ == b"moov" || typ == b"trak" {
-                let child_start = pos + 8;
-                let child_end = pos + size;
-                if child_end <= data.len() {
-                    let result = find_tkhd_rotation(data, child_start, child_end);
-                    if result != 0 {
-                        return result;
-                    }
-                }
-            }
-
-            // 找到 tkhd atom，解析旋转矩阵。
-            if typ == b"tkhd" && size >= 84 {
-                let version = data[pos + 8];
-                // 矩阵偏移量：version + flags + creation_time + modification_time +
-                // track_ID + reserved + duration + reserved + layer + alternate_group +
-                // volume + reserved = 40 bytes for version 0, 52 for version 1
-                let matrix_offset = if version == 0 {
-                    pos + 8 + 40 // 4 + 4 + 4 + 4 + 4 + 4 + 8 + 2 + 2 + 2 + 2
-                } else {
-                    pos + 8 + 52 // 4 + 8 + 8 + 4 + 4 + 8 + 8 + 2 + 2 + 2 + 2
-                };
-
-                if matrix_offset + 36 <= data.len() {
-                    let a = i32::from_be_bytes(
-                        data[matrix_offset..matrix_offset + 4]
-                            .try_into()
-                            .unwrap_or([0; 4]),
-                    );
-                    let b = i32::from_be_bytes(
-                        data[matrix_offset + 4..matrix_offset + 8]
-                            .try_into()
-                            .unwrap_or([0; 4]),
-                    );
-
-                    let a_f = a as f64 / 65536.0;
-                    let b_f = b as f64 / 65536.0;
-
-                    if a_f.abs() < 0.01 && (b_f - 1.0).abs() < 0.01 {
-                        return 90;
-                    }
-                    if (a_f - (-1.0)).abs() < 0.01 && b_f.abs() < 0.01 {
-                        return 180;
-                    }
-                    if a_f.abs() < 0.01 && (b_f - (-1.0)).abs() < 0.01 {
-                        return 270;
-                    }
-                }
-            }
-
-            pos += size;
-        }
-        0
-    }
-
-    find_tkhd_rotation(&data, 0, data.len())
-}
-
-/// 在 pixbuf 左下角叠加一个半透明播放三角形，标记为视频缩略图。
-fn overlay_play_icon(pb: &Pixbuf) -> Pixbuf {
-    let pb = pb.clone();
-    let w = pb.width();
-    let h = pb.height();
-    if w < 20 || h < 20 {
-        return pb;
-    }
-
-    // 图标尺寸：约 1/6 宽度，最小 16px，最大 48px。
-    let icon_size = (w / 6).clamp(16, 48);
-    let margin = icon_size / 4;
-
-    // 三角形参数：指向右方的等腰三角形。
-    let tri_h = icon_size;
-    let tri_w = (icon_size as f64 * 0.86) as i32; // 等边三角形比例
-    let ox = margin;
-    let oy = h - margin - tri_h;
-
-    let rowstride = pb.rowstride() as usize;
-    let channels = pb.n_channels() as usize;
-    let has_alpha = pb.has_alpha();
-
-    unsafe {
-        let pixels = pb.pixels();
-        // 半透明深色圆形背景。
-        let bg_r: u8 = 0;
-        let bg_g: u8 = 0;
-        let bg_b: u8 = 0;
-        let bg_a: u8 = 140;
-        let cx = ox + tri_w / 2;
-        let cy = oy + tri_h / 2;
-        let radius = (tri_h / 2 + 4) as f64;
-
-        for y in (oy - 4).max(0)..(oy + tri_h + 4).min(h) {
-            for x in (ox - 4).max(0)..(ox + tri_w + 4).min(w) {
-                let dx = (x - cx) as f64;
-                let dy = (y - cy) as f64;
-                if dx * dx + dy * dy <= radius * radius {
-                    let i = y as usize * rowstride + x as usize * channels;
-                    if i + 2 < pixels.len() {
-                        let alpha = bg_a as f64 / 255.0;
-                        let inv = 1.0 - alpha;
-                        pixels[i] = (bg_r as f64 * alpha + pixels[i] as f64 * inv) as u8;
-                        pixels[i + 1] = (bg_g as f64 * alpha + pixels[i + 1] as f64 * inv) as u8;
-                        pixels[i + 2] = (bg_b as f64 * alpha + pixels[i + 2] as f64 * inv) as u8;
-                        if has_alpha && i + 3 < pixels.len() {
-                            pixels[i + 3] = 255;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 白色三角形（指向右方）。
-        for dy in 0..tri_h {
-            let row_half = (dy as f64 / tri_h as f64 * tri_w as f64 / 2.0) as i32;
-            let left = cx - row_half;
-            let right = cx + row_half;
-            for x in left.max(0)..right.min(w) {
-                let y = oy + dy;
-                if y < 0 || y >= h {
-                    continue;
-                }
-                let i = y as usize * rowstride + x as usize * channels;
-                if i + 2 < pixels.len() {
-                    pixels[i] = 255;
-                    pixels[i + 1] = 255;
-                    pixels[i + 2] = 255;
-                    if has_alpha && i + 3 < pixels.len() {
-                        pixels[i + 3] = 255;
-                    }
-                }
-            }
-        }
-    }
-
-    pb
-}
-
-// ── libjpeg IDCT 缩放解码（JPEG 快速路径）───────────────────────────────────────
-//
-// 系统 libjpeg.so 就是 libjpeg-turbo，支持在 jpeg_read_header 与
-// jpeg_start_decompress 之间设置 scale_num/scale_denom，让解码器只
-// 输出低频 DCT 系数对应的缩小图像（1/2, 1/4, 1/8），避免全分辨率解码后再缩放。
-// 例：48MP JPEG → 1/8 输出 1000×750 像素 → 再缩到 512px，约快 8×。
-
-extern "C" {
-    fn jpeg_shim_create() -> *mut std::ffi::c_void;
-    fn jpeg_shim_destroy(shim: *mut std::ffi::c_void);
-    fn jpeg_shim_decode_scaled(
-        shim: *mut std::ffi::c_void,
-        filename: *const std::ffi::c_char,
-        max_dim: std::ffi::c_int,
-        out_w: *mut std::ffi::c_int,
-        out_h: *mut std::ffi::c_int,
-        errmsg: *mut std::ffi::c_char,
-        errmsg_size: std::ffi::c_int,
-    ) -> std::ffi::c_int;
-    fn jpeg_shim_take_buffer(shim: *mut std::ffi::c_void, out_len: *mut usize) -> *mut u8;
-    fn jpeg_shim_free_buffer(ptr: *mut std::ffi::c_void);
-}
-
-/// 对 JPEG 文件利用 libjpeg-turbo 的 IDCT 缩放能力，解码时直接缩放到接近目标尺寸。
-///
-/// `orientation` 由调用方预算好（避免每次调用都重读 EXIF），在这里经
-/// [`orientation::apply_orientation_to_pixbuf`] 应用——与 gdk-pixbuf 路径走同一条
-/// EXIF 方向处理，单一实现、不会漂移。
-///
-/// 失败返回 `None`，调用方回退到 gdk-pixbuf。
-fn decode_jpeg_scaled(src_path: &Path, max_dim: u32, orientation: u16) -> Option<Pixbuf> {
-    let cpath = std::ffi::CString::new(src_path.to_string_lossy().as_bytes()).ok()?;
-
-    let shim = unsafe { jpeg_shim_create() };
-    if shim.is_null() {
-        return None;
-    }
-
-    let mut out_w: std::ffi::c_int = 0;
-    let mut out_h: std::ffi::c_int = 0;
-    let mut errbuf = vec![0u8; 256];
-    let rc = unsafe {
-        jpeg_shim_decode_scaled(
-            shim,
-            cpath.as_ptr(),
-            max_dim.max(1) as std::ffi::c_int,
-            &mut out_w,
-            &mut out_h,
-            errbuf.as_mut_ptr() as *mut std::ffi::c_char,
-            errbuf.len() as std::ffi::c_int,
-        )
-    };
-    if rc != 0 {
-        let msg = String::from_utf8_lossy(&errbuf);
-        debug!(
-            target: crate::core::log_targets::THUMBNAILS,
-            "THUMB jpeg_shim_decode_failed path={} error={}",
-            src_path.display(),
-            msg.trim_end_matches('\0').trim()
-        );
-        unsafe {
-            jpeg_shim_destroy(shim);
-        }
-        return None;
-    }
-
-    // 取走 C 端 malloc 的解码缓冲区，拷贝进 Rust 拥有的 Vec，再用 C 的 free 释放。
-    // 这样 Rust 永远不通过自己的分配器去释放 C 的指针——不依赖两个分配器相同。
-    let mut buf_len: usize = 0;
-    let raw = unsafe { jpeg_shim_take_buffer(shim, &mut buf_len) };
-    unsafe {
-        jpeg_shim_destroy(shim);
-    }
-
-    if raw.is_null() || buf_len == 0 || out_w <= 0 || out_h <= 0 {
-        if !raw.is_null() {
-            unsafe {
-                jpeg_shim_free_buffer(raw as *mut std::ffi::c_void);
-            }
-        }
-        return None;
-    }
-
-    // SAFETY: `raw` 由 shim malloc，长度正好是 buf_len 字节（= w*h*3）。
-    // 立刻拷贝进 Rust Vec，随后用 jpeg_shim_free_buffer 释放 C 端内存。
-    let pixels: Vec<u8> = unsafe {
-        let slice = std::slice::from_raw_parts(raw, buf_len);
-        slice.to_vec()
-    };
-    unsafe {
-        jpeg_shim_free_buffer(raw as *mut std::ffi::c_void);
-    }
-
-    let (w, h) = (out_w as i32, out_h as i32);
-    let rowstride = w as usize * 3;
-    // 先用缩放后的 RGB 构造未旋转 pixbuf，再复用 gdk-pixbuf 的方向处理（单一实现）。
-    let unrotated = Pixbuf::from_mut_slice(
-        pixels.into_boxed_slice(),
-        gdk_pixbuf::Colorspace::Rgb,
-        false,
-        8,
-        w,
-        h,
-        rowstride as i32,
-    );
-    Some(orientation::apply_orientation_to_pixbuf(
-        &unrotated,
-        orientation,
-    ))
-}
-
-fn file_has_jpeg_signature(path: &Path) -> bool {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    let mut head = [0u8; 3];
-    match file.read(&mut head) {
-        Ok(n) if n == head.len() => head == [0xff, 0xd8, 0xff],
-        _ => false,
-    }
-}
-
-/// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。
-/// 返回内存里已缩放好的 pixbuf，让调用方直接做成 Texture，省掉读盘重解码。
-///
-/// JPEG 格式优先走 turbojpeg IDCT 缩放解码（快速路径），失败时回退到 gdk-pixbuf。
-fn generate_via_pixbuf(src_path: &Path, max_dim: u32, cache_stem: &Path) -> anyhow::Result<Pixbuf> {
-    // 只读一次 EXIF 方向：turbojpeg 路径与 orientation 应用都复用这个值。
-    let orientation = orientation::read_orientation(src_path).unwrap_or(1);
-    let use_jpeg_fast_path =
-        mime_from_extension(src_path) == Some("image/jpeg") && file_has_jpeg_signature(src_path);
-
-    // decode 阶段（最耗时）：JPEG 优先走 turbojpeg IDCT 缩放解码，失败/非 JPEG
-    // 回退 gdk-pixbuf。阶段耗时由 `thumb:pb_decode` span 承载（父级 `thumb:generate`）。
-    let pb = {
-        let decode_span = tracing::debug_span!("thumb:pb_decode");
-        let _decode = decode_span.enter();
-        if use_jpeg_fast_path {
-            match decode_jpeg_scaled(src_path, max_dim, orientation) {
-                Some(pb) => pb,
-                None => {
-                    // turbojpeg 失败（CMYK/渐进式/损坏），回退到 gdk-pixbuf。
-                    debug!(
-                        target: crate::core::log_targets::THUMBNAILS,
-                        "THUMB turbojpeg_fallback path={}",
-                        src_path.display()
-                    );
-                    orientation::load_oriented_pixbuf(src_path)
-                        .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?
-                }
-            }
-        } else {
-            orientation::load_oriented_pixbuf(src_path)
-                .map_err(|e| anyhow::anyhow!("gdk-pixbuf 解码失败: {e}"))?
-        }
-    };
-
-    // scale 阶段：等比缩放到目标尺寸。
-    let scaled = {
-        let scale_span = tracing::debug_span!("thumb:pb_scale");
-        let _scale = scale_span.enter();
-        scale_pixbuf_to_fit(&pb, max_dim)
-    };
-
-    // save 阶段：写磁盘缓存（有透明度用 webp，否则 jpeg）。
-    if pixbuf_has_transparency(&scaled) {
-        let cache_path = cache_stem.with_extension("webp");
-        {
-            let save_span = tracing::debug_span!("thumb:pb_save");
-            let _save = save_span.enter();
-            save_pixbuf_as_webp(&scaled, &cache_path)?;
-        }
-        return Ok(scaled);
-    }
-
-    let cache_path = cache_stem.with_extension("jpg");
-    let thumb = ensure_opaque(&scaled);
-    {
-        let save_span = tracing::debug_span!("thumb:pb_save");
-        let _save = save_span.enter();
-        save_pixbuf_as_jpeg_atomic(&thumb, &cache_path).map_err(|e| {
-            anyhow::anyhow!(
-                "gdk-pixbuf JPEG 保存失败 {:?}: {}",
-                cache_stem.with_extension("jpg"),
-                e
-            )
-        })?;
-    }
-    Ok(thumb)
-}
-
-fn pixbuf_has_transparency(pb: &Pixbuf) -> bool {
-    if !pb.has_alpha() {
-        return false;
-    }
-    let bytes = pb.read_pixel_bytes();
-    let buf: &[u8] = bytes.as_ref();
-    let n_channels = pb.n_channels() as usize;
-    let rowstride = pb.rowstride() as usize;
-    if n_channels < 4 {
-        return false;
-    }
-    for y in 0..pb.height() as usize {
-        for x in 0..pb.width() as usize {
-            let i = y * rowstride + x * n_channels + 3;
-            if i < buf.len() && buf[i] < 255 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn save_pixbuf_as_webp(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
-    let rgba = pixbuf_to_rgba_bytes(pb)?;
-    let tmp_path = temporary_cache_path(cache_path);
-    let file = File::create(&tmp_path)?;
-    let writer = BufWriter::new(file);
-    image::codecs::webp::WebPEncoder::new_lossless(writer)
-        .write_image(
-            &rgba,
-            pb.width() as u32,
-            pb.height() as u32,
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|e| anyhow::anyhow!("WebP 缩略图保存失败 {:?}: {}", cache_path, e))?;
-    std::fs::rename(&tmp_path, cache_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        anyhow::anyhow!("WebP 缩略图发布失败 {:?}: {}", cache_path, e)
-    })
-}
-
-fn save_pixbuf_as_jpeg_atomic(pb: &Pixbuf, cache_path: &Path) -> anyhow::Result<()> {
-    let tmp_path = temporary_cache_path(cache_path);
-    pb.savev(&tmp_path, "jpeg", &[])
-        .map_err(|e| anyhow::anyhow!("JPEG 缩略图保存失败 {:?}: {}", tmp_path, e))?;
-    std::fs::rename(&tmp_path, cache_path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp_path);
-        anyhow::anyhow!("JPEG 缩略图发布失败 {:?}: {}", cache_path, e)
-    })
-}
-
-fn temporary_cache_path(cache_path: &Path) -> PathBuf {
-    let ext = cache_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("tmp");
-    let nonce = format!(
-        "{}-{:?}-{}",
-        std::process::id(),
-        std::thread::current().id(),
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    );
-    cache_path.with_extension(format!("{ext}.{nonce}.tmp"))
-}
-
-fn pixbuf_to_rgba_bytes(pb: &Pixbuf) -> anyhow::Result<Vec<u8>> {
-    let width = pb.width() as usize;
-    let height = pb.height() as usize;
-    let n_channels = pb.n_channels() as usize;
-    let rowstride = pb.rowstride() as usize;
-    if n_channels != 3 && n_channels != 4 {
-        anyhow::bail!("不支持的 pixbuf 通道数: {}", n_channels);
-    }
-
-    let bytes = pb.read_pixel_bytes();
-    let buf: &[u8] = bytes.as_ref();
-    let mut rgba = Vec::with_capacity(width * height * 4);
-    for y in 0..height {
-        for x in 0..width {
-            let i = y * rowstride + x * n_channels;
-            if i + n_channels > buf.len() {
-                anyhow::bail!("pixbuf 像素缓冲区越界");
-            }
-            rgba.extend_from_slice(&buf[i..i + 3]);
-            rgba.push(if n_channels == 4 { buf[i + 3] } else { 255 });
-        }
-    }
-    Ok(rgba)
-}
-
-/// 返回等尺寸的**不透明**（无 alpha）pixbuf：有 alpha 时合成到不透明白底上，
-/// 无 alpha 时原样克隆。供 JPEG 保存前使用（JPEG 无 alpha 通道）。
-fn ensure_opaque(pb: &Pixbuf) -> Pixbuf {
-    if !pb.has_alpha() {
-        return pb.clone();
-    }
-    let (w, h) = (pb.width(), pb.height());
-    let bg =
-        Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, w, h).expect("分配不透明背景 pixbuf");
-    bg.fill(0xFFFFFFFF); // 不透明白
-    pb.composite(
-        &bg,
-        0,
-        0,
-        w,
-        h,
-        0.0,
-        0.0,
-        1.0,
-        1.0,
-        gdk_pixbuf::InterpType::Bilinear,
-        255,
-    );
-    bg
-}
-
-/// 等比缩放到 `max_dim` 内（不放大），行为对齐 `image::DynamicImage::thumbnail`。
-fn scale_pixbuf_to_fit(pb: &Pixbuf, max_dim: u32) -> Pixbuf {
-    let (w, h) = (pb.width(), pb.height());
-    let longest = (w.max(h).max(1)) as f64;
-    let scale = ((max_dim as f64) / longest).min(1.0);
-    let nw = ((w as f64) * scale).round().max(1.0) as i32;
-    let nh = ((h as f64) * scale).round().max(1.0) as i32;
-    pb.scale_simple(nw, nh, gdk_pixbuf::InterpType::Bilinear)
-        .unwrap_or_else(|| pb.clone())
-}
-
-/// 采样 pixbuf 像素估算平均亮度（>=160 视为"亮"背景），用于 tile 文字配色。
-///
-/// 在 worker 线程就地读取像素缓冲（零拷贝借用），替代原来在主线程对每张
-/// texture 做 `Texture::download` + 大 buffer 分配的做法。RGB(3 通道)/RGBA(4 通道)
-/// 均适用：`x * n_channels` 自动按实际通道数定位。
-fn pixbuf_is_light(pb: &Pixbuf) -> Option<bool> {
-    let width = pb.width();
-    let height = pb.height();
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-    let bytes = pb.read_pixel_bytes();
-    let buf: &[u8] = bytes.as_ref();
-    let n_channels = pb.n_channels() as usize;
-    let rowstride = pb.rowstride() as usize;
-    let step_x = (width / 24).max(1) as usize;
-    let step_y = (height / 24).max(1) as usize;
-    let mut total = 0.0f64;
-    let mut count = 0.0f64;
-    for y in (0..height as usize).step_by(step_y) {
-        for x in (0..width as usize).step_by(step_x) {
-            let i = y * rowstride + x * n_channels;
-            if i + 2 < buf.len() {
-                total += (buf[i] as f64 + buf[i + 1] as f64 + buf[i + 2] as f64) / 3.0;
-                count += 1.0;
-            }
-        }
-    }
-    if count == 0.0 {
-        return None;
-    }
-    Some(total / count >= 160.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::db;
+    use crate::core::media::mime_from_extension;
+    use crate::core::orientation;
+    use crate::core::thumbnails::jpeg_turbo::decode_jpeg_scaled;
+    use crate::core::thumbnails::queue::pull_batch_and_enqueue;
+    use crate::core::thumbnails::video::extract_video_frame;
     use gtk4::prelude::TextureExt;
+    use image::ImageEncoder;
+    use std::fs::File;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
 
@@ -2059,13 +813,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn high_frequency_thumbnail_progress_logs_stay_debug() {
-        let source = include_str!("thumbnails.rs");
-        let production_source = source
+    fn thumbnail_production_sources() -> String {
+        let root = include_str!("thumbnails.rs");
+        let mut production_source = root
             .split("\n#[cfg(test)]\nmod tests {")
             .next()
-            .expect("thumbnails.rs must contain production code");
+            .expect("thumbnails.rs must contain production code")
+            .to_string();
+        production_source.push_str(include_str!("thumbnails/queue.rs"));
+        production_source.push_str(include_str!("thumbnails/decode.rs"));
+        production_source.push_str(include_str!("thumbnails/video.rs"));
+        production_source
+    }
+
+    #[test]
+    fn high_frequency_thumbnail_progress_logs_stay_debug() {
+        let production_source = thumbnail_production_sources();
 
         for message in [
             "THUMB disk_cache_hit",
@@ -2076,17 +839,13 @@ mod tests {
             "VIDEO_THUMB 提取视频帧(GStreamer)",
             "VIDEO_THUMB 提取成功",
         ] {
-            assert_log_message_uses_macro(production_source, message, "debug!(");
+            assert_log_message_uses_macro(&production_source, message, "debug!(");
         }
     }
 
     #[test]
     fn per_thumbnail_trace_spans_stay_debug() {
-        let source = include_str!("thumbnails.rs");
-        let production_source = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("thumbnails.rs must contain production code");
+        let production_source = thumbnail_production_sources();
 
         for span_name in [
             "thumb:process",

@@ -8,7 +8,11 @@ This module owns the shared UI material system for glass chrome, including the u
 
 | File | Role |
 |---|---|
-| `src/ui/grid_css.rs` | CSS source, mode split, provider install/reapply |
+| `src/ui/grid_css.rs` | CSS assembly, transparency scaling, provider install/reapply |
+| `data/css/base.css` | Shared layout, size, radius, and state selectors |
+| `data/css/liquid.css` | Liquid Glass material selectors |
+| `data/css/plain.css` | Plain translucent fallback material selectors |
+| `data/css/a11y.css` | Reserved accessibility/runtime class rules |
 | `src/ui/theme.rs` | Maps persisted theme preference to libadwaita color schemes |
 | `src/ui/glass_context_menu.rs` | Overlay-backed right-click menu using raised glass material |
 | `src/core/prefs.rs` | `theme`, `liquid_glass`, and material transparency preference persistence |
@@ -35,14 +39,14 @@ glass settings should not force light or dark mode.
 
 ## Material Split
 
-`src/ui/grid_css.rs` builds CSS from four blocks:
+`src/ui/grid_css.rs` builds CSS from four source files:
 
 | Block | Responsibility |
 |---|---|
-| `BASE_CSS` | Shared layout, size, radius, state selectors |
-| `LIQUID_GLASS_MATERIAL_CSS` | Blur/saturate/brightness, highlights, heavier shadows |
-| `PLAIN_GLASS_MATERIAL_CSS` | Plain translucent fallback with no `backdrop-filter` |
-| `A11Y_CSS` | Reserved for GTK-supported accessibility/runtime class rules |
+| `data/css/base.css` | Shared layout, size, radius, state selectors |
+| `data/css/liquid.css` | Blur/saturate/brightness, highlights, heavier shadows |
+| `data/css/plain.css` | Plain translucent fallback with no `backdrop-filter` |
+| `data/css/a11y.css` | Reserved for GTK-supported accessibility/runtime class rules |
 
 All chrome surfaces — fills, top highlights, hairline edges, and text — use
 libadwaita theme variables (`@window_fg_color` / `@window_bg_color`) so they
@@ -77,9 +81,9 @@ The style is intentionally one glass container with lightweight internal state. 
 ## Adding Glass Surfaces
 
 1. Reuse existing classes first: `.glass-base`, `.glass-raised`, `.glass-header`, `.glass-menu`, `.glass-alert-dialog`, `.viewer-details-panel`, or `.glass-segmented`.
-2. If a new selector is required, add it to both `LIQUID_GLASS_MATERIAL_CSS` and `PLAIN_GLASS_MATERIAL_CSS`.
-3. Keep shape/layout/state rules in `BASE_CSS`.
-4. Never put `backdrop-filter` in `BASE_CSS`.
+2. If a new selector is required, add it to both `data/css/liquid.css` and `data/css/plain.css`.
+3. Keep shape/layout/state rules in `data/css/base.css`.
+4. Never put `backdrop-filter` in `data/css/base.css`.
 5. Extend CSS tests when adding selectors or changing mode behavior.
 
 Right-click menus should use the custom overlay `GlassContextMenu` and compose

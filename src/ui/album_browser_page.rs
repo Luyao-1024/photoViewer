@@ -18,7 +18,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
-use crate::ui::media_grid::square_tile::SquareTile;
+use crate::ui::square_tile::SquareTile;
 
 const ALBUM_CARD_PX: i32 = 270;
 const ALBUM_TILE_SIZE: ThumbnailSize = ThumbnailSize::Large;
