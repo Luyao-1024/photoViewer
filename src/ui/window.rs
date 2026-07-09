@@ -439,30 +439,6 @@ impl MainWindow {
         self.update_photos_count_label_from_db();
     }
 
-    fn open_search_page(&self) -> bool {
-        let nav = self.imp().nav_view.get();
-        if let Some(search) = nav
-            .visible_page()
-            .and_then(|page| page.downcast::<SearchPage>().ok())
-        {
-            search.focus_search_entry();
-            return true;
-        }
-        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
-            return false;
-        };
-        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
-            return false;
-        };
-        let page = SearchPage::new(pool, loader);
-        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
-            page.set_db_actor(db_actor);
-        }
-        page.set_nav_target(&nav);
-        nav.push(&page);
-        true
-    }
-
     fn show_settings_dialog(&self) {
         if self.imp().settings_dialog.borrow().is_some() {
             return;

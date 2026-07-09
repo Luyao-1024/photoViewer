@@ -156,6 +156,7 @@ fn window_navigation_flows_live_in_navigation_module() {
         "pub fn connect_sidebar",
         "fn schedule_album_open_from_sidebar",
         "pub(crate) fn open_album",
+        "fn open_search_page",
         "pub fn refresh_visible_trash_page",
         "pub fn refresh_visible_album_detail_page",
     ] {
@@ -168,6 +169,7 @@ fn window_navigation_flows_live_in_navigation_module() {
         "fn connect_sidebar(",
         "fn schedule_album_open_from_sidebar(",
         "fn open_album(",
+        "fn open_search_page(",
         "fn refresh_visible_trash_page(",
         "fn refresh_visible_album_detail_page(",
     ] {

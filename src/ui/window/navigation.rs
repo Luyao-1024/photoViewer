@@ -407,6 +407,30 @@ impl MainWindow {
         nav_view.push(&page);
     }
 
+    pub(super) fn open_search_page(&self) -> bool {
+        let nav = self.imp().nav_view.get();
+        if let Some(search) = nav
+            .visible_page()
+            .and_then(|page| page.downcast::<SearchPage>().ok())
+        {
+            search.focus_search_entry();
+            return true;
+        }
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return false;
+        };
+        let page = SearchPage::new(pool, loader);
+        if let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() {
+            page.set_db_actor(db_actor);
+        }
+        page.set_nav_target(&nav);
+        nav.push(&page);
+        true
+    }
+
     /// 若当前可见页面是回收站页，重读 DB 刷新它。供 `TrashChanged` 事件调用——
     /// 文件管理器改了系统回收站后，watcher 已对账 DB，这里让打开着的回收站页实时
     /// 跟着变，无需用户切换页面。
