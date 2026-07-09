@@ -25,7 +25,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 | DB, scanner, filesystem watcher, thumbnails | [`docs/modules/storage.md`](docs/modules/storage.md) |
 | Crash logs, panic hook, signal handler | [`docs/modules/diagnostics.md`](docs/modules/diagnostics.md) |
 | Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
-| Visual UI component naming map | [`docs/ui-naming-reference.html`](docs/ui-naming-reference.html) |
+| Visual UI component naming map | [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) |
 | Liquid Glass and shared UI material classes | [`docs/modules/ui-liquid-glass.md`](docs/modules/ui-liquid-glass.md) |
 | Historical milestone plans/specs | [`docs/superpowers/`](docs/superpowers/) |
 
@@ -36,7 +36,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 - Do not revert user changes or unrelated worktree changes.
 - Prefer existing helpers and patterns over new abstractions.
 - Keep docs and tests close to the module being changed.
-- When you add/rename/remove a UI widget, change a template `child-id`, or alter a drag/resize affordance, update [`docs/ui-naming-reference.html`](docs/ui-naming-reference.html) to match. It is a maintained visual naming map (source of truth: `data/ui/*.blp`, `src/ui/*.rs`), not a one-time artifact.
+- When you add/rename/remove a UI widget, change a template `child-id`, or alter a drag/resize affordance, update [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) to match. It is a maintained visual naming map (source of truth: `data/ui/*.blp`, `src/ui/*.rs`), not a one-time artifact.
 
 ## UI Invariants
 
