@@ -65,7 +65,6 @@ mod virtual_paging;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Datelike;
 use gtk4 as gtk;
@@ -74,25 +73,21 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::refresh::LibraryStats;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{
-    apply_authoritative_counts, group_items, GroupBy, MediaSection, SectionKey,
-};
-use crate::core::thumbnails::{LoadedThumb, ThumbnailLoader, ThumbnailSize};
-use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
+use crate::core::section_model::{GroupBy, SectionKey};
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::square_tile::SquareTile;
-use libadwaita as adw;
-use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
-use render::{build_photo_picture, prepare_reused_tile, sync_flow_child_visibility_for_tile};
+#[cfg(test)]
+use render::{build_photo_picture, sync_flow_child_visibility_for_tile};
+#[cfg(test)]
 use virtual_paging::{
-    build_virtual_placeholder_flow, estimated_virtual_columns, replace_pending_virtual_page,
+    build_virtual_placeholder_flow, replace_pending_virtual_page,
     should_consider_virtual_page_load, virtual_offset_for_ratio, virtual_page_start_for_offset,
-    virtual_spacer, virtual_spacer_height, virtual_window_item_count,
+    virtual_spacer_height, virtual_window_item_count,
 };
 
 /// Get the current max rendered grid items from runtime configuration.

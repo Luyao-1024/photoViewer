@@ -6,43 +6,37 @@ mod sidebar;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::time::Instant;
 
 use glib::subclass::types::ObjectSubclassIsExt;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use libadwaita::prelude::{
-    ActionRowExt, AdwDialogExt, AlertDialogExt, NavigationPageExt, PreferencesGroupExt,
-    PreferencesRowExt,
-};
-use serde_json::{Map, Value};
+#[cfg(test)]
+use libadwaita::prelude::{ActionRowExt, PreferencesRowExt};
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
-use crate::config;
-use crate::core::albums::{list_media_type_albums, list_with_favorites, Album};
+use crate::core::albums::Album;
 use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
-use crate::core::i18n::{locale, tr, trf};
+use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
-use crate::core::repository::MediaMutation;
 use crate::core::repository::MediaQuery;
 use crate::core::thumbnails::ThumbnailLoader;
-use crate::core::{prefs, runtime_config};
-use crate::ui::album_detail_page::{media_query_for_album, AlbumDetailPage};
+use crate::ui::album_detail_page::AlbumDetailPage;
 use crate::ui::TrashPage;
-use crate::ui::{grid_css, keyboard, theme, PhotosPage, SearchPage, ViewerPage};
+use crate::ui::{keyboard, PhotosPage, SearchPage, ViewerPage};
+use albums::album_backfill_fetch_limit;
+#[cfg(test)]
+use albums::album_initial_load_limit;
 pub use albums::build_album_context_menu_for_tests;
 pub(crate) use albums::refresh_after_album_operation;
 #[cfg(test)]
 use albums::remove_deleted_album_media_from_media_list;
-use albums::{album_backfill_fetch_limit, album_initial_load_limit};
 #[cfg(test)]
 use settings::restart_spec_from_for_tests;
-use settings::{add_excluded_scan_path, show_settings_error_dialog};
 pub(crate) use sidebar::refresh_albums_sidebar;
 use sidebar::{build_albums_header_row, build_nav_row};
 
