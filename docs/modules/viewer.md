@@ -20,11 +20,14 @@ load the full query result just to move one step in the viewer. The current
 | File | Role |
 |---|---|
 | `src/ui/viewer_page.rs` | Viewer state, navigation, overlay panel behavior |
+| `src/ui/viewer/actions.rs` | Viewer toolbar delete/favorite actions, favorite state sync, and post-delete navigation |
+| `src/ui/viewer/transform.rs` | Image-stage zoom/rotation controls, CSS transform updates, and transform math helpers |
+| `src/ui/viewer/fullscreen_window.rs` | Independent fullscreen preview window, preview navigation buttons, and preview-local transforms |
 | `src/ui/viewer/filmstrip.rs` | Filmstrip geometry plus stateful UI wiring, bounded window rebuild/extend, thumbnail buttons, and centering animation |
 | `src/ui/viewer/details.rs` | Details panel wiring, EXIF/video row population, and metadata formatting helpers |
 | `src/ui/viewer/navigation.rs` | Stable-id lookup, viewer navigation actions, deferred switch, neighbour cache, and prefetch helpers |
 | `src/ui/viewer/stage.rs` | Image/video stage loading, animated/motion playback, video stream lifecycle, and playback helper predicates |
-| `src/ui/viewer/fullscreen.rs` | Fullscreen preview overlay button helper |
+| `src/ui/viewer/fullscreen.rs` | Shared fullscreen/overlay button helper used by viewer chrome |
 | `src/ui/viewer/crop.rs` | Editor crop overlay drawing, hit-testing, drag/resize geometry, and overlay-to-source coordinate conversion |
 | `src/ui/viewer/editor.rs` | Editor side-panel lifecycle, editor callback wiring, save-result dialogs, and editor navigation lock state |
 | `src/ui/keyboard/` | Project-wide shortcut bindings and router |
