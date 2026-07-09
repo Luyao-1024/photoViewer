@@ -81,6 +81,23 @@ fn viewer_focused_modules_exist() {
             "src/ui/viewer/fullscreen.rs",
             &["pub(super) fn viewer_overlay_button"][..],
         ),
+        (
+            "src/ui/viewer/crop.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) struct CropDragState",
+                "pub(super) fn set_crop_overlay",
+                "pub(super) fn setup_crop_overlay",
+                "fn draw_crop_overlay",
+                "fn begin_crop_drag",
+                "fn update_crop_drag",
+                "pub(super) fn compute_contained_image_rect",
+                "pub(super) fn crop_rect_to_widget",
+                "pub(super) fn hit_crop_drag_mode",
+                "pub(super) fn drag_rect",
+                "pub(super) fn resize_from_edges",
+            ][..],
+        ),
     ] {
         let module_path = Path::new(path);
         assert!(module_path.exists(), "{path} should exist");
@@ -91,7 +108,14 @@ fn viewer_focused_modules_exist() {
     }
 
     let root = fs::read_to_string("src/ui/viewer_page.rs").expect("viewer root readable");
-    for module in ["navigation", "filmstrip", "details", "stage", "fullscreen"] {
+    for module in [
+        "navigation",
+        "filmstrip",
+        "details",
+        "stage",
+        "fullscreen",
+        "crop",
+    ] {
         assert!(
             root.contains(&format!("mod {module};")),
             "viewer_page.rs should declare mod {module}"
@@ -166,6 +190,17 @@ fn viewer_focused_modules_exist() {
         "fn apply_video_audio_preferences_to_stream(",
         "fn should_toggle_video_from_stage_click(",
         "fn viewer_overlay_button(",
+        "fn set_crop_overlay(",
+        "fn setup_crop_overlay(",
+        "fn draw_crop_overlay(",
+        "fn begin_crop_drag(",
+        "fn update_crop_drag(",
+        "fn compute_contained_image_rect(",
+        "fn crop_rect_to_widget(",
+        "fn crop_handle_points(",
+        "fn hit_crop_drag_mode(",
+        "fn drag_rect(",
+        "fn resize_from_edges(",
     ] {
         assert!(
             !root.contains(marker),

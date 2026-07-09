@@ -25,6 +25,7 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/viewer/navigation.rs` | Stable-id lookup, viewer navigation actions, deferred switch, neighbour cache, and prefetch helpers |
 | `src/ui/viewer/stage.rs` | Image/video stage loading, animated/motion playback, video stream lifecycle, and playback helper predicates |
 | `src/ui/viewer/fullscreen.rs` | Fullscreen preview overlay button helper |
+| `src/ui/viewer/crop.rs` | Editor crop overlay drawing, hit-testing, drag/resize geometry, and overlay-to-source coordinate conversion |
 | `src/ui/keyboard/` | Project-wide shortcut bindings and router |
 | `data/ui/viewer-page.blp` | Viewer template |
 | `tests/e2e_viewer.rs` | Viewer flow coverage |
