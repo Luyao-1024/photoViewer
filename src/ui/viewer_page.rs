@@ -1587,6 +1587,129 @@ mod tests {
     }
 
     #[gtk::test]
+    fn fullscreen_preview_reuses_existing_window_handle() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let texture = test_texture();
+        viewer.imp().picture.get().set_paintable(Some(&texture));
+        let parent = gtk::Window::builder()
+            .title("Viewer parent")
+            .default_width(900)
+            .default_height(700)
+            .build();
+        parent.set_child(Some(&viewer));
+        parent.present();
+        while glib::MainContext::default().iteration(false) {}
+
+        viewer.open_fullscreen_preview_window();
+        let first_preview = viewer
+            .imp()
+            .fullscreen_preview_window
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("first fullscreen open should store a preview window");
+        let first_ptr = first_preview.as_ptr();
+
+        viewer.open_fullscreen_preview_window();
+        let second_preview = viewer
+            .imp()
+            .fullscreen_preview_window
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("second fullscreen open should keep a preview window stored");
+
+        assert_eq!(
+            second_preview.as_ptr(),
+            first_ptr,
+            "opening fullscreen preview twice should reuse the existing top-level preview window"
+        );
+
+        second_preview.close();
+        parent.close();
+        while glib::MainContext::default().iteration(false) {}
+    }
+
+    #[gtk::test]
+    fn fullscreen_preview_close_disconnects_paintable_sync_handler() {
+        init_viewer_test();
+        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+        media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+        let viewer = ViewerPage::new(media_list, 0);
+        let first_texture = test_texture();
+        viewer
+            .imp()
+            .picture
+            .get()
+            .set_paintable(Some(&first_texture));
+        let parent = gtk::Window::builder()
+            .title("Viewer parent")
+            .default_width(900)
+            .default_height(700)
+            .build();
+        parent.set_child(Some(&viewer));
+        parent.present();
+        while glib::MainContext::default().iteration(false) {}
+
+        viewer.open_fullscreen_preview_window();
+        let preview = viewer
+            .imp()
+            .fullscreen_preview_window
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("fullscreen preview should be stored while open");
+        let preview_overlay = preview
+            .child()
+            .expect("fullscreen preview should have overlay content")
+            .downcast::<gtk::Overlay>()
+            .expect("fullscreen preview content should be a GtkOverlay");
+        let preview_picture = preview_overlay
+            .child()
+            .expect("fullscreen preview overlay should have a picture child")
+            .downcast::<gtk::Picture>()
+            .expect("fullscreen preview overlay child should be GtkPicture");
+        let preview_picture_weak = preview_picture.downgrade();
+        let first_paintable_ptr = preview_picture
+            .paintable()
+            .expect("preview picture should mirror the main viewer paintable")
+            .as_ptr();
+
+        preview.close();
+        while glib::MainContext::default().iteration(false) {}
+
+        assert!(
+            viewer.imp().fullscreen_preview_window.borrow().is_none(),
+            "closing the preview should clear the stored preview window handle"
+        );
+
+        let second_texture = test_texture();
+        viewer
+            .imp()
+            .picture
+            .get()
+            .set_paintable(Some(&second_texture));
+        while glib::MainContext::default().iteration(false) {}
+
+        if let Some(preview_picture) = preview_picture_weak.upgrade() {
+            let current_paintable_ptr = preview_picture
+                .paintable()
+                .map(|paintable| paintable.as_ptr());
+            assert_eq!(
+                current_paintable_ptr,
+                Some(first_paintable_ptr),
+                "closed preview picture must not receive paintable updates from the disconnected notify handler"
+            );
+        }
+
+        parent.close();
+        while glib::MainContext::default().iteration(false) {}
+    }
+
+    #[gtk::test]
     fn editing_hides_overlay_navigation_buttons() {
         init_viewer_test();
         let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
