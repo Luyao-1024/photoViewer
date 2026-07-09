@@ -1,4 +1,16 @@
-use super::*;
+use super::albums::album_initial_load_limit;
+use super::{
+    backfill_album_media_list, pop_to_photos_root, visible_page_is_trash, MainWindow, SidebarTarget,
+};
+use crate::core::albums::Album;
+use crate::core::i18n::tr;
+use crate::ui::album_detail_page::{media_query_for_album, AlbumDetailPage};
+use crate::ui::{SearchPage, TrashPage};
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
+use libadwaita as adw;
+use std::time::Instant;
 
 impl MainWindow {
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row

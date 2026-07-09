@@ -1,4 +1,11 @@
-use super::*;
+use super::{DisplayedItem, MediaGrid};
+use crate::core::identity::MediaId;
+use crate::core::media::MediaItem;
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
+use std::collections::HashSet;
+use std::rc::Rc;
 
 impl MediaGrid {
     /// Register a callback fired whenever the selected set changes. `PhotosPage`

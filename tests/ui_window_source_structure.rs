@@ -1,5 +1,17 @@
 use std::{fs, path::Path};
 
+fn assert_no_top_level_super_glob(path: &str) {
+    let source = fs::read_to_string(path).expect("module readable");
+    let has_top_level_super_glob = source
+        .lines()
+        .take(12)
+        .any(|line| line.trim() == "use super::*;");
+    assert!(
+        !has_top_level_super_glob,
+        "{path} should use explicit imports instead of top-level `use super::*`"
+    );
+}
+
 #[test]
 fn window_settings_helpers_live_in_settings_module() {
     let module_path = Path::new("src/ui/window/settings.rs");
@@ -218,5 +230,17 @@ fn window_album_flow_helpers_live_in_albums_module() {
             !root.contains(marker),
             "album flow helper `{marker}` should move out of window.rs"
         );
+    }
+}
+
+#[test]
+fn window_split_modules_use_explicit_imports() {
+    for path in [
+        "src/ui/window/albums.rs",
+        "src/ui/window/settings.rs",
+        "src/ui/window/sidebar.rs",
+        "src/ui/window/navigation.rs",
+    ] {
+        assert_no_top_level_super_glob(path);
     }
 }

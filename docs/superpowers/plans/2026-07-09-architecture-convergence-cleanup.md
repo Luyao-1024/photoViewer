@@ -554,7 +554,7 @@ Create `src/ui/media_grid/loading.rs` and move the loading orchestration cluster
 Keep behavior unchanged:
 
 - Virtual page generation counter drops stale results.
-- Skeleton placeholder window renders during page load.
+- Virtual page retargets keep the existing tile window visible until the DB page lands; no synchronous skeleton rebuild occurs before landing.
 - Progressive render fill invalidates correctly.
 - Library metadata/stats refresh remains async and token guarded.
 

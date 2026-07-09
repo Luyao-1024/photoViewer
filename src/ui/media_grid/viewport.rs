@@ -1,4 +1,9 @@
-use super::*;
+use super::{tile_intersects_request_window, MediaGrid};
+use crate::core::runtime_config;
+use crate::ui::square_tile::SquareTile;
+use gtk4 as gtk;
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
 
 impl MediaGrid {
     pub(super) fn connect_scroll_handlers(&self) {

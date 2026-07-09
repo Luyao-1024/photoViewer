@@ -1,8 +1,17 @@
-use super::*;
+use super::{MainWindow, SidebarAlbumSnapshot, SIDEBAR_SNAPSHOT_TRACE_ID};
 use gdk_pixbuf::Pixbuf;
 
-use crate::core::thumbnails::ThumbnailSize;
+use crate::core::albums::{list_media_type_albums, list_with_favorites, Album};
+use crate::core::db::DbPool;
+use crate::core::i18n::trf;
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::SquareTile;
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
+use libadwaita as adw;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 // ── Sidebar row builders ──────────────────────────────────────────────────
 // Rows share the `.glass-sidebar-row` material (hover/selected glass veil from

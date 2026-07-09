@@ -1,7 +1,19 @@
-use super::*;
+use super::{build_about_label, widget_or_ancestor_has_class, MainWindow};
 
-use crate::core::prefs::TrashBackend;
+use crate::config;
+use crate::core::db::DbPool;
+use crate::core::i18n::{locale, tr, trf};
+use crate::core::prefs::{self, TrashBackend};
+use crate::core::runtime_config;
+use crate::ui::{grid_css, theme};
+use gtk4 as gtk;
+use gtk4::prelude::*;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use libadwaita as adw;
+use libadwaita::prelude::*;
+use serde_json::{Map, Value};
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;

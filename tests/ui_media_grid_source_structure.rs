@@ -1,5 +1,17 @@
 use std::{fs, path::Path};
 
+fn assert_no_top_level_super_glob(path: &str) {
+    let source = fs::read_to_string(path).expect("module readable");
+    let has_top_level_super_glob = source
+        .lines()
+        .take(12)
+        .any(|line| line.trim() == "use super::*;");
+    assert!(
+        !has_top_level_super_glob,
+        "{path} should use explicit imports instead of top-level `use super::*`"
+    );
+}
+
 #[test]
 fn media_grid_virtual_paging_helpers_live_in_virtual_paging_module() {
     let module_path = Path::new("src/ui/media_grid/virtual_paging.rs");
@@ -233,5 +245,17 @@ fn media_grid_loading_helpers_live_in_loading_module() {
             !root.contains(marker),
             "loading helper `{marker}` should move out of media_grid.rs"
         );
+    }
+}
+
+#[test]
+fn media_grid_split_modules_use_explicit_imports() {
+    for path in [
+        "src/ui/media_grid/selection.rs",
+        "src/ui/media_grid/updates.rs",
+        "src/ui/media_grid/loading.rs",
+        "src/ui/media_grid/viewport.rs",
+    ] {
+        assert_no_top_level_super_glob(path);
     }
 }

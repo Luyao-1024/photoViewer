@@ -1,4 +1,20 @@
-use super::*;
+use super::virtual_paging::{
+    replace_pending_virtual_page, should_consider_virtual_page_load, virtual_offset_for_ratio,
+    virtual_page_start_for_offset,
+};
+use super::{
+    library_stats_text, load_grid_metadata, scroll_ratio_from_adjustment_value,
+    should_show_library_stats, MediaGrid,
+};
+use crate::core::repository::{MediaQuery, MediaRepository};
+use crate::core::runtime_config;
+use crate::core::section_model::GroupBy;
+use crate::core::thumbnails::ThumbnailLoader;
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
+use std::sync::Arc;
+use std::time::Duration;
 
 impl MediaGrid {
     /// 如果滚动接近底部（距底部 3 屏内），动态扩大 `rendered_limit` 并触发 rebuild。

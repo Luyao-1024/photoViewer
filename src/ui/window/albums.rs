@@ -1,8 +1,22 @@
+use super::settings::{add_excluded_scan_path, show_settings_error_dialog};
 use super::sidebar::sidebar_album_summary;
-use super::*;
+use super::{pop_to_photos_root, show_trash_operation_error_dialog, MainWindow};
 use crate::core::albums::set_album_order;
+use crate::core::albums::Album;
+use crate::core::db::DbPool;
+use crate::core::i18n::{tr, trf};
+use crate::core::media::MediaItem;
+use crate::core::prefs;
 use crate::core::prefs::TrashBackend;
+use crate::core::repository::MediaMutation;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{glib, prelude::*};
+use libadwaita as adw;
+use libadwaita::prelude::*;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 impl MainWindow {
     pub fn enter_album_selection_mode(&self) {

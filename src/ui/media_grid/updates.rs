@@ -1,4 +1,31 @@
-use super::*;
+use super::render::{
+    build_photo_picture, prepare_reused_tile, sync_flow_child_visibility_for_tile,
+};
+use super::virtual_paging::{
+    build_virtual_placeholder_flow, estimated_virtual_columns, virtual_spacer,
+    virtual_spacer_height, virtual_window_item_count,
+};
+use super::{
+    build_library_stats_label, extract_items, find_media_item_by_uri, gray_placeholder_texture,
+    library_stats_text, media_item_at_displayed_index, runtime_config, section_key_for_item,
+    should_show_library_stats, spec_for_mode, thumbnail_request_mtime, uri_index_map,
+    DisplayedItem, MediaGrid, ViewSpec,
+};
+use crate::core::i18n::tr;
+use crate::core::identity::MediaId;
+use crate::core::media::MediaItem;
+use crate::core::section_model::{
+    apply_authoritative_counts, group_items, GroupBy, MediaSection, SectionKey,
+};
+use crate::core::thumbnails::{LoadedThumb, ThumbnailLoader};
+use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
+use gtk4 as gtk;
+use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use gtk4::{gio, glib, prelude::*};
+use libadwaita as adw;
+use libadwaita::prelude::{AdwDialogExt, AlertDialogExt};
+use std::rc::Rc;
+use std::sync::Arc;
 
 impl MediaGrid {
     pub(super) fn connect_model_changes(&self, media_list: &gio::ListStore) {
