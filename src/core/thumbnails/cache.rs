@@ -98,7 +98,9 @@ pub(in crate::core::thumbnails) fn cache_stem_for(
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<PathBuf> {
     let (src_path, mtime) = resolve_src(uri, mtime)?;
-    let key = format!("thumb-v3:{}{:?}", src_path.display(), mtime);
+    // v4 invalidates caches generated before video thumbnails stopped embedding
+    // the playback triangle and before failure placeholders became memory-only.
+    let key = format!("thumb-v4:{}{:?}", src_path.display(), mtime);
     let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
     Ok(cache_dir
         .join("thumbnails")
