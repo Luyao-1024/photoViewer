@@ -596,8 +596,8 @@ mod tests {
                 &["TRASH_TRACE album_detail_delete_requested count="],
             ),
             (
-                "ui/viewer_page.rs",
-                include_str!("ui/viewer_page.rs"),
+                "ui/viewer/actions.rs",
+                include_str!("ui/viewer/actions.rs"),
                 &["TRASH_TRACE viewer_delete_requested id="],
             ),
             (
