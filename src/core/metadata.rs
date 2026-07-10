@@ -54,15 +54,9 @@ impl ExifSummary {
             exposure_mode: short(exif, exif::Tag::ExposureProgram).and_then(ExposureMode::from_u16),
             metering_mode: short(exif, exif::Tag::MeteringMode)
                 .map(MeteringMode::from)
-                .and_then(|m| {
-                    // MeteringMode::Other is only for unknown values; drop it so the
-                    // row isn't shown for exotic modes nobody recognises.
-                    if matches!(m, MeteringMode::Other) {
-                        None
-                    } else {
-                        Some(m)
-                    }
-                }),
+                // MeteringMode::Other is only for unknown values; drop it so the
+                // row isn't shown for exotic modes nobody recognises.
+                .filter(|&m| !matches!(m, MeteringMode::Other)),
             flash: short(exif, exif::Tag::Flash).map(|v| {
                 // bit 0 == 1 means fired
                 if v & 1 == 1 {
