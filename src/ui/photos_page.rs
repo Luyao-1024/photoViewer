@@ -1128,11 +1128,12 @@ impl PhotosPage {
             Some(n) => n.clone(),
             None => return,
         };
-        let self_page: adw::NavigationPage = self.clone().upcast();
-        if nav
-            .visible_page()
-            .is_some_and(|visible| visible != self_page)
-        {
+        // The browsing refactor wraps PhotosPage inside `browsing_root_page`,
+        // so `nav.visible_page()` is the wrapper rather than this page.
+        // Match AlbumDetailPage's check: bail when this widget is not actually
+        // the visible browsing child (e.g. a viewer/search/trash page is on
+        // top of the nav stack).
+        if !self.is_visible() {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "PhotosPage: ignoring viewer activation because PhotosPage is not visible"

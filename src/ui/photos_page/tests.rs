@@ -172,3 +172,65 @@ fn opening_viewer_temporarily_disables_photos_page_input() {
         "Photos page input should be restored after the guarded push window"
     );
 }
+
+#[gtk::test]
+fn opening_viewer_pushes_through_browsing_root_page_wrapper() {
+    // Regression: the browsing-stack refactor moved PhotosPage inside a
+    // `browsing_root_page` wrapper on the host `AdwNavigationView`, so
+    // `nav.visible_page()` is the wrapper rather than the PhotosPage.
+    // PhotosPage's open_viewer must not early-return when the visible page is
+    // the wrapper; it must check whether PhotosPage itself is the visible
+    // browsing child (e.g. via `is_visible()`).
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.PhotosBrowsingRootViewer")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    crate::ui::grid_css::install();
+    let window = crate::ui::MainWindow::new(&app);
+    let nav = window.nav_view();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("photos-root.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+    window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+
+    let photos = PhotosPage::new(media_list, loader);
+    photos.set_nav_target(&nav);
+    photos.set_db_pool(pool);
+    window.show_photos_browsing_page(&photos);
+
+    // Production sets browsing_root_page as the visible NavigationPage; the
+    // PhotosPage lives inside the inner browsing_stack.
+    assert_ne!(
+        nav.visible_page().as_ref(),
+        Some(photos.upcast_ref()),
+        "sanity check: PhotosPage must NOT be the visible NavigationPage once \
+         wrapped in browsing_root_page — this is the condition the production \
+         viewer-open guard must tolerate"
+    );
+
+    // Realize the widget tree so `WidgetExt::is_visible()` reflects the same
+    // mapped state as the running app; GTK only marks descendants as visible
+    // once the toplevel has been shown.
+    window.present();
+    while glib::MainContext::default().iteration(false) {}
+
+    photos.open_viewer(MediaId::from(1));
+
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        2,
+        "clicking a photo on the Photos page must push a ViewerPage even when \
+         the host nav stack holds browsing_root_page rather than PhotosPage directly"
+    );
+    assert!(
+        nav.visible_page().and_downcast::<ViewerPage>().is_some(),
+        "viewer should be the top page after activating a Photos thumbnail"
+    );
+}
