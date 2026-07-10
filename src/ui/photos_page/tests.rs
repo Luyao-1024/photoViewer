@@ -2,6 +2,17 @@ use super::*;
 use chrono::{TimeZone, Utc};
 use std::path::PathBuf;
 
+/// Window for polling the viewer-open debounce's *recovery*. `open_viewer`
+/// pushes the viewer with `can_pop = false` and a one-shot
+/// `VIEWER_OPEN_POP_GUARD_MS` (~350 ms) timeout that re-enables pop and
+/// restores source-page input. These tests pump the main loop until that
+/// recovery lands. The deadline must clear 350 ms with generous margin:
+/// GitHub Actions runners dispatch the one-shot late enough that a 600 ms
+/// window flaked on CI (the recovery landed just past it). 3 s leaves ample
+/// headroom and still fails fast if recovery is genuinely broken — the happy
+/// path exits the loop as soon as the ~350 ms timeout fires.
+const OPEN_GUARD_RECOVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn sample_item(id: i64, name: &str) -> crate::core::media::MediaItem {
     let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
     crate::core::media::MediaItem {
@@ -129,7 +140,7 @@ fn opening_viewer_temporarily_disables_initial_navigation_pop() {
     );
 
     let ctx = glib::MainContext::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+    let deadline = std::time::Instant::now() + OPEN_GUARD_RECOVERY_DEADLINE;
     while std::time::Instant::now() < deadline && !viewer.can_pop() {
         ctx.iteration(true);
     }
@@ -162,7 +173,7 @@ fn opening_viewer_temporarily_disables_photos_page_input() {
     );
 
     let ctx = glib::MainContext::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(600);
+    let deadline = std::time::Instant::now() + OPEN_GUARD_RECOVERY_DEADLINE;
     while std::time::Instant::now() < deadline && !page.is_sensitive() {
         ctx.iteration(true);
     }
