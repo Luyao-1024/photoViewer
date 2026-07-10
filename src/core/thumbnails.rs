@@ -39,9 +39,7 @@ use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 #[cfg(test)]
-use video::{
-    extract_video_frame_ffmpeg, ffmpeg_thumbnail_temp_path, overlay_play_icon, read_video_rotation,
-};
+use video::{extract_video_frame_ffmpeg, ffmpeg_thumbnail_temp_path, read_video_rotation};
 
 /// 缩略图尺寸档位
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -225,16 +225,15 @@ fn gif_content_with_jpg_suffix_skips_turbojpeg_warning() {
 }
 
 #[test]
-fn unavailable_video_thumbnail_is_cached_as_jpeg_without_play_triangle() {
+fn unavailable_video_thumbnail_is_returned_without_disk_cache() {
     let dir = tempfile::tempdir().unwrap();
-    let out = dir.path().join("video");
+    let cache_stem = dir.path().join("video");
 
-    let thumb = generate_unavailable_placeholder(256, &out, true)
-        .expect("video unavailable placeholder should generate");
+    let thumb = generate_unavailable_placeholder(256, true);
 
     assert!(
-        out.with_extension("jpg").exists(),
-        "placeholder should be cached"
+        !cache_stem.with_extension("jpg").exists(),
+        "placeholder should not be cached"
     );
     assert_eq!(thumb.width(), 256);
     assert_eq!(thumb.height(), 144);
@@ -252,7 +251,7 @@ fn unavailable_video_thumbnail_is_cached_as_jpeg_without_play_triangle() {
 }
 
 #[test]
-fn image_decode_failure_generates_unavailable_thumbnail() {
+fn image_decode_failure_returns_unavailable_thumbnail_without_caching_it() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("broken.jpg");
     std::fs::write(&src, b"not an image").unwrap();
@@ -274,10 +273,10 @@ fn image_decode_failure_generates_unavailable_thumbnail() {
         .map(|entry| entry.path())
         .collect();
     assert!(
-        cached
+        !cached
             .iter()
             .any(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jpg")),
-        "unavailable image thumbnail should be cached as JPEG"
+        "unavailable image thumbnail should not be cached"
     );
 }
 
@@ -624,46 +623,6 @@ fn heap_pops_highest_priority_first() {
         heap.pop().unwrap().0.cache_key,
         "b",
         "最后弹出 b 的过期 NORMAL 项"
-    );
-}
-
-/// `overlay_play_icon` 在 pixbuf 左下角绘制半透明背景 + 白色三角形。
-#[test]
-fn overlay_play_icon_modifies_pixels() {
-    let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 200, 150).unwrap();
-    pb.fill(0x808080ff); // 灰色填充
-    let result = overlay_play_icon(&pb);
-    // overlay 后尺寸不变
-    assert_eq!(result.width(), 200);
-    assert_eq!(result.height(), 150);
-    // 左下角区域像素应被修改（不再是纯灰）
-    let bytes = result.read_pixel_bytes();
-    let buf: &[u8] = bytes.as_ref();
-    let rowstride = result.rowstride() as usize;
-    // 采样左下角附近一点
-    let sample_y = 150 - 20;
-    let sample_x = 20;
-    let i = sample_y * rowstride + sample_x * 3;
-    assert!(i + 2 < buf.len());
-    // 像素值应与原始灰色 (128,128,128) 不同
-    assert!(
-        buf[i] != 128 || buf[i + 1] != 128 || buf[i + 2] != 128,
-        "左下角像素应被 overlay 修改"
-    );
-}
-
-/// `overlay_play_icon` 对过小的 pixbuf 不做修改。
-#[test]
-fn overlay_play_icon_skips_tiny_pixbuf() {
-    let pb = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 10, 10).unwrap();
-    pb.fill(0x808080ff);
-    let result = overlay_play_icon(&pb);
-    let bytes_orig = pb.read_pixel_bytes();
-    let bytes_result = result.read_pixel_bytes();
-    assert_eq!(
-        bytes_orig.as_ref(),
-        bytes_result.as_ref(),
-        "10x10 pixbuf 不应被修改"
     );
 }
 

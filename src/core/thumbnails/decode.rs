@@ -85,8 +85,7 @@ pub(in crate::core::thumbnails) fn generate(
                     size,
                     e
                 );
-                let placeholder =
-                    generate_unavailable_placeholder(size.max_dim(), &cache_stem, true)?;
+                let placeholder = generate_unavailable_placeholder(size.max_dim(), true);
                 debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB video_placeholder_generated source_uri={} source_path={} size={:?}",
@@ -124,16 +123,15 @@ pub(in crate::core::thumbnails) fn generate(
                 size,
                 e
             );
-            generate_unavailable_placeholder(size.max_dim(), &cache_stem, false)
+            Ok(generate_unavailable_placeholder(size.max_dim(), false))
         }
     }
 }
 
 pub(in crate::core::thumbnails) fn generate_unavailable_placeholder(
     max_dim: u32,
-    cache_stem: &Path,
     is_video: bool,
-) -> anyhow::Result<Pixbuf> {
+) -> Pixbuf {
     let width = max_dim as i32;
     let height = if is_video {
         ((max_dim as f64) * 9.0 / 16.0).round().max(1.0) as i32
@@ -141,7 +139,7 @@ pub(in crate::core::thumbnails) fn generate_unavailable_placeholder(
         width
     };
     let pb = Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height)
-        .ok_or_else(|| anyhow::anyhow!("failed to allocate unavailable thumbnail"))?;
+        .expect("failed to allocate unavailable thumbnail");
     pb.fill(0x242932ff);
 
     let rowstride = pb.rowstride() as usize;
@@ -195,15 +193,7 @@ pub(in crate::core::thumbnails) fn generate_unavailable_placeholder(
         }
     }
 
-    let cache_path = cache_stem.with_extension("jpg");
-    save_pixbuf_as_jpeg_atomic(&pb, &cache_path).map_err(|e| {
-        anyhow::anyhow!(
-            "unavailable thumbnail save failed {:?}: {}",
-            cache_stem.with_extension("jpg"),
-            e
-        )
-    })?;
-    Ok(pb)
+    pb
 }
 
 /// `image` crate 解不了的格式（HEIC/AVIF 等）走 gdk-pixbuf：解码 → 等比缩放 → 存磁盘缓存。

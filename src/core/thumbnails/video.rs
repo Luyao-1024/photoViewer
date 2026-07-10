@@ -12,7 +12,7 @@ use tracing::debug;
 ///
 /// 提取视频封面帧：优先调用 [`extract_video_frame_ffmpeg`]（基于 libav，正确处理
 /// limited->full 色彩范围、HDR->SDR 色调映射与旋转），失败时回退到内置 GStreamer
-/// 管线 [`extract_video_frame_gst`]。两条路径返回的帧均已在左下角叠加播放图标。
+/// 管线 [`extract_video_frame_gst`]。返回的视频帧保持原始画面，不添加 UI 标记。
 pub(in crate::core::thumbnails) fn extract_video_frame(
     path: &Path,
     max_dim: u32,
@@ -33,7 +33,7 @@ pub(in crate::core::thumbnails) fn extract_video_frame(
 /// 用外部 `ffmpegthumbnailer` 生成封面帧。它内部走 libav，会正确扩展 limited
 /// range（YUV 16-235 -> RGB 0-255）并做 HDR->SDR 与旋转，避免手写管线把窄范围
 /// 原样塞进 RGB 导致缩略图发灰、低饱和。输出 PNG（无损，避免二次 JPEG 压缩），
-/// 解码后在左下角叠加播放图标。
+/// 解码后直接返回视频画面。
 pub(in crate::core::thumbnails) fn extract_video_frame_ffmpeg(
     path: &Path,
     max_dim: u32,
@@ -69,7 +69,6 @@ pub(in crate::core::thumbnails) fn extract_video_frame_ffmpeg(
     let pb = load_pixbuf_sync(&tmp);
     let _ = std::fs::remove_file(&tmp);
     let pb = pb?;
-    let pb = overlay_play_icon(&pb);
     debug!(
         "VIDEO_THUMB ffmpegthumbnailer 提取成功 {}x{}",
         pb.width(),
@@ -226,9 +225,6 @@ fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf>
 
     debug!("VIDEO_THUMB 提取成功 {}x{}", pb.width(), pb.height());
 
-    // 在左下角叠加半透明播放图标。
-    let pb = overlay_play_icon(&pb);
-
     Ok(pb)
 }
 
@@ -315,84 +311,4 @@ pub(in crate::core::thumbnails) fn read_video_rotation(path: &Path) -> i32 {
     }
 
     find_tkhd_rotation(&data, 0, data.len())
-}
-
-/// 在 pixbuf 左下角叠加一个半透明播放三角形，标记为视频缩略图。
-pub(in crate::core::thumbnails) fn overlay_play_icon(pb: &Pixbuf) -> Pixbuf {
-    let pb = pb.clone();
-    let w = pb.width();
-    let h = pb.height();
-    if w < 20 || h < 20 {
-        return pb;
-    }
-
-    // 图标尺寸：约 1/6 宽度，最小 16px，最大 48px。
-    let icon_size = (w / 6).clamp(16, 48);
-    let margin = icon_size / 4;
-
-    // 三角形参数：指向右方的等腰三角形。
-    let tri_h = icon_size;
-    let tri_w = (icon_size as f64 * 0.86) as i32; // 等边三角形比例
-    let ox = margin;
-    let oy = h - margin - tri_h;
-
-    let rowstride = pb.rowstride() as usize;
-    let channels = pb.n_channels() as usize;
-    let has_alpha = pb.has_alpha();
-
-    unsafe {
-        let pixels = pb.pixels();
-        // 半透明深色圆形背景。
-        let bg_r: u8 = 0;
-        let bg_g: u8 = 0;
-        let bg_b: u8 = 0;
-        let bg_a: u8 = 140;
-        let cx = ox + tri_w / 2;
-        let cy = oy + tri_h / 2;
-        let radius = (tri_h / 2 + 4) as f64;
-
-        for y in (oy - 4).max(0)..(oy + tri_h + 4).min(h) {
-            for x in (ox - 4).max(0)..(ox + tri_w + 4).min(w) {
-                let dx = (x - cx) as f64;
-                let dy = (y - cy) as f64;
-                if dx * dx + dy * dy <= radius * radius {
-                    let i = y as usize * rowstride + x as usize * channels;
-                    if i + 2 < pixels.len() {
-                        let alpha = bg_a as f64 / 255.0;
-                        let inv = 1.0 - alpha;
-                        pixels[i] = (bg_r as f64 * alpha + pixels[i] as f64 * inv) as u8;
-                        pixels[i + 1] = (bg_g as f64 * alpha + pixels[i + 1] as f64 * inv) as u8;
-                        pixels[i + 2] = (bg_b as f64 * alpha + pixels[i + 2] as f64 * inv) as u8;
-                        if has_alpha && i + 3 < pixels.len() {
-                            pixels[i + 3] = 255;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 白色三角形（指向右方）。
-        for dy in 0..tri_h {
-            let row_half = (dy as f64 / tri_h as f64 * tri_w as f64 / 2.0) as i32;
-            let left = cx - row_half;
-            let right = cx + row_half;
-            for x in left.max(0)..right.min(w) {
-                let y = oy + dy;
-                if y < 0 || y >= h {
-                    continue;
-                }
-                let i = y as usize * rowstride + x as usize * channels;
-                if i + 2 < pixels.len() {
-                    pixels[i] = 255;
-                    pixels[i + 1] = 255;
-                    pixels[i + 2] = 255;
-                    if has_alpha && i + 3 < pixels.len() {
-                        pixels[i + 3] = 255;
-                    }
-                }
-            }
-        }
-    }
-
-    pb
 }
