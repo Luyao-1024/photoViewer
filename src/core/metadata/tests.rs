@@ -7,7 +7,8 @@
 //! synthetic HEIC whose Exif item is deliberately oversized and prove the
 //! dedicated parser still recovers DateTimeOriginal.
 use super::*;
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::{Cursor, Seek, SeekFrom, Write};
+use tempfile::NamedTempFile;
 
 /// Minimal TIFF block (little-endian) with DateTimeOriginal set.
 fn tiff_with_datetime_original(dt: &str) -> Vec<u8> {
@@ -415,4 +416,102 @@ fn exif_summary_empty_when_no_relevant_fields() {
         "DateTimeOriginal should still parse"
     );
     assert_eq!(ExifSummary::from_exif(&exif), None);
+}
+
+// ── lenient EXIF recovery for the details-panel / scanner path ─────────────
+// Same root cause as the viewer (see `core::orientation::tests`): a JPEG whose
+// EXIF has an intact primary IFD but a truncated secondary (thumbnail) IFD.
+// `metadata::extract` feeds these files to the details panel and the scanner's
+// `taken_at`, so it must recover the primary-IFD fields (here DateTimeOriginal)
+// instead of dropping them. Before the lenient reader, `read_exif` returned
+// `Err(InvalidFormat("Truncated IFD count"))` and `taken_at` came back empty.
+
+/// Little-endian TIFF block: one primary-IFD entry (DateTime, 0x0132 — a
+/// Tiff-context tag that lives in IFD0, unlike DateTimeOriginal which is an
+/// Exif sub-IFD tag) plus a `next_ifd` pointer past EOF, so kamadak-exif's
+/// strict reader fails with "Truncated IFD count" while the primary IFD still
+/// parses cleanly.
+fn le_tiff_with_datetime_and_truncated_next_ifd(dt: &str) -> Vec<u8> {
+    let mut ascii = dt.as_bytes().to_vec();
+    ascii.push(0); // EXIF ASCII NUL terminator
+    let ascii_len = ascii.len() as u32;
+    assert!(
+        ascii_len > 4,
+        "value must be offset-stored to exercise the pointer path"
+    );
+
+    let mut tiff = Vec::new();
+    // Header: "II", magic 42, IFD0 at offset 8.
+    tiff.extend_from_slice(b"II");
+    tiff.extend_from_slice(&0x002Au16.to_le_bytes());
+    tiff.extend_from_slice(&8u32.to_le_bytes());
+    // IFD0: 1 entry.
+    tiff.extend_from_slice(&1u16.to_le_bytes());
+    // DateTime (0x0132), ASCII (2), count, offset = 26
+    // (header 8 + count 2 + entry 12 + next_ifd 4).
+    tiff.extend_from_slice(&0x0132u16.to_le_bytes());
+    tiff.extend_from_slice(&2u16.to_le_bytes());
+    tiff.extend_from_slice(&ascii_len.to_le_bytes());
+    tiff.extend_from_slice(&26u32.to_le_bytes());
+    // next_ifd — points past EOF (total length = 26 + ascii_len) so the strict
+    // reader rejects with "Truncated IFD count".
+    tiff.extend_from_slice(&100u32.to_le_bytes());
+    // ASCII payload at offset 26.
+    tiff.extend_from_slice(&ascii);
+    tiff
+}
+
+/// Wrap a TIFF block in a minimal JPEG (SOI + APP1 + EOI) the way phone
+/// galleries do. No pixel body — `metadata` never decodes pixels here.
+fn jpeg_with_app1_exif(tiff: &[u8]) -> Vec<u8> {
+    const EXIF_PREFIX: &[u8; 6] = b"Exif\0\0";
+    let segment_len = 2 + EXIF_PREFIX.len() + tiff.len(); // length field is self-inclusive
+    assert!(segment_len <= u16::MAX as usize);
+
+    let mut jpeg = Vec::new();
+    jpeg.extend_from_slice(&[0xFF, 0xD8]); // SOI
+    jpeg.extend_from_slice(&[0xFF, 0xE1]); // APP1
+    jpeg.extend_from_slice(&(segment_len as u16).to_be_bytes());
+    jpeg.extend_from_slice(EXIF_PREFIX);
+    jpeg.extend_from_slice(tiff);
+    jpeg.extend_from_slice(&[0xFF, 0xD9]); // EOI
+    jpeg
+}
+
+#[test]
+fn exif_from_recovers_datetime_from_truncated_secondary_ifd() {
+    let tiff = le_tiff_with_datetime_and_truncated_next_ifd("2024:05:06 07:08:09");
+    let jpeg = jpeg_with_app1_exif(&tiff);
+    let mut file = NamedTempFile::with_suffix(".jpg").expect("create temp .jpg");
+    file.write_all(&jpeg).expect("write JPEG");
+    file.flush().expect("flush");
+    let path = file.path();
+
+    // Strict read reproduces the original failure.
+    let strict_err = {
+        let mut f = std::io::BufReader::new(std::fs::File::open(path).expect("open temp file"));
+        exif::Reader::new()
+            .read_from_container(&mut f)
+            .err()
+            .expect("strict reader must fail on truncated tail IFD")
+    };
+    assert!(
+        strict_err.to_string().contains("Truncated IFD count"),
+        "strict path should surface the truncated secondary IFD; got: {strict_err}"
+    );
+
+    // Lenient path (used by `extract` → details panel + scanner `taken_at`)
+    // recovers DateTime from the intact primary IFD, both via the shared-head
+    // fast path and the streaming fallback.
+    let from_head = exif_from(path, Some(&jpeg)).expect("head path should recover partial EXIF");
+    assert!(
+        exif_datetime(&from_head).is_some(),
+        "DateTime must survive a truncated tail IFD (head path)"
+    );
+
+    let streamed = exif_from(path, None).expect("streaming path should recover partial EXIF");
+    assert!(
+        exif_datetime(&streamed).is_some(),
+        "DateTime must survive a truncated tail IFD (streaming path)"
+    );
 }

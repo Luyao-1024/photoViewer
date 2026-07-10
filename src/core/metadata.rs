@@ -309,7 +309,7 @@ pub fn extract_with_head(path: &Path, head: Option<&[u8]>) -> Result<RawMetadata
                 meta.width = Some(buf.width() as u32);
                 meta.height = Some(buf.height() as u32);
             }
-            if let Ok(exif) = read_heic_exif_from_bytes(data) {
+            if let Some(exif) = read_heic_exif_from_bytes(data) {
                 meta.taken_at = exif_datetime(&exif);
                 meta.camera = ExifSummary::from_exif(&exif);
             }
@@ -322,7 +322,7 @@ pub fn extract_with_head(path: &Path, head: Option<&[u8]>) -> Result<RawMetadata
             meta.width = Some(w);
             meta.height = Some(h);
         }
-        if let Ok(exif) = exif_from(path, head) {
+        if let Some(exif) = exif_from(path, head) {
             meta.taken_at = exif_datetime(&exif);
             meta.camera = ExifSummary::from_exif(&exif);
         }
@@ -355,12 +355,59 @@ fn dims_from(path: &Path, head: Option<&[u8]>) -> Option<(u32, u32)> {
         .or_else(|| pixbuf_dims(path))
 }
 
-/// EXIF for a standard image: parsed from the shared head when present, else a
-/// streaming `read_exif(path)` read.
-fn exif_from(path: &Path, head: Option<&[u8]>) -> Result<exif::Exif> {
+// ── lenient EXIF reading ───────────────────────────────────────────────────
+// kamadak-exif's default reader rejects the *whole* file when any single IFD
+// is structurally broken — common with phone-app re-encodes (WeChat,
+// WhatsApp, …) that leave a half-written tail IFD, surfacing as
+// `InvalidFormat("Truncated IFD count")`. Every display (read-only) EXIF path
+// below opts into the crate's `continue_on_error` mode and salvages the intact
+// primary IFD via `Error::distill_partial_result`, so a truncated sibling IFD
+// no longer hides the orientation tag (viewer) or the camera/date fields
+// (details panel). The write path in `orientation::write_orientation` keeps a
+// *strict* read on purpose: a rotation click must never silently rewrite a
+// half-parseable EXIF block.
+
+/// A kamadak-exif reader configured to keep parsing past per-IFD errors so the
+/// intact primary IFD survives a truncated sibling. Shared by every display
+/// EXIF path here and in `core::orientation`.
+pub(crate) fn lenient_exif_reader() -> exif::Reader {
+    let mut reader = exif::Reader::new();
+    reader.continue_on_error(true);
+    reader
+}
+
+/// Recover the successfully-parsed fields from a kamadak-exif result: `Ok`
+/// passes through; an `Error::PartialResult` unwraps into the partial `Exif`;
+/// any other (fatal) error — including `NotFound` for files with no EXIF —
+/// becomes `None`.
+pub(crate) fn distill_partial_exif(
+    result: std::result::Result<exif::Exif, exif::Error>,
+) -> Option<exif::Exif> {
+    match result {
+        Ok(exif) => Some(exif),
+        Err(e) => e
+            .distill_partial_result(|errors| {
+                tracing::debug!(
+                    target: crate::core::log_targets::METADATA,
+                    "exif: recovered primary IFD from partial parse ({} ignored error(s)): {:?}",
+                    errors.len(),
+                    errors
+                );
+            })
+            .ok(),
+    }
+}
+
+/// EXIF for a standard image: parsed leniently from the shared head when
+/// present, else a streaming `read_exif(path)` read. Returns `None` when no
+/// recoverable EXIF is present.
+fn exif_from(path: &Path, head: Option<&[u8]>) -> Option<exif::Exif> {
     if let Some(h) = head {
-        if let Ok(exif) = exif::Reader::new().read_from_container(&mut std::io::Cursor::new(h)) {
-            return Ok(exif);
+        let mut cur = std::io::Cursor::new(h);
+        if let Some(exif) =
+            distill_partial_exif(lenient_exif_reader().read_from_container(&mut cur))
+        {
+            return Some(exif);
         }
     }
     read_exif(path)
@@ -380,29 +427,23 @@ fn pixbuf_dims(path: &Path) -> Option<(u32, u32)> {
         .map(|buf| (buf.width() as u32, buf.height() as u32))
 }
 
-fn read_exif(path: &Path) -> Result<exif::Exif> {
+fn read_exif(path: &Path) -> Option<exif::Exif> {
     // Standard (non-HEIC) path: stream the file and let kamadak-exif find the
     // EXIF segment. HEIC is handled in `extract` via `read_heic_exif_from_bytes`
     // — it parses the ISOBMFF container itself (bypassing kamadak-exif's 64 KB
     // Exif-item cap, which phone HEICs with embedded thumbnails exceed) and
     // reuses the bytes already read for dimensions, so the file is read once.
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).ok()?;
     let mut bufreader = std::io::BufReader::new(&file);
-    let exif = exif::Reader::new()
-        .read_from_container(&mut bufreader)
-        .map_err(|e| AppError::Exif(e.to_string()))?;
-    Ok(exif)
+    distill_partial_exif(lenient_exif_reader().read_from_container(&mut bufreader))
 }
 
 /// Parse the EXIF block of a HEIC/HEIF file from already-read bytes (no extra
 /// I/O). `extract` calls this so the single `std::fs::read` feeds both
 /// dimensions (`extract_heic_dims`) and EXIF.
-fn read_heic_exif_from_bytes(data: &[u8]) -> Result<exif::Exif> {
-    let tiff = extract_heic_exif_tiff(data)
-        .ok_or_else(|| AppError::Exif("no Exif item in HEIC".into()))?;
-    exif::Reader::new()
-        .read_raw(tiff)
-        .map_err(|e| AppError::Exif(e.to_string()))
+fn read_heic_exif_from_bytes(data: &[u8]) -> Option<exif::Exif> {
+    let tiff = extract_heic_exif_tiff(data)?;
+    distill_partial_exif(lenient_exif_reader().read_raw(tiff))
 }
 
 // ── EXIF value helpers ──────────────────────────────────────────────────────

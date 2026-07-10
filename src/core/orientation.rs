@@ -6,14 +6,21 @@ use gdk_pixbuf::{Pixbuf, PixbufRotation};
 
 use crate::core::error::{AppError, Result};
 use crate::core::media::mime_from_extension;
-use crate::core::metadata::extract_heic_exif_tiff;
+use crate::core::metadata::{distill_partial_exif, extract_heic_exif_tiff, lenient_exif_reader};
 
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const EXIF_PREFIX: &[u8] = b"Exif\0\0";
 
 /// Read the image orientation property. Missing orientation is normal.
+///
+/// We deliberately use a **lenient** EXIF read here (kamadak-exif's
+/// `continue_on_error` mode + `Error::distill_partial_result`) so that
+/// partially-broken files still expose their primary-IFD orientation tag.
+/// The strict `read_exif` reserved for the write path returns `Err(...)`
+/// instead, so a rotation click never silently nukes a half-parseable EXIF
+/// block.
 pub fn read_orientation(path: &Path) -> Result<u16> {
-    let Some(exif) = read_exif(path)? else {
+    let Some(exif) = read_orientation_exif_lenient(path) else {
         return Ok(1);
     };
     Ok(exif
@@ -119,6 +126,31 @@ fn read_exif(path: &Path) -> Result<Option<exif::Exif>> {
         Err(exif::Error::InvalidFormat("Unknown image format")) => Ok(None),
         Err(e) => Err(AppError::Exif(e.to_string())),
     }
+}
+
+/// Lenient EXIF read for [`read_orientation`]: recovers the primary IFD even
+/// when a sibling IFD is truncated (WeChat and other phone-app re-encodes
+/// leave a half-written tail IFD that kamadak-exif otherwise rejects with
+/// `InvalidFormat("Truncated IFD count")`, which used to make the viewer skip
+/// the original decode). Delegates to the shared `core::metadata` lenient
+/// reader + partial-result recovery so the viewer and the details panel
+/// behave identically on damaged EXIF blocks.
+fn read_orientation_exif_lenient(path: &Path) -> Option<exif::Exif> {
+    let data = std::fs::read(path).ok()?;
+    let reader = lenient_exif_reader();
+
+    if is_png(&data) {
+        let tiff = find_png_exif_chunk(&data).ok().flatten()?;
+        return distill_partial_exif(reader.read_raw(tiff));
+    }
+
+    if mime_from_extension(path) == Some("image/heic") {
+        let tiff = extract_heic_exif_tiff(&data)?;
+        return distill_partial_exif(reader.read_raw(tiff));
+    }
+
+    let mut cursor = Cursor::new(&data);
+    distill_partial_exif(reader.read_from_container(&mut cursor))
 }
 
 fn write_orientation(path: &Path, orientation: u16) -> Result<()> {
@@ -295,3 +327,6 @@ fn write_jpeg_exif_segment(data: &[u8], tiff: &[u8]) -> Result<Vec<u8>> {
     out.extend_from_slice(&data[pos..]);
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests;
