@@ -208,8 +208,10 @@ impl DbActorHandle {
         &self,
         command: DbCommand,
         reply: oneshot::Sender<Result<DbCommandResult>>,
-    ) -> std::result::Result<(), mpsc::SendError<DbEnvelope>> {
-        self.tx.send(DbEnvelope { command, reply })
+    ) -> std::result::Result<(), Box<mpsc::SendError<DbEnvelope>>> {
+        self.tx
+            .send(DbEnvelope { command, reply })
+            .map_err(Box::new)
     }
 }
 

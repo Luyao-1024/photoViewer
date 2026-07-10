@@ -207,7 +207,7 @@ impl ViewerPage {
                             tracing::warn!("ViewerPage: Toggle favorite failed: {e}");
                             toasts::error(
                                 &this.imp().toast_overlay.get(),
-                                &format!("{}: {e}", &tr("viewer.toast.favorite_update_failed")),
+                                &format!("{}: {e}", tr("viewer.toast.favorite_update_failed")),
                             );
                         }
                     }

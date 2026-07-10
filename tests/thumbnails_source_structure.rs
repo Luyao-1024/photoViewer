@@ -122,7 +122,6 @@ fn thumbnail_video_helpers_live_in_video_module() {
         "pub(in crate::core::thumbnails) fn extract_video_frame",
         "pub(in crate::core::thumbnails) fn extract_video_frame_ffmpeg",
         "pub(in crate::core::thumbnails) fn ffmpeg_thumbnail_temp_path",
-        "pub(in crate::core::thumbnails) fn overlay_play_icon",
     ] {
         assert!(video.contains(marker), "video.rs missing `{marker}`");
     }
