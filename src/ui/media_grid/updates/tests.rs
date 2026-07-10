@@ -87,7 +87,13 @@ fn grid_inserts_same_section_item_without_replacing_existing_tiles() {
     let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
     let first_child_before = flow_child_at(&flow_before, 0).expect("first tile should be rendered");
 
-    let inserted = sample_item(3, "inserted.png");
+    let inserted_source = dir.path().join("inserted.png");
+    image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 40, 60, 255]))
+        .save(&inserted_source)
+        .expect("test source image should be writable");
+    let mut inserted = sample_item(3, "inserted.png");
+    inserted.uri = format!("file://{}", inserted_source.display());
+    inserted.path = inserted_source;
     crate::core::thumbnails::generate_for_tests(
         &cache_dir,
         &inserted.uri,
