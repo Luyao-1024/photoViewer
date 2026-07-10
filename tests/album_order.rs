@@ -4,6 +4,7 @@
 //! `albums::refresh`（扫描 / 加入相册后都会触发）的 DELETE+INSERT 中丢失。
 //! 这里覆盖三件事：写入顺序被 `list_with_favorites` 读回；未被记录顺序的新
 //! 相册回退到末尾并保留默认相对顺序；空顺序维持虚拟相册置顶的默认行为。
+mod common;
 use chrono::{TimeZone, Utc};
 use photo_viewer::core::albums::{
     self, FAVORITES_ALBUM_PATH, IMAGES_ALBUM_PATH, VIDEOS_ALBUM_PATH,
@@ -36,12 +37,12 @@ fn make_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
 
 /// 两个文件夹相册 + 三个虚拟相册（收藏 / 图片 / 视频）的图库快照。
 fn seed(pool: &db::DbPool) {
-    db::insert_media_item(
+    common::db::insert_media_item(
         pool,
         &make_item("file:///p/Camera/a.jpg", "/p/Camera/a.jpg", "/p/Camera", 2),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         pool,
         &make_item(
             "file:///p/Screenshots/b.jpg",
@@ -97,7 +98,7 @@ fn unrecorded_albums_fall_to_the_end() {
     albums::set_album_order(&pool, &["/p/Camera".to_string()]).unwrap();
 
     // 扫描后新增一个相册（也不在 album_order 里）。
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///p/New/c.jpg", "/p/New/c.jpg", "/p/New", 3),
     )

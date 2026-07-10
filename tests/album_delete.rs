@@ -1,3 +1,4 @@
+mod common;
 use chrono::{Duration, Utc};
 use photo_viewer::core::album_ops;
 use photo_viewer::core::albums::{self, Album, FAVORITES_ALBUM_PATH};
@@ -53,7 +54,7 @@ fn create_media(pool: &db::DbPool, folder: &Path, name: &str) -> (i64, String, P
     std::fs::write(&path, b"fake jpeg data").expect("write media file");
     let item = media_item(&path);
     let uri = item.uri.clone();
-    let id = db::insert_media_item(pool, &item).expect("insert media row");
+    let id = common::db::insert_media_item(pool, &item).expect("insert media row");
     (id, uri, path)
 }
 
@@ -67,7 +68,7 @@ fn insert_missing_media(
     let path = folder.join(name);
     let item = media_item_with_size_and_mtime(&path, 0, file_mtime);
     let uri = item.uri.clone();
-    let id = db::insert_media_item(pool, &item).expect("insert missing media row");
+    let id = common::db::insert_media_item(pool, &item).expect("insert missing media row");
     (id, uri, path)
 }
 

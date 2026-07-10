@@ -54,7 +54,7 @@ fn setup() -> (
     std::fs::create_dir(&dest_folder).unwrap();
 
     let pool = db::init_pool(&root.join("test.db")).unwrap();
-    let id = db::insert_media_item(
+    let id = common::db::insert_media_item(
         &pool,
         &make_new_item(file_path.clone(), source_folder.clone(), "h_img1"),
     )
@@ -123,7 +123,7 @@ fn conflict_in_target_folder_renames_with_underscore_n_suffix() {
     let existing = write_plain_jpeg(&dest, "img.jpg");
 
     let pool = db::init_pool(&root.join("test.db")).unwrap();
-    let id = db::insert_media_item(
+    let id = common::db::insert_media_item(
         &pool,
         &make_new_item(source_file.clone(), source.clone(), "h_img"),
     )

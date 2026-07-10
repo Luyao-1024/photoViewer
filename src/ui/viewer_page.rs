@@ -485,7 +485,8 @@ impl ViewerPage {
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
-        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+        *self.imp().db_actor.borrow_mut() = Some(db_actor.clone());
+        self.imp().editor_panel.get().set_db_actor(db_actor);
     }
 
     /// Register a callback fired when the user presses ArrowLeft / ArrowRight /
@@ -742,12 +743,18 @@ impl ViewerPage {
             tracing::warn!("ViewerPage: inline rename requested but pool not set");
             return;
         };
+        let db_actor = self.imp().db_actor.borrow().clone();
         let media_id = MediaId::from(item.id);
         let weak = self.downgrade();
         let (tx, rx) = tokio::sync::oneshot::channel();
         gio::spawn_blocking(move || {
             let repo = MediaRepository::new(pool);
-            let result = repo.rename_media_file(media_id, &requested_name);
+            let result = match db_actor.as_ref() {
+                Some(actor) => repo.rename_media_file_with_actor(media_id, &requested_name, actor),
+                None => Err(crate::core::error::AppError::Backend(
+                    "DB actor unavailable for media rename".into(),
+                )),
+            };
             let _ = tx.send(result);
         });
         glib::spawn_future_local(async move {

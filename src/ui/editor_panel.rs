@@ -32,6 +32,7 @@ use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, PreferencesGroupExt, Pre
 use gdk_pixbuf::{Colorspace, Pixbuf};
 
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::edit::{
     apply_all, centered_crop_rect_for_aspect, CropRect, EditRegistry, EditState,
 };
@@ -112,6 +113,7 @@ mod imp {
     pub struct EditorPanel {
         pub media_item: RefCell<Option<MediaItem>>,
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub registry: RefCell<Option<EditRegistry>>,
         pub state: RefCell<EditState>,
         pub source_image: RefCell<Option<image::DynamicImage>>,
@@ -213,6 +215,9 @@ glib::wrapper! {
 }
 
 impl EditorPanel {
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
     fn apply_i18n(&self) {
         let imp = self.imp();
         imp.editor_title.get().set_label(&tr("page.editor.title"));
@@ -528,6 +533,7 @@ impl EditorPanel {
             Some(p) => p,
             None => return,
         };
+        let db_actor = imp.db_actor.borrow().clone();
         let registry = match imp.registry.borrow().clone() {
             Some(r) => r,
             None => return,
@@ -537,8 +543,11 @@ impl EditorPanel {
         glib::spawn_future_local(async move {
             let result: std::thread::Result<
                 std::result::Result<crate::core::media::MediaItem, crate::core::error::AppError>,
-            > = gio::spawn_blocking(move || {
-                crate::core::edit::save_as_copy(&item, &state, &pool, &registry)
+            > = gio::spawn_blocking(move || match db_actor.as_ref() {
+                Some(actor) => crate::core::edit::save_as_copy_with_actor(
+                    &item, &state, &pool, &registry, actor,
+                ),
+                None => crate::core::edit::save_as_copy(&item, &state, &pool, &registry),
             })
             .await;
 
@@ -610,6 +619,7 @@ impl EditorPanel {
             Some(p) => p,
             None => return,
         };
+        let db_actor = imp.db_actor.borrow().clone();
         let registry = match imp.registry.borrow().clone() {
             Some(r) => r,
             None => return,
@@ -618,8 +628,11 @@ impl EditorPanel {
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
-                gio::spawn_blocking(move || {
-                    crate::core::edit::save_overwrite(&item, &state, &pool, &registry)
+                gio::spawn_blocking(move || match db_actor.as_ref() {
+                    Some(actor) => crate::core::edit::save_overwrite_with_actor(
+                        &item, &state, &pool, &registry, actor,
+                    ),
+                    None => crate::core::edit::save_overwrite(&item, &state, &pool, &registry),
                 })
                 .await;
 

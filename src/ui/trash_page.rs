@@ -26,6 +26,7 @@ use libadwaita::subclass::prelude::*;
 #[cfg(test)]
 use crate::core::db;
 use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
@@ -38,21 +39,52 @@ use crate::ui::square_tile::SquareTile;
 const TRASH_TILE_PX: i32 = 270;
 const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
 
-fn restore_items(pool: &DbPool, ids: Vec<i64>) -> Vec<MediaItem> {
+fn restore_items(pool: &DbPool, db_actor: Option<&DbActorHandle>, ids: Vec<i64>) -> Vec<MediaItem> {
     let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
+    if let Some(actor) = db_actor {
+        let items = ids
+            .iter()
+            .filter_map(|id| crate::core::db::get_media_item(pool, id.get()).ok())
+            .collect::<Vec<_>>();
+        for item in &items {
+            if trash::restore_from_trash(&item.uri).is_err() {
+                return Vec::new();
+            }
+        }
+        return match actor.execute_blocking(DbCommand::RestoreTrashed { ids }) {
+            Ok(DbCommandResult::MediaItems(items)) => items,
+            _ => Vec::new(),
+        };
+    }
     MediaRepository::new(pool.clone())
         .restore_from_trash(&ids)
         .map(|mutation| mutation.changed_items)
         .unwrap_or_default()
 }
 
-fn delete_items_permanently(pool: &DbPool, ids: Vec<i64>) {
+fn delete_items_permanently(pool: &DbPool, db_actor: Option<&DbActorHandle>, ids: Vec<i64>) {
     let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
-    let _ = MediaRepository::new(pool.clone()).delete_permanently(&ids);
+    if let Some(actor) = db_actor {
+        let items = ids
+            .iter()
+            .filter_map(|id| crate::core::db::get_media_item(pool, id.get()).ok())
+            .collect::<Vec<_>>();
+        for item in &items {
+            let _ = trash::delete_permanently(&item.uri);
+        }
+        let _ = actor.execute_blocking(DbCommand::DeleteTrashedRows { ids });
+    } else {
+        let _ = MediaRepository::new(pool.clone()).delete_permanently(&ids);
+    }
 }
 
-fn empty_trash(pool: &DbPool) {
-    let _ = MediaRepository::new(pool.clone()).empty_trash();
+fn empty_trash(pool: &DbPool, db_actor: Option<&DbActorHandle>) {
+    let ids = crate::core::db::list_trashed_media(pool)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<Vec<_>>();
+    delete_items_permanently(pool, db_actor, ids);
 }
 
 fn load_trash_items(pool: DbPool) -> crate::core::Result<Vec<MediaItem>> {
@@ -69,6 +101,7 @@ mod imp {
     #[template(file = "../../data/ui/trash-page.ui")]
     pub struct TrashPage {
         pub pool: RefCell<Option<DbPool>>,
+        pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub visible_items: RefCell<Vec<MediaItem>>,
@@ -181,6 +214,17 @@ impl TrashPage {
         Self::build(pool, loader, Some(media_list))
     }
 
+    pub fn with_media_list_and_actor(
+        pool: DbPool,
+        loader: Arc<ThumbnailLoader>,
+        media_list: gtk::gio::ListStore,
+        db_actor: DbActorHandle,
+    ) -> Self {
+        let page = Self::build(pool, loader, Some(media_list));
+        *page.imp().db_actor.borrow_mut() = Some(db_actor);
+        page
+    }
+
     fn build(
         pool: DbPool,
         loader: Arc<ThumbnailLoader>,
@@ -238,11 +282,12 @@ impl TrashPage {
                     None => return,
                 };
                 let ids = obj.imp().trashed_ids.borrow().clone();
+                let db_actor = obj.imp().db_actor.borrow().clone();
                 let media_list = obj.imp().media_list.borrow().clone();
                 let page_weak = obj.downgrade();
 
                 glib::spawn_future_local(async move {
-                    let restored_items = gtk::gio::spawn_blocking(move || restore_items(&pool, ids))
+                    let restored_items = gtk::gio::spawn_blocking(move || restore_items(&pool, db_actor.as_ref(), ids))
                         .await
                         .unwrap_or_default();
                     if let Some(list) = media_list {
@@ -267,10 +312,11 @@ impl TrashPage {
                     None => return,
                 };
                 let ids = obj.imp().trashed_ids.borrow().clone();
+                let db_actor = obj.imp().db_actor.borrow().clone();
                 let page_weak = obj.downgrade();
 
                 glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, ids)).await;
+                    let _ = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, db_actor.as_ref(), ids)).await;
                     flow.unselect_all();
                     // refresh — 完整刷新 FlowBox（全空时自动切到空状态页面），
                     // 避免部分删除后残留旧 tile。
@@ -290,6 +336,7 @@ impl TrashPage {
                     Some(p) => p.clone(),
                     None => return,
                 };
+                let db_actor = obj.imp().db_actor.borrow().clone();
                 let page_weak = obj.downgrade();
 
                 let dialog = adw::AlertDialog::builder()
@@ -306,9 +353,10 @@ impl TrashPage {
                     move |_, response| {
                         if response == "empty" {
                             let pool = pool.clone();
+                            let db_actor = db_actor.clone();
                             let page_weak = page_weak.clone();
                             glib::spawn_future_local(async move {
-                                let _ = gtk::gio::spawn_blocking(move || empty_trash(&pool)).await;
+                                let _ = gtk::gio::spawn_blocking(move || empty_trash(&pool, db_actor.as_ref())).await;
                                 // refresh — 全删后 DB 已空，refresh 内部会切到空状态页面。
                                 if let Some(page) = page_weak.upgrade() {
                                     page.refresh();

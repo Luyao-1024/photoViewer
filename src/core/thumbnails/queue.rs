@@ -5,6 +5,8 @@ use super::{
     SharedStatsDirtyCallback, TIER_BACKGROUND,
 };
 use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
+use crate::core::identity::MediaId;
 use gtk4::gdk::Texture;
 use std::cmp::Reverse;
 use std::path::PathBuf;
@@ -19,6 +21,7 @@ pub(in crate::core::thumbnails) fn worker_loop(
     cache_dir: PathBuf,
     state: Arc<Mutex<LoaderState>>,
     bg: Arc<BackgroundPullState>,
+    db_actor: Option<DbActorHandle>,
     stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
@@ -68,7 +71,16 @@ pub(in crate::core::thumbnails) fn worker_loop(
                     req.cache_key
                 );
                 if let Some(media_id) = generated_media_id {
-                    if let Err(e) = crate::core::db::mark_thumbnails_generated(&pool, &[media_id]) {
+                    let result = if let Some(actor) = db_actor.as_ref() {
+                        actor
+                            .execute_blocking(DbCommand::MarkThumbnailsGenerated {
+                                ids: vec![MediaId::from(media_id)],
+                            })
+                            .map(|_| ())
+                    } else {
+                        crate::core::db::mark_thumbnails_generated(&pool, &[media_id]).map(|_| ())
+                    };
+                    if let Err(e) = result {
                         warn!("更新缩略图状态失败: {}", e);
                     } else if let Ok(callback) = stats_dirty_callback.lock() {
                         debug!(

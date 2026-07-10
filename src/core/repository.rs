@@ -1,4 +1,5 @@
 use crate::core::db::{self, DbPool, SearchField};
+use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
@@ -418,6 +419,24 @@ impl MediaRepository {
     }
 
     pub fn rename_media_file(&self, id: MediaId, requested_name: &str) -> Result<MediaMutation> {
+        self.rename_media_file_inner(id, requested_name, None)
+    }
+
+    pub fn rename_media_file_with_actor(
+        &self,
+        id: MediaId,
+        requested_name: &str,
+        db_actor: &DbActorHandle,
+    ) -> Result<MediaMutation> {
+        self.rename_media_file_inner(id, requested_name, Some(db_actor))
+    }
+
+    fn rename_media_file_inner(
+        &self,
+        id: MediaId,
+        requested_name: &str,
+        db_actor: Option<&DbActorHandle>,
+    ) -> Result<MediaMutation> {
         let item = db::get_media_item(&self.pool, id.get())?;
         let target = rename_target_path(&item.path, requested_name)?;
         if target == item.path {
@@ -438,7 +457,38 @@ impl MediaRepository {
         let parent = target
             .parent()
             .ok_or_else(|| AppError::Backend("renamed file has no parent folder".into()))?;
-        if let Err(err) = db::update_media_location(&self.pool, item.id, &target, parent) {
+        let changed_result: Result<MediaItem> = match db_actor {
+            Some(actor) => match actor.execute_blocking(DbCommand::UpdateMediaLocation {
+                id,
+                path: target.clone(),
+                folder_path: parent.to_path_buf(),
+            }) {
+                Ok(DbCommandResult::MediaItems(mut items)) => items
+                    .pop()
+                    .ok_or_else(|| AppError::Backend("renamed media row was not returned".into())),
+                Ok(other) => Err(AppError::Backend(format!(
+                    "unexpected rename DB result: {other:?}"
+                ))),
+                Err(err) => Err(err),
+            },
+            None => db::update_media_location(&self.pool, item.id, &target, parent)
+                .and_then(|_| db::get_media_item(&self.pool, item.id)),
+        };
+        let changed = match changed_result {
+            Ok(changed) => changed,
+            Err(err) => {
+                if let Err(rollback_err) = std::fs::rename(&target, &item.path) {
+                    tracing::warn!(
+                        "failed to roll back rename from {} to {} after DB update error {err}: {rollback_err}",
+                        target.display(),
+                        item.path.display()
+                    );
+                }
+                return Err(err);
+            }
+        };
+        if changed.path != target {
+            let err = AppError::Backend("renamed media row did not persist target path".into());
             if let Err(rollback_err) = std::fs::rename(&target, &item.path) {
                 tracing::warn!(
                     "failed to roll back rename from {} to {} after DB update error {err}: {rollback_err}",
@@ -448,8 +498,6 @@ impl MediaRepository {
             }
             return Err(err);
         }
-
-        let changed = db::get_media_item(&self.pool, item.id)?;
         Ok(MediaMutation {
             changed_ids: vec![id],
             changed_items: vec![changed],

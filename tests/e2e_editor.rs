@@ -47,7 +47,7 @@ fn insert_test_item(
         file_size: 1000,
         blake3_hash: "h".into(),
     };
-    let id = db::insert_media_item(pool, &item).unwrap();
+    let id = common::db::insert_media_item(pool, &item).unwrap();
     db::get_media_item(pool, id).unwrap()
 }
 

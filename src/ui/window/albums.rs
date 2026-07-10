@@ -1,9 +1,9 @@
 use super::settings::{add_excluded_scan_path, show_settings_error_dialog};
 use super::sidebar::sidebar_album_summary;
 use super::{pop_to_photos_root, show_trash_operation_error_dialog, MainWindow};
-use crate::core::albums::set_album_order;
 use crate::core::albums::Album;
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
 use crate::core::media::MediaItem;
 use crate::core::prefs;
@@ -101,10 +101,6 @@ impl MainWindow {
         if source_path == target_path {
             return;
         }
-        let Some(pool) = self.imp().pool.borrow().clone() else {
-            return;
-        };
-
         let mut order: Vec<String> = self
             .imp()
             .album_targets
@@ -126,7 +122,13 @@ impl MainWindow {
         };
         order.insert(insert_at, source_path.to_string());
 
-        if let Err(err) = set_album_order(&pool, &order) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!("failed to persist album order: DB actor unavailable");
+            return;
+        };
+        if let Err(err) = db_actor
+            .execute_blocking(crate::core::db_actor::DbCommand::SetAlbumOrder { ordered: order })
+        {
             tracing::warn!("failed to persist album order: {err}");
         }
         self.rebuild_album_rows();
@@ -337,14 +339,14 @@ impl MainWindow {
         if album.is_virtual {
             return;
         }
-        let Some(pool) = self.imp().pool.borrow().clone() else {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
             return;
         };
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let worker_result =
-                gtk::gio::spawn_blocking(move || ignore_album_worker(pool, album.folder_path))
+                gtk::gio::spawn_blocking(move || ignore_album_worker(db_actor, album.folder_path))
                     .await;
 
             let Some(window) = weak.upgrade() else {
@@ -432,6 +434,10 @@ impl MainWindow {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
+        let Some(db_actor) = self.imp().db_actor.borrow().clone() else {
+            tracing::warn!("album delete requested before DB actor was initialized");
+            return;
+        };
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_TRACE delete_albums_to_trash_ui_begin albums={} summary=[{}]",
@@ -443,9 +449,12 @@ impl MainWindow {
         let weak = self.downgrade();
         let retry_pool = pool.clone();
         let retry_albums = albums.clone();
+        let retry_actor = db_actor.clone();
         glib::spawn_future_local(async move {
-            let worker_result =
-                gtk::gio::spawn_blocking(move || delete_albums_to_trash_worker(pool, albums)).await;
+            let worker_result = gtk::gio::spawn_blocking(move || {
+                delete_albums_to_trash_worker(pool, db_actor, albums)
+            })
+            .await;
 
             let Some(window) = weak.upgrade() else {
                 return;
@@ -459,6 +468,7 @@ impl MainWindow {
                         if prefs::trash_backend() == TrashBackend::System {
                             window.prompt_album_trash_backend_fallback(
                                 retry_pool,
+                                retry_actor,
                                 retry_albums,
                                 err,
                             );
@@ -531,7 +541,13 @@ impl MainWindow {
         self.log_sidebar_layout_state_next_idle("apply_album_delete_result_end");
     }
 
-    fn prompt_album_trash_backend_fallback(&self, pool: DbPool, albums: Vec<Album>, error: String) {
+    fn prompt_album_trash_backend_fallback(
+        &self,
+        pool: DbPool,
+        db_actor: DbActorHandle,
+        albums: Vec<Album>,
+        error: String,
+    ) {
         let dialog = adw::AlertDialog::builder()
             .heading(tr("trash.fallback.title"))
             .body(trf("trash.fallback.album_body", &[("error", &error)]))
@@ -546,13 +562,14 @@ impl MainWindow {
         let weak = self.downgrade();
         dialog.connect_response(Some("switch"), move |_, _| {
             let pool = pool.clone();
+            let db_actor = db_actor.clone();
             let albums = albums.clone();
             let weak = weak.clone();
             glib::spawn_future_local(async move {
                 let worker_result = gtk::gio::spawn_blocking(move || {
                     crate::core::trash::switch_trash_backend(&pool, TrashBackend::App)
                         .map_err(|err| err.to_string())?;
-                    Ok::<_, String>(delete_albums_to_trash_worker(pool, albums))
+                    Ok::<_, String>(delete_albums_to_trash_worker(pool, db_actor, albums))
                 })
                 .await;
 
@@ -618,13 +635,23 @@ pub(super) fn album_backfill_fetch_limit(current_len: u32, total: u32) -> u32 {
 }
 
 pub(super) fn ignore_album_worker(
-    pool: DbPool,
+    db_actor: crate::core::db_actor::DbActorHandle,
     folder_path: PathBuf,
 ) -> std::result::Result<AlbumIgnoreUiResult, String> {
     add_excluded_scan_path(folder_path.clone())?;
-    let removed_count = crate::core::db::delete_live_media_by_folder(&pool, &folder_path)
+    let removed_count = match db_actor
+        .execute_blocking(crate::core::db_actor::DbCommand::DeleteLiveByFolder {
+            source: crate::core::events::ChangeSource::UserInteractive,
+            folder_path: folder_path.clone(),
+        })
+        .map_err(|err| err.to_string())?
+    {
+        crate::core::db_actor::DbCommandResult::Count(count) => count,
+        other => return Err(format!("unexpected ignore album result: {other:?}")),
+    };
+    db_actor
+        .execute_blocking(crate::core::db_actor::DbCommand::RefreshAlbumsInternal)
         .map_err(|err| err.to_string())?;
-    crate::core::albums::refresh(&pool).map_err(|err| err.to_string())?;
     Ok(AlbumIgnoreUiResult {
         folder_path,
         removed_count,
@@ -633,6 +660,7 @@ pub(super) fn ignore_album_worker(
 
 pub(super) fn delete_albums_to_trash_worker(
     pool: DbPool,
+    db_actor: DbActorHandle,
     albums: Vec<Album>,
 ) -> AlbumDeleteUiResult {
     let deleted_paths = albums
@@ -640,8 +668,9 @@ pub(super) fn delete_albums_to_trash_worker(
         .filter(|album| !album.is_virtual)
         .map(|album| album.folder_path.clone())
         .collect::<Vec<_>>();
-    let operation = crate::core::album_ops::delete_albums_to_trash(&pool, &albums)
-        .map_err(|err| err.to_string());
+    let operation =
+        crate::core::album_ops::delete_albums_to_trash_with_actor(&pool, &db_actor, &albums)
+            .map_err(|err| err.to_string());
 
     let mut remaining_live_uris = HashSet::new();
     let mut remaining_live_folder_paths = HashSet::new();

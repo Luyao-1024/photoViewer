@@ -1,4 +1,4 @@
-use crate::core::db::DbPool;
+use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::error::Result;
 use gtk4::glib;
 use std::cell::Cell;
@@ -17,23 +17,23 @@ pub struct RefreshCoordinator {
     album_refresh_running: Rc<Cell<bool>>,
     album_refresh_pending: Rc<Cell<bool>>,
     album_job: AlbumRefreshJob,
-    album_pool: Option<DbPool>,
+    album_actor: Option<DbActorHandle>,
     on_albums_refreshed: Option<Rc<dyn Fn()>>,
 }
 
 impl RefreshCoordinator {
-    pub fn new(pool: DbPool, on_albums_refreshed: Rc<dyn Fn()>) -> Self {
-        let pool_for_sync = pool.clone();
+    pub fn new(db_actor: DbActorHandle, on_albums_refreshed: Rc<dyn Fn()>) -> Self {
+        let actor_for_sync = db_actor.clone();
         let callback_for_sync = on_albums_refreshed.clone();
         Self {
             album_refresh_running: Rc::new(Cell::new(false)),
             album_refresh_pending: Rc::new(Cell::new(false)),
             album_job: Rc::new(move || {
-                crate::core::albums::refresh(&pool_for_sync)?;
+                actor_for_sync.execute_blocking(DbCommand::RefreshAlbumsInternal)?;
                 callback_for_sync();
                 Ok(())
             }),
-            album_pool: Some(pool),
+            album_actor: Some(db_actor),
             on_albums_refreshed: Some(on_albums_refreshed),
         }
     }
@@ -46,7 +46,7 @@ impl RefreshCoordinator {
             album_refresh_running: Rc::new(Cell::new(false)),
             album_refresh_pending: Rc::new(Cell::new(false)),
             album_job: Rc::new(album_job),
-            album_pool: None,
+            album_actor: None,
             on_albums_refreshed: None,
         }
     }
@@ -90,7 +90,7 @@ impl RefreshCoordinator {
             self.album_refresh_pending.set(true);
             return;
         }
-        let Some(pool) = self.album_pool.clone() else {
+        let Some(actor) = self.album_actor.clone() else {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_mark_async fallback=sync_no_pool"
@@ -118,10 +118,12 @@ impl RefreshCoordinator {
                 target: crate::core::log_targets::BROWSING,
                 "SIDEBAR_TRACE album_refresh_worker_start"
             );
-            let result =
-                gtk4::gio::spawn_blocking(move || crate::core::albums::refresh(&pool)).await;
+            let result = gtk4::gio::spawn_blocking(move || {
+                actor.execute_blocking(DbCommand::RefreshAlbumsInternal)
+            })
+            .await;
             match result {
-                Ok(Ok(())) => {
+                Ok(Ok(_)) => {
                     tracing::debug!(
                         target: crate::core::log_targets::BROWSING,
                         "SIDEBAR_TRACE album_refresh_worker_ok invoking_callback"

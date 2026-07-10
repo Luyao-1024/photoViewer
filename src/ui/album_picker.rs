@@ -16,16 +16,22 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
-use crate::core::album_ops::{add_to_album, AlbumOpMode};
+use crate::core::album_ops::AlbumOpMode;
 use crate::core::albums;
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
 
 /// Present the album picker on top of `host_nav`. `media_ids` are the
 /// `media_items.id`s the user wants to add (1+ entries; empty is a no-op
 /// for the caller). The dialog blocks the nav view while it's open and
 /// pops itself when the user confirms or cancels.
-pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>) {
+pub fn present(
+    host_nav: &adw::NavigationView,
+    pool: DbPool,
+    db_actor: DbActorHandle,
+    media_ids: Vec<i64>,
+) {
     if media_ids.is_empty() {
         return;
     }
@@ -109,12 +115,14 @@ pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>
             let inner_clone = inner_for_listing.clone();
             let pool_clone = pool_for_listing.clone();
             let ids_clone = media_ids_for_rows.clone();
+            let actor_clone = db_actor.clone();
             let folder = album.folder_path.clone();
             let host_nav_clone = host_nav_for_rows.clone();
             row.connect_activated(move |_| {
                 push_action_page(
                     &inner_clone,
                     pool_clone.clone(),
+                    actor_clone.clone(),
                     ids_clone.clone(),
                     folder.clone(),
                     &host_nav_clone,
@@ -149,6 +157,7 @@ fn build_album_list_page(list_box: &gtk::ListBox) -> gtk::Box {
 pub fn push_action_page(
     inner: &adw::NavigationView,
     pool: DbPool,
+    db_actor: DbActorHandle,
     media_ids: Vec<i64>,
     folder: std::path::PathBuf,
     host_nav: &adw::NavigationView,
@@ -217,6 +226,7 @@ pub fn push_action_page(
 
     // Wire Copy / Move buttons to run album_ops on a blocking thread.
     let pool_copy = pool.clone();
+    let actor_copy = db_actor.clone();
     let media_ids_copy = media_ids.clone();
     let folder_copy = folder.clone();
     let inner_copy = inner.clone();
@@ -224,6 +234,7 @@ pub fn push_action_page(
     copy_btn.connect_clicked(move |_| {
         run_op(
             pool_copy.clone(),
+            actor_copy.clone(),
             media_ids_copy.clone(),
             folder_copy.clone(),
             AlbumOpMode::Copy,
@@ -233,6 +244,7 @@ pub fn push_action_page(
     });
 
     let pool_move = pool;
+    let actor_move = db_actor;
     let media_ids_move = media_ids;
     let folder_move = folder;
     let inner_move = inner.clone();
@@ -240,6 +252,7 @@ pub fn push_action_page(
     move_btn.connect_clicked(move |_| {
         run_op(
             pool_move.clone(),
+            actor_move.clone(),
             media_ids_move.clone(),
             folder_move.clone(),
             AlbumOpMode::Move,
@@ -253,6 +266,7 @@ pub fn push_action_page(
 /// log a warning and pop anyway (the user can re-pick).
 fn run_op(
     pool: DbPool,
+    db_actor: DbActorHandle,
     media_ids: Vec<i64>,
     folder: std::path::PathBuf,
     mode: AlbumOpMode,
@@ -265,9 +279,12 @@ fn run_op(
         .unwrap_or_else(|| folder.display().to_string());
     glib::spawn_future_local(async move {
         // Spawn blocking because add_to_album does synchronous fs I/O.
-        let result =
-            tokio::task::spawn_blocking(move || add_to_album(&pool, &media_ids, &folder, mode))
-                .await;
+        let result = tokio::task::spawn_blocking(move || {
+            crate::core::album_ops::add_to_album_with_actor(
+                &pool, &db_actor, &media_ids, &folder, mode,
+            )
+        })
+        .await;
 
         match result {
             Ok(Ok(items)) => {
@@ -276,7 +293,7 @@ fn run_op(
                     AlbumOpMode::Move => "Moved",
                 };
                 tracing::info!("{} {} photo(s) to {}", verb, items.len(), folder_name);
-                // 操作已成功，DB 已由 add_to_album 内部调用 albums::refresh 更新。
+                // 操作已成功，DB 写入和相册刷新均已由 DbActor 完成。
                 // 同步刷新共享照片列表、可见相册详情和侧栏计数。
                 super::window::refresh_after_album_operation(&host_nav);
                 // Pop the entire dialog (inner has 2 levels). Once the
@@ -311,7 +328,12 @@ pub type AlbumPickerHandle = ();
 /// 「在给定 nav 上展示 picker」的便捷方法。`media_ids` 至少 1 项。
 pub struct AlbumPickerDialog;
 impl AlbumPickerDialog {
-    pub fn present(host_nav: &adw::NavigationView, pool: DbPool, media_ids: Vec<i64>) {
-        present(host_nav, pool, media_ids);
+    pub fn present(
+        host_nav: &adw::NavigationView,
+        pool: DbPool,
+        db_actor: DbActorHandle,
+        media_ids: Vec<i64>,
+    ) {
+        present(host_nav, pool, db_actor, media_ids);
     }
 }

@@ -1,6 +1,7 @@
 //! albums::find_by_folder_path — 按 folder_path 查单个 album。
 //!
 //! 比 `list` 更轻量,适合 picker 这种只需要"选中一个目标"的场景。
+mod common;
 use chrono::Utc;
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
@@ -31,7 +32,7 @@ fn find_by_folder_path_returns_some_when_present() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item(
             "file:///p/Camera/a.jpg",

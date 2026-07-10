@@ -96,7 +96,7 @@ fn save_as_copy_creates_new_file() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -118,7 +118,7 @@ fn save_as_copy_names_file_with_edited_millisecond_timestamp() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -150,7 +150,7 @@ fn save_as_copy_replaces_existing_edited_timestamp_suffix() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_edited_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -174,7 +174,7 @@ fn save_overwrite_replaces_original() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
     let _orig_size = std::fs::metadata(&media_item.path).unwrap().len();
 
@@ -196,7 +196,7 @@ fn save_png_as_copy_preserves_png_file_format() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_png_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -217,7 +217,7 @@ fn save_as_copy_bakes_source_orientation_into_saved_pixels() {
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_png_test_item(dir.path());
     destructive_rotate::rotate_in_place(&item.path, 90).unwrap();
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -234,7 +234,7 @@ fn save_as_copy_creates_distinct_timestamped_files() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_png_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -265,7 +265,7 @@ fn save_png_overwrite_preserves_png_file_format() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_png_test_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();
@@ -284,7 +284,7 @@ fn save_overwrite_recovers_png_path_that_contains_jpeg_bytes() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let item = make_mismatched_png_path_with_jpeg_bytes_item(dir.path());
-    let id = db::insert_media_item(&pool, &item).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
     let media_item = db::get_media_item(&pool, id).unwrap();
 
     let state = EditState::default();

@@ -21,10 +21,13 @@ use rusqlite::{params_from_iter, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 const SCHEMA_SQL: &str = include_str!("schema.sql");
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
+const UPSERT_RETRY_LIMIT: usize = 3;
 const REQUIRED_MEDIA_ITEM_COLUMNS: &[&str] = &[
     "id",
     "uri",
@@ -75,11 +78,12 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
 /// 打开连接池 + 跑 schema 迁移。任一步出错都会让上层走重建分支。
 fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
-        c.execute_batch(
+        c.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
-                 PRAGMA foreign_keys = ON;
-                 PRAGMA synchronous = NORMAL;",
-        )
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};
+             PRAGMA synchronous = NORMAL;"
+        ))
     });
     let pool = Pool::builder()
         .max_size(8)
@@ -169,7 +173,7 @@ pub fn media_kind_db_value(mime_type: &str) -> &'static str {
 }
 
 /// 插入新项，返回自增 id
-pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
+pub(crate) fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
@@ -206,8 +210,51 @@ pub fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i64> {
 /// INSERT。返回每个成功写入行的完整物化视图（顺序与输入一致）；单行出错只跳过该行、
 /// 计入返回外的差异，不影响同批其余行的提交。
 pub fn upsert_media_items_batch(pool: &DbPool, items: &[NewMediaItem]) -> Result<Vec<MediaItem>> {
+    for attempt in 0..UPSERT_RETRY_LIMIT {
+        match upsert_media_items_batch_once(pool, items) {
+            Ok(items) => return Ok(items),
+            Err(err) if is_retryable_lock_error(&err) && attempt + 1 < UPSERT_RETRY_LIMIT => {
+                let delay_ms = 25_u64 << attempt;
+                tracing::warn!(
+                    target: crate::core::log_targets::STORAGE,
+                    "SQL_FLOW op=upsert_media_items_batch phase=retry attempt={} delay_ms={} error={}",
+                    attempt + 1,
+                    delay_ms,
+                    err
+                );
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("upsert retry loop must return within its attempt limit")
+}
+
+fn is_retryable_lock_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::Db(rusqlite::Error::SqliteFailure(err, _))
+            if matches!(
+                err.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            )
+    )
+}
+
+fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Result<Vec<MediaItem>> {
+    let started = Instant::now();
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=begin item_count={}",
+        items.len()
+    );
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=transaction_started item_count={}",
+        items.len()
+    );
     let mut out = Vec::with_capacity(items.len());
     for item in items {
         let existing: Option<i64> = tx
@@ -279,7 +326,20 @@ pub fn upsert_media_items_batch(pool: &DbPool, items: &[NewMediaItem]) -> Result
             row_to_media_item,
         )?);
     }
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=commit_begin item_count={} changed_count={}",
+        items.len(),
+        out.len()
+    );
     tx.commit()?;
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=commit_done item_count={} changed_count={} elapsed_ms={}",
+        items.len(),
+        out.len(),
+        started.elapsed().as_millis()
+    );
     Ok(out)
 }
 
@@ -623,16 +683,34 @@ pub fn list_media_needing_thumbnail_from_live_offset(
 }
 
 /// 批量标记已生成缩略图的 media_items：写入 `thumbnail_generated_at = unixepoch()`。
-pub fn mark_thumbnails_generated(pool: &DbPool, ids: &[i64]) -> Result<()> {
+pub(crate) fn mark_thumbnails_generated(pool: &DbPool, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
+    let started = Instant::now();
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=mark_thumbnails_generated phase=begin id_count={} ids={:?}",
+        ids.len(),
+        ids
+    );
     let conn = pool.get()?;
     let mut stmt =
         conn.prepare("UPDATE media_items SET thumbnail_generated_at = unixepoch() WHERE id = ?1")?;
     for id in ids {
+        tracing::trace!(
+            target: crate::core::log_targets::STORAGE,
+            "SQL_FLOW op=mark_thumbnails_generated phase=execute media_id={}",
+            id
+        );
         stmt.execute([*id])?;
     }
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=mark_thumbnails_generated phase=done id_count={} elapsed_ms={}",
+        ids.len(),
+        started.elapsed().as_millis()
+    );
     Ok(())
 }
 
@@ -1042,7 +1120,7 @@ fn media_neighbor_with_filter_and_order(
 }
 
 /// 删除单行
-pub fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
+pub(crate) fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;
     conn.execute("DELETE FROM media_items WHERE id = ?1", [id])?;
     Ok(())
@@ -1130,14 +1208,14 @@ pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
 /// 清空所有媒体记录。返回删除的记录数。
 ///
 /// 用于重置数据库，不会删除原始文件。
-pub fn clear_all_media(pool: &DbPool) -> Result<usize> {
+pub(crate) fn clear_all_media(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;
     let count = conn.execute("DELETE FROM media_items", [])?;
     Ok(count)
 }
 
 /// 标记为已删除（不立即物理删除）
-pub fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
+pub(crate) fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
         "UPDATE media_items SET trashed_at = unixepoch() WHERE id = ?1",
@@ -1147,7 +1225,7 @@ pub fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
 }
 
 /// 取消回收站标记
-pub fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
+pub(crate) fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
         "UPDATE media_items SET trashed_at = NULL WHERE id = ?1",
@@ -1162,7 +1240,7 @@ pub fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
 /// `media_items` 行,以便随后的 `list_all_media` / `albums::refresh` 看见
 /// 新位置。`file_mtime` 保存文件侧排序时间（created 优先, modified
 /// fallback）,失败时回退当前时间,避免出现 NULL。
-pub fn update_media_location(
+pub(crate) fn update_media_location(
     pool: &DbPool,
     id: i64,
     new_path: &Path,
@@ -1187,6 +1265,25 @@ pub fn update_media_location(
             uri,
             file_time
         ],
+    )?;
+    Ok(())
+}
+
+/// Update metadata after an editor overwrites the source file.
+pub(crate) fn update_media_edit_metadata(
+    pool: &DbPool,
+    id: i64,
+    file_mtime: i64,
+    file_size: i64,
+    blake3_hash: &str,
+) -> Result<()> {
+    let conn = pool.get()?;
+    conn.execute(
+        "UPDATE media_items
+         SET file_mtime = ?2, file_size = ?3, blake3_hash = ?4,
+             thumbnail_generated_at = NULL
+         WHERE id = ?1",
+        rusqlite::params![id, file_mtime, file_size, blake3_hash],
     )?;
     Ok(())
 }
@@ -1238,7 +1335,7 @@ pub fn is_media_favorite(pool: &DbPool, media_id: i64) -> Result<bool> {
 }
 
 /// 设置单张媒体收藏状态。
-pub fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Result<()> {
+pub(crate) fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Result<()> {
     let conn = pool.get()?;
     let changed = conn.execute(
         "UPDATE media_items SET is_favorite = ?2 WHERE id = ?1",

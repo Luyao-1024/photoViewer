@@ -420,12 +420,12 @@ impl MainWindow {
         storage_group.add(&db_row);
 
         let parent_for_db = parent.clone();
-        let pool_for_db = self.imp().pool.borrow().clone();
+        let db_actor_for_db = self.imp().db_actor.borrow().clone();
         let loader_for_db = self.imp().loader.borrow().clone();
         let media_list_for_db = self.imp().media_list.borrow().clone();
         let db_row_for_db = db_row.clone();
         btn_clear_db.connect_clicked(move |_| {
-            let pool_clone = pool_for_db.clone();
+            let db_actor_clone = db_actor_for_db.clone();
             let loader_clone = loader_for_db.clone();
             let media_list_clone = media_list_for_db.clone();
             let row_clone = db_row_for_db.clone();
@@ -434,9 +434,11 @@ impl MainWindow {
                 &tr("setting.clear_database_confirm_title"),
                 &tr("setting.clear_database_confirm_body"),
                 move || {
-                    if let Some(ref pool) = pool_clone {
-                        match crate::core::db::clear_all_media(pool) {
-                            Ok(count) => {
+                    if let Some(db_actor) = db_actor_clone.as_ref() {
+                        match db_actor
+                            .execute_blocking(crate::core::db_actor::DbCommand::ClearAllMedia)
+                        {
+                            Ok(crate::core::db_actor::DbCommandResult::Count(count)) => {
                                 if let Some(ref loader) = loader_clone {
                                     loader.clear_mem_cache();
                                 }
@@ -447,6 +449,12 @@ impl MainWindow {
                                 show_clear_success_toast(&trf(
                                     "setting.clear_database_success",
                                     &[("count", &count.to_string())],
+                                ));
+                            }
+                            Ok(other) => {
+                                show_clear_error_toast(&trf(
+                                    "setting.clear_failed",
+                                    &[("error", &format!("unexpected result: {other:?}"))],
                                 ));
                             }
                             Err(err) => {

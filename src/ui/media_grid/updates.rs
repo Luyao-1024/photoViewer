@@ -318,6 +318,7 @@ impl MediaGrid {
                 window_index,
                 loader.clone(),
                 on_bg.clone(),
+                true,
             );
             flow.insert(&picture, insert_child_index as i32 + inserted_ready as i32);
             let Some(flow_child) = picture
@@ -454,6 +455,7 @@ impl MediaGrid {
             window_index,
             loader,
             on_background_changed.clone(),
+            true,
         );
         let insert_succeeded = ready.is_some();
         match ready {
@@ -985,6 +987,7 @@ impl MediaGrid {
                                 gi,
                                 loader.clone(),
                                 on_bg,
+                                false,
                             )
                         };
                         flow.append(&picture);

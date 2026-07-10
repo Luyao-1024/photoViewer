@@ -217,13 +217,13 @@ impl SquareTile {
             p.set_paintable(paintable);
         }
         // 设入任意 paintable（真实 texture 或失败灰底）即停止骨架 shimmer。
-        // 透明度由 CSS 驱动（.glass-thumb-card 的 opacity transition +
-        // .glass-thumb-card.thumb-loading 的 opacity:0）：移除 thumb-loading
-        // class 时 tile 由 0→1 淡入。不要在此处 widget.set_opacity，否则会
-        // 绕过 CSS transition 直接跳变。
+        // 透明度由 CSS 驱动（普通 .thumb-loading 隐藏，.thumb-placeholder
+        // 保持可见；.glass-thumb-card 的 opacity transition 负责淡入）。
+        // 不要在此处 widget.set_opacity，否则会绕过 CSS transition 直接跳变。
         self.remove_css_class("thumb-loading");
+        self.remove_css_class("thumb-placeholder");
         // 父 FlowBoxChild 在 sync_flow_child_visibility_for_tile 里随
-        // thumb-loading 同步成 opacity:0；纹理到位时立刻把它恢复可见，
+        // loading 状态同步到父 FlowBoxChild；纹理到位时立刻把它恢复可见，
         // 好让上面的 tile 淡入能被看到。
         if let Some(parent) = self.parent() {
             parent.set_opacity(1.0);

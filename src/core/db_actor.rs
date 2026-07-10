@@ -4,6 +4,8 @@ use crate::core::error::{AppError, Result};
 use crate::core::events::{ChangeSource, DomainEvent, DomainEventSender, MediaFields};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
@@ -18,6 +20,10 @@ pub enum DbCommand {
         source: ChangeSource,
         path: PathBuf,
     },
+    DeleteLiveByFolder {
+        source: ChangeSource,
+        folder_path: PathBuf,
+    },
     PruneMissingLiveRows {
         roots: Vec<PathBuf>,
         excluded_roots: Vec<PathBuf>,
@@ -26,7 +32,44 @@ pub enum DbCommand {
         ids: Vec<MediaId>,
         is_favorite: bool,
     },
+    InsertMediaItem {
+        item: NewMediaItem,
+    },
+    UpdateMediaLocation {
+        id: MediaId,
+        path: PathBuf,
+        folder_path: PathBuf,
+    },
+    InsertEditedMedia {
+        item: NewMediaItem,
+    },
+    UpdateEditedMedia {
+        id: MediaId,
+        file_mtime: i64,
+        file_size: i64,
+        blake3_hash: String,
+    },
+    SetAlbumOrder {
+        ordered: Vec<String>,
+    },
+    SetAlbumCover {
+        folder_path: PathBuf,
+        cover_uri: String,
+    },
+    ClearAllMedia,
+    DeleteMediaRows {
+        ids: Vec<MediaId>,
+    },
+    MarkThumbnailsGenerated {
+        ids: Vec<MediaId>,
+    },
     MarkTrashed {
+        ids: Vec<MediaId>,
+    },
+    RestoreTrashed {
+        ids: Vec<MediaId>,
+    },
+    DeleteTrashedRows {
         ids: Vec<MediaId>,
     },
     CommitMovedToTrash {
@@ -38,14 +81,64 @@ pub enum DbCommand {
     RefreshAlbums {
         source: ChangeSource,
     },
+    RefreshAlbumsInternal,
     ReconcileTrash {
         pictures_root: PathBuf,
     },
 }
 
+/// Runtime DB write urgency. Higher values run first once the actor reaches
+/// its queue; an already-running transaction is never interrupted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DbWritePriority {
+    Thumbnail = 10,
+    DerivedRefresh = 20,
+    StartupScan = 30,
+    FilesystemWatcher = 70,
+    Trash = 90,
+    UserInteractive = 100,
+}
+
+impl DbCommand {
+    pub fn priority(&self) -> DbWritePriority {
+        match self {
+            Self::UpsertMediaBatch { source, .. }
+            | Self::DeleteLiveByPath { source, .. }
+            | Self::DeleteLiveByFolder { source, .. } => match source {
+                ChangeSource::StartupScan => DbWritePriority::StartupScan,
+                ChangeSource::FilesystemWatcher => DbWritePriority::FilesystemWatcher,
+                ChangeSource::UserInteractive => DbWritePriority::UserInteractive,
+                ChangeSource::TrashReconcile => DbWritePriority::Trash,
+                ChangeSource::ThumbnailWorker => DbWritePriority::Thumbnail,
+            },
+            Self::PruneMissingLiveRows { .. } => DbWritePriority::StartupScan,
+            Self::SetFavorite { .. }
+            | Self::InsertMediaItem { .. }
+            | Self::UpdateMediaLocation { .. }
+            | Self::InsertEditedMedia { .. }
+            | Self::UpdateEditedMedia { .. }
+            | Self::SetAlbumOrder { .. }
+            | Self::SetAlbumCover { .. }
+            | Self::ClearAllMedia
+            | Self::DeleteMediaRows { .. } => DbWritePriority::UserInteractive,
+            Self::MarkThumbnailsGenerated { .. } => DbWritePriority::Thumbnail,
+            Self::MarkTrashed { .. }
+            | Self::RestoreTrashed { .. }
+            | Self::DeleteTrashedRows { .. } => DbWritePriority::Trash,
+            Self::CommitMovedToTrash { .. } | Self::RollbackTrashed { .. } => {
+                DbWritePriority::Trash
+            }
+            Self::RefreshAlbums { .. } => DbWritePriority::DerivedRefresh,
+            Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
+            Self::ReconcileTrash { .. } => DbWritePriority::Trash,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum DbCommandResult {
     None,
+    Count(usize),
     MediaItems(Vec<MediaItem>),
     RemovedUris(Vec<String>),
 }
@@ -53,6 +146,34 @@ pub enum DbCommandResult {
 struct DbEnvelope {
     command: DbCommand,
     reply: oneshot::Sender<Result<DbCommandResult>>,
+}
+
+struct QueuedEnvelope {
+    priority: DbWritePriority,
+    sequence: u64,
+    envelope: DbEnvelope,
+}
+
+impl PartialEq for QueuedEnvelope {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority == other.priority && self.sequence == other.sequence
+    }
+}
+
+impl Eq for QueuedEnvelope {}
+
+impl Ord for QueuedEnvelope {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| other.sequence.cmp(&self.sequence))
+    }
+}
+
+impl PartialOrd for QueuedEnvelope {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Clone)]
@@ -63,8 +184,7 @@ pub struct DbActorHandle {
 impl DbActorHandle {
     pub async fn execute(&self, command: DbCommand) -> Result<DbCommandResult> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbEnvelope { command, reply })
+        self.send_envelope(command, reply)
             .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))?;
         rx.await
             .map_err(|err| AppError::Backend(format!("db actor dropped response: {err}")))?
@@ -72,8 +192,7 @@ impl DbActorHandle {
 
     pub fn execute_blocking(&self, command: DbCommand) -> Result<DbCommandResult> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(DbEnvelope { command, reply })
+        self.send_envelope(command, reply)
             .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))?;
         rx.blocking_recv()
             .map_err(|err| AppError::Backend(format!("db actor dropped response: {err}")))?
@@ -81,9 +200,16 @@ impl DbActorHandle {
 
     pub fn enqueue(&self, command: DbCommand) -> Result<()> {
         let (reply, _rx) = oneshot::channel();
-        self.tx
-            .send(DbEnvelope { command, reply })
+        self.send_envelope(command, reply)
             .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))
+    }
+
+    fn send_envelope(
+        &self,
+        command: DbCommand,
+        reply: oneshot::Sender<Result<DbCommandResult>>,
+    ) -> std::result::Result<(), mpsc::SendError<DbEnvelope>> {
+        self.tx.send(DbEnvelope { command, reply })
     }
 }
 
@@ -97,9 +223,70 @@ pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle 
 }
 
 fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEnvelope>) {
-    while let Ok(envelope) = rx.recv() {
+    let mut queue = BinaryHeap::new();
+    let mut sequence = 0_u64;
+    loop {
+        if queue.is_empty() {
+            let Ok(envelope) = rx.recv() else { break };
+            queue.push(QueuedEnvelope {
+                priority: envelope.command.priority(),
+                sequence,
+                envelope,
+            });
+            sequence = sequence.wrapping_add(1);
+        }
+        while let Ok(envelope) = rx.try_recv() {
+            queue.push(QueuedEnvelope {
+                priority: envelope.command.priority(),
+                sequence,
+                envelope,
+            });
+            sequence = sequence.wrapping_add(1);
+        }
+        let QueuedEnvelope { envelope, .. } = queue.pop().expect("queue is not empty");
+        let command_name = db_command_name(&envelope.command);
+        let started = std::time::Instant::now();
+        tracing::trace!(
+            target: crate::core::log_targets::STORAGE,
+            "DB_ACTOR_FLOW phase=begin command={}",
+            command_name
+        );
         let result = execute_command(&pool, &events, envelope.command);
+        tracing::trace!(
+            target: crate::core::log_targets::STORAGE,
+            "DB_ACTOR_FLOW phase=end command={} success={} elapsed_ms={}",
+            command_name,
+            result.is_ok(),
+            started.elapsed().as_millis()
+        );
         let _ = envelope.reply.send(result);
+    }
+}
+
+fn db_command_name(command: &DbCommand) -> &'static str {
+    match command {
+        DbCommand::UpsertMediaBatch { .. } => "upsert_media_batch",
+        DbCommand::DeleteLiveByPath { .. } => "delete_live_by_path",
+        DbCommand::DeleteLiveByFolder { .. } => "delete_live_by_folder",
+        DbCommand::PruneMissingLiveRows { .. } => "prune_missing_live_rows",
+        DbCommand::SetFavorite { .. } => "set_favorite",
+        DbCommand::InsertMediaItem { .. } => "insert_media_item",
+        DbCommand::UpdateMediaLocation { .. } => "update_media_location",
+        DbCommand::InsertEditedMedia { .. } => "insert_edited_media",
+        DbCommand::UpdateEditedMedia { .. } => "update_edited_media",
+        DbCommand::SetAlbumOrder { .. } => "set_album_order",
+        DbCommand::SetAlbumCover { .. } => "set_album_cover",
+        DbCommand::ClearAllMedia => "clear_all_media",
+        DbCommand::DeleteMediaRows { .. } => "delete_media_rows",
+        DbCommand::MarkThumbnailsGenerated { .. } => "mark_thumbnails_generated",
+        DbCommand::MarkTrashed { .. } => "mark_trashed",
+        DbCommand::RestoreTrashed { .. } => "restore_trashed",
+        DbCommand::DeleteTrashedRows { .. } => "delete_trashed_rows",
+        DbCommand::CommitMovedToTrash { .. } => "commit_moved_to_trash",
+        DbCommand::RollbackTrashed { .. } => "rollback_trashed",
+        DbCommand::RefreshAlbums { .. } => "refresh_albums",
+        DbCommand::RefreshAlbumsInternal => "refresh_albums_internal",
+        DbCommand::ReconcileTrash { .. } => "reconcile_trash",
     }
 }
 
@@ -148,6 +335,21 @@ fn execute_command(
                 Ok(DbCommandResult::RemovedUris(Vec::new()))
             }
         }
+        DbCommand::DeleteLiveByFolder {
+            source,
+            folder_path,
+        } => {
+            let changed = db::delete_live_media_by_folder(pool, &folder_path)?;
+            if changed > 0 {
+                events.send(DomainEvent::AlbumsChanged {
+                    source,
+                    affected_folders: vec![folder_path],
+                    affected_virtual: Vec::new(),
+                    live_count_delta: -(changed as i64),
+                });
+            }
+            Ok(DbCommandResult::Count(changed))
+        }
         DbCommand::PruneMissingLiveRows {
             roots,
             excluded_roots,
@@ -190,12 +392,76 @@ fn execute_command(
             }
             Ok(DbCommandResult::MediaItems(changed))
         }
+        DbCommand::InsertMediaItem { item } | DbCommand::InsertEditedMedia { item } => {
+            let id = db::insert_media_item(pool, &item)?;
+            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
+                pool, id,
+            )?]))
+        }
+        DbCommand::UpdateMediaLocation {
+            id,
+            path,
+            folder_path,
+        } => {
+            db::update_media_location(pool, id.get(), &path, &folder_path)?;
+            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
+                pool,
+                id.get(),
+            )?]))
+        }
+        DbCommand::UpdateEditedMedia {
+            id,
+            file_mtime,
+            file_size,
+            blake3_hash,
+        } => {
+            db::update_media_edit_metadata(pool, id.get(), file_mtime, file_size, &blake3_hash)?;
+            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
+                pool,
+                id.get(),
+            )?]))
+        }
+        DbCommand::SetAlbumOrder { ordered } => {
+            crate::core::albums::set_album_order(pool, &ordered)?;
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::SetAlbumCover {
+            folder_path,
+            cover_uri,
+        } => {
+            crate::core::albums::set_album_cover(pool, &folder_path, &cover_uri)?;
+            events.send(DomainEvent::AlbumCoverChanged {
+                folder_path,
+                cover_uri,
+            });
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::ClearAllMedia => Ok(DbCommandResult::Count(db::clear_all_media(pool)?)),
+        DbCommand::DeleteMediaRows { ids } | DbCommand::DeleteTrashedRows { ids } => {
+            for id in ids {
+                db::delete_media_item(pool, id.get())?;
+            }
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::MarkThumbnailsGenerated { ids } => {
+            let ids: Vec<i64> = ids.into_iter().map(MediaId::get).collect();
+            db::mark_thumbnails_generated(pool, &ids)?;
+            Ok(DbCommandResult::None)
+        }
         DbCommand::MarkTrashed { ids } => {
             let mut changed = Vec::new();
             for id in ids {
                 let item = db::get_media_item(pool, id.get())?;
                 db::mark_trashed(pool, id.get())?;
                 changed.push(item);
+            }
+            Ok(DbCommandResult::MediaItems(changed))
+        }
+        DbCommand::RestoreTrashed { ids } => {
+            let mut changed = Vec::new();
+            for id in ids {
+                db::unmark_trashed(pool, id.get())?;
+                changed.push(db::get_media_item(pool, id.get())?);
             }
             Ok(DbCommandResult::MediaItems(changed))
         }
@@ -238,6 +504,10 @@ fn execute_command(
                 affected_virtual: Vec::new(),
                 live_count_delta: 0,
             });
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::RefreshAlbumsInternal => {
+            crate::core::albums::refresh(pool)?;
             Ok(DbCommandResult::None)
         }
         DbCommand::ReconcileTrash { pictures_root } => {

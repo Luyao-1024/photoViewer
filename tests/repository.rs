@@ -180,7 +180,7 @@ fn repository_attribute_page_returns_only_matching_live_media() {
         ],
     )
     .unwrap();
-    photo_viewer::core::db::mark_trashed(&pool, inserted[0].id).unwrap();
+    common::db::mark_trashed(&pool, inserted[0].id).unwrap();
 
     let repo = MediaRepository::new(pool);
     let page = repo
@@ -276,7 +276,7 @@ fn repository_searches_live_media_by_file_name_and_capture_date() {
         ],
     )
     .unwrap();
-    photo_viewer::core::db::mark_trashed(&pool, inserted[3].id).unwrap();
+    common::db::mark_trashed(&pool, inserted[3].id).unwrap();
 
     let repo = MediaRepository::new(pool);
     let page = repo
@@ -476,7 +476,7 @@ fn repository_favorite_summary_batches_ids() {
     let inserted =
         photo_viewer::core::db::upsert_media_items_batch(&pool, &[item("a", 10), item("b", 20)])
             .unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
 
     let repo = MediaRepository::new(pool);
     let summary = repo
@@ -552,7 +552,7 @@ fn repository_library_stats_counts_only_current_generated_thumbnails() {
         &[item("fresh", 30), item("stale", 20), item("missing", 10)],
     )
     .unwrap();
-    photo_viewer::core::db::mark_thumbnails_generated(&pool, &[inserted[0].id]).unwrap();
+    common::db::mark_thumbnails_generated(&pool, &[inserted[0].id]).unwrap();
     photo_viewer::core::db::set_thumbnail_generated_at_for_tests(&pool, inserted[1].id, 1).unwrap();
 
     let repo = MediaRepository::new(pool);
@@ -609,9 +609,9 @@ fn db_favorite_neighbor_uses_favorite_projection_order() {
         ],
     )
     .unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
 
     let neighbor =
         photo_viewer::core::db::favorite_media_neighbor(&pool, inserted[1].id, 1).unwrap();
@@ -637,9 +637,9 @@ fn repository_neighbor_returns_adjacent_media_for_favorites_query_order() {
         ],
     )
     .unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
-    photo_viewer::core::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[1].id, true).unwrap();
+    common::db::set_media_favorite(&pool, inserted[3].id, true).unwrap();
     let repo = MediaRepository::new(pool);
 
     let neighbor = repo
@@ -696,7 +696,7 @@ fn db_trashed_media_page_returns_bounded_rows() {
     )
     .unwrap();
     for item in &inserted {
-        photo_viewer::core::db::mark_trashed(&pool, item.id).unwrap();
+        common::db::mark_trashed(&pool, item.id).unwrap();
     }
 
     let page = photo_viewer::core::db::list_trashed_media_page(&pool, 0, 2).unwrap();
@@ -717,7 +717,7 @@ fn repository_neighbor_returns_adjacent_media_for_trash_query_order() {
     )
     .unwrap();
     for item in &inserted {
-        photo_viewer::core::db::mark_trashed(&pool, item.id).unwrap();
+        common::db::mark_trashed(&pool, item.id).unwrap();
     }
     let repo = MediaRepository::new(pool);
 

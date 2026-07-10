@@ -13,7 +13,7 @@ use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
-use crate::core::albums::{list_with_favorites, set_album_order, Album};
+use crate::core::albums::{list_with_favorites, Album};
 use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
@@ -194,10 +194,6 @@ impl AlbumBrowserPage {
         if source_path == target_path {
             return;
         }
-        let Some(pool) = self.imp().pool.borrow().clone() else {
-            return;
-        };
-
         let mut order: Vec<String> = self
             .imp()
             .albums
@@ -219,7 +215,13 @@ impl AlbumBrowserPage {
         };
         order.insert(insert_at, source_path.to_string());
 
-        if let Err(err) = set_album_order(&pool, &order) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            tracing::warn!("failed to persist album browser order: DB actor unavailable");
+            return;
+        };
+        if let Err(err) = db_actor
+            .execute_blocking(crate::core::db_actor::DbCommand::SetAlbumOrder { ordered: order })
+        {
             tracing::warn!("failed to persist album browser order: {err}");
             return;
         }

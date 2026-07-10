@@ -45,6 +45,8 @@ fn album_picker_buttons_use_glass() {
     let inner = adw::NavigationView::new();
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
+    let (events, _receiver) = photo_viewer::core::events::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), events);
 
     // Call the level-2 chooser builder directly. This is normally invoked
     // when a row in the level-1 album list is activated; we skip that flow
@@ -52,6 +54,7 @@ fn album_picker_buttons_use_glass() {
     album_picker::push_action_page(
         &inner,
         pool,
+        db_actor,
         vec![1],
         std::path::PathBuf::from("/tmp/test-album"),
         &inner,

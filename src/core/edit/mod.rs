@@ -9,7 +9,7 @@ pub mod saturation;
 pub mod save;
 
 pub use destructive_rotate::rotate_in_place;
-pub use save::{save_as_copy, save_overwrite};
+pub use save::{save_as_copy, save_as_copy_with_actor, save_overwrite, save_overwrite_with_actor};
 
 use std::collections::HashMap;
 use std::sync::Arc;

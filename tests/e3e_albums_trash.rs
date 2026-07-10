@@ -88,7 +88,7 @@ fn full_flow_scan_albums_trash() {
     let real_uri = format!("file://{}", real_src.display());
 
     trash::move_to_trash(&real_uri).expect("move to trash should succeed");
-    db::mark_trashed(&pool, first_id).unwrap();
+    common::db::mark_trashed(&pool, first_id).unwrap();
 
     // 5. 重新聚合：trashed 项应被排除
     albums::refresh(&pool).unwrap();
@@ -250,7 +250,7 @@ fn end_to_end_move_then_trash_then_album_count_consistent() {
     std::fs::copy(&img2.path, &real_src).unwrap();
     let real_uri = format!("file://{}", real_src.display());
     trash::move_to_trash(&real_uri).expect("move to trash should succeed");
-    db::mark_trashed(&pool, img2.id).unwrap();
+    common::db::mark_trashed(&pool, img2.id).unwrap();
 
     // 5. Final album state
     albums::refresh(&pool).unwrap();

@@ -63,7 +63,7 @@ fn section_counts_come_from_db_not_window() {
         &[new_item(602, Some(dt(2020, 1, 1)), dt(2020, 1, 1))],
     )
     .unwrap();
-    db::mark_trashed(&pool, trashed[0].id).unwrap();
+    common::db::mark_trashed(&pool, trashed[0].id).unwrap();
 
     // 1) 按完整日期分组：2025-03-01 = 600，2024-12-25 = 1，2023-06-15 = 1；2020 不计。
     let by_date = db::count_live_media_by_date(&pool).unwrap();

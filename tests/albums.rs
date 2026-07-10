@@ -1,3 +1,4 @@
+mod common;
 use chrono::{TimeZone, Utc};
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
@@ -72,7 +73,7 @@ fn media_type_albums_include_only_non_empty_attribute_categories() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime_and_subkind(
             "file:///Pictures/live.jpg",
@@ -83,7 +84,7 @@ fn media_type_albums_include_only_non_empty_attribute_categories() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime_subkind_and_attrs(
             "file:///Pictures/anim.gif",
@@ -95,7 +96,7 @@ fn media_type_albums_include_only_non_empty_attribute_categories() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime_subkind_and_attrs(
             "file:///Pictures/hdr.heic",
@@ -107,7 +108,7 @@ fn media_type_albums_include_only_non_empty_attribute_categories() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime(
             "file:///Pictures/still.jpg",
@@ -154,7 +155,7 @@ fn media_type_albums_hide_empty_categories() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime(
             "file:///Pictures/still.jpg",
@@ -177,17 +178,17 @@ fn refresh_groups_by_folder() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///p/Camera/a.jpg", "/p/Camera/a.jpg", "/p/Camera"),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///p/Camera/b.jpg", "/p/Camera/b.jpg", "/p/Camera"),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item(
             "file:///p/Screenshots/c.jpg",
@@ -210,7 +211,7 @@ fn folder_album_cover_defaults_to_latest_media() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_at(
             "file:///p/Camera/old.jpg",
@@ -220,7 +221,7 @@ fn folder_album_cover_defaults_to_latest_media() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_at(
             "file:///p/Camera/new.jpg",
@@ -248,7 +249,7 @@ fn explicit_folder_album_cover_overrides_latest_media_and_survives_refresh() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_at(
             "file:///p/Camera/old.jpg",
@@ -258,7 +259,7 @@ fn explicit_folder_album_cover_overrides_latest_media_and_survives_refresh() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_at(
             "file:///p/Camera/new.jpg",
@@ -288,8 +289,9 @@ fn trashed_items_excluded_from_albums() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    let id = db::insert_media_item(&pool, &make_item("file:///p/a.jpg", "/p/a.jpg", "/p")).unwrap();
-    db::mark_trashed(&pool, id).unwrap();
+    let id = common::db::insert_media_item(&pool, &make_item("file:///p/a.jpg", "/p/a.jpg", "/p"))
+        .unwrap();
+    common::db::mark_trashed(&pool, id).unwrap();
 
     albums::refresh(&pool).unwrap();
     let list = albums::list(&pool).unwrap();
@@ -301,7 +303,7 @@ fn list_with_favorites_includes_type_virtual_albums() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
 
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime(
             "file:///Videos/photo-in-video-dir.jpg",
@@ -311,7 +313,7 @@ fn list_with_favorites_includes_type_virtual_albums() {
         ),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_mime(
             "file:///Pictures/video-in-picture-dir.mp4",

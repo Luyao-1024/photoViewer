@@ -20,6 +20,31 @@ fn new_item(path: PathBuf) -> NewMediaItem {
     }
 }
 
+#[test]
+fn write_priorities_put_interactive_work_before_background_work() {
+    let thumbnail = DbCommand::MarkThumbnailsGenerated {
+        ids: vec![MediaId::from(1)],
+    };
+    let refresh = DbCommand::RefreshAlbumsInternal;
+    let scan = DbCommand::PruneMissingLiveRows {
+        roots: Vec::new(),
+        excluded_roots: Vec::new(),
+    };
+    let watcher = DbCommand::DeleteLiveByPath {
+        source: ChangeSource::FilesystemWatcher,
+        path: PathBuf::from("/tmp/a.jpg"),
+    };
+    let user = DbCommand::SetFavorite {
+        ids: vec![MediaId::from(1)],
+        is_favorite: true,
+    };
+
+    assert!(refresh.priority() > thumbnail.priority());
+    assert!(scan.priority() > refresh.priority());
+    assert!(watcher.priority() > scan.priority());
+    assert!(user.priority() > watcher.priority());
+}
+
 #[tokio::test]
 async fn set_favorite_updates_db_and_emits_precise_event() {
     let dir = tempfile::tempdir().unwrap();
@@ -101,4 +126,22 @@ async fn trash_commit_emits_precise_moved_event_after_mark() {
         DomainEvent::MediaMovedToTrash { items, .. } => assert_eq!(items[0].id, id),
         other => panic!("expected MediaMovedToTrash, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn mark_thumbnails_generated_runs_through_db_actor() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
+    let id = db::insert_media_item(&pool, &new_item(dir.path().join("thumb.jpg"))).unwrap();
+    let (events, _rx) = DomainEventSender::new();
+    let actor = start_db_actor(pool.clone(), events);
+
+    actor
+        .execute(DbCommand::MarkThumbnailsGenerated {
+            ids: vec![MediaId::from(id)],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(db::count_thumbnail_generated(&pool).unwrap(), 1);
 }

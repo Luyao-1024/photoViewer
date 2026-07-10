@@ -567,7 +567,10 @@ impl MainWindow {
         let pool = self.imp().pool.borrow().clone()?;
         let loader = self.imp().loader.borrow().clone()?;
         let media_list = self.imp().media_list.borrow().clone()?;
-        Some(TrashPage::with_media_list(pool, loader, media_list))
+        let db_actor = self.imp().db_actor.borrow().as_ref().cloned()?;
+        Some(TrashPage::with_media_list_and_actor(
+            pool, loader, media_list, db_actor,
+        ))
     }
 
     /// Reload the bounded live-media window backing the Photos page. This is

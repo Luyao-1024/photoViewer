@@ -13,6 +13,7 @@ mod queue;
 mod video;
 
 use crate::core::db::DbPool;
+use crate::core::db_actor::DbActorHandle;
 use crate::core::runtime_config;
 #[cfg(test)]
 use cache::cache_stem_for;
@@ -209,6 +210,7 @@ pub(in crate::core::thumbnails) struct BackgroundPullState {
 /// 不会一次性灌入队列。
 pub struct ThumbnailLoader {
     pool: DbPool,
+    db_actor: Arc<Mutex<Option<DbActorHandle>>>,
     cache_dir: PathBuf,
     queue_capacity: usize,
     queue: SharedQueue,
@@ -260,6 +262,7 @@ impl ThumbnailLoader {
         });
         Self {
             pool,
+            db_actor: Arc::new(Mutex::new(None)),
             cache_dir,
             queue_capacity: runtime.thumbnail_queue_capacity,
             queue,
@@ -287,6 +290,14 @@ impl ThumbnailLoader {
     pub fn set_stats_dirty_callback(&self, callback: StatsDirtyCallback) {
         if let Ok(mut slot) = self.stats_dirty_callback.lock() {
             *slot = Some(callback);
+        }
+    }
+
+    /// Inject the process-wide single-writer actor before starting workers.
+    /// Test-only loaders may omit it and keep using the direct DB fallback.
+    pub fn set_db_actor(&self, db_actor: DbActorHandle) {
+        if let Ok(mut slot) = self.db_actor.lock() {
+            *slot = Some(db_actor);
         }
     }
 
@@ -372,9 +383,18 @@ impl ThumbnailLoader {
             let queue = self.queue.clone();
             let state = self.state.clone();
             let bg = self.background_pull.clone();
+            let db_actor = self.db_actor.lock().ok().and_then(|slot| slot.clone());
             let stats_dirty_callback = self.stats_dirty_callback.clone();
             tokio::task::spawn_blocking(move || {
-                worker_loop(queue, pool, cache_dir, state, bg, stats_dirty_callback);
+                worker_loop(
+                    queue,
+                    pool,
+                    cache_dir,
+                    state,
+                    bg,
+                    db_actor,
+                    stats_dirty_callback,
+                );
             });
         }
     }

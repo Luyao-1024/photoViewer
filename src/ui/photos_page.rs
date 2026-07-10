@@ -976,11 +976,14 @@ impl PhotosPage {
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
             return;
         };
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            return;
+        };
         if ids.is_empty() {
             return;
         }
         let raw_ids: Vec<i64> = ids.into_iter().map(MediaId::get).collect();
-        album_picker::AlbumPickerDialog::present(&nav, pool, raw_ids);
+        album_picker::AlbumPickerDialog::present(&nav, pool, db_actor, raw_ids);
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {

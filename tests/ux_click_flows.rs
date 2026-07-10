@@ -3,6 +3,7 @@
 //! These tests exercise the same GTK signal paths a user hits: clicking the
 //! Photos mode selector cells and activating a rendered thumbnail tile. They
 //! intentionally avoid calling `PhotosPage` internals such as `open_viewer`.
+mod common;
 
 use chrono::{TimeZone, Utc};
 use gtk4 as gtk;
@@ -503,10 +504,13 @@ fn album_picker_clicks_album_row_and_copy_move() {
     let window = gtk::Window::new();
     window.set_child(Some(&fixture.nav));
     let original_count = db::list_all_media(&fixture.pool).unwrap().len();
+    let (events, _receiver) = photo_viewer::core::events::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(fixture.pool.clone(), events);
 
     photo_viewer::ui::AlbumPickerDialog::present(
         &fixture.nav,
         fixture.pool.clone(),
+        db_actor.clone(),
         vec![fixture.items[0].id],
     );
     let wrapper = fixture
@@ -556,6 +560,7 @@ fn album_picker_clicks_album_row_and_copy_move() {
     album_picker::push_action_page(
         &inner,
         fixture.pool.clone(),
+        db_actor,
         vec![fixture.items[1].id],
         move_target.clone(),
         &fixture.nav,
@@ -688,8 +693,8 @@ fn album_browser_reorder_persists_full_album_order() {
 
 fn trash_page_clicks_selection_cancel_restore_and_delete() {
     let fixture = build_photos_page_with_nav();
-    db::mark_trashed(&fixture.pool, fixture.items[0].id).unwrap();
-    db::mark_trashed(&fixture.pool, fixture.items[1].id).unwrap();
+    common::db::mark_trashed(&fixture.pool, fixture.items[0].id).unwrap();
+    common::db::mark_trashed(&fixture.pool, fixture.items[1].id).unwrap();
     let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     let trash =
         TrashPage::with_media_list(fixture.pool.clone(), fixture.loader.clone(), shared.clone());
@@ -790,7 +795,7 @@ fn seed_media(pool: &db::DbPool, root: &std::path::Path) -> Vec<MediaItem> {
         let path = media_dir.join(name);
         std::fs::write(&path, b"ux-flow-test-image").unwrap();
         let item = sample_item(0, path);
-        let id = db::insert_media_item(pool, &NewMediaItem::from(&item)).unwrap();
+        let id = common::db::insert_media_item(pool, &NewMediaItem::from(&item)).unwrap();
         items.push(db::get_media_item(pool, id).unwrap());
     }
     items
@@ -802,7 +807,7 @@ fn seed_extra_album(fixture: &PhotosFixture) {
     let album_path = album_dir.join("three.jpg");
     std::fs::write(&album_path, b"ux-flow-second-album").unwrap();
     let item = sample_item(200, album_path);
-    db::insert_media_item(&fixture.pool, &NewMediaItem::from(&item)).unwrap();
+    common::db::insert_media_item(&fixture.pool, &NewMediaItem::from(&item)).unwrap();
 }
 
 fn click_mode_selector_cell(selector: &ModeSelector, index: usize) {

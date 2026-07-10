@@ -5,6 +5,7 @@
 //! intermediate album-grid page anymore). The album rows live in a dedicated
 //! bounded scroll region so the top-level Photos / Albums / Trash rows stay
 //! stable even with many albums.
+mod common;
 
 use chrono::Utc;
 use std::sync::Arc;
@@ -75,12 +76,12 @@ fn photos_count_uses_loaded_model_before_background_refresh() {
 
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///tmp/root/two.jpg", "/tmp/root/two.jpg", "/tmp/root"),
     )
@@ -351,12 +352,12 @@ fn sidebar_navigation_suite() {
 
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
     )
     .unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item_with_subkind(
             "file:///tmp/root/two.jpg",
@@ -572,7 +573,7 @@ fn assert_media_type_group_hides_when_no_media_type_albums_exist() {
 
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item("file:///tmp/root/one.jpg", "/tmp/root/one.jpg", "/tmp/root"),
     )
@@ -626,7 +627,7 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
         let folder = format!("/tmp/album-{i:02}");
         let uri = format!("file://{folder}/cover.jpg");
         let path = format!("{folder}/cover.jpg");
-        db::insert_media_item(&pool, &make_item(&uri, &path, &folder)).unwrap();
+        common::db::insert_media_item(&pool, &make_item(&uri, &path, &folder)).unwrap();
     }
     albums::refresh(&pool).unwrap();
     window.populate_album_rows();
@@ -696,7 +697,7 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
     window.set_resources(pool.clone(), loader, media_list);
 
     let folder = "/tmp/album-active";
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &make_item(
             "file:///tmp/album-active/cover.jpg",

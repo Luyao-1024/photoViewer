@@ -1,3 +1,4 @@
+mod common;
 use chrono::{TimeZone, Utc};
 use photo_viewer::core::db;
 use photo_viewer::core::media::{MediaItem, NewMediaItem};
@@ -30,7 +31,7 @@ fn sample_new_item() -> NewMediaItem {
 #[test]
 fn insert_and_get() {
     let pool = fresh_pool();
-    let id = db::insert_media_item(&pool, &sample_new_item()).unwrap();
+    let id = common::db::insert_media_item(&pool, &sample_new_item()).unwrap();
     assert!(id > 0);
 
     let item = db::get_media_item(&pool, id).unwrap();
@@ -51,8 +52,8 @@ fn insert_and_get_persists_video_duration_and_favorite_state() {
     item.video_duration_secs = Some(83.25);
     item.blake3_hash = "video-hash".into();
 
-    let id = db::insert_media_item(&pool, &item).unwrap();
-    db::set_media_favorite(&pool, id, true).unwrap();
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
+    common::db::set_media_favorite(&pool, id, true).unwrap();
 
     let persisted = db::get_media_item(&pool, id).unwrap();
     assert!(persisted.is_video());
@@ -63,13 +64,13 @@ fn insert_and_get_persists_video_duration_and_favorite_state() {
 #[test]
 fn list_all_returns_inserted() {
     let pool = fresh_pool();
-    db::insert_media_item(&pool, &sample_new_item()).unwrap();
+    common::db::insert_media_item(&pool, &sample_new_item()).unwrap();
 
     let mut item2 = sample_new_item();
     item2.uri = "file:///test/IMG_002.jpg".into();
     item2.path = "/test/IMG_002.jpg".into();
     item2.blake3_hash = "hash002".into();
-    db::insert_media_item(&pool, &item2).unwrap();
+    common::db::insert_media_item(&pool, &item2).unwrap();
 
     let all = db::list_all_media(&pool).unwrap();
     assert_eq!(all.len(), 2);
@@ -113,7 +114,7 @@ fn list_all_orders_by_taken_at_then_file_time_fallback() {
     exif_newest.taken_at = Some(Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap());
     exif_newest.file_mtime = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
     exif_newest.blake3_hash = "exif-newest".into();
-    db::insert_media_item(&pool, &exif_newest).unwrap();
+    common::db::insert_media_item(&pool, &exif_newest).unwrap();
 
     let mut file_time_middle = sample_new_item();
     file_time_middle.uri = "file:///test/file-middle.jpg".into();
@@ -121,7 +122,7 @@ fn list_all_orders_by_taken_at_then_file_time_fallback() {
     file_time_middle.taken_at = None;
     file_time_middle.file_mtime = Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap();
     file_time_middle.blake3_hash = "file-middle".into();
-    db::insert_media_item(&pool, &file_time_middle).unwrap();
+    common::db::insert_media_item(&pool, &file_time_middle).unwrap();
 
     let mut oldest = sample_new_item();
     oldest.uri = "file:///test/oldest.jpg".into();
@@ -129,7 +130,7 @@ fn list_all_orders_by_taken_at_then_file_time_fallback() {
     oldest.taken_at = None;
     oldest.file_mtime = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
     oldest.blake3_hash = "oldest".into();
-    db::insert_media_item(&pool, &oldest).unwrap();
+    common::db::insert_media_item(&pool, &oldest).unwrap();
 
     let all = db::list_all_media(&pool).unwrap();
     let names: Vec<_> = all.iter().map(|item| item.display_name()).collect();
@@ -142,8 +143,8 @@ fn list_all_orders_by_taken_at_then_file_time_fallback() {
 #[test]
 fn delete_removes_row() {
     let pool = fresh_pool();
-    let id = db::insert_media_item(&pool, &sample_new_item()).unwrap();
-    db::delete_media_item(&pool, id).unwrap();
+    let id = common::db::insert_media_item(&pool, &sample_new_item()).unwrap();
+    common::db::delete_media_item(&pool, id).unwrap();
     let result = db::get_media_item(&pool, id);
     assert!(result.is_err());
 }
@@ -151,8 +152,8 @@ fn delete_removes_row() {
 #[test]
 fn unique_uri_constraint() {
     let pool = fresh_pool();
-    db::insert_media_item(&pool, &sample_new_item()).unwrap();
-    let result = db::insert_media_item(&pool, &sample_new_item());
+    common::db::insert_media_item(&pool, &sample_new_item()).unwrap();
+    let result = common::db::insert_media_item(&pool, &sample_new_item());
     assert!(result.is_err());
 }
 
@@ -170,7 +171,7 @@ fn delete_media_by_ids_removes_rows_across_chunks() {
         item.uri = format!("file:///test/IMG_{i:03}.jpg");
         item.path = format!("/test/IMG_{i:03}.jpg").into();
         item.blake3_hash = format!("hash{i:03}");
-        ids.push(db::insert_media_item(&pool, &item).unwrap());
+        ids.push(common::db::insert_media_item(&pool, &item).unwrap());
     }
 
     let removed = db::delete_media_by_ids(&pool, &ids).unwrap();
@@ -185,13 +186,13 @@ fn delete_media_by_ids_removes_rows_across_chunks() {
 fn delete_media_by_ids_skips_trashed_rows() {
     // trashed_at IS NULL 守卫：trashed 行不被批量删除误伤。
     let pool = fresh_pool();
-    let live_id = db::insert_media_item(&pool, &sample_new_item()).unwrap();
+    let live_id = common::db::insert_media_item(&pool, &sample_new_item()).unwrap();
 
     let mut trashed = sample_new_item();
     trashed.uri = "file:///test/trashed.jpg".into();
     trashed.path = "/test/trashed.jpg".into();
-    let trashed_id = db::insert_media_item(&pool, &trashed).unwrap();
-    db::mark_trashed(&pool, trashed_id).unwrap();
+    let trashed_id = common::db::insert_media_item(&pool, &trashed).unwrap();
+    common::db::mark_trashed(&pool, trashed_id).unwrap();
 
     let removed = db::delete_media_by_ids(&pool, &[live_id, trashed_id]).unwrap();
     assert_eq!(removed, 1, "only the live row should be deleted");

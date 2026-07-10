@@ -39,6 +39,7 @@ fn mem_cached_thumbnail_tile_is_built_without_loading_class() {
         0,
         loader,
         Rc::new(|| {}),
+        true,
     );
 
     assert!(
@@ -69,6 +70,7 @@ fn uncached_thumbnail_tile_stays_hidden_until_result_arrives() {
         0,
         loader,
         Rc::new(|| {}),
+        true,
     );
 
     // The tile is hidden via CSS (`.glass-thumb-card.thumb-loading` sets
@@ -102,6 +104,46 @@ fn uncached_thumbnail_tile_stays_hidden_until_result_arrives() {
         1.0,
         "thumbnail success or failure should reveal the FlowBoxChild wrapper"
     );
+}
+
+#[gtk::test]
+fn uncached_existing_thumbnail_keeps_its_loading_border_visible() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let item = sample_item(9, "existing.png");
+    media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+
+    let tile = build_photo_picture(
+        spec_for_mode(GroupBy::Day),
+        item,
+        media_list,
+        0,
+        loader,
+        Rc::new(|| {}),
+        false,
+    );
+    let flow = gtk::FlowBox::new();
+    flow.append(&tile);
+    let flow_child = tile
+        .parent()
+        .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
+        .expect("FlowBox should wrap tile in a FlowBoxChild");
+
+    sync_flow_child_visibility_for_tile(&tile, &flow_child);
+    assert!(tile.has_css_class("thumb-loading"));
+    assert!(tile.has_css_class("thumb-placeholder"));
+    assert_eq!(
+        flow_child.opacity(),
+        1.0,
+        "existing uncached media should show its loading border before the thumbnail arrives"
+    );
+
+    tile.set_paintable(Some(&gray_placeholder_texture()));
+    assert!(!tile.has_css_class("thumb-loading"));
+    assert!(!tile.has_css_class("thumb-placeholder"));
 }
 
 #[test]

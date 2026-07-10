@@ -391,7 +391,18 @@ pub fn favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
 
 /// 重新计算 albums 表（启动时 + 索引完成后调用）
 pub fn refresh(pool: &DbPool) -> Result<()> {
-    refresh_with_observer(pool, || Ok(()))
+    let started = std::time::Instant::now();
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=refresh_albums phase=begin"
+    );
+    refresh_with_observer(pool, || Ok(())).inspect(|_| {
+        tracing::trace!(
+            target: crate::core::log_targets::STORAGE,
+            "SQL_FLOW op=refresh_albums phase=done elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    })
 }
 
 fn refresh_with_observer<F>(pool: &DbPool, after_clear: F) -> Result<()>

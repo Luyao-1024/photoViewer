@@ -3,6 +3,7 @@
 //! unused to the dead-code lint in some binaries even though they are used in
 //! others. Allow the warning at module level.
 #![allow(dead_code)]
+pub mod db;
 use image::{ImageBuffer, Rgb};
 use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;

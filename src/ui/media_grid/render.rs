@@ -38,11 +38,13 @@ pub(super) fn sync_flow_child_visibility_for_tile(
     tile: &SquareTile,
     flow_child: &gtk::FlowBoxChild,
 ) {
-    flow_child.set_opacity(if tile.has_css_class("thumb-loading") {
-        0.0
-    } else {
-        1.0
-    });
+    flow_child.set_opacity(
+        if tile.has_css_class("thumb-loading") && !tile.has_css_class("thumb-placeholder") {
+            0.0
+        } else {
+            1.0
+        },
+    );
 }
 
 pub(super) fn build_photo_picture(
@@ -52,6 +54,7 @@ pub(super) fn build_photo_picture(
     global_index: u32,
     loader: Arc<ThumbnailLoader>,
     on_background_changed: Rc<dyn Fn()>,
+    hide_until_loaded: bool,
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
@@ -101,13 +104,17 @@ pub(super) fn build_photo_picture(
         );
     } else {
         tile.add_css_class("thumb-loading");
+        if !hide_until_loaded {
+            tile.add_css_class("thumb-placeholder");
+        }
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "THUMB_TILE_TRACE tile_loading_class_added item_id={} uri={} mode={:?} global_index={} opacity=0",
+            "THUMB_TILE_TRACE tile_loading_class_added item_id={} uri={} mode={:?} global_index={} hide_until_loaded={}",
             item.id,
             item.uri,
             spec.mode,
-            global_index
+            global_index,
+            hide_until_loaded
         );
     }
 

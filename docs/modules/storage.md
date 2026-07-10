@@ -34,7 +34,13 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 
 ## Database
 
-SQLite uses an r2d2 connection pool with WAL and foreign-key pragmas applied through the pool init hook. `schema.sql` is embedded with `include_str!`; migrations are expected to be idempotent.
+SQLite uses an r2d2 connection pool with WAL, foreign-key, and a 10-second
+busy timeout applied through the pool init hook. SQLite still permits only one
+writer at a time even in WAL mode; the timeout lets the filesystem watcher,
+startup scan, thumbnail workers, and foreground mutations wait through short
+writer contention instead of reporting a spurious `database is locked` error.
+`schema.sql` is embedded with `include_str!`; migrations are expected to be
+idempotent.
 
 UI-facing database access should go through `core::repository::MediaRepository`.
 `core::db` remains the low-level SQL/migration module, but widgets and pages
@@ -55,13 +61,19 @@ scanner/watcher producer facade, but its channel emits domain events directly.
 UI projections such as the bounded `gio::ListStore` consume those domain
 events through explicit adapters rather than through a second event vocabulary.
 
-DB mutations are moving behind `core::db_actor::DbActor`. New mutation paths
-should send a `DbCommand` through `DbActorHandle` and let the actor emit
-`DomainEvent` values; UI pages should subscribe through `ui::refresh_hub` or
-the current legacy hub bridge instead of manually deciding which views to
-refresh. During migration, repository reads and unmigrated mutation call sites
-still exist, but do not add new direct UI calls to `core::db`, `albums::refresh`,
-or repository mutation methods.
+All production SQLite writes go through the single `core::db_actor::DbActor`
+connection owner. `DbActorHandle` accepts a priority queue: user-interactive
+mutations run first, followed by trash operations, filesystem watcher changes,
+startup scan work, derived album refreshes, and thumbnail bookkeeping. Commands
+with the same priority are FIFO. A running SQL transaction is not interrupted;
+priority is applied at the next queue selection.
+
+Filesystem work may happen outside the actor, but its database commit must be a
+`DbCommand` (for example `UpdateMediaLocation`, `CommitMovedToTrash`, or
+`RestoreTrashed`). The actor emits `DomainEvent` values; UI pages should
+subscribe through `ui::refresh_hub` or the current legacy hub bridge instead of
+manually deciding which views to refresh. Test-only low-level helpers may still
+write directly to an isolated pool to set up fixtures.
 
 Derived refresh work belongs in `core::refresh::RefreshCoordinator`. Album
 refreshes are single-flight with pending replay. Thumbnail/library statistics

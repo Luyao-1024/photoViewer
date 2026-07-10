@@ -99,13 +99,15 @@ like `(position, removed=0, added=1)` so inactive pages do not gray out the
 currently visible grid when they later observe the shared model.
 During bulk grid rebuilds, a tile paints immediately only when its thumbnail is
 already in `ThumbnailLoader`'s in-memory LRU; do not do synchronous disk-cache
-reads in that path. Sparse incremental insertions for newly added or updated
-media may use `ThumbnailLoader::try_load_cached` before insertion, but must not
-add a `GtkFlowBoxChild` until thumbnail generation finishes when the cache is
-missing. If the request succeeds, insert the tile with the generated texture; if
-it fails, insert the final unavailable placeholder. Do not insert a
-transparent/loading tile first: local GTK/CSS backgrounds can still read
-visually as a gray image.
+reads in that path. When the cache is missing, existing library media remains
+visible as a fixed-size loading border and receives its thumbnail when the
+viewport request completes. Sparse incremental insertions for newly added or
+updated media may use `ThumbnailLoader::try_load_cached` before insertion, but
+must not add a `GtkFlowBoxChild` until thumbnail generation finishes when the
+cache is missing. If the request succeeds, insert the tile with the generated
+texture; if it fails, insert the final unavailable placeholder. Do not insert a
+transparent/loading tile first for these new-media insertions: local GTK/CSS
+backgrounds can still read visually as a gray image.
 
 For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
 bounded while the database remains the full source of truth. Startup loads the

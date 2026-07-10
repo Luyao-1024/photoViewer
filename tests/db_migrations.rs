@@ -1,3 +1,4 @@
+mod common;
 use chrono::Utc;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
@@ -46,7 +47,7 @@ fn media_items_has_media_kind_column_and_upsert_populates_it() {
     );
 
     drop(conn);
-    db::insert_media_item(
+    common::db::insert_media_item(
         &pool,
         &NewMediaItem {
             uri: "file:///tmp/clip.mp4".into(),
@@ -401,4 +402,19 @@ fn indexes_created() {
     assert!(indexes.iter().any(|n| n.contains("taken_at")));
     assert!(indexes.iter().any(|n| n.contains("folder")));
     assert!(indexes.iter().any(|n| n.contains("trashed")));
+}
+
+#[test]
+fn connections_wait_for_transient_write_locks() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let conn = pool.get().unwrap();
+    let timeout_ms: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+        .unwrap();
+
+    assert!(
+        timeout_ms >= 5_000,
+        "database connections should wait for transient SQLite writer contention"
+    );
 }

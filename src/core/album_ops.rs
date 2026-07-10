@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::albums;
 use crate::core::db::{self, DbPool};
+use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
@@ -51,6 +52,29 @@ pub fn add_to_album(
         updated.push(new_item);
     }
     albums::refresh(pool)?;
+    Ok(updated)
+}
+
+pub fn add_to_album_with_actor(
+    pool: &DbPool,
+    db_actor: &DbActorHandle,
+    media_ids: &[i64],
+    target_folder: &Path,
+    mode: AlbumOpMode,
+) -> Result<Vec<MediaItem>> {
+    if !target_folder.is_dir() {
+        return Err(AppError::Backend(format!(
+            "target album folder does not exist: {}",
+            target_folder.display()
+        )));
+    }
+    let mut updated = Vec::with_capacity(media_ids.len());
+    for &id in media_ids {
+        let item = db::get_media_item(pool, id)?;
+        let new_item = add_one_with_actor(db_actor, item, target_folder, mode)?;
+        updated.push(new_item);
+    }
+    db_actor.execute_blocking(DbCommand::RefreshAlbumsInternal)?;
     Ok(updated)
 }
 
@@ -106,6 +130,57 @@ pub fn delete_albums_to_trash(
     }
 
     albums::refresh(pool)?;
+    Ok(combined)
+}
+
+/// Actor-backed variant used by the production album sidebar flow. Filesystem
+/// moves remain outside the actor, while every SQLite state transition is
+/// serialized through the actor.
+pub fn delete_albums_to_trash_with_actor(
+    pool: &DbPool,
+    db_actor: &DbActorHandle,
+    albums_to_delete: &[albums::Album],
+) -> Result<MediaMutation> {
+    for album in albums_to_delete {
+        if album.is_virtual {
+            return Err(AppError::Backend(format!(
+                "cannot delete virtual album: {}",
+                album.display_name()
+            )));
+        }
+    }
+
+    let mut combined = MediaMutation::default();
+    for album in albums_to_delete {
+        let items = db::list_media_by_folder(pool, &album.folder_path)?;
+        for item in items {
+            let prepared = db_actor.execute_blocking(DbCommand::MarkTrashed {
+                ids: vec![MediaId::from(item.id)],
+            })?;
+            let DbCommandResult::MediaItems(mut marked) = prepared else {
+                return Err(AppError::Backend(
+                    "album trash mark returned no media item".into(),
+                ));
+            };
+            let marked_item = marked.pop().ok_or_else(|| {
+                AppError::Backend("album trash mark returned no media item".into())
+            })?;
+
+            if let Err(err) = crate::core::trash::move_to_configured_trash(&item.uri) {
+                let _ = db_actor.execute_blocking(DbCommand::RollbackTrashed {
+                    ids: vec![MediaId::from(item.id)],
+                });
+                return Err(err);
+            }
+
+            db_actor.execute_blocking(DbCommand::CommitMovedToTrash {
+                items: vec![marked_item.clone()],
+            })?;
+            combined.changed_ids.push(MediaId::from(item.id));
+            combined.changed_items.push(marked_item);
+            combined.removed_uris.push(item.uri);
+        }
+    }
     Ok(combined)
 }
 
@@ -165,6 +240,73 @@ fn add_one(
             moved.folder_path = target_folder.to_path_buf();
             moved.uri = format!("file://{}", moved.path.display());
             Ok(moved)
+        }
+    }
+}
+
+fn add_one_with_actor(
+    db_actor: &DbActorHandle,
+    item: MediaItem,
+    target_folder: &Path,
+    mode: AlbumOpMode,
+) -> Result<MediaItem> {
+    let ext = item
+        .path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpg");
+    let stem = item
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("photo");
+    let dst = resolve_unique_path(target_folder, stem, ext)?;
+    match mode {
+        AlbumOpMode::Copy => {
+            std::fs::copy(&item.path, &dst)?;
+            let mut new_item = item.clone();
+            new_item.path = dst.clone();
+            new_item.folder_path = target_folder.to_path_buf();
+            new_item.uri = format!("file://{}", dst.display());
+            new_item.file_mtime = std::fs::metadata(&dst)
+                .and_then(|m| m.created().or_else(|_| m.modified()))
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|d| {
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(d.as_secs() as i64, 0)
+                })
+                .unwrap_or_else(chrono::Utc::now);
+            let result = db_actor.execute_blocking(DbCommand::InsertMediaItem {
+                item: NewMediaItem::from(&new_item),
+            })?;
+            match result {
+                DbCommandResult::MediaItems(mut items) => items.pop().ok_or_else(|| {
+                    AppError::Backend("album copy insert returned no media item".into())
+                }),
+                other => Err(AppError::Backend(format!(
+                    "unexpected album copy result: {other:?}"
+                ))),
+            }
+        }
+        AlbumOpMode::Move => {
+            std::fs::rename(&item.path, &dst)?;
+            let result = db_actor.execute_blocking(DbCommand::UpdateMediaLocation {
+                id: MediaId::from(item.id),
+                path: dst.clone(),
+                folder_path: target_folder.to_path_buf(),
+            });
+            match result {
+                Ok(DbCommandResult::MediaItems(mut items)) => items.pop().ok_or_else(|| {
+                    AppError::Backend("album move update returned no media item".into())
+                }),
+                Ok(other) => Err(AppError::Backend(format!(
+                    "unexpected album move result: {other:?}"
+                ))),
+                Err(err) => {
+                    let _ = std::fs::rename(&dst, &item.path);
+                    Err(err)
+                }
+            }
         }
     }
 }

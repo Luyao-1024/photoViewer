@@ -10,7 +10,7 @@ use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 use libadwaita::subclass::prelude::*;
 
-use crate::core::albums::{self, Album};
+use crate::core::albums::Album;
 use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::identity::MediaId;
@@ -312,7 +312,7 @@ impl AlbumDetailPage {
         let Some(album) = self.imp().album.borrow().as_ref().cloned() else {
             return;
         };
-        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
             return;
         };
         let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
@@ -326,7 +326,10 @@ impl AlbumDetailPage {
         let nav = self.imp().nav_view.borrow().as_ref().cloned();
         glib::spawn_future_local(async move {
             let _ = gtk::gio::spawn_blocking(move || {
-                albums::set_album_cover(&pool, &folder_path, &cover_uri)
+                db_actor.execute_blocking(crate::core::db_actor::DbCommand::SetAlbumCover {
+                    folder_path,
+                    cover_uri,
+                })
             })
             .await;
             if let Some(nav) = nav {

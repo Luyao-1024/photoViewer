@@ -2,6 +2,7 @@
 use crate::core::db::DbPool;
 use crate::core::error::Result as CoreResult;
 use crate::core::events::DomainEvent;
+#[cfg(test)]
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::runtime_config;
@@ -83,7 +84,6 @@ pub fn build_app() -> adw::Application {
                     // Store DB pool + loader on the window so the sidebar can
                     // build album detail / trash pages on demand, then wire
                     // row-selected to push them onto nav_view.
-                    let pool_for_refresh = pool.clone();
                     window.set_resources(pool, loader, media_list.clone());
                     window.set_db_actor(db_actor.clone());
                     window.connect_sidebar(&nav);
@@ -99,7 +99,7 @@ pub fn build_app() -> adw::Application {
                     // 后无需切换页面即可看到）。
                     let window_for_consumer = window.downgrade();
                     let album_refresh = crate::core::refresh::RefreshCoordinator::new(
-                        pool_for_refresh,
+                        db_actor.clone(),
                         Rc::new({
                             let window = window.downgrade();
                             move || {
@@ -298,7 +298,7 @@ async fn initialize() -> anyhow::Result<(
     let db_path = data_dir.join("photos.db");
     let initial_media_page_size = runtime_config::initial_media_page_size();
     let pictures = crate::config::pictures_dir();
-    let (pool, items) =
+    let (pool, items, db_actor, db_event_rx) =
         initialize_db_once_with_retry(db_path.clone(), initial_media_page_size, pictures.clone())
             .await?;
 
@@ -307,6 +307,7 @@ async fn initialize() -> anyhow::Result<(
         pool.clone(),
         crate::config::cache_dir(),
     ));
+    thumbnail_loader.set_db_actor(db_actor.clone());
     thumbnail_loader.spawn_workers(runtime_config::thumbnail_worker_count());
 
     let media_roots = crate::config::media_roots();
@@ -318,8 +319,6 @@ async fn initialize() -> anyhow::Result<(
     // 同时监听系统回收站根：文件管理器对回收站的还原/清空/删除只动回收站目录，
     // 必须单独监听才能实时感知（见 notify_watcher 的防抖对账）。
     let (_notifier, change_rx) = crate::core::media_change_notifier::MediaChangeNotifier::new();
-    let (db_event_sender, db_event_rx) = crate::core::events::DomainEventSender::new();
-    let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), db_event_sender);
     let trash_roots = crate::core::trash::trash_roots();
     let excluded_scan_roots = crate::core::prefs::excluded_scan_roots();
     let mut watch_paths = media_roots.clone();
@@ -365,36 +364,32 @@ async fn initialize() -> anyhow::Result<(
     ))
 }
 
-fn initialize_db_once_blocking_with_preload<F>(
-    path: PathBuf,
-    page_size: u32,
-    preload: F,
-) -> CoreResult<(DbPool, Vec<MediaItem>)>
-where
-    F: FnOnce(&DbPool) -> CoreResult<()>,
-{
-    let pool = init_pool(&path)?;
-    preload(&pool)?;
-    let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
-        crate::core::repository::MediaQuery::LiveAll,
-        0,
-        page_size,
-    )?;
-    Ok((pool, items))
-}
-
 async fn initialize_db_once_with_retry(
     path: PathBuf,
     page_size: u32,
     pictures: PathBuf,
-) -> anyhow::Result<(DbPool, Vec<MediaItem>)> {
+) -> anyhow::Result<(
+    DbPool,
+    Vec<MediaItem>,
+    crate::core::db_actor::DbActorHandle,
+    tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
+)> {
     let first = match gtk::gio::spawn_blocking({
         let path = path.clone();
         let pictures = pictures.clone();
-        move || {
-            initialize_db_once_blocking_with_preload(path, page_size, |pool| {
-                crate::core::trash::reconcile_trash(pool, &pictures).map(|_| ())
-            })
+        move || -> CoreResult<_> {
+            let pool = crate::core::init_pool(&path)?;
+            let (sender, receiver) = crate::core::events::DomainEventSender::new();
+            let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+            db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash {
+                pictures_root: pictures,
+            })?;
+            let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
+                crate::core::repository::MediaQuery::LiveAll,
+                0,
+                page_size,
+            )?;
+            Ok((pool, items, db_actor, receiver))
         }
     })
     .await
@@ -414,10 +409,19 @@ async fn initialize_db_once_with_retry(
         let second = match gtk::gio::spawn_blocking({
             let path = path.clone();
             let pictures = pictures.clone();
-            move || {
-                initialize_db_once_blocking_with_preload(path, page_size, |pool| {
-                    crate::core::trash::reconcile_trash(pool, &pictures).map(|_| ())
-                })
+            move || -> CoreResult<_> {
+                let pool = crate::core::init_pool(&path)?;
+                let (sender, receiver) = crate::core::events::DomainEventSender::new();
+                let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+                db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash {
+                    pictures_root: pictures,
+                })?;
+                let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
+                    crate::core::repository::MediaQuery::LiveAll,
+                    0,
+                    page_size,
+                )?;
+                Ok((pool, items, db_actor, receiver))
             }
         })
         .await
@@ -427,6 +431,25 @@ async fn initialize_db_once_with_retry(
         };
         second.map_err(anyhow::Error::from)
     }
+}
+
+#[cfg(test)]
+fn initialize_db_once_blocking_with_preload<F>(
+    path: PathBuf,
+    page_size: u32,
+    preload: F,
+) -> CoreResult<(DbPool, Vec<MediaItem>)>
+where
+    F: FnOnce(&DbPool) -> CoreResult<()>,
+{
+    let pool = crate::core::init_pool(&path)?;
+    preload(&pool)?;
+    let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
+        crate::core::repository::MediaQuery::LiveAll,
+        0,
+        page_size,
+    )?;
+    Ok((pool, items))
 }
 
 fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {

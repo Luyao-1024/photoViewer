@@ -15,8 +15,10 @@ use chrono::Utc;
 use image::ImageReader;
 
 use crate::core::db::{self, DbPool};
+use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::edit::{apply_all, EditRegistry, EditState};
 use crate::core::error::Result;
+use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use crate::core::orientation;
 
@@ -28,6 +30,26 @@ pub fn save_as_copy(
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
+) -> Result<MediaItem> {
+    save_as_copy_inner(source, state, pool, registry, None)
+}
+
+pub fn save_as_copy_with_actor(
+    source: &MediaItem,
+    state: &EditState,
+    pool: &DbPool,
+    registry: &EditRegistry,
+    db_actor: &DbActorHandle,
+) -> Result<MediaItem> {
+    save_as_copy_inner(source, state, pool, registry, Some(db_actor))
+}
+
+fn save_as_copy_inner(
+    source: &MediaItem,
+    state: &EditState,
+    pool: &DbPool,
+    registry: &EditRegistry,
+    db_actor: Option<&DbActorHandle>,
 ) -> Result<MediaItem> {
     // 1. 加载原图全分辨率
     let img = load_source_image(&source.path)?;
@@ -63,7 +85,7 @@ pub fn save_as_copy(
         file_size: std::fs::metadata(&new_path).map(|m| m.len()).unwrap_or(0),
         blake3_hash: stream_file_hash(&new_path)?,
     };
-    insert_or_update_copy_row(pool, &new_item)
+    insert_or_update_copy_row(pool, &new_item, db_actor)
 }
 
 /// 覆盖原图：备份到 `.{ext}.bak` → 渲染 → 写回原文件 → 更新 DB 元数据。
@@ -73,6 +95,26 @@ pub fn save_overwrite(
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
+) -> Result<()> {
+    save_overwrite_inner(source, state, pool, registry, None)
+}
+
+pub fn save_overwrite_with_actor(
+    source: &MediaItem,
+    state: &EditState,
+    pool: &DbPool,
+    registry: &EditRegistry,
+    db_actor: &DbActorHandle,
+) -> Result<()> {
+    save_overwrite_inner(source, state, pool, registry, Some(db_actor))
+}
+
+fn save_overwrite_inner(
+    source: &MediaItem,
+    state: &EditState,
+    pool: &DbPool,
+    registry: &EditRegistry,
+    db_actor: Option<&DbActorHandle>,
 ) -> Result<()> {
     // 1. 备份原图
     let backup = backup_path_for(&source.path);
@@ -88,16 +130,25 @@ pub fn save_overwrite(
     rendered.save_with_format(&source.path, format)?;
 
     // 4. 更新 DB 元数据
-    let conn = pool.get()?;
     let new_mtime = Utc::now().timestamp();
     let new_size = std::fs::metadata(&source.path)
         .map(|m| m.len() as i64)
         .unwrap_or(0);
     let new_hash = stream_file_hash(&source.path)?;
-    conn.execute(
-        "UPDATE media_items SET file_mtime=?2, file_size=?3, blake3_hash=?4 WHERE id=?1",
-        rusqlite::params![source.id, new_mtime, new_size, new_hash],
-    )?;
+    if let Some(db_actor) = db_actor {
+        db_actor.execute_blocking(DbCommand::UpdateEditedMedia {
+            id: MediaId::from(source.id),
+            file_mtime: new_mtime,
+            file_size: new_size,
+            blake3_hash: new_hash,
+        })?;
+    } else {
+        let conn = pool.get()?;
+        conn.execute(
+            "UPDATE media_items SET file_mtime=?2, file_size=?3, blake3_hash=?4 WHERE id=?1",
+            rusqlite::params![source.id, new_mtime, new_size, new_hash],
+        )?;
+    }
 
     Ok(())
 }
@@ -116,7 +167,23 @@ fn stream_file_hash(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn insert_or_update_copy_row(pool: &DbPool, item: &NewMediaItem) -> Result<MediaItem> {
+fn insert_or_update_copy_row(
+    pool: &DbPool,
+    item: &NewMediaItem,
+    db_actor: Option<&DbActorHandle>,
+) -> Result<MediaItem> {
+    if let Some(db_actor) = db_actor {
+        let result =
+            db_actor.execute_blocking(DbCommand::InsertEditedMedia { item: item.clone() })?;
+        return match result {
+            DbCommandResult::MediaItems(mut items) => items.pop().ok_or_else(|| {
+                crate::core::error::AppError::Backend("edited media insert returned no item".into())
+            }),
+            other => Err(crate::core::error::AppError::Backend(format!(
+                "unexpected edited media insert result: {other:?}"
+            ))),
+        };
+    }
     let conn = pool.get()?;
     conn.execute(
         "INSERT INTO media_items
