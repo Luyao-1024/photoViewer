@@ -42,7 +42,21 @@ environment-specific Flatpak visual check, or a manual debugging path.
 - `tests/ux_*`: GTK signal-level UX flows that simulate user clicks/activations.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
 - `tests/*_flow.rs`: module-level behavior such as trash and destructive rotate.
-- `src/**` unit tests: small invariants close to implementation.
+- `src/**/tests.rs` and `src/**/tests/*.rs`: unit tests close to implementation.
+
+## Test Ownership
+
+Keep unit tests with the module that owns the behavior, but do not define
+inline `mod tests { ... }` blocks inside production source files. Source files
+should declare `#[cfg(test)] mod tests;`, with test bodies in child test files.
+
+- Single-file modules use a sibling `tests.rs` file, such as
+  `src/core/runtime_config/tests.rs`.
+- Nested modules use a child test module, such as
+  `src/ui/viewer/filmstrip/tests.rs` or
+  `src/ui/media_grid/loading/tests.rs`.
+- Cross-module source-structure assertions stay under `tests/`, such as
+  `tests/inline_test_ownership.rs`.
 
 ## Liquid Glass Warnings
 

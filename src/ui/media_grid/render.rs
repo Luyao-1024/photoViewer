@@ -264,3 +264,6 @@ pub(super) fn build_photo_picture(
     tile.set_thumbnail_request(request_once);
     tile
 }
+
+#[cfg(test)]
+mod tests;

@@ -35,6 +35,11 @@ load the full query result just to move one step in the viewer. The current
 | `tests/e2e_viewer.rs` | Viewer flow coverage |
 | `tests/ui_viewer_toolbar.rs` | Viewer toolbar/template assertions |
 
+Viewer unit tests live beside the behavior they cover. Production source files
+declare `#[cfg(test)] mod tests;`, and test bodies live in child test files such
+as `src/ui/viewer_page/tests.rs`, `src/ui/viewer/filmstrip/tests.rs`, and
+`src/ui/viewer/stage/tests.rs`.
+
 ## Layout Contract
 
 The viewer is pushed inside the existing `adw::NavigationView`; it must not resize the main app sidebar. Keep viewer chrome inside the page content area and avoid constraints that alter root window/sidebar sizing.

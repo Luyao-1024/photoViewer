@@ -125,3 +125,6 @@ impl MediaGrid {
         *imp.reprio_debounce.borrow_mut() = Some(id);
     }
 }
+
+#[cfg(test)]
+mod tests;

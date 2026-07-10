@@ -592,3 +592,6 @@ impl MediaGrid {
         self.rebuild(media_list, self.mode());
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -148,3 +148,7 @@ pub(super) fn clamp_zoom_pan(
     let max_y = viewport_height * (scale - 1.0) / 2.0;
     (pan_x.clamp(-max_x, max_x), pan_y.clamp(-max_y, max_y))
 }
+
+#[cfg(test)]
+#[path = "transform/tests.rs"]
+mod tests;

@@ -643,3 +643,7 @@ impl ViewerPage {
         video.add_controller(click);
     }
 }
+
+#[cfg(test)]
+#[path = "stage/tests.rs"]
+mod tests;

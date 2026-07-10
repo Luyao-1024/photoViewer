@@ -286,3 +286,6 @@ impl MediaGrid {
         self.fire_selection_changed();
     }
 }
+
+#[cfg(test)]
+mod tests;

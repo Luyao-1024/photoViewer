@@ -25,6 +25,12 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `data/ui/media-grid.blp` | Grid template |
 | `data/ui/mode-selector.blp` | Mode selector template |
 
+MediaGrid unit tests live with the submodule that owns the behavior. Production
+source files declare `#[cfg(test)] mod tests;`, and test bodies live in child
+test files such as `src/ui/media_grid/tests.rs`,
+`src/ui/media_grid/loading/tests.rs`, and
+`src/ui/media_grid/updates/tests.rs`.
+
 ## Behavior
 
 `PhotosPage` owns three `MediaGrid` instances for Year, Month, and Day views. All views are backed by the same `gio::ListStore`, so changes to the media collection should propagate without rebuilding unrelated UI state. The list can contain both image and video `MediaItem`s; grouping still uses `taken_at` when present, falling back to file time.

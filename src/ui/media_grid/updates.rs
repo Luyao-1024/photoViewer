@@ -1330,3 +1330,6 @@ impl MediaGrid {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

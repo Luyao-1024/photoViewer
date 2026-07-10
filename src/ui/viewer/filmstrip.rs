@@ -1131,3 +1131,7 @@ impl ViewerPage {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "filmstrip/tests.rs"]
+mod tests;

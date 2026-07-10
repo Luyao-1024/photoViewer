@@ -329,3 +329,7 @@ pub(super) fn resize_from_edges(
         (bottom - top) as u32,
     )
 }
+
+#[cfg(test)]
+#[path = "crop/tests.rs"]
+mod tests;

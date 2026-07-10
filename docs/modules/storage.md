@@ -26,6 +26,12 @@ Storage covers SQLite schema/migrations, media rows, filesystem scanning, metada
 | `src/core/prefs.rs` | User preferences |
 | `src/core/runtime_config.rs` | Runtime sizing, loading, and worker strategy config |
 
+Storage/core unit tests live in child test modules instead of inline source
+blocks. Production source files declare `#[cfg(test)] mod tests;`, with test
+bodies in paths such as `src/core/metadata/tests.rs`,
+`src/core/trash/tests.rs`, `src/core/thumbnails/tests.rs`, and
+`src/core/runtime_config/tests.rs`.
+
 ## Database
 
 SQLite uses an r2d2 connection pool with WAL and foreign-key pragmas applied through the pool init hook. `schema.sql` is embedded with `include_str!`; migrations are expected to be idempotent.

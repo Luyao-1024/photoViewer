@@ -81,14 +81,6 @@ use crate::core::runtime_config;
 use crate::core::section_model::{GroupBy, SectionKey};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::square_tile::SquareTile;
-#[cfg(test)]
-use render::{build_photo_picture, sync_flow_child_visibility_for_tile};
-#[cfg(test)]
-use virtual_paging::{
-    build_virtual_placeholder_flow, replace_pending_virtual_page,
-    should_consider_virtual_page_load, virtual_offset_for_ratio, virtual_page_start_for_offset,
-    virtual_spacer_height, virtual_window_item_count,
-};
 
 /// Get the current max rendered grid items from runtime configuration.
 fn max_rendered_grid_items() -> usize {
@@ -173,6 +165,146 @@ struct DisplayedItem {
     window_index: u32,
     media_id: MediaId,
     section_key: SectionKey,
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::*;
+    use chrono::{TimeZone, Utc};
+
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    pub(super) fn noop_callbacks() -> MediaGridCallbacks {
+        MediaGridCallbacks {
+            on_activate: Rc::new(|_| {}),
+            on_background_changed: Rc::new(|| {}),
+            on_add_to_album: Rc::new(|_| {}),
+            on_move_to_trash: Rc::new(|_| {}),
+            on_set_favorite: Rc::new(|_, _| {}),
+            on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+            on_set_album_cover: None,
+        }
+    }
+
+    pub(super) fn sample_item(id: i64, name: &str) -> MediaItem {
+        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
+        MediaItem {
+            id,
+            uri: format!("file:///tmp/{name}"),
+            path: PathBuf::from(format!("/tmp/{name}")),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/png".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(100),
+            height: Some(100),
+            video_duration_secs: None,
+            taken_at: Some(dt),
+            file_mtime: dt,
+            file_size: 100,
+            blake3_hash: format!("hash-{id}"),
+            is_favorite: false,
+            trashed_at: None,
+        }
+    }
+
+    pub(super) fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
+        crate::core::db::insert_media_item(
+            pool,
+            &crate::core::media::NewMediaItem {
+                uri: item.uri.clone(),
+                path: item.path.clone(),
+                folder_path: item.folder_path.clone(),
+                mime_type: item.mime_type.clone(),
+                media_subkind: item.media_subkind.clone(),
+                media_attributes: item.media_attributes.clone(),
+                width: item.width,
+                height: item.height,
+                video_duration_secs: item.video_duration_secs,
+                taken_at: item.taken_at,
+                file_mtime: item.file_mtime,
+                file_size: item.file_size,
+                blake3_hash: item.blake3_hash.clone(),
+            },
+        )
+        .unwrap()
+    }
+
+    pub(super) fn tile_count(grid: &MediaGrid) -> u32 {
+        let content = grid.imp().content.get();
+        let mut count = 0;
+        let mut child = content.first_child();
+        while let Some(widget) = child {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                count += flow.observe_children().n_items();
+            }
+            child = widget.next_sibling();
+        }
+        count
+    }
+
+    pub(super) fn first_section_flow(grid: &MediaGrid) -> Option<gtk::FlowBox> {
+        let content = grid.imp().content.get();
+        let mut child = content.first_child();
+        while let Some(widget) = child {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                return Some(flow.clone());
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    pub(super) fn flow_child_at(flow: &gtk::FlowBox, index: u32) -> Option<gtk::FlowBoxChild> {
+        flow.child_at_index(index as i32)
+    }
+
+    pub(super) fn first_square_tile(grid: &MediaGrid) -> Option<SquareTile> {
+        first_section_flow(grid)?
+            .first_child()
+            .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
+            .and_then(|child| child.child())
+            .and_then(|child| child.downcast::<SquareTile>().ok())
+    }
+
+    pub(super) fn square_tiles(grid: &MediaGrid) -> Vec<SquareTile> {
+        let content = grid.imp().content.get();
+        let mut tiles = Vec::new();
+        let mut section = content.first_child();
+        while let Some(widget) = section {
+            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
+                let mut child = flow.first_child();
+                while let Some(flow_child) = child {
+                    let next = flow_child.next_sibling();
+                    if let Some(tile) = flow_child
+                        .downcast::<gtk::FlowBoxChild>()
+                        .ok()
+                        .and_then(|child| child.child())
+                        .and_then(|child| child.downcast::<SquareTile>().ok())
+                    {
+                        tiles.push(tile);
+                    }
+                    child = next;
+                }
+            }
+            section = widget.next_sibling();
+        }
+        tiles
+    }
+
+    pub(super) fn section_flow_selection_modes(grid: &MediaGrid) -> Vec<gtk::SelectionMode> {
+        let content = grid.imp().content.get();
+        let mut modes = Vec::new();
+        let mut child = content.first_child();
+        while let Some(c) = child {
+            if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
+                modes.push(flow.selection_mode());
+            }
+            child = c.next_sibling();
+        }
+        modes
+    }
 }
 
 mod imp {
@@ -837,1143 +969,4 @@ impl Default for MediaGrid {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::{TimeZone, Utc};
-    use std::path::PathBuf;
-
-    fn noop_callbacks() -> MediaGridCallbacks {
-        MediaGridCallbacks {
-            on_activate: Rc::new(|_| {}),
-            on_background_changed: Rc::new(|| {}),
-            on_add_to_album: Rc::new(|_| {}),
-            on_move_to_trash: Rc::new(|_| {}),
-            on_set_favorite: Rc::new(|_, _| {}),
-            on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
-            on_set_album_cover: None,
-        }
-    }
-
-    fn sample_item(id: i64, name: &str) -> MediaItem {
-        let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
-        MediaItem {
-            id,
-            uri: format!("file:///tmp/{name}"),
-            path: PathBuf::from(format!("/tmp/{name}")),
-            folder_path: PathBuf::from("/tmp"),
-            mime_type: "image/png".into(),
-            media_subkind: "standard".into(),
-            media_attributes: "{}".into(),
-            width: Some(100),
-            height: Some(100),
-            video_duration_secs: None,
-            taken_at: Some(dt),
-            file_mtime: dt,
-            file_size: 100,
-            blake3_hash: format!("hash-{id}"),
-            is_favorite: false,
-            trashed_at: None,
-        }
-    }
-
-    #[test]
-    fn thumbnail_request_mtime_uses_indexed_file_mtime_without_stat() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("photo.jpg");
-        std::fs::write(&path, b"image").unwrap();
-
-        let indexed_mtime = Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap();
-        let mut item = sample_item(99, "photo.jpg");
-        item.path = path;
-        item.file_mtime = indexed_mtime;
-
-        assert_eq!(
-            thumbnail_request_mtime(&item),
-            std::time::SystemTime::from(indexed_mtime),
-            "thumbnail requests should reuse the indexed mtime instead of stat-ing on the UI thread"
-        );
-    }
-
-    fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
-        crate::core::db::insert_media_item(
-            pool,
-            &crate::core::media::NewMediaItem {
-                uri: item.uri.clone(),
-                path: item.path.clone(),
-                folder_path: item.folder_path.clone(),
-                mime_type: item.mime_type.clone(),
-                media_subkind: item.media_subkind.clone(),
-                media_attributes: item.media_attributes.clone(),
-                width: item.width,
-                height: item.height,
-                video_duration_secs: item.video_duration_secs,
-                taken_at: item.taken_at,
-                file_mtime: item.file_mtime,
-                file_size: item.file_size,
-                blake3_hash: item.blake3_hash.clone(),
-            },
-        )
-        .unwrap()
-    }
-
-    fn tile_count(grid: &MediaGrid) -> u32 {
-        let content = grid.imp().content.get();
-        let mut count = 0;
-        let mut child = content.first_child();
-        while let Some(widget) = child {
-            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
-                count += flow.observe_children().n_items();
-            }
-            child = widget.next_sibling();
-        }
-        count
-    }
-
-    fn first_section_flow(grid: &MediaGrid) -> Option<gtk::FlowBox> {
-        let content = grid.imp().content.get();
-        let mut child = content.first_child();
-        while let Some(widget) = child {
-            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
-                return Some(flow.clone());
-            }
-            child = widget.next_sibling();
-        }
-        None
-    }
-
-    fn flow_child_at(flow: &gtk::FlowBox, index: u32) -> Option<gtk::FlowBoxChild> {
-        flow.child_at_index(index as i32)
-    }
-
-    fn first_square_tile(grid: &MediaGrid) -> Option<SquareTile> {
-        first_section_flow(grid)?
-            .first_child()
-            .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
-            .and_then(|child| child.child())
-            .and_then(|child| child.downcast::<SquareTile>().ok())
-    }
-
-    fn square_tiles(grid: &MediaGrid) -> Vec<SquareTile> {
-        let content = grid.imp().content.get();
-        let mut tiles = Vec::new();
-        let mut section = content.first_child();
-        while let Some(widget) = section {
-            if let Some(flow) = widget.downcast_ref::<gtk::FlowBox>() {
-                let mut child = flow.first_child();
-                while let Some(flow_child) = child {
-                    let next = flow_child.next_sibling();
-                    if let Some(tile) = flow_child
-                        .downcast::<gtk::FlowBoxChild>()
-                        .ok()
-                        .and_then(|child| child.child())
-                        .and_then(|child| child.downcast::<SquareTile>().ok())
-                    {
-                        tiles.push(tile);
-                    }
-                    child = next;
-                }
-            }
-            section = widget.next_sibling();
-        }
-        tiles
-    }
-
-    fn section_flow_selection_modes(grid: &MediaGrid) -> Vec<gtk::SelectionMode> {
-        let content = grid.imp().content.get();
-        let mut modes = Vec::new();
-        let mut child = content.first_child();
-        while let Some(c) = child {
-            if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
-                modes.push(flow.selection_mode());
-            }
-            child = c.next_sibling();
-        }
-        modes
-    }
-
-    #[gtk::test]
-    fn section_flowbox_selection_mode_tracks_multi_select() {
-        // The checkmark is revealed by `flowboxchild:selected`, which can only
-        // happen while a section FlowBox is in `Multiple`. Out of multi-select
-        // every section must be `None` so no stray tick can appear.
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-
-        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
-
-        let modes = section_flow_selection_modes(&grid);
-        assert!(
-            !modes.is_empty(),
-            "rebuild should produce section FlowBoxes"
-        );
-        assert!(
-            modes.iter().all(|m| *m == gtk::SelectionMode::None),
-            "default (non-multi) must be None, got {modes:?}"
-        );
-
-        grid.set_multi_select_mode(true);
-        let modes = section_flow_selection_modes(&grid);
-        assert!(
-            modes.iter().all(|m| *m == gtk::SelectionMode::Multiple),
-            "multi-select must flip every section to Multiple, got {modes:?}"
-        );
-
-        grid.set_multi_select_mode(false);
-        let modes = section_flow_selection_modes(&grid);
-        assert!(
-            modes.iter().all(|m| *m == gtk::SelectionMode::None),
-            "exiting multi-select must restore None, got {modes:?}"
-        );
-    }
-
-    #[gtk::test]
-    fn grid_rebuilds_when_backing_store_removes_item() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        assert_eq!(tile_count(&grid), 2);
-
-        media_list.remove(0);
-
-        assert_eq!(
-            tile_count(&grid),
-            1,
-            "MediaGrid must drop stale thumbnails when the shared ListStore changes"
-        );
-    }
-
-    #[gtk::test]
-    fn grid_removes_backing_store_item_without_replacing_section_flow() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(3, "three.png")));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
-
-        media_list.remove(1);
-
-        assert_eq!(tile_count(&grid), 2);
-        let flow_after = first_section_flow(&grid).expect("section flow should remain");
-        assert!(
-            flow_before == flow_after,
-            "a single backing-store removal should remove the child in place instead of rebuilding the whole section flow"
-        );
-    }
-
-    #[gtk::test]
-    fn grid_inserts_same_section_item_without_replacing_existing_tiles() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let cache_dir = dir.path().join("thumbs");
-        let loader = Arc::new(ThumbnailLoader::new(pool, cache_dir.clone()));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let existing_one = sample_item(1, "one.png");
-        let existing_two = sample_item(2, "two.png");
-        media_list.append(&glib::BoxedAnyObject::new(existing_one.clone()));
-        media_list.append(&glib::BoxedAnyObject::new(existing_two.clone()));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
-        let first_child_before =
-            flow_child_at(&flow_before, 0).expect("first tile should be rendered");
-
-        let inserted = sample_item(3, "inserted.png");
-        crate::core::thumbnails::generate_for_tests(
-            &cache_dir,
-            &inserted.uri,
-            ThumbnailSize::Medium,
-            Some(thumbnail_request_mtime(&inserted)),
-        )
-        .expect("test should pre-create thumbnail cache for the inserted item");
-        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
-
-        assert_eq!(
-            tile_count(&grid),
-            3,
-            "same-section pure insertion should update the visible grid immediately"
-        );
-        let flow_after = first_section_flow(&grid).expect("section flow should remain");
-        assert!(
-            flow_before == flow_after,
-            "same-section pure insertion should preserve the existing section flow"
-        );
-        let shifted_child = flow_child_at(&flow_after, 1).expect("old first tile should shift");
-        assert!(
-            first_child_before == shifted_child,
-            "same-section pure insertion should not recreate existing tile children"
-        );
-    }
-
-    #[gtk::test]
-    fn grid_defers_uncached_incremental_insert_until_thumbnail_ready() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        let flow_before = first_section_flow(&grid).expect("grid should render a section flow");
-        let first_child_before =
-            flow_child_at(&flow_before, 0).expect("first tile should be rendered");
-
-        let inserted = sample_item(3, "inserted.png");
-        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
-
-        assert_eq!(
-            tile_count(&grid),
-            2,
-            "uncached incremental inserts should wait for thumbnail success/failure before entering the grid"
-        );
-        let flow_after = first_section_flow(&grid).expect("section flow should remain");
-        assert!(
-            flow_before == flow_after,
-            "deferring the new tile should still preserve the existing section flow"
-        );
-        let first_child_after = flow_child_at(&flow_after, 0)
-            .expect("old first tile should remain first while pending");
-        assert!(
-            first_child_before == first_child_after,
-            "pending uncached insert should not insert a gray/transparent tile before the old first child"
-        );
-    }
-
-    #[gtk::test]
-    fn grid_inserts_deferred_item_after_thumbnail_failure() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader.clone(),
-            noop_callbacks(),
-            false,
-        );
-        let inserted = sample_item(3, "inserted.png");
-        let inserted_uri = inserted.uri.clone();
-        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
-        assert_eq!(tile_count(&grid), 2);
-
-        grid.insert_deferred_incremental_item(
-            media_list,
-            inserted_uri,
-            spec_for_mode(GroupBy::Day),
-            loader,
-            Rc::new(|| {}),
-            None,
-        );
-
-        assert_eq!(
-            tile_count(&grid),
-            3,
-            "thumbnail failure should insert the final failure placeholder only after the request completes"
-        );
-        let first_tile = first_square_tile(&grid).expect("deferred item should be visible");
-        assert!(
-            !first_tile.has_css_class("thumb-loading"),
-            "ready failure placeholder must not be inserted as a loading gray tile"
-        );
-        assert_eq!(first_tile.opacity(), 1.0);
-    }
-
-    #[gtk::test]
-    fn mem_cached_thumbnail_tile_is_built_without_loading_class() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let cache_dir = dir.path().join("thumbs");
-        let loader = Arc::new(ThumbnailLoader::new(pool, cache_dir.clone()));
-        let src = dir.path().join("cached.png");
-        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 40, 60, 255]));
-        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
-        let mut item = sample_item(7, "cached.png");
-        item.uri = format!("file://{}", src.display());
-        item.path = src;
-        let mtime = thumbnail_request_mtime(&item);
-        crate::core::thumbnails::generate_for_tests(
-            &cache_dir,
-            &item.uri,
-            ThumbnailSize::Medium,
-            Some(mtime),
-        )
-        .expect("test should pre-create thumbnail cache");
-        loader
-            .try_load_cached(&item.uri, ThumbnailSize::Medium, Some(mtime))
-            .expect("test should load disk cache into the memory LRU");
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
-
-        let tile = build_photo_picture(
-            spec_for_mode(GroupBy::Day),
-            item,
-            media_list,
-            0,
-            loader,
-            Rc::new(|| {}),
-        );
-
-        assert!(
-            !tile.has_css_class("thumb-loading"),
-            "cached thumbnails should paint immediately instead of flashing the loading placeholder"
-        );
-    }
-
-    #[gtk::test]
-    fn uncached_thumbnail_tile_stays_hidden_until_result_arrives() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let src = dir.path().join("uncached.png");
-        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 40, 60, 255]));
-        image::DynamicImage::ImageRgba8(img).save(&src).unwrap();
-        let mut item = sample_item(8, "uncached.png");
-        item.uri = format!("file://{}", src.display());
-        item.path = src;
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
-
-        let tile = build_photo_picture(
-            spec_for_mode(GroupBy::Day),
-            item,
-            media_list,
-            0,
-            loader,
-            Rc::new(|| {}),
-        );
-
-        // The tile is hidden via CSS (`.glass-thumb-card.thumb-loading` sets
-        // opacity:0 in grid_css), not via widget.set_opacity — that lets the
-        // fade-in transition fire when set_paintable drops the class. So this
-        // headless test asserts the CSS hook (.thumb-loading) is present rather
-        // than a widget opacity value.
-        assert!(
-            tile.has_css_class("thumb-loading"),
-            "uncached thumbnails must carry .thumb-loading so CSS hides them until generation finishes"
-        );
-        let flow = gtk::FlowBox::new();
-        flow.append(&tile);
-        let flow_child = tile
-            .parent()
-            .and_then(|w| w.downcast::<gtk::FlowBoxChild>().ok())
-            .expect("FlowBox should wrap tile in a FlowBoxChild");
-        sync_flow_child_visibility_for_tile(&tile, &flow_child);
-        assert_eq!(
-            flow_child.opacity(),
-            0.0,
-            "uncached thumbnails should hide the FlowBoxChild wrapper as well as the tile"
-        );
-        tile.set_paintable(Some(&gray_placeholder_texture()));
-        assert!(
-            !tile.has_css_class("thumb-loading"),
-            "thumbnail success or failure should drop .thumb-loading so CSS reveals (and fades in) the tile"
-        );
-        assert_eq!(
-            flow_child.opacity(),
-            1.0,
-            "thumbnail success or failure should reveal the FlowBoxChild wrapper"
-        );
-    }
-
-    #[gtk::test]
-    fn rebuild_reuses_loaded_tiles_when_a_new_section_is_added() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let existing = sample_item(1, "one.png");
-        media_list.append(&glib::BoxedAnyObject::new(existing));
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        let existing_tile = first_square_tile(&grid).expect("existing tile should render");
-        existing_tile.set_paintable(Some(&gray_placeholder_texture()));
-
-        let mut inserted = sample_item(2, "new-day.png");
-        inserted.taken_at = Some(Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).unwrap());
-        inserted.file_mtime = inserted.taken_at.unwrap();
-        media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
-        grid.rebuild(media_list, GroupBy::Day);
-
-        let tiles = square_tiles(&grid);
-        assert!(
-            tiles.iter().any(|tile| tile == &existing_tile),
-            "full rebuild fallback should reuse already-loaded tile widgets instead of making them gray again"
-        );
-    }
-
-    #[gtk::test]
-    fn album_grid_uses_progressive_first_render_seed() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let seed = crate::core::runtime_config::DEFAULT_STARTUP_RENDER_SEED;
-        for id in 1..=(seed + 12) {
-            media_list.append(&glib::BoxedAnyObject::new(sample_item(
-                id as i64,
-                &format!("album-{id}.png"),
-            )));
-        }
-
-        let grid = MediaGrid::new_for_album_with_context_menu(
-            media_list,
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-        );
-
-        assert_eq!(
-            tile_count(&grid),
-            seed as u32,
-            "album grids should use the same progressive first-render seed as the Photos grid"
-        );
-    }
-
-    #[gtk::test]
-    fn progressive_render_addition_appends_without_rebuilding_existing_tiles() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        for id in 1..=4 {
-            media_list.append(&glib::BoxedAnyObject::new(sample_item(
-                id,
-                &format!("same-day-{id}.png"),
-            )));
-        }
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        grid.imp().rendered_limit.set(2);
-        grid.rebuild(media_list.clone(), GroupBy::Day);
-        let before = square_tiles(&grid);
-        assert_eq!(before.len(), 2);
-        let first_tile = before[0].clone();
-
-        assert!(
-            grid.apply_progressive_render_addition(2, 2, &media_list),
-            "same-section progressive fill should append instead of forcing a full rebuild"
-        );
-
-        let after = square_tiles(&grid);
-        assert_eq!(after.len(), 4);
-        assert_eq!(
-            after[0], first_tile,
-            "progressive append must preserve already-rendered tile widgets"
-        );
-        assert_eq!(
-            grid.imp().virtual_total.get(),
-            4,
-            "rendering more of the same model must not inflate full-library totals"
-        );
-    }
-
-    #[test]
-    fn progressive_render_progress_logs_stay_debug() {
-        let production_source = media_grid_production_sources();
-
-        for message in [
-            "PROGRESSIVE_RENDER seed",
-            "PROGRESSIVE_RENDER done",
-            "PROGRESSIVE_RENDER tick",
-            "PROGRESSIVE_RENDER append",
-        ] {
-            let message_index = production_source
-                .find(message)
-                .unwrap_or_else(|| panic!("missing log message {message}"));
-            let before = &production_source[..message_index];
-            let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
-                .iter()
-                .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
-                .max_by_key(|(index, _)| *index)
-                .map(|(_, candidate)| candidate)
-                .expect("log message should be inside a tracing macro");
-            assert_eq!(
-                actual_macro, "tracing::debug!(",
-                "{message} should stay out of default logs"
-            );
-        }
-    }
-
-    #[test]
-    fn high_frequency_thumbnail_trace_spans_stay_debug() {
-        let production_source = media_grid_production_sources();
-
-        for span_name in ["grid:reprioritize", "grid:thumb_request"] {
-            let span_index = production_source
-                .find(span_name)
-                .unwrap_or_else(|| panic!("missing trace span {span_name}"));
-            let before = &production_source[..span_index];
-            let actual_macro = [
-                "tracing::debug_span!(",
-                "tracing::info_span!(",
-                "tracing::warn_span!(",
-            ]
-            .iter()
-            .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
-            .max_by_key(|(index, _)| *index)
-            .map(|(_, candidate)| candidate)
-            .expect("span should be inside a tracing span macro");
-            assert_eq!(
-                actual_macro, "tracing::debug_span!(",
-                "{span_name} is high-frequency diagnostic tracing and should stay out of default INFO logs"
-            );
-        }
-    }
-
-    fn media_grid_production_sources() -> String {
-        let source = include_str!("media_grid.rs");
-        let mut production_source = source
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("media_grid.rs must contain production code")
-            .to_string();
-        production_source.push_str(include_str!("media_grid/selection.rs"));
-        production_source.push_str(include_str!("media_grid/updates.rs"));
-        production_source.push_str(include_str!("media_grid/viewport.rs"));
-        production_source.push_str(include_str!("media_grid/loading.rs"));
-        production_source.push_str(include_str!("media_grid/render.rs"));
-        production_source.push_str(include_str!("media_grid/virtual_paging.rs"));
-        production_source
-    }
-
-    #[gtk::test]
-    fn inactive_grid_defers_initial_tile_build_until_activated() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.png")));
-
-        let grid = MediaGrid::new_with_initial_active(
-            media_list,
-            GroupBy::Month,
-            loader,
-            noop_callbacks(),
-            false,
-            false,
-        );
-
-        assert_eq!(
-            tile_count(&grid),
-            0,
-            "inactive grids should not build hidden FlowBox tiles at startup"
-        );
-
-        grid.set_active(true);
-
-        assert_eq!(
-            tile_count(&grid),
-            2,
-            "activating a dirty grid should build tiles from the current model"
-        );
-    }
-
-    #[gtk::test]
-    fn inactive_full_library_grid_uses_progressive_seed_on_first_activation() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let seed = runtime_config::startup_render_seed();
-        let expected_seed = seed as u32;
-        let source_len = seed + 12;
-        for id in 1..=source_len {
-            media_list.append(&glib::BoxedAnyObject::new(sample_item(
-                id as i64,
-                &format!("lazy-full-library-{id}.png"),
-            )));
-        }
-
-        let grid = MediaGrid::new_with_initial_active(
-            media_list,
-            GroupBy::Month,
-            loader,
-            noop_callbacks(),
-            false,
-            false,
-        );
-
-        assert_eq!(
-            tile_count(&grid),
-            0,
-            "inactive full-library grids should not build hidden tiles at startup"
-        );
-
-        grid.set_active(true);
-
-        assert_eq!(
-            tile_count(&grid),
-            expected_seed,
-            "first activation should render only the progressive seed, not the full model"
-        );
-    }
-
-    #[gtk::test]
-    fn active_empty_day_grid_rebuilds_when_first_scan_items_arrive() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-
-        assert_eq!(tile_count(&grid), 0);
-        assert!(
-            grid.imp().stats_label.borrow().is_none(),
-            "empty Day grid should not render a stats label before media exists"
-        );
-
-        let item = sample_item(1, "first-scan.png");
-        insert_sample_item(&pool, &item);
-        media_list.append(&glib::BoxedAnyObject::new(item));
-
-        assert_eq!(
-            tile_count(&grid),
-            1,
-            "active Day grid must render the first media items delivered by startup scan"
-        );
-        assert!(
-            grid.imp().stats_label.borrow().is_none(),
-            "stats should be filled by background metadata, not the first scan-triggered rebuild"
-        );
-    }
-
-    #[gtk::test]
-    fn day_grid_defers_stats_until_background_metadata_refresh() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let one = sample_item(1, "one.png");
-        let two = sample_item(2, "two.png");
-        let generated_id = insert_sample_item(&pool, &one);
-        insert_sample_item(&pool, &two);
-        crate::core::db::mark_thumbnails_generated(&pool, &[generated_id]).unwrap();
-        media_list.append(&glib::BoxedAnyObject::new(one));
-        media_list.append(&glib::BoxedAnyObject::new(two));
-
-        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
-
-        assert_eq!(tile_count(&grid), 2);
-        assert!(
-            grid.imp().stats_label.borrow().is_none(),
-            "first rebuild should not block on full-library thumbnail stats"
-        );
-        assert_eq!(
-            grid.imp().virtual_total.get(),
-            2,
-            "first rebuild should use the loaded window as the temporary total"
-        );
-    }
-
-    #[gtk::test]
-    fn metadata_invalidation_during_load_requests_followup_refresh() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-
-        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
-        grid.imp().library_metadata_loading.set(true);
-        grid.imp().library_total_snapshot.set(Some(1));
-        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
-            live_total: 1,
-            thumbnails_generated: 0,
-        }));
-
-        grid.invalidate_library_metadata();
-
-        assert!(
-            grid.imp().library_metadata_dirty_pending.get(),
-            "metadata invalidated while a DB snapshot is loading must request a follow-up refresh"
-        );
-        assert!(
-            grid.imp().library_total_snapshot.get().is_none(),
-            "stale total snapshot should be cleared immediately"
-        );
-        assert!(
-            grid.imp().library_stats_snapshot.get().is_none(),
-            "stale stats snapshot should be cleared immediately"
-        );
-    }
-
-    #[gtk::test]
-    fn day_grid_stats_are_above_first_section_header() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let one = sample_item(1, "one.png");
-        insert_sample_item(&pool, &one);
-        media_list.append(&glib::BoxedAnyObject::new(one));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        grid.imp().library_total_snapshot.set(Some(1));
-        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
-            live_total: 1,
-            thumbnails_generated: 0,
-        }));
-        grid.rebuild(media_list, GroupBy::Day);
-        let content = grid.imp().content.get();
-        let first_child = content
-            .first_child()
-            .expect("Day grid should have a first content child");
-
-        assert!(
-            first_child.has_css_class("library-stats"),
-            "Day grid stats should be the first content child, above the first date header"
-        );
-    }
-
-    #[gtk::test]
-    fn pending_thumbnail_stats_survive_metadata_invalidation_rebuild() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let one = sample_item(1, "one.png");
-        insert_sample_item(&pool, &one);
-        media_list.append(&glib::BoxedAnyObject::new(one));
-
-        let grid = MediaGrid::new(
-            media_list.clone(),
-            GroupBy::Day,
-            loader,
-            noop_callbacks(),
-            false,
-        );
-        grid.imp().library_total_snapshot.set(Some(1));
-        grid.imp().library_stats_snapshot.set(Some(LibraryStats {
-            live_total: 1,
-            thumbnails_generated: 0,
-        }));
-        grid.rebuild(media_list.clone(), GroupBy::Day);
-        assert!(
-            grid.imp().stats_label.borrow().is_some(),
-            "pending thumbnail stats should be visible before invalidation"
-        );
-
-        grid.invalidate_library_metadata();
-        grid.rebuild(media_list, GroupBy::Day);
-
-        assert!(
-            grid.imp().stats_label.borrow().is_some(),
-            "metadata invalidation during thumbnail generation must not temporarily remove the stats prompt"
-        );
-    }
-
-    #[gtk::test]
-    fn album_grid_skips_global_library_stats() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let item = sample_item(1, "album-only.png");
-        insert_sample_item(&pool, &item);
-        media_list.append(&glib::BoxedAnyObject::new(item));
-
-        let grid = MediaGrid::new_for_album(media_list, GroupBy::Day, loader, noop_callbacks());
-
-        assert!(
-            grid.imp().stats_label.borrow().is_none(),
-            "album grids should not query or render full-library thumbnail stats"
-        );
-        assert!(
-            grid.imp().stats_refresh_source.borrow().is_none(),
-            "album grids should not start the full-library stats refresh timer"
-        );
-    }
-
-    #[gtk::test]
-    fn completed_day_grid_stats_are_hidden() {
-        let _ = gtk::init();
-        let dir = tempfile::tempdir().unwrap();
-        let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
-        let loader = Arc::new(ThumbnailLoader::new(
-            pool.clone(),
-            dir.path().join("thumbs"),
-        ));
-        let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let item = sample_item(1, "complete.png");
-        let media_id = insert_sample_item(&pool, &item);
-        crate::core::db::mark_thumbnails_generated(&pool, &[media_id]).unwrap();
-        media_list.append(&glib::BoxedAnyObject::new(item));
-
-        let grid = MediaGrid::new(media_list, GroupBy::Day, loader, noop_callbacks(), false);
-        assert!(
-            grid.imp().stats_label.borrow().is_none(),
-            "completed thumbnail generation should hide the Day grid stats label"
-        );
-        assert!(
-            grid.imp().stats_refresh_source.borrow().is_none(),
-            "completed thumbnail generation should not start a stats refresh timeout"
-        );
-    }
-
-    #[test]
-    fn tile_duration_formats_minutes_and_hours() {
-        assert_eq!(format_tile_duration(83.2).as_deref(), Some("01:23"));
-        assert_eq!(format_tile_duration(3_661.0).as_deref(), Some("1:01:01"));
-        assert_eq!(format_tile_duration(f64::NAN), None);
-    }
-
-    #[test]
-    fn library_stats_text_clamps_generated_to_total() {
-        assert_eq!(library_stats_text(20, 7), "媒体 20 项 · 缩略图 7/20");
-        assert_eq!(library_stats_text(20, 99), "媒体 20 项 · 缩略图 20/20");
-    }
-
-    #[gtk::test]
-    fn virtual_placeholder_flow_renders_loading_tiles_immediately() {
-        let _ = gtk::init();
-        let spec = ViewSpec {
-            mode: GroupBy::Day,
-            pixel_size: 270,
-            thumb_size: ThumbnailSize::Large,
-        };
-        let flow = build_virtual_placeholder_flow(spec, 12);
-
-        assert!(flow.has_css_class("virtual-placeholder-grid"));
-        assert_eq!(flow.selection_mode(), gtk::SelectionMode::None);
-        let mut count = 0;
-        let mut child = flow.first_child();
-        while let Some(widget) = child {
-            let next = widget.next_sibling();
-            let tile = widget
-                .downcast::<gtk::FlowBoxChild>()
-                .ok()
-                .and_then(|child| child.child())
-                .and_then(|child| child.downcast::<SquareTile>().ok())
-                .expect("placeholder flow children should wrap SquareTile");
-            assert_eq!(tile.target(), 270);
-            assert!(tile.has_css_class("thumb-loading"));
-            assert!(tile.has_css_class("thumb-placeholder"));
-            count += 1;
-            child = next;
-        }
-        assert_eq!(count, 12);
-    }
-
-    #[test]
-    fn virtual_scroll_ratio_maps_to_full_library_offset() {
-        assert_eq!(virtual_offset_for_ratio(0.0, 100_000, 500), 0);
-        assert_eq!(virtual_offset_for_ratio(0.50, 100_000, 500), 50_000);
-        assert_eq!(virtual_offset_for_ratio(0.99, 100_000, 500), 99_000);
-        assert_eq!(virtual_offset_for_ratio(1.0, 100_000, 500), 99_500);
-    }
-
-    #[test]
-    fn virtual_scroll_prefetches_before_window_edge() {
-        assert_eq!(
-            virtual_page_start_for_offset(850, 0, 1_000, 100_000, 500),
-            Some(600),
-            "80%+ through the current window should prefetch ahead"
-        );
-        assert_eq!(
-            virtual_page_start_for_offset(550, 0, 1_000, 100_000, 500),
-            None,
-            "middle of current window should not reload"
-        );
-        assert_eq!(
-            virtual_page_start_for_offset(50_000, 0, 1_000, 100_000, 500),
-            Some(49_750),
-            "dragging the full-library scrollbar should jump near that global offset"
-        );
-        assert_eq!(
-            virtual_page_start_for_offset(99_900, 99_000, 1_000, 100_000, 500),
-            Some(99_500),
-            "near the end should clamp to the last full page"
-        );
-    }
-
-    #[test]
-    fn virtual_scroll_absolute_end_targets_last_page() {
-        assert_eq!(
-            virtual_page_start_for_offset(99_500, 0, 500, 100_000, 500),
-            Some(99_500),
-            "dragging to the absolute end must load the final page, not a centered window above bottom spacer"
-        );
-        assert_eq!(
-            virtual_page_start_for_offset(99_593, 0, 500, 100_093, 500),
-            Some(99_593),
-            "non-page-aligned library totals must still land on the final partial boundary"
-        );
-    }
-
-    #[test]
-    fn virtual_spacer_height_scales_with_unloaded_items() {
-        let spec = ViewSpec {
-            mode: GroupBy::Day,
-            pixel_size: 270,
-            thumb_size: ThumbnailSize::Large,
-        };
-        assert_eq!(virtual_spacer_height(0, 4, 1_000.0, spec), 0);
-        assert!(
-            virtual_spacer_height(1_000, 4, 1_000.0, spec)
-                > virtual_spacer_height(100, 4, 1_000.0, spec)
-        );
-    }
-
-    #[test]
-    fn virtual_loading_window_counts_placeholders_for_target_page() {
-        assert_eq!(virtual_window_item_count(0, 100_000, 500), 500);
-        assert_eq!(virtual_window_item_count(99_500, 100_000, 500), 500);
-        assert_eq!(virtual_window_item_count(99_800, 100_000, 500), 200);
-        assert_eq!(virtual_window_item_count(100_000, 100_000, 500), 0);
-    }
-
-    #[test]
-    fn scroll_ratio_tracks_latest_drag_value_while_page_is_loading() {
-        assert_eq!(scroll_ratio_from_adjustment_value(0.0, 1_000.0, 100.0), 0.0);
-        assert_eq!(
-            scroll_ratio_from_adjustment_value(450.0, 1_000.0, 100.0),
-            0.5
-        );
-        assert_eq!(
-            scroll_ratio_from_adjustment_value(2_000.0, 1_000.0, 100.0),
-            1.0
-        );
-        assert_eq!(scroll_ratio_from_adjustment_value(20.0, 100.0, 100.0), 0.0);
-    }
-
-    #[test]
-    fn programmatic_scroll_restore_does_not_request_virtual_page() {
-        assert!(
-            should_consider_virtual_page_load(false, 100_000, 500),
-            "user-driven scrolling in a virtualized library should still consider page loads"
-        );
-        assert!(
-            !should_consider_virtual_page_load(true, 100_000, 500),
-            "restoring scroll after a rebuild must not recursively request another virtual page"
-        );
-        assert!(
-            !should_consider_virtual_page_load(false, 500, 500),
-            "fully loaded small libraries do not need virtual page loads"
-        );
-        assert!(
-            !should_consider_virtual_page_load(false, 100_000, 0),
-            "an empty current window cannot be used to target a virtual page"
-        );
-    }
-
-    #[test]
-    fn coalesced_virtual_page_target_keeps_latest_drag_target() {
-        let pending_start = std::cell::Cell::new(None);
-        let pending_ratio = std::cell::Cell::new(None);
-
-        replace_pending_virtual_page(&pending_start, &pending_ratio, 20_000, 0.20);
-        replace_pending_virtual_page(&pending_start, &pending_ratio, 55_000, 0.55);
-
-        assert_eq!(pending_start.get(), Some(55_000));
-        assert_eq!(pending_ratio.get(), Some(0.55));
-    }
-
-    #[test]
-    fn thumbnail_request_window_includes_viewport_and_one_page_overscan() {
-        assert!(tile_intersects_request_window(0.0, 270.0, 900.0, 1.0));
-        assert!(tile_intersects_request_window(1_700.0, 270.0, 900.0, 1.0));
-        assert!(!tile_intersects_request_window(1_900.0, 270.0, 900.0, 1.0));
-        assert!(tile_intersects_request_window(-250.0, 270.0, 900.0, 1.0));
-        assert!(!tile_intersects_request_window(-1_200.0, 270.0, 900.0, 1.0));
-    }
-}
+mod tests;

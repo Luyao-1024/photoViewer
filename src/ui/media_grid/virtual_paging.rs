@@ -124,3 +124,6 @@ pub(super) fn build_virtual_placeholder_flow(spec: ViewSpec, count: u32) -> gtk:
 
     flow
 }
+
+#[cfg(test)]
+mod tests;

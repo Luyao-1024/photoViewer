@@ -331,3 +331,7 @@ impl ViewerPage {
         button.set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
     }
 }
+
+#[cfg(test)]
+#[path = "fullscreen_window/tests.rs"]
+mod tests;

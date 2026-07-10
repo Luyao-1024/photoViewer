@@ -9,6 +9,7 @@ This module owns the shared UI material system for glass chrome, including the u
 | File | Role |
 |---|---|
 | `src/ui/grid_css.rs` | CSS assembly, transparency scaling, provider install/reapply |
+| `src/ui/grid_css/tests.rs` | Unit tests for CSS assembly and material-mode behavior |
 | `data/css/base.css` | Shared layout, size, radius, and state selectors |
 | `data/css/liquid.css` | Liquid Glass material selectors |
 | `data/css/plain.css` | Plain translucent fallback material selectors |
@@ -21,6 +22,10 @@ This module owns the shared UI material system for glass chrome, including the u
 | `src/ui/mode_selector.rs` | Mode selector behavior |
 | `tests/ui_grid_css_install.rs` | CSS provider/mode assertions |
 | `tests/ui_mode_selector.rs` | Mode selector template assertions |
+
+Keep `grid_css` behavior tests in `src/ui/grid_css/tests.rs`; integration
+coverage under `tests/ui_grid_css_*` should stay focused on provider
+installation and source-file wiring.
 
 ## Appearance Preferences
 

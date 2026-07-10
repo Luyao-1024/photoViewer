@@ -816,3 +816,6 @@ pub(super) fn remove_deleted_album_media_from_media_list(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

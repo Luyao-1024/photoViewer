@@ -1151,3 +1151,6 @@ fn format_size(bytes: u64) -> String {
 pub(super) fn restart_spec_from_for_tests(program: PathBuf, args: Vec<OsString>) -> RestartSpec {
     restart_spec_from(program, args)
 }
+
+#[cfg(test)]
+mod tests;

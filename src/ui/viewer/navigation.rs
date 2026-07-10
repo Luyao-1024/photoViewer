@@ -520,3 +520,7 @@ impl ViewerPage {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "navigation/tests.rs"]
+mod tests;
