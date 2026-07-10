@@ -313,6 +313,14 @@ impl MainWindow {
             "album_switch: begin"
         );
 
+        // Pop the viewer/search/trash pages stacked on top of the browsing root
+        // before swapping the album underneath. Otherwise opening an album from
+        // the sidebar while the viewer is up leaves the viewer covering the new
+        // album page. `pop_to_photos_root` is a no-op when the stack only holds
+        // the browsing root (loop guards on `n_items() > 1`), so this is safe
+        // for the normal "Photos -> album" click path.
+        pop_to_photos_root(nav_view);
+
         let already_visible = {
             let check_span = tracing::info_span!(
                 "album:already_visible_check",

@@ -360,3 +360,56 @@ fn viewer_right_key_navigates_when_focus_is_on_header_button() {
     assert!(handled, "viewer Right shortcut should stop propagation");
     assert_eq!(events.borrow().as_slice(), &[1]);
 }
+
+#[gtk::test]
+fn opening_album_pops_viewer_pushed_above_browsing_root() {
+    // Regression: clicking an album in the sidebar while the viewer was up
+    // used to leave the viewer covering the new album page because the
+    // album/media-type sidebar handlers did not pop the nav stack the way
+    // Photos/Trash did. `open_album` now pops to the browsing root before
+    // swapping the album underneath.
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.AlbumOpenPopsViewer")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    crate::ui::grid_css::install();
+    let window = MainWindow::new(&app);
+    let nav = window.nav_view();
+
+    let (_tmp, loader) = keyboard_thumbnail_loader();
+    let media_list = keyboard_media_list();
+    let pool = crate::core::db::init_pool(&_tmp.path().join("album-open-pops.db")).unwrap();
+    window.set_resources(pool, loader, media_list);
+
+    // Simulate the post-photo-activation state: browsing root + viewer on top.
+    let viewer = crate::ui::ViewerPage::new(keyboard_media_list(), 0);
+    nav.push(&viewer);
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        2,
+        "viewer should sit on top of the browsing root before the album click"
+    );
+
+    let album = crate::core::albums::Album {
+        folder_path: std::path::PathBuf::from("/tmp/AlbumOpenPopsViewer"),
+        name: "AlbumOpenPopsViewer".into(),
+        cover_uri: None,
+        photo_count: 0,
+        last_modified: chrono::Utc::now(),
+        is_virtual: false,
+    };
+    window.open_album(&nav, album);
+
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        1,
+        "open_album must pop the viewer before swapping the album underneath"
+    );
+    assert!(
+        nav.visible_page()
+            .and_downcast::<crate::ui::ViewerPage>()
+            .is_none(),
+        "viewer must no longer be the visible page after switching albums"
+    );
+}
