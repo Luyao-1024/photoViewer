@@ -111,6 +111,14 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
       };
 
       content: Adw.NavigationView nav_view {
+        Adw.NavigationPage browsing_root_page {
+          title: "";
+
+          child: Gtk.Stack browsing_stack {
+            transition-type: crossfade;
+            transition-duration: 200;
+          };
+        }
       };
       }
   }

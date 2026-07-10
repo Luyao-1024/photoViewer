@@ -377,9 +377,20 @@ fn sidebar_navigation_suite() {
     let photos = PhotosPage::new(media_list.clone(), loader.clone());
     photos.set_nav_target(&nav);
     photos.set_db_pool(pool.clone());
-    nav.push(&photos);
+    window.show_photos_browsing_page(&photos);
 
     window.set_resources(pool, loader, media_list);
+    let (events, _events_receiver) = photo_viewer::core::events::DomainEventSender::new();
+    window.set_db_actor(photo_viewer::core::db_actor::start_db_actor(
+        window
+            .imp()
+            .pool
+            .borrow()
+            .as_ref()
+            .expect("pool should be installed")
+            .clone(),
+        events,
+    ));
     // Now that the pool exists, populate the album rows under the header —
     // mirroring app.rs ordering (set_resources → populate_album_rows → connect).
     window.populate_album_rows();
@@ -487,27 +498,31 @@ fn sidebar_navigation_suite() {
     }
     let first_album_row = window.imp().album_rows.borrow()[0].clone();
 
-    // Selecting an album row schedules its AlbumDetailPage push directly.
+    // Selecting an album row schedules its AlbumDetailPage crossfade directly.
     window
         .imp()
         .album_list
         .get()
         .select_row(Some(&first_album_row));
     drain_main_context();
-    assert!(
-        nav.visible_page()
-            .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
-            .is_some(),
-        "selecting an album row should push AlbumDetailPage after idle dispatch",
+    assert_eq!(
+        window.browsing_stack().visible_child_name().as_deref(),
+        Some("album"),
+        "selecting an album row should crossfade to the album child after idle dispatch",
+    );
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        1,
+        "album selection should not add an outer NavigationView page",
     );
 
     // Selecting Photos returns to the root Photos page.
     let photos_row = sidebar.row_at_index(0).expect("Photos row exists");
     sidebar.select_row(Some(&photos_row));
     assert_eq!(
-        nav.visible_page().map(|page| page.title()).as_deref(),
-        Some(tr("page.photos.title").as_str()),
-        "selecting Photos should return to the Photos root page",
+        window.browsing_stack().visible_child_name().as_deref(),
+        Some("photos"),
+        "selecting Photos should crossfade back to the Photos child",
     );
 
     // Selecting a media type row uses the same AlbumDetailPage flow.
@@ -518,21 +533,38 @@ fn sidebar_navigation_suite() {
         .get()
         .select_row(Some(&media_type_row));
     drain_main_context();
-    assert!(
-        nav.visible_page()
-            .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
-            .is_some(),
-        "selecting a media type row should push AlbumDetailPage after idle dispatch",
+    assert_eq!(
+        window.browsing_stack().visible_child_name().as_deref(),
+        Some("album"),
+        "selecting a media type row should crossfade to the album child after idle dispatch",
     );
 
     // Trash is in its own stable bottom nav list. Selecting it pushes the Trash
     // page on top of the Photos root.
     let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
     trash_list.select_row(Some(&trash_row));
+    drain_main_context();
     assert_eq!(
         nav.visible_page().map(|page| page.title()).as_deref(),
         Some(tr("page.trash.title").as_str()),
         "selecting Trash should push the Trash page",
+    );
+    nav.pop();
+    drain_main_context();
+    assert_eq!(
+        window.browsing_stack().visible_child_name().as_deref(),
+        Some("album"),
+        "returning from Trash should restore the previous album page",
+    );
+    assert_eq!(
+        window
+            .imp()
+            .media_type_list
+            .get()
+            .selected_row()
+            .map(|row| row.index()),
+        Some(0),
+        "returning from Trash should restore the previous album sidebar selection",
     );
 
     // Collapse toggle hides the album scroll region; expanding brings it back.
@@ -619,9 +651,14 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
     let photos = PhotosPage::new(media_list.clone(), loader.clone());
     photos.set_nav_target(&nav);
     photos.set_db_pool(pool.clone());
-    nav.push(&photos);
+    window.show_photos_browsing_page(&photos);
 
     window.set_resources(pool.clone(), loader, media_list);
+    let (events, _events_receiver) = photo_viewer::core::events::DomainEventSender::new();
+    window.set_db_actor(photo_viewer::core::db_actor::start_db_actor(
+        pool.clone(),
+        events,
+    ));
 
     for i in 0..25 {
         let folder = format!("/tmp/album-{i:02}");
@@ -692,7 +729,7 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
     let photos = PhotosPage::new(media_list.clone(), loader.clone());
     photos.set_nav_target(&nav);
     photos.set_db_pool(pool.clone());
-    nav.push(&photos);
+    window.show_photos_browsing_page(&photos);
 
     window.set_resources(pool.clone(), loader, media_list);
 
@@ -723,11 +760,10 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
         .expect("target album row should exist");
     album_list.select_row(Some(&row));
     drain_main_context();
-    assert!(
-        nav.visible_page()
-            .and_downcast::<photo_viewer::ui::AlbumDetailPage>()
-            .is_some(),
-        "selecting the target album should open AlbumDetailPage after idle dispatch",
+    assert_eq!(
+        window.browsing_stack().visible_child_name().as_deref(),
+        Some("album"),
+        "selecting the target album should show AlbumDetailPage after idle dispatch",
     );
 
     window.toggle_albums_expanded();

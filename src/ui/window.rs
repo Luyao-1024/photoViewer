@@ -268,11 +268,14 @@ mod imp {
         /// folder_path of the album whose `AlbumDetailPage` is on top of the
         /// stack, so a live refresh can re-select its sidebar row.
         pub active_album: RefCell<Option<PathBuf>>,
+        pub trash_return_album: RefCell<Option<PathBuf>>,
         /// Whether the sidebar album list is in batch-selection mode.
         pub album_selection_mode: Cell<bool>,
         /// Real album folder paths selected for batch delete. Virtual albums
         /// are deliberately excluded because they are saved views, not folders.
         pub selected_album_paths: RefCell<HashSet<PathBuf>>,
+        /// Monotonic names for retired album children during crossfade cleanup.
+        pub browsing_generation: Cell<u64>,
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
@@ -307,6 +310,10 @@ mod imp {
         pub media_type_list: TemplateChild<gtk::ListBox>,
         #[template_child]
         pub nav_view: TemplateChild<adw::NavigationView>,
+        #[template_child]
+        pub browsing_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub browsing_root_page: TemplateChild<adw::NavigationPage>,
         #[template_child]
         pub sidebar_page: TemplateChild<adw::NavigationPage>,
         #[template_child]
@@ -348,6 +355,11 @@ impl MainWindow {
             .property("application", app)
             .property("title", tr("app.title"))
             .build();
+        window
+            .imp()
+            .browsing_root_page
+            .get()
+            .set_title(&tr("page.photos.title"));
         keyboard::router::install(
             &window,
             {
@@ -396,6 +408,15 @@ impl MainWindow {
             return keyboard::KeyboardScope::Viewer;
         }
 
+        if self.browsing_root_is_visible()
+            && self.visible_browsing_page().is_some_and(|child| {
+                child.clone().downcast::<PhotosPage>().is_ok()
+                    || child.downcast::<AlbumDetailPage>().is_ok()
+            })
+        {
+            return keyboard::KeyboardScope::Browsing;
+        }
+
         if page.clone().downcast::<PhotosPage>().is_ok()
             || page.clone().downcast::<AlbumDetailPage>().is_ok()
             || page.clone().downcast::<SearchPage>().is_ok()
@@ -435,6 +456,16 @@ impl MainWindow {
                     return result;
                 }
             }
+            if self.browsing_root_is_visible() {
+                if let Some(child) = self.visible_browsing_page() {
+                    if let Ok(photos) = child.downcast::<PhotosPage>() {
+                        let result = photos.handle_keyboard_action(action);
+                        if result.is_handled() {
+                            return result;
+                        }
+                    }
+                }
+            }
         }
 
         match action {
@@ -450,7 +481,26 @@ impl MainWindow {
                 keyboard::KeyboardResult::Handled
             }
             keyboard::KeyboardAction::NavigateBack | keyboard::KeyboardAction::CancelOrClose => {
-                if self.imp().nav_view.get().pop() {
+                if self.browsing_root_is_visible()
+                    && self
+                        .imp()
+                        .browsing_stack
+                        .get()
+                        .visible_child_name()
+                        .as_deref()
+                        == Some("album")
+                {
+                    if let Some(photos) = self
+                        .imp()
+                        .browsing_stack
+                        .get()
+                        .child_by_name("photos")
+                        .and_downcast::<PhotosPage>()
+                    {
+                        self.show_photos_browsing_page(&photos);
+                    }
+                    keyboard::KeyboardResult::Handled
+                } else if self.imp().nav_view.get().pop() {
                     keyboard::KeyboardResult::Handled
                 } else {
                     keyboard::KeyboardResult::Ignored
@@ -543,6 +593,69 @@ impl MainWindow {
     /// Accessor for the content area's NavigationView (used by later tasks).
     pub fn nav_view(&self) -> adw::NavigationView {
         self.imp().nav_view.get()
+    }
+
+    pub fn browsing_stack(&self) -> gtk::Stack {
+        self.imp().browsing_stack.get()
+    }
+
+    /// Install the Photos page as the root child of the crossfading browsing
+    /// stack. The outer NavigationView remains the host for viewer/search and
+    /// other page-level pushes.
+    pub fn show_photos_browsing_page(&self, page: &PhotosPage) {
+        let stack = self.imp().browsing_stack.get();
+        if stack.child_by_name("photos").is_none() {
+            stack.add_named(page, Some("photos"));
+        }
+        stack.set_visible_child_name("photos");
+        *self.imp().active_album.borrow_mut() = None;
+        self.imp().selecting_programmatically.set(true);
+        self.imp().album_list.get().unselect_all();
+        self.imp().media_type_list.get().unselect_all();
+        self.imp().trash_list.get().unselect_all();
+        if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
+            self.imp().sidebar_list.get().select_row(Some(&row));
+        }
+        self.imp().selecting_programmatically.set(false);
+    }
+
+    /// Replace the active album child and crossfade to it. Keeping exactly one
+    /// album child prevents hidden album pages from participating in layout or
+    /// retaining stale navigation state.
+    pub fn show_album_browsing_page(&self, page: &AlbumDetailPage) {
+        let stack = self.imp().browsing_stack.get();
+        if let Some(old) = stack.child_by_name("album") {
+            let generation = self.imp().browsing_generation.get().saturating_add(1);
+            self.imp().browsing_generation.set(generation);
+            let old_name = format!("album-old-{generation}");
+            stack.page(&old).set_name(&old_name);
+            let cleanup_stack = stack.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(240), move || {
+                if let Some(retired) = cleanup_stack.child_by_name(&old_name) {
+                    cleanup_stack.remove(&retired);
+                }
+            });
+        }
+        stack.add_named(page, Some("album"));
+        stack.set_visible_child_name("album");
+    }
+
+    pub(crate) fn visible_browsing_page(&self) -> Option<gtk::Widget> {
+        self.imp().browsing_stack.get().visible_child()
+    }
+
+    pub(crate) fn browsing_root_is_visible(&self) -> bool {
+        self.imp()
+            .nav_view
+            .get()
+            .visible_page()
+            .is_some_and(|page| {
+                page == self
+                    .imp()
+                    .browsing_root_page
+                    .get()
+                    .upcast::<adw::NavigationPage>()
+            })
     }
 
     /// Inject the DB pool and thumbnail loader so the sidebar can construct
@@ -969,7 +1082,11 @@ fn show_trash_operation_error_dialog(parent: &gtk::Widget, body: &str) {
 }
 
 fn pop_to_photos_root(nav_view: &adw::NavigationView) {
-    while nav_view.pop() {}
+    while nav_view.navigation_stack().n_items() > 1 {
+        if !nav_view.pop() {
+            break;
+        }
+    }
 }
 
 fn visible_page_is_trash(nav_view: &adw::NavigationView) -> bool {

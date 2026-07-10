@@ -32,6 +32,15 @@ template $PhotosPage : Adw.NavigationPage {
       // not revealed, so the header never reserves empty space. `[start]`
       // revealers use slide_right, `[end]` revealers use slide_left.
 
+      // Keep search first among the start children so its position matches
+      // AlbumDetailPage when the selection revealers are hidden.
+      [start]
+      Gtk.Button search_btn {
+        icon-name: "system-search-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
+
       [start]
       Gtk.Revealer select_all_revealer {
         transition-type: slide_right;
@@ -52,13 +61,6 @@ template $PhotosPage : Adw.NavigationPage {
         Gtk.Button exit_multi_select_btn {
           css-classes: ["glass-toolbar-button"];
         }
-      }
-
-      [start]
-      Gtk.Button search_btn {
-        icon-name: "system-search-symbolic";
-        tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "round-search-button"];
       }
 
       [end]

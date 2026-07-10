@@ -90,8 +90,12 @@ virtual-album flow, but it is not part of album drag ordering or album deletion.
 The only current media-type row is Dynamic Photos, backed by
 `media_items.media_subkind = 'motion_photo'`.
 
-Selecting an album row pushes its `AlbumDetailPage` immediately. The per-album
-media list is built by `album_detail_page::filtered_items_for_album`. Virtual
+Selecting an album row switches the window browsing stack to its
+`AlbumDetailPage` immediately. Photos and the active album detail are peer
+children of a `Gtk.Stack` using the same `crossfade`/200ms transition as the
+Year/Month/Day selector; the outer `Adw.NavigationView` remains responsible
+for viewer, search, and trash pages. The per-album media list is built by
+`album_detail_page::filtered_items_for_album`. Virtual
 albums (Favorites, Photos, Videos, and media-type rows such as Dynamic Photos)
 load their membership from `MediaRepository` so they are not capped by the
 startup GTK list window; real folder albums query the database by `folder_path`.

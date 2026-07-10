@@ -203,7 +203,6 @@ impl AlbumDetailPage {
                 }
             });
         }
-
         obj
     }
 
@@ -365,14 +364,10 @@ impl AlbumDetailPage {
             Some(n) => n.clone(),
             None => return,
         };
-        let self_page: adw::NavigationPage = self.clone().upcast();
-        if nav
-            .visible_page()
-            .is_some_and(|visible| visible != self_page)
-        {
+        if !self.is_visible() {
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
-                "AlbumDetailPage: ignoring viewer activation because AlbumDetailPage is not visible"
+                "AlbumDetailPage: ignoring viewer activation because AlbumDetailPage is not the visible browsing child"
             );
             return;
         }

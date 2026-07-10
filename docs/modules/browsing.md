@@ -33,6 +33,14 @@ test files such as `src/ui/media_grid/tests.rs`,
 
 ## Behavior
 
+The window keeps Photos and the currently active `AlbumDetailPage` as peer
+children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a
+200ms duration, so entering an album, switching albums, and returning to Photos
+match the Year/Month/Day mode transition. `Adw.NavigationView` remains the
+outer host for `ViewerPage`, `SearchPage`, and `TrashPage`; album changes do not
+push additional outer navigation pages. The outer `TrashPage` keeps its
+NavigationView back button so it can return to the browsing root.
+
 `PhotosPage` owns three `MediaGrid` instances for Year, Month, and Day views. All views are backed by the same `gio::ListStore`, so changes to the media collection should propagate without rebuilding unrelated UI state. The list can contain both image and video `MediaItem`s; grouping still uses `taken_at` when present, falling back to file time.
 
 The Photos header includes a circular search button that pushes a dedicated

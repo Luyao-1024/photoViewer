@@ -15,7 +15,7 @@ use std::time::Instant;
 impl MainWindow {
     /// Wire the sidebar `ListBox` row-selected signal to navigate by row
     /// identity (`targets[index]`), not a hardcoded index:
-    ///   - Photos → pop back to the root Photos page.
+    ///   - Photos → return to the Photos child of the browsing stack.
     ///   - Trash → push the `TrashPage`.
     ///
     /// Album rows live in `album_list` and are wired separately below.
@@ -54,6 +54,13 @@ impl MainWindow {
                         window.imp().media_type_list.get().unselect_all();
                         window.imp().trash_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
+                        if let Some(photos) = window
+                            .browsing_stack()
+                            .child_by_name("photos")
+                            .and_downcast::<crate::ui::PhotosPage>()
+                        {
+                            window.show_photos_browsing_page(&photos);
+                        }
                     }
                     SidebarTarget::AlbumsHeader => {}
                     SidebarTarget::Trash => {}
@@ -77,6 +84,17 @@ impl MainWindow {
                     target
                 };
                 if let SidebarTarget::Trash = target {
+                    let return_album = if window
+                        .browsing_stack()
+                        .visible_child_name()
+                        .as_deref()
+                        == Some("album")
+                    {
+                        window.imp().active_album.borrow().clone()
+                    } else {
+                        None
+                    };
+                    *window.imp().trash_return_album.borrow_mut() = return_album;
                     *window.imp().active_album.borrow_mut() = None;
                     window.imp().sidebar_list.get().unselect_all();
                     window.imp().album_list.get().unselect_all();
@@ -167,6 +185,73 @@ impl MainWindow {
                 window.confirm_delete_selected_albums();
             }),
         );
+
+        nav_view.connect_visible_page_notify(glib::clone!(@weak self as window => move |_| {
+            let weak = window.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.sync_sidebar_selection_for_browsing_page();
+                }
+            });
+        }));
+        nav_view.connect_popped(glib::clone!(@weak self as window => move |_, _| {
+            let weak = window.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    window.sync_sidebar_selection_for_browsing_page();
+                }
+            });
+        }));
+    }
+
+    fn sync_sidebar_selection_for_browsing_page(&self) {
+        if !self.browsing_root_is_visible() {
+            return;
+        }
+
+        let is_album = self.browsing_stack().visible_child_name().as_deref() == Some("album");
+        if is_album && self.imp().active_album.borrow().is_none() {
+            if let Some(album) = self.imp().trash_return_album.borrow_mut().take() {
+                *self.imp().active_album.borrow_mut() = Some(album);
+            }
+        }
+        self.imp().selecting_programmatically.set(true);
+        self.imp().trash_list.get().unselect_all();
+        if is_album {
+            self.imp().sidebar_list.get().unselect_all();
+            self.imp().media_type_list.get().unselect_all();
+            if let Some(active) = self.imp().active_album.borrow().clone() {
+                if let Some(index) = self
+                    .imp()
+                    .media_type_targets
+                    .borrow()
+                    .iter()
+                    .position(|album| album.folder_path == active)
+                {
+                    if let Some(row) = self.imp().media_type_list.get().row_at_index(index as i32) {
+                        self.imp().media_type_list.get().select_row(Some(&row));
+                    }
+                } else if let Some(index) = self
+                    .imp()
+                    .album_targets
+                    .borrow()
+                    .iter()
+                    .position(|album| album.folder_path == active)
+                {
+                    if let Some(row) = self.imp().album_list.get().row_at_index(index as i32) {
+                        self.imp().album_list.get().select_row(Some(&row));
+                    }
+                }
+            }
+        } else {
+            self.imp().active_album.borrow_mut().take();
+            self.imp().album_list.get().unselect_all();
+            self.imp().media_type_list.get().unselect_all();
+            if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
+                self.imp().sidebar_list.get().select_row(Some(&row));
+            }
+        }
+        self.imp().selecting_programmatically.set(false);
     }
 
     fn schedule_album_open_from_sidebar(
@@ -235,8 +320,7 @@ impl MainWindow {
                 album_path = %album_path
             );
             let _check = check_span.enter();
-            nav_view
-                .visible_page()
+            self.visible_browsing_page()
                 .and_then(|page| page.downcast::<AlbumDetailPage>().ok())
                 .is_some_and(|detail| {
                     detail.album_folder_path().as_deref() == Some(album.folder_path.as_path())
@@ -279,16 +363,6 @@ impl MainWindow {
             );
             return;
         };
-
-        {
-            let pop_span = tracing::info_span!(
-                "album:pop",
-                album_name = %album_name,
-                album_path = %album_path
-            );
-            let _pop = pop_span.enter();
-            pop_to_photos_root(nav_view);
-        }
 
         let query = media_query_for_album(&album);
         let initial_limit = album_initial_load_limit(album.photo_count);
@@ -375,15 +449,15 @@ impl MainWindow {
             page.set_nav_target(nav_view);
         }
         {
-            let push_span = tracing::info_span!(
-                "album:push",
+            let switch_span = tracing::info_span!(
+                "album:switch",
                 album_name = %album_name,
                 album_path = %album_path,
                 item_count,
                 total_items
             );
-            let _push = push_span.enter();
-            nav_view.push(&page);
+            let _switch = switch_span.enter();
+            self.show_album_browsing_page(&page);
         }
 
         tracing::debug!(

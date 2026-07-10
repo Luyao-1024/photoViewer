@@ -244,3 +244,86 @@ fn window_split_modules_use_explicit_imports() {
         assert_no_top_level_super_glob(path);
     }
 }
+
+#[test]
+fn window_uses_crossfade_browsing_stack() {
+    let template = fs::read_to_string("data/ui/window.blp").expect("window template readable");
+    assert!(
+        template.contains("Gtk.Stack browsing_stack"),
+        "window should own a dedicated browsing stack"
+    );
+    assert!(
+        template.contains("transition-type: crossfade;"),
+        "browsing stack should use the Photos mode transition"
+    );
+    assert!(
+        template.contains("transition-duration: 200;"),
+        "browsing stack should use the Photos mode transition duration"
+    );
+
+    let window = fs::read_to_string("src/ui/window.rs").expect("window source readable");
+    for marker in [
+        "pub browsing_stack: TemplateChild<gtk::Stack>",
+        "pub fn show_photos_browsing_page",
+        "pub fn show_album_browsing_page",
+    ] {
+        assert!(window.contains(marker), "window source missing `{marker}`");
+    }
+}
+
+#[test]
+fn album_open_uses_browsing_stack_instead_of_outer_push() {
+    let navigation =
+        fs::read_to_string("src/ui/window/navigation.rs").expect("navigation source readable");
+    assert!(
+        navigation.contains("self.show_album_browsing_page(&page)"),
+        "album opening should select the inner browsing child"
+    );
+    let open_start = navigation
+        .find("pub(crate) fn open_album")
+        .expect("open_album should exist");
+    let trash_start = navigation
+        .find("fn show_trash_page")
+        .expect("show_trash_page should exist");
+    assert!(
+        !navigation[open_start..trash_start].contains("nav_view.push(&page);"),
+        "album opening should not push a page onto the outer navigation view"
+    );
+
+    let app = fs::read_to_string("src/app.rs").expect("app source readable");
+    assert!(
+        app.contains("window.show_photos_browsing_page(&photos);"),
+        "Photos should be installed in the browsing stack at startup"
+    );
+}
+
+#[test]
+fn trash_has_navigation_back_button_but_album_detail_does_not() {
+    let album = fs::read_to_string("data/ui/album-detail-page.blp")
+        .expect("album detail template readable");
+    assert!(
+        !album.contains("back_btn") && !album.contains("go-previous-symbolic"),
+        "album detail should not add a dedicated back button"
+    );
+
+    let trash = fs::read_to_string("data/ui/trash-page.blp").expect("trash template readable");
+    assert!(
+        trash.contains("show-back-button: true;"),
+        "TrashPage should expose the NavigationView back button"
+    );
+}
+
+#[test]
+fn photos_and_album_search_buttons_share_header_start_position() {
+    let photos = fs::read_to_string("data/ui/photos-page.blp").expect("Photos template readable");
+    let album = fs::read_to_string("data/ui/album-detail-page.blp")
+        .expect("album detail template readable");
+    assert!(
+        photos.find("Gtk.Button search_btn") < photos.find("Gtk.Revealer select_all_revealer"),
+        "Photos search button should be declared before hidden selection revealers"
+    );
+    assert!(
+        album.contains("Gtk.Button search_btn"),
+        "Album detail should keep the same search button"
+    );
+}

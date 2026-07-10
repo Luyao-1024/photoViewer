@@ -383,13 +383,18 @@ fn sidebar_clicks_drive_top_level_navigation() {
         fixture.loader.clone(),
         fixture.media_list.clone(),
     );
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    window.set_db_actor(photo_viewer::core::start_db_actor(
+        fixture.pool.clone(),
+        event_sender,
+    ));
     albums::refresh(&fixture.pool).unwrap();
     window.populate_album_rows();
     let nav = window.nav_view();
     let root_page = PhotosPage::new(fixture.media_list.clone(), fixture.loader.clone());
     root_page.set_nav_target(&nav);
     root_page.set_db_pool(fixture.pool.clone());
-    nav.push(&root_page);
+    window.show_photos_browsing_page(&root_page);
     window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
@@ -419,6 +424,7 @@ fn sidebar_clicks_drive_top_level_navigation() {
 
     let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
     trash_list.select_row(Some(&trash_row));
+    while glib::MainContext::default().iteration(false) {}
     assert!(
         nav.visible_page().and_downcast::<TrashPage>().is_some(),
         "selecting the Trash sidebar row should show TrashPage"
@@ -427,7 +433,7 @@ fn sidebar_clicks_drive_top_level_navigation() {
     let photos_row = sidebar.row_at_index(0).expect("Photos row exists");
     sidebar.select_row(Some(&photos_row));
     assert!(
-        nav.visible_page().and_downcast::<PhotosPage>().is_some(),
+        window.browsing_stack().visible_child_name().as_deref() == Some("photos"),
         "selecting the Photos sidebar row should return to PhotosPage"
     );
 
@@ -660,6 +666,11 @@ fn album_browser_reorder_persists_full_album_order() {
         fixture.loader.clone(),
         Rc::new(|_| {}),
     );
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    browser.set_db_actor(photo_viewer::core::start_db_actor(
+        fixture.pool.clone(),
+        event_sender,
+    ));
 
     let before: Vec<String> = albums::list_with_favorites(&fixture.pool)
         .unwrap()

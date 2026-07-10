@@ -47,7 +47,7 @@
         <div class="hotspot-outline split-handle-hitbox" tabindex="0" data-ui="main-split-view" data-name="主分隔视图" data-impl="Adw.OverlaySplitView split_view" data-props="min-sidebar-width:240 且 max-sidebar-width:240；主侧栏不可调宽。"></div>
       </aside>
 
-      <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage" data-props="根浏览页；header + Gtk.Stack 三套 MediaGrid + 悬浮 ModeSelector。" data-source="data/ui/photos-page.blp · src/ui/photos_page.rs">
+      <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=photos" data-props="根浏览页；与当前相册详情共享 crossfade 浏览栈；header + Gtk.Stack 三套 MediaGrid + 悬浮 ModeSelector。" data-source="data/ui/window.blp · data/ui/photos-page.blp · src/ui/photos_page.rs">
         <div class="headerbar hotspot" tabindex="0" data-ui="photos-header" data-name="照片页顶栏" data-impl="Adw.HeaderBar header_bar .glass-header" data-props="搜索常驻；多选后 reveal 全选、退出、多选批量动作。">
           <button class="button round hotspot" tabindex="0" data-ui="search-button" data-name="搜索按钮" data-impl="Gtk.Button search_btn .round-search-button" data-props="push SearchPage；图标 system-search-symbolic。">⌕</button>
           <button class="button hotspot" tabindex="0" data-ui="select-all-button" data-name="全选按钮" data-impl="Gtk.Revealer select_all_revealer → Gtk.Button select_all_btn" data-props="只在多选模式显示；文本在 全选 / 取消全选 间切换。">全选</button>
@@ -90,7 +90,7 @@
   </section>
 
   <section class="screen">
-    <div class="titlebar hotspot" tabindex="0" data-ui="album-detail-window" data-name="相册详情导航状态" data-impl="nav_view.push($AlbumDetailPage)" data-props="侧栏保持同一 240px；内容页切换为相册作用域。">
+    <div class="titlebar hotspot" tabindex="0" data-ui="album-detail-window" data-name="相册详情浏览状态" data-impl="$AlbumDetailPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=album" data-props="与照片页作为 peer child 通过 crossfade 切换；外层 nav_view 只承载查看器/搜索/回收站。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Album Detail</span>
     </div>
@@ -99,12 +99,12 @@
         <div class="nav-group">
           <div class="row"><span class="icon">P</span><span>照片</span></div>
           <div class="row group"><span>相册</span><span class="count">⌄</span></div>
-          <div class="row indent active hotspot" tabindex="0" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected row" data-props="点击相册行 push AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
+          <div class="row indent active hotspot" tabindex="0" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected row" data-props="点击相册行切换 browsing_stack 到 AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
           <div class="row indent"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
         </div>
       </aside>
       <main class="content hotspot" tabindex="0" data-ui="album-detail-page" data-name="相册详情页" data-impl="$AlbumDetailPage : Adw.NavigationPage" data-props="复用 MediaGrid 视觉；构造时传入已过滤 media_list。">
-        <div class="headerbar hotspot" tabindex="0" data-ui="album-detail-header" data-name="相册详情顶栏" data-impl="Adw.HeaderBar header_bar" data-props="标题来自相册名；搜索按钮可进入相册上下文搜索。">
+        <div class="headerbar hotspot" tabindex="0" data-ui="album-detail-header" data-name="相册详情顶栏" data-impl="Adw.HeaderBar header_bar → search_btn" data-props="标题来自相册名；搜索按钮可进入相册上下文搜索；返回由侧栏照片项或键盘返回处理。">
           <button class="button round">⌕</button>
           <span class="header-title">2026 旅行</span>
         </div>

@@ -79,11 +79,12 @@ pub fn build_app() -> adw::Application {
                     // (the editor needs the pool for M4-T4 save logic).
                     photos.set_db_pool(pool.clone());
                     photos.set_db_actor(db_actor.clone());
-                    nav.push(&photos);
+                    window.show_photos_browsing_page(&photos);
 
                     // Store DB pool + loader on the window so the sidebar can
                     // build album detail / trash pages on demand, then wire
-                    // row-selected to push them onto nav_view.
+                    // row-selected to switch browsing children or push outer
+                    // navigation pages as appropriate.
                     window.set_resources(pool, loader, media_list.clone());
                     window.set_db_actor(db_actor.clone());
                     window.connect_sidebar(&nav);
