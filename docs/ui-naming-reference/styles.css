@@ -22,6 +22,11 @@
 
 * { box-sizing: border-box; }
 
+/* Base positioning context for hotspot annotations. Declared early so
+   later single-class layout rules (.filmstrip, .stage-controls,
+   .mode-selector) win the specificity tie and keep position: absolute. */
+.hotspot { position: relative; }
+
 html,
 body {
   margin: 0;
@@ -590,6 +595,7 @@ h1 {
   z-index: 4;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   height: 72px;
   padding: 11px 16px;
@@ -852,7 +858,6 @@ h1 {
 }
 
 .hotspot {
-  position: relative;
   outline: 0;
 }
 
