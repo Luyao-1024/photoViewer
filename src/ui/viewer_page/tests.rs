@@ -256,55 +256,25 @@ fn details_panel_temporarily_disables_navigation_pop() {
 }
 
 #[gtk::test]
-fn initial_open_guard_ignores_navigation_pop_action() {
+fn viewer_is_immediately_poppable_with_date_visible_on_open() {
     init_viewer_test();
     let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
     media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
     let viewer = ViewerPage::new(media_list, 0);
-    let nav = adw::NavigationView::new();
-    nav.push(&viewer);
-    let nav_weak = nav.downgrade();
-    viewer.connect_navigation(move |delta| {
-        if delta == NAV_POP {
-            if let Some(nav) = nav_weak.upgrade() {
-                nav.pop();
-            }
-        }
-    });
+    let label = viewer.imp().date_label.get();
 
-    viewer.guard_initial_navigation_pop();
-    let _ = viewer.activate_action("navigation.pop", None);
-
-    assert_eq!(
-        nav.visible_page().map(|page| page.title()).as_deref(),
-        Some(viewer.title().as_str()),
-        "initial open guard should swallow immediate navigation.pop events"
+    // There is no initial-open pop guard anymore. Pressing Escape / swiping
+    // back / clicking back right after opening is intentional user input and
+    // must work immediately, so `can_pop` stays true from the first `show_at`.
+    // The date label is likewise shown immediately (it is a passive peer of the
+    // title, decoupled from the back button's visibility).
+    viewer.show_at(0);
+    assert!(
+        viewer.can_pop(),
+        "viewer must remain poppable on open — immediate back/Escape/swipe is intentional"
     );
-}
-
-#[gtk::test]
-fn initial_open_guard_ignores_keyboard_cancel() {
-    init_viewer_test();
-    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-    media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
-    let viewer = ViewerPage::new(media_list, 0);
-    let pop_count = Rc::new(Cell::new(0));
-    let pop_count_for_cb = pop_count.clone();
-    viewer.connect_navigation(move |delta| {
-        if delta == NAV_POP {
-            pop_count_for_cb.set(pop_count_for_cb.get() + 1);
-        }
-    });
-
-    viewer.guard_initial_navigation_pop();
-    assert_eq!(
-        viewer.handle_keyboard_action(KeyboardAction::CancelOrClose),
-        KeyboardResult::Handled
-    );
-
-    assert_eq!(
-        pop_count.get(),
-        0,
-        "initial open guard should swallow immediate keyboard close events"
+    assert!(
+        label.is_visible(),
+        "date label should be visible as soon as an item is shown"
     );
 }

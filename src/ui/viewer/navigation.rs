@@ -58,19 +58,6 @@ pub(super) fn index_for_media_id(media_list: &gio::ListStore, media_id: MediaId)
 
 impl ViewerPage {
     pub(super) fn fire_nav(&self, delta: NavDelta) {
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG fire_nav delta={} index={} details_revealed={} editor_revealed={} fullscreen_preview_open={} can_pop={} root_present={} header_visible={} bottom_visible={}",
-            delta,
-            self.imp().current_index.get(),
-            self.imp().details_split_view.get().shows_sidebar(),
-            self.imp().editor_split_view.get().shows_sidebar(),
-            self.imp().fullscreen_preview_window.borrow().is_some(),
-            self.can_pop(),
-            self.root().is_some(),
-            self.imp().header_bar.get().is_visible(),
-            self.imp().viewer_bottom_stack.get().is_visible()
-        );
         let cb = self.imp().nav_cb.borrow().clone();
         if let Some(cb) = cb {
             cb(delta);
@@ -421,18 +408,6 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else { return };
             let details_split_view = this.imp().details_split_view.get();
             let editor_split_view = this.imp().editor_split_view.get();
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG navigation_pop_action index={} details_revealed={} editor_revealed={} fullscreen_preview_open={} can_pop={} root_present={} header_visible={} bottom_visible={}",
-                this.imp().current_index.get(),
-                details_split_view.shows_sidebar(),
-                editor_split_view.shows_sidebar(),
-                this.imp().fullscreen_preview_window.borrow().is_some(),
-                this.can_pop(),
-                this.root().is_some(),
-                this.imp().header_bar.get().is_visible(),
-                this.imp().viewer_bottom_stack.get().is_visible()
-            );
             if editor_split_view.shows_sidebar() {
                 this.stop_editing();
             } else if details_split_view.shows_sidebar() {

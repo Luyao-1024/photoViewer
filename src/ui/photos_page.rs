@@ -1206,42 +1206,6 @@ impl PhotosPage {
                 displayed_indices.len()
             );
         }
-        let viewer_debug_label = format!("viewer-open-id-{}", media_id.get());
-        nav.connect_visible_page_notify({
-            let label = viewer_debug_label.clone();
-            move |nav| {
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "VIEWER_DEBUG nav visible_page_notify label={} visible={:?}",
-                    label,
-                    nav.visible_page().map(|page| page.title())
-                );
-            }
-        });
-        nav.connect_pushed({
-            let label = viewer_debug_label.clone();
-            move |nav| {
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "VIEWER_DEBUG nav pushed label={} visible={:?}",
-                    label,
-                    nav.visible_page().map(|page| page.title())
-                );
-            }
-        });
-        nav.connect_popped({
-            let label = viewer_debug_label.clone();
-            move |nav, page| {
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "VIEWER_DEBUG nav popped label={} popped_page={} visible_after={:?}",
-                    label,
-                    page.title(),
-                    nav.visible_page().map(|page| page.title())
-                );
-            }
-        });
-
         let viewer = ViewerPage::new_for_query(MediaQuery::LiveAll, media_id, media_list);
 
         // Wire the viewer's Edit button: it reveals the editor panel inside `nav`.
@@ -1275,37 +1239,15 @@ impl PhotosPage {
         let viewer_weak = viewer.downgrade();
         let nav_weak = nav.downgrade();
         viewer.connect_navigation(move |delta: NavDelta| {
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "VIEWER_DEBUG photos_page navigation_callback delta={}",
-                delta
-            );
             if delta == NAV_POP {
                 if let Some(n) = nav_weak.upgrade() {
-                    tracing::debug!(
-                        target: crate::core::log_targets::BROWSING,
-                        "VIEWER_DEBUG photos_page executing nav.pop visible_before={:?}",
-                        n.visible_page().map(|page| page.title())
-                    );
                     n.pop();
-                    tracing::debug!(
-                        target: crate::core::log_targets::BROWSING,
-                        "VIEWER_DEBUG photos_page after nav.pop visible_after={:?}",
-                        n.visible_page().map(|page| page.title())
-                    );
                 }
                 return;
             }
             if let Some(v) = viewer_weak.upgrade() {
                 let cur = v.current_index();
                 let next = (cur as i32 + delta).max(0) as u32;
-                tracing::debug!(
-                    target: crate::core::log_targets::BROWSING,
-                    "VIEWER_DEBUG photos_page arrow_nav cur={} delta={} next={}",
-                    cur,
-                    delta,
-                    next
-                );
                 if let Some(list) = v.imp().media_list.borrow().as_ref() {
                     if next < list.n_items() {
                         v.show_at(next);
@@ -1314,7 +1256,6 @@ impl PhotosPage {
             }
         });
 
-        viewer.guard_initial_navigation_pop();
         self.imp().viewer_open_pending.set(true);
         let source_page = nav.visible_page();
         if let Some(page) = source_page.as_ref() {

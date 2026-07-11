@@ -45,6 +45,8 @@
     "viewer.details.size": "File Size",
     "viewer.details.modified": "Modified",
     "viewer.details.captured": "Captured",
+    "viewer.date.today": "Today",
+    "viewer.date.yesterday": "Yesterday",
     "viewer.not_available": "Not available",
     "viewer.video_error.title": "Video can't be played",
     "viewer.video_error.subtitle": "The file may be damaged or use an unsupported codec.",

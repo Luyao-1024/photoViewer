@@ -437,7 +437,6 @@ impl AlbumDetailPage {
             }
         });
 
-        viewer.guard_initial_navigation_pop();
         self.imp().viewer_open_pending.set(true);
         let source_page = nav.visible_page();
         if let Some(page) = source_page.as_ref() {

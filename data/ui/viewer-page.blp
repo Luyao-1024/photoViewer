@@ -15,6 +15,21 @@ template $ViewerPage : Adw.NavigationPage {
         // asserted by tests.
         css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
+        // Capture date pinned to the start (left) side of the header, day
+        // precision only (no time). 今天 / 昨天 replace the last two days.
+        // Every item shows a date: follows the sort date (taken_at, else
+        // file_mtime), so it is always populated once an item is loaded.
+        [start]
+        Gtk.Label date_label {
+          label: "";
+          xalign: 0;
+          visible: false;
+          // Carries libadwaita's `title` class so the date inherits the same
+          // font size/weight as the centered file name, plus `viewer-date-label`
+          // for tabular-nums and the naming reference.
+          css-classes: ["title", "viewer-date-label"];
+        }
+
         // Header actions render left-to-right as favorite, edit, delete,
         // details. Adw.HeaderBar packs `[end]` children edge-first (first
         // declared = rightmost), so declare them in reverse.

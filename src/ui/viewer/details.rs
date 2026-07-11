@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-use crate::core::i18n::tr;
+use crate::core::i18n::{locale, tr};
 use crate::core::media::MediaItem;
 use crate::core::metadata::{self, ExifSummary, VideoSummary};
-use chrono::{Local, Utc};
+use chrono::{Datelike, Local, Utc};
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::gio;
@@ -100,6 +100,29 @@ pub(super) fn format_datetime(value: Option<chrono::DateTime<Utc>>) -> String {
         .unwrap_or_else(|| tr("viewer.not_available"))
 }
 
+/// Format a timestamp for the header date label at day precision (no time).
+/// The most recent two local days render as 今天 / 昨天; older dates use a
+/// locale-appropriate calendar date. Returns `None` only when `value` is
+/// `None`; the header passes `MediaItem::sort_datetime`, which is always
+/// defined (`taken_at` falling back to `file_mtime`).
+pub(super) fn format_capture_day(value: Option<chrono::DateTime<Utc>>) -> Option<String> {
+    let dt = value?.with_timezone(&Local);
+    let captured = dt.date_naive();
+    let today = Local::now().date_naive();
+    if captured == today {
+        return Some(tr("viewer.date.today"));
+    }
+    // `pred_opt` is `None` only at `NaiveDate::MIN`; today is always far from
+    // that boundary, so this safely yields yesterday's date.
+    if Some(captured) == today.pred_opt() {
+        return Some(tr("viewer.date.yesterday"));
+    }
+    Some(match locale() {
+        "zh-CN" => format!("{}年{}月{}日", dt.year(), dt.month(), dt.day()),
+        _ => dt.format("%Y-%m-%d").to_string(),
+    })
+}
+
 impl ViewerPage {
     pub(super) fn setup_details_panel(&self) {
         let imp = self.imp();
@@ -108,24 +131,10 @@ impl ViewerPage {
         imp.details_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
             let split_view = this.imp().details_split_view.get();
-            let before = split_view.shows_sidebar();
             let next = !split_view.shows_sidebar();
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG details_btn clicked index={} before_revealed={} next_revealed={}",
-                this.imp().current_index.get(),
-                before,
-                next
-            );
             this.set_details_revealed(next, "details_btn");
             if next {
                 if let Some(item) = this.current_media_item() {
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_DEBUG details_btn loading_details index={} name={}",
-                        this.imp().current_index.get(),
-                        item.display_name()
-                    );
                     this.update_details(&item);
                 }
             }
@@ -134,36 +143,7 @@ impl ViewerPage {
         let weak = self.downgrade();
         imp.details_close_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
-            let split_view = this.imp().details_split_view.get();
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG details_close_btn clicked index={} before_revealed={}",
-                this.imp().current_index.get(),
-                split_view.shows_sidebar()
-            );
             this.set_details_revealed(false, "details_close_btn");
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG details_close_btn after set_reveal_child(false) revealed={}",
-                split_view.shows_sidebar()
-            );
-            this.log_nav_state("details_close_btn immediate");
-            let weak_after = this.downgrade();
-            glib::idle_add_local_once(move || {
-                if let Some(this) = weak_after.upgrade() {
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_DEBUG details_close_btn idle_after revealed={} mapped={} visible={} root_is_some={}",
-                        this.imp().details_split_view.get().shows_sidebar(),
-                        this.is_mapped(),
-                        this.is_visible(),
-                        this.root().is_some()
-                    );
-                    this.log_nav_state("details_close_btn idle_after");
-                } else {
-                    tracing::debug!(target: crate::core::log_targets::VIEWER, "VIEWER_DEBUG details_close_btn idle_after viewer_dropped");
-                }
-            });
         });
 
         let weak = self.downgrade();
@@ -203,17 +183,8 @@ impl ViewerPage {
         imp.name_entry.get().add_controller(key);
     }
 
-    pub(super) fn set_details_revealed(&self, revealed: bool, reason: &str) {
+    pub(super) fn set_details_revealed(&self, revealed: bool, _reason: &str) {
         let split_view = self.imp().details_split_view.get();
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG set_details_revealed reason={} index={} from={} to={} can_pop_before={}",
-            reason,
-            self.imp().current_index.get(),
-            split_view.shows_sidebar(),
-            revealed,
-            self.can_pop()
-        );
 
         if revealed {
             self.set_details_sidebar_child_visible(true);
@@ -232,53 +203,17 @@ impl ViewerPage {
             let weak = self.downgrade();
             glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
                 let Some(this) = weak.upgrade() else {
-                    tracing::debug!(target: crate::core::log_targets::VIEWER, "VIEWER_DEBUG restore_can_pop viewer_dropped");
                     return;
                 };
                 if !this.imp().details_split_view.get().shows_sidebar() {
                     this.set_details_sidebar_child_visible(false);
                     this.set_can_pop(true);
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_DEBUG restore_can_pop restored index={} can_pop={} visible={:?}",
-                        this.imp().current_index.get(),
-                        this.can_pop(),
-                        this.imp()
-                            .nav_view
-                            .borrow()
-                            .as_ref()
-                            .and_then(|nav| nav.visible_page())
-                            .map(|page| page.title())
-                    );
-                } else {
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_DEBUG restore_can_pop skipped_details_open index={} can_pop={}",
-                        this.imp().current_index.get(),
-                        this.can_pop()
-                    );
                 }
             });
         }
-
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG set_details_revealed done reason={} index={} revealed={} can_pop_after={}",
-            reason,
-            self.imp().current_index.get(),
-            split_view.shows_sidebar(),
-            self.can_pop()
-        );
     }
 
     pub(super) fn update_details(&self, item: &MediaItem) {
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG update_details index={} name={} path={}",
-            self.imp().current_index.get(),
-            item.display_name(),
-            item.path.display()
-        );
         let imp = self.imp();
         imp.name_row.get().set_title(&tr("viewer.details.name"));
         imp.folder_row.get().set_title(&tr("viewer.details.folder"));
@@ -330,6 +265,25 @@ impl ViewerPage {
         } else {
             self.load_camera_details(item.path.clone(), self.imp().current_token.get());
         }
+    }
+
+    /// Refresh the header capture-date label for the current item. Called on
+    /// every `show_at` (and after rename) so left/right navigation and inline
+    /// edits keep the date in sync. Uses `MediaItem::sort_datetime` — the same
+    /// `COALESCE(taken_at, file_mtime)` the library sorts/groups by — so the
+    /// label always shows: capture date when present, else file mtime as the
+    /// ingestion date.
+    pub(super) fn update_date_label(&self, item: &MediaItem) {
+        let imp = self.imp();
+        let label = imp.date_label.get();
+        let text = format_capture_day(Some(item.sort_datetime()))
+            .expect("sort_datetime always provides a date for format_capture_day");
+        label.set_label(&text);
+        // The label is a passive peer of the title — show it as soon as an item
+        // is loaded. It is decoupled from `can_pop` (the back button's
+        // visibility), so opening details/editor — which drops `can_pop` and
+        // hides the back button — must not hide the date.
+        label.set_visible(true);
     }
 
     /// Walk up from an ActionRow to its owning PreferencesGroup.
@@ -672,3 +626,7 @@ impl ViewerPage {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "details/tests.rs"]
+mod tests;

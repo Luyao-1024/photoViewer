@@ -211,6 +211,11 @@ Design intent:
 
 - The active image or video is the page's visual center. It should be contained,
   correctly oriented, and never force the app window or sidebar to grow.
+- The start (left) side of the top header shows the current item's date at day
+  precision for every image and video: 今天 / 昨天 for the last two local days, a
+  locale-appropriate calendar date otherwise. It follows the sort date
+  (`taken_at`, falling back to file mtime), so it is always shown, never blank.
+  It is a passive label, not a hover/glass action.
 - The top header contains item actions, left-to-right: favorite, edit, delete
   (trash), and details. (Album assignment is reached from the photos grid batch
   menu, not the viewer.) These actions stay compact and icon-led, and use

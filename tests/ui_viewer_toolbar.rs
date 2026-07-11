@@ -10,6 +10,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use photo_viewer::core::i18n::tr;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::motion_photo::{MediaAttributes, MotionPhotoFormat, MotionPhotoInfo};
 use photo_viewer::ui::ViewerPage;
@@ -281,8 +282,79 @@ fn viewer_toolbar_uses_glass_classes() {
         "favorite_btn should not carry favorite-active after remove_css_class, got {after_remove_classes:?}",
     );
 
+    // The header start side carries a capture-date label. It starts hidden and
+    // is revealed by the first `show_at` (no item shown yet here).
+    assert!(
+        !imp.date_label.get().is_visible(),
+        "date_label should stay hidden until the first show_at reveals it"
+    );
+
     assert_viewer_motion_photo_mode_shows_play_button();
     assert_viewer_video_mode_disables_editing();
+    assert_viewer_date_label_updates();
+}
+
+/// `show_at` must refresh the header date label so it is always visible once an
+/// item is loaded: it shows the capture date when `taken_at` is the current
+/// instant (rendered as the localized "today"), and falls back to `file_mtime`
+/// (the sort date) when `taken_at` is absent.
+fn assert_viewer_date_label_updates() {
+    let dir = tempfile::tempdir().unwrap();
+    let image_path = dir.path().join("dated.jpg");
+    std::fs::write(&image_path, b"fake jpeg").unwrap();
+    let now = chrono::Utc::now();
+
+    let make_item = |taken_at: Option<chrono::DateTime<chrono::Utc>>| MediaItem {
+        id: 1,
+        uri: format!("file://{}", image_path.display()),
+        path: image_path.clone(),
+        folder_path: image_path.parent().unwrap_or(dir.path()).to_path_buf(),
+        mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
+        width: None,
+        height: None,
+        video_duration_secs: None,
+        taken_at,
+        file_mtime: now,
+        file_size: 8,
+        blake3_hash: "hash".into(),
+        is_favorite: false,
+        trashed_at: None,
+    };
+
+    // today -> visible, reads the localized "today" string
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
+    media_list.append(&gtk::glib::BoxedAnyObject::new(make_item(Some(now))));
+    let page = ViewerPage::new(media_list, 0);
+    page.show_at(0);
+    let label = page.imp().date_label.get();
+    assert!(
+        label.is_visible(),
+        "date_label should be visible for an item with taken_at"
+    );
+    assert_eq!(
+        label.label().to_string(),
+        tr("viewer.date.today"),
+        "today's capture should render as the today string"
+    );
+
+    // no taken_at -> falls back to file_mtime (the sort date), still visible.
+    // file_mtime is `now`, so it also renders as today.
+    let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
+    media_list.append(&gtk::glib::BoxedAnyObject::new(make_item(None)));
+    let page = ViewerPage::new(media_list, 0);
+    page.show_at(0);
+    let label = page.imp().date_label.get();
+    assert!(
+        label.is_visible(),
+        "date_label should fall back to file_mtime (sort date) when taken_at is absent"
+    );
+    assert_eq!(
+        label.label().to_string(),
+        tr("viewer.date.today"),
+        "file_mtime fallback (now) should also render as today"
+    );
 }
 
 fn assert_viewer_video_mode_disables_editing() {

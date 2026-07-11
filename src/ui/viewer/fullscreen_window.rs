@@ -7,7 +7,6 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
-use libadwaita::prelude::NavigationPageExt;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -19,37 +18,17 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG fullscreen_preview_button_clicked index={} already_open={} root_present={} can_pop={} header_visible={} bottom_visible={}",
-                this.imp().current_index.get(),
-                this.imp().fullscreen_preview_window.borrow().is_some(),
-                this.root().is_some(),
-                this.can_pop(),
-                this.imp().header_bar.get().is_visible(),
-                this.imp().viewer_bottom_stack.get().is_visible()
-            );
             this.open_fullscreen_preview_window();
         });
     }
 
     pub(super) fn open_fullscreen_preview_window(&self) {
         if let Some(window) = self.imp().fullscreen_preview_window.borrow().as_ref() {
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG fullscreen_preview_present_existing index={}",
-                self.imp().current_index.get()
-            );
             window.present();
             return;
         }
 
         let Some(paintable) = self.imp().picture.get().paintable() else {
-            tracing::warn!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG fullscreen_preview_no_paintable index={}",
-                self.imp().current_index.get()
-            );
             return;
         };
 
@@ -291,11 +270,6 @@ impl ViewerPage {
         let handler_id_for_close = paintable_handler_id.clone();
         window.connect_close_request(move |_| {
             if let Some(this) = weak.upgrade() {
-                tracing::debug!(
-                    target: crate::core::log_targets::VIEWER,
-                    "VIEWER_DEBUG fullscreen_preview_close_request index={}",
-                    this.imp().current_index.get()
-                );
                 if let Some(handler_id) = handler_id_for_close.borrow_mut().take() {
                     this.imp().picture.get().disconnect(handler_id);
                 }
@@ -308,12 +282,6 @@ impl ViewerPage {
             window.fullscreen();
         });
 
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG fullscreen_preview_open index={} title={}",
-            self.imp().current_index.get(),
-            title
-        );
         window.present();
         window.set_fullscreened(true);
         window.fullscreen();

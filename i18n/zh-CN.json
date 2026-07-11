@@ -45,6 +45,8 @@
     "viewer.details.size": "文件大小",
     "viewer.details.modified": "修改于",
     "viewer.details.captured": "拍摄时间",
+    "viewer.date.today": "今天",
+    "viewer.date.yesterday": "昨天",
     "viewer.not_available": "不可用",
     "viewer.video_error.title": "无法播放此视频",
     "viewer.video_error.subtitle": "文件可能已损坏，或使用了暂不支持的编码。",

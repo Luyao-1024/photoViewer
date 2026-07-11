@@ -3,10 +3,11 @@ use chrono::{TimeZone, Utc};
 use std::path::PathBuf;
 
 /// Window for polling the viewer-open debounce's *recovery*. `open_viewer`
-/// pushes the viewer with `can_pop = false` and a one-shot
-/// `VIEWER_OPEN_POP_GUARD_MS` (~350 ms) timeout that re-enables pop and
-/// restores source-page input. These tests pump the main loop until that
-/// recovery lands. The deadline must clear 350 ms with generous margin:
+/// arms a one-shot `VIEWER_OPEN_POP_GUARD_MS` (~350 ms) timeout that clears
+/// the `viewer_open_pending` re-entry flag and restores source-page input.
+/// (Pop is never disabled on open — immediate back/Escape/swipe is intentional
+/// user input and must work right away.) These tests pump the main loop until
+/// that recovery lands. The deadline must clear 350 ms with generous margin:
 /// GitHub Actions runners dispatch the one-shot late enough that a 600 ms
 /// window flaked on CI (the recovery landed just past it). 3 s leaves ample
 /// headroom and still fails fast if recovery is genuinely broken — the happy
@@ -111,43 +112,6 @@ fn repeated_photo_activation_pushes_only_one_viewer_while_pending() {
     assert!(
         nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "the single pushed page should be a ViewerPage"
-    );
-}
-
-#[gtk::test]
-fn opening_viewer_temporarily_disables_initial_navigation_pop() {
-    let _ = gtk::init();
-    let tmp = tempfile::tempdir().unwrap();
-    let pool = crate::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
-    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
-
-    let nav = adw::NavigationView::new();
-    let page = PhotosPage::new(media_list, loader);
-    page.set_nav_target(&nav);
-    nav.push(&page);
-
-    page.open_viewer(MediaId::from(1));
-
-    let viewer = nav
-        .visible_page()
-        .and_downcast::<ViewerPage>()
-        .expect("photo activation should open viewer");
-    assert!(
-        !viewer.can_pop(),
-        "viewer should ignore immediate second-click/back events while the open debounce is active"
-    );
-
-    let ctx = glib::MainContext::default();
-    let deadline = std::time::Instant::now() + OPEN_GUARD_RECOVERY_DEADLINE;
-    while std::time::Instant::now() < deadline && !viewer.can_pop() {
-        ctx.iteration(true);
-    }
-
-    assert!(
-        viewer.can_pop(),
-        "viewer should allow normal navigation again after the open debounce"
     );
 }
 

@@ -162,7 +162,8 @@
     </div>
     <div class="workspace column hotspot" tabindex="0" data-ui="viewer-page" data-name="查看器页" data-impl="$ViewerPage : Adw.NavigationPage" data-props="ToastOverlay → root_box；外层 editor_split_view，内层 details_split_view。">
       <div class="viewer-wrap">
-        <div class="headerbar viewer hotspot" tabindex="0" data-ui="viewer-header" data-name="查看器顶栏" data-impl="Adw.HeaderBar header_bar .glass-header.viewer-toolbar.viewer-chrome" data-props="hover-only glass；动作顺序：收藏、编辑、删除、详情。">
+        <div class="headerbar viewer hotspot" tabindex="0" data-ui="viewer-header" data-name="查看器顶栏" data-impl="Adw.HeaderBar header_bar .glass-header.viewer-toolbar.viewer-chrome" data-props="左侧 date_label 显示拍摄日期；hover-only glass；动作顺序：收藏、编辑、删除、详情。">
+          <span class="header-title date-label hotspot" tabindex="0" data-ui="viewer-date-label" data-name="拍摄日期" data-impl="Gtk.Label date_label .viewer-date-label" data-props="每张图/视频都显示日期，精确到天；取排序日期 COALESCE(taken_at, file_mtime)：有拍摄日期用拍摄日期，否则回退文件 mtime(入库日期)；最近两天显示 今天/昨天；zh-CN 用 2026年7月9日，en 用 2026-07-09。">今天</span>
           <span class="header-title">IMG_0123.jpg</span>
           <button class="button bare hotspot" tabindex="0" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。">♡</button>
           <button class="button bare hotspot" tabindex="0" data-ui="viewer-edit" data-name="编辑入口" data-impl="Gtk.Button edit_btn" data-props="图片可用；普通 video/* 禁用。">✎</button>

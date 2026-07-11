@@ -280,6 +280,8 @@ mod imp {
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
+        pub date_label: TemplateChild<gtk::Label>,
+        #[template_child]
         pub details_title: TemplateChild<gtk::Label>,
         #[template_child]
         pub details_btn: TemplateChild<gtk::Button>,
@@ -421,7 +423,6 @@ impl ViewerPage {
         obj.setup_motion_play_button();
         obj.setup_thumb_strip_listener();
         obj.setup_navigation_pop_action();
-        obj.setup_lifecycle_logging();
         obj
     }
 
@@ -487,12 +488,6 @@ impl ViewerPage {
     /// the editor panel when the Edit button is pressed. Call this after
     /// construction (mirrors `PhotosPage::set_nav_target`).
     pub fn set_edit_target(&self, nav: &adw::NavigationView, pool: DbPool) {
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG set_edit_target index={} nav_visible={:?}",
-            self.imp().current_index.get(),
-            nav.visible_page().map(|page| page.title())
-        );
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
         *self.imp().pool.borrow_mut() = Some(pool);
     }
@@ -615,24 +610,6 @@ impl ViewerPage {
         *self.imp().favorite_state_cb.borrow_mut() = Some(Rc::new(f));
     }
 
-    pub(crate) fn guard_initial_navigation_pop(&self) {
-        self.set_can_pop(false);
-        let weak = self.downgrade();
-        glib::timeout_add_local_once(
-            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
-            move || {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                if !this.imp().details_split_view.get().shows_sidebar()
-                    && !this.imp().editor_split_view.get().shows_sidebar()
-                {
-                    this.set_can_pop(true);
-                }
-            },
-        );
-    }
-
     /// Inject the shared thumbnail loader. Must be called before `show_at`
     /// so the filmstrip can request thumbnails.
     pub fn set_thumbnail_loader(&self, loader: Arc<ThumbnailLoader>) {
@@ -676,36 +653,6 @@ impl ViewerPage {
         if let Some(container) = self.imp().prev_btn.get().parent() {
             container.set_visible(visible);
         }
-    }
-
-    fn setup_lifecycle_logging(&self) {
-        let weak = self.downgrade();
-        self.connect_unmap(move |_| {
-            if let Some(this) = weak.upgrade() {
-                tracing::debug!(
-                    target: crate::core::log_targets::VIEWER,
-                    "VIEWER_DEBUG viewer unmap index={} title={} details_revealed={}",
-                    this.imp().current_index.get(),
-                    this.title(),
-                    this.imp().details_split_view.get().shows_sidebar()
-                );
-                this.log_nav_state("viewer unmap");
-            }
-        });
-
-        let weak = self.downgrade();
-        self.connect_unrealize(move |_| {
-            if let Some(this) = weak.upgrade() {
-                tracing::debug!(
-                    target: crate::core::log_targets::VIEWER,
-                    "VIEWER_DEBUG viewer unrealize index={} title={} details_revealed={}",
-                    this.imp().current_index.get(),
-                    this.title(),
-                    this.imp().details_split_view.get().shows_sidebar()
-                );
-                this.log_nav_state("viewer unrealize");
-            }
-        });
     }
 
     fn start_inline_rename(&self) {
@@ -782,6 +729,7 @@ impl ViewerPage {
                     if let Some(item) = mutation.changed_items.into_iter().next() {
                         this.replace_current_media_item(item.clone());
                         this.set_title(item.display_name());
+                        this.update_date_label(&item);
                         this.update_details(&item);
                         this.refresh_thumb_strip();
                     }
@@ -806,43 +754,11 @@ impl ViewerPage {
         self.imp().current_media_id.set(item.id);
     }
 
-    fn log_nav_state(&self, label: &str) {
-        if let Some(nav) = self.imp().nav_view.borrow().as_ref() {
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG nav_state label=\"{}\" visible={:?} viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
-                label,
-                nav.visible_page().map(|page| page.title()),
-                self.title(),
-                self.is_mapped(),
-                self.is_visible(),
-                self.root().is_some()
-            );
-        } else {
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_DEBUG nav_state label=\"{}\" nav_view=None viewer_title={} viewer_mapped={} viewer_visible={} root_is_some={}",
-                label,
-                self.title(),
-                self.is_mapped(),
-                self.is_visible(),
-                self.root().is_some()
-            );
-        }
-    }
-
     /// Display the item at `index`, decode the **original** image off the
     /// main thread, and preload its immediate neighbours. Safe to call
     /// multiple times.
     #[tracing::instrument(name = "viewer:show_at", skip(self))]
     pub fn show_at(&self, index: u32) {
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG show_at requested_index={} current_before={} details_revealed={}",
-            index,
-            self.imp().current_index.get(),
-            self.imp().details_split_view.get().shows_sidebar()
-        );
         self.imp().current_index.set(index);
         self.stop_animated_image_playback();
         // Keep the previous frame on screen until a new texture arrives — no
@@ -881,6 +797,7 @@ impl ViewerPage {
             self.imp().current_media_id.set(item.id);
         }
         self.set_title(item.display_name());
+        self.update_date_label(&item);
         self.sync_favorite_state(item.id);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
@@ -891,16 +808,6 @@ impl ViewerPage {
             item.display_name(),
             item.uri,
             item.sort_datetime()
-        );
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_DEBUG show_at resolved index={} item_id={} title={} uri={} media_path={} details_revealed={}",
-            index,
-            item.id,
-            item.display_name(),
-            item.uri,
-            item.path.display(),
-            self.imp().details_split_view.get().shows_sidebar()
         );
         if self.imp().details_split_view.get().shows_sidebar() {
             self.update_details(&item);

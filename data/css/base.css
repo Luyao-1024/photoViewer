@@ -584,6 +584,14 @@ video.viewer-media-surface controls scale slider {
   min-width: 180px;
 }
 
+/* viewer-date-label — capture date pinned to the start (left) of the viewer
+   header. The widget also carries libadwaita's `title` class so its font
+   size/weight matches the centered file name exactly; this rule only adds
+   tabular-nums so 今天/昨天 and ISO dates don't change width while navigating. */
+.viewer-date-label {
+  font-variant-numeric: tabular-nums;
+}
+
 /* glass-editor-preview — analogous to .viewer-stage, but calmer: the
    editor's adjustment sliders occupy the same screen and need every
    ounce of readable chrome, so this is a near-flat panel with a hairline

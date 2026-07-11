@@ -1063,7 +1063,6 @@ impl MediaGrid {
 
                     if enable_context_menu {
                         let weak_for_context = self.downgrade();
-                        let section_label_for_ctx = section.label.clone();
                         let flow_for_ctx = flow.clone();
                         let on_add_to_album_ctx = on_add_to_album.clone();
                         let on_move_to_trash_ctx = on_move_to_trash.clone();
@@ -1075,174 +1074,178 @@ impl MediaGrid {
                         gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
 
                         gesture.connect_released(move |gesture, _n_press, x, y| {
-                    if gesture.current_button() != 3 {
-                        return;
-                    }
-                    let Some(this) = weak_for_context.upgrade() else {
-                        return;
-                    };
+                            if gesture.current_button() != 3 {
+                                return;
+                            }
+                            let Some(this) = weak_for_context.upgrade() else {
+                                return;
+                            };
 
-                    let Some(flow_child_for_ctx) = flow_for_ctx.child_at_pos(x as i32, y as i32) else {
-                        return;
-                    };
+                            let Some(flow_child_for_ctx) =
+                                flow_for_ctx.child_at_pos(x as i32, y as i32)
+                            else {
+                                return;
+                            };
 
-                    let Some(displayed_item) = this.displayed_item_for_child(&flow_child_for_ctx) else {
-                        return;
-                    };
-                    let media_id = displayed_item.media_id;
+                            let Some(displayed_item) =
+                                this.displayed_item_for_child(&flow_child_for_ctx)
+                            else {
+                                return;
+                            };
+                            let media_id = displayed_item.media_id;
 
-                    let in_multi_mode = this.is_multi_select_mode();
-                    let target_indices = if in_multi_mode {
-                        this.ensure_context_selection(&flow_for_ctx, &flow_child_for_ctx, media_id)
-                    } else {
-                        vec![media_id]
-                    };
-                    let favorite_state = (on_query_favorite_state_ctx)(target_indices.clone());
-                    tracing::debug!(
-                        target: crate::core::log_targets::BROWSING,
-                        "VIEWER_DEBUG context_menu mode={:?} section={} selected={:?} multi_select={}",
-                        this.mode(),
-                        section_label_for_ctx,
-                        target_indices,
-                        in_multi_mode,
-                    );
+                            let in_multi_mode = this.is_multi_select_mode();
+                            let target_indices = if in_multi_mode {
+                                this.ensure_context_selection(
+                                    &flow_for_ctx,
+                                    &flow_child_for_ctx,
+                                    media_id,
+                                )
+                            } else {
+                                vec![media_id]
+                            };
+                            let favorite_state =
+                                (on_query_favorite_state_ctx)(target_indices.clone());
 
-                    let Some(context_overlay) = this.imp().context_menu_overlay.borrow().clone()
-                    else {
-                        return;
-                    };
-                    let mut items = Vec::new();
+                            let Some(context_overlay) =
+                                this.imp().context_menu_overlay.borrow().clone()
+                            else {
+                                return;
+                            };
+                            let mut items = Vec::new();
 
-                    // Multi-select / Exit Multi-select.
-                    if in_multi_mode {
-                        let weak_exit = weak_for_context.clone();
-                        items.push(GlassMenuItem::new(
-                            tr("photos.batch.exit_multi_select"),
-                            GlassMenuItemKind::Danger,
-                            move || {
-                                if let Some(this) = weak_exit.upgrade() {
-                                    this.set_multi_select_mode(false);
-                                }
-                            },
-                        ));
-                    } else {
-                        let weak_enter = weak_for_context.clone();
-                        let flow_for_ctx_enter = flow_for_ctx.clone();
-                        let flow_child_for_ctx_enter = flow_child_for_ctx.clone();
-                        items.push(GlassMenuItem::new(
-                            tr("photos.batch.multi_select"),
-                            GlassMenuItemKind::Suggested,
-                            move || {
-                                if let Some(this) = weak_enter.upgrade() {
-                                    this.set_multi_select_mode(true);
-                                    this.ensure_context_selection(
-                                        &flow_for_ctx_enter,
-                                        &flow_child_for_ctx_enter,
-                                        media_id,
-                                    );
-                                }
-                            },
-                        ));
-                    }
-
-                    // Favorite / Unfavorite (single and batch context).
-                    if favorite_state.can_favorite {
-                        let indices_for_fav = target_indices.clone();
-                        let on_set_favorite_fav = on_set_favorite_ctx.clone();
-                        items.push(GlassMenuItem::new(
-                            tr("photos.batch.favorite"),
-                            GlassMenuItemKind::Normal,
-                            move || {
-                                on_set_favorite_fav(indices_for_fav.clone(), true);
-                            },
-                        ));
-                    }
-                    if favorite_state.can_unfavorite {
-                        let indices_for_unfav = target_indices.clone();
-                        let on_set_favorite_unfav = on_set_favorite_ctx.clone();
-                        items.push(GlassMenuItem::new(
-                            tr("photos.batch.unfavorite"),
-                            GlassMenuItemKind::Normal,
-                            move || {
-                                on_set_favorite_unfav(indices_for_unfav.clone(), false);
-                            },
-                        ));
-                    }
-
-                    if !target_indices.is_empty() {
-                        if !in_multi_mode {
-                            if let Some(on_set_album_cover_ctx) = on_set_album_cover_ctx.clone() {
+                            // Multi-select / Exit Multi-select.
+                            if in_multi_mode {
+                                let weak_exit = weak_for_context.clone();
                                 items.push(GlassMenuItem::new(
-                                    tr("album.context.set_cover"),
-                                    GlassMenuItemKind::Normal,
+                                    tr("photos.batch.exit_multi_select"),
+                                    GlassMenuItemKind::Danger,
                                     move || {
-                                        on_set_album_cover_ctx(media_id);
+                                        if let Some(this) = weak_exit.upgrade() {
+                                            this.set_multi_select_mode(false);
+                                        }
+                                    },
+                                ));
+                            } else {
+                                let weak_enter = weak_for_context.clone();
+                                let flow_for_ctx_enter = flow_for_ctx.clone();
+                                let flow_child_for_ctx_enter = flow_child_for_ctx.clone();
+                                items.push(GlassMenuItem::new(
+                                    tr("photos.batch.multi_select"),
+                                    GlassMenuItemKind::Suggested,
+                                    move || {
+                                        if let Some(this) = weak_enter.upgrade() {
+                                            this.set_multi_select_mode(true);
+                                            this.ensure_context_selection(
+                                                &flow_for_ctx_enter,
+                                                &flow_child_for_ctx_enter,
+                                                media_id,
+                                            );
+                                        }
                                     },
                                 ));
                             }
-                        }
 
-                        let indices_for_album = target_indices.clone();
-                        let on_add_to_album_ctx = on_add_to_album_ctx.clone();
-                        items.push(GlassMenuItem::new(
-                            tr("photos.batch.move_to_album"),
-                            GlassMenuItemKind::Normal,
-                            move || {
-                                on_add_to_album_ctx(indices_for_album.clone());
-                            },
-                        ));
+                            // Favorite / Unfavorite (single and batch context).
+                            if favorite_state.can_favorite {
+                                let indices_for_fav = target_indices.clone();
+                                let on_set_favorite_fav = on_set_favorite_ctx.clone();
+                                items.push(GlassMenuItem::new(
+                                    tr("photos.batch.favorite"),
+                                    GlassMenuItemKind::Normal,
+                                    move || {
+                                        on_set_favorite_fav(indices_for_fav.clone(), true);
+                                    },
+                                ));
+                            }
+                            if favorite_state.can_unfavorite {
+                                let indices_for_unfav = target_indices.clone();
+                                let on_set_favorite_unfav = on_set_favorite_ctx.clone();
+                                items.push(GlassMenuItem::new(
+                                    tr("photos.batch.unfavorite"),
+                                    GlassMenuItemKind::Normal,
+                                    move || {
+                                        on_set_favorite_unfav(indices_for_unfav.clone(), false);
+                                    },
+                                ));
+                            }
 
-                        let indices_for_trash = target_indices.clone();
-                        let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
-                        let grid_weak = this.downgrade();
-                        items.push(GlassMenuItem::new(
-                            tr("viewer.tooltip.move_to_trash"),
-                            GlassMenuItemKind::Danger,
-                            move || {
-                                let count = indices_for_trash.len();
-                                let body = if count == 1 {
-                                    tr("trash.confirm_body_one")
-                                } else {
-                                    tr("trash.confirm_body_many")
-                                        .replace("{count}", &count.to_string())
-                                };
-                                let dialog = adw::AlertDialog::builder()
-                                    .heading(tr("trash.confirm_title"))
-                                    .body(body)
-                                    .build();
-                                dialog.add_css_class("glass-alert-dialog");
-                                dialog.add_response("cancel", &tr("dialog.cancel"));
-                                dialog.add_response("trash", &tr("dialog.trash"));
-                                dialog.set_response_appearance(
-                                    "trash",
-                                    adw::ResponseAppearance::Destructive,
-                                );
-                                dialog.set_default_response(Some("cancel"));
-                                dialog.set_close_response("cancel");
-
-                                let indices2 = indices_for_trash.clone();
-                                let on_move2 = on_move_to_trash_ctx.clone();
-                                dialog.connect_response(None, move |_, response| {
-                                    if response == "trash" {
-                                        on_move2(indices2.clone());
+                            if !target_indices.is_empty() {
+                                if !in_multi_mode {
+                                    if let Some(on_set_album_cover_ctx) =
+                                        on_set_album_cover_ctx.clone()
+                                    {
+                                        items.push(GlassMenuItem::new(
+                                            tr("album.context.set_cover"),
+                                            GlassMenuItemKind::Normal,
+                                            move || {
+                                                on_set_album_cover_ctx(media_id);
+                                            },
+                                        ));
                                     }
-                                });
-
-                                if let Some(grid) = grid_weak.upgrade() {
-                                    dialog.present(&grid);
                                 }
-                            },
-                        ));
-                    }
 
-                    glass_context_menu::show(
-                        &context_overlay,
-                        flow_for_ctx.upcast_ref(),
-                        x,
-                        y,
-                        items,
-                    );
-                });
+                                let indices_for_album = target_indices.clone();
+                                let on_add_to_album_ctx = on_add_to_album_ctx.clone();
+                                items.push(GlassMenuItem::new(
+                                    tr("photos.batch.move_to_album"),
+                                    GlassMenuItemKind::Normal,
+                                    move || {
+                                        on_add_to_album_ctx(indices_for_album.clone());
+                                    },
+                                ));
+
+                                let indices_for_trash = target_indices.clone();
+                                let on_move_to_trash_ctx = on_move_to_trash_ctx.clone();
+                                let grid_weak = this.downgrade();
+                                items.push(GlassMenuItem::new(
+                                    tr("viewer.tooltip.move_to_trash"),
+                                    GlassMenuItemKind::Danger,
+                                    move || {
+                                        let count = indices_for_trash.len();
+                                        let body = if count == 1 {
+                                            tr("trash.confirm_body_one")
+                                        } else {
+                                            tr("trash.confirm_body_many")
+                                                .replace("{count}", &count.to_string())
+                                        };
+                                        let dialog = adw::AlertDialog::builder()
+                                            .heading(tr("trash.confirm_title"))
+                                            .body(body)
+                                            .build();
+                                        dialog.add_css_class("glass-alert-dialog");
+                                        dialog.add_response("cancel", &tr("dialog.cancel"));
+                                        dialog.add_response("trash", &tr("dialog.trash"));
+                                        dialog.set_response_appearance(
+                                            "trash",
+                                            adw::ResponseAppearance::Destructive,
+                                        );
+                                        dialog.set_default_response(Some("cancel"));
+                                        dialog.set_close_response("cancel");
+
+                                        let indices2 = indices_for_trash.clone();
+                                        let on_move2 = on_move_to_trash_ctx.clone();
+                                        dialog.connect_response(None, move |_, response| {
+                                            if response == "trash" {
+                                                on_move2(indices2.clone());
+                                            }
+                                        });
+
+                                        if let Some(grid) = grid_weak.upgrade() {
+                                            dialog.present(&grid);
+                                        }
+                                    },
+                                ));
+                            }
+
+                            glass_context_menu::show(
+                                &context_overlay,
+                                flow_for_ctx.upcast_ref(),
+                                x,
+                                y,
+                                items,
+                            );
+                        });
 
                         flow.add_controller(gesture);
                     }

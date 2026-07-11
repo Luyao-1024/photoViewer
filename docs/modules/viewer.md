@@ -192,6 +192,26 @@ Viewer previous/next, cancel/close, video playback toggle, image transform, full
 
 ## Header Toolbar
 
+The start (left) side of the header carries a date label for the current item,
+day precision only (no time), shown for every image and video. It follows the
+same date the library sorts and groups by — `MediaItem::sort_datetime`, i.e.
+`COALESCE(taken_at, file_mtime)` — so it shows the capture date when present and
+falls back to the file mtime (ingestion date) otherwise, and is always populated
+once an item is loaded. `update_date_label` runs on every `show_at` and after an
+inline rename. The label is revealed by the first `show_at` with no defer:
+opening the viewer no longer disables `can_pop`, so AdwHeaderBar's back button
+is visible from the start and the date appears alongside it immediately (there
+is no initial-open pop guard — an immediate back / Escape / swipe-back after
+opening is intentional user input and must work right away). The date is
+decoupled from `can_pop`, so opening details or the editor later (which drops
+`can_pop` and hides the back button) must not hide the date. The most recent two local days render as the localized
+今天 / 昨天; older dates use a locale-appropriate calendar date (zh-CN:
+`2026年7月9日`; en: `2026-07-09`). The label carries libadwaita's `title` class
+so its font size and weight match the centered file name (it reads as a peer of
+the title, not secondary chrome), plus a `viewer-date-label` class for
+tabular-nums. It must never change layout or use a hover/glass surface like the
+action buttons.
+
 The viewer header carries four actions, left-to-right: favorite, edit, delete,
 details. (The earlier add-to-album entry was removed from the
 viewer — album assignment for a photo is reached from the photos grid batch
