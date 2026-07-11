@@ -24,6 +24,26 @@ fn viewer_preview_uses_medium_thumbnail() {
 }
 
 #[test]
+fn preview_thumbnail_yields_once_original_has_landed() {
+    // The original full-resolution texture is authoritative for its token;
+    // a late preview thumbnail must not overwrite it. This is the race that
+    // left PNG screenshots stuck on the thumbnail: non-JPEG thumbnails decode
+    // the full source before downscaling and can land after the original.
+    assert!(
+        original_has_landed(7, 7),
+        "original for the current token must suppress a late thumbnail"
+    );
+    assert!(
+        !original_has_landed(0, 7),
+        "thumbnail may paint while the original is still decoding"
+    );
+    assert!(
+        !original_has_landed(5, 7),
+        "a previous item's original must not block the current item's thumbnail"
+    );
+}
+
+#[test]
 fn animated_image_adds_half_second_pause_before_looping() {
     let texture = test_texture();
     let frames = vec![

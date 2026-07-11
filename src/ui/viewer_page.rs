@@ -165,6 +165,19 @@ mod imp {
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
+        /// The `current_token` whose **original** full-resolution texture has
+        /// already been painted. Lets the preview-thumbnail callback avoid
+        /// overwriting the original with a late-arriving Medium thumbnail.
+        ///
+        /// For non-JPEG images (e.g. PNG screenshots) the thumbnail path
+        /// decodes the full-resolution source before downscaling, so it can
+        /// land *after* the (lighter) original decode and clobber the already-
+        /// painted original — leaving the viewer permanently stuck on the
+        /// thumbnail. JPEG thumbnails take the turbojpeg IDCT fast path and
+        /// finish first, so only non-JPEG items hit this race. The thumbnail
+        /// is a progressive placeholder; once the original is up for this
+        /// token, a stale thumbnail must not repaint. `0` = no original yet.
+        pub original_painted_token: Cell<u64>,
         /// Navigation coalescing token. Bumped on every left/right press so a
         /// stale in-flight prefetch (DB neighbour lookup or thumbnail wait)
         /// can be discarded when the user pressed again. 0 = no pending nav.

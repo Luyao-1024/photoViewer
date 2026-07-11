@@ -173,6 +173,19 @@ viewer open). Neighbour page-cache warming (`preload_neighbor_pages`) only
 used to fire two concurrent HEIC decodes per switch and steal CPU from the
 current decode.
 
+The preview thumbnail and the original are decoded on two independent async
+paths and either can land first. The original is authoritative: once it has
+painted for the current `show_at` token (`original_painted_token`), a late
+preview-thumbnail callback for that same token must be suppressed
+(`original_has_landed`) so it cannot clobber the original. This matters for
+non-JPEG sources (PNG screenshots, WebP, HEIC): their thumbnail path decodes
+the full-resolution file before downscaling (`generate_via_pixbuf`), so the
+thumbnail can finish *after* the lighter original decode and overwrite it —
+leaving the viewer permanently stuck on the Medium thumbnail. JPEG thumbnails
+take the turbojpeg IDCT fast path and finish first, so only non-JPEG items are
+at risk. The token comparison also ensures a *previous* item's original never
+suppresses the *current* item's thumbnail after navigation.
+
 Image zoom, portable rotation, and fullscreen-preview controls sit at the image stage's top-right edge so they do not compete with the bottom-right prev/next pair. Keep their order reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in. At identity zoom, show rotate-left, rotate-right, fullscreen, and zoom-in; reveal zoom-out and reset only once the image is enlarged, and hide the rotation buttons while enlarged. Zoom and rotation state are viewer-local display transforms, never persisted to the media file, and reset when switching media or opening the editor; videos remain view-only and do not show these image controls.
 
 Viewer previous/next, cancel/close, video playback toggle, image transform, fullscreen-preview, details, edit, and delete shortcuts are routed through the project-wide keyboard subsystem documented in [`keyboard.md`](keyboard.md). Keep visible buttons as the primary affordance and route keyboard actions through the same viewer methods or button signal paths. Do not install touch-only pinch, pan, or global swipe controllers on the viewer image stage, because they compete with overlay buttons and keyboard-driven actions. The editor crop overlay is the exception: its direct drag interaction is part of crop editing, not viewer navigation.

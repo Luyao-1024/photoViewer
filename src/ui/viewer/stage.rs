@@ -49,6 +49,20 @@ pub(super) fn should_reveal_prepared_video_stage(
     expected_token == current_token && stream_prepared
 }
 
+/// True once the authoritative original-resolution texture has already been
+/// painted for `token`. A preview thumbnail landing after this point must be
+/// suppressed so it cannot clobber the original.
+///
+/// Non-JPEG thumbnails (e.g. PNG screenshots) decode the full-resolution
+/// source before downscaling, so the thumbnail path can finish *after* the
+/// lighter original decode. Without this guard the late thumbnail overwrites
+/// the already-painted original and the viewer stays stuck on the thumbnail.
+/// The `token` comparison also ensures a *previous* item's original never
+/// suppresses the *current* item's thumbnail after navigation.
+pub(super) fn original_has_landed(original_painted_token: u64, token: u64) -> bool {
+    original_painted_token == token
+}
+
 fn animated_image_frame_delay(delay: Option<Duration>) -> Duration {
     match delay {
         Some(delay) if delay >= Duration::from_millis(20) => delay,
@@ -557,6 +571,9 @@ impl ViewerPage {
             if this.imp().animated_image_source.borrow().is_some() {
                 return;
             }
+            if original_has_landed(this.imp().original_painted_token.get(), token) {
+                return;
+            }
             this.imp().picture.get().set_paintable(Some(&texture));
             this.set_spinner_visible(false);
         });
@@ -615,6 +632,11 @@ impl ViewerPage {
             if this.imp().current_token.get() != token {
                 return;
             }
+            // Record that the authoritative original has landed for this token
+            // BEFORE painting, so a late preview-thumbnail callback (which can
+            // finish after the original for non-JPEG sources) won't clobber it
+            // (see `original_has_landed`).
+            this.imp().original_painted_token.set(token);
             this.imp().picture.get().set_paintable(Some(&texture));
             this.set_spinner_visible(false);
             this.imp().edit_btn.get().set_sensitive(true);
