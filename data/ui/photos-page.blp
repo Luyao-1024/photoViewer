@@ -124,6 +124,23 @@ template $PhotosPage : Adw.NavigationPage {
         valign: end;
         margin-bottom: 24;
       }
+
+      [overlay]
+      Gtk.Revealer scroll_date_revealer {
+        transition-type: crossfade;
+        transition-duration: 200;
+        reveal-child: false;
+        halign: end;
+        valign: start;
+        margin-end: 14;
+        margin-top: 0;
+        // Click-through: never steal pointer events from tiles or the scrollbar.
+        can-target: false;
+
+        Gtk.Label scroll_date_label {
+          css-classes: ["glass-raised", "scroll-date-pill"];
+        }
+      }
     }
   };
 }
