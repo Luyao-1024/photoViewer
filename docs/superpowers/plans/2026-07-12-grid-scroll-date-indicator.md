@@ -361,7 +361,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/ui/media_grid.rs src/ui/media_grid/tests.rs
+git add src/ui/media_grid.rs src/ui/media_grid/loading/tests.rs
 git commit -m "feat(media-grid): expose scroll fraction and current date section
 
 MediaGrid::scroll_fraction and current_scroll_section_key project the scroll
