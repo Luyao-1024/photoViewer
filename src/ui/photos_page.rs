@@ -1037,13 +1037,26 @@ impl PhotosPage {
     /// last scroll event.
     fn arm_scroll_date_hide(&self) {
         let imp = self.imp();
+        // Cancel any previously-armed hide timer. A one-shot source is
+        // auto-destroyed by GLib once it fires, and `SourceId::remove` panics
+        // ("source not found") when called on such a stale id. The fire
+        // callback below clears the stored id; this guard is defense-in-depth —
+        // a fired source is simply gone, so there is nothing to remove.
         if let Some(old) = imp.scroll_date_hide_timer.borrow_mut().take() {
-            old.remove();
+            if glib::MainContext::default()
+                .find_source_by_id(&old)
+                .is_some()
+            {
+                old.remove();
+            }
         }
         let weak = self.downgrade();
         let id = glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
             if let Some(this) = weak.upgrade() {
                 this.imp().scroll_date_revealer.set_reveal_child(false);
+                // Drop the now-fired source's id so the next arm does not try
+                // to remove a source GLib has already destroyed.
+                *this.imp().scroll_date_hide_timer.borrow_mut() = None;
             }
         });
         *imp.scroll_date_hide_timer.borrow_mut() = Some(id);

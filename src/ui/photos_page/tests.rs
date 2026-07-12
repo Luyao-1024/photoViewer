@@ -209,3 +209,54 @@ fn opening_viewer_pushes_through_browsing_root_page_wrapper() {
         "viewer should be the top page after activating a Photos thumbnail"
     );
 }
+
+#[gtk::test]
+fn arm_scroll_date_hide_does_not_panic_on_a_fired_source() {
+    // Regression: the hide timer stored its one-shot SourceId, and after the
+    // timer fired (GLib auto-destroys it) the next scroll re-armed and called
+    // `SourceId::remove` on the stale id, which panics:
+    //   "Source ID N was not found when attempting to remove it"
+    // arm_scroll_date_hide must tolerate a fired/stale stored id.
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("hide-timer.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let page = PhotosPage::new(media_list, loader);
+
+    // Create a one-shot source and pump the main loop until it fires, so we
+    // hold a SourceId whose source GLib has already destroyed.
+    let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fired_cb = fired.clone();
+    let stale_id = glib::timeout_add_local_once(std::time::Duration::from_millis(1), move || {
+        fired_cb.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let ctx = glib::MainContext::default();
+    while !fired.load(std::sync::atomic::Ordering::SeqCst) {
+        ctx.iteration(true);
+    }
+    assert!(
+        glib::MainContext::default()
+            .find_source_by_id(&stale_id)
+            .is_none(),
+        "sanity: the one-shot source should be gone after firing"
+    );
+
+    // Inject the stale id as if it were the pending hide timer, then re-arm.
+    // The old code panicked here; the fixed code skips the stale id.
+    *page.imp().scroll_date_hide_timer.borrow_mut() = Some(stale_id);
+    page.arm_scroll_date_hide();
+
+    // Clean up the real 700ms timer we just armed so it can't fire later.
+    // Bind out of the `if let` so the `RefMut` (and its borrow of `page`)
+    // drops at the semicolon, not at the end of the `if let` block.
+    let armed = page.imp().scroll_date_hide_timer.borrow_mut().take();
+    if let Some(armed) = armed {
+        if glib::MainContext::default()
+            .find_source_by_id(&armed)
+            .is_some()
+        {
+            armed.remove();
+        }
+    }
+}
