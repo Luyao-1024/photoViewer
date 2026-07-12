@@ -85,6 +85,7 @@
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
+        <div class="scroll-date-pill hotspot" tabindex="0" data-ui="scroll-date-pill" data-name="滚动日期气泡" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .glass-raised.scroll-date-pill" data-props="滚动时浮在滚动条左侧、随 thumb 垂直跟踪的玻璃日期胶囊；约 700ms 后淡出。日期由 滚动比例 × 全库总数 投影到当前模式的 section_counts（section_for_global_offset）解析，不读已实现 tile，虚拟分页区也正确。库元数据未加载/空库/仅一个段时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026 · 七月</div>
       </main>
     </div>
   </section>

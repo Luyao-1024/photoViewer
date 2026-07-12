@@ -271,6 +271,18 @@ than `GtkPopover`, so they render through the same page-overlay path as the
 Year/Month/Day selector. Keep button-triggered popovers separate from this
 right-click menu path.
 
+While the Photos grid is scrolled, a compact glass date pill appears just left
+of the scrollbar and tracks the thumb vertically, fading out ~700ms after
+scrolling stops. It shows the date section at the current scroll position in the
+active mode (Year/Month/Day). The date is resolved by projecting the scrollbar
+ratio × full-library live total through the already-loaded per-mode
+`section_counts` (`section_model::section_for_global_offset`), NOT by reading the
+realized tiles — so it stays correct in virtual-paged regions whose thumbnails
+are not loaded. It is hidden when library metadata has not loaded, the library
+is empty, or there is a single section. The pill is `can-target: false`
+(click-through) and reuses `.glass-raised`; it is Photos-page only (album detail
+pages are a follow-up).
+
 ## Mode Selector
 
 The Year/Month/Day control is both navigation and the canonical Liquid Glass segmented control. Preserve its visual structure:
