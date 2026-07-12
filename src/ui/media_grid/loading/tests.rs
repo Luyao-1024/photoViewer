@@ -348,3 +348,75 @@ fn library_stats_text_clamps_generated_to_total() {
     assert_eq!(library_stats_text(20, 7), "媒体 20 项 · 缩略图 7/20");
     assert_eq!(library_stats_text(20, 99), "媒体 20 项 · 缩略图 20/20");
 }
+
+#[gtk::test]
+fn current_scroll_section_key_resolves_via_injected_counts() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let grid = MediaGrid::new(media_list, GroupBy::Month, loader, noop_callbacks(), false);
+
+    // Empty/counts-less grid degrades safely.
+    assert!(grid.current_scroll_section_key().is_none());
+    assert_eq!(grid.scroll_fraction(), 0.0);
+
+    // Inject full-library metadata as the background refresh would.
+    let mut counts: HashMap<SectionKey, u32> = HashMap::new();
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: Some(7),
+            day: None,
+        },
+        3,
+    );
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: Some(6),
+            day: None,
+        },
+        2,
+    );
+    counts.insert(
+        SectionKey {
+            year: Some(2025),
+            month: None,
+            day: None,
+        },
+        4,
+    );
+    grid.imp()
+        .section_count_snapshots
+        .borrow_mut()
+        .insert(GroupBy::Month, counts);
+    grid.imp().library_total_snapshot.set(Some(9));
+
+    // Drive the scrolled window's adjustment. upper=1000, page=200 → travel=800.
+    let adj = grid.imp().scroller.get().vadjustment();
+    adj.set_upper(1000.0);
+    adj.set_page_size(200.0);
+
+    let jul = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: None,
+    };
+    let y2025 = SectionKey {
+        year: Some(2025),
+        month: None,
+        day: None,
+    };
+
+    // value=0 → ratio 0 → offset 0 → newest section (Jul).
+    adj.set_value(0.0);
+    assert_eq!(grid.scroll_fraction(), 0.0);
+    assert_eq!(grid.current_scroll_section_key(), Some(jul));
+
+    // value=800 → ratio 1.0 → offset clamps to oldest (2025).
+    adj.set_value(800.0);
+    assert_eq!(grid.scroll_fraction(), 1.0);
+    assert_eq!(grid.current_scroll_section_key(), Some(y2025));
+}

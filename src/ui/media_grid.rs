@@ -803,6 +803,31 @@ impl MediaGrid {
         });
     }
 
+    /// The scrollbar thumb's travel fraction: `value / (upper - page_size)`,
+    /// clamped to `[0, 1]`. `0.0` when the content does not overflow.
+    pub fn scroll_fraction(&self) -> f64 {
+        let adj = self.imp().scroller.get().vadjustment();
+        scroll_ratio_from_adjustment_value(adj.value(), adj.upper(), adj.page_size())
+    }
+
+    /// The date section at the current scroll position, resolved from the
+    /// already-loaded full-library `section_counts` so it stays correct even in
+    /// virtual-paged regions whose tiles are not realized. `None` when library
+    /// metadata has not loaded yet, the library is empty, or there is only one
+    /// section (nothing meaningful to indicate).
+    pub fn current_scroll_section_key(&self) -> Option<SectionKey> {
+        let imp = self.imp();
+        let total = imp.library_total_snapshot.get()?;
+        let counts_by_mode = imp.section_count_snapshots.borrow();
+        let counts = counts_by_mode.get(&imp.mode.get())?;
+        if counts.len() <= 1 {
+            return None;
+        }
+        let ratio = self.scroll_fraction();
+        let offset = ((ratio * total as f64).round() as u32).min(total.saturating_sub(1));
+        crate::core::section_model::section_for_global_offset(counts, offset)
+    }
+
     /// Return the brightness class of the visible tile currently underneath
     /// `selector`, if a loaded tile overlaps it. `None` means there is no tile
     /// under the floating selector yet/anymore, so callers should keep the
