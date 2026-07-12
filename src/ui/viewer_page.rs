@@ -757,8 +757,9 @@ impl ViewerPage {
     /// Display the item at `index`, decode the **original** image off the
     /// main thread, and preload its immediate neighbours. Safe to call
     /// multiple times.
-    #[tracing::instrument(name = "viewer:show_at", skip(self))]
+    #[tracing::instrument(name = "viewer:show_at", skip(self), fields(index, item_id, token))]
     pub fn show_at(&self, index: u32) {
+        tracing::Span::current().record("index", index);
         self.imp().current_index.set(index);
         self.stop_animated_image_playback();
         // Keep the previous frame on screen until a new texture arrives — no
@@ -779,6 +780,7 @@ impl ViewerPage {
             self.imp().current_token.set(t);
             t
         };
+        tracing::Span::current().record("token", token);
 
         let item = {
             let list = self.imp().media_list.borrow();
@@ -790,6 +792,7 @@ impl ViewerPage {
             };
             item
         };
+        tracing::Span::current().record("item_id", item.id);
         if self.imp().current_index.get() != index {
             self.imp().current_index.set(index);
         }

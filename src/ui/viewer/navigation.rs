@@ -64,8 +64,14 @@ impl ViewerPage {
         }
     }
 
-    #[tracing::instrument(name = "viewer:navigate", skip(self))]
+    #[tracing::instrument(
+        name = "viewer:navigate",
+        skip(self),
+        fields(delta, current_media_id, token)
+    )]
     pub(super) fn navigate_by_delta(&self, delta: NavDelta) {
+        tracing::Span::current().record("delta", delta);
+        tracing::Span::current().record("current_media_id", self.imp().current_media_id.get());
         if delta == NAV_POP {
             self.fire_nav(delta);
             return;
@@ -92,6 +98,7 @@ impl ViewerPage {
             self.imp().nav_token.set(t);
             t
         };
+        tracing::Span::current().record("token", token);
 
         // Fast path: the ±1 neighbour was prefetched (item + Medium thumb
         // warmed) during the previous show_at. Skip the DB query entirely.
@@ -275,6 +282,8 @@ impl ViewerPage {
             index,
             reason
         );
+        let settle_span = tracing::info_span!("viewer:nav_settle", token, index, reason);
+        let _g = settle_span.enter();
         self.show_at(index);
     }
 

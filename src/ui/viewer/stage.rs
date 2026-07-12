@@ -291,28 +291,55 @@ impl ViewerPage {
 
     pub(super) fn start_animated_image_playback(&self, path: &Path, token: u64) -> bool {
         self.stop_animated_image_playback();
-        let frames = match load_animated_image_frames(path) {
-            Ok(frames) => frames,
-            Err(err) => {
-                tracing::warn!(
-                    "ViewerPage: failed to load animated image {}: {err}",
-                    path.display()
-                );
-                return false;
+        let path = path.to_owned();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Decode all frames off the main thread, matching the
+        // `request_current_original_image` pattern. GIF frame decoding is
+        // CPU-bound (image crate) and previously blocked the GTK main loop
+        // for 0.5-2.3 s on large files.
+        gio::spawn_blocking(move || {
+            let _ = tx.send(load_animated_image_frames(&path));
+        });
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let frames = match rx.await {
+                Ok(Ok(f)) => f,
+                Ok(Err(err)) => {
+                    tracing::warn!("ViewerPage: failed to load animated image: {err}");
+                    if let Some(this) = weak.upgrade() {
+                        this.set_spinner_visible(false);
+                    }
+                    return;
+                }
+                Err(_) => return,
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
             }
-        };
-        if frames.len() < 2 {
-            return false;
-        }
-
-        let frames = Rc::new(frames);
-        self.imp()
-            .picture
-            .get()
-            .set_paintable(Some(&frames[0].texture));
-        self.set_spinner_visible(false);
-        self.imp().edit_btn.get().set_sensitive(true);
-        self.schedule_animated_image_frame(frames, 0, token);
+            if frames.len() < 2 {
+                // Single frame or decode issue: fall back to original image.
+                if let Some(item) = this.current_media_item() {
+                    let path = strip_file_uri(&item.uri);
+                    this.request_current_original_image(
+                        path,
+                        token,
+                        item.display_name().to_string(),
+                    );
+                }
+                return;
+            }
+            let frames = Rc::new(frames);
+            this.imp()
+                .picture
+                .get()
+                .set_paintable(Some(&frames[0].texture));
+            this.set_spinner_visible(false);
+            this.imp().edit_btn.get().set_sensitive(true);
+            this.schedule_animated_image_frame(frames, 0, token);
+        });
         true
     }
 
@@ -640,6 +667,14 @@ impl ViewerPage {
             this.imp().picture.get().set_paintable(Some(&texture));
             this.set_spinner_visible(false);
             this.imp().edit_btn.get().set_sensitive(true);
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_TRACE original_painted token={} item_name={} texture={}x{}",
+                token,
+                item_name,
+                texture.width(),
+                texture.height()
+            );
         });
     }
 
