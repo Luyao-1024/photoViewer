@@ -259,3 +259,165 @@ fn apply_authoritative_counts_leaves_unmapped_keys() {
     apply_authoritative_counts(&mut sections, &HashMap::new());
     assert_eq!(sections[0].label, before);
 }
+
+#[test]
+fn section_for_global_offset_empty_returns_none() {
+    let counts: HashMap<SectionKey, u32> = HashMap::new();
+    assert!(section_for_global_offset(&counts, 0).is_none());
+}
+
+#[test]
+fn section_for_global_offset_maps_boundaries_and_midpoints() {
+    // Library ordered newest-first. Counts: 2026-07=3, 2026-06=2, 2025=4 (total 9).
+    let mut counts: HashMap<SectionKey, u32> = HashMap::new();
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: Some(7),
+            day: None,
+        },
+        3,
+    );
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: Some(6),
+            day: None,
+        },
+        2,
+    );
+    counts.insert(
+        SectionKey {
+            year: Some(2025),
+            month: None,
+            day: None,
+        },
+        4,
+    );
+
+    let jul = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: None,
+    };
+    let jun = SectionKey {
+        year: Some(2026),
+        month: Some(6),
+        day: None,
+    };
+    let y2025 = SectionKey {
+        year: Some(2025),
+        month: None,
+        day: None,
+    };
+
+    assert_eq!(section_for_global_offset(&counts, 0), Some(jul.clone())); // first
+    assert_eq!(section_for_global_offset(&counts, 2), Some(jul.clone())); // last of jul
+    assert_eq!(section_for_global_offset(&counts, 3), Some(jun.clone())); // first of jun (boundary → next)
+    assert_eq!(section_for_global_offset(&counts, 4), Some(jun.clone())); // last of jun
+    assert_eq!(section_for_global_offset(&counts, 5), Some(y2025.clone())); // first of 2025
+    assert_eq!(section_for_global_offset(&counts, 8), Some(y2025.clone())); // last overall
+}
+
+#[test]
+fn section_for_global_offset_clamps_beyond_total_to_oldest() {
+    let mut counts: HashMap<SectionKey, u32> = HashMap::new();
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: None,
+            day: None,
+        },
+        2,
+    );
+    // Oldest (smallest year) when more than one section exists.
+    counts.insert(
+        SectionKey {
+            year: Some(2020),
+            month: None,
+            day: None,
+        },
+        1,
+    );
+    // offset past total (3) → oldest section (2020), not None.
+    assert_eq!(
+        section_for_global_offset(&counts, 99),
+        Some(SectionKey {
+            year: Some(2020),
+            month: None,
+            day: None
+        }),
+    );
+}
+
+#[test]
+fn section_for_global_offset_orders_newest_first_regardless_of_input_order() {
+    // Insert oldest first; result must still treat newest as offset 0.
+    let mut counts: HashMap<SectionKey, u32> = HashMap::new();
+    counts.insert(
+        SectionKey {
+            year: Some(2020),
+            month: None,
+            day: None,
+        },
+        1,
+    );
+    counts.insert(
+        SectionKey {
+            year: Some(2026),
+            month: None,
+            day: None,
+        },
+        1,
+    );
+    assert_eq!(
+        section_for_global_offset(&counts, 0),
+        Some(SectionKey {
+            year: Some(2026),
+            month: None,
+            day: None
+        }),
+    );
+    assert_eq!(
+        section_for_global_offset(&counts, 1),
+        Some(SectionKey {
+            year: Some(2020),
+            month: None,
+            day: None
+        }),
+    );
+}
+
+#[test]
+fn make_label_nocount_has_no_count_and_matches_mode() {
+    let year = make_label_nocount(&SectionKey {
+        year: Some(2026),
+        month: None,
+        day: None,
+    });
+    let month = make_label_nocount(&SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: None,
+    });
+    let day = make_label_nocount(&SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(12),
+    });
+    assert!(
+        !year.contains("·"),
+        "year label must not include the count separator: {year}"
+    );
+    assert!(
+        !month.contains("·"),
+        "month label must not include the count separator: {month}"
+    );
+    assert!(
+        !day.contains("·"),
+        "day label must not include the count separator: {day}"
+    );
+    assert!(year.contains("2026"));
+    assert!(month.contains("7"));
+    assert!(day.contains("12"));
+}

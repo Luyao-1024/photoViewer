@@ -2,6 +2,7 @@
 use crate::core::i18n::trf;
 use crate::core::media::MediaItem;
 use chrono::{Datelike, NaiveDate, Weekday};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -125,6 +126,37 @@ pub fn apply_authoritative_counts(
     }
 }
 
+/// Resolve the date section a global media offset falls into, given the
+/// full-library per-section `counts`. Sections are treated as newest-first
+/// (matching the grid's descending `sort_datetime` order): the newest section
+/// covers offset `[0, c0)`, the next covers `[c0, c0+c1)`, and so on.
+///
+/// `offset` past the total clamps to the oldest section. An empty map returns
+/// `None`. Used by the scroll-date indicator so the date stays correct even in
+/// virtual-paged regions whose tiles are not realized.
+pub fn section_for_global_offset(
+    counts: &HashMap<SectionKey, u32>,
+    offset: u32,
+) -> Option<SectionKey> {
+    if counts.is_empty() {
+        return None;
+    }
+    // Newest (largest date_rank) first.
+    let mut ordered: Vec<(&SectionKey, u32)> = counts.iter().map(|(k, v)| (k, *v)).collect();
+    ordered.sort_unstable_by_key(|(k, _)| Reverse(date_rank(k)));
+
+    let mut acc: u32 = 0;
+    for (key, count) in &ordered {
+        let upper = acc.saturating_add(*count);
+        if offset < upper {
+            return Some((*key).clone());
+        }
+        acc = upper;
+    }
+    // offset >= total: clamp to the oldest section.
+    ordered.last().map(|(key, _)| (*key).clone())
+}
+
 fn make_key(item: &MediaItem, mode: GroupBy) -> SectionKey {
     let dt = item.sort_datetime();
     match mode {
@@ -159,6 +191,15 @@ fn weekday_cn(d: Weekday) -> String {
     trf(key, &[])
 }
 
+/// Map a `SectionKey` to a comparable rank so sections can be ordered newest-first.
+/// `None` components sink to the bottom (treated as the smallest value).
+fn date_rank(key: &SectionKey) -> (i64, u32, u32) {
+    let year = key.year.map(|y| y as i64).unwrap_or(i64::MIN);
+    let month = key.month.unwrap_or(0);
+    let day = key.day.unwrap_or(0);
+    (year, month, day)
+}
+
 fn make_label(key: &SectionKey, count: u32) -> String {
     let count_s = count.to_string();
     match (key.year, key.month, key.day) {
@@ -190,6 +231,28 @@ fn make_label(key: &SectionKey, count: u32) -> String {
             &[("year", &y.to_string()), ("count", &count_s)],
         ),
         _ => trf("section.label.unknown", &[("count", &count_s)]),
+    }
+}
+
+/// Like `make_label` but without the photo count (and without the weekday), for
+/// the compact scroll-date pill. Mirrors the per-mode `section.label.*.nocount`
+/// i18n keys.
+pub fn make_label_nocount(key: &SectionKey) -> String {
+    match (key.year, key.month, key.day) {
+        (Some(y), Some(m), Some(d)) => trf(
+            "section.label.day.nocount",
+            &[
+                ("year", &y.to_string()),
+                ("month", &m.to_string()),
+                ("day", &d.to_string()),
+            ],
+        ),
+        (Some(y), Some(m), None) => trf(
+            "section.label.month.nocount",
+            &[("year", &y.to_string()), ("month", &m.to_string())],
+        ),
+        (Some(y), None, None) => trf("section.label.year.nocount", &[("year", &y.to_string())]),
+        _ => trf("section.label.unknown.nocount", &[]),
     }
 }
 
