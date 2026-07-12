@@ -190,10 +190,12 @@ fn mode_selector_integration_suite() {
     let overlay = stack_parent
         .downcast::<gtk::Overlay>()
         .expect("parent already asserted to be GtkOverlay");
-    // Walk overlay children and confirm both view_stack and the
-    // mode_selector are reachable as siblings under it.
+    // Walk overlay children and confirm view_stack, mode_selector, and the
+    // scroll-date pill revealer are all reachable as siblings under it.
     let stack_widget = stack.upcast::<gtk::Widget>();
     let sel_widget = sel4.clone().upcast::<gtk::Widget>();
+    let scroll_date_revealer = page.imp().scroll_date_revealer.get();
+    let revealer_widget = scroll_date_revealer.clone().upcast::<gtk::Widget>();
     let overlay_children: Vec<gtk::Widget> = {
         let mut kids = Vec::new();
         let mut next = overlay.first_child();
@@ -211,10 +213,18 @@ fn mode_selector_integration_suite() {
         overlay_children.contains(&sel_widget),
         "overlay should contain mode_selector as a sibling of view_stack"
     );
+    assert!(
+        overlay_children.contains(&revealer_widget),
+        "overlay should contain scroll_date_revealer as a sibling of view_stack"
+    );
+    assert!(
+        !scroll_date_revealer.can_target(),
+        "scroll_date_revealer must be can-target:false (click-through) so it never steals pointer events from tiles or the scrollbar"
+    );
     assert_eq!(
         overlay_children.len(),
-        2,
-        "overlay should have exactly 2 children (view_stack + mode_selector)"
+        3,
+        "overlay should have exactly 3 children (view_stack + mode_selector + scroll_date_revealer)"
     );
 
     // 3. ModeSelector does not claim grid space — no vexpand / hexpand.
