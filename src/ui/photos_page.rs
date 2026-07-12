@@ -77,10 +77,20 @@ mod imp {
         /// adjustment value changes because tile bounds and newly-visible
         /// thumbnail brightness state settle asynchronously.
         pub contrast_update_pending: Cell<bool>,
+        /// Coalescing flag for `schedule_scroll_date_update` (mirrors
+        /// `contrast_update_pending`).
+        pub scroll_date_update_pending: Cell<bool>,
+        /// One-shot hide timer: reset on every scroll event; fires ~700ms after
+        /// the last scroll to fade the pill out.
+        pub scroll_date_hide_timer: RefCell<Option<glib::SourceId>>,
         /// Debounces photo activation while NavigationView is pushing the
         /// viewer. Without this, rapid repeated clicks can stack viewer pages
         /// or race with viewer-level back handling during the transition.
         pub viewer_open_pending: Cell<bool>,
+        #[template_child]
+        pub scroll_date_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub scroll_date_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -134,7 +144,11 @@ mod imp {
                 grids: RefCell::new(Vec::new()),
                 selected_ids: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
+                scroll_date_update_pending: Cell::new(false),
+                scroll_date_hide_timer: RefCell::new(None),
                 viewer_open_pending: Cell::new(false),
+                scroll_date_revealer: TemplateChild::default(),
+                scroll_date_label: TemplateChild::default(),
                 header_bar: TemplateChild::default(),
                 search_btn: TemplateChild::default(),
                 grid_overlay: TemplateChild::default(),
@@ -363,6 +377,8 @@ impl PhotosPage {
             grid.connect_view_changed(move || {
                 if let Some(this) = weak.upgrade() {
                     this.schedule_mode_selector_contrast_update();
+                    this.schedule_scroll_date_update();
+                    this.arm_scroll_date_hide();
                 }
             });
         }
@@ -967,6 +983,70 @@ impl PhotosPage {
             }
             glib::ControlFlow::Break
         });
+    }
+
+    /// Refresh the scroll-date pill: resolve the current grid's date section,
+    /// update the label, position the pill alongside the scrollbar thumb, and
+    /// reveal it. Hides itself when there is nothing to show.
+    fn update_scroll_date(&self) {
+        let Some(grid) = self.current_grid() else {
+            self.imp().scroll_date_revealer.set_reveal_child(false);
+            return;
+        };
+        let Some(key) = grid.current_scroll_section_key() else {
+            self.imp().scroll_date_revealer.set_reveal_child(false);
+            return;
+        };
+
+        let imp = self.imp();
+        imp.scroll_date_label
+            .set_label(&crate::core::section_model::make_label_nocount(&key));
+
+        // Track the thumb vertically. Only position once the overlay is
+        // allocated; before that, heights are 0 and we just reveal at the top.
+        let overlay = imp.grid_overlay.get();
+        let revealer = imp.scroll_date_revealer.get();
+        let overlay_h = overlay.height() as f32;
+        let pill_h = revealer.height().max(1) as f32;
+        if overlay_h > pill_h {
+            let margin = 8.0_f32;
+            let usable = (overlay_h - pill_h - 2.0 * margin).max(0.0);
+            let top = margin + (grid.scroll_fraction() as f32) * usable;
+            revealer.set_margin_top(top.round() as i32);
+        }
+        revealer.set_reveal_child(true);
+    }
+
+    /// Coalesce scroll-date updates (the resolution is cheap but we still avoid
+    /// queuing more than one per idle tick during kinetic scrolling). Mirrors
+    /// `schedule_mode_selector_contrast_update`.
+    fn schedule_scroll_date_update(&self) {
+        if self.imp().scroll_date_update_pending.replace(true) {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(this) = weak.upgrade() {
+                this.update_scroll_date();
+                this.imp().scroll_date_update_pending.set(false);
+            }
+        });
+    }
+
+    /// (Re)arm the one-shot hide timer so the pill fades out ~700ms after the
+    /// last scroll event.
+    fn arm_scroll_date_hide(&self) {
+        let imp = self.imp();
+        if let Some(old) = imp.scroll_date_hide_timer.borrow_mut().take() {
+            old.remove();
+        }
+        let weak = self.downgrade();
+        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+            if let Some(this) = weak.upgrade() {
+                this.imp().scroll_date_revealer.set_reveal_child(false);
+            }
+        });
+        *imp.scroll_date_hide_timer.borrow_mut() = Some(id);
     }
 
     fn open_album_picker_for_ids(&self, ids: Vec<MediaId>) {
