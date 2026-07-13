@@ -25,6 +25,7 @@ pub mod toasts;
 pub mod trash_fallback;
 pub mod trash_page;
 pub mod viewer_page;
+pub mod virtual_media_grid;
 pub mod window;
 
 pub use album_browser_page::AlbumBrowserPage;

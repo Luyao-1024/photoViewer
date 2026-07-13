@@ -60,6 +60,27 @@ flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {
   opacity: 1;
 }
 
+/* GtkGridView keeps selection in the Photos model as stable MediaIds rather
+   than `GtkSelectionModel` positions.  Its factory marks the reused tile
+   itself, so retain the exact same visual affordance outside FlowBox. */
+.glass-thumb-card.media-selected {
+  background: alpha(@window_fg_color, 0.10);
+  border-color: alpha(@window_fg_color, 0.48);
+  box-shadow: inset 0 1px alpha(@window_fg_color, 0.35);
+}
+
+.glass-thumb-card.media-selected .thumb-checkmark {
+  opacity: 1;
+}
+
+/* GtkGridView's theme default gives list children wider vertical padding than
+   the Photos row index uses. Remove that theme padding; GridView itself keeps
+   the shared 2px row separator, so the physical stride is exactly
+   `tile_size + 2` in every mode. */
+gridview.virtual-media-grid-view > child {
+  padding: 0;
+}
+
 /* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
    Apply `glass-raised glass-segmented` to the outer container, `glass-segment`
    to equal-width slots, `glass-segment-label` to labels, and
