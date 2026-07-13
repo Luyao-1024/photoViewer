@@ -88,6 +88,50 @@ fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
 }
 
 #[gtk::test]
+fn gridview_backend_creates_and_switches_all_three_photos_modes() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("gridview-modes.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+
+    let page =
+        PhotosPage::new_with_backend_for_tests(media_list, loader, PhotosGridBackend::GridView);
+
+    {
+        let grids = page.imp().grids.borrow();
+        assert_eq!(grids.len(), 3);
+        assert!(
+            grids
+                .iter()
+                .all(|grid| matches!(grid, PhotosGrid::GridView(_))),
+            "the GridView backend must cover Year, Month, and Day together"
+        );
+    }
+
+    assert_eq!(
+        page.current_grid().map(|grid| grid.mode()),
+        Some(GroupBy::Day)
+    );
+
+    let stack = page.imp().view_stack.get();
+    stack.set_visible_child_name("month");
+    page.sync_active_grid_rebuilds();
+    assert_eq!(
+        page.current_grid().map(|grid| grid.mode()),
+        Some(GroupBy::Month)
+    );
+
+    stack.set_visible_child_name("year");
+    page.sync_active_grid_rebuilds();
+    assert_eq!(
+        page.current_grid().map(|grid| grid.mode()),
+        Some(GroupBy::Year)
+    );
+}
+
+#[gtk::test]
 fn repeated_photo_activation_pushes_only_one_viewer_while_pending() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();

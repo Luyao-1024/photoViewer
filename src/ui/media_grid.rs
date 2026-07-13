@@ -168,14 +168,14 @@ struct DisplayedItem {
 }
 
 #[cfg(test)]
-pub(super) mod test_support {
+pub(crate) mod test_support {
     use super::*;
     use chrono::{TimeZone, Utc};
 
     use std::path::PathBuf;
     use std::rc::Rc;
 
-    pub(super) fn noop_callbacks() -> MediaGridCallbacks {
+    pub(crate) fn noop_callbacks() -> MediaGridCallbacks {
         MediaGridCallbacks {
             on_activate: Rc::new(|_| {}),
             on_background_changed: Rc::new(|| {}),
@@ -187,7 +187,7 @@ pub(super) mod test_support {
         }
     }
 
-    pub(super) fn sample_item(id: i64, name: &str) -> MediaItem {
+    pub(crate) fn sample_item(id: i64, name: &str) -> MediaItem {
         let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
         MediaItem {
             id,
@@ -209,7 +209,7 @@ pub(super) mod test_support {
         }
     }
 
-    pub(super) fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
+    pub(crate) fn insert_sample_item(pool: &crate::core::db::DbPool, item: &MediaItem) -> i64 {
         crate::core::db::insert_media_item(
             pool,
             &crate::core::media::NewMediaItem {
@@ -894,7 +894,7 @@ impl MediaGrid {
     }
 }
 
-fn format_tile_duration(secs: f64) -> Option<String> {
+pub(crate) fn format_tile_duration(secs: f64) -> Option<String> {
     if !secs.is_finite() || secs < 0.0 {
         return None;
     }
@@ -909,7 +909,7 @@ fn format_tile_duration(secs: f64) -> Option<String> {
     })
 }
 
-fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
+pub(crate) fn thumbnail_request_mtime(item: &MediaItem) -> std::time::SystemTime {
     std::time::SystemTime::from(item.file_mtime)
 }
 

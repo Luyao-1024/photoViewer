@@ -41,6 +41,7 @@ fn main() {
         "data/ui/album-browser-page.blp",
         "data/ui/album-detail-page.blp",
         "data/ui/media-grid.blp",
+        "data/ui/virtual-media-grid.blp",
         "data/ui/mode-selector.blp",
         "data/ui/photo-tile.blp",
         "data/ui/section-header.blp",

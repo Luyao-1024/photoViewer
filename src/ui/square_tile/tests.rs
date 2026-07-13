@@ -121,3 +121,49 @@ fn square_tile_runs_registered_thumbnail_request() {
 
     assert!(called.get());
 }
+
+#[gtk::test]
+fn square_tile_clear_for_rebind_drops_previous_media_visual_state() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    tile.set_background_is_light(true);
+    tile.set_cache_key(Some("old-cache-key".into()));
+    tile.set_motion_badge_visible(true);
+    tile.set_video_duration(Some("01:23"));
+    tile.set_favorite_badge_visible(true);
+    tile.add_css_class("thumb-loading");
+    tile.add_css_class("thumb-placeholder");
+    tile.add_css_class("media-selected");
+    tile.set_can_target(false);
+
+    tile.clear_for_rebind();
+
+    assert_eq!(tile.background_is_light(), None);
+    assert_eq!(tile.cache_key(), None);
+    assert!(!tile.has_css_class("thumb-loading"));
+    assert!(!tile.has_css_class("thumb-placeholder"));
+    assert!(!tile.has_css_class("media-selected"));
+    assert!(tile.can_target());
+}
+
+#[gtk::test]
+fn square_tile_loading_placeholder_is_visible_until_a_paintable_arrives() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    tile.show_loading_placeholder();
+
+    assert!(tile.has_css_class("thumb-loading"));
+    assert!(tile.has_css_class("thumb-placeholder"));
+}
+
+#[gtk::test]
+fn square_tile_accepts_zero_allocation_while_a_gridview_recycles_it() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    // GtkGridView can issue this transient deallocation before calculating the
+    // next fixed column layout. It must not trip the badge-size clamps.
+    tile.size_allocate(&gtk::Allocation::new(0, 0, 0, 0), -1);
+}

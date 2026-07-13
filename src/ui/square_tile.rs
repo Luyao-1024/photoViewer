@@ -139,6 +139,12 @@ mod imp {
         }
 
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            // A GtkGridView can briefly deallocate a recycled child while it
+            // recalculates columns. GTK permits a zero allocation at that
+            // point, whereas `i32::clamp(1, 0)` panics. Keep every child
+            // allocation non-negative until the next normal layout pass.
+            let width = width.max(0);
+            let height = height.max(0);
             if let Some(p) = self.picture.borrow().as_ref() {
                 p.size_allocate(&gtk::Allocation::new(0, 0, width, height), baseline);
             }
@@ -148,8 +154,8 @@ mod imp {
             if let Some(c) = self.checkmark.borrow().as_ref() {
                 let (_, cw, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
                 let (_, ch, _, _) = c.measure(gtk::Orientation::Vertical, -1);
-                let cw = cw.clamp(1, width);
-                let ch = ch.clamp(1, height);
+                let cw = cw.max(0).min(width);
+                let ch = ch.max(0).min(height);
                 let margin = 6;
                 let x = (width - cw - margin).max(0);
                 let y = (height - ch - margin).max(0);
@@ -158,8 +164,8 @@ mod imp {
             if let Some(b) = self.motion_badge.borrow().as_ref() {
                 let (_, bw, _, _) = b.measure(gtk::Orientation::Horizontal, -1);
                 let (_, bh, _, _) = b.measure(gtk::Orientation::Vertical, -1);
-                let bw = bw.clamp(1, width);
-                let bh = bh.clamp(1, height);
+                let bw = bw.max(0).min(width);
+                let bh = bh.max(0).min(height);
                 let margin = 7;
                 let y = (height - bh - margin).max(0);
                 b.size_allocate(&gtk::Allocation::new(margin, y, bw, bh), -1);
@@ -167,8 +173,8 @@ mod imp {
             if let Some(d) = self.duration_badge.borrow().as_ref() {
                 let (_, dw, _, _) = d.measure(gtk::Orientation::Horizontal, -1);
                 let (_, dh, _, _) = d.measure(gtk::Orientation::Vertical, -1);
-                let dw = dw.clamp(1, width);
-                let dh = dh.clamp(1, height);
+                let dw = dw.max(0).min(width);
+                let dh = dh.max(0).min(height);
                 let margin = 7;
                 let y = (height - dh - margin).max(0);
                 d.size_allocate(&gtk::Allocation::new(margin, y, dw, dh), -1);
@@ -176,8 +182,8 @@ mod imp {
             if let Some(f) = self.favorite_badge.borrow().as_ref() {
                 let (_, fw, _, _) = f.measure(gtk::Orientation::Horizontal, -1);
                 let (_, fh, _, _) = f.measure(gtk::Orientation::Vertical, -1);
-                let fw = fw.clamp(1, width);
-                let fh = fh.clamp(1, height);
+                let fw = fw.max(0).min(width);
+                let fh = fh.max(0).min(height);
                 let margin = 7;
                 let x = (width - fw - margin).max(0);
                 f.size_allocate(&gtk::Allocation::new(x, margin, fw, fh), -1);
@@ -228,6 +234,37 @@ impl SquareTile {
         if let Some(parent) = self.parent() {
             parent.set_opacity(1.0);
         }
+    }
+
+    /// Reset every piece of media-specific state before a `GtkListItem` reuses
+    /// this tile for another virtual-grid slot.  This deliberately does not
+    /// perform cache I/O: the next bind decides whether the tile is a filler,
+    /// placeholder, or a ready media item and may then start an async request.
+    pub fn clear_for_rebind(&self) {
+        if let Some(picture) = self.imp().picture.borrow().as_ref() {
+            picture.set_paintable(None::<&gtk::gdk::Paintable>);
+        }
+        self.imp().background_is_light.set(None);
+        *self.imp().cache_key.borrow_mut() = None;
+        *self.imp().thumbnail_request.borrow_mut() = None;
+        self.set_motion_badge_visible(false);
+        self.set_video_duration(None);
+        self.set_favorite_badge_visible(false);
+        self.remove_css_class("thumb-loading");
+        self.remove_css_class("thumb-placeholder");
+        self.remove_css_class("media-selected");
+        self.set_opacity(1.0);
+        self.set_visible(true);
+        self.set_can_target(true);
+    }
+
+    /// Put a freshly rebound tile into the stable loading state.  The virtual
+    /// GridView intentionally keeps this placeholder visible while its worker
+    /// checks disk cache / decodes; callers must use `set_paintable` only once
+    /// they have a concrete texture or unavailable fallback.
+    pub fn show_loading_placeholder(&self) {
+        self.add_css_class("thumb-loading");
+        self.add_css_class("thumb-placeholder");
     }
 
     pub fn set_background_is_light(&self, is_light: bool) {

@@ -1,7 +1,9 @@
-//! PhotosPage: year/month/day view (shared MediaGrid, ModeSelector overlay).
+//! PhotosPage: year/month/day view (FlowBox or virtual GridView, ModeSelector
+//! overlay).
 //!
-//! Hosts three MediaGrid instances. When the user clicks a tile, a `ViewerPage`
-//! is pushed onto the host `AdwNavigationView` (injected via `set_nav_target`).
+//! Hosts three same-backend mode instances. When the user clicks a tile, a
+//! `ViewerPage` is pushed onto the host `AdwNavigationView` (injected via
+//! `set_nav_target`).
 //! Multi-select is entered via the right-click "Multi-select" item; while it is
 //! active the batch toolbar (select all / exit multi-select / add to album /
 //! favorite / trash) appears. ESC or the "Exit Multi-select" button leaves
@@ -26,6 +28,7 @@ use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
+use crate::core::runtime_config::{self, PhotosGridBackend};
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_picker;
@@ -34,6 +37,7 @@ use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
+use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use crate::ui::window::refresh_albums_sidebar;
 
 const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
@@ -53,6 +57,178 @@ fn stack_visible_child_name(stack: &gtk::Stack) -> String {
         .unwrap_or_else(|| "(none)".to_string())
 }
 
+/// PhotosPage's deliberately narrow bridge between the established FlowBox
+/// renderer and the opt-in virtual GridView renderer.  Widget ownership stays
+/// statically typed, while the page only depends on the interactions it
+/// genuinely shares across both implementations.
+#[derive(Clone)]
+enum PhotosGrid {
+    FlowBox(MediaGrid),
+    GridView(VirtualMediaGrid),
+}
+
+impl PhotosGrid {
+    fn new(
+        backend: PhotosGridBackend,
+        media_list: gtk::gio::ListStore,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        callbacks: MediaGridCallbacks,
+        initial_active: bool,
+    ) -> Self {
+        match backend {
+            PhotosGridBackend::FlowBox => Self::FlowBox(MediaGrid::new_with_initial_active(
+                media_list,
+                mode,
+                loader,
+                callbacks,
+                true,
+                initial_active,
+            )),
+            PhotosGridBackend::GridView => Self::GridView(VirtualMediaGrid::new(
+                media_list,
+                mode,
+                loader,
+                callbacks,
+                initial_active,
+            )),
+        }
+    }
+
+    fn widget(&self) -> gtk::Widget {
+        match self {
+            Self::FlowBox(grid) => grid.clone().upcast(),
+            Self::GridView(grid) => grid.clone().upcast(),
+        }
+    }
+
+    fn matches_widget(&self, widget: &gtk::Widget) -> bool {
+        match self {
+            Self::FlowBox(grid) => widget == grid.upcast_ref::<gtk::Widget>(),
+            Self::GridView(grid) => widget == grid.upcast_ref::<gtk::Widget>(),
+        }
+    }
+
+    fn same_instance(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::FlowBox(left), Self::FlowBox(right)) => left == right,
+            (Self::GridView(left), Self::GridView(right)) => left == right,
+            _ => false,
+        }
+    }
+
+    fn set_context_menu_overlay(&self, overlay: Option<&gtk::Overlay>) {
+        match self {
+            Self::FlowBox(grid) => grid.set_context_menu_overlay(overlay),
+            Self::GridView(grid) => grid.set_context_menu_overlay(overlay),
+        }
+    }
+
+    fn mode(&self) -> GroupBy {
+        match self {
+            Self::FlowBox(grid) => grid.mode(),
+            Self::GridView(grid) => grid.mode(),
+        }
+    }
+
+    fn set_active(&self, active: bool) {
+        match self {
+            Self::FlowBox(grid) => grid.set_active(active),
+            Self::GridView(grid) => grid.set_active(active),
+        }
+    }
+
+    fn connect_view_changed<F: Fn() + 'static>(&self, f: F) {
+        match self {
+            Self::FlowBox(grid) => grid.connect_view_changed(f),
+            Self::GridView(grid) => grid.connect_view_changed(f),
+        }
+    }
+
+    fn scroll_fraction(&self) -> f64 {
+        match self {
+            Self::FlowBox(grid) => grid.scroll_fraction(),
+            Self::GridView(grid) => grid.scroll_fraction(),
+        }
+    }
+
+    fn current_scroll_section_key(&self) -> Option<crate::core::section_model::SectionKey> {
+        match self {
+            Self::FlowBox(grid) => grid.current_scroll_section_key(),
+            Self::GridView(grid) => grid.current_scroll_section_key(),
+        }
+    }
+
+    fn background_is_light_under(&self, selector: &ModeSelector) -> Option<bool> {
+        match self {
+            Self::FlowBox(grid) => grid.background_is_light_under(selector),
+            Self::GridView(grid) => grid.background_is_light_under(selector),
+        }
+    }
+
+    fn connect_selection_changed<F: Fn() + 'static>(&self, f: F) {
+        match self {
+            Self::FlowBox(grid) => grid.connect_selection_changed(f),
+            Self::GridView(grid) => grid.connect_selection_changed(f),
+        }
+    }
+
+    fn selected_ids(&self) -> Vec<MediaId> {
+        match self {
+            Self::FlowBox(grid) => grid.selected_ids(),
+            Self::GridView(grid) => grid.selected_ids(),
+        }
+    }
+
+    fn is_multi_select_mode(&self) -> bool {
+        match self {
+            Self::FlowBox(grid) => grid.is_multi_select_mode(),
+            Self::GridView(grid) => grid.is_multi_select_mode(),
+        }
+    }
+
+    fn select_all(&self) {
+        match self {
+            Self::FlowBox(grid) => grid.select_all(),
+            Self::GridView(grid) => grid.select_all(),
+        }
+    }
+
+    fn select_ids(&self, ids: &[MediaId]) {
+        match self {
+            Self::FlowBox(grid) => grid.select_ids(ids),
+            Self::GridView(grid) => grid.select_ids(ids),
+        }
+    }
+
+    fn is_all_displayed_selected(&self) -> bool {
+        match self {
+            Self::FlowBox(grid) => grid.is_all_displayed_selected(),
+            Self::GridView(grid) => grid.is_all_displayed_selected(),
+        }
+    }
+
+    fn clear_selection(&self) {
+        match self {
+            Self::FlowBox(grid) => grid.clear_selection(),
+            Self::GridView(grid) => grid.clear_selection(),
+        }
+    }
+
+    fn viewer_seed_for(&self, media_id: MediaId) -> Option<gtk::gio::ListStore> {
+        match self {
+            Self::FlowBox(_) => None,
+            Self::GridView(grid) => grid.viewer_seed_for(media_id),
+        }
+    }
+
+    fn refresh_from_shared_projection(&self) {
+        if let Self::GridView(grid) = self {
+            grid.refresh_from_shared_projection();
+        }
+    }
+}
+
 mod imp {
     use super::*;
     use adw::subclass::prelude::*;
@@ -65,9 +241,9 @@ mod imp {
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,
-        /// Tracks the three MediaGrids so we can clear their selections and
-        /// react to their `selection-changed` callbacks uniformly.
-        pub grids: RefCell<Vec<MediaGrid>>,
+        /// Tracks the three Photos grid backends so selection and mode
+        /// callbacks stay uniform while the GridView path is trialled.
+        pub(super) grids: RefCell<Vec<PhotosGrid>>,
         /// Global indices currently selected, in insertion order. Maintained
         /// by listening to each grid's `selection-changed` callback; not
         /// authoritative on its own — the per-grid `selected` set is.
@@ -204,9 +380,32 @@ gtk::glib::wrapper! {
 }
 
 impl PhotosPage {
-    /// Build a PhotosPage backed by `media_list`, sharing `loader` across the three
-    /// mode-specific MediaGrids (Year/Month/Day).
+    /// Build a PhotosPage backed by `media_list`, sharing `loader` across the
+    /// three mode-specific grids (Year/Month/Day). The backend is sampled
+    /// once at construction; changing runtime.json requires a restart.
     pub fn new(media_list: gtk::gio::ListStore, loader: Arc<ThumbnailLoader>) -> Self {
+        Self::new_with_backend(media_list, loader, runtime_config::photos_grid_backend())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_backend_for_tests(
+        media_list: gtk::gio::ListStore,
+        loader: Arc<ThumbnailLoader>,
+        backend: PhotosGridBackend,
+    ) -> Self {
+        Self::new_with_backend(media_list, loader, backend)
+    }
+
+    fn new_with_backend(
+        media_list: gtk::gio::ListStore,
+        loader: Arc<ThumbnailLoader>,
+        backend: PhotosGridBackend,
+    ) -> Self {
+        tracing::info!(
+            target: crate::core::log_targets::BROWSING,
+            photos_grid_backend = backend.as_str(),
+            "photos grid backend selected"
+        );
         let obj: Self = gtk::glib::Object::builder().build();
         obj.set_title(&tr("page.photos.title"));
         // select_all_btn keeps a text label (toggles 全选/取消全选);
@@ -249,7 +448,7 @@ impl PhotosPage {
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
-        // Snapshot the initial size before `media_list` is moved into MediaGrid.
+        // Snapshot the initial size before `media_list` is moved into a grid.
         let is_empty = media_list.n_items() == 0;
         let media_list_for_empty_state = media_list.clone();
 
@@ -311,31 +510,26 @@ impl PhotosPage {
             on_set_album_cover: None,
         };
 
-        // Three independent MediaGrid instances — one per grouping mode.
-        let year_grid = MediaGrid::new_with_initial_active(
+        // Three independent Photos grids — one per grouping mode. Only the
+        // currently visible grid is active, so inactive GridView instances do
+        // not start metadata/range/thumbnail work while they sit in the stack.
+        let year_grid = PhotosGrid::new(
+            backend,
             media_list.clone(),
             GroupBy::Year,
             loader.clone(),
             callbacks.clone(),
-            true,
             false,
         );
-        let month_grid = MediaGrid::new_with_initial_active(
+        let month_grid = PhotosGrid::new(
+            backend,
             media_list.clone(),
             GroupBy::Month,
             loader.clone(),
             callbacks.clone(),
-            true,
             false,
         );
-        let day_grid = MediaGrid::new_with_initial_active(
-            media_list,
-            GroupBy::Day,
-            loader,
-            callbacks,
-            true,
-            true,
-        );
+        let day_grid = PhotosGrid::new(backend, media_list, GroupBy::Day, loader, callbacks, true);
         let context_menu_overlay = obj.imp().grid_overlay.get();
         year_grid.set_context_menu_overlay(Some(&context_menu_overlay));
         month_grid.set_context_menu_overlay(Some(&context_menu_overlay));
@@ -386,9 +580,9 @@ impl PhotosPage {
             vec![year_grid.clone(), month_grid.clone(), day_grid.clone()];
 
         let stack = obj.imp().view_stack.get();
-        stack.add_titled(&year_grid, Some("year"), &tr("photo.mode.year"));
-        stack.add_titled(&month_grid, Some("month"), &tr("photo.mode.month"));
-        stack.add_titled(&day_grid, Some("day"), &tr("photo.mode.day"));
+        stack.add_titled(&year_grid.widget(), Some("year"), &tr("photo.mode.year"));
+        stack.add_titled(&month_grid.widget(), Some("month"), &tr("photo.mode.month"));
+        stack.add_titled(&day_grid.widget(), Some("day"), &tr("photo.mode.day"));
 
         // Empty-state placeholder: shown when the media list is empty.
         // Added as a hidden stack child so we can swap to it without rebuilding.
@@ -862,10 +1056,15 @@ impl PhotosPage {
         self.imp().selected_ids.borrow().len()
     }
 
-    fn current_grid(&self) -> Option<MediaGrid> {
+    fn current_grid(&self) -> Option<PhotosGrid> {
         let stack = self.imp().view_stack.get();
         let visible = stack.visible_child()?;
-        visible.downcast::<MediaGrid>().ok()
+        self.imp()
+            .grids
+            .borrow()
+            .iter()
+            .find(|grid| grid.matches_widget(&visible))
+            .cloned()
     }
 
     fn sync_active_grid_rebuilds(&self) {
@@ -883,7 +1082,9 @@ impl PhotosPage {
         let _trace = span.enter();
         let mut active_mode = "none";
         for grid in grids.iter() {
-            let active = current.as_ref().is_some_and(|visible| visible == grid);
+            let active = current
+                .as_ref()
+                .is_some_and(|visible| visible.same_instance(grid));
             if active {
                 active_mode = group_mode_name(grid.mode());
             }
@@ -945,12 +1146,7 @@ impl PhotosPage {
 
     fn update_mode_selector_contrast(&self) {
         let selector = self.imp().mode_selector.get();
-        let stack = self.imp().view_stack.get();
-        let Some(visible) = stack.visible_child() else {
-            selector.set_light_background(false);
-            return;
-        };
-        let Some(grid) = visible.downcast_ref::<MediaGrid>() else {
+        let Some(grid) = self.current_grid() else {
             selector.set_light_background(false);
             return;
         };
@@ -1182,6 +1378,12 @@ impl PhotosPage {
                 list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
             }
         }
+        // A viewer can update an item that sits outside the bounded shared
+        // list. Let the virtual backend refresh its authoritative range even
+        // when no ListStore splice was emitted for that media id.
+        for grid in self.imp().grids.borrow().iter() {
+            grid.refresh_from_shared_projection();
+        }
     }
 
     /// Clear selection across all three sub-grids and hide the toolbar.
@@ -1240,31 +1442,36 @@ impl PhotosPage {
         // viewer-mode area could re-add a stale index.
         self.clear_selection();
 
-        let media_list = match self.imp().media_list.borrow().as_ref() {
+        let shared_media_list = match self.imp().media_list.borrow().as_ref() {
             Some(l) => l.clone(),
             None => return,
         };
-        let Some(global_index) = index_for_media_id(&media_list, media_id) else {
+        let (media_list, initial_index, source) = if let Some(index) =
+            index_for_media_id(&shared_media_list, media_id)
+        {
+            (shared_media_list, index, "shared-window")
+        } else if let Some(seed) = self
+            .current_grid()
+            .and_then(|grid| grid.viewer_seed_for(media_id))
+        {
+            // A virtual range can be far outside the bounded GTK-facing
+            // startup window. The Viewer will resolve subsequent neighbours
+            // through LiveAll, so one ready item is enough to open correctly.
+            (seed, 0, "virtual-range")
+        } else {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "PhotosPage: ignoring viewer activation for media_id={} because it is not in the current window",
+                "PhotosPage: ignoring viewer activation for media_id={} because it is not ready in the active grid",
                 media_id.get()
             );
             return;
         };
-        let displayed_indices = self
-            .current_grid()
-            .map(|grid| grid.displayed_indices())
-            .unwrap_or_default();
-        let displayed_pos = displayed_indices
-            .iter()
-            .position(|index| *index == global_index);
         let around = [
-            global_index.checked_sub(2),
-            global_index.checked_sub(1),
-            Some(global_index),
-            global_index.checked_add(1),
-            global_index.checked_add(2),
+            initial_index.checked_sub(2),
+            initial_index.checked_sub(1),
+            Some(initial_index),
+            initial_index.checked_add(1),
+            initial_index.checked_add(2),
         ]
         .into_iter()
         .flatten()
@@ -1273,16 +1480,13 @@ impl PhotosPage {
                 .map(|item| format!("{index}:{}:{}", item.id, item.display_name()))
         })
         .collect::<Vec<_>>();
-        if let Some(item) = media_item_for_index(&media_list, global_index) {
+        if let Some(item) = media_item_for_index(&media_list, initial_index) {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "VIEWER_TRACE photos_open_viewer global_index={} list_len={} displayed_pos={:?} displayed_len={} displayed_first={:?} displayed_last={:?} around={:?} item_id={} item_name={} item_uri={} sort_time={}",
-                global_index,
+                "VIEWER_TRACE photos_open_viewer source={} initial_index={} list_len={} around={:?} item_id={} item_name={} item_uri={} sort_time={}",
+                source,
+                initial_index,
                 media_list.n_items(),
-                displayed_pos,
-                displayed_indices.len(),
-                displayed_indices.first(),
-                displayed_indices.last(),
                 around,
                 item.id,
                 item.display_name(),
@@ -1292,11 +1496,10 @@ impl PhotosPage {
         } else {
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
-                "VIEWER_TRACE photos_open_viewer missing_item global_index={} list_len={} displayed_pos={:?} displayed_len={}",
-                global_index,
+                "VIEWER_TRACE photos_open_viewer missing_item source={} initial_index={} list_len={}",
+                source,
+                initial_index,
                 media_list.n_items(),
-                displayed_pos,
-                displayed_indices.len()
             );
         }
         let viewer = ViewerPage::new_for_query(MediaQuery::LiveAll, media_id, media_list);
@@ -1314,7 +1517,7 @@ impl PhotosPage {
             viewer.set_thumbnail_loader(loader.clone());
         }
 
-        viewer.show_at(global_index);
+        viewer.show_at(initial_index);
 
         let weak = self.downgrade();
         let nav_for_refresh = nav.downgrade();

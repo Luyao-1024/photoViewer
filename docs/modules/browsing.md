@@ -16,6 +16,8 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/ui/media_grid/loading.rs` | Virtual page loading, progressive render fill, async library metadata/stats refresh, and rebuild scheduling |
 | `src/ui/media_grid/render.rs` | Tile construction, reused-tile preparation, and FlowBox child visibility sync |
 | `src/ui/media_grid/virtual_paging.rs` | Virtual scroll offset, spacer, and placeholder window helpers |
+| `src/ui/virtual_media_grid.rs` | Photos-only `GtkGridView` backend, lifecycle, range scheduling, and Photos-grid callbacks |
+| `src/ui/virtual_media_grid/` | Pure layout index, virtual list model, range residency coordinator, factory, and focused tests |
 | `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
 | `src/ui/photo_tile.rs` | Thumbnail tile widget |
@@ -23,6 +25,7 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/core/section_model.rs` | Year/Month/Day grouping model |
 | `data/ui/photos-page.blp` | Photos page template |
 | `data/ui/media-grid.blp` | Grid template |
+| `data/ui/virtual-media-grid.blp` | Direct `GtkScrolledWindow` → `GtkGridView` virtual-grid template |
 | `data/ui/mode-selector.blp` | Mode selector template |
 
 MediaGrid unit tests live with the submodule that owns the behavior. Production
@@ -41,7 +44,33 @@ outer host for `ViewerPage`, `SearchPage`, and `TrashPage`; album changes do not
 push additional outer navigation pages. The outer `TrashPage` keeps its
 NavigationView back button so it can return to the browsing root.
 
-`PhotosPage` owns three `MediaGrid` instances for Year, Month, and Day views. All views are backed by the same `gio::ListStore`, so changes to the media collection should propagate without rebuilding unrelated UI state. The list can contain both image and video `MediaItem`s; grouping still uses `taken_at` when present, falling back to file time.
+`PhotosPage` owns three Year/Month/Day grid instances backed by the same bounded
+`gio::ListStore`. At process start it selects one Photos renderer from
+`runtime.json`: `photos_grid_backend: "flowbox"` (the default and rollback
+path) keeps the existing `MediaGrid`; `"gridview"` selects `VirtualMediaGrid`
+for all three modes. This is intentionally startup-only—do not live-switch a
+mounted grid or infer a fallback from a panic. The flowbox renderer remains in
+the binary so reverting the key and restarting is a low-risk rollback. Albums,
+search previews, and trash always retain `MediaGrid`/FlowBox.
+
+The GridView path exposes one logical slot for every full-library media item,
+plus deterministic non-interactive filler slots that preserve section-row
+boundaries. Its `gio::ListModel` only keeps ready `MediaItem`s for a bounded
+viewport-adjacent range; all other media slots are light loading placeholders.
+`VirtualGridLayoutIndex` maps section/media offsets to slots without materializing
+widgets or a full `MediaItem` list. Database metadata and ranges are fetched off
+the GTK thread, generation-checked, and coalesced while a scrollbar drag is in
+flight. GTK recycles `SquareTile` cells through `GtkSignalListItemFactory`, and
+thumbnail results must validate the current layout generation, slot, MediaId,
+and cache key before painting a recycled cell.
+
+Both renderers group image and video `MediaItem`s by `taken_at`, falling back to
+file time. GridView mode metrics are fixed: Year uses 90 px tiles, Month 180 px,
+and Day 270 px, with a 2 px row gap. The GridView column count is updated from
+the real scroller viewport on an idle turn (never re-entrantly during GTK
+allocation), and the layout index, date pill, and range calculation use that
+same count. Hidden GridView modes stay inactive and do not seed or query ranges
+until selected.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using
@@ -282,6 +311,13 @@ are not loaded. It is hidden when library metadata has not loaded, the library
 is empty, or there is a single section. The pill is `can-target: false`
 (click-through) and reuses `.glass-raised`; it is Photos-page only (album detail
 pages are a follow-up).
+
+The same floating-date contract applies when `photos_grid_backend` is
+`"gridview"`: it uses the virtual layout index's section for the top physical
+slot rather than realized tile widgets, so dragging through unloaded ranges and
+switching to Year or Month remains immediate. The GridView renderer has no
+section-heading widgets; its deterministic filler slots give each section a
+clean row boundary while the pill supplies the floating date context.
 
 ## Mode Selector
 

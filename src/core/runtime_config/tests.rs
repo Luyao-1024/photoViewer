@@ -23,6 +23,7 @@ fn missing_runtime_file_uses_central_defaults() {
 
     let config = read_runtime_config_at(&path);
 
+    assert_eq!(config.photos_grid_backend, DEFAULT_PHOTOS_GRID_BACKEND);
     assert_eq!(config.initial_media_page_size, 500);
     assert_eq!(config.virtual_media_page_size, 500);
     assert_eq!(config.ui_media_list_cap, 1500);
@@ -46,6 +47,55 @@ fn missing_runtime_file_uses_central_defaults() {
     assert_eq!(config.startup_render_batch, 96);
     assert_eq!(config.startup_render_interval_ms, 20);
     assert_eq!(config.startup_render_first_tick_delay_ms, 150);
+
+    cleanup(&path);
+}
+
+#[test]
+fn photos_grid_backend_parses_supported_values() {
+    let path = tmp_path("photos-grid-backend-valid");
+    cleanup(&path);
+
+    for (value, expected) in [
+        ("flowbox", PhotosGridBackend::FlowBox),
+        ("gridview", PhotosGridBackend::GridView),
+    ] {
+        std::fs::write(&path, format!(r#"{{"photos_grid_backend":"{value}"}}"#)).unwrap();
+
+        assert_eq!(read_runtime_config_at(&path).photos_grid_backend, expected);
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn photos_grid_backend_unknown_value_uses_safe_default() {
+    let path = tmp_path("photos-grid-backend-unknown");
+    cleanup(&path);
+
+    for value in [r#""experimental""#, "false", "[]"] {
+        std::fs::write(&path, format!(r#"{{"photos_grid_backend":{value}}}"#)).unwrap();
+
+        assert_eq!(
+            read_runtime_config_at(&path).photos_grid_backend,
+            DEFAULT_PHOTOS_GRID_BACKEND,
+            "unexpected backend value {value} must not prevent startup"
+        );
+    }
+
+    cleanup(&path);
+}
+
+#[test]
+fn photos_grid_backend_missing_value_uses_safe_default() {
+    let path = tmp_path("photos-grid-backend-missing");
+    cleanup(&path);
+    std::fs::write(&path, "{}").unwrap();
+
+    assert_eq!(
+        read_runtime_config_at(&path).photos_grid_backend,
+        DEFAULT_PHOTOS_GRID_BACKEND
+    );
 
     cleanup(&path);
 }
