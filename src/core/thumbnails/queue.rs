@@ -1,5 +1,5 @@
 use super::cache::cache_key_str;
-use super::decode::{generate, pixbuf_is_light};
+use super::decode::{generate, pixbuf_is_light, DecodeOrigin};
 use super::{
     BackgroundPullState, LoadedThumb, LoaderState, PriItem, QueuedEntry, SharedQueue,
     SharedStatsDirtyCallback, TIER_BACKGROUND,
@@ -38,8 +38,11 @@ pub(in crate::core::thumbnails) fn worker_loop(
         );
         let _process_guard = process_span.enter();
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
-            Ok(pb) => {
-                // 带 media_id 的请求生成成功后立刻标记，避免统计落后于可见缩略图。
+            Ok((pb, origin)) => {
+                // 磁盘命中意味着此前一次冷生成已标记过该行（缓存文件只在标记它的
+                // 那次生成中写出），故命中无需重标；只有冷生成才需要更新
+                // thumbnail_generated_at。
+                let was_cache_hit = matches!(origin, DecodeOrigin::DiskCache);
                 let generated_media_id = (req.media_id != 0).then_some(req.media_id);
                 let is_light = pixbuf_is_light(&pb);
                 let texture = Texture::for_pixbuf(&pb);
@@ -47,20 +50,21 @@ pub(in crate::core::thumbnails) fn worker_loop(
                     texture: texture.clone(),
                     is_light,
                 };
-                let is_bg = req.tier >= TIER_BACKGROUND;
                 let waiters = {
                     let mut st = match state.lock() {
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    if !is_bg {
-                        st.mem_cache.put(req.cache_key.clone(), loaded.clone());
-                    }
+                    // 无条件入 mem_cache：预热（TIER_BACKGROUND）结果也写入，使后续
+                    // 视口 bind 命中 try_load_mem_cached 而非重新解码磁盘 JPEG。
+                    // 预热只在队列为空时运行（可见请求先服务），且经 redirect_prewarm
+                    // 指向当前视口邻域，LRU recency 保护刚访问的可见 tile 不被驱逐。
+                    st.mem_cache.put(req.cache_key.clone(), loaded.clone());
                     st.in_flight.remove(&req.cache_key).unwrap_or_default()
                 };
                 debug!(
                     target: crate::core::log_targets::THUMBNAILS,
-                    "THUMB_LOADER_TRACE worker_loaded uri={} size={:?} tier={} media_id={} texture={}x{} waiters={} cache_key={}",
+                    "THUMB_LOADER_TRACE worker_loaded uri={} size={:?} tier={} media_id={} texture={}x{} waiters={} cache_key={} cache_hit={}",
                     req.uri,
                     req.size,
                     req.tier,
@@ -68,32 +72,53 @@ pub(in crate::core::thumbnails) fn worker_loop(
                     pb.width(),
                     pb.height(),
                     waiters.len(),
-                    req.cache_key
+                    req.cache_key,
+                    was_cache_hit,
                 );
                 if let Some(media_id) = generated_media_id {
-                    let result = if let Some(actor) = db_actor.as_ref() {
-                        actor
-                            .execute_blocking(DbCommand::MarkThumbnailsGenerated {
-                                ids: vec![MediaId::from(media_id)],
-                            })
-                            .map(|_| ())
-                    } else {
-                        crate::core::db::mark_thumbnails_generated(&pool, &[media_id]).map(|_| ())
-                    };
-                    if let Err(e) = result {
-                        warn!("更新缩略图状态失败: {}", e);
-                    } else if let Ok(callback) = stats_dirty_callback.lock() {
+                    if was_cache_hit {
+                        // 磁盘命中：该行已被前一次冷生成标记过，无需重标——既省一次
+                        // 经单写 DbActor 的 UPDATE（其尾部拥塞正是滚动卡顿来源），也让
+                        // 热路径纹理在零 DB 记账下立即送达。
                         debug!(
                             target: crate::core::log_targets::THUMBNAILS,
-                            "THUMB_LOADER_TRACE mark_generated media_id={} uri={}",
-                            media_id,
-                            req.uri
+                            "THUMB mark_skipped cache_hit media_id={} uri={}",
+                            media_id, req.uri,
                         );
-                        if let Some(callback) = callback.as_ref() {
-                            callback();
+                    } else {
+                        // 冷生成：同步更新 thumbnail_generated_at，保持「交付前已标记」
+                        // 契约（集成测试与统计计数都依赖 rx 解析时该行已被标记）。
+                        // debug span 度量 worker 在标记上的阻塞时间（仅冷路径）。
+                        let result = {
+                            let _mark =
+                                tracing::debug_span!("thumb:mark_generated", media_id,).entered();
+                            if let Some(actor) = db_actor.as_ref() {
+                                actor
+                                    .execute_blocking(DbCommand::MarkThumbnailsGenerated {
+                                        ids: vec![MediaId::from(media_id)],
+                                    })
+                                    .map(|_| ())
+                            } else {
+                                crate::core::db::mark_thumbnails_generated(&pool, &[media_id])
+                                    .map(|_| ())
+                            }
+                        };
+                        if let Err(e) = result {
+                            warn!("更新缩略图状态失败: {}", e);
+                        } else if let Ok(callback) = stats_dirty_callback.lock() {
+                            debug!(
+                                target: crate::core::log_targets::THUMBNAILS,
+                                "THUMB_LOADER_TRACE mark_generated media_id={} uri={}",
+                                media_id, req.uri,
+                            );
+                            if let Some(callback) = callback.as_ref() {
+                                callback();
+                            }
                         }
                     }
                 }
+                // 交付纹理：冷路径下标记已先于此完成（保契约）；命中路径无 DB 记账，
+                // 纹理在 generate 后即刻送达。
                 for w in waiters {
                     let _ = w.send(loaded.clone());
                 }

@@ -12,13 +12,20 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{debug, warn};
 
+/// 一次 `generate` 的来源：磁盘命中还是冷生成。调用方据此决定是否需要更新
+/// `thumbnail_generated_at`——磁盘命中意味着此前一次冷生成已标记过该行。
+pub(in crate::core::thumbnails) enum DecodeOrigin {
+    DiskCache,
+    Cold,
+}
+
 #[tracing::instrument(name = "thumb:generate", skip(cache_dir), level = "debug")]
 pub(in crate::core::thumbnails) fn generate(
     cache_dir: &Path,
     uri: &str,
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
-) -> anyhow::Result<Pixbuf> {
+) -> anyhow::Result<(Pixbuf, DecodeOrigin)> {
     let (src_path, mtime) = resolve_src(uri, mtime)?;
     let cache_stem = cache_stem_for(cache_dir, uri, size, Some(mtime))?;
     let jpeg_path = cache_stem.with_extension("jpg");
@@ -39,7 +46,7 @@ pub(in crate::core::thumbnails) fn generate(
         // 磁盘命中：必须解码一次才能拿到像素做 Texture（不可避免）。
         // 使用同步读取确保文件完全写入后再解码。坏缓存会删除并继续重新生成。
         match load_pixbuf_sync_or_remove(cache_path) {
-            Ok(pb) => return Ok(pb),
+            Ok(pb) => return Ok((pb, DecodeOrigin::DiskCache)),
             Err(e) => {
                 warn!(
                     target: crate::core::log_targets::THUMBNAILS,
@@ -74,7 +81,7 @@ pub(in crate::core::thumbnails) fn generate(
                     size,
                     cache_path.display()
                 );
-                return Ok(thumb);
+                return Ok((thumb, DecodeOrigin::Cold));
             }
             Err(e) => {
                 debug!(
@@ -93,7 +100,7 @@ pub(in crate::core::thumbnails) fn generate(
                     src_path.display(),
                     size
                 );
-                return Ok(placeholder);
+                return Ok((placeholder, DecodeOrigin::Cold));
             }
         }
     }
@@ -112,7 +119,7 @@ pub(in crate::core::thumbnails) fn generate(
                 size,
                 cache_stem.display()
             );
-            Ok(pixbuf)
+            Ok((pixbuf, DecodeOrigin::Cold))
         }
         Err(e) => {
             warn!(
@@ -123,7 +130,10 @@ pub(in crate::core::thumbnails) fn generate(
                 size,
                 e
             );
-            Ok(generate_unavailable_placeholder(size.max_dim(), false))
+            Ok((
+                generate_unavailable_placeholder(size.max_dim(), false),
+                DecodeOrigin::Cold,
+            ))
         }
     }
 }

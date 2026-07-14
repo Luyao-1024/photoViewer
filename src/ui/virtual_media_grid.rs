@@ -1086,6 +1086,15 @@ impl VirtualMediaGrid {
             let Some(grid) = weak.upgrade() else {
                 return;
             };
+            // Main-thread landing: finish + replace_ready_range + evict_outside
+            // + redirect_prewarm + chained re-request. Excludes the DB query
+            // (done above on a blocking worker). Debug-only span.
+            let _landing = tracing::debug_span!(
+                "vgrid:landing",
+                range_start = range.start,
+                range_len = range.len(),
+            )
+            .entered();
             let completion = grid.imp().range.borrow_mut().finish(request.generation);
             if completion.apply_result {
                 match result {

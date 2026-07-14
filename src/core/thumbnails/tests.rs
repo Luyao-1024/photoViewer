@@ -3,7 +3,7 @@ use crate::core::db;
 use crate::core::media::mime_from_extension;
 use crate::core::orientation;
 use crate::core::thumbnails::jpeg_turbo::decode_jpeg_scaled;
-use crate::core::thumbnails::queue::pull_batch_and_enqueue;
+use crate::core::thumbnails::queue::{pull_batch_and_enqueue, worker_loop};
 use crate::core::thumbnails::video::extract_video_frame;
 use gtk4::prelude::TextureExt;
 use image::ImageEncoder;
@@ -258,7 +258,7 @@ fn image_decode_failure_returns_unavailable_thumbnail_without_caching_it() {
     let cache_dir = dir.path().join("cache");
     let uri = format!("file://{}", src.display());
 
-    let thumb = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+    let (thumb, _) = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
         .expect("broken images should still return a visible unavailable thumbnail");
 
     assert_eq!(thumb.width(), 256);
@@ -316,13 +316,49 @@ fn generate_replaces_empty_disk_cache_file() {
     let cache_path = cache_stem.with_extension("jpg");
     File::create(&cache_path).unwrap();
 
-    let thumb = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+    let (thumb, _) = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
         .expect("empty cache files should be discarded and regenerated");
 
     assert!(thumb.width() > 0);
     assert!(
         std::fs::metadata(&cache_path).unwrap().len() > 0,
         "regenerated cache file should not be empty"
+    );
+}
+
+/// fix #2: `generate()` 必须报告来源——磁盘命中 vs 冷生成。来源是 worker 跳过
+/// 重复 `thumbnail_generated_at` 写入的依据：磁盘命中意味着该行已被前一次冷生成
+/// 标记过。
+#[test]
+fn generate_reports_decode_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        80,
+        60,
+        image::Rgb([10, 20, 30]),
+    ))
+    .save(&src)
+    .unwrap();
+    let cache_dir = dir.path().join("cache");
+    let uri = format!("file://{}", src.display());
+
+    // 首次：无磁盘缓存 → 冷生成（写出缓存）。
+    let (thumb1, origin1) = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+        .expect("first generate should succeed");
+    assert!(thumb1.width() > 0);
+    assert!(
+        matches!(origin1, DecodeOrigin::Cold),
+        "首次生成（无磁盘缓存）必须是 Cold"
+    );
+
+    // 第二次：磁盘缓存已存在 → 命中。
+    let (thumb2, origin2) = generate(&cache_dir, &uri, ThumbnailSize::Small, None)
+        .expect("second generate should hit the disk cache");
+    assert!(thumb2.width() > 0);
+    assert!(
+        matches!(origin2, DecodeOrigin::DiskCache),
+        "磁盘缓存存在时必须是 DiskCache"
     );
 }
 
@@ -381,6 +417,175 @@ fn background_pull_marks_returned_item_in_flight() {
             .contains_key(&first.cache_key),
         "returned background key should be registered for duplicate suppression"
     );
+}
+
+/// fix #1: `TIER_BACKGROUND`（预热）缩略图生成后必须落入 `mem_cache`，使后续
+/// 视口 bind 命中 `try_load_mem_cached` 而非重新解码磁盘 JPEG。worker 在
+/// `mem_cache.put` **之后**才向 waiter 发送结果，故 `blocking_recv` 成功即代表
+/// put 已发生。改动前 `if !is_bg` 守卫跳过 put → `try_load_mem_cached` 返回
+/// `None` → 断言失败；改动后无条件 put → 命中。
+#[test]
+fn background_tier_thumbnail_populates_mem_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let src = dir.path().join("src.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        80,
+        60,
+        image::Rgb([10, 20, 30]),
+    ))
+    .save(&src)
+    .unwrap();
+    let mtime = std::fs::metadata(&src).and_then(|m| m.modified()).ok();
+    let uri = format!("file://{}", src.display());
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+
+    // worker_loop 阻塞在 std Condvar 上（非 reactor 驱动），可直接跑在普通
+    // std::thread 上，无需 tokio 运行时；用 oneshot::blocking_recv 同步等待结果。
+    let stats: SharedStatsDirtyCallback = Arc::new(Mutex::new(None));
+    let _worker = {
+        let queue = loader.queue.clone();
+        let pool = loader.pool.clone();
+        let cache_dir = loader.cache_dir.clone();
+        let state = loader.state.clone();
+        let bg = loader.background_pull.clone();
+        std::thread::spawn(move || {
+            worker_loop(queue, pool, cache_dir, state, bg, None, stats);
+        })
+    };
+
+    let (tx, rx) = oneshot::channel();
+    loader.request(
+        uri.clone(),
+        ThumbnailSize::Small,
+        mtime,
+        tx,
+        TIER_BACKGROUND,
+    );
+
+    let loaded = rx
+        .blocking_recv()
+        .expect("worker should generate the thumbnail");
+    assert!(
+        loaded.texture.width() > 0,
+        "worker should return a real texture"
+    );
+
+    assert!(
+        loader
+            .try_load_mem_cached(&uri, ThumbnailSize::Small, mtime)
+            .is_some(),
+        "TIER_BACKGROUND thumbnail must be resident in mem_cache after generation"
+    );
+    // loader drop → shutdown() 置 closed + notify_all → detached worker 退出
+}
+
+/// fix #2: 磁盘缓存命中时不得重复写 `thumbnail_generated_at`。
+///
+/// 命中意味着此前一次冷生成已标记过该行（缓存文件只在标记它的那次生成中写出），
+/// 故每次磁盘命中都重标是纯浪费——且把所有 worker 经单写 DbActor 串行化，还顺带
+/// 触发 stats 回调刷统计标签。用 `stats_dirty_callback` 作探针：冷生成触发回调
+/// （counter +1），磁盘命中必须不再触发。
+///
+/// 单线程 worker 顺序处理两条请求：rx2 返回时，请求1的整轮迭代（含回调）已先于
+/// 请求2完成，故断言 `counter == 1` 同时证明「冷已标记」与「命中已跳过」
+/// （==0 表示冷没标记；==2 表示命中又标了一次）。
+#[test]
+fn disk_cache_hit_skips_thumbnail_mark_callback() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let src = dir.path().join("src.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+        80,
+        60,
+        image::Rgb([10, 20, 30]),
+    ))
+    .save(&src)
+    .unwrap();
+    let mtime = std::fs::metadata(&src).and_then(|m| m.modified()).ok();
+    let uri = format!("file://{}", src.display());
+
+    // 插入媒体行：request_for_media 需要 media_id != 0 才会走 mark 路径。
+    let now = chrono::Utc::now();
+    let id = db::insert_media_item(
+        &pool,
+        &crate::core::media::NewMediaItem {
+            uri: uri.clone(),
+            path: src.clone(),
+            folder_path: dir.path().to_path_buf(),
+            mime_type: "image/png".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(80),
+            height: Some(60),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: now,
+            file_size: std::fs::metadata(&src).unwrap().len(),
+            blake3_hash: "hash".into(),
+        },
+    )
+    .unwrap();
+
+    // 探针回调：每次 mark dispatch 自增。
+    let counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counter_for_cb = counter.clone();
+    let callback: StatsDirtyCallback = Arc::new(move || {
+        counter_for_cb.fetch_add(1, AtomicOrdering::SeqCst);
+    });
+    let stats: SharedStatsDirtyCallback = Arc::new(Mutex::new(Some(callback)));
+
+    let loader = ThumbnailLoader::new(pool.clone(), dir.path().join("cache"));
+    let _worker = {
+        let queue = loader.queue.clone();
+        let pool = loader.pool.clone();
+        let cache_dir = loader.cache_dir.clone();
+        let state = loader.state.clone();
+        let bg = loader.background_pull.clone();
+        std::thread::spawn(move || {
+            worker_loop(queue, pool, cache_dir, state, bg, None, stats);
+        })
+    };
+
+    // 请求1：冷生成 → 标记 → 回调（counter 0→1）。
+    let (tx1, rx1) = oneshot::channel();
+    loader.request_for_media(
+        id,
+        uri.clone(),
+        ThumbnailSize::Small,
+        mtime,
+        tx1,
+        TIER_BOOST,
+    );
+    let loaded1 = rx1
+        .blocking_recv()
+        .expect("cold generate should deliver a texture");
+    assert!(loaded1.texture.width() > 0);
+
+    // 清掉 mem_cache，强制请求2 miss mem → 走 worker → 命中磁盘缓存。
+    loader.clear_mem_cache();
+
+    // 请求2：磁盘命中 → 不得再标记、不得再触发回调。
+    let (tx2, rx2) = oneshot::channel();
+    loader.request_for_media(
+        id,
+        uri.clone(),
+        ThumbnailSize::Small,
+        mtime,
+        tx2,
+        TIER_BOOST,
+    );
+    let loaded2 = rx2
+        .blocking_recv()
+        .expect("disk hit should deliver a texture");
+    assert!(loaded2.texture.width() > 0);
+
+    assert_eq!(
+        counter.load(AtomicOrdering::SeqCst),
+        1,
+        "exactly one mark (cold only); disk-cache hit must not re-mark"
+    );
+    // loader drop → shutdown() → detached worker exits
 }
 
 /// 重定向预热起点后，下一次后台拉取应从该全局 DESC 偏移取，而非默认 0。

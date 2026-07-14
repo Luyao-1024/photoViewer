@@ -24,7 +24,7 @@ use decode::pixbuf_is_light;
 #[cfg(test)]
 use decode::{
     ensure_opaque, generate, generate_unavailable_placeholder, generate_via_pixbuf,
-    scale_pixbuf_to_fit,
+    scale_pixbuf_to_fit, DecodeOrigin,
 };
 use gtk4::gdk::Texture;
 use lru::LruCache;
@@ -411,7 +411,7 @@ impl ThumbnailLoader {
     /// （远超库规模才会发生）时，第 3 步才会失败；此时回滚在途项，调用方收到 `Err`。
     ///
     /// `tier`：`TIER_BOOST`（可见/视口优先）、`TIER_NORMAL`（默认）、
-    /// `TIER_BACKGROUND`（全局预热，不入 mem_cache，受 worker 限流）。
+    /// `TIER_BACKGROUND`（全局预热，入 mem_cache，受 worker 限流）。
     ///
     /// 锁序：`state{drop}` → `queue{drop}` →（回滚）`state{drop}`。两锁从不嵌套，无死锁。
     pub fn request(
@@ -771,7 +771,7 @@ pub(crate) fn generate_for_tests(
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<gdk_pixbuf::Pixbuf> {
-    generate(cache_dir, uri, size, mtime)
+    generate(cache_dir, uri, size, mtime).map(|(pb, _)| pb)
 }
 
 #[cfg(test)]

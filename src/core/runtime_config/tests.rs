@@ -36,7 +36,10 @@ fn missing_runtime_file_uses_central_defaults() {
         ThumbnailGenerationSpeed::Normal.worker_count()
     );
     assert_eq!(config.thumbnail_queue_capacity, 8192);
-    assert_eq!(config.thumbnail_mem_cache_cap, 128);
+    assert_eq!(
+        config.thumbnail_mem_cache_cap,
+        DEFAULT_THUMBNAIL_MEM_CACHE_CAP
+    );
     assert_eq!(config.thumbnail_disk_cache_bytes, 2 * 1024 * 1024 * 1024);
     assert_eq!(config.thumbnail_prewarm_poll_ms, 500);
     assert_eq!(config.thumbnail_idle_wait_ms, 30_000);

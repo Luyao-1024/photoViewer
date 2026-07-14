@@ -245,6 +245,13 @@ impl VirtualMediaModel {
     /// changed receive replacement notifications; GTK can therefore rebind
     /// visible cells without losing the model or the scroll adjustment.
     pub fn replace_ready_range(&self, range: Range<u32>, items: Vec<MediaItem>) {
+        let _span = tracing::debug_span!(
+            "vgrid:replace_ready_range",
+            range_start = range.start,
+            range_len = range.len(),
+            items = items.len(),
+        )
+        .entered();
         if range.start >= range.end {
             return;
         }
@@ -293,6 +300,7 @@ impl VirtualMediaModel {
     /// items retain their own boxed slot snapshots while bound; later re-entry
     /// turns an evicted slot back into a placeholder and schedules a new range.
     pub fn evict_outside(&self, keep: Range<u32>) {
+        let _span = tracing::debug_span!("vgrid:evict").entered();
         let mut changed_slots = Vec::new();
         {
             let mut state = self.imp().state.borrow_mut();
@@ -357,6 +365,8 @@ impl VirtualMediaModel {
     }
 
     fn emit_replacements(&self, mut positions: Vec<u32>) {
+        let _span =
+            tracing::debug_span!("vgrid:emit_replacements", positions = positions.len(),).entered();
         positions.sort_unstable();
         positions.dedup();
         {
