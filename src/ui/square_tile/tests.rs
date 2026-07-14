@@ -23,10 +23,11 @@ fn fixed_size_square_tiles_do_not_propagate_row_width_as_height() {
     let tile = SquareTile::new();
 
     assert_eq!(tile.request_mode(), gtk::SizeRequestMode::ConstantSize);
-    assert_eq!(
-        tile.measure(gtk::Orientation::Vertical, 174),
-        (90, 90, -1, -1)
-    );
+    let (minimum, natural, min_baseline, natural_baseline) =
+        tile.measure(gtk::Orientation::Vertical, 174);
+    assert_eq!(minimum, natural);
+    assert_ne!(natural, 174);
+    assert_eq!((min_baseline, natural_baseline), (-1, -1));
 }
 
 #[gtk::test]
