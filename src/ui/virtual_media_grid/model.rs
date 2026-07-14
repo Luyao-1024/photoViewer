@@ -66,7 +66,13 @@ pub(super) struct ModelState {
     layout: VirtualGridLayoutIndex,
     layout_generation: u64,
     ready_by_offset: BTreeMap<u32, MediaItem>,
+    /// GListModel promises the same object for a position while consumers
+    /// still hold it. Keep weak entries so GridView can retain identity for
+    /// visible slots without materialising the entire library.
+    slot_objects: BTreeMap<u32, glib::WeakRef<glib::BoxedAnyObject>>,
 }
+
+const SLOT_OBJECT_WEAK_CACHE_PRUNE_THRESHOLD: usize = 2_048;
 
 mod imp {
     use super::*;
@@ -96,9 +102,25 @@ mod imp {
         }
 
         fn item(&self, position: u32) -> Option<glib::Object> {
-            let state = self.state.borrow();
+            let mut state = self.state.borrow_mut();
+            if let Some(object) = state
+                .slot_objects
+                .get(&position)
+                .and_then(|weak| weak.upgrade())
+            {
+                return Some(object.upcast());
+            }
+            if state.slot_objects.len() >= SLOT_OBJECT_WEAK_CACHE_PRUNE_THRESHOLD {
+                state
+                    .slot_objects
+                    .retain(|_, weak| weak.upgrade().is_some());
+            }
             let slot = slot_state_at(&state, position)?;
-            Some(glib::BoxedAnyObject::new(slot).upcast())
+            let object = glib::BoxedAnyObject::new(slot);
+            let weak = glib::WeakRef::new();
+            weak.set(Some(&object));
+            state.slot_objects.insert(position, weak);
+            Some(object.upcast())
         }
     }
 }
@@ -133,6 +155,50 @@ impl VirtualMediaModel {
             state.layout = layout;
             state.layout_generation = generation;
             state.ready_by_offset.clear();
+            state.slot_objects.clear();
+            (old_slots, state.layout.slot_count())
+        };
+        self.items_changed(0, old_slots, new_slots);
+    }
+
+    /// Replaces the physical layout and exposes an already-known initial media
+    /// range in the same ListModel notification.
+    ///
+    /// A consumer must never observe the structural `items_changed` followed
+    /// synchronously by replacements for those same just-created positions.
+    /// GtkGridView's item manager can still be realizing the new ListItems at
+    /// that point. Populate the state first, then emit one structural change
+    /// so every queried slot already has its final initial state.
+    pub fn replace_layout_with_ready_range(
+        &self,
+        layout: VirtualGridLayoutIndex,
+        generation: u64,
+        range: Range<u32>,
+        items: Vec<MediaItem>,
+    ) {
+        let (old_slots, new_slots) = {
+            let mut state = self.imp().state.borrow_mut();
+            let old_slots = state.layout.slot_count();
+            state.layout = layout;
+            state.layout_generation = generation;
+            state.ready_by_offset.clear();
+            state.slot_objects.clear();
+
+            for (index, item) in items.into_iter().enumerate() {
+                let Ok(index) = u32::try_from(index) else {
+                    break;
+                };
+                let Some(offset) = range.start.checked_add(index) else {
+                    break;
+                };
+                if offset >= range.end {
+                    break;
+                }
+                if state.layout.slot_for_media_offset(offset).is_some() {
+                    state.ready_by_offset.insert(offset, item);
+                }
+            }
+
             (old_slots, state.layout.slot_count())
         };
         self.items_changed(0, old_slots, new_slots);
@@ -256,6 +322,12 @@ impl VirtualMediaModel {
     fn emit_replacements(&self, mut positions: Vec<u32>) {
         positions.sort_unstable();
         positions.dedup();
+        {
+            let mut state = self.imp().state.borrow_mut();
+            for position in &positions {
+                state.slot_objects.remove(position);
+            }
+        }
         let mut run_start = None;
         let mut previous: u32 = 0;
 

@@ -682,9 +682,7 @@ impl VirtualMediaGrid {
         let counts = counts_for_items(&items, self.mode());
         self.imp().metadata_counts.replace(Some(counts.clone()));
         let layout = VirtualGridLayoutIndex::new(&counts, self.imp().columns.get());
-        self.replace_layout(layout);
-        self.model()
-            .replace_ready_range(0..items.len().min(u32::MAX as usize) as u32, items);
+        self.replace_layout_with_initial_items(layout, items);
     }
 
     fn reload_metadata_now(&self) {
@@ -741,18 +739,24 @@ impl VirtualMediaGrid {
         self.imp().live_total.set(total);
         self.imp().metadata_counts.replace(Some(counts.clone()));
         self.imp().metadata_ready.set(true);
-        self.replace_layout(VirtualGridLayoutIndex::new(
-            &counts,
-            self.imp().columns.get(),
-        ));
         // Preserve instant first paint when the shared startup window matches
         // the beginning of the canonical live ordering; the authoritative
-        // range worker will replace it if it changed in the meantime.
-        if let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() {
-            let seed = media_items_from_list(&media_list);
-            let limit = seed.len().min(total as usize) as u32;
-            self.model().replace_ready_range(0..limit, seed);
-        }
+        // range worker will replace it if it changed in the meantime. Seed
+        // those items atomically with the layout notification: emitting an
+        // immediate second replacement for freshly inserted GridView slots can
+        // race GTK 4.20's ListItem accessibility bookkeeping.
+        let mut seed = self
+            .imp()
+            .media_list
+            .borrow()
+            .as_ref()
+            .map(media_items_from_list)
+            .unwrap_or_default();
+        seed.truncate(total as usize);
+        self.replace_layout_with_initial_items(
+            VirtualGridLayoutIndex::new(&counts, self.imp().columns.get()),
+            seed,
+        );
         self.schedule_visible_range_after_layout();
     }
 
@@ -779,6 +783,19 @@ impl VirtualMediaGrid {
         let generation = self.imp().layout_generation.get().saturating_add(1);
         self.imp().layout_generation.set(generation);
         self.model().replace_layout(layout, generation);
+    }
+
+    fn replace_layout_with_initial_items(
+        &self,
+        layout: VirtualGridLayoutIndex,
+        items: Vec<crate::core::media::MediaItem>,
+    ) {
+        self.imp().range.borrow_mut().invalidate();
+        let generation = self.imp().layout_generation.get().saturating_add(1);
+        self.imp().layout_generation.set(generation);
+        let limit = items.len().min(u32::MAX as usize) as u32;
+        self.model()
+            .replace_layout_with_ready_range(layout, generation, 0..limit, items);
     }
 
     fn update_columns_for_width(&self, width: i32) {

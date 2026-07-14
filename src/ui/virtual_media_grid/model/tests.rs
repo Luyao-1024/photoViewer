@@ -76,6 +76,26 @@ fn model_reports_slot_count_and_placeholder_without_io() {
 }
 
 #[test]
+fn model_reuses_a_live_slot_object_until_that_slot_changes() {
+    let model = VirtualMediaModel::new(layout());
+
+    let first = model.item(0).expect("slot should have an object");
+    let same = model.item(0).expect("slot should reuse its live object");
+    assert_eq!(first, same);
+
+    model.replace_ready_range(0..1, vec![item(10)]);
+    let updated = model.item(0).expect("changed slot should have an object");
+    assert_ne!(first, updated);
+    let updated = updated
+        .downcast::<glib::BoxedAnyObject>()
+        .expect("virtual slot items use BoxedAnyObject");
+    assert!(matches!(
+        *updated.borrow::<GridSlotState>(),
+        GridSlotState::Ready { ref item, .. } if item.id == 10
+    ));
+}
+
+#[test]
 fn replacing_ready_range_only_retains_returned_items() {
     let model = VirtualMediaModel::new(layout());
     model.replace_ready_range(0..3, vec![item(10), item(11), item(12)]);
@@ -138,5 +158,23 @@ fn layout_replacement_clears_ready_items_and_changes_generation() {
     assert!(matches!(
         model.slot_state(0),
         Some(GridSlotState::Placeholder { .. })
+    ));
+}
+
+#[test]
+fn layout_replacement_can_publish_its_initial_ready_range_atomically() {
+    let model = VirtualMediaModel::new(layout());
+
+    model.replace_layout_with_ready_range(layout(), 7, 0..2, vec![item(10), item(11)]);
+
+    assert_eq!(model.layout_generation(), 7);
+    assert_eq!(model.ready_item_count(), 2);
+    assert!(matches!(
+        model.slot_state(0),
+        Some(GridSlotState::Ready { ref item, .. }) if item.id == 10
+    ));
+    assert!(matches!(
+        model.slot_state(1),
+        Some(GridSlotState::Ready { ref item, .. }) if item.id == 11
     ));
 }

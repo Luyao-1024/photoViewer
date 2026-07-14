@@ -35,8 +35,8 @@ fn square_tile_clips_thumbnail_to_glass_card_radius() {
     assert!(picture.has_css_class("thumb-image"));
 }
 
-// The translucent-white selection checkmark is parented atop the
-// picture in every tile and revealed by CSS on flowboxchild:selected.
+// The translucent-white selection checkmark is parented by the shared overlay
+// atop the picture in every tile and revealed by CSS on flowboxchild:selected.
 #[gtk::test]
 fn square_tile_has_selection_checkmark_atop_picture() {
     let _ = gtk::init();
@@ -50,9 +50,40 @@ fn square_tile_has_selection_checkmark_atop_picture() {
         .expect("SquareTile should construct its checkmark child")
         .clone();
     assert!(checkmark.has_css_class("thumb-checkmark"));
-    // Parented (always allocated; visibility driven by CSS opacity)
-    // and drawn above the picture.
+    // Parented (always allocated; visibility driven by CSS opacity).
     assert!(checkmark.parent().is_some());
+}
+
+#[gtk::test]
+fn square_tile_uses_one_managed_overlay_child_tree() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+    let content = tile
+        .imp()
+        .content
+        .borrow()
+        .as_ref()
+        .expect("SquareTile should construct its overlay content root")
+        .clone();
+    let picture = tile
+        .imp()
+        .picture
+        .borrow()
+        .as_ref()
+        .expect("SquareTile should construct its picture child")
+        .clone();
+    let checkmark = tile
+        .imp()
+        .checkmark
+        .borrow()
+        .as_ref()
+        .expect("SquareTile should construct its checkmark child")
+        .clone();
+
+    assert_eq!(tile.first_child(), Some(content.clone().upcast()));
+    assert_eq!(content.parent(), Some(tile.clone().upcast()));
+    assert_eq!(picture.parent(), Some(content.clone().upcast()));
+    assert_eq!(checkmark.parent(), Some(content.upcast()));
 }
 
 #[gtk::test]
@@ -156,6 +187,35 @@ fn square_tile_loading_placeholder_is_visible_until_a_paintable_arrives() {
 
     assert!(tile.has_css_class("thumb-loading"));
     assert!(tile.has_css_class("thumb-placeholder"));
+}
+
+#[gtk::test]
+fn square_tile_only_restores_opacity_on_a_legacy_flowbox_wrapper() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+    let generic_parent = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    generic_parent.append(&tile);
+    generic_parent.set_opacity(0.25);
+
+    tile.set_paintable(None::<&gtk::gdk::Paintable>);
+
+    assert!(
+        (generic_parent.opacity() - 0.25).abs() < 0.01,
+        "a non-FlowBox parent must not be changed by set_paintable"
+    );
+
+    generic_parent.remove(&tile);
+    let flow = gtk::FlowBox::new();
+    flow.append(&tile);
+    let flow_child = tile
+        .parent()
+        .and_downcast::<gtk::FlowBoxChild>()
+        .expect("FlowBox should wrap the tile in a FlowBoxChild");
+    flow_child.set_opacity(0.25);
+
+    tile.set_paintable(None::<&gtk::gdk::Paintable>);
+
+    assert_eq!(flow_child.opacity(), 1.0);
 }
 
 #[gtk::test]

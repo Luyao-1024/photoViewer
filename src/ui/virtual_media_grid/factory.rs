@@ -124,19 +124,36 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() else {
                 return;
             };
-            let Some(grid) = weak.upgrade() else {
-                return;
-            };
-            if let Some(tile) = list_item
-                .child()
-                .and_then(|child| child.downcast::<SquareTile>().ok())
-            {
-                grid.remove_factory_cell(&tile);
-            }
+            let grid = weak.upgrade();
+            teardown_list_item(grid.as_ref(), &list_item);
         });
     }
 
     grid.set_list_factory(&factory);
+}
+
+/// Reverse the permanent child setup when GTK retires a list item.
+///
+/// GtkGridView may retire items while replacing the initial provisional layout
+/// with authoritative metadata. This must remain valid even when the grid was
+/// disposed first, because the ListItem still owns its setup child until this
+/// callback clears it.
+fn teardown_list_item(grid: Option<&VirtualMediaGrid>, list_item: &gtk::ListItem) {
+    let tile = list_item
+        .child()
+        .and_then(|child| child.downcast::<SquareTile>().ok());
+
+    if let (Some(grid), Some(tile)) = (grid, tile.as_ref()) {
+        if let Some(cell) = grid.factory_cell_for(tile) {
+            *cell.binding.borrow_mut() = None;
+            cell.tile.clear_for_rebind();
+        }
+        grid.remove_factory_cell(tile);
+    }
+
+    list_item.set_activatable(false);
+    list_item.set_selectable(false);
+    list_item.set_child(None::<&gtk::Widget>);
 }
 
 fn bind_cell(
@@ -213,11 +230,17 @@ fn bind_ready_cell(
     if let Some(loaded) =
         loader.try_load_mem_cached(&item.uri, spec.thumbnail_size(), Some(item_mtime))
     {
-        if let Some(is_light) = loaded.is_light {
-            cell.tile.set_background_is_light(is_light);
-            grid.notify_background_changed();
-        }
-        cell.tile.set_paintable(Some(&loaded.texture));
+        // A cache hit is painted on the next idle turn just like an async
+        // result. Keep the visible skeleton in the intervening frame instead
+        // of briefly showing an empty recycled card.
+        cell.tile.show_loading_placeholder();
+        defer_thumbnail_paint(
+            cell.tile.downgrade(),
+            grid.downgrade(),
+            cell.binding.clone(),
+            binding,
+            loaded,
+        );
         return;
     }
 
@@ -230,6 +253,41 @@ fn bind_ready_cell(
         item,
         loader,
     );
+}
+
+/// Apply a thumbnail outside `GtkSignalListItemFactory::bind`.
+///
+/// GTK 4.22 updates a GridView's internal accessibility tree while it emits
+/// `bind`. Changing CSS classes on the tile in that same call stack can
+/// re-enter that bookkeeping. An idle callback also naturally coalesces a
+/// burst of in-memory cache hits, while the binding comparison prevents a
+/// recycled cell from receiving an old texture.
+fn defer_thumbnail_paint(
+    tile_weak: glib::WeakRef<SquareTile>,
+    grid_weak: glib::WeakRef<VirtualMediaGrid>,
+    binding_state: Rc<RefCell<Option<TileBinding>>>,
+    binding: TileBinding,
+    loaded: crate::core::thumbnails::LoadedThumb,
+) {
+    glib::idle_add_local_once(move || {
+        let current_matches = binding_state
+            .borrow()
+            .as_ref()
+            .is_some_and(|current| current == &binding);
+        if !current_matches {
+            return;
+        }
+        let Some(tile) = tile_weak.upgrade() else {
+            return;
+        };
+        if let Some(is_light) = loaded.is_light {
+            tile.set_background_is_light(is_light);
+            if let Some(grid) = grid_weak.upgrade() {
+                grid.notify_background_changed();
+            }
+        }
+        tile.set_paintable(Some(&loaded.texture));
+    });
 }
 
 fn request_thumbnail(
@@ -258,23 +316,7 @@ fn request_thumbnail(
         let Ok(loaded) = rx.await else {
             return;
         };
-        let current_matches = binding_state
-            .borrow()
-            .as_ref()
-            .is_some_and(|current| current == &binding);
-        if !current_matches {
-            return;
-        }
-        let Some(tile) = tile_weak.upgrade() else {
-            return;
-        };
-        if let Some(is_light) = loaded.is_light {
-            tile.set_background_is_light(is_light);
-            if let Some(grid) = grid_weak.upgrade() {
-                grid.notify_background_changed();
-            }
-        }
-        tile.set_paintable(Some(&loaded.texture));
+        defer_thumbnail_paint(tile_weak, grid_weak, binding_state, binding, loaded);
     });
 }
 

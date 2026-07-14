@@ -58,9 +58,12 @@ viewport-adjacent range; all other media slots are light loading placeholders.
 `VirtualGridLayoutIndex` maps section/media offsets to slots without materializing
 widgets or a full `MediaItem` list. Database metadata and ranges are fetched off
 the GTK thread, generation-checked, and coalesced while a scrollbar drag is in
-flight. GTK recycles `SquareTile` cells through `GtkSignalListItemFactory`, and
-thumbnail results must validate the current layout generation, slot, MediaId,
-and cache key before painting a recycled cell.
+flight. The lazy `gio::ListModel` keeps a stable GObject identity for each
+queried slot until GTK releases it, and invalidates affected identities before
+emitting replacement notifications. GTK recycles `SquareTile` cells through
+`GtkSignalListItemFactory`; thumbnail results validate the current layout
+generation, slot, MediaId, and cache key, then paint on an idle turn after the
+factory bind stack has returned.
 
 The Photos virtual grid groups image and video `MediaItem`s by `taken_at`,
 falling back to file time. Its fixed mode metrics are: Year 90 px, Month 180 px,
