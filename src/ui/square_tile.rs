@@ -10,6 +10,9 @@ mod imp {
     use super::*;
 
     pub struct SquareTile {
+        /// A single manually-parented root lets a standard GtkOverlay own the
+        /// picture and badge hierarchy while GridView recycles the tile.
+        pub content: RefCell<Option<gtk::Overlay>>,
         pub picture: RefCell<Option<gtk::Picture>>,
         /// 半透明白色勾选标记，浮于缩略图右下角；始终 parented/allocated，
         /// 通过 CSS（flowboxchild:selected .thumb-checkmark）控制显隐，
@@ -19,6 +22,15 @@ mod imp {
         pub duration_badge: RefCell<Option<gtk::Label>>,
         pub favorite_badge: RefCell<Option<gtk::Image>>,
         pub target: Cell<i32>,
+        /// Only virtual GridView cells participate in height-for-width
+        /// measurement. Fixed-size covers must not turn a parent row width
+        /// into their requested height.
+        pub height_for_width: Cell<bool>,
+        /// Virtual GridView cells may lose a few pixels to the scroller or
+        /// CSS box model after their column count has been chosen. Keep the
+        /// target as the natural size while allowing that final allocation to
+        /// shrink instead of rejecting GTK's measure request.
+        pub allow_width_shrink: Cell<bool>,
         pub background_is_light: Cell<Option<bool>>,
         /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
         pub cache_key: RefCell<Option<String>>,
@@ -28,12 +40,15 @@ mod imp {
     impl Default for SquareTile {
         fn default() -> Self {
             Self {
+                content: RefCell::new(None),
                 picture: RefCell::new(None),
                 checkmark: RefCell::new(None),
                 motion_badge: RefCell::new(None),
                 duration_badge: RefCell::new(None),
                 favorite_badge: RefCell::new(None),
                 target: Cell::new(90),
+                height_for_width: Cell::new(false),
+                allow_width_shrink: Cell::new(false),
                 background_is_light: Cell::new(None),
                 cache_key: RefCell::new(None),
                 thumbnail_request: RefCell::new(None),
@@ -52,28 +67,38 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
+            obj.add_css_class("thumb-tile");
+            obj.add_css_class("glass-thumb-card");
+            obj.set_overflow(gtk::Overflow::Hidden);
+
+            let content = gtk::Overlay::new();
+            content.set_hexpand(true);
+            content.set_vexpand(true);
+            content.set_parent(&*obj);
+            *self.content.borrow_mut() = Some(content.clone());
+
             let picture = gtk::Picture::builder()
                 .content_fit(gtk::ContentFit::Cover)
                 .can_shrink(true)
                 .build();
-            obj.add_css_class("thumb-tile");
-            obj.add_css_class("glass-thumb-card");
-            obj.set_overflow(gtk::Overflow::Hidden);
             picture.add_css_class("thumb-image");
-            picture.set_parent(&*obj);
+            content.set_child(Some(&picture));
             *self.picture.borrow_mut() = Some(picture);
 
             // Selection checkmark: a translucent-white tick pinned to the
             // bottom-right, drawn above the picture. It is always
             // parented/allocated but invisible (opacity 0) until the
             // wrapping FlowBoxChild becomes :selected, when CSS reveals it.
-            // Parented after the picture so GTK draws it on top.
             let checkmark = gtk::Image::builder()
                 .icon_name("object-select-symbolic")
                 .pixel_size(22)
                 .build();
             checkmark.add_css_class("thumb-checkmark");
-            checkmark.set_parent(&*obj);
+            checkmark.set_halign(gtk::Align::End);
+            checkmark.set_valign(gtk::Align::End);
+            checkmark.set_margin_end(6);
+            checkmark.set_margin_bottom(6);
+            content.add_overlay(&checkmark);
             *self.checkmark.borrow_mut() = Some(checkmark);
 
             let motion_badge = gtk::Image::builder()
@@ -82,7 +107,11 @@ mod imp {
                 .visible(false)
                 .build();
             motion_badge.add_css_class("thumb-motion-badge");
-            motion_badge.set_parent(&*obj);
+            motion_badge.set_halign(gtk::Align::Start);
+            motion_badge.set_valign(gtk::Align::End);
+            motion_badge.set_margin_start(7);
+            motion_badge.set_margin_bottom(7);
+            content.add_overlay(&motion_badge);
             *self.motion_badge.borrow_mut() = Some(motion_badge);
 
             let duration_badge = gtk::Label::builder()
@@ -91,7 +120,9 @@ mod imp {
                 .valign(gtk::Align::End)
                 .build();
             duration_badge.add_css_class("thumb-video-duration");
-            duration_badge.set_parent(&*obj);
+            duration_badge.set_margin_start(7);
+            duration_badge.set_margin_bottom(7);
+            content.add_overlay(&duration_badge);
             *self.duration_badge.borrow_mut() = Some(duration_badge);
 
             let favorite_badge = gtk::Image::builder()
@@ -100,37 +131,58 @@ mod imp {
                 .visible(false)
                 .build();
             favorite_badge.add_css_class("thumb-favorite-badge");
-            favorite_badge.set_parent(&*obj);
+            favorite_badge.set_halign(gtk::Align::End);
+            favorite_badge.set_valign(gtk::Align::Start);
+            favorite_badge.set_margin_end(7);
+            favorite_badge.set_margin_top(7);
+            content.add_overlay(&favorite_badge);
             *self.favorite_badge.borrow_mut() = Some(favorite_badge);
         }
 
         fn dispose(&self) {
-            if let Some(p) = self.picture.borrow_mut().take() {
-                p.unparent();
+            if let Some(content) = self.content.borrow_mut().take() {
+                content.unparent();
             }
-            if let Some(c) = self.checkmark.borrow_mut().take() {
-                c.unparent();
-            }
-            if let Some(b) = self.motion_badge.borrow_mut().take() {
-                b.unparent();
-            }
-            if let Some(d) = self.duration_badge.borrow_mut().take() {
-                d.unparent();
-            }
-            if let Some(f) = self.favorite_badge.borrow_mut().take() {
-                f.unparent();
-            }
+            self.picture.borrow_mut().take();
+            self.checkmark.borrow_mut().take();
+            self.motion_badge.borrow_mut().take();
+            self.duration_badge.borrow_mut().take();
+            self.favorite_badge.borrow_mut().take();
         }
     }
 
     impl WidgetImpl for SquareTile {
-        // Fixed square size: `target` in both orientations (height-for-width
-        // returns the given width, so it stays square at any column size).
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            if !self.height_for_width.get() {
+                return gtk::SizeRequestMode::ConstantSize;
+            }
+            // GridView asks every realized child for its row height at the
+            // allocated column width. Without this declaration GTK treats the
+            // tile as constant-size, passes `-1` here, and leaves a resized
+            // column paired with the old fixed-height tile.
+            gtk::SizeRequestMode::HeightForWidth
+        }
+
+        // `target` is the preferred square size in the unconstrained
+        // direction. With a real column width, HeightForWidth returns that
+        // width so the tile stays square as GridView reflows. Virtual grid
+        // cells retain this as their natural width but may advertise a
+        // smaller minimum: their final allocated column can be a couple of
+        // pixels narrower than the viewport-derived layout target.
         // NB: do NOT set a layout manager here — GTK4 would then measure via
         // the layout manager and bypass this override.
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let target = self.target.get().max(1);
-            let size = if orientation == gtk::Orientation::Vertical && for_size > 0 {
+            if orientation == gtk::Orientation::Horizontal {
+                let minimum = if self.allow_width_shrink.get() {
+                    1
+                } else {
+                    target
+                };
+                return (minimum, target, -1, -1);
+            }
+
+            let size = if self.height_for_width.get() && for_size > 0 {
                 for_size
             } else {
                 target
@@ -145,48 +197,8 @@ mod imp {
             // allocation non-negative until the next normal layout pass.
             let width = width.max(0);
             let height = height.max(0);
-            if let Some(p) = self.picture.borrow().as_ref() {
-                p.size_allocate(&gtk::Allocation::new(0, 0, width, height), baseline);
-            }
-            // Pin the checkmark to the bottom-right corner with a small
-            // margin. Use its natural (pixel-size) extent, clamped to the
-            // tile so it never overflows the clipped card.
-            if let Some(c) = self.checkmark.borrow().as_ref() {
-                let (_, cw, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
-                let (_, ch, _, _) = c.measure(gtk::Orientation::Vertical, -1);
-                let cw = cw.max(0).min(width);
-                let ch = ch.max(0).min(height);
-                let margin = 6;
-                let x = (width - cw - margin).max(0);
-                let y = (height - ch - margin).max(0);
-                c.size_allocate(&gtk::Allocation::new(x, y, cw, ch), -1);
-            }
-            if let Some(b) = self.motion_badge.borrow().as_ref() {
-                let (_, bw, _, _) = b.measure(gtk::Orientation::Horizontal, -1);
-                let (_, bh, _, _) = b.measure(gtk::Orientation::Vertical, -1);
-                let bw = bw.max(0).min(width);
-                let bh = bh.max(0).min(height);
-                let margin = 7;
-                let y = (height - bh - margin).max(0);
-                b.size_allocate(&gtk::Allocation::new(margin, y, bw, bh), -1);
-            }
-            if let Some(d) = self.duration_badge.borrow().as_ref() {
-                let (_, dw, _, _) = d.measure(gtk::Orientation::Horizontal, -1);
-                let (_, dh, _, _) = d.measure(gtk::Orientation::Vertical, -1);
-                let dw = dw.max(0).min(width);
-                let dh = dh.max(0).min(height);
-                let margin = 7;
-                let y = (height - dh - margin).max(0);
-                d.size_allocate(&gtk::Allocation::new(margin, y, dw, dh), -1);
-            }
-            if let Some(f) = self.favorite_badge.borrow().as_ref() {
-                let (_, fw, _, _) = f.measure(gtk::Orientation::Horizontal, -1);
-                let (_, fh, _, _) = f.measure(gtk::Orientation::Vertical, -1);
-                let fw = fw.max(0).min(width);
-                let fh = fh.max(0).min(height);
-                let margin = 7;
-                let x = (width - fw - margin).max(0);
-                f.size_allocate(&gtk::Allocation::new(x, margin, fw, fh), -1);
+            if let Some(content) = self.content.borrow().as_ref() {
+                content.size_allocate(&gtk::Allocation::new(0, 0, width, height), baseline);
             }
         }
     }
@@ -214,8 +226,27 @@ impl SquareTile {
         self.queue_resize();
     }
 
+    pub fn set_height_for_width(&self, enabled: bool) {
+        if self.imp().height_for_width.replace(enabled) != enabled {
+            self.queue_resize();
+        }
+    }
+
     pub fn target(&self) -> i32 {
         self.imp().target.get()
+    }
+
+    /// Let a virtual `GtkGridView` allocate this square at a width slightly
+    /// below its preferred target. Other grids retain the default fixed
+    /// minimum width so their existing layout contracts are unchanged.
+    pub fn set_allow_width_shrink(&self, allow: bool) {
+        if self.imp().allow_width_shrink.replace(allow) != allow {
+            self.queue_resize();
+        }
+    }
+
+    pub fn allows_width_shrink(&self) -> bool {
+        self.imp().allow_width_shrink.get()
     }
 
     pub fn set_paintable<P: IsA<gtk::gdk::Paintable>>(&self, paintable: Option<&P>) {
@@ -228,11 +259,12 @@ impl SquareTile {
         // 不要在此处 widget.set_opacity，否则会绕过 CSS transition 直接跳变。
         self.remove_css_class("thumb-loading");
         self.remove_css_class("thumb-placeholder");
-        // 父 FlowBoxChild 在 sync_flow_child_visibility_for_tile 里随
-        // loading 状态同步到父 FlowBoxChild；纹理到位时立刻把它恢复可见，
-        // 好让上面的 tile 淡入能被看到。
-        if let Some(parent) = self.parent() {
-            parent.set_opacity(1.0);
+        // Legacy FlowBox grids fade their wrapper itself. Restore only that
+        // known wrapper once a texture arrives. A GtkGridView uses a private
+        // list-item wrapper here; changing its opacity during factory bind is
+        // re-entrant with GTK's accessibility bookkeeping.
+        if let Some(flow_child) = self.parent().and_downcast::<gtk::FlowBoxChild>() {
+            flow_child.set_opacity(1.0);
         }
     }
 

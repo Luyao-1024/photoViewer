@@ -275,6 +275,47 @@ impl MainWindow {
         content.append(&build_scan_paths_group(parent));
         content.append(&self.build_trash_settings_group(parent));
 
+        let grid_group = adw::PreferencesGroup::new();
+        grid_group.set_title(&tr("setting.section.grid"));
+        grid_group.set_description(Some(&tr("setting.section.grid_description")));
+        grid_group.add_css_class("settings-preferences-group");
+        content.append(&grid_group);
+
+        let columns_spin = gtk::SpinButton::with_range(
+            runtime_config::MIN_PHOTOS_GRID_COLUMNS as f64,
+            runtime_config::MAX_PHOTOS_GRID_COLUMNS as f64,
+            1.0,
+        );
+        columns_spin.set_value(runtime_config::photos_grid_columns() as f64);
+        columns_spin.set_numeric(true);
+        columns_spin.set_wrap(false);
+        let columns_row = adw::ActionRow::new();
+        columns_row.add_css_class("settings-action-row");
+        columns_row.set_title(&tr("setting.photos_grid_columns"));
+        columns_row.set_subtitle(&tr("setting.photos_grid_columns_description"));
+        columns_row.set_activatable(false);
+        columns_row.add_suffix(&columns_spin);
+        grid_group.add(&columns_row);
+
+        let parent_for_columns = parent.clone();
+        columns_spin.connect_value_changed(move |spin| {
+            let columns = spin.value_as_int().max(1) as usize;
+            match runtime_config::set_photos_grid_columns(columns) {
+                Ok(()) => {
+                    if let Ok(window) = parent_for_columns.clone().downcast::<MainWindow>() {
+                        window.set_photos_grid_columns(columns);
+                    }
+                }
+                Err(err) => show_settings_error_dialog(
+                    &parent_for_columns,
+                    &trf(
+                        "setting.photos_grid_columns_save_failed",
+                        &[("error", &err)],
+                    ),
+                ),
+            }
+        });
+
         let storage_group = adw::PreferencesGroup::new();
         storage_group.set_title(&tr("setting.section.storage"));
         storage_group.set_description(Some(&tr("setting.section.storage_description")));

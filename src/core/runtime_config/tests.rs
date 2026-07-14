@@ -23,7 +23,6 @@ fn missing_runtime_file_uses_central_defaults() {
 
     let config = read_runtime_config_at(&path);
 
-    assert_eq!(config.photos_grid_backend, DEFAULT_PHOTOS_GRID_BACKEND);
     assert_eq!(config.initial_media_page_size, 500);
     assert_eq!(config.virtual_media_page_size, 500);
     assert_eq!(config.ui_media_list_cap, 1500);
@@ -31,6 +30,7 @@ fn missing_runtime_file_uses_central_defaults() {
     assert_eq!(config.grid_render_absolute_cap, 1_200);
     assert_eq!(config.grid_render_expand_step, 200);
     assert_eq!(config.grid_reprioritize_debounce_ms, 120);
+    assert_eq!(config.photos_grid_columns, DEFAULT_PHOTOS_GRID_COLUMNS);
     assert_eq!(
         config.thumbnail_worker_count,
         ThumbnailGenerationSpeed::Normal.worker_count()
@@ -52,55 +52,6 @@ fn missing_runtime_file_uses_central_defaults() {
 }
 
 #[test]
-fn photos_grid_backend_parses_supported_values() {
-    let path = tmp_path("photos-grid-backend-valid");
-    cleanup(&path);
-
-    for (value, expected) in [
-        ("flowbox", PhotosGridBackend::FlowBox),
-        ("gridview", PhotosGridBackend::GridView),
-    ] {
-        std::fs::write(&path, format!(r#"{{"photos_grid_backend":"{value}"}}"#)).unwrap();
-
-        assert_eq!(read_runtime_config_at(&path).photos_grid_backend, expected);
-    }
-
-    cleanup(&path);
-}
-
-#[test]
-fn photos_grid_backend_unknown_value_uses_safe_default() {
-    let path = tmp_path("photos-grid-backend-unknown");
-    cleanup(&path);
-
-    for value in [r#""experimental""#, "false", "[]"] {
-        std::fs::write(&path, format!(r#"{{"photos_grid_backend":{value}}}"#)).unwrap();
-
-        assert_eq!(
-            read_runtime_config_at(&path).photos_grid_backend,
-            DEFAULT_PHOTOS_GRID_BACKEND,
-            "unexpected backend value {value} must not prevent startup"
-        );
-    }
-
-    cleanup(&path);
-}
-
-#[test]
-fn photos_grid_backend_missing_value_uses_safe_default() {
-    let path = tmp_path("photos-grid-backend-missing");
-    cleanup(&path);
-    std::fs::write(&path, "{}").unwrap();
-
-    assert_eq!(
-        read_runtime_config_at(&path).photos_grid_backend,
-        DEFAULT_PHOTOS_GRID_BACKEND
-    );
-
-    cleanup(&path);
-}
-
-#[test]
 fn runtime_file_overrides_sizing_and_strategy_values() {
     let path = tmp_path("overrides");
     cleanup(&path);
@@ -114,6 +65,7 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
               "grid_render_absolute_cap": 1300,
               "grid_render_expand_step": 250,
               "grid_reprioritize_debounce_ms": 160,
+              "photos_grid_columns": 7,
               "thumbnail_worker_count": 3,
               "thumbnail_queue_capacity": 4096,
               "thumbnail_mem_cache_cap": 24,
@@ -140,6 +92,7 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
     assert_eq!(config.grid_render_absolute_cap, 1300);
     assert_eq!(config.grid_render_expand_step, 250);
     assert_eq!(config.grid_reprioritize_debounce_ms, 160);
+    assert_eq!(config.photos_grid_columns, 7);
     assert_eq!(config.thumbnail_worker_count, 3);
     assert_eq!(config.thumbnail_queue_capacity, 4096);
     assert_eq!(config.thumbnail_mem_cache_cap, 24);
@@ -171,6 +124,7 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
               "grid_render_absolute_cap": 0,
               "grid_render_expand_step": 0,
               "grid_reprioritize_debounce_ms": 0,
+              "photos_grid_columns": 99,
               "thumbnail_worker_count": 0,
               "thumbnail_queue_capacity": 0,
               "thumbnail_mem_cache_cap": 0,
@@ -196,6 +150,7 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
     assert_eq!(config.grid_render_absolute_cap, 1);
     assert_eq!(config.grid_render_expand_step, 1);
     assert_eq!(config.grid_reprioritize_debounce_ms, 1);
+    assert_eq!(config.photos_grid_columns, MAX_PHOTOS_GRID_COLUMNS);
     assert_eq!(config.thumbnail_worker_count, 1);
     assert_eq!(config.thumbnail_queue_capacity, 1);
     assert_eq!(config.thumbnail_mem_cache_cap, 1);

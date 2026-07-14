@@ -12,12 +12,14 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
 use photo_viewer::core::albums::Album;
+use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use photo_viewer::core::thumbnails::ThumbnailLoader;
 use photo_viewer::core::{albums, db};
+use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
 use photo_viewer::ui::{
-    album_picker, AlbumBrowserPage, AlbumDetailPage, MainWindow, MediaGrid, ModeSelector,
-    PhotosPage, SearchPage, TrashPage, ViewerPage,
+    album_picker, AlbumBrowserPage, AlbumDetailPage, MainWindow, ModeSelector, PhotosPage,
+    SearchPage, TrashPage, ViewerPage,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -133,15 +135,10 @@ fn mode_selector_click_switches_photos_view() {
 
 fn thumbnail_activation_opens_one_viewer() {
     let fixture = build_photos_page_with_nav();
-    let first_tile =
-        first_flowbox_child(fixture.page.upcast_ref()).expect("rendered thumbnail exists");
-    let flow = first_tile
-        .parent()
-        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
-        .expect("thumbnail child should belong to a FlowBox");
+    let grid = visible_photos_grid(&fixture.page);
 
-    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
-    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    activate_virtual_grid_slot(&grid, 0);
+    activate_virtual_grid_slot(&grid, 0);
 
     assert_eq!(
         fixture.nav.navigation_stack().n_items(),
@@ -160,21 +157,10 @@ fn thumbnail_activation_opens_one_viewer() {
 
 fn photos_batch_toolbar_clicks_select_favorite_and_album() {
     let fixture = build_photos_page_with_nav();
-    let stack = find_descendant::<gtk::Stack>(fixture.page.upcast_ref())
-        .expect("PhotosPage should contain a GtkStack");
-    let grid = stack
-        .visible_child()
-        .and_downcast::<MediaGrid>()
-        .expect("Day grid should be visible");
-    let first_tile =
-        first_flowbox_child(grid.upcast_ref()).expect("rendered thumbnail exists in Day grid");
-    let flow = first_tile
-        .parent()
-        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
-        .expect("thumbnail child should belong to a FlowBox");
+    let grid = visible_photos_grid(&fixture.page);
+    let first_id = MediaId::from(fixture.items[0].id);
 
-    grid.set_multi_select_mode(true);
-    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    grid.select_ids(&[first_id]);
 
     assert!(
         fixture
@@ -210,8 +196,7 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         "clicking the toggled Select All button clears selection and hides batch actions"
     );
 
-    grid.set_multi_select_mode(true);
-    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    grid.select_ids(&[first_id]);
     click_button(&fixture.page.imp().favorite_btn.get());
     let favorite_id = fixture.items[0].id;
     assert!(
@@ -232,14 +217,7 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         "favorite action should clear the previous selection before the next batch action"
     );
 
-    let first_tile =
-        first_flowbox_child(grid.upcast_ref()).expect("rendered thumbnail remains in Day grid");
-    let flow = first_tile
-        .parent()
-        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
-        .expect("thumbnail child should still belong to a FlowBox");
-    grid.set_multi_select_mode(true);
-    flow.emit_by_name::<()>("child-activated", &[&first_tile]);
+    grid.select_ids(&[first_id]);
     assert!(
         wait_until(Duration::from_secs(2), || fixture
             .page
@@ -843,6 +821,21 @@ fn first_flowbox_child(root: &gtk::Widget) -> Option<gtk::FlowBoxChild> {
     let flow = find_descendant::<gtk::FlowBox>(root)?;
     flow.first_child()
         .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
+}
+
+fn visible_photos_grid(page: &PhotosPage) -> VirtualMediaGrid {
+    let stack = find_descendant::<gtk::Stack>(page.upcast_ref())
+        .expect("PhotosPage should contain a GtkStack");
+    stack
+        .visible_child()
+        .and_downcast::<VirtualMediaGrid>()
+        .expect("the active Photos mode should use VirtualMediaGrid")
+}
+
+fn activate_virtual_grid_slot(grid: &VirtualMediaGrid, position: u32) {
+    let view = find_descendant::<gtk::GridView>(grid.upcast_ref())
+        .expect("VirtualMediaGrid should contain its GtkGridView");
+    view.emit_by_name::<()>("activate", &[&position]);
 }
 
 fn find_button_with_css(root: &gtk::Widget, css_class: &str) -> Option<gtk::Button> {

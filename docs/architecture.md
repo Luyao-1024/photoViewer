@@ -42,7 +42,7 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
   scan), and `albums::list_with_favorites` re-applies it — virtual and folder
   albums alike.
 - Trash row → push `TrashPage`.
-- `PhotosPage` owns Year/Month/Day `MediaGrid` instances backed by the same `gio::ListStore`.
+- `PhotosPage` owns Year/Month/Day `VirtualMediaGrid` instances backed by the same bounded `gio::ListStore`; the Photos renderer is always virtual `GtkGridView`.
 - Settings is launched from a fixed **gear button** in the sidebar footer, and now
   opens a popup `AdwDialog` instead of pushing a new navigation page.
 - Opening a photo pushes `ViewerPage`.

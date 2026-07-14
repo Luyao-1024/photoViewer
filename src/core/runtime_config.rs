@@ -8,7 +8,6 @@ use crate::config::config_dir;
 
 const RUNTIME_CONFIG_FILE: &str = "runtime.json";
 
-const PHOTOS_GRID_BACKEND_KEY: &str = "photos_grid_backend";
 const INITIAL_MEDIA_PAGE_SIZE_KEY: &str = "initial_media_page_size";
 const VIRTUAL_MEDIA_PAGE_SIZE_KEY: &str = "virtual_media_page_size";
 const UI_MEDIA_LIST_CAP_KEY: &str = "ui_media_list_cap";
@@ -16,6 +15,7 @@ const MAX_RENDERED_GRID_ITEMS_KEY: &str = "max_rendered_grid_items";
 const GRID_RENDER_ABSOLUTE_CAP_KEY: &str = "grid_render_absolute_cap";
 const GRID_RENDER_EXPAND_STEP_KEY: &str = "grid_render_expand_step";
 const GRID_REPRIORITIZE_DEBOUNCE_MS_KEY: &str = "grid_reprioritize_debounce_ms";
+const PHOTOS_GRID_COLUMNS_KEY: &str = "photos_grid_columns";
 const THUMBNAIL_WORKER_COUNT_KEY: &str = "thumbnail_worker_count";
 const THUMBNAIL_SPEED_TIER_KEY: &str = "thumbnail_speed_tier";
 const THUMBNAIL_QUEUE_CAPACITY_KEY: &str = "thumbnail_queue_capacity";
@@ -41,6 +41,9 @@ pub const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 800;
 pub const DEFAULT_GRID_RENDER_ABSOLUTE_CAP: usize = 1_200;
 pub const DEFAULT_GRID_RENDER_EXPAND_STEP: usize = 200;
 pub const DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS: u64 = 120;
+pub const DEFAULT_PHOTOS_GRID_COLUMNS: usize = 4;
+pub const MIN_PHOTOS_GRID_COLUMNS: usize = 1;
+pub const MAX_PHOTOS_GRID_COLUMNS: usize = 12;
 pub const DEFAULT_THUMBNAIL_QUEUE_CAPACITY: usize = 8192;
 /// Sized for viewer navigation: each switch warms the target's Medium preview,
 /// and the viewer prefetches ±1 neighbours. With 16, sequential navigation
@@ -71,44 +74,8 @@ pub const DEFAULT_STARTUP_RENDER_INTERVAL_MS: u64 = 20;
 /// launch→first-thumbnail time.
 pub const DEFAULT_STARTUP_RENDER_FIRST_TICK_DELAY_MS: u64 = 150;
 
-/// Rendering backend for the Photos main library grid.
-///
-/// This is intentionally an internal startup-only switch: changing it requires
-/// restarting the application so GTK widget ownership and scroll state are not
-/// swapped while the page is live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhotosGridBackend {
-    FlowBox,
-    GridView,
-}
-
-impl PhotosGridBackend {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::FlowBox => "flowbox",
-            Self::GridView => "gridview",
-        }
-    }
-}
-
-/// Keep the established FlowBox implementation as the migration-safe default.
-pub const DEFAULT_PHOTOS_GRID_BACKEND: PhotosGridBackend = PhotosGridBackend::FlowBox;
-
-impl std::str::FromStr for PhotosGridBackend {
-    type Err = ();
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "flowbox" => Ok(Self::FlowBox),
-            "gridview" => Ok(Self::GridView),
-            _ => Err(()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
-    pub photos_grid_backend: PhotosGridBackend,
     pub initial_media_page_size: u32,
     pub virtual_media_page_size: u32,
     pub ui_media_list_cap: usize,
@@ -116,6 +83,7 @@ pub struct RuntimeConfig {
     pub grid_render_absolute_cap: usize,
     pub grid_render_expand_step: usize,
     pub grid_reprioritize_debounce_ms: u64,
+    pub photos_grid_columns: usize,
     pub thumbnail_worker_count: usize,
     pub thumbnail_queue_capacity: usize,
     pub thumbnail_mem_cache_cap: usize,
@@ -260,7 +228,6 @@ fn read_object_at(path: &Path) -> Map<String, Value> {
 fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
     let obj = read_object_at(path);
     RuntimeConfig {
-        photos_grid_backend: read_photos_grid_backend(&obj),
         initial_media_page_size: read_u32(
             &obj,
             INITIAL_MEDIA_PAGE_SIZE_KEY,
@@ -291,6 +258,13 @@ fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
             &obj,
             GRID_REPRIORITIZE_DEBOUNCE_MS_KEY,
             DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS,
+        ),
+        photos_grid_columns: read_bounded_usize(
+            &obj,
+            PHOTOS_GRID_COLUMNS_KEY,
+            DEFAULT_PHOTOS_GRID_COLUMNS,
+            MIN_PHOTOS_GRID_COLUMNS,
+            MAX_PHOTOS_GRID_COLUMNS,
         ),
         thumbnail_worker_count: read_usize(
             &obj,
@@ -360,10 +334,6 @@ pub fn load() -> RuntimeConfig {
     read_runtime_config_at(&runtime_config_path())
 }
 
-pub fn photos_grid_backend() -> PhotosGridBackend {
-    load().photos_grid_backend
-}
-
 pub fn initial_media_page_size() -> u32 {
     load().initial_media_page_size
 }
@@ -390,6 +360,15 @@ pub fn grid_render_expand_step() -> usize {
 
 pub fn grid_reprioritize_debounce_ms() -> u64 {
     load().grid_reprioritize_debounce_ms
+}
+
+pub fn photos_grid_columns() -> usize {
+    load().photos_grid_columns
+}
+
+pub fn set_photos_grid_columns(columns: usize) -> Result<(), String> {
+    let columns = columns.clamp(MIN_PHOTOS_GRID_COLUMNS, MAX_PHOTOS_GRID_COLUMNS);
+    write_usize_at(&runtime_config_path(), PHOTOS_GRID_COLUMNS_KEY, columns)
 }
 
 pub fn thumbnail_worker_count() -> usize {
@@ -533,6 +512,19 @@ fn read_usize(obj: &Map<String, Value>, key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn read_bounded_usize(
+    obj: &Map<String, Value>,
+    key: &str,
+    default: usize,
+    minimum: usize,
+    maximum: usize,
+) -> usize {
+    obj.get(key)
+        .and_then(|v| v.as_u64())
+        .map(|v| (v as usize).clamp(minimum, maximum))
+        .unwrap_or(default.clamp(minimum, maximum))
+}
+
 fn read_u64(obj: &Map<String, Value>, key: &str, default: u64) -> u64 {
     obj.get(key)
         .and_then(|v| v.as_u64())
@@ -542,13 +534,6 @@ fn read_u64(obj: &Map<String, Value>, key: &str, default: u64) -> u64 {
 
 fn read_bool(obj: &Map<String, Value>, key: &str, default: bool) -> bool {
     obj.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-fn read_photos_grid_backend(obj: &Map<String, Value>) -> PhotosGridBackend {
-    obj.get(PHOTOS_GRID_BACKEND_KEY)
-        .and_then(|value| value.as_str())
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_PHOTOS_GRID_BACKEND)
 }
 
 #[cfg(test)]

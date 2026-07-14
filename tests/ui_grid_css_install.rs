@@ -22,8 +22,14 @@ fn grid_css_keeps_web_only_rules_outside_liquid_blur() {
     let css = photo_viewer::ui::grid_css::css_for_tests();
 
     assert!(
-        !css.contains("spacing:"),
-        "GTK CSS does not support `spacing`; set GtkBox spacing in the widget builder/template"
+        !css
+            .lines()
+            .any(|line| line.trim_start().starts_with("spacing:")),
+        "GTK CSS does not support the generic `spacing` property; set GtkBox spacing in the widget builder/template"
+    );
+    assert!(
+        css.contains("border-spacing:"),
+        "the virtual GtkGridView uses supported CSS border-spacing for its fixed tile gap"
     );
     assert!(
         css.contains("backdrop-filter: blur("),

@@ -1,6 +1,6 @@
 using Gtk 4.0;
 
-// Photos-only virtual backend. GtkGridView is the direct ScrolledWindow child:
+// Photos-only virtual grid. GtkGridView is the direct ScrolledWindow child:
 // adding a GtkViewport here would defeat its native list virtualization.
 template $VirtualMediaGrid : Gtk.Box {
   orientation: vertical;
