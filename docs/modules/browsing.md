@@ -80,10 +80,13 @@ cell-width calculation on every resize, so tile side, row stride, date pill,
 and visible-range calculations stay aligned. Column count changes still rebuild
 the section-slot index, but reflow existing physical slots while retaining ready
 media offsets and range residency; same-count resizes update only viewport
-metrics. This keeps the 3-to-4-column threshold from causing a placeholder or
-database reload pass.
-Updates run on an idle turn (never re-entrantly during GTK allocation). Hidden
-modes stay inactive and do not seed or query ranges until selected.
+metrics. Column updates are coalesced behind a short 120 ms quiet period, so
+dragging a window does not repeatedly trigger the structural GridView rebuild;
+GTK can resize the existing columns during the drag and the final column count
+is committed once the width settles. This keeps the 3-to-4-column threshold
+from causing a placeholder or database reload pass. Updates never run
+re-entrantly during GTK allocation. Hidden modes stay inactive and do not seed
+or query ranges until selected.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

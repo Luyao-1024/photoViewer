@@ -847,7 +847,9 @@ impl VirtualMediaGrid {
     /// GTK updates adjustments while it is allocating list items. Changing a
     /// GridView's column properties from that signal is re-entrant and can
     /// briefly produce negative child allocations. Coalesce the latest width
-    /// onto the next main-loop turn instead.
+    /// and wait for a short quiet period before changing the structural column
+    /// count. During a live window drag GTK can resize the existing cells
+    /// without repeatedly rebuilding the virtual list.
     fn schedule_column_update(&self, width: i32) {
         if width <= 0 {
             return;
@@ -857,7 +859,7 @@ impl VirtualMediaGrid {
             return;
         }
         let weak = self.downgrade();
-        let source = glib::idle_add_local_once(move || {
+        let source = glib::timeout_add_local_once(Duration::from_millis(120), move || {
             let Some(grid) = weak.upgrade() else {
                 return;
             };
