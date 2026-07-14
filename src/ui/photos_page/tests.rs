@@ -88,7 +88,7 @@ fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
 }
 
 #[gtk::test]
-fn gridview_backend_creates_and_switches_all_three_photos_modes() {
+fn virtual_grid_creates_and_switches_all_three_photos_modes() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();
     let pool = crate::core::db::init_pool(&tmp.path().join("gridview-modes.db")).unwrap();
@@ -96,17 +96,15 @@ fn gridview_backend_creates_and_switches_all_three_photos_modes() {
     let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
 
-    let page =
-        PhotosPage::new_with_backend_for_tests(media_list, loader, PhotosGridBackend::GridView);
+    let page = PhotosPage::new(media_list, loader);
 
     {
         let grids = page.imp().grids.borrow();
         assert_eq!(grids.len(), 3);
-        assert!(
-            grids
-                .iter()
-                .all(|grid| matches!(grid, PhotosGrid::GridView(_))),
-            "the GridView backend must cover Year, Month, and Day together"
+        assert_eq!(
+            grids.iter().map(VirtualMediaGrid::mode).collect::<Vec<_>>(),
+            vec![GroupBy::Year, GroupBy::Month, GroupBy::Day],
+            "Photos must always construct virtual grids for every mode"
         );
     }
 

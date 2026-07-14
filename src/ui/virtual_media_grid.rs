@@ -1,9 +1,8 @@
-//! Virtual `GtkGridView` backend for the Photos main library.
+//! Virtual `GtkGridView` for the Photos main library.
 //!
-//! Unlike the legacy FlowBox grid, this widget exposes a stable logical model
-//! for the whole library and only keeps data/thumbnail work near the viewport.
-//! It is deliberately Photos-only during the migration; albums, search and
-//! trash retain the proven bounded `MediaGrid` implementation.
+//! It exposes a stable logical model for the whole library and only keeps
+//! data/thumbnail work near the viewport. It is intentionally Photos-only;
+//! albums, search, and trash retain their bounded `MediaGrid` implementation.
 
 mod factory;
 mod layout_index;

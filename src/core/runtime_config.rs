@@ -8,7 +8,6 @@ use crate::config::config_dir;
 
 const RUNTIME_CONFIG_FILE: &str = "runtime.json";
 
-const PHOTOS_GRID_BACKEND_KEY: &str = "photos_grid_backend";
 const INITIAL_MEDIA_PAGE_SIZE_KEY: &str = "initial_media_page_size";
 const VIRTUAL_MEDIA_PAGE_SIZE_KEY: &str = "virtual_media_page_size";
 const UI_MEDIA_LIST_CAP_KEY: &str = "ui_media_list_cap";
@@ -71,44 +70,8 @@ pub const DEFAULT_STARTUP_RENDER_INTERVAL_MS: u64 = 20;
 /// launch→first-thumbnail time.
 pub const DEFAULT_STARTUP_RENDER_FIRST_TICK_DELAY_MS: u64 = 150;
 
-/// Rendering backend for the Photos main library grid.
-///
-/// This is intentionally an internal startup-only switch: changing it requires
-/// restarting the application so GTK widget ownership and scroll state are not
-/// swapped while the page is live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PhotosGridBackend {
-    FlowBox,
-    GridView,
-}
-
-impl PhotosGridBackend {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::FlowBox => "flowbox",
-            Self::GridView => "gridview",
-        }
-    }
-}
-
-/// Keep the established FlowBox implementation as the migration-safe default.
-pub const DEFAULT_PHOTOS_GRID_BACKEND: PhotosGridBackend = PhotosGridBackend::FlowBox;
-
-impl std::str::FromStr for PhotosGridBackend {
-    type Err = ();
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "flowbox" => Ok(Self::FlowBox),
-            "gridview" => Ok(Self::GridView),
-            _ => Err(()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
-    pub photos_grid_backend: PhotosGridBackend,
     pub initial_media_page_size: u32,
     pub virtual_media_page_size: u32,
     pub ui_media_list_cap: usize,
@@ -260,7 +223,6 @@ fn read_object_at(path: &Path) -> Map<String, Value> {
 fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
     let obj = read_object_at(path);
     RuntimeConfig {
-        photos_grid_backend: read_photos_grid_backend(&obj),
         initial_media_page_size: read_u32(
             &obj,
             INITIAL_MEDIA_PAGE_SIZE_KEY,
@@ -358,10 +320,6 @@ fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
 
 pub fn load() -> RuntimeConfig {
     read_runtime_config_at(&runtime_config_path())
-}
-
-pub fn photos_grid_backend() -> PhotosGridBackend {
-    load().photos_grid_backend
 }
 
 pub fn initial_media_page_size() -> u32 {
@@ -542,13 +500,6 @@ fn read_u64(obj: &Map<String, Value>, key: &str, default: u64) -> u64 {
 
 fn read_bool(obj: &Map<String, Value>, key: &str, default: bool) -> bool {
     obj.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-}
-
-fn read_photos_grid_backend(obj: &Map<String, Value>) -> PhotosGridBackend {
-    obj.get(PHOTOS_GRID_BACKEND_KEY)
-        .and_then(|value| value.as_str())
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_PHOTOS_GRID_BACKEND)
 }
 
 #[cfg(test)]

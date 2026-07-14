@@ -9,14 +9,14 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | File | Role |
 |---|---|
 | `src/ui/photos_page.rs` | Photos root page, view stack, shared store wiring |
-| `src/ui/media_grid.rs` | MediaGrid widget state, constructors, public API shell, sizing specs, and shared grouping helpers |
+| `src/ui/media_grid.rs` | Bounded FlowBox grid retained for album and search surfaces |
 | `src/ui/media_grid/selection.rs` | Multi-select state, visible selection sync, context selection, and selection callbacks |
 | `src/ui/media_grid/updates.rs` | Incremental add/remove handling, deferred thumbnail-ready insertions, metadata cache adjustments, and grid rebuild implementation |
 | `src/ui/media_grid/viewport.rs` | Scroll-position viewport scan, visible thumbnail reprioritization, and scroll-triggered loading hooks |
 | `src/ui/media_grid/loading.rs` | Virtual page loading, progressive render fill, async library metadata/stats refresh, and rebuild scheduling |
 | `src/ui/media_grid/render.rs` | Tile construction, reused-tile preparation, and FlowBox child visibility sync |
 | `src/ui/media_grid/virtual_paging.rs` | Virtual scroll offset, spacer, and placeholder window helpers |
-| `src/ui/virtual_media_grid.rs` | Photos-only `GtkGridView` backend, lifecycle, range scheduling, and Photos-grid callbacks |
+| `src/ui/virtual_media_grid.rs` | Photos-only `GtkGridView`, lifecycle, range scheduling, and Photos-grid callbacks |
 | `src/ui/virtual_media_grid/` | Pure layout index, virtual list model, range residency coordinator, factory, and focused tests |
 | `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
@@ -24,7 +24,7 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/ui/section_header.rs` | Date/group section headers |
 | `src/core/section_model.rs` | Year/Month/Day grouping model |
 | `data/ui/photos-page.blp` | Photos page template |
-| `data/ui/media-grid.blp` | Grid template |
+| `data/ui/media-grid.blp` | Bounded FlowBox grid template for album and search surfaces |
 | `data/ui/virtual-media-grid.blp` | Direct `GtkScrolledWindow` → `GtkGridView` virtual-grid template |
 | `data/ui/mode-selector.blp` | Mode selector template |
 
@@ -44,14 +44,12 @@ outer host for `ViewerPage`, `SearchPage`, and `TrashPage`; album changes do not
 push additional outer navigation pages. The outer `TrashPage` keeps its
 NavigationView back button so it can return to the browsing root.
 
-`PhotosPage` owns three Year/Month/Day grid instances backed by the same bounded
-`gio::ListStore`. At process start it selects one Photos renderer from
-`runtime.json`: `photos_grid_backend: "flowbox"` (the default and rollback
-path) keeps the existing `MediaGrid`; `"gridview"` selects `VirtualMediaGrid`
-for all three modes. This is intentionally startup-only—do not live-switch a
-mounted grid or infer a fallback from a panic. The flowbox renderer remains in
-the binary so reverting the key and restarting is a low-risk rollback. Albums,
-search previews, and trash always retain `MediaGrid`/FlowBox.
+`PhotosPage` owns three Year/Month/Day `VirtualMediaGrid` instances backed by
+the same bounded `gio::ListStore`. Photos always uses the virtual
+`GtkGridView`; there is no runtime backend selector or FlowBox fallback. A
+legacy `photos_grid_backend` value left in `runtime.json` is ignored. Albums,
+search previews, and trash continue to use their separate `MediaGrid`/FlowBox
+implementations.
 
 The GridView path exposes one logical slot for every full-library media item,
 plus deterministic non-interactive filler slots that preserve section-row
@@ -64,13 +62,12 @@ flight. GTK recycles `SquareTile` cells through `GtkSignalListItemFactory`, and
 thumbnail results must validate the current layout generation, slot, MediaId,
 and cache key before painting a recycled cell.
 
-Both renderers group image and video `MediaItem`s by `taken_at`, falling back to
-file time. GridView mode metrics are fixed: Year uses 90 px tiles, Month 180 px,
-and Day 270 px, with a 2 px row gap. The GridView column count is updated from
-the real scroller viewport on an idle turn (never re-entrantly during GTK
-allocation), and the layout index, date pill, and range calculation use that
-same count. Hidden GridView modes stay inactive and do not seed or query ranges
-until selected.
+The Photos virtual grid groups image and video `MediaItem`s by `taken_at`,
+falling back to file time. Its fixed mode metrics are: Year 90 px, Month 180 px,
+and Day 270 px, with a 2 px row gap. Its column count is updated from the real
+scroller viewport on an idle turn (never re-entrantly during GTK allocation),
+and the layout index, date pill, and range calculation use that same count.
+Hidden modes stay inactive and do not seed or query ranges until selected.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using
@@ -120,180 +117,80 @@ backed by top-level `media_attributes` JSON booleans. If no media type album has
 any live media, hide the whole Media Types group instead of showing an empty
 header.
 
-`MediaGrid::spec_for_mode` owns per-view tile sizing. Section headers are separate GTK labels because the thumbnail grid cannot span a full-width header row by itself.
-Pure removal signals from the backing `ListStore` remove the affected
-`GtkFlowBoxChild` in place instead of rebuilding every section. This keeps
-single-photo trash/delete updates from flashing the whole Photos or album grid;
-only replacements, first non-empty loads, virtual page swaps, and inserted-item
-bursts should rebuild sections.
-Pure insertions into an existing section should insert only the new
-`GtkFlowBoxChild` and preserve existing tile widgets; rebuilding every tile
-makes already-visible thumbnails briefly return to their loading placeholder.
-Filesystem watcher upsert batches that contain only new URIs should be applied
-to the shared `ListStore` as sorted insertions, not by replacing the full
-visible model window; a single screenshot should emit an `items-changed` signal
-like `(position, removed=0, added=1)` so inactive pages do not gray out the
-currently visible grid when they later observe the shared model.
-During bulk grid rebuilds, a tile paints immediately only when its thumbnail is
-already in `ThumbnailLoader`'s in-memory LRU; do not do synchronous disk-cache
-reads in that path. When the cache is missing, existing library media remains
-visible as a fixed-size loading border and receives its thumbnail when the
-viewport request completes. Sparse incremental insertions for newly added or
-updated media may use `ThumbnailLoader::try_load_cached` before insertion, but
-must not add a `GtkFlowBoxChild` until thumbnail generation finishes when the
-cache is missing. If the request succeeds, insert the tile with the generated
-texture; if it fails, insert the final unavailable placeholder. Do not insert a
-transparent/loading tile first for these new-media insertions: local GTK/CSS
-backgrounds can still read visually as a gray image.
+### Bounded FlowBox Grids (Albums And Search)
 
-For very large libraries, the GTK-facing model and each `MediaGrid` rebuild are
-bounded while the database remains the full source of truth. Startup loads the
-first configured live page (`initial_media_page_size`, default 500); after
-that, `MediaGrid` treats the scroll position as a ratio across the full
-live-media count and swaps in a configured DB page (`virtual_media_page_size`,
-default 500) around that global offset before the user reaches the end of the
-currently loaded window. The DB page query is fast (~ms), so a retarget does NOT
-do a synchronous skeleton rebuild — the existing window's tiles stay in place
-until the page lands, then a single rebuild swaps in the new window (restoring
-scroll to `saved_scroll`, which for a centered retarget is already the correct
-global position). An earlier skeleton rebuild was removed: it cleared the old
-tiles, built placeholders, and restored scroll to the retarget ratio, which made
-the scrollbar jump up (to the retarget point) then down (to the landing) on every
-page swap. Top and bottom virtual spacer widgets
-approximate the height of unloaded rows, so the scrollbar thumb represents the
-full library rather than only the current page. Rapid drag retargets increment
-a virtual-page generation counter; stale DB page results are discarded rather
-than replacing a newer target window. Only one virtual DB page query should be
-in flight per grid; additional drag targets are coalesced so the next query
-loads the latest target rather than every intermediate position. Programmatic
-scroll restoration after a virtual page rebuild must not request another DB
-page, and the `ListStore` splice that applies a virtual page must be rebuilt
-exactly once instead of also going through the generic removal rebuild path.
-When a virtual DB page lands, the grid redirects thumbnail background prewarm to
-the current full-library scroll offset via
-`ThumbnailLoader::redirect_prewarm_to_offset(prewarm_offset)`. The page itself is
-usually centered around the user's target, so use the desired live-media offset
-rather than the landed page start. The scrollbar can jump to any (possibly cold)
-region instantly, so prewarm must follow the current browsing position rather
-than always warming newest-first; visible tiles still take `TIER_BOOST`, and the
-redirect only repositions the lower-priority off-screen prewarm work. See
-[`storage.md`](storage.md) "Thumbnails".
-The landing rebuild is a plain immediate `rebuild_immediately` (full page) — a
-deferred rebuild and a progressive (seed+fill) rebuild were both tried and
-reverted: deferral broke scroll-position restoration (the grid jumped to the top),
-and the progressive fill destroyed-and-rebuilt tiles faster than thumbnails could
-load, re-triggering the tile-reuse assertion below. Reducing per-landing rebuild
-cost remains open.
+`MediaGrid` remains the bounded FlowBox renderer for album detail and search
+surfaces; it is not a Photos renderer. `MediaGrid::spec_for_mode` owns its tile
+sizing, and its date headers are separate GTK labels because a FlowBox cannot
+span a header across a thumbnail row. Pure `ListStore` removals and insertions
+should update the affected `GtkFlowBoxChild` in place where possible, preserving
+already-visible tiles. Bulk construction may use only the thumbnail loader's
+in-memory LRU; synchronous disk-cache decoding on the GTK thread is forbidden.
+When a sparse inserted item lacks a cached thumbnail, wait for asynchronous
+generation before adding its FlowBox child so it does not appear as a gray
+placeholder.
 
-**Tile reuse must detach cleanly.** `detach_reusable_loaded_tiles` rescues loaded
-tiles by MediaId to avoid a placeholder flash on same-content rebuilds, but it
-must `set_child(None)` to detach the tile from its old `FlowBoxChild` before
-clearing — otherwise GTK toggle-ref finalization timing can leave the tile
-parented, tripping `gtk_flow_box_child_set_child` and leaving the reused tile
-blank (the fast-scroll "stuck tiles" bug on overlapping pages). The build loop
-defensively skips any rescued tile that is still parented and builds it fresh.
-`apply_to_media_list::ui_media_list_cap()`
-(configurable via `runtime.json`, default 1500) remains a safety cap for live
-change merges, and `MediaGrid::max_rendered_grid_items()` (configurable via
-`runtime.json`, default 800) caps tile widgets per rebuild. Runtime loading
-and sizing keys live in `src/core/runtime_config.rs`; user-facing preferences
-remain in `settings.json`. `PhotosPage` also
-initializes only the visible Day grid as active; Year/Month grids defer their
-FlowBox/tile construction until the user switches to them. Do not let GTK
-model, hidden views, or FlowBox children grow with the full on-disk library;
-doing so drives GB-level memory use and blocks the main thread before the app
-is usable.
+For large Photos libraries, `VirtualMediaGrid` keeps the database as the full
+source of truth. The shared `media_list` supplies instant-first-paint seed data;
+afterward the virtual list model owns one lightweight slot per library item and
+loads only viewport-adjacent ranges through `MediaRepository`. A layout or range
+generation invalidates stale worker results, and the range coordinator coalesces
+rapid scrollbar-drag targets so only the newest necessary request follows the
+in-flight one. When a range lands, the model replaces ready slots in place and
+evicts distant ready data; it never rebuilds a FlowBox page. Thumbnail prewarm
+is redirected to the current viewport offset, while visible requests retain
+their higher priority. See [`storage.md`](storage.md) "Thumbnails".
 
-Progressive first-page render: eligible grids do NOT build the whole first page
-on their first `rebuild`. Instead `MediaGrid::rebuild` uses
-`runtime_config::progressive_render_plan` to cap `rendered_limit` at a
-viewport-sized seed for that first rebuild (the full page would block the main
-thread, gating first paint and later sidebar/navigation work). After the seed
-render, `schedule_progressive_render_fill` paces the remainder of the first
-page: every tick (default 20ms) it raises `rendered_limit` by a batch (default
-96). When the next chunk remains inside an existing date section, the grid
-appends those tiles incrementally and preserves already-built FlowBox children.
-If the chunk crosses a section boundary, it falls back to a full `rebuild` for
-that tick so headers and section structure stay correct. The full page still
-ends up fully rendered — only its construction is deferred past first paint.
-This is armed for full-library Photos grids and album detail grids. Album pages
-keep `full_library_context` disabled, so they reuse the first-render pacing
-without enabling Photos-only statistics, section-count snapshots, or virtual
-library paging. Mode/active changes bump a generation counter that cancels any
-in-flight fill. Tunable via `runtime.json`:
-`startup_progressive_render` (master switch, default true), `startup_render_seed`
-(48), `startup_render_batch` (96), `startup_render_interval_ms` (20),
-`startup_render_first_tick_delay_ms` (150 — longer than the per-tick interval so
-the seed render's thumbnails deliver before the fill competes for the main
-thread).
+**FlowBox tile reuse must detach cleanly.** On album and search surfaces,
+`detach_reusable_loaded_tiles` must call `set_child(None)` before clearing a
+`FlowBoxChild`; GTK finalization can otherwise leave a reused tile parented and
+blank. This is not part of the Photos renderer. `ui_media_list_cap` remains the
+safety cap for the shared live projection, while `MediaGrid`'s render limits
+apply only to its bounded FlowBox surfaces. Photos initializes only the visible
+Day `VirtualMediaGrid`; Year and Month remain inactive until selected, so they
+do not create metadata or range work while hidden.
 
-Browsing identity is migrating from list indexes to stable `MediaId` values.
-`MediaGrid` activation and multi-select callbacks must pass media ids across
-widget/page boundaries; indexes are local to the current visible window only.
+Progressive first-page rendering remains an optimization for eligible bounded
+`MediaGrid` surfaces such as album detail. It must not be reintroduced as a
+Photos FlowBox fallback; Photos first paints its virtual seed and then lets GTK
+recycle cells as authoritative ranges arrive.
+
+Browsing identity uses stable `MediaId` values. Grid activation and multi-select
+callbacks must pass media ids across widget/page boundaries; indexes are local
+to a current visible window only.
 The `ui::models::media_window_model::MediaWindowModel` is the intended owner of
 visible-window state (`MediaQuery`, total count, window start, generation, and
 the GTK `ListStore` projection). Batch actions, selection state, viewer
 activation, and cross-async work should use `MediaId`; indexes are render-local
 only.
 
-Thumbnail requests are driven by a viewport scan, not by tile `map` signals:
-`GtkFlowBox` can map most or all children in the current virtual page even when
-they are far below the visible area. The scan requests and priority-boosts
-tiles intersecting the viewport plus one viewport of overscan, which keeps
-visible thumbnails ahead of off-screen work while still making near-scroll
-content warm quickly. Thumbnail request cache keys use the `MediaItem`
-metadata already loaded from the database, including `file_mtime`; do not add
-per-tile filesystem `metadata()` calls on the GTK thread.
+Virtual-grid thumbnail requests are driven by the current visible range, not by
+tile map signals. The range model keeps visible items and an overscan window
+resident, prioritizes their thumbnail work, and uses the `MediaItem` metadata
+already fetched from the database (including `file_mtime`); never add per-tile
+filesystem metadata calls on the GTK thread. Factory binding may use only the
+in-memory thumbnail cache synchronously; disk-cache reads and generation stay
+off the GTK thread.
 
-Tile construction must not do synchronous thumbnail disk I/O. `build_photo_picture`
-calls `ThumbnailLoader::try_load_mem_cached` (in-memory LRU only) so a tile paints
-instantly only when its thumbnail is already resident; otherwise it stays on the
-`thumb-loading` placeholder and is filled by the viewport scan → async worker
-(whose `generate()` consults the disk cache off the main thread). The earlier
-`try_load_cached` (mem + disk) did a synchronous read + decode per tile, so
-building a ~500-tile virtual page froze the main thread on every landing — that
-was the fast-scroll freeze. `try_load_cached` (with disk) is still used for the
-sparse single-item incremental-insertion path, just not the bulk rebuild.
-
-The Day grid's library statistics label sits at the top of the grid content,
-above the first date section header with a small top inset, after the
-full-library metadata background refresh has loaded. The initial grid rebuild
-must render from the already-loaded GTK model window only; it must not block on
-`MediaRepository::library_stats()`, live total count, or date section GROUP BY
-queries. Once loaded, the label should display the repository projection
-(`LibraryStats`) and not calculate thumbnail progress from `ThumbnailLoader`
-internals; stale thumbnail markers are filtered at the DB projection layer.
-While thumbnails are still pending, metadata invalidation from list refreshes
-or section-count reloads must keep the existing pending stats label visible
-rather than removing it temporarily. Hide the label only after a fresh
-repository projection confirms every live media item has a generated or
-unavailable thumbnail.
-Keep it as plain text, not a raised glass capsule, and size it slightly larger
-than the day section count text. Once every live media item has a current
-thumbnail, hide the Day grid statistics label entirely; the Photos sidebar row
-remains the persistent place for the total live media count.
-
-Each section header's photo count (Year/Month/Day) must come from the database,
-not from the currently loaded virtual-page window. Because the shared `media_list`
-only holds a `virtual_media_page_size` (default 500) window, a year or month with
-more photos than the window would otherwise show a truncated count (e.g. "500")
-instead of the true total. `MediaGrid` therefore loads
-`MediaRepository::section_counts(mode)` (backed by `db::count_live_media_by_date`,
-grouping by `COALESCE(taken_at, file_mtime)` in UTC) from a background worker,
-then `section_model::apply_authoritative_counts` overwrites each section's label
-after the metadata snapshot is available. The first rebuild may temporarily use
-the visible window counts; the window only decides which thumbnails render and
-must not remain the authoritative count after background metadata lands.
+`VirtualMediaGrid` loads the full live count and per-mode section counts through
+`MediaRepository` after its seed paint. Those counts define the layout index and
+floating-date projection, so a bounded shared `media_list` can never truncate a
+year, month, or day section's logical extent. Metadata queries must remain off
+the GTK thread and stale results must be ignored by generation.
 
 Media activation is debounced while opening `ViewerPage` on the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page: every viewer entry point (Photos, album details, search results) arms a short `viewer_open_pending` window that ignores duplicate activations during the push transition. There is no initial-open navigation-pop guard — a second click does not close the viewer (it cannot produce a pop), and an immediate back / Escape / swipe-back right after opening is intentional user input and is honored, so `can_pop` stays true from the first `show_at`.
 
-Multi-select selection state is owned by each section `GtkFlowBox`. Its `selection-mode` tracks the multi-select flag — `None` by default, switched to `Multiple` only while multi-select is active (kept in sync by `MediaGrid::apply_selection_mode`, called from `set_multi_select_mode` / `select_all` / `clear_selection`). `toggle_selection` / `select_all` / `clear_selection` call `flow.select_child` / `unselect_child`, which drives the `flowboxchild:selected` state — this only takes effect because multi-select first flips the FlowBox to `Multiple`. The selected affordance is a translucent-white checkmark pinned to each tile's bottom-right (`SquareTile`'s `.thumb-checkmark` child), revealed by CSS on `flowboxchild:selected`; tying selection to `None`-by-default means the checkmark can never appear unless the user explicitly enters multi-select. Do not add a parallel selected-state mechanism. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
+Photos multi-select state is owned by each `VirtualMediaGrid` as a stable
+`MediaId` set. A recycled factory cell derives its checkmark from that set when
+it binds; selection must not depend on a realized cell or a FlowBox child.
+Context-menu entry enables multi-select before selecting its target, and
+`clear_selection` updates every mode grid. See [`ui-design.md`](ui-design.md)
+"Media Grids And Tiles".
 Photos page "Select All" is intentionally capped at 2,000 live media items. For
 large virtualized libraries it loads the first 2,000 ids from the database's
-canonical live ordering, not from the current 500-item GTK window or the
-currently rendered seed tiles. `MediaGrid` may therefore hold a selected
-`MediaId` set larger than the rendered FlowBox children; it only mirrors
-`flowboxchild:selected` onto children that are currently visible.
+canonical live ordering, not from the current GTK seed or ready range.
+`VirtualMediaGrid` may therefore hold selected ids outside its currently
+realized factory cells.
 
 Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
 than `GtkPopover`, so they render through the same page-overlay path as the
@@ -303,21 +200,18 @@ right-click menu path.
 While the Photos grid is scrolled, a compact glass date pill appears just left
 of the scrollbar and tracks the thumb vertically, fading out ~700ms after
 scrolling stops. It shows the date section at the current scroll position in the
-active mode (Year/Month/Day). The date is resolved by projecting the scrollbar
-ratio × full-library live total through the already-loaded per-mode
-`section_counts` (`section_model::section_for_global_offset`), NOT by reading the
-realized tiles — so it stays correct in virtual-paged regions whose thumbnails
-are not loaded. It is hidden when library metadata has not loaded, the library
-is empty, or there is a single section. The pill is `can-target: false`
+active mode (Year/Month/Day). The date is resolved from the virtual layout's
+section counts and top physical slot, NOT by reading realized tiles — so it
+stays correct in unloaded ranges. It is hidden when library metadata has not
+loaded, the library is empty, or there is a single section. The pill is `can-target: false`
 (click-through) and reuses `.glass-raised`; it is Photos-page only (album detail
 pages are a follow-up).
 
-The same floating-date contract applies when `photos_grid_backend` is
-`"gridview"`: it uses the virtual layout index's section for the top physical
-slot rather than realized tile widgets, so dragging through unloaded ranges and
-switching to Year or Month remains immediate. The GridView renderer has no
-section-heading widgets; its deterministic filler slots give each section a
-clean row boundary while the pill supplies the floating date context.
+The virtual layout index resolves the date from the top physical slot rather
+than realized tile widgets, so dragging through unloaded ranges and switching
+to Year or Month remains immediate. The Photos renderer has no section-heading
+widgets; deterministic filler slots give each section a clean row boundary while
+the pill supplies the floating date context.
 
 ## Mode Selector
 
@@ -331,9 +225,9 @@ The Year/Month/Day control is both navigation and the canonical Liquid Glass seg
 Reusable segmented classes are documented in [`ui-liquid-glass.md`](ui-liquid-glass.md).
 
 Mode switching is instrumented for Chrome/Perfetto traces from selector input
-through stack notification, active-grid sync, grid activation, and coarse
-`MediaGrid::rebuild` phases. See [`diagnostics.md`](diagnostics.md) for the
-span names and how to enable `PHOTOVIEWER_CHROME_TRACE`.
+through stack notification, active-grid sync, virtual-grid activation, layout,
+and range-loading phases. See [`diagnostics.md`](diagnostics.md) for the span
+names and how to enable `PHOTOVIEWER_CHROME_TRACE`.
 
 ## Layout Pitfalls
 

@@ -47,7 +47,7 @@
         <div class="hotspot-outline split-handle-hitbox" tabindex="0" data-ui="main-split-view" data-name="主分隔视图" data-impl="Adw.OverlaySplitView split_view" data-props="min-sidebar-width:240 且 max-sidebar-width:240；主侧栏不可调宽。"></div>
       </aside>
 
-      <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=photos" data-props="根浏览页；与当前相册详情共享 crossfade 浏览栈；header + Gtk.Stack 三套同后端网格 + 悬浮 ModeSelector。runtime.json 的 photos_grid_backend 在启动时选择 FlowBox MediaGrid（默认/回退）或 Photos-only VirtualMediaGrid。" data-source="data/ui/window.blp · data/ui/photos-page.blp · src/ui/photos_page.rs">
+      <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=photos" data-props="根浏览页；与当前相册详情共享 crossfade 浏览栈；header + Gtk.Stack 三套 Photos-only VirtualMediaGrid + 悬浮 ModeSelector。Photos 始终使用 GtkGridView，没有 FlowBox 回退开关。" data-source="data/ui/window.blp · data/ui/photos-page.blp · src/ui/photos_page.rs">
         <div class="headerbar hotspot" tabindex="0" data-ui="photos-header" data-name="照片页顶栏" data-impl="Adw.HeaderBar header_bar .glass-header" data-props="搜索常驻；多选后 reveal 全选、退出、多选批量动作。">
           <button class="button round hotspot" tabindex="0" data-ui="search-button" data-name="搜索按钮" data-impl="Gtk.Button search_btn .round-search-button" data-props="push SearchPage；图标 system-search-symbolic。">⌕</button>
           <button class="button hotspot" tabindex="0" data-ui="select-all-button" data-name="全选按钮" data-impl="Gtk.Revealer select_all_revealer → Gtk.Button select_all_btn" data-props="只在多选模式显示；文本在 全选 / 取消全选 间切换。">全选</button>
@@ -57,23 +57,22 @@
           <button class="button danger hotspot" tabindex="0" data-ui="delete-to-trash-button" data-name="移到回收站" data-impl="Gtk.Button delete_to_trash_btn .glass-toolbar-danger" data-props="多选批量动作；移动到 trash backend。">⌫</button>
         </div>
 
-        <div class="grid-page hotspot" tabindex="0" data-ui="media-grid-surface" data-name="媒体网格区域" data-impl="默认：$MediaGrid → Gtk.ScrolledWindow scroller → Gtk.Viewport viewport → Gtk.Box content；虚拟后端：$VirtualMediaGrid → Gtk.ScrolledWindow scroller → Gtk.GridView grid" data-props="FlowBox 按日期段渲染 heading + Gtk.FlowBox .thumb-grid；GridView 直接作为 scroller child，使用可复用 SquareTile、占位 slot 和非交互 filler slot，不插入 GtkViewport；右侧滚动条属于 scroller。" data-source="data/ui/media-grid.blp · data/ui/virtual-media-grid.blp · src/ui/media_grid.rs · src/ui/virtual_media_grid.rs">
-          <p class="stats-line hotspot" tabindex="0" data-ui="library-stats" data-name="图库统计行" data-impl="Gtk.Label .library-stats" data-props="Day grid 顶部纯文本统计；缩略图完成后隐藏。">1,248 项 · 2026 年至今</p>
-          <strong class="section-title hotspot" tabindex="0" data-ui="section-header" data-name="日期段标题" data-impl="Gtk.Label .heading / SectionHeader" data-props="位于 FlowBox 外部，确保标题横跨整行。">2026 · 七月</strong>
+        <div class="grid-page hotspot" tabindex="0" data-ui="media-grid-surface" data-name="媒体网格区域" data-impl="$VirtualMediaGrid → Gtk.ScrolledWindow scroller → Gtk.GridView grid" data-props="GtkGridView 直接作为 scroller child，使用可复用 SquareTile、加载 slot 和非交互 filler slot；不插入 GtkViewport 或 GtkFlowBox；右侧滚动条属于 scroller。" data-source="data/ui/virtual-media-grid.blp · src/ui/virtual_media_grid.rs">
+          <p class="stats-line hotspot" tabindex="0" data-ui="virtual-grid-section-boundary" data-name="虚拟日期边界" data-impl="VirtualGridLayoutIndex filler slots" data-props="没有实体日期标题；确定性 filler slot 让日期段从新行开始，悬浮日期气泡提供当前日期上下文。">2026 · 七月</p>
 
-          <div class="tile-grid hotspot" tabindex="0" data-ui="thumb-flowbox" data-name="缩略图 FlowBox" data-impl="Gtk.FlowBox .thumb-grid" data-props="单段缩略图容器；选择模式默认 None，多选时切到 Multiple。">
-            <div class="tile selected hotspot" tabindex="0" data-ui="square-tile-selected" data-name="单个图片宫格" data-impl="SquareTile / PvSquareTile → Gtk.Picture cover" data-props="已选中：FlowBoxChild:selected 驱动右下角 .thumb-checkmark；不是并行状态。"></div>
+          <div class="tile-grid hotspot" tabindex="0" data-ui="virtual-media-grid" data-name="虚拟缩略图网格" data-impl="Gtk.GridView grid + GtkSignalListItemFactory" data-props="Gtk 回收可见 SquareTile；非就绪 slot 显示加载占位；多选由 VirtualMediaGrid 的 MediaId 集合驱动。">
+            <div class="tile selected hotspot" tabindex="0" data-ui="square-tile-selected" data-name="单个图片宫格" data-impl="Factory SquareTile → Gtk.Picture cover" data-props="已选中：factory 绑定时从 VirtualMediaGrid 的 MediaId 集合恢复右下角 .thumb-checkmark。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-video" data-name="视频宫格" data-impl="SquareTile / media_kind=video" data-props="底部显示持久化视频时长；普通视频不显示动态照片播放标记。"><span class="badge duration">0:42</span></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-motion" data-name="动态照片宫格" data-impl="SquareTile / media_subkind=motion_photo" data-props="仍按 image item 处理；底部播放 glyph 表示内嵌视频范围。"><span class="badge motion">▶</span></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-favorite" data-name="收藏图片宫格" data-impl="SquareTile + .thumb-favorite-badge" data-props="Day view 顶右显示白色心形；不改变瓦片尺寸。"><span class="badge favorite">♡</span></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图加载前使用 thumb-loading 占位；加载完成淡入。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-2" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="点击打开 ViewerPage；传递稳定 MediaId，而不是长期全局 index。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-3" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="hover/focus/selection 只给轻量边框，不遮挡缩略图内容。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-4" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="Year/Month/Day 共享媒体 store，但 tile size 由 MediaGrid::spec_for_mode 决定。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-5" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图请求由 viewport scan 驱动，不靠 map 信号。"></div>
+            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-4" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="Year/Month/Day 共享媒体 store；tile size 由 VirtualGridModeSpec 固定为 90 / 180 / 270 px。"></div>
+            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-5" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图请求由虚拟可见范围驱动，不靠 map 信号。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-6" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="图片和视频在同一集合内呈现。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-7" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="批量 rebuild 会复用已加载 tile，避免闪回占位。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-8" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="FlowBoxChild 是选择状态来源。"></div>
+            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-7" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="GtkGridView 回收 factory cell；异步缩略图必须校验布局代数、slot、MediaId 和缓存键。"></div>
+            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-8" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="VirtualMediaGrid 的 MediaId 集合是选择状态来源。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-9" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="普通浏览点击打开查看器，多选模式点击切换选择。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-10" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图尺寸稳定，hover 不引发布局抖动。"></div>
           </div>
@@ -85,7 +84,7 @@
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
-        <div class="scroll-date-pill hotspot" tabindex="0" data-ui="scroll-date-pill" data-name="滚动日期气泡" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .glass-raised.scroll-date-pill" data-props="滚动时浮在滚动条左侧、随 thumb 垂直跟踪的玻璃日期胶囊；约 700ms 后淡出。日期由 滚动比例 × 全库总数 投影到当前模式的 section_counts（section_for_global_offset）解析，不读已实现 tile，虚拟分页区也正确。库元数据未加载/空库/仅一个段时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026 · 七月</div>
+        <div class="scroll-date-pill hotspot" tabindex="0" data-ui="scroll-date-pill" data-name="滚动日期气泡" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .glass-raised.scroll-date-pill" data-props="滚动时浮在滚动条左侧、随 thumb 垂直跟踪的玻璃日期胶囊；约 700ms 后淡出。日期由 VirtualGridLayoutIndex 的顶部物理 slot 与权威 section_counts 解析，不读已实现 tile，拖过未加载范围也正确。库元数据未加载/空库/仅一个段时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026 · 七月</div>
       </main>
     </div>
   </section>
