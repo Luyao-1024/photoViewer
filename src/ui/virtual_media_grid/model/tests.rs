@@ -178,3 +178,19 @@ fn layout_replacement_can_publish_its_initial_ready_range_atomically() {
         Some(GridSlotState::Ready { ref item, .. }) if item.id == 11
     ));
 }
+
+#[test]
+fn layout_reflow_preserves_ready_media_when_columns_change() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..2, vec![item(10), item(11)]);
+
+    let previous_generation = model.layout_generation();
+    model.reflow_layout(layout(), previous_generation + 1);
+
+    assert_eq!(model.layout_generation(), previous_generation + 1);
+    assert_eq!(model.ready_item_count(), 2);
+    assert!(matches!(
+        model.slot_state(0),
+        Some(GridSlotState::Ready { ref item, .. }) if item.id == 10
+    ));
+}

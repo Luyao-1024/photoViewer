@@ -787,13 +787,6 @@ impl VirtualMediaGrid {
         *self.imp().metadata_reload_source.borrow_mut() = Some(source);
     }
 
-    fn replace_layout(&self, layout: VirtualGridLayoutIndex) {
-        self.imp().range.borrow_mut().invalidate();
-        let generation = self.imp().layout_generation.get().saturating_add(1);
-        self.imp().layout_generation.set(generation);
-        self.model().replace_layout(layout, generation);
-    }
-
     fn replace_layout_with_initial_items(
         &self,
         layout: VirtualGridLayoutIndex,
@@ -837,7 +830,13 @@ impl VirtualMediaGrid {
             let layout = VirtualGridLayoutIndex::new(&counts, next_metrics.columns());
             let restored_slot =
                 anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));
-            self.replace_layout(layout);
+            // A column change only reflows physical slots. Canonical media
+            // offsets and bounded range residency remain valid, so retain
+            // them to avoid a placeholder/database reload pass while the
+            // user is dragging the window edge.
+            let generation = self.imp().layout_generation.get().saturating_add(1);
+            self.imp().layout_generation.set(generation);
+            self.model().reflow_layout(layout, generation);
             if let Some(slot) = restored_slot {
                 self.restore_top_slot(slot);
             }

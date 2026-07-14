@@ -161,6 +161,24 @@ impl VirtualMediaModel {
         self.items_changed(0, old_slots, new_slots);
     }
 
+    /// Reflow physical slots after a column-count change without dropping
+    /// already loaded canonical media offsets. A column change alters where
+    /// an offset is rendered, but not the database order or media data.
+    pub fn reflow_layout(&self, layout: VirtualGridLayoutIndex, generation: u64) {
+        let (old_slots, new_slots) = {
+            let mut state = self.imp().state.borrow_mut();
+            let old_slots = state.layout.slot_count();
+            state.layout = layout.clone();
+            state.layout_generation = generation;
+            state
+                .ready_by_offset
+                .retain(|offset, _| layout.slot_for_media_offset(*offset).is_some());
+            state.slot_objects.clear();
+            (old_slots, state.layout.slot_count())
+        };
+        self.items_changed(0, old_slots, new_slots);
+    }
+
     /// Replaces the physical layout and exposes an already-known initial media
     /// range in the same ListModel notification.
     ///

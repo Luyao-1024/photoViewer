@@ -78,7 +78,10 @@ tiles retain their fixed minimum. The grid has an explicit 2 px CSS
 `border-spacing`. `VirtualGridViewportMetrics` mirrors GTK's integer
 cell-width calculation on every resize, so tile side, row stride, date pill,
 and visible-range calculations stay aligned. Column count changes still rebuild
-the section-slot index; same-count resizes update only viewport metrics.
+the section-slot index, but reflow existing physical slots while retaining ready
+media offsets and range residency; same-count resizes update only viewport
+metrics. This keeps the 3-to-4-column threshold from causing a placeholder or
+database reload pass.
 Updates run on an idle turn (never re-entrantly during GTK allocation). Hidden
 modes stay inactive and do not seed or query ranges until selected.
 
