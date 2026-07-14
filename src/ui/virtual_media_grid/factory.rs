@@ -33,24 +33,18 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
                 return;
             };
             let tile = SquareTile::new();
-            // Keep GridView cells in constant-size request mode. During its
-            // initial column calculation GtkGridView can ask a height-for-
-            // width child to measure with an invalid negative width (less
-            // than GTK's -1 unconstrained sentinel), which triggers a GTK
-            // assertion before the child's measure vfunc can sanitize it.
-            // GridView already owns the cell allocation, so a fixed square
-            // request avoids the transient height-for-width path. Its final
-            // cell can be a few pixels narrower than the preferred target;
-            // SquareTile reports a bounded relaxed minimum for that case.
+            tile.set_height_for_width(true);
+            // GridView columns expand to fill a viewport. The tile must fill
+            // that allocated cell as well; centering a fixed-width square
+            // leaves a large blank gutter whenever the window is resized.
+            // The scroller/CSS box model can make that final cell a few
+            // pixels narrower than its preferred target, so do not report
+            // the target as a hard minimum during GTK's measure pass.
             tile.set_allow_width_shrink(true);
             tile.set_halign(gtk::Align::Fill);
             tile.set_hexpand(true);
             tile.set_valign(gtk::Align::Fill);
-            // GridView supplies the row height. Letting the recycled child
-            // expand vertically makes GTK 4.20 compute a negative width
-            // constraint during its first measure pass in the Flatpak
-            // runtime.
-            tile.set_vexpand(false);
+            tile.set_vexpand(true);
             let binding = Rc::new(RefCell::new(None));
             let binding_for_context = binding.clone();
             let weak_for_context = grid.downgrade();

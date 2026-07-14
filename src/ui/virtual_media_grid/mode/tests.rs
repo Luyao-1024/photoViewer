@@ -62,7 +62,7 @@ fn fixed_columns_never_shrink_below_the_preferred_day_tile() {
 #[test]
 fn year_and_month_keep_adaptive_column_geometry() {
     let year = VirtualGridModeSpec::for_mode(GroupBy::Year);
-    assert_eq!(year.viewport_metrics_for_width(290).columns(), 3);
+    assert_eq!(year.viewport_metrics_for_width(294).columns(), 3);
     let month = VirtualGridModeSpec::for_mode(GroupBy::Month);
-    assert_eq!(month.viewport_metrics_for_width(370).columns(), 2);
+    assert_eq!(month.viewport_metrics_for_width(376).columns(), 2);
 }

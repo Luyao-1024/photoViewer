@@ -109,10 +109,11 @@ flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {
 }
 
 /* Keep GridView's geometry explicit rather than depending on a theme default.
-   Each tile fills its allocated column, while the exact 8px CSS
-   `border-spacing` is also used by the virtual scroll/date-range metrics. */
+   The 4px margin on either side of a list-item wrapper supplies the visual
+   8px inter-card gutter. Do not move this back to `border-spacing`: GTK 4.22
+   subtracts border spacing from its unallocated height-for-width probe. */
 gridview.virtual-media-grid-view > child {
-  margin: 0;
+  margin: 4px;
   padding: 0;
   border: 0;
 }
@@ -128,9 +129,10 @@ gridview.virtual-media-grid-view > child:selected {
 
 gridview.virtual-media-grid-view {
   /* Keep the first/last card away from the sidebar and scroller edge so the
-     four-sided glass ring has paint room just like the internal gaps. */
-  padding: 8px;
-  border-spacing: 8px;
+     four-sided glass ring has paint room just like the internal gaps. The
+     child's 4px margin combines with this padding to retain the 8px edge. */
+  padding: 4px;
+  border-spacing: 0;
 }
 
 gridview.virtual-media-grid-view > child > .glass-thumb-card {

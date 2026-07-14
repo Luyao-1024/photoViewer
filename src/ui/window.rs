@@ -22,6 +22,7 @@ use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::tr;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
+use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::album_detail_page::AlbumDetailPage;
 use crate::ui::TrashPage;
@@ -359,6 +360,14 @@ impl MainWindow {
             .property("application", app)
             .property("title", tr("app.title"))
             .build();
+        // Apply the persisted Day-grid column preference before the window is
+        // first presented. The virtual grid itself is created after async
+        // initialization, so waiting for the Settings callback leaves a
+        // four-column grid in the template's narrower 1200px default window
+        // during startup and forces GtkGridView to compress its 270px cells.
+        let content_width =
+            PhotosPage::preferred_day_grid_width(runtime_config::photos_grid_columns());
+        window.set_default_size(content_width.saturating_add(240), 800);
         window
             .imp()
             .browsing_root_page

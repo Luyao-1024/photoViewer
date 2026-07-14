@@ -74,9 +74,12 @@ thumbnail remains square rather than leaving a centered fixed-size gutter. The
 virtual-grid tile reports the target as its natural width but accepts a smaller
 minimum width, so a final cell that loses a few pixels to the scroller or CSS
 box model remains square without GTK measurement warnings; legacy FlowBox
-tiles retain their fixed minimum. The grid has an explicit 8 px CSS
-`border-spacing` plus 8 px outer padding, so the first and last thumbnails
-retain room for their four-sided glass focus or selection ring.
+tiles retain their fixed minimum. The grid keeps an 8 px visual gutter by
+combining 4 px list-item margins with 4 px outer padding, so the first and
+last thumbnails retain room for their four-sided glass focus or selection
+ring. `GtkGridView` itself must keep `border-spacing: 0`: GTK 4.22 subtracts
+non-zero border spacing from an unallocated height-for-width probe and can
+pass an invalid size to its list-item wrappers.
 `VirtualGridViewportMetrics` mirrors GTK's integer
 cell-width calculation on every resize, so tile side, row stride, date pill,
 and visible-range calculations stay aligned. Resizing updates only viewport
@@ -89,10 +92,18 @@ The Day-view column count is a persisted Settings preference. Window resizing
 never changes the Day column count. Day thumbnails keep the preferred 270 px
 side; changing the preference raises the GridView/content minimum width and
 requests a main-window width that fits the new number of columns, so the
-setting does not silently shrink thumbnails. Year and Month retain their
+setting does not silently shrink thumbnails. The same width request must be
+applied before the main window is first presented, using the persisted
+preference; waiting for a Settings interaction leaves the initial grid narrower
+than its configured cells and produces GTK measurement warnings. Year and Month retain their
 smaller-tile adaptive column count and may reflow when their natural width
 thresholds are crossed. Changing the Day preference intentionally reflows the
 Day grid once.
+
+GTK 4.22 measures an installed height-for-width `GtkGridView` factory before
+the scroller has a real width. Keep its own `border-spacing` at zero and model
+the same visual gap with the list-item margins above; this preserves the
+square height-for-width layout without a hard-coded cell-size workaround.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

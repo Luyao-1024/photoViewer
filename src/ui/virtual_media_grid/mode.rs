@@ -124,7 +124,7 @@ impl VirtualGridModeSpec {
     pub(crate) fn columns_for_width(self, available_width: i32) -> u32 {
         let width = i64::from(available_width).max(0);
         let extent = i64::from(self.tile_size + VIRTUAL_GRID_TILE_GAP_PX);
-        let columns = ((width + i64::from(VIRTUAL_GRID_TILE_GAP_PX)) / extent).max(1);
+        let columns = (width / extent).max(1);
         u32::try_from(columns).unwrap_or(u32::MAX)
     }
 
@@ -135,7 +135,7 @@ impl VirtualGridModeSpec {
         let columns = self.columns_for_width(available_width);
         let width = i64::from(available_width).max(0);
         let gap = i64::from(VIRTUAL_GRID_TILE_GAP_PX);
-        let tile_size = ((width + gap) / i64::from(columns))
+        let tile_size = (width / i64::from(columns))
             .saturating_sub(gap)
             .max(i64::from(self.tile_size));
         VirtualGridViewportMetrics {
@@ -153,7 +153,7 @@ impl VirtualGridModeSpec {
         let columns = columns.max(1);
         let width = i64::from(available_width).max(0);
         let gap = i64::from(VIRTUAL_GRID_TILE_GAP_PX);
-        let allocated_tile = (width + gap) / i64::from(columns);
+        let allocated_tile = width / i64::from(columns);
         // Day columns are user-configured. Never turn that preference into a
         // thumbnail-quality downgrade just because the current window is too
         // narrow; the host window/content area will request the preferred
@@ -172,9 +172,7 @@ impl VirtualGridModeSpec {
     /// preferred tile size without scaling thumbnails down.
     pub(crate) fn preferred_width_for_fixed_columns(self, columns: u32) -> i32 {
         let columns = i64::from(columns.max(1));
-        let width = columns
-            .saturating_mul(i64::from(self.tile_size + VIRTUAL_GRID_TILE_GAP_PX))
-            .saturating_sub(i64::from(VIRTUAL_GRID_TILE_GAP_PX));
+        let width = columns.saturating_mul(i64::from(self.tile_size + VIRTUAL_GRID_TILE_GAP_PX));
         i32::try_from(width).unwrap_or(i32::MAX)
     }
 }

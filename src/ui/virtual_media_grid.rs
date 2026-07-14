@@ -40,10 +40,10 @@ use mode::{VirtualGridModeSpec, VirtualGridViewportMetrics};
 use model::VirtualMediaModel;
 use range_cache::{expanded_visible_range, MediaRange, RangeCoordinator, RequestDisposition};
 
-/// CSS padding around the virtual grid. It is kept separate from the
-/// inter-tile gap because the viewport metrics receive only the space that
-/// remains inside this padding.
-const VIRTUAL_GRID_OUTER_PADDING_PX: i32 = 8;
+/// A card's outer gap is split between the grid padding and each list-item
+/// wrapper's margin. This keeps the visual 8px edge/gutter while leaving
+/// GtkGridView's own `border-spacing` at zero.
+const VIRTUAL_GRID_OUTER_PADDING_PX: i32 = 4;
 
 fn virtual_grid_content_width(width: i32) -> i32 {
     width.saturating_sub(VIRTUAL_GRID_OUTER_PADDING_PX.saturating_mul(2))
