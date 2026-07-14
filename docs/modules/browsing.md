@@ -71,13 +71,16 @@ preferred tile targets used to choose a fixed column count; they are not a
 fixed post-resize allocation. `GtkGridView` fills each chosen column across the
 real scroller viewport, and `SquareTile` declares height-for-width so each
 thumbnail remains square rather than leaving a centered fixed-size gutter. The
-grid has an explicit 2 px CSS `border-spacing`. `VirtualGridViewportMetrics`
-mirrors GTK's integer cell-width calculation on every resize, so tile side,
-row stride, date pill, and visible-range calculations stay aligned. Column
-count changes still rebuild the section-slot index; same-count resizes update
-only viewport metrics. Updates run on an idle turn (never re-entrantly during
-GTK allocation). Hidden modes stay inactive and do not seed or query ranges
-until selected.
+virtual-grid tile reports the target as its natural width but accepts a smaller
+minimum width, so a final cell that loses a few pixels to the scroller or CSS
+box model remains square without GTK measurement warnings; legacy FlowBox
+tiles retain their fixed minimum. The grid has an explicit 2 px CSS
+`border-spacing`. `VirtualGridViewportMetrics` mirrors GTK's integer
+cell-width calculation on every resize, so tile side, row stride, date pill,
+and visible-range calculations stay aligned. Column count changes still rebuild
+the section-slot index; same-count resizes update only viewport metrics.
+Updates run on an idle turn (never re-entrantly during GTK allocation). Hidden
+modes stay inactive and do not seed or query ranges until selected.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

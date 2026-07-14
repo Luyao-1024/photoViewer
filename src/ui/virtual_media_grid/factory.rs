@@ -36,6 +36,10 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             // GridView columns expand to fill a viewport. The tile must fill
             // that allocated cell as well; centering a fixed-width square
             // leaves a large blank gutter whenever the window is resized.
+            // The scroller/CSS box model can make that final cell a few
+            // pixels narrower than its preferred target, so do not report
+            // the target as a hard minimum during GTK's measure pass.
+            tile.set_allow_width_shrink(true);
             tile.set_halign(gtk::Align::Fill);
             tile.set_valign(gtk::Align::Start);
             let binding = Rc::new(RefCell::new(None));

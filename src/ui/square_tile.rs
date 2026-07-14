@@ -22,6 +22,11 @@ mod imp {
         pub duration_badge: RefCell<Option<gtk::Label>>,
         pub favorite_badge: RefCell<Option<gtk::Image>>,
         pub target: Cell<i32>,
+        /// Virtual GridView cells may lose a few pixels to the scroller or
+        /// CSS box model after their column count has been chosen. Keep the
+        /// target as the natural size while allowing that final allocation to
+        /// shrink instead of rejecting GTK's measure request.
+        pub allow_width_shrink: Cell<bool>,
         pub background_is_light: Cell<Option<bool>>,
         /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
         pub cache_key: RefCell<Option<String>>,
@@ -38,6 +43,7 @@ mod imp {
                 duration_badge: RefCell::new(None),
                 favorite_badge: RefCell::new(None),
                 target: Cell::new(90),
+                allow_width_shrink: Cell::new(false),
                 background_is_light: Cell::new(None),
                 cache_key: RefCell::new(None),
                 thumbnail_request: RefCell::new(None),
@@ -151,16 +157,24 @@ mod imp {
 
         // `target` is the preferred square size in the unconstrained
         // direction. With a real column width, HeightForWidth returns that
-        // width so the tile stays square as GridView reflows.
+        // width so the tile stays square as GridView reflows. Virtual grid
+        // cells retain this as their natural width but may advertise a
+        // smaller minimum: their final allocated column can be a couple of
+        // pixels narrower than the viewport-derived layout target.
         // NB: do NOT set a layout manager here — GTK4 would then measure via
         // the layout manager and bypass this override.
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let target = self.target.get().max(1);
-            let size = if orientation == gtk::Orientation::Vertical && for_size > 0 {
-                for_size
-            } else {
-                target
-            };
+            if orientation == gtk::Orientation::Horizontal {
+                let minimum = if self.allow_width_shrink.get() {
+                    1
+                } else {
+                    target
+                };
+                return (minimum, target, -1, -1);
+            }
+
+            let size = if for_size > 0 { for_size } else { target };
             (size, size, -1, -1)
         }
 
@@ -202,6 +216,19 @@ impl SquareTile {
 
     pub fn target(&self) -> i32 {
         self.imp().target.get()
+    }
+
+    /// Let a virtual `GtkGridView` allocate this square at a width slightly
+    /// below its preferred target. Other grids retain the default fixed
+    /// minimum width so their existing layout contracts are unchanged.
+    pub fn set_allow_width_shrink(&self, allow: bool) {
+        if self.imp().allow_width_shrink.replace(allow) != allow {
+            self.queue_resize();
+        }
+    }
+
+    pub fn allows_width_shrink(&self) -> bool {
+        self.imp().allow_width_shrink.get()
     }
 
     pub fn set_paintable<P: IsA<gtk::gdk::Paintable>>(&self, paintable: Option<&P>) {

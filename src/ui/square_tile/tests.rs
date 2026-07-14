@@ -16,6 +16,27 @@ fn square_tile_declares_height_for_width_for_responsive_grid_cells() {
     assert_eq!(tile.request_mode(), gtk::SizeRequestMode::HeightForWidth);
 }
 
+#[gtk::test]
+fn square_tile_can_relax_its_horizontal_minimum_for_virtual_grid_cells() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+    tile.set_target(270);
+
+    let (fixed_minimum, fixed_natural, _, _) = tile.measure(gtk::Orientation::Horizontal, -1);
+    assert_eq!(fixed_minimum, fixed_natural);
+    assert!(!tile.allows_width_shrink());
+
+    tile.set_allow_width_shrink(true);
+    let (relaxed_minimum, relaxed_natural, _, _) = tile.measure(gtk::Orientation::Horizontal, -1);
+
+    assert!(tile.allows_width_shrink());
+    assert!(
+        relaxed_minimum < relaxed_natural,
+        "a virtual GridView cell must accept a final width below its preferred target"
+    );
+    assert_eq!(relaxed_natural, fixed_natural);
+}
+
 // Task 4: the new three-state CSS in `grid_css` targets
 // `.glass-thumb-card`, which the legacy `.thumb-tile` selector no
 // longer covers. The tile wrapper must carry the new class.
