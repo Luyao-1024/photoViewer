@@ -51,6 +51,8 @@ fn deferred_thumbnail_paint_waits_for_idle_and_rejects_a_stale_binding() {
         binding_state.clone(),
         binding.clone(),
         loaded,
+        std::time::Instant::now(),
+        true,
     );
     assert!(
         tile.has_css_class("thumb-loading"),
@@ -86,6 +88,8 @@ fn deferred_thumbnail_paint_waits_for_idle_and_rejects_a_stale_binding() {
         binding_state,
         binding,
         stale_loaded,
+        std::time::Instant::now(),
+        true,
     );
     while glib::MainContext::default().pending() {
         glib::MainContext::default().iteration(false);

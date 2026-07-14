@@ -132,6 +132,25 @@ fn per_thumbnail_trace_spans_stay_debug() {
     );
 }
 
+/// trace 细化：`thumb:process` 必须携带 `cache_hit` 字段（创建时为 Empty，generate
+/// 返回 `DecodeOrigin` 后 record），让 trace 能把每次解码拆成磁盘命中 vs 冷生成。
+#[test]
+fn thumb_process_span_records_cache_hit() {
+    let src = thumbnail_production_sources();
+    let idx = src
+        .find("\"thumb:process\"")
+        .expect("thumb:process span must exist");
+    let decl = &src[idx..idx + 500];
+    assert!(
+        decl.contains("cache_hit = tracing::field::Empty"),
+        "thumb:process 必须声明 cache_hit = tracing::field::Empty"
+    );
+    assert!(
+        src[idx..].contains("process_span.record(\"cache_hit\""),
+        "thumb:process 必须在 generate 后 record cache_hit"
+    );
+}
+
 #[test]
 fn request_for_missing_source_drops_gracefully() {
     let dir = tempfile::tempdir().unwrap();

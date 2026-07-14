@@ -122,3 +122,16 @@ fn write_panic_crash_log_writes_expected_sections() {
     assert!(content.contains("--- app.log tail"));
     assert!(content.contains("lead-up event line"));
 }
+
+/// The Chrome trace layer must serialize span/event field values. tracing-chrome
+/// 0.7 defaults `include_args` to false, which silently drops every span field
+/// (uri, queue_wait_ms, tier, media_id, cache_hit, …) — the trace then carries
+/// only counts/durations, hiding the per-item latency breakdown. Guard the opt-in.
+#[test]
+fn chrome_layer_serializes_span_fields() {
+    let src = include_str!("../diagnostics.rs");
+    assert!(
+        src.contains(".include_args(true)"),
+        "ChromeLayerBuilder must call .include_args(true) so span fields are serialized into the trace"
+    );
+}

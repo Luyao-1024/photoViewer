@@ -234,6 +234,7 @@ fn bind_ready_cell(
     list_item.set_selectable(false);
 
     let loader = grid.loader();
+    let load_started = std::time::Instant::now();
     if let Some(loaded) =
         loader.try_load_mem_cached(&item.uri, spec.thumbnail_size(), Some(item_mtime))
     {
@@ -247,6 +248,8 @@ fn bind_ready_cell(
             cell.binding.clone(),
             binding,
             loaded,
+            load_started,
+            true,
         );
         return;
     }
@@ -259,6 +262,7 @@ fn bind_ready_cell(
         binding,
         item,
         loader,
+        load_started,
     );
 }
 
@@ -275,6 +279,8 @@ fn defer_thumbnail_paint(
     binding_state: Rc<RefCell<Option<TileBinding>>>,
     binding: TileBinding,
     loaded: crate::core::thumbnails::LoadedThumb,
+    load_started: std::time::Instant,
+    mem_hit: bool,
 ) {
     glib::idle_add_local_once(move || {
         let current_matches = binding_state
@@ -294,6 +300,20 @@ fn defer_thumbnail_paint(
             }
         }
         tile.set_paintable(Some(&loaded.texture));
+        // 端到端 bind→paint 延迟（主线程墙钟；worker 解码在 request 与 rx 之间于
+        // 另一线程完成）。用 span 承载点测量：稳定名 "tile:paint"，elapsed_ms 在
+        // 构造时（=上屏时刻）求值。mem_hit=true 表示 bind 时即命中 mem_cache（仅
+        // GTK idle 延迟）；false 走 request→queue→decode→rx→idle 全程。按 media_id
+        // 与 thumb:process（queue_wait_ms / cache_hit）交叉即可拆成 排队 + 解码 +
+        // GTK 上屏 三段。不带 target → 默认模块路径（photo_viewer::…）被
+        // photo_viewer=debug 放行（显式 "ui::…" target 会被过滤掉）。
+        let _tile_paint = tracing::debug_span!(
+            "tile:paint",
+            media_id = binding.media_id().get(),
+            mem_hit,
+            elapsed_ms = load_started.elapsed().as_millis() as u64,
+        )
+        .entered();
     });
 }
 
@@ -304,6 +324,7 @@ fn request_thumbnail(
     binding: TileBinding,
     item: crate::core::media::MediaItem,
     loader: Arc<ThumbnailLoader>,
+    load_started: std::time::Instant,
 ) {
     let spec = grid.spec();
     let mtime = thumbnail_request_mtime(&item);
@@ -323,7 +344,15 @@ fn request_thumbnail(
         let Ok(loaded) = rx.await else {
             return;
         };
-        defer_thumbnail_paint(tile_weak, grid_weak, binding_state, binding, loaded);
+        defer_thumbnail_paint(
+            tile_weak,
+            grid_weak,
+            binding_state,
+            binding,
+            loaded,
+            load_started,
+            false,
+        );
     });
 }
 

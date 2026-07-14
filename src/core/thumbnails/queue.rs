@@ -35,6 +35,8 @@ pub(in crate::core::thumbnails) fn worker_loop(
             tier = req.tier,
             media_id = req.media_id,
             queue_wait_ms = req.enqueued_at.elapsed().as_millis(),
+            // 在 generate 返回 DecodeOrigin 后 record：磁盘命中 vs 冷生成。
+            cache_hit = tracing::field::Empty,
         );
         let _process_guard = process_span.enter();
         match generate(&cache_dir, &req.uri, req.size, req.mtime) {
@@ -43,6 +45,7 @@ pub(in crate::core::thumbnails) fn worker_loop(
                 // 那次生成中写出），故命中无需重标；只有冷生成才需要更新
                 // thumbnail_generated_at。
                 let was_cache_hit = matches!(origin, DecodeOrigin::DiskCache);
+                process_span.record("cache_hit", was_cache_hit);
                 let generated_media_id = (req.media_id != 0).then_some(req.media_id);
                 let is_light = pixbuf_is_light(&pb);
                 let texture = Texture::for_pixbuf(&pb);

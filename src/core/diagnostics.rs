@@ -119,6 +119,13 @@ fn install_subscriber(log_dir: &Path) -> Option<tracing_chrome::FlushGuard> {
                 Ok(file) => {
                     let (layer, flush_guard) = tracing_chrome::ChromeLayerBuilder::new()
                         .writer(file)
+                        // Serialize span/event field values (uri, queue_wait_ms,
+                        // tier, media_id, cache_hit, …) into each event's `args`.
+                        // tracing-chrome 0.7 defaults this OFF; without it the trace
+                        // carries only counts/durations, not the per-item fields
+                        // needed to break down latency. (Guarded by the
+                        // chrome_layer_serializes_span_fields test.)
+                        .include_args(true)
                         .build();
                     (Some(layer), Some(flush_guard))
                 }
