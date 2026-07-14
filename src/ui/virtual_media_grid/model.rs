@@ -165,6 +165,7 @@ impl VirtualMediaModel {
     /// already loaded canonical media offsets. A column change alters where
     /// an offset is rendered, but not the database order or media data.
     pub fn reflow_layout(&self, layout: VirtualGridLayoutIndex, generation: u64) {
+        let started = std::time::Instant::now();
         let (old_slots, new_slots) = {
             let mut state = self.imp().state.borrow_mut();
             let old_slots = state.layout.slot_count();
@@ -173,10 +174,28 @@ impl VirtualMediaModel {
             state
                 .ready_by_offset
                 .retain(|offset, _| layout.slot_for_media_offset(*offset).is_some());
+            let new_slots = state.layout.slot_count();
             state.slot_objects.clear();
-            (old_slots, state.layout.slot_count())
+            (old_slots, new_slots)
         };
+        tracing::trace!(
+            target: "ui::grid_settings",
+            old_slots,
+            new_slots,
+            generation,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "virtual_grid_model_reflow_state_updated"
+        );
+        let notify_started = std::time::Instant::now();
         self.items_changed(0, old_slots, new_slots);
+        tracing::trace!(
+            target: "ui::grid_settings",
+            old_slots,
+            new_slots,
+            generation,
+            elapsed_ms = notify_started.elapsed().as_secs_f64() * 1000.0,
+            "virtual_grid_model_items_changed_finished"
+        );
     }
 
     /// Replaces the physical layout and exposes an already-known initial media

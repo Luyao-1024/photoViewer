@@ -14,13 +14,17 @@ mod imp {
         /// picture and badge hierarchy while GridView recycles the tile.
         pub content: RefCell<Option<gtk::Overlay>>,
         pub picture: RefCell<Option<gtk::Picture>>,
+        /// A paint-only glass veil above the thumbnail. Keeping this as an
+        /// overlay is essential: the picture fills the tile and otherwise
+        /// hides CSS backgrounds painted on the SquareTile root.
+        pub state_overlay: RefCell<Option<gtk::Frame>>,
         /// 半透明白色勾选标记，浮于缩略图右下角；始终 parented/allocated，
         /// 通过 CSS（flowboxchild:selected .thumb-checkmark）控制显隐，
         /// 仅在选中时可见。见 grid_css 的 .thumb-checkmark 规则。
         pub checkmark: RefCell<Option<gtk::Image>>,
-        pub motion_badge: RefCell<Option<gtk::Image>>,
+        pub motion_badge: RefCell<Option<gtk::Label>>,
         pub duration_badge: RefCell<Option<gtk::Label>>,
-        pub favorite_badge: RefCell<Option<gtk::Image>>,
+        pub favorite_badge: RefCell<Option<gtk::Label>>,
         pub target: Cell<i32>,
         /// Only virtual GridView cells participate in height-for-width
         /// measurement. Fixed-size covers must not turn a parent row width
@@ -42,6 +46,7 @@ mod imp {
             Self {
                 content: RefCell::new(None),
                 picture: RefCell::new(None),
+                state_overlay: RefCell::new(None),
                 checkmark: RefCell::new(None),
                 motion_badge: RefCell::new(None),
                 duration_badge: RefCell::new(None),
@@ -77,6 +82,25 @@ mod imp {
             content.set_parent(&*obj);
             *self.content.borrow_mut() = Some(content.clone());
 
+            // GtkGridView recycles private list-item wrappers and their
+            // `:hover` CSS state is not consistently exposed on every row.
+            // Track pointer presence on the reusable tile itself so the
+            // hover outline works identically in every row and in FlowBox.
+            let motion = gtk::EventControllerMotion::new();
+            let weak_tile = obj.downgrade();
+            motion.connect_enter(move |_, _, _| {
+                if let Some(tile) = weak_tile.upgrade() {
+                    tile.add_css_class("thumb-pointer-hover");
+                }
+            });
+            let weak_tile = obj.downgrade();
+            motion.connect_leave(move |_| {
+                if let Some(tile) = weak_tile.upgrade() {
+                    tile.remove_css_class("thumb-pointer-hover");
+                }
+            });
+            obj.add_controller(motion);
+
             let picture = gtk::Picture::builder()
                 .content_fit(gtk::ContentFit::Cover)
                 .can_shrink(true)
@@ -84,6 +108,18 @@ mod imp {
             picture.add_css_class("thumb-image");
             content.set_child(Some(&picture));
             *self.picture.borrow_mut() = Some(picture);
+
+            // The selected/hover glass material must be painted above the
+            // picture, not behind it. This overlay never receives input and
+            // stays allocated so toggling the state cannot disturb geometry.
+            let state_overlay = gtk::Frame::new(None);
+            state_overlay.add_css_class("thumb-state-glass");
+            state_overlay.set_hexpand(true);
+            state_overlay.set_vexpand(true);
+            state_overlay.set_can_target(false);
+            state_overlay.set_sensitive(false);
+            content.add_overlay(&state_overlay);
+            *self.state_overlay.borrow_mut() = Some(state_overlay);
 
             // Selection checkmark: a translucent-white tick pinned to the
             // bottom-right, drawn above the picture. It is always
@@ -101,12 +137,9 @@ mod imp {
             content.add_overlay(&checkmark);
             *self.checkmark.borrow_mut() = Some(checkmark);
 
-            let motion_badge = gtk::Image::builder()
-                .icon_name("media-playback-start-symbolic")
-                .pixel_size(18)
-                .visible(false)
-                .build();
+            let motion_badge = gtk::Label::builder().label("▶").visible(false).build();
             motion_badge.add_css_class("thumb-motion-badge");
+            motion_badge.set_can_target(true);
             motion_badge.set_halign(gtk::Align::Start);
             motion_badge.set_valign(gtk::Align::End);
             motion_badge.set_margin_start(7);
@@ -125,12 +158,9 @@ mod imp {
             content.add_overlay(&duration_badge);
             *self.duration_badge.borrow_mut() = Some(duration_badge);
 
-            let favorite_badge = gtk::Image::builder()
-                .icon_name("emblem-favorite-symbolic")
-                .pixel_size(20)
-                .visible(false)
-                .build();
+            let favorite_badge = gtk::Label::builder().label("♡").visible(false).build();
             favorite_badge.add_css_class("thumb-favorite-badge");
+            favorite_badge.set_can_target(true);
             favorite_badge.set_halign(gtk::Align::End);
             favorite_badge.set_valign(gtk::Align::Start);
             favorite_badge.set_margin_end(7);
@@ -144,6 +174,7 @@ mod imp {
                 content.unparent();
             }
             self.picture.borrow_mut().take();
+            self.state_overlay.borrow_mut().take();
             self.checkmark.borrow_mut().take();
             self.motion_badge.borrow_mut().take();
             self.duration_badge.borrow_mut().take();
@@ -173,6 +204,11 @@ mod imp {
         // the layout manager and bypass this override.
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let target = self.target.get().max(1);
+            // GTK can briefly pass a stale negative constraint while
+            // GtkGridView is replacing/recycling a row. `-1` is the only
+            // valid unconstrained sentinel; never propagate a smaller value
+            // into a child measurement.
+            let for_size = for_size.max(-1);
             if orientation == gtk::Orientation::Horizontal {
                 let minimum = if self.allow_width_shrink.get() {
                     1

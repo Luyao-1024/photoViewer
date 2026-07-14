@@ -103,7 +103,7 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     let has_expected_realization = || {
         let metrics = grid.viewport_metrics();
         if metrics.columns() != 4
-            || metrics.tile_size() != 223
+            || metrics.tile_size() != 270
             || !grid.imp().factory_cells.borrow().iter().any(|cell| {
                 cell.tile.width() == metrics.tile_size()
                     && cell.tile.height() == metrics.tile_size()
@@ -144,8 +144,8 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
 
     let metrics = grid.viewport_metrics();
     assert_eq!(metrics.columns(), 4);
-    assert_eq!(metrics.tile_size(), 223);
-    assert_eq!(metrics.row_extent(), 225);
+    assert_eq!(metrics.tile_size(), 270);
+    assert_eq!(metrics.row_extent(), 278);
     let first_tile = grid
         .imp()
         .factory_cells
@@ -208,9 +208,8 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
         "filled tiles should leave only the configured 2px inter-column gap"
     );
 
-    // Resize without crossing a column breakpoint. The layout must still
-    // update tile height and virtual row stride; otherwise the former fixed
-    // 270px height reappears as a visible gutter after a window drag.
+    // Resize without crossing a column breakpoint. The layout keeps the
+    // preferred Day tile size instead of shrinking it with the viewport.
     window.set_default_size(1_018, 900);
     let resize_deadline_reached = std::rc::Rc::new(std::cell::Cell::new(false));
     let resize_deadline_callback = resize_deadline_reached.clone();
@@ -220,7 +219,7 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     let has_resized_layout = || {
         let metrics = grid.viewport_metrics();
         metrics.columns() == 4
-            && metrics.tile_size() == 253
+            && metrics.tile_size() == 270
             && grid.imp().factory_cells.borrow().iter().any(|cell| {
                 cell.tile.width() == metrics.tile_size()
                     && cell.tile.height() == metrics.tile_size()
@@ -239,14 +238,14 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     );
     let resized_metrics = grid.viewport_metrics();
     assert_eq!(resized_metrics.columns(), 4);
-    assert_eq!(resized_metrics.tile_size(), 253);
-    assert_eq!(resized_metrics.row_extent(), 255);
+    assert_eq!(resized_metrics.tile_size(), 270);
+    assert_eq!(resized_metrics.row_extent(), 278);
 
     window.close();
 }
 
 #[gtk::test]
-fn viewport_width_updates_the_row_metric_even_when_column_count_is_unchanged() {
+fn viewport_width_does_not_shrink_day_tiles_when_column_count_is_unchanged() {
     let _ = gtk::init();
     let dir = tempfile::tempdir().unwrap();
     let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
@@ -257,10 +256,10 @@ fn viewport_width_updates_the_row_metric_even_when_column_count_is_unchanged() {
     grid.update_columns_for_width(900);
     let compact = grid.viewport_metrics();
     assert_eq!(compact.columns(), 4);
-    assert_eq!(compact.row_extent(), 225);
+    assert_eq!(compact.row_extent(), 278);
 
     grid.update_columns_for_width(1_018);
     let wide = grid.viewport_metrics();
     assert_eq!(wide.columns(), 4);
-    assert_eq!(wide.row_extent(), 255);
+    assert_eq!(wide.row_extent(), 278);
 }

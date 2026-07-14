@@ -8,7 +8,10 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailSize;
 
 /// Fixed spacing between neighboring tiles in the virtual grid.
-pub(crate) const VIRTUAL_GRID_TILE_GAP_PX: i32 = 2;
+///
+/// Keep enough breathing room for the card outline and hover accent to remain
+/// visible on all four sides, matching the album FlowBox spacing.
+pub(crate) const VIRTUAL_GRID_TILE_GAP_PX: i32 = 8;
 
 /// The geometry that one allocated `GtkGridView` viewport actually uses.
 ///
@@ -151,12 +154,28 @@ impl VirtualGridModeSpec {
         let width = i64::from(available_width).max(0);
         let gap = i64::from(VIRTUAL_GRID_TILE_GAP_PX);
         let allocated_tile = (width + gap) / i64::from(columns);
-        let tile_size = allocated_tile.saturating_sub(gap).max(1);
+        // Day columns are user-configured. Never turn that preference into a
+        // thumbnail-quality downgrade just because the current window is too
+        // narrow; the host window/content area will request the preferred
+        // width and GTK can scroll temporarily while the resize settles.
+        let tile_size = allocated_tile
+            .saturating_sub(gap)
+            .max(i64::from(self.tile_size));
 
         VirtualGridViewportMetrics {
             columns,
             tile_size: i32::try_from(tile_size).unwrap_or(i32::MAX),
         }
+    }
+
+    /// Minimum content width needed to render fixed columns at the product's
+    /// preferred tile size without scaling thumbnails down.
+    pub(crate) fn preferred_width_for_fixed_columns(self, columns: u32) -> i32 {
+        let columns = i64::from(columns.max(1));
+        let width = columns
+            .saturating_mul(i64::from(self.tile_size + VIRTUAL_GRID_TILE_GAP_PX))
+            .saturating_sub(i64::from(VIRTUAL_GRID_TILE_GAP_PX));
+        i32::try_from(width).unwrap_or(i32::MAX)
     }
 }
 

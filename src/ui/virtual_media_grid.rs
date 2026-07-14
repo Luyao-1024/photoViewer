@@ -40,6 +40,24 @@ use mode::{VirtualGridModeSpec, VirtualGridViewportMetrics};
 use model::VirtualMediaModel;
 use range_cache::{expanded_visible_range, MediaRange, RangeCoordinator, RequestDisposition};
 
+/// CSS padding around the virtual grid. It is kept separate from the
+/// inter-tile gap because the viewport metrics receive only the space that
+/// remains inside this padding.
+const VIRTUAL_GRID_OUTER_PADDING_PX: i32 = 8;
+
+fn virtual_grid_content_width(width: i32) -> i32 {
+    width.saturating_sub(VIRTUAL_GRID_OUTER_PADDING_PX.saturating_mul(2))
+}
+
+fn virtual_grid_preferred_width(spec: VirtualGridModeSpec, columns: u32) -> i32 {
+    spec.preferred_width_for_fixed_columns(columns)
+        .saturating_add(VIRTUAL_GRID_OUTER_PADDING_PX.saturating_mul(2))
+}
+
+pub(crate) fn preferred_day_grid_width(columns: usize) -> i32 {
+    virtual_grid_preferred_width(VirtualGridModeSpec::for_mode(GroupBy::Day), columns as u32)
+}
+
 pub(crate) use model::GridSlotState;
 
 /// Identity for a factory binding.  A thumbnail result may only paint a tile
@@ -277,6 +295,12 @@ impl VirtualMediaGrid {
         let configured_columns = runtime_config::photos_grid_columns() as u32;
         let initial_metrics = if mode == GroupBy::Day {
             imp.grid_columns.set(configured_columns);
+            let preferred_width = virtual_grid_preferred_width(
+                VirtualGridModeSpec::for_mode(mode),
+                configured_columns,
+            );
+            imp.scroller.get().set_min_content_width(preferred_width);
+            imp.grid.get().set_width_request(preferred_width);
             VirtualGridModeSpec::for_mode(mode)
                 .viewport_metrics_for_fixed_columns(0, configured_columns)
         } else {
@@ -340,6 +364,12 @@ impl VirtualMediaGrid {
 
     pub fn set_grid_columns(&self, columns: usize) {
         if self.mode() != GroupBy::Day {
+            tracing::trace!(
+                target: "ui::grid_settings",
+                mode = ?self.mode(),
+                columns,
+                "virtual_grid_skip_non_day_columns"
+            );
             return;
         }
         let columns = columns.clamp(
@@ -347,8 +377,29 @@ impl VirtualMediaGrid {
             runtime_config::MAX_PHOTOS_GRID_COLUMNS,
         ) as u32;
         if self.imp().grid_columns.replace(columns) == columns {
+            tracing::trace!(
+                target: "ui::grid_settings",
+                mode = ?self.mode(),
+                columns,
+                "virtual_grid_columns_unchanged"
+            );
             return;
         }
+        let preferred_width = virtual_grid_preferred_width(self.spec(), columns);
+        tracing::trace!(
+            target: "ui::grid_settings",
+            mode = ?self.mode(),
+            columns,
+            preferred_width,
+            scroller_width = self.imp().scroller.get().width(),
+            grid_width = self.imp().grid.get().width(),
+            "virtual_grid_apply_day_columns"
+        );
+        self.imp()
+            .scroller
+            .get()
+            .set_min_content_width(preferred_width);
+        self.imp().grid.get().set_width_request(preferred_width);
         self.imp().grid.get().set_min_columns(columns);
         self.imp().grid.get().set_max_columns(columns);
         let width = self.imp().scroller.get().width();
@@ -829,15 +880,37 @@ impl VirtualMediaGrid {
 
     fn update_columns_for_width(&self, width: i32) {
         let next_metrics = if self.mode() == GroupBy::Day {
-            self.spec()
-                .viewport_metrics_for_fixed_columns(width, self.imp().grid_columns.get())
+            self.spec().viewport_metrics_for_fixed_columns(
+                virtual_grid_content_width(width),
+                self.imp().grid_columns.get(),
+            )
         } else {
-            self.spec().viewport_metrics_for_width(width)
+            self.spec()
+                .viewport_metrics_for_width(virtual_grid_content_width(width))
         };
         let previous_metrics = self.viewport_metrics();
         if next_metrics == previous_metrics {
+            tracing::trace!(
+                target: "ui::grid_settings",
+                mode = ?self.mode(),
+                width,
+                columns = next_metrics.columns(),
+                tile_size = next_metrics.tile_size(),
+                "virtual_grid_width_update_unchanged"
+            );
             return;
         }
+
+        tracing::trace!(
+            target: "ui::grid_settings",
+            mode = ?self.mode(),
+            width,
+            previous_columns = previous_metrics.columns(),
+            previous_tile_size = previous_metrics.tile_size(),
+            columns = next_metrics.columns(),
+            tile_size = next_metrics.tile_size(),
+            "virtual_grid_width_update"
+        );
 
         let old_layout = self.model().layout();
         let old_top_slot = self.top_slot_for_adjustment();
@@ -859,20 +932,49 @@ impl VirtualMediaGrid {
             return;
         };
         if columns_changed {
+            let layout_started = std::time::Instant::now();
             let layout = VirtualGridLayoutIndex::new(&counts, next_metrics.columns());
             let restored_slot =
                 anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));
+            tracing::trace!(
+                target: "ui::grid_settings",
+                mode = ?self.mode(),
+                columns = next_metrics.columns(),
+                slot_count = layout.slot_count(),
+                media_count = layout.media_count(),
+                elapsed_ms = layout_started.elapsed().as_secs_f64() * 1000.0,
+                "virtual_grid_layout_index_built"
+            );
             // A column change only reflows physical slots. Canonical media
             // offsets and bounded range residency remain valid, so retain
             // them to avoid a placeholder/database reload pass while the
             // user is dragging the window edge.
             let generation = self.imp().layout_generation.get().saturating_add(1);
             self.imp().layout_generation.set(generation);
+            let reflow_started = std::time::Instant::now();
             self.model().reflow_layout(layout, generation);
+            tracing::trace!(
+                target: "ui::grid_settings",
+                mode = ?self.mode(),
+                generation,
+                elapsed_ms = reflow_started.elapsed().as_secs_f64() * 1000.0,
+                "virtual_grid_model_reflow_finished"
+            );
             if let Some(slot) = restored_slot {
+                tracing::trace!(
+                    target: "ui::grid_settings",
+                    mode = ?self.mode(),
+                    slot,
+                    "virtual_grid_restore_scroll_scheduled"
+                );
                 self.restore_top_slot(slot);
             }
         }
+        tracing::trace!(
+            target: "ui::grid_settings",
+            mode = ?self.mode(),
+            "virtual_grid_visible_range_scheduled"
+        );
         self.schedule_visible_range_after_layout();
     }
 

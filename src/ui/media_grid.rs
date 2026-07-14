@@ -28,8 +28,8 @@
 //!
 //! ## Gap & hover hint
 //!
-//! The FlowBox `column-spacing` / `row-spacing` (2 px) is the thin separator
-//! between tiles. The highlight (a clean accent `outline` on the
+//! The FlowBox `column-spacing` / `row-spacing` (8 px) leaves room for the
+//! card outline and hover accent between tiles. The highlight (a clean accent `outline` on the
 //! `flowboxchild` — the same node GTK uses for its keyboard-focus ring, so
 //! mouse hover and arrow-key focus look identical) lives in
 //! `crate::ui::grid_css`. Each section FlowBox defaults to

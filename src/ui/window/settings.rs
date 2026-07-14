@@ -12,10 +12,12 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use serde_json::{Map, Value};
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -281,39 +283,90 @@ impl MainWindow {
         grid_group.add_css_class("settings-preferences-group");
         content.append(&grid_group);
 
-        let columns_spin = gtk::SpinButton::with_range(
-            runtime_config::MIN_PHOTOS_GRID_COLUMNS as f64,
-            runtime_config::MAX_PHOTOS_GRID_COLUMNS as f64,
-            1.0,
-        );
-        columns_spin.set_value(runtime_config::photos_grid_columns() as f64);
-        columns_spin.set_numeric(true);
-        columns_spin.set_wrap(false);
+        let initial_columns = runtime_config::photos_grid_columns();
+        let columns_value = gtk::Label::new(Some(&initial_columns.to_string()));
+        columns_value.add_css_class("settings-stepper-value");
+        columns_value.set_width_chars(2);
+        columns_value.set_xalign(0.5);
+
+        let columns_minus = gtk::Button::from_icon_name("list-remove-symbolic");
+        let columns_plus = gtk::Button::from_icon_name("list-add-symbolic");
+        for button in [&columns_minus, &columns_plus] {
+            button.add_css_class("settings-stepper-button");
+            button.set_valign(gtk::Align::Center);
+            button.set_focus_on_click(false);
+        }
+        columns_minus.set_sensitive(initial_columns > runtime_config::MIN_PHOTOS_GRID_COLUMNS);
+        columns_plus.set_sensitive(initial_columns < runtime_config::MAX_PHOTOS_GRID_COLUMNS);
+
+        let columns_stepper = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        columns_stepper.add_css_class("settings-stepper");
+        columns_stepper.append(&columns_minus);
+        columns_stepper.append(&columns_value);
+        columns_stepper.append(&columns_plus);
+
         let columns_row = adw::ActionRow::new();
         columns_row.add_css_class("settings-action-row");
         columns_row.set_title(&tr("setting.photos_grid_columns"));
         columns_row.set_subtitle(&tr("setting.photos_grid_columns_description"));
         columns_row.set_activatable(false);
-        columns_row.add_suffix(&columns_spin);
+        columns_row.add_suffix(&columns_stepper);
         grid_group.add(&columns_row);
 
         let parent_for_columns = parent.clone();
-        columns_spin.connect_value_changed(move |spin| {
-            let columns = spin.value_as_int().max(1) as usize;
-            match runtime_config::set_photos_grid_columns(columns) {
-                Ok(()) => {
-                    if let Ok(window) = parent_for_columns.clone().downcast::<MainWindow>() {
-                        window.set_photos_grid_columns(columns);
+        let current_columns = Rc::new(Cell::new(initial_columns));
+        let current_for_apply = current_columns.clone();
+        let value_for_apply = columns_value.clone();
+        let minus_for_apply = columns_minus.clone();
+        let plus_for_apply = columns_plus.clone();
+        let apply_columns =
+            Rc::new(
+                move |columns: usize| match runtime_config::set_photos_grid_columns(columns) {
+                    Ok(()) => {
+                        tracing::trace!(
+                            target: "ui::grid_settings",
+                            columns,
+                            "day_grid_columns_apply_saved"
+                        );
+                        current_for_apply.set(columns);
+                        value_for_apply.set_label(&columns.to_string());
+                        minus_for_apply
+                            .set_sensitive(columns > runtime_config::MIN_PHOTOS_GRID_COLUMNS);
+                        plus_for_apply
+                            .set_sensitive(columns < runtime_config::MAX_PHOTOS_GRID_COLUMNS);
+                        if let Ok(window) = parent_for_columns.clone().downcast::<MainWindow>() {
+                            window.set_photos_grid_columns(columns);
+                        }
                     }
-                }
-                Err(err) => show_settings_error_dialog(
-                    &parent_for_columns,
-                    &trf(
-                        "setting.photos_grid_columns_save_failed",
-                        &[("error", &err)],
+                    Err(err) => show_settings_error_dialog(
+                        &parent_for_columns,
+                        &trf(
+                            "setting.photos_grid_columns_save_failed",
+                            &[("error", &err)],
+                        ),
                     ),
-                ),
-            }
+                },
+            );
+
+        let apply_minus = apply_columns.clone();
+        let current_for_minus = current_columns.clone();
+        columns_minus.connect_clicked(move |_| {
+            tracing::trace!(target: "ui::grid_settings", "day_grid_columns_minus_clicked");
+            let columns = current_for_minus
+                .get()
+                .saturating_sub(1)
+                .max(runtime_config::MIN_PHOTOS_GRID_COLUMNS);
+            apply_minus(columns);
+        });
+
+        let current_for_plus = current_columns;
+        columns_plus.connect_clicked(move |_| {
+            tracing::trace!(target: "ui::grid_settings", "day_grid_columns_plus_clicked");
+            let columns = current_for_plus
+                .get()
+                .saturating_add(1)
+                .min(runtime_config::MAX_PHOTOS_GRID_COLUMNS);
+            apply_columns(columns);
         });
 
         let storage_group = adw::PreferencesGroup::new();

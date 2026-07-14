@@ -260,7 +260,7 @@
     "setting.section.grid": "Photo Grid",
     "setting.section.grid_description": "Controls Day view only; Year and Month adapt to the window size.",
     "setting.photos_grid_columns": "Day images per row",
-    "setting.photos_grid_columns_description": "Applies immediately to Day view; Year and Month remain adaptive.",
+    "setting.photos_grid_columns_description": "Applies immediately; Day keeps its thumbnail size and resizes to fit the columns. Year and Month remain adaptive.",
     "setting.photos_grid_columns_save_failed": "Failed to save Day images per row: {error}",
     "setting.trash.backend": "Trash Location",
     "setting.trash.backend.system": "System Trash",

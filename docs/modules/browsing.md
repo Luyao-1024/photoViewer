@@ -74,8 +74,10 @@ thumbnail remains square rather than leaving a centered fixed-size gutter. The
 virtual-grid tile reports the target as its natural width but accepts a smaller
 minimum width, so a final cell that loses a few pixels to the scroller or CSS
 box model remains square without GTK measurement warnings; legacy FlowBox
-tiles retain their fixed minimum. The grid has an explicit 2 px CSS
-`border-spacing`. `VirtualGridViewportMetrics` mirrors GTK's integer
+tiles retain their fixed minimum. The grid has an explicit 8 px CSS
+`border-spacing` plus 8 px outer padding, so the first and last thumbnails
+retain room for their four-sided glass focus or selection ring.
+`VirtualGridViewportMetrics` mirrors GTK's integer
 cell-width calculation on every resize, so tile side, row stride, date pill,
 and visible-range calculations stay aligned. Resizing updates only viewport
 metrics and never rebuilds the section-slot index. Changing the setting
@@ -84,10 +86,13 @@ re-entrantly during GTK allocation. Hidden modes stay inactive and do not seed
 or query ranges until selected.
 
 The Day-view column count is a persisted Settings preference. Window resizing
-never changes the Day column count; it only recalculates cell width and row
-stride. Year and Month retain their smaller-tile adaptive column count and may
-reflow when their natural width thresholds are crossed. Changing the Day
-preference intentionally reflows the Day grid once.
+never changes the Day column count. Day thumbnails keep the preferred 270 px
+side; changing the preference raises the GridView/content minimum width and
+requests a main-window width that fits the new number of columns, so the
+setting does not silently shrink thumbnails. Year and Month retain their
+smaller-tile adaptive column count and may reflow when their natural width
+thresholds are crossed. Changing the Day preference intentionally reflows the
+Day grid once.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

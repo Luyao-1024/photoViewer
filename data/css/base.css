@@ -12,6 +12,16 @@ flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card {
   border-color: alpha(@window_fg_color, 0.18);
 }
 
+/* GtkFlowBox paints its own blue selection surface on the child wrapper in
+   Multiple mode. Selection is rendered by the thumbnail card below, so the
+   wrapper must remain transparent; otherwise multi-select gets a different
+   blue halo from the normal `media-selected` glass material. */
+flowbox.thumb-grid > flowboxchild:selected {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 /* Keyboard focus — glass ring. Hidden once the pointer leaves the grid
    (see .pointer-left rule below) so the ring doesn't linger on the
    last-hovered tile after the mouse moves away. */
@@ -20,13 +30,22 @@ flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
   outline-offset: 2px;
 }
 
-/* Selected — luminous glass border + soft inner veil. Glass alone
-   communicates the selected state; no accent colour needed. */
+/* Selected — neutral glass. The two radial washes provide a soft material
+   gradient instead of a flat blue block: a bright highlight catches the
+   upper-left edge while the lower-right remains translucent. The inset ring
+   is intentional because GridView tiles clip paint at their bounds. */
 flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card {
-  background: alpha(@window_fg_color, 0.10);
-  border-color: alpha(@window_fg_color, 0.48);
+  background:
+    radial-gradient(circle at 18% 12%, alpha(@window_fg_color, 0.28), transparent 42%),
+    radial-gradient(circle at 88% 92%, alpha(@window_fg_color, 0.18), transparent 64%),
+    alpha(@window_fg_color, 0.10);
+  border-color: alpha(@window_fg_color, 0.62);
   box-shadow:
-    inset 0 1px alpha(@window_fg_color,0.35);
+    0 0 0 1px alpha(@window_fg_color, 0.26),
+    0 8px 22px alpha(@window_fg_color, 0.12),
+    inset 0 1px alpha(@window_fg_color, 0.52),
+    inset 0 -1px alpha(black, 0.16),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.40);
 }
 
 /* Pointer-left — hide the focus ring once the mouse exits the grid.
@@ -64,17 +83,33 @@ flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {
    than `GtkSelectionModel` positions.  Its factory marks the reused tile
    itself, so retain the exact same visual affordance outside FlowBox. */
 .glass-thumb-card.media-selected {
-  background: alpha(@window_fg_color, 0.10);
-  border-color: alpha(@window_fg_color, 0.48);
-  box-shadow: inset 0 1px alpha(@window_fg_color, 0.35);
+  background:
+    radial-gradient(circle at 18% 12%, alpha(@window_fg_color, 0.28), transparent 42%),
+    radial-gradient(circle at 88% 92%, alpha(@window_fg_color, 0.18), transparent 64%),
+    alpha(@window_fg_color, 0.10);
+  border-color: alpha(@window_fg_color, 0.62);
+  box-shadow:
+    0 0 0 1px alpha(@window_fg_color, 0.26),
+    0 8px 22px alpha(@window_fg_color, 0.12),
+    inset 0 1px alpha(@window_fg_color, 0.52),
+    inset 0 -1px alpha(black, 0.16),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.40);
 }
 
 .glass-thumb-card.media-selected .thumb-checkmark {
   opacity: 1;
 }
 
+/* Track pointer state on SquareTile itself. GtkGridView's private child
+   wrappers do not reliably expose :hover for every recycled row. An inset
+   outline keeps all four sides visible without changing allocation. */
+.glass-thumb-card.thumb-pointer-hover {
+  background: alpha(@window_fg_color, 0.08);
+  box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.42);
+}
+
 /* Keep GridView's geometry explicit rather than depending on a theme default.
-   Each tile fills its allocated column, while the exact 2px CSS
+   Each tile fills its allocated column, while the exact 8px CSS
    `border-spacing` is also used by the virtual scroll/date-range metrics. */
 gridview.virtual-media-grid-view > child {
   margin: 0;
@@ -82,8 +117,20 @@ gridview.virtual-media-grid-view > child {
   border: 0;
 }
 
+/* Keep GTK's list-item selection node transparent as well. Photos currently
+   uses NoSelection plus stable MediaIds, but this reset makes the visual
+   contract safe if a selection model is temporarily enabled during reuse. */
+gridview.virtual-media-grid-view > child:selected {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 gridview.virtual-media-grid-view {
-  border-spacing: 2px;
+  /* Keep the first/last card away from the sidebar and scroller edge so the
+     four-sided glass ring has paint room just like the internal gaps. */
+  padding: 8px;
+  border-spacing: 8px;
 }
 
 gridview.virtual-media-grid-view > child > .glass-thumb-card {
@@ -96,9 +143,86 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card {
 }
 
 gridview.virtual-media-grid-view > child > .glass-thumb-card.media-selected {
+  background:
+    radial-gradient(circle at 18% 12%, alpha(@window_fg_color, 0.28), transparent 42%),
+    radial-gradient(circle at 88% 92%, alpha(@window_fg_color, 0.18), transparent 64%),
+    alpha(@window_fg_color, 0.10);
   box-shadow:
-    inset 0 0 0 1px alpha(@window_fg_color, 0.48),
-    inset 0 1px alpha(@window_fg_color, 0.35);
+    0 0 0 1px alpha(@window_fg_color, 0.62),
+    0 8px 22px alpha(@window_fg_color, 0.12),
+    inset 0 1px alpha(@window_fg_color, 0.52),
+    inset 0 -1px alpha(black, 0.16),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.40);
+}
+
+/* GridView does not expose FlowBoxChild's hover selector. Keep the same
+   lightweight hover treatment for recycled Photos cells and let the media
+   markers retain a stable visual identity over every icon theme. */
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card {
+  background:
+    radial-gradient(circle at 18% 12%, alpha(@window_fg_color, 0.16), transparent 44%),
+    alpha(@window_fg_color, 0.06);
+  box-shadow:
+    0 0 0 1px alpha(@window_fg_color, 0.36),
+    inset 0 1px alpha(@window_fg_color, 0.28);
+}
+
+/* Hover must not flatten a selected tile. Keep the accent glass as the
+   dominant state while adding only a little extra edge light. */
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected,
+.glass-thumb-card.media-selected.thumb-pointer-hover {
+  background:
+    radial-gradient(circle at 18% 12%, alpha(@window_fg_color, 0.34), transparent 42%),
+    radial-gradient(circle at 88% 92%, alpha(@window_fg_color, 0.22), transparent 64%),
+    alpha(@window_fg_color, 0.12);
+  box-shadow:
+    0 0 0 1px alpha(@window_fg_color, 0.74),
+    0 8px 24px alpha(@window_fg_color, 0.16),
+    inset 0 1px alpha(@window_fg_color, 0.62),
+    inset 0 -1px alpha(black, 0.16),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.48);
+}
+
+/* Pointer emphasis and multi-selection are one interaction language. Keep
+   the exact same material for both states and make the veil visible over
+   dark thumbnails: the upper light is the glass reflection, the lower wash
+   gives the card body depth, and the shadow separates it from the image. */
+.glass-thumb-card.media-selected,
+.glass-thumb-card.thumb-pointer-hover,
+flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card,
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card,
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected,
+.glass-thumb-card.media-selected.thumb-pointer-hover {
+  background:
+    radial-gradient(circle at 20% 8%, alpha(@window_fg_color, 0.42), transparent 44%),
+    radial-gradient(circle at 84% 96%, alpha(@window_fg_color, 0.24), transparent 68%),
+    alpha(@window_fg_color, 0.16);
+  border-color: alpha(@window_fg_color, 0.72);
+  box-shadow:
+    0 0 0 1px alpha(@window_fg_color, 0.54),
+    0 8px 24px alpha(black, 0.34),
+    inset 0 1px alpha(@window_fg_color, 0.72),
+    inset 0 -1px alpha(black, 0.20),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.52);
+}
+
+/* The marker itself is targetable, so hovering the heart/play glyph gives a
+   stronger accent than hovering the rest of the tile. This mirrors the HTML
+   reference without adding a layout-changing button capsule. */
+.thumb-motion-badge,
+.thumb-favorite-badge {
+  font-weight: 800;
+  text-shadow: 0 1px 3px alpha(black, 0.78);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.thumb-motion-badge:hover,
+.thumb-favorite-badge:hover,
+flowbox.thumb-grid > flowboxchild:hover .thumb-motion-badge,
+flowbox.thumb-grid > flowboxchild:hover .thumb-favorite-badge,
+gridview.virtual-media-grid-view > child:hover .thumb-motion-badge,
+gridview.virtual-media-grid-view > child:hover .thumb-favorite-badge {
+  color: alpha(@window_fg_color, 0.98);
 }
 
 /* Segmented glass — the reusable shape used by the 年/月/日 mode selector.
@@ -677,11 +801,39 @@ video.viewer-media-surface controls scale slider {
   border-radius: 10px;
 }
 
+/* The picture is opaque, so the selected/hover veil must be a real overlay
+   child rather than the card background. It is allocated permanently and
+   only changes paint opacity, keeping GridView recycling geometry stable. */
+.thumb-state-glass {
+  border-radius: 10px;
+  opacity: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: opacity 120ms ease;
+}
+
+.glass-thumb-card.media-selected .thumb-state-glass,
+.glass-thumb-card.thumb-pointer-hover .thumb-state-glass,
+flowbox.thumb-grid > flowboxchild:hover .thumb-state-glass,
+gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
+  opacity: 0.46;
+  background:
+    radial-gradient(circle at center, transparent 72%, alpha(@window_fg_color, 0.055) 100%),
+    linear-gradient(180deg, alpha(@window_fg_color, 0.055), transparent 14%, transparent 86%, alpha(black, 0.035));
+  border-color: alpha(@window_fg_color, 0.32);
+  box-shadow:
+    inset 0 1px alpha(@window_fg_color, 0.24),
+    inset 0 -1px alpha(black, 0.05),
+    inset 0 0 0 1px alpha(@window_fg_color, 0.16);
+}
+
 .thumb-motion-badge {
   color: alpha(white, 0.95);
   background: alpha(black, 0.42);
   border-radius: 999px;
   padding: 5px;
+  min-width: 18px;
+  min-height: 18px;
 }
 
 .thumb-video-duration {
@@ -696,7 +848,7 @@ video.viewer-media-surface controls scale slider {
 
 .thumb-favorite-badge {
   color: white;
-  -gtk-icon-shadow: 0 1px 3px alpha(black, 0.72);
+  font-size: 18pt;
 }
 
 .library-stats {
@@ -914,6 +1066,42 @@ button.viewer-thumb-item.viewer-thumb-current picture {
 row.settings-action-row {
   background: transparent;
   background-color: transparent;
+}
+
+/* Compact stepper used for settings that change a persisted integer. Keep
+   the value visually centered between equal hit targets instead of exposing
+   the platform SpinButton's dense inline arrows. */
+.settings-stepper {
+  min-height: 36px;
+  border-radius: 10px;
+  background: alpha(@window_fg_color, 0.07);
+  border: 1px solid alpha(@window_fg_color, 0.12);
+  overflow: hidden;
+}
+
+.settings-stepper-button {
+  min-width: 38px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: none;
+}
+
+.settings-stepper-button:hover,
+.settings-stepper-button:focus-visible {
+  background: alpha(@window_fg_color, 0.10);
+}
+
+.settings-stepper-button:active {
+  background: alpha(@accent_bg_color, 0.22);
+}
+
+.settings-stepper-value {
+  min-width: 34px;
+  padding: 0 4px;
+  font-weight: 700;
+  color: @window_fg_color;
 }
 
 .settings-dialog-content label {

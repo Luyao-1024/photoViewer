@@ -292,6 +292,37 @@ fn thumb_checkmark_shows_only_on_selected() {
     );
 }
 
+/// Selected thumbnails use the same neutral glass material in FlowBox and
+/// GridView: a layered gradient, a highlight edge, and a neutral ring.
+/// Keep this contract explicit so a later visual cleanup does not regress to
+/// the flat translucent fill that made selected rows hard to distinguish.
+#[test]
+fn selected_thumbnail_uses_glass_accent_gradient() {
+    let css = build_css(true);
+
+    assert!(
+        css.contains(".glass-thumb-card.media-selected {\n  background:\n    radial-gradient")
+            && css.contains("alpha(@window_fg_color, 0.10)")
+            && css.contains("inset 0 1px alpha(@window_fg_color, 0.52)"),
+        "selected thumbnails should use a layered accent glass material"
+    );
+
+    assert!(
+        css.contains(
+            "gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected"
+        ) && css.contains("alpha(@window_fg_color, 0.74)"),
+        "hovering a selected GridView tile should preserve and strengthen its glass ring"
+    );
+
+    assert!(
+        css.contains("flowbox.thumb-grid > flowboxchild:selected {\n  background: transparent;")
+            && css.contains(
+                "gridview.virtual-media-grid-view > child:selected {\n  background: transparent;"
+            ),
+        "GTK selection wrappers must not add a separate blue background"
+    );
+}
+
 /// A loading thumbnail — a `.glass-thumb-card` carrying `.thumb-loading`
 /// but NOT the startup `.thumb-placeholder` skeleton — is held at opacity 0
 /// and fades in via the `.glass-thumb-card` opacity transition when

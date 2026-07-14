@@ -281,6 +281,10 @@ mod imp {
         pub selecting_programmatically: Cell<bool>,
         /// Guard so diagnostic sidebar layout notify logging is connected once.
         pub sidebar_layout_trace_installed: Cell<bool>,
+        /// Latest requested Day column count. Updates are coalesced until the
+        /// window has had one layout turn to negotiate its new width.
+        pub pending_day_grid_columns: Cell<usize>,
+        pub day_grid_apply_source: RefCell<Option<glib::SourceId>>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub root_overlay: TemplateChild<gtk::Overlay>,
@@ -600,13 +604,80 @@ impl MainWindow {
     }
 
     pub fn set_photos_grid_columns(&self, columns: usize) {
-        if let Some(photos) = self
+        tracing::trace!(
+            target: "ui::grid_settings",
+            columns,
+            window_width = self.width(),
+            window_height = self.height(),
+            "main_window_apply_day_grid_columns_start"
+        );
+        if self
             .browsing_stack()
             .child_by_name("photos")
             .and_downcast::<PhotosPage>()
+            .is_some()
         {
-            photos.set_grid_columns(columns);
+            // Keep the Day thumbnails at their preferred 270px target. GTK4
+            // does not expose a portable imperative resize API on Wayland;
+            // updating the default size together with the content minimum
+            // lets the compositor resize the mapped window where supported,
+            // while the grid's own request prevents a quality downgrade while
+            // the resize is settling.
+            let content_width = PhotosPage::preferred_day_grid_width(columns);
+            let current_height = self.height().max(800);
+            tracing::trace!(
+                target: "ui::grid_settings",
+                columns,
+                content_width,
+                requested_window_width = content_width.saturating_add(240),
+                current_height,
+                "main_window_request_day_grid_width"
+            );
+            self.set_default_size(content_width.saturating_add(240), current_height);
+
+            self.imp().pending_day_grid_columns.set(columns);
+            if self.imp().day_grid_apply_source.borrow().is_none() {
+                let weak = self.downgrade();
+                let source =
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(16), move || {
+                        let Some(window) = weak.upgrade() else {
+                            return;
+                        };
+                        *window.imp().day_grid_apply_source.borrow_mut() = None;
+                        let columns = window.imp().pending_day_grid_columns.get();
+                        let Some(photos) = window
+                            .browsing_stack()
+                            .child_by_name("photos")
+                            .and_downcast::<PhotosPage>()
+                        else {
+                            return;
+                        };
+                        let started = std::time::Instant::now();
+                        tracing::trace!(
+                            target: "ui::grid_settings",
+                            columns,
+                            window_width = window.width(),
+                            "main_window_deferred_day_grid_columns_start"
+                        );
+                        photos.set_grid_columns(columns);
+                        tracing::trace!(
+                            target: "ui::grid_settings",
+                            columns,
+                            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                            window_width = window.width(),
+                            "main_window_deferred_day_grid_columns_end"
+                        );
+                    });
+                *self.imp().day_grid_apply_source.borrow_mut() = Some(source);
+            }
         }
+        tracing::trace!(
+            target: "ui::grid_settings",
+            columns,
+            window_width = self.width(),
+            window_height = self.height(),
+            "main_window_apply_day_grid_columns_end"
+        );
     }
 
     /// Install the Photos page as the root child of the crossfading browsing

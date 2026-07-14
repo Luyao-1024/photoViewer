@@ -675,9 +675,21 @@ impl PhotosPage {
 
     /// Apply the user-selected fixed column count to the Day Photos mode.
     pub fn set_grid_columns(&self, columns: usize) {
+        tracing::trace!(
+            target: "ui::grid_settings",
+            columns,
+            grid_count = self.imp().grids.borrow().len(),
+            "photos_page_apply_day_grid_columns"
+        );
         for grid in self.imp().grids.borrow().iter() {
             grid.set_grid_columns(columns);
         }
+    }
+
+    /// Return the minimum Photos content width needed by the configured Day
+    /// grid. The setting changes the number of columns, not thumbnail scale.
+    pub fn preferred_day_grid_width(columns: usize) -> i32 {
+        crate::ui::virtual_media_grid::preferred_day_grid_width(columns)
     }
 
     /// Inject the `AdwNavigationView` we live inside — needed to push/pop
