@@ -41,7 +41,9 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             // the target as a hard minimum during GTK's measure pass.
             tile.set_allow_width_shrink(true);
             tile.set_halign(gtk::Align::Fill);
-            tile.set_valign(gtk::Align::Start);
+            tile.set_hexpand(true);
+            tile.set_valign(gtk::Align::Fill);
+            tile.set_vexpand(true);
             let binding = Rc::new(RefCell::new(None));
             let binding_for_context = binding.clone();
             let weak_for_context = grid.downgrade();
