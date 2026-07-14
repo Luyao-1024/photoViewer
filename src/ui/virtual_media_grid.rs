@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use factory::FactoryCell;
 use layout_index::VirtualGridLayoutIndex;
-use mode::VirtualGridModeSpec;
+use mode::{VirtualGridModeSpec, VirtualGridViewportMetrics};
 use model::VirtualMediaModel;
 use range_cache::{expanded_visible_range, MediaRange, RangeCoordinator, RequestDisposition};
 
@@ -145,7 +145,7 @@ mod imp {
         pub scroller: TemplateChild<gtk::ScrolledWindow>,
         pub mode: Cell<GroupBy>,
         pub active: Cell<bool>,
-        pub columns: Cell<u32>,
+        pub(super) viewport_metrics: Cell<VirtualGridViewportMetrics>,
         pub loader: OnceCell<Arc<ThumbnailLoader>>,
         pub callbacks: OnceCell<MediaGridCallbacks>,
         pub media_list: RefCell<Option<gio::ListStore>>,
@@ -178,7 +178,7 @@ mod imp {
                 scroller: gtk::TemplateChild::default(),
                 mode: Cell::default(),
                 active: Cell::new(false),
-                columns: Cell::new(1),
+                viewport_metrics: Cell::new(VirtualGridViewportMetrics::default()),
                 loader: OnceCell::new(),
                 callbacks: OnceCell::new(),
                 media_list: RefCell::new(None),
@@ -271,6 +271,8 @@ impl VirtualMediaGrid {
         let obj: Self = glib::Object::new();
         let imp = obj.imp();
         imp.mode.set(mode);
+        imp.viewport_metrics
+            .set(VirtualGridModeSpec::for_mode(mode).initial_viewport_metrics());
         imp.active.set(initial_active);
         assert!(
             imp.loader.set(loader).is_ok(),
@@ -284,7 +286,10 @@ impl VirtualMediaGrid {
 
         let initial_layout = if initial_active {
             let items = media_items_from_list(&media_list);
-            VirtualGridLayoutIndex::new(&counts_for_items(&items, mode), 1)
+            VirtualGridLayoutIndex::new(
+                &counts_for_items(&items, mode),
+                imp.viewport_metrics.get().columns(),
+            )
         } else {
             VirtualGridLayoutIndex::default()
         };
@@ -456,6 +461,10 @@ impl VirtualMediaGrid {
 
     pub(super) fn spec(&self) -> VirtualGridModeSpec {
         VirtualGridModeSpec::for_mode(self.mode())
+    }
+
+    fn viewport_metrics(&self) -> VirtualGridViewportMetrics {
+        self.imp().viewport_metrics.get()
     }
 
     pub(super) fn loader(&self) -> Arc<ThumbnailLoader> {
@@ -630,7 +639,7 @@ impl VirtualMediaGrid {
         // level. The scrolled window's horizontal adjustment is updated for
         // every initial allocation and resize, giving us the actual viewport
         // width (after scrollbar allocation) that must agree with the layout
-        // index's fixed column count.
+        // index's fixed column count and responsive row metrics.
         let weak = self.downgrade();
         self.imp()
             .scroller
@@ -681,7 +690,7 @@ impl VirtualMediaGrid {
         let items = media_items_from_list(&media_list);
         let counts = counts_for_items(&items, self.mode());
         self.imp().metadata_counts.replace(Some(counts.clone()));
-        let layout = VirtualGridLayoutIndex::new(&counts, self.imp().columns.get());
+        let layout = VirtualGridLayoutIndex::new(&counts, self.viewport_metrics().columns());
         self.replace_layout_with_initial_items(layout, items);
     }
 
@@ -754,7 +763,7 @@ impl VirtualMediaGrid {
             .unwrap_or_default();
         seed.truncate(total as usize);
         self.replace_layout_with_initial_items(
-            VirtualGridLayoutIndex::new(&counts, self.imp().columns.get()),
+            VirtualGridLayoutIndex::new(&counts, self.viewport_metrics().columns()),
             seed,
         );
         self.schedule_visible_range_after_layout();
@@ -799,26 +808,39 @@ impl VirtualMediaGrid {
     }
 
     fn update_columns_for_width(&self, width: i32) {
-        let columns = mode::columns_for_width(self.mode(), width);
-        if columns == self.imp().columns.get() {
+        let next_metrics = self.spec().viewport_metrics_for_width(width);
+        let previous_metrics = self.viewport_metrics();
+        if next_metrics == previous_metrics {
             return;
         }
 
         let old_layout = self.model().layout();
         let old_top_slot = self.top_slot_for_adjustment();
         let anchor = old_layout.anchor_media_offset_for_slot(old_top_slot);
-        self.imp().columns.set(columns);
-        self.imp().grid.get().set_min_columns(columns);
-        self.imp().grid.get().set_max_columns(columns);
+        let columns_changed = next_metrics.columns() != previous_metrics.columns();
+        self.imp().viewport_metrics.set(next_metrics);
+        if columns_changed {
+            self.imp()
+                .grid
+                .get()
+                .set_min_columns(next_metrics.columns());
+            self.imp()
+                .grid
+                .get()
+                .set_max_columns(next_metrics.columns());
+        }
 
         let Some(counts) = self.imp().metadata_counts.borrow().clone() else {
             return;
         };
-        let layout = VirtualGridLayoutIndex::new(&counts, columns);
-        let restored_slot = anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));
-        self.replace_layout(layout);
-        if let Some(slot) = restored_slot {
-            self.restore_top_slot(slot);
+        if columns_changed {
+            let layout = VirtualGridLayoutIndex::new(&counts, next_metrics.columns());
+            let restored_slot =
+                anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));
+            self.replace_layout(layout);
+            if let Some(slot) = restored_slot {
+                self.restore_top_slot(slot);
+            }
         }
         self.schedule_visible_range_after_layout();
     }
@@ -848,8 +870,8 @@ impl VirtualMediaGrid {
 
     fn top_slot_for_adjustment(&self) -> u32 {
         let adjustment = self.imp().scroller.get().vadjustment();
-        self.spec()
-            .top_slot_for_scroll_offset(adjustment.value(), self.imp().columns.get())
+        self.viewport_metrics()
+            .top_slot_for_scroll_offset(adjustment.value())
     }
 
     fn restore_top_slot(&self, slot: u32) {
@@ -859,9 +881,10 @@ impl VirtualMediaGrid {
                 return;
             };
             let adjustment = grid.imp().scroller.get().vadjustment();
-            let columns = grid.imp().columns.get().max(1);
+            let metrics = grid.viewport_metrics();
+            let columns = metrics.columns().max(1);
             let row = slot / columns;
-            let desired = f64::from(row) * f64::from(grid.spec().row_extent());
+            let desired = f64::from(row) * f64::from(metrics.row_extent());
             let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
             adjustment.set_value(desired.min(maximum));
         });
@@ -898,11 +921,12 @@ impl VirtualMediaGrid {
             return None;
         }
         let adjustment = self.imp().scroller.get().vadjustment();
-        let columns = self.imp().columns.get().max(1);
+        let metrics = self.viewport_metrics();
+        let columns = metrics.columns().max(1);
         let first_slot = self
             .top_slot_for_adjustment()
             .min(layout.slot_count().saturating_sub(1));
-        let visible_rows = (adjustment.page_size() / f64::from(self.spec().row_extent()))
+        let visible_rows = (adjustment.page_size() / f64::from(metrics.row_extent()))
             .ceil()
             .max(1.0) as u32;
         let last_slot = first_slot

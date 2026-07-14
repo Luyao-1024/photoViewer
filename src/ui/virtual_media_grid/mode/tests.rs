@@ -49,7 +49,10 @@ fn columns_for_width_counts_the_two_pixel_gaps_at_boundaries() {
     assert_eq!(day.columns_for_width(541), 1);
     assert_eq!(day.columns_for_width(542), 2);
 
-    assert_eq!(columns_for_width(GroupBy::Year, 274), 3);
+    assert_eq!(
+        VirtualGridModeSpec::for_mode(GroupBy::Year).columns_for_width(274),
+        3
+    );
 }
 
 #[test]
@@ -67,17 +70,47 @@ fn fixed_row_metrics_map_adjustment_offsets_to_top_slots() {
     assert_eq!(VIRTUAL_GRID_TILE_GAP_PX, 2);
     assert_eq!(day.row_extent(), 272);
 
-    assert_eq!(day.top_row_for_scroll_offset(-1.0), 0);
-    assert_eq!(day.top_row_for_scroll_offset(f64::NAN), 0);
-    assert_eq!(day.top_row_for_scroll_offset(f64::INFINITY), 0);
-    assert_eq!(day.top_row_for_scroll_offset(271.999), 0);
-    assert_eq!(day.top_row_for_scroll_offset(272.0), 1);
+    let metrics = day.initial_viewport_metrics();
+    assert_eq!(metrics.columns(), 1);
+    assert_eq!(metrics.tile_size(), 270);
+    assert_eq!(metrics.row_extent(), 272);
 
-    assert_eq!(day.top_slot_for_scroll_offset(543.999, 3), 3);
-    assert_eq!(day.top_slot_for_scroll_offset(544.0, 3), 6);
+    assert_eq!(metrics.top_row_for_scroll_offset(-1.0), 0);
+    assert_eq!(metrics.top_row_for_scroll_offset(f64::NAN), 0);
+    assert_eq!(metrics.top_row_for_scroll_offset(f64::INFINITY), 0);
+    assert_eq!(metrics.top_row_for_scroll_offset(271.999), 0);
+    assert_eq!(metrics.top_row_for_scroll_offset(272.0), 1);
+
+    assert_eq!(metrics.top_slot_for_scroll_offset(543.999), 1);
+    assert_eq!(metrics.top_slot_for_scroll_offset(544.0), 2);
+}
+
+#[test]
+fn viewport_metrics_match_gridview_column_allocation_after_resize() {
+    let day = VirtualGridModeSpec::for_mode(GroupBy::Day);
+
+    // GtkGridView chooses three Day columns from the 270px preferred tile
+    // target, then expands those cells to consume all 900 viewport pixels:
+    // (900 + 2) / 3 - 2 = 298.
+    let compact = day.viewport_metrics_for_width(900);
+    assert_eq!(compact.columns(), 3);
+    assert_eq!(compact.tile_size(), 298);
+    assert_eq!(compact.row_extent(), 300);
+    assert_eq!(compact.top_row_for_scroll_offset(299.999), 0);
+    assert_eq!(compact.top_row_for_scroll_offset(300.0), 1);
+    assert_eq!(compact.top_slot_for_scroll_offset(600.0), 6);
+
+    // A wider window keeps the same column count but must still update its
+    // row stride; otherwise date/range math drifts on every resized row.
+    let wide = day.viewport_metrics_for_width(1_018);
+    assert_eq!(wide.columns(), 3);
+    assert_eq!(wide.tile_size(), 338);
+    assert_eq!(wide.row_extent(), 340);
+
+    // Before a real allocation GTK retains the tile's natural minimum rather
+    // than creating a zero-sized cell.
     assert_eq!(
-        day.top_slot_for_scroll_offset(544.0, 0),
-        2,
-        "a transient zero-column layout still maps with the required minimum of one column"
+        day.viewport_metrics_for_width(0),
+        day.initial_viewport_metrics()
     );
 }

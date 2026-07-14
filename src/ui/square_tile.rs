@@ -141,8 +141,17 @@ mod imp {
     }
 
     impl WidgetImpl for SquareTile {
-        // Fixed square size: `target` in both orientations (height-for-width
-        // returns the given width, so it stays square at any column size).
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            // GridView asks every realized child for its row height at the
+            // allocated column width. Without this declaration GTK treats the
+            // tile as constant-size, passes `-1` here, and leaves a resized
+            // column paired with the old fixed-height tile.
+            gtk::SizeRequestMode::HeightForWidth
+        }
+
+        // `target` is the preferred square size in the unconstrained
+        // direction. With a real column width, HeightForWidth returns that
+        // width so the tile stays square as GridView reflows.
         // NB: do NOT set a layout manager here — GTK4 would then measure via
         // the layout manager and bypass this override.
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {

@@ -33,10 +33,10 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
                 return;
             };
             let tile = SquareTile::new();
-            // GridView columns expand to fill a viewport. Keep the reusable
-            // card at the mode's fixed natural square instead of stretching
-            // its texture horizontally inside that allocated column.
-            tile.set_halign(gtk::Align::Center);
+            // GridView columns expand to fill a viewport. The tile must fill
+            // that allocated cell as well; centering a fixed-width square
+            // leaves a large blank gutter whenever the window is resized.
+            tile.set_halign(gtk::Align::Fill);
             tile.set_valign(gtk::Align::Start);
             let binding = Rc::new(RefCell::new(None));
             let binding_for_context = binding.clone();

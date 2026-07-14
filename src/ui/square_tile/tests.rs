@@ -8,6 +8,14 @@ fn square_tile_exposes_shared_thumbnail_css_class() {
     assert!(tile.has_css_class("thumb-tile"));
 }
 
+#[gtk::test]
+fn square_tile_declares_height_for_width_for_responsive_grid_cells() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    assert_eq!(tile.request_mode(), gtk::SizeRequestMode::HeightForWidth);
+}
+
 // Task 4: the new three-state CSS in `grid_css` targets
 // `.glass-thumb-card`, which the legacy `.thumb-tile` selector no
 // longer covers. The tile wrapper must carry the new class.
