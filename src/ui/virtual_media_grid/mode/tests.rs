@@ -58,3 +58,11 @@ fn fixed_columns_only_change_cell_geometry_after_resize() {
     assert_eq!(compact.tile_size(), 223);
     assert_eq!(wide.tile_size(), 253);
 }
+
+#[test]
+fn year_and_month_keep_adaptive_column_geometry() {
+    let year = VirtualGridModeSpec::for_mode(GroupBy::Year);
+    assert_eq!(year.viewport_metrics_for_width(274).columns(), 3);
+    let month = VirtualGridModeSpec::for_mode(GroupBy::Month);
+    assert_eq!(month.viewport_metrics_for_width(362).columns(), 2);
+}

@@ -673,7 +673,7 @@ impl PhotosPage {
         obj
     }
 
-    /// Apply the user-selected fixed column count to all Photos modes.
+    /// Apply the user-selected fixed column count to the Day Photos mode.
     pub fn set_grid_columns(&self, columns: usize) {
         for grid in self.imp().grids.borrow().iter() {
             grid.set_grid_columns(columns);

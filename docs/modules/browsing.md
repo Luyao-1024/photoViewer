@@ -83,12 +83,11 @@ intentionally reflows the three mode grids once. Updates never run
 re-entrantly during GTK allocation. Hidden modes stay inactive and do not seed
 or query ranges until selected.
 
-The number of Photos columns is a persisted Settings preference shared by
-Year/Month/Day. Window resizing never changes that number: it only recalculates
-the square cell width and row stride for the existing fixed-column layout.
-Changing the preference intentionally applies one structural reflow to all
-three mode grids. This makes live window dragging allocation-only and avoids
-the 3-to-4-column threshold rebuild entirely.
+The Day-view column count is a persisted Settings preference. Window resizing
+never changes the Day column count; it only recalculates cell width and row
+stride. Year and Month retain their smaller-tile adaptive column count and may
+reflow when their natural width thresholds are crossed. Changing the Day
+preference intentionally reflows the Day grid once.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

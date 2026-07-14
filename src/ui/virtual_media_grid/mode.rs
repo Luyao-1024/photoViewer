@@ -118,6 +118,29 @@ impl VirtualGridModeSpec {
         self.thumbnail_size
     }
 
+    pub(crate) fn columns_for_width(self, available_width: i32) -> u32 {
+        let width = i64::from(available_width).max(0);
+        let extent = i64::from(self.tile_size + VIRTUAL_GRID_TILE_GAP_PX);
+        let columns = ((width + i64::from(VIRTUAL_GRID_TILE_GAP_PX)) / extent).max(1);
+        u32::try_from(columns).unwrap_or(u32::MAX)
+    }
+
+    pub(crate) fn viewport_metrics_for_width(
+        self,
+        available_width: i32,
+    ) -> VirtualGridViewportMetrics {
+        let columns = self.columns_for_width(available_width);
+        let width = i64::from(available_width).max(0);
+        let gap = i64::from(VIRTUAL_GRID_TILE_GAP_PX);
+        let tile_size = ((width + gap) / i64::from(columns))
+            .saturating_sub(gap)
+            .max(i64::from(self.tile_size));
+        VirtualGridViewportMetrics {
+            columns,
+            tile_size: i32::try_from(tile_size).unwrap_or(i32::MAX),
+        }
+    }
+
     /// Computes geometry for the user-selected, fixed column count.
     pub(crate) fn viewport_metrics_for_fixed_columns(
         self,

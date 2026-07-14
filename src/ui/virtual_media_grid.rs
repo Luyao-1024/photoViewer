@@ -275,11 +275,14 @@ impl VirtualMediaGrid {
         let imp = obj.imp();
         imp.mode.set(mode);
         let configured_columns = runtime_config::photos_grid_columns() as u32;
-        imp.grid_columns.set(configured_columns);
-        imp.viewport_metrics.set(
+        let initial_metrics = if mode == GroupBy::Day {
+            imp.grid_columns.set(configured_columns);
             VirtualGridModeSpec::for_mode(mode)
-                .viewport_metrics_for_fixed_columns(0, configured_columns),
-        );
+                .viewport_metrics_for_fixed_columns(0, configured_columns)
+        } else {
+            VirtualGridModeSpec::for_mode(mode).viewport_metrics_for_width(0)
+        };
+        imp.viewport_metrics.set(initial_metrics);
         imp.active.set(initial_active);
         assert!(
             imp.loader.set(loader).is_ok(),
@@ -313,8 +316,8 @@ impl VirtualMediaGrid {
         imp.grid.get().set_model(Some(&selection_model));
         imp.grid.get().set_enable_rubberband(false);
         imp.grid.get().set_single_click_activate(true);
-        imp.grid.get().set_min_columns(configured_columns);
-        imp.grid.get().set_max_columns(configured_columns);
+        imp.grid.get().set_min_columns(initial_metrics.columns());
+        imp.grid.get().set_max_columns(initial_metrics.columns());
 
         factory::install(&obj);
         obj.connect_grid_signals(&media_list);
@@ -336,6 +339,9 @@ impl VirtualMediaGrid {
     }
 
     pub fn set_grid_columns(&self, columns: usize) {
+        if self.mode() != GroupBy::Day {
+            return;
+        }
         let columns = columns.clamp(
             runtime_config::MIN_PHOTOS_GRID_COLUMNS,
             runtime_config::MAX_PHOTOS_GRID_COLUMNS,
@@ -822,9 +828,12 @@ impl VirtualMediaGrid {
     }
 
     fn update_columns_for_width(&self, width: i32) {
-        let next_metrics = self
-            .spec()
-            .viewport_metrics_for_fixed_columns(width, self.imp().grid_columns.get());
+        let next_metrics = if self.mode() == GroupBy::Day {
+            self.spec()
+                .viewport_metrics_for_fixed_columns(width, self.imp().grid_columns.get())
+        } else {
+            self.spec().viewport_metrics_for_width(width)
+        };
         let previous_metrics = self.viewport_metrics();
         if next_metrics == previous_metrics {
             return;
@@ -833,12 +842,23 @@ impl VirtualMediaGrid {
         let old_layout = self.model().layout();
         let old_top_slot = self.top_slot_for_adjustment();
         let anchor = old_layout.anchor_media_offset_for_slot(old_top_slot);
+        let columns_changed = next_metrics.columns() != previous_metrics.columns();
         self.imp().viewport_metrics.set(next_metrics);
+        if columns_changed {
+            self.imp()
+                .grid
+                .get()
+                .set_min_columns(next_metrics.columns());
+            self.imp()
+                .grid
+                .get()
+                .set_max_columns(next_metrics.columns());
+        }
 
         let Some(counts) = self.imp().metadata_counts.borrow().clone() else {
             return;
         };
-        if next_metrics.columns() != previous_metrics.columns() {
+        if columns_changed {
             let layout = VirtualGridLayoutIndex::new(&counts, next_metrics.columns());
             let restored_slot =
                 anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));
@@ -859,9 +879,8 @@ impl VirtualMediaGrid {
     /// GTK updates adjustments while it is allocating list items. Changing a
     /// GridView's column properties from that signal is re-entrant and can
     /// briefly produce negative child allocations. Coalesce the latest width
-    /// and wait for a short quiet period before changing the structural column
-    /// count. During a live window drag GTK can resize the existing cells
-    /// without repeatedly rebuilding the virtual list.
+    /// and wait for a short quiet period before applying adaptive Year/Month
+    /// column changes. Day keeps its configured column count while dragging.
     fn schedule_column_update(&self, width: i32) {
         if width <= 0 {
             return;
