@@ -211,7 +211,11 @@ mod imp {
             let for_size = for_size.max(-1);
             if orientation == gtk::Orientation::Horizontal {
                 let minimum = if self.allow_width_shrink.get() {
-                    1
+                    // GridView can lose a few pixels to the scroller and
+                    // CSS box model. Keep a bounded minimum so GTK accepts
+                    // that final allocation without entering its invalid
+                    // negative-constraint path.
+                    target.saturating_sub(8).max(1)
                 } else {
                     target
                 };

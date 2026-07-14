@@ -256,7 +256,7 @@ pub fn assert_installed() {
 /// provider in [`ACTIVE_PROVIDER`] for the next swap.
 fn register(css: &str) {
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(css);
+    provider.load_from_data(&runtime_compatible_css(css));
     if let Some(display) = gtk::gdk::Display::default() {
         // Take the previous provider out of the slot (releasing the borrow)
         // before touching the display, then store the new one afterwards —
@@ -272,6 +272,22 @@ fn register(css: &str) {
         );
         ACTIVE_PROVIDER.with(|slot| *slot.borrow_mut() = Some(provider));
     }
+}
+
+/// GTK added `backdrop-filter` after the oldest runtime still supported by the
+/// application.  CssProvider logs one parser warning per declaration when an
+/// older runtime sees it, even though the rest of the material CSS remains a
+/// valid translucent fallback. Keep the source CSS (and newer runtimes' glass
+/// effect) intact, but omit that optional property on older GTK versions.
+fn runtime_compatible_css(css: &str) -> String {
+    if gtk::check_version(4, 22, 0).is_none() {
+        return css.to_string();
+    }
+
+    css.lines()
+        .filter(|line| !line.trim_start().starts_with("backdrop-filter:"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Register the thumbnail-grid + glass CSS with the default display.

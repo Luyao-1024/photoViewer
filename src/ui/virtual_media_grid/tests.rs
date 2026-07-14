@@ -157,13 +157,16 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     assert_eq!(grid.viewport_metrics().columns(), 4);
     assert_eq!(grid.imp().grid.get().min_columns(), 4);
     assert_eq!(grid.imp().grid.get().max_columns(), 4);
-    assert!(
-        grid.imp()
-            .factory_cells
-            .borrow()
-            .iter()
-            .all(|cell| cell.tile.allows_width_shrink()),
-        "GridView factory tiles must not turn the preferred target into a hard measure minimum"
+    let allows_width_shrink = grid
+        .imp()
+        .factory_cells
+        .borrow()
+        .iter()
+        .all(|cell| cell.tile.allows_width_shrink());
+    assert_eq!(
+        allows_width_shrink,
+        true,
+        "GridView factory tiles must accept the final cell width"
     );
     assert_eq!(first_tile.width(), metrics.tile_size());
     assert_eq!(first_tile.height(), metrics.tile_size());
