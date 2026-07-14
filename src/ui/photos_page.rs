@@ -673,6 +673,13 @@ impl PhotosPage {
         obj
     }
 
+    /// Apply the user-selected fixed column count to all Photos modes.
+    pub fn set_grid_columns(&self, columns: usize) {
+        for grid in self.imp().grids.borrow().iter() {
+            grid.set_grid_columns(columns);
+        }
+    }
+
     /// Inject the `AdwNavigationView` we live inside — needed to push/pop
     /// the viewer page. Called by the host (`app::build_app`) after pushing
     /// the PhotosPage.

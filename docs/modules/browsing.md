@@ -66,9 +66,9 @@ generation, slot, MediaId, and cache key, then paint on an idle turn after the
 factory bind stack has returned.
 
 The Photos virtual grid groups image and video `MediaItem`s by `taken_at`,
-falling back to file time. Year 90 px, Month 180 px, and Day 270 px are
-preferred tile targets used to choose a fixed column count; they are not a
-fixed post-resize allocation. `GtkGridView` fills each chosen column across the
+falling back to file time. Year 90 px, Month 180 px, and Day 270 px remain
+preferred tile targets for thumbnail quality; the number of columns comes only
+from the persisted Photos Grid setting. `GtkGridView` fills each fixed column across the
 real scroller viewport, and `SquareTile` declares height-for-width so each
 thumbnail remains square rather than leaving a centered fixed-size gutter. The
 virtual-grid tile reports the target as its natural width but accepts a smaller
@@ -77,16 +77,18 @@ box model remains square without GTK measurement warnings; legacy FlowBox
 tiles retain their fixed minimum. The grid has an explicit 2 px CSS
 `border-spacing`. `VirtualGridViewportMetrics` mirrors GTK's integer
 cell-width calculation on every resize, so tile side, row stride, date pill,
-and visible-range calculations stay aligned. Column count changes still rebuild
-the section-slot index, but reflow existing physical slots while retaining ready
-media offsets and range residency; same-count resizes update only viewport
-metrics. Column updates are coalesced behind a short 120 ms quiet period, so
-dragging a window does not repeatedly trigger the structural GridView rebuild;
-GTK can resize the existing columns during the drag and the final column count
-is committed once the width settles. This keeps the 3-to-4-column threshold
-from causing a placeholder or database reload pass. Updates never run
+and visible-range calculations stay aligned. Resizing updates only viewport
+metrics and never rebuilds the section-slot index. Changing the setting
+intentionally reflows the three mode grids once. Updates never run
 re-entrantly during GTK allocation. Hidden modes stay inactive and do not seed
 or query ranges until selected.
+
+The number of Photos columns is a persisted Settings preference shared by
+Year/Month/Day. Window resizing never changes that number: it only recalculates
+the square cell width and row stride for the existing fixed-column layout.
+Changing the preference intentionally applies one structural reflow to all
+three mode grids. This makes live window dragging allocation-only and avoids
+the 3-to-4-column threshold rebuild entirely.
 
 The Photos header includes a circular search button that pushes a dedicated
 `SearchPage`. Search filters live media through `MediaRepository` using

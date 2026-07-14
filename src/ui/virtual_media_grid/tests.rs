@@ -102,8 +102,8 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     });
     let has_expected_realization = || {
         let metrics = grid.viewport_metrics();
-        if metrics.columns() != 3
-            || metrics.tile_size() != 298
+        if metrics.columns() != 4
+            || metrics.tile_size() != 223
             || !grid.imp().factory_cells.borrow().iter().any(|cell| {
                 cell.tile.width() == metrics.tile_size()
                     && cell.tile.height() == metrics.tile_size()
@@ -143,9 +143,9 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     );
 
     let metrics = grid.viewport_metrics();
-    assert_eq!(metrics.columns(), 3);
-    assert_eq!(metrics.tile_size(), 298);
-    assert_eq!(metrics.row_extent(), 300);
+    assert_eq!(metrics.columns(), 4);
+    assert_eq!(metrics.tile_size(), 223);
+    assert_eq!(metrics.row_extent(), 225);
     let first_tile = grid
         .imp()
         .factory_cells
@@ -154,9 +154,9 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
         .find(|cell| cell.tile.width() > 0)
         .map(|cell| cell.tile.clone())
         .expect("the realized GridView should create at least one reusable tile");
-    assert_eq!(grid.viewport_metrics().columns(), 3);
-    assert_eq!(grid.imp().grid.get().min_columns(), 3);
-    assert_eq!(grid.imp().grid.get().max_columns(), 3);
+    assert_eq!(grid.viewport_metrics().columns(), 4);
+    assert_eq!(grid.imp().grid.get().min_columns(), 4);
+    assert_eq!(grid.imp().grid.get().max_columns(), 4);
     assert!(
         grid.imp()
             .factory_cells
@@ -196,7 +196,7 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
         .collect::<Vec<_>>();
     first_row_columns.sort_unstable();
     first_row_columns.dedup();
-    assert_eq!(first_row_columns.len(), 3);
+    assert_eq!(first_row_columns.len(), 4);
     assert_eq!(
         first_row_columns[1] - first_row_columns[0],
         metrics.row_extent(),
@@ -219,8 +219,8 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     });
     let has_resized_layout = || {
         let metrics = grid.viewport_metrics();
-        metrics.columns() == 3
-            && metrics.tile_size() == 338
+        metrics.columns() == 4
+            && metrics.tile_size() == 253
             && grid.imp().factory_cells.borrow().iter().any(|cell| {
                 cell.tile.width() == metrics.tile_size()
                     && cell.tile.height() == metrics.tile_size()
@@ -238,9 +238,9 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
         grid.imp().scroller.get().hadjustment().page_size(),
     );
     let resized_metrics = grid.viewport_metrics();
-    assert_eq!(resized_metrics.columns(), 3);
-    assert_eq!(resized_metrics.tile_size(), 338);
-    assert_eq!(resized_metrics.row_extent(), 340);
+    assert_eq!(resized_metrics.columns(), 4);
+    assert_eq!(resized_metrics.tile_size(), 253);
+    assert_eq!(resized_metrics.row_extent(), 255);
 
     window.close();
 }
@@ -256,11 +256,11 @@ fn viewport_width_updates_the_row_metric_even_when_column_count_is_unchanged() {
 
     grid.update_columns_for_width(900);
     let compact = grid.viewport_metrics();
-    assert_eq!(compact.columns(), 3);
-    assert_eq!(compact.row_extent(), 300);
+    assert_eq!(compact.columns(), 4);
+    assert_eq!(compact.row_extent(), 225);
 
     grid.update_columns_for_width(1_018);
     let wide = grid.viewport_metrics();
-    assert_eq!(wide.columns(), 3);
-    assert_eq!(wide.row_extent(), 340);
+    assert_eq!(wide.columns(), 4);
+    assert_eq!(wide.row_extent(), 255);
 }

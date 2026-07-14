@@ -30,6 +30,7 @@ fn missing_runtime_file_uses_central_defaults() {
     assert_eq!(config.grid_render_absolute_cap, 1_200);
     assert_eq!(config.grid_render_expand_step, 200);
     assert_eq!(config.grid_reprioritize_debounce_ms, 120);
+    assert_eq!(config.photos_grid_columns, DEFAULT_PHOTOS_GRID_COLUMNS);
     assert_eq!(
         config.thumbnail_worker_count,
         ThumbnailGenerationSpeed::Normal.worker_count()
@@ -64,6 +65,7 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
               "grid_render_absolute_cap": 1300,
               "grid_render_expand_step": 250,
               "grid_reprioritize_debounce_ms": 160,
+              "photos_grid_columns": 7,
               "thumbnail_worker_count": 3,
               "thumbnail_queue_capacity": 4096,
               "thumbnail_mem_cache_cap": 24,
@@ -90,6 +92,7 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
     assert_eq!(config.grid_render_absolute_cap, 1300);
     assert_eq!(config.grid_render_expand_step, 250);
     assert_eq!(config.grid_reprioritize_debounce_ms, 160);
+    assert_eq!(config.photos_grid_columns, 7);
     assert_eq!(config.thumbnail_worker_count, 3);
     assert_eq!(config.thumbnail_queue_capacity, 4096);
     assert_eq!(config.thumbnail_mem_cache_cap, 24);
@@ -121,6 +124,7 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
               "grid_render_absolute_cap": 0,
               "grid_render_expand_step": 0,
               "grid_reprioritize_debounce_ms": 0,
+              "photos_grid_columns": 99,
               "thumbnail_worker_count": 0,
               "thumbnail_queue_capacity": 0,
               "thumbnail_mem_cache_cap": 0,
@@ -146,6 +150,7 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
     assert_eq!(config.grid_render_absolute_cap, 1);
     assert_eq!(config.grid_render_expand_step, 1);
     assert_eq!(config.grid_reprioritize_debounce_ms, 1);
+    assert_eq!(config.photos_grid_columns, MAX_PHOTOS_GRID_COLUMNS);
     assert_eq!(config.thumbnail_worker_count, 1);
     assert_eq!(config.thumbnail_queue_capacity, 1);
     assert_eq!(config.thumbnail_mem_cache_cap, 1);

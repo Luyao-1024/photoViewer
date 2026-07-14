@@ -118,57 +118,17 @@ impl VirtualGridModeSpec {
         self.thumbnail_size
     }
 
-    /// Preferred distance between the starts of two adjacent rows, in CSS
-    /// pixels, before the grid has a real viewport allocation.
-    ///
-    /// The rendered viewport may be wider than this preferred target. Runtime
-    /// scroll calculations must use [`Self::viewport_metrics_for_width`] once
-    /// the scroller has reported its width.
-    pub(crate) const fn row_extent(self) -> i32 {
-        self.tile_size + VIRTUAL_GRID_TILE_GAP_PX
-    }
-
-    /// Geometry used before the scroller's first non-zero allocation.
-    pub(crate) const fn initial_viewport_metrics(self) -> VirtualGridViewportMetrics {
-        VirtualGridViewportMetrics {
-            columns: 1,
-            tile_size: self.tile_size,
-        }
-    }
-
-    /// Computes the one fixed GridView column count for `available_width`.
-    ///
-    /// The caller passes the GridView's usable content width after any outer
-    /// margins.  `n` columns require `n * tile_size + (n - 1) * gap` pixels,
-    /// which is equivalently calculated as `(width + gap) / row_extent`.
-    /// A transient zero or negative allocation still yields one column so the
-    /// layout index never diverges into an invalid zero-column state.
-    pub(crate) fn columns_for_width(self, available_width: i32) -> u32 {
-        let width = i64::from(available_width).max(0);
-        let extent = i64::from(self.row_extent());
-        let columns = ((width + i64::from(VIRTUAL_GRID_TILE_GAP_PX)) / extent).max(1);
-
-        u32::try_from(columns).unwrap_or(u32::MAX)
-    }
-
-    /// Computes the real cell geometry for a GridView viewport.
-    ///
-    /// This intentionally follows GTK's `GtkGridView` allocation formula:
-    /// `(viewport_width + border_spacing) / columns - border_spacing`, then
-    /// clamps to the tile's natural minimum. GTK uses integer division here,
-    /// so matching it avoids a one-pixel-per-row drift in virtual-scroll
-    /// calculations after a window resize.
-    pub(crate) fn viewport_metrics_for_width(
+    /// Computes geometry for the user-selected, fixed column count.
+    pub(crate) fn viewport_metrics_for_fixed_columns(
         self,
         available_width: i32,
+        columns: u32,
     ) -> VirtualGridViewportMetrics {
-        let columns = self.columns_for_width(available_width).max(1);
+        let columns = columns.max(1);
         let width = i64::from(available_width).max(0);
         let gap = i64::from(VIRTUAL_GRID_TILE_GAP_PX);
         let allocated_tile = (width + gap) / i64::from(columns);
-        let tile_size = allocated_tile
-            .saturating_sub(gap)
-            .max(i64::from(self.tile_size));
+        let tile_size = allocated_tile.saturating_sub(gap).max(1);
 
         VirtualGridViewportMetrics {
             columns,

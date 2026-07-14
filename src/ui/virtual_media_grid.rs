@@ -14,6 +14,7 @@ use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
+use crate::core::runtime_config;
 use crate::core::section_model::{GroupBy, SectionKey};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
@@ -146,6 +147,7 @@ mod imp {
         pub mode: Cell<GroupBy>,
         pub active: Cell<bool>,
         pub(super) viewport_metrics: Cell<VirtualGridViewportMetrics>,
+        pub(super) grid_columns: Cell<u32>,
         pub loader: OnceCell<Arc<ThumbnailLoader>>,
         pub callbacks: OnceCell<MediaGridCallbacks>,
         pub media_list: RefCell<Option<gio::ListStore>>,
@@ -179,6 +181,7 @@ mod imp {
                 mode: Cell::default(),
                 active: Cell::new(false),
                 viewport_metrics: Cell::new(VirtualGridViewportMetrics::default()),
+                grid_columns: Cell::new(1),
                 loader: OnceCell::new(),
                 callbacks: OnceCell::new(),
                 media_list: RefCell::new(None),
@@ -271,8 +274,12 @@ impl VirtualMediaGrid {
         let obj: Self = glib::Object::new();
         let imp = obj.imp();
         imp.mode.set(mode);
-        imp.viewport_metrics
-            .set(VirtualGridModeSpec::for_mode(mode).initial_viewport_metrics());
+        let configured_columns = runtime_config::photos_grid_columns() as u32;
+        imp.grid_columns.set(configured_columns);
+        imp.viewport_metrics.set(
+            VirtualGridModeSpec::for_mode(mode)
+                .viewport_metrics_for_fixed_columns(0, configured_columns),
+        );
         imp.active.set(initial_active);
         assert!(
             imp.loader.set(loader).is_ok(),
@@ -306,8 +313,8 @@ impl VirtualMediaGrid {
         imp.grid.get().set_model(Some(&selection_model));
         imp.grid.get().set_enable_rubberband(false);
         imp.grid.get().set_single_click_activate(true);
-        imp.grid.get().set_min_columns(1);
-        imp.grid.get().set_max_columns(1);
+        imp.grid.get().set_min_columns(configured_columns);
+        imp.grid.get().set_max_columns(configured_columns);
 
         factory::install(&obj);
         obj.connect_grid_signals(&media_list);
@@ -326,6 +333,20 @@ impl VirtualMediaGrid {
 
     pub fn mode(&self) -> GroupBy {
         self.imp().mode.get()
+    }
+
+    pub fn set_grid_columns(&self, columns: usize) {
+        let columns = columns.clamp(
+            runtime_config::MIN_PHOTOS_GRID_COLUMNS,
+            runtime_config::MAX_PHOTOS_GRID_COLUMNS,
+        ) as u32;
+        if self.imp().grid_columns.replace(columns) == columns {
+            return;
+        }
+        self.imp().grid.get().set_min_columns(columns);
+        self.imp().grid.get().set_max_columns(columns);
+        let width = self.imp().scroller.get().width();
+        self.update_columns_for_width(width);
     }
 
     pub fn set_active(&self, active: bool) {
@@ -801,7 +822,9 @@ impl VirtualMediaGrid {
     }
 
     fn update_columns_for_width(&self, width: i32) {
-        let next_metrics = self.spec().viewport_metrics_for_width(width);
+        let next_metrics = self
+            .spec()
+            .viewport_metrics_for_fixed_columns(width, self.imp().grid_columns.get());
         let previous_metrics = self.viewport_metrics();
         if next_metrics == previous_metrics {
             return;
@@ -810,23 +833,12 @@ impl VirtualMediaGrid {
         let old_layout = self.model().layout();
         let old_top_slot = self.top_slot_for_adjustment();
         let anchor = old_layout.anchor_media_offset_for_slot(old_top_slot);
-        let columns_changed = next_metrics.columns() != previous_metrics.columns();
         self.imp().viewport_metrics.set(next_metrics);
-        if columns_changed {
-            self.imp()
-                .grid
-                .get()
-                .set_min_columns(next_metrics.columns());
-            self.imp()
-                .grid
-                .get()
-                .set_max_columns(next_metrics.columns());
-        }
 
         let Some(counts) = self.imp().metadata_counts.borrow().clone() else {
             return;
         };
-        if columns_changed {
+        if next_metrics.columns() != previous_metrics.columns() {
             let layout = VirtualGridLayoutIndex::new(&counts, next_metrics.columns());
             let restored_slot =
                 anchor.and_then(|offset| layout.slot_for_media_offset_clamped(offset));

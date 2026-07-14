@@ -599,6 +599,16 @@ impl MainWindow {
         self.imp().browsing_stack.get()
     }
 
+    pub fn set_photos_grid_columns(&self, columns: usize) {
+        if let Some(photos) = self
+            .browsing_stack()
+            .child_by_name("photos")
+            .and_downcast::<PhotosPage>()
+        {
+            photos.set_grid_columns(columns);
+        }
+    }
+
     /// Install the Photos page as the root child of the crossfading browsing
     /// stack. The outer NavigationView remains the host for viewer/search and
     /// other page-level pushes.

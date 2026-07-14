@@ -15,6 +15,7 @@ const MAX_RENDERED_GRID_ITEMS_KEY: &str = "max_rendered_grid_items";
 const GRID_RENDER_ABSOLUTE_CAP_KEY: &str = "grid_render_absolute_cap";
 const GRID_RENDER_EXPAND_STEP_KEY: &str = "grid_render_expand_step";
 const GRID_REPRIORITIZE_DEBOUNCE_MS_KEY: &str = "grid_reprioritize_debounce_ms";
+const PHOTOS_GRID_COLUMNS_KEY: &str = "photos_grid_columns";
 const THUMBNAIL_WORKER_COUNT_KEY: &str = "thumbnail_worker_count";
 const THUMBNAIL_SPEED_TIER_KEY: &str = "thumbnail_speed_tier";
 const THUMBNAIL_QUEUE_CAPACITY_KEY: &str = "thumbnail_queue_capacity";
@@ -40,6 +41,9 @@ pub const DEFAULT_MAX_RENDERED_GRID_ITEMS: usize = 800;
 pub const DEFAULT_GRID_RENDER_ABSOLUTE_CAP: usize = 1_200;
 pub const DEFAULT_GRID_RENDER_EXPAND_STEP: usize = 200;
 pub const DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS: u64 = 120;
+pub const DEFAULT_PHOTOS_GRID_COLUMNS: usize = 4;
+pub const MIN_PHOTOS_GRID_COLUMNS: usize = 1;
+pub const MAX_PHOTOS_GRID_COLUMNS: usize = 12;
 pub const DEFAULT_THUMBNAIL_QUEUE_CAPACITY: usize = 8192;
 /// Sized for viewer navigation: each switch warms the target's Medium preview,
 /// and the viewer prefetches ±1 neighbours. With 16, sequential navigation
@@ -79,6 +83,7 @@ pub struct RuntimeConfig {
     pub grid_render_absolute_cap: usize,
     pub grid_render_expand_step: usize,
     pub grid_reprioritize_debounce_ms: u64,
+    pub photos_grid_columns: usize,
     pub thumbnail_worker_count: usize,
     pub thumbnail_queue_capacity: usize,
     pub thumbnail_mem_cache_cap: usize,
@@ -254,6 +259,13 @@ fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
             GRID_REPRIORITIZE_DEBOUNCE_MS_KEY,
             DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS,
         ),
+        photos_grid_columns: read_bounded_usize(
+            &obj,
+            PHOTOS_GRID_COLUMNS_KEY,
+            DEFAULT_PHOTOS_GRID_COLUMNS,
+            MIN_PHOTOS_GRID_COLUMNS,
+            MAX_PHOTOS_GRID_COLUMNS,
+        ),
         thumbnail_worker_count: read_usize(
             &obj,
             THUMBNAIL_WORKER_COUNT_KEY,
@@ -348,6 +360,15 @@ pub fn grid_render_expand_step() -> usize {
 
 pub fn grid_reprioritize_debounce_ms() -> u64 {
     load().grid_reprioritize_debounce_ms
+}
+
+pub fn photos_grid_columns() -> usize {
+    load().photos_grid_columns
+}
+
+pub fn set_photos_grid_columns(columns: usize) -> Result<(), String> {
+    let columns = columns.clamp(MIN_PHOTOS_GRID_COLUMNS, MAX_PHOTOS_GRID_COLUMNS);
+    write_usize_at(&runtime_config_path(), PHOTOS_GRID_COLUMNS_KEY, columns)
 }
 
 pub fn thumbnail_worker_count() -> usize {
@@ -489,6 +510,19 @@ fn read_usize(obj: &Map<String, Value>, key: &str, default: usize) -> usize {
         .and_then(|v| v.as_u64())
         .map(|v| v.max(1) as usize)
         .unwrap_or(default)
+}
+
+fn read_bounded_usize(
+    obj: &Map<String, Value>,
+    key: &str,
+    default: usize,
+    minimum: usize,
+    maximum: usize,
+) -> usize {
+    obj.get(key)
+        .and_then(|v| v.as_u64())
+        .map(|v| (v as usize).clamp(minimum, maximum))
+        .unwrap_or(default.clamp(minimum, maximum))
 }
 
 fn read_u64(obj: &Map<String, Value>, key: &str, default: u64) -> u64 {
