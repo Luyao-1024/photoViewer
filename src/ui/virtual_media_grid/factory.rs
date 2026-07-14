@@ -33,6 +33,7 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
                 return;
             };
             let tile = SquareTile::new();
+            tile.set_height_for_width(true);
             // GridView columns expand to fill a viewport. The tile must fill
             // that allocated cell as well; centering a fixed-width square
             // leaves a large blank gutter whenever the window is resized.

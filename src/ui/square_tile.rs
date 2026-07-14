@@ -22,6 +22,10 @@ mod imp {
         pub duration_badge: RefCell<Option<gtk::Label>>,
         pub favorite_badge: RefCell<Option<gtk::Image>>,
         pub target: Cell<i32>,
+        /// Only virtual GridView cells participate in height-for-width
+        /// measurement. Fixed-size covers must not turn a parent row width
+        /// into their requested height.
+        pub height_for_width: Cell<bool>,
         /// Virtual GridView cells may lose a few pixels to the scroller or
         /// CSS box model after their column count has been chosen. Keep the
         /// target as the natural size while allowing that final allocation to
@@ -43,6 +47,7 @@ mod imp {
                 duration_badge: RefCell::new(None),
                 favorite_badge: RefCell::new(None),
                 target: Cell::new(90),
+                height_for_width: Cell::new(false),
                 allow_width_shrink: Cell::new(false),
                 background_is_light: Cell::new(None),
                 cache_key: RefCell::new(None),
@@ -148,6 +153,9 @@ mod imp {
 
     impl WidgetImpl for SquareTile {
         fn request_mode(&self) -> gtk::SizeRequestMode {
+            if !self.height_for_width.get() {
+                return gtk::SizeRequestMode::ConstantSize;
+            }
             // GridView asks every realized child for its row height at the
             // allocated column width. Without this declaration GTK treats the
             // tile as constant-size, passes `-1` here, and leaves a resized
@@ -174,7 +182,11 @@ mod imp {
                 return (minimum, target, -1, -1);
             }
 
-            let size = if for_size > 0 { for_size } else { target };
+            let size = if self.height_for_width.get() && for_size > 0 {
+                for_size
+            } else {
+                target
+            };
             (size, size, -1, -1)
         }
 
@@ -212,6 +224,12 @@ impl SquareTile {
     pub fn set_target(&self, target: i32) {
         self.imp().target.set(target);
         self.queue_resize();
+    }
+
+    pub fn set_height_for_width(&self, enabled: bool) {
+        if self.imp().height_for_width.replace(enabled) != enabled {
+            self.queue_resize();
+        }
     }
 
     pub fn target(&self) -> i32 {

@@ -12,8 +12,21 @@ fn square_tile_exposes_shared_thumbnail_css_class() {
 fn square_tile_declares_height_for_width_for_responsive_grid_cells() {
     let _ = gtk::init();
     let tile = SquareTile::new();
+    tile.set_height_for_width(true);
 
     assert_eq!(tile.request_mode(), gtk::SizeRequestMode::HeightForWidth);
+}
+
+#[gtk::test]
+fn fixed_size_square_tiles_do_not_propagate_row_width_as_height() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    assert_eq!(tile.request_mode(), gtk::SizeRequestMode::ConstantSize);
+    assert_eq!(
+        tile.measure(gtk::Orientation::Vertical, 174),
+        (90, 90, -1, -1)
+    );
 }
 
 #[gtk::test]
