@@ -470,3 +470,49 @@ fn focus_driven_sidebar_selection_does_not_pop_pushed_page() {
         "a genuine Photos row selection should pop the Trash page"
     );
 }
+
+#[gtk::test]
+fn programmatic_sidebar_selection_does_not_navigate() {
+    // `selecting_programmatically` is set while the window re-selects sidebar
+    // rows during a refresh; those selections must not navigate. (Sibling guard
+    // to focus_driven_sidebar_selection_does_not_pop_pushed_page.)
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.ProgrammaticSidebarNoNav")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    crate::ui::grid_css::install();
+    let window = MainWindow::new(&app);
+    let nav = window.nav_view();
+    let media_list = keyboard_media_list();
+    let (_tmp, loader) = keyboard_thumbnail_loader();
+    let pool = crate::core::db::init_pool(&_tmp.path().join("programmatic-sidebar.db")).unwrap();
+    window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+    window.populate_sidebar();
+    let root = PhotosPage::new(media_list.clone(), loader);
+    root.set_nav_target(&nav);
+    window.show_photos_browsing_page(&root);
+    window.connect_sidebar(&nav);
+
+    let trash = TrashPage::with_media_list(pool, keyboard_thumbnail_loader().1, media_list);
+    nav.push(&trash);
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "TrashPage should be pushed on top of the browsing root"
+    );
+
+    // A programmatic (refresh-driven) Photos selection must NOT pop the Trash page.
+    let sidebar = window.imp().sidebar_list.get();
+    let photos_row = sidebar.row_at_index(0).expect("Photos row exists");
+    window.imp().selecting_programmatically.set(true);
+    sidebar.unselect_all();
+    sidebar.select_row(Some(&photos_row));
+    while glib::MainContext::default().iteration(false) {}
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "a programmatic Photos row selection must not pop the Trash page"
+    );
+
+    // Once the programmatic guard is cleared, the selection is ambient again.
+    window.imp().selecting_programmatically.set(false);
+}
