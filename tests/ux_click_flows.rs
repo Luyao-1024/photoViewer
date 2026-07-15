@@ -27,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[allow(dead_code)] // retired in Task 4 along with build_photos_page_with_nav
 struct PhotosFixture {
     _tmp: tempfile::TempDir,
     pool: db::DbPool,
@@ -359,33 +360,9 @@ fn viewer_chrome_clicks_drive_visible_operations() {
 }
 
 fn sidebar_clicks_drive_top_level_navigation() {
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.UxClickFlows")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
-
-    let fixture = build_photos_page_with_nav();
-    let window = MainWindow::new(&app);
-    window.populate_sidebar();
-    window.set_resources(
-        fixture.pool.clone(),
-        fixture.loader.clone(),
-        fixture.media_list.clone(),
-    );
-    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
-    window.set_db_actor(photo_viewer::core::start_db_actor(
-        fixture.pool.clone(),
-        event_sender,
-    ));
-    albums::refresh(&fixture.pool).unwrap();
-    window.populate_album_rows();
+    let shell = build_full_app_shell();
+    let window = &shell.window;
     let nav = window.nav_view();
-    let root_page = PhotosPage::new(fixture.media_list.clone(), fixture.loader.clone());
-    root_page.set_nav_target(&nav);
-    root_page.set_db_pool(fixture.pool.clone());
-    window.show_photos_browsing_page(&root_page);
-    window.connect_sidebar(&nav);
 
     let sidebar = window.imp().sidebar_list.get();
     let trash_list = window.imp().trash_list.get();
@@ -435,25 +412,13 @@ fn sidebar_clicks_drive_top_level_navigation() {
 }
 
 fn album_sidebar_multi_select_deletes_real_albums() {
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.AlbumMultiSelect")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
-
-    let fixture = build_photos_page_with_nav();
-    let window = MainWindow::new(&app);
-    window.populate_sidebar();
-    window.set_resources(
-        fixture.pool.clone(),
-        fixture.loader.clone(),
-        fixture.media_list.clone(),
-    );
-    seed_extra_album(&fixture);
-    albums::refresh(&fixture.pool).unwrap();
+    let shell = build_full_app_shell();
+    let window = &shell.window;
+    // The base shell seeds one real folder album; add a second so multi-select
+    // has two real albums to select (the assertion expects exactly two).
+    seed_extra_album(&shell.pool, shell._tmp.path());
+    albums::refresh(&shell.pool).unwrap();
     window.populate_album_rows();
-    let nav = window.nav_view();
-    window.connect_sidebar(&nav);
 
     window.enter_album_selection_mode();
     assert_eq!(
@@ -496,21 +461,27 @@ fn album_sidebar_multi_select_deletes_real_albums() {
 }
 
 fn album_picker_clicks_album_row_and_copy_move() {
-    let fixture = build_photos_page_with_nav();
-    let window = gtk::Window::new();
-    window.set_child(Some(&fixture.nav));
-    let original_count = db::list_all_media(&fixture.pool).unwrap().len();
-    let (events, _receiver) = photo_viewer::core::events::DomainEventSender::new();
-    let db_actor = photo_viewer::core::start_db_actor(fixture.pool.clone(), events);
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let grid = visible_photos_grid(&shell.photos);
+    let original_count = db::list_all_media(&shell.pool).unwrap().len();
 
-    photo_viewer::ui::AlbumPickerDialog::present(
-        &fixture.nav,
-        fixture.pool.clone(),
-        db_actor.clone(),
-        vec![fixture.items[0].id],
+    // Open the picker the way a user does: select a photo, then click the
+    // batch "Add to Album" button, which presents AlbumPickerDialog onto the
+    // window's outer nav.
+    grid.select_ids(&[MediaId::from(shell.items[0].id)]);
+    assert!(
+        wait_until(Duration::from_secs(2), || shell
+            .photos
+            .imp()
+            .add_to_album_btn
+            .get()
+            .is_visible()),
+        "selecting a tile should expose the batch add-to-album action"
     );
-    let wrapper = fixture
-        .nav
+    click_button(&shell.photos.imp().add_to_album_btn.get());
+
+    let wrapper = nav
         .visible_page()
         .expect("AlbumPicker should push a wrapper page");
     let inner = find_descendant::<adw::NavigationView>(wrapper.upcast_ref())
@@ -518,10 +489,9 @@ fn album_picker_clicks_album_row_and_copy_move() {
     let list_box = find_descendant::<gtk::ListBox>(wrapper.upcast_ref())
         .expect("AlbumPicker should contain an album ListBox");
     assert!(
-        wait_until(Duration::from_secs(2), || list_box
-            .observe_children()
-            .n_items()
-            > 0),
+        wait_until(Duration::from_secs(2), || {
+            list_box.observe_children().n_items() > 0
+        }),
         "AlbumPicker should populate album rows"
     );
     let first_album_row = list_box
@@ -538,42 +508,41 @@ fn album_picker_clicks_album_row_and_copy_move() {
         .expect("Copy button should be present on the AlbumPicker action page");
     click_button(&copy_btn);
     assert!(
-        wait_until(Duration::from_secs(2), || db::list_all_media(&fixture.pool)
-            .map(|items| items.len() > original_count)
-            .unwrap_or(false)),
+        wait_until(Duration::from_secs(2), || {
+            db::list_all_media(&shell.pool)
+                .map(|items| items.len() > original_count)
+                .unwrap_or(false)
+        }),
         "clicking Copy should create a copied media row"
     );
     assert!(
-        wait_until(Duration::from_secs(2), || inner
-            .navigation_stack()
-            .n_items()
-            == 1),
+        wait_until(Duration::from_secs(2), || {
+            inner.navigation_stack().n_items() == 1
+        }),
         "AlbumPicker should return to the album list after Copy"
     );
 
-    let move_target = fixture._tmp.path().join("move-target");
+    let move_target = shell._tmp.path().join("move-target");
     std::fs::create_dir_all(&move_target).unwrap();
     album_picker::push_action_page(
         &inner,
-        fixture.pool.clone(),
-        db_actor,
-        vec![fixture.items[1].id],
+        shell.pool.clone(),
+        shell.db_actor.clone(),
+        vec![shell.items[1].id],
         move_target.clone(),
-        &fixture.nav,
+        &nav,
     );
     let move_btn = find_button_with_css(wrapper.upcast_ref(), "glass-toolbar-danger")
         .expect("Move button should be present on the AlbumPicker action page");
     click_button(&move_btn);
     assert!(
-        wait_until(Duration::from_secs(2), || db::get_media_item(
-            &fixture.pool,
-            fixture.items[1].id
-        )
-        .map(|item| item.folder_path == move_target)
-        .unwrap_or(false)),
+        wait_until(Duration::from_secs(2), || {
+            db::get_media_item(&shell.pool, shell.items[1].id)
+                .map(|item| item.folder_path == move_target)
+                .unwrap_or(false)
+        }),
         "clicking Move should update the media item's album folder"
     );
-    drop(window);
 }
 
 fn album_sidebar_open_then_tile_opens_viewer() {
@@ -864,6 +833,7 @@ fn open_trash_via_sidebar(window: &MainWindow) -> TrashPage {
         .expect("TrashPage is visible")
 }
 
+#[allow(dead_code)] // retired in Task 4
 fn build_photos_page_with_nav() -> PhotosFixture {
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
@@ -913,13 +883,13 @@ fn seed_media(pool: &db::DbPool, root: &std::path::Path) -> Vec<MediaItem> {
     items
 }
 
-fn seed_extra_album(fixture: &PhotosFixture) {
-    let album_dir = fixture._tmp.path().join("second-album");
+fn seed_extra_album(pool: &db::DbPool, base: &std::path::Path) {
+    let album_dir = base.join("second-album");
     std::fs::create_dir_all(&album_dir).unwrap();
     let album_path = album_dir.join("three.jpg");
     std::fs::write(&album_path, b"ux-flow-second-album").unwrap();
     let item = sample_item(200, album_path);
-    common::db::insert_media_item(&fixture.pool, &NewMediaItem::from(&item)).unwrap();
+    common::db::insert_media_item(pool, &NewMediaItem::from(&item)).unwrap();
 }
 
 fn click_mode_selector_cell(selector: &ModeSelector, index: usize) {
