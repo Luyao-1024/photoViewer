@@ -138,6 +138,148 @@ fn authoritative_counts_keep_layout_and_range_total_in_sync_during_a_db_race() {
     );
 }
 
+#[test]
+fn metadata_layout_replacement_preserves_the_current_media_anchor() {
+    let newest = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(13),
+    };
+    let older = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(12),
+    };
+    let counts = HashMap::from([(newest, 5), (older, 12)]);
+    let previous = VirtualGridLayoutIndex::new(&counts, 4);
+    let replacement = VirtualGridLayoutIndex::new(&counts, 3);
+
+    // Slot 8 is the first item in the second section of the four-column
+    // layout. That section starts at slot 6 after the replacement layout's
+    // different row padding.
+    // It must remain anchored to the same logical media item after a metadata-driven model
+    // replacement, even though its physical slot changes with the layout.
+    assert_eq!(
+        restored_slot_after_layout_replacement(&previous, 8, &replacement),
+        Some(6)
+    );
+}
+
+#[gtk::test]
+fn layout_replacement_restores_scroll_after_the_next_frame() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=40 {
+        list.append(&glib::BoxedAnyObject::new(sample_item(
+            id,
+            &format!("{id}.jpg"),
+        )));
+    }
+    let grid = VirtualMediaGrid::new(list.clone(), GroupBy::Day, loader, noop_callbacks(), false);
+    grid.seed_provisional_items();
+
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(500)
+        .child(&grid)
+        .build();
+    window.present();
+
+    let context = glib::MainContext::default();
+    let adjustment = grid.imp().scroller.get().vadjustment();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.upper() <= adjustment.page_size() && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    assert!(
+        adjustment.upper() > adjustment.page_size(),
+        "test grid must have a scrollable allocation"
+    );
+
+    // A structural ListModel replacement can temporarily reset GTK's
+    // adjustment, then the frame-tick restore must bring the viewport back.
+    let layout = grid.model().layout();
+    grid.replace_layout_with_initial_items(layout, media_items_from_list(&list));
+    grid.restore_top_slot(20);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.value() <= 0.0 && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    assert!(
+        adjustment.value() > 0.0,
+        "scroll position should be restored after the replacement allocation"
+    );
+
+    let focus_scroll_value = adjustment.value();
+    assert!(
+        grid.focus_visible_tile(),
+        "a visible GridView item should accept focus before a toolbar hides"
+    );
+    assert!(
+        (adjustment.value() - focus_scroll_value).abs() <= 0.5,
+        "returning focus to a visible GridView item must not move the viewport"
+    );
+
+    // A context-menu layer can steal focus, then GTK performs its fallback to
+    // the first GridView item one frame later. The bounded frame watcher must
+    // restore the pixel offset captured before that delayed reset.
+    let captured_scroll_value = adjustment.value();
+    grid.restore_scroll_after_transient_reset(captured_scroll_value, 8);
+    adjustment.set_value(0.0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.value() <= 0.0 && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    assert!(
+        adjustment.value() > 0.0,
+        "context-menu focus fallback should restore the captured scroll offset"
+    );
+
+    // Favorite mutations register their captured offset before the database
+    // event arrives. The adjustment signal, rather than a guessed delay,
+    // triggers the same bounded recovery when GTK resets to zero.
+    adjustment.set_value(captured_scroll_value);
+    grid.arm_favorite_scroll_restore();
+    adjustment.set_value(0.0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.value() <= 0.0 && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    assert!(
+        adjustment.value() > 0.0,
+        "favorite mutation reset should restore the captured scroll offset"
+    );
+
+    // The full authoritative replacement can later scroll a remembered
+    // GridView focus position into view without passing through zero. Keep
+    // the exact captured offset for every favorite mutation, not only ones
+    // that happened to reset to zero first.
+    let layout = grid.model().layout();
+    grid.replace_layout_with_initial_items(layout, media_items_from_list(&list));
+    let (favorite_guard_generation, favorite_scroll_value) = grid
+        .favorite_scroll_restore_for_layout()
+        .expect("favorite mutation should retain its pre-mutation scroll value");
+    grid.hold_favorite_scroll_after_layout(favorite_guard_generation, favorite_scroll_value, 8);
+    adjustment.set_value(
+        (favorite_scroll_value + 278.0).min((adjustment.upper() - adjustment.page_size()).max(0.0)),
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while (adjustment.value() - favorite_scroll_value).abs() > 0.5
+        && std::time::Instant::now() < deadline
+    {
+        context.iteration(true);
+    }
+    assert!(
+        (adjustment.value() - favorite_scroll_value).abs() <= 0.5,
+        "favorite layout replacement should preserve the captured scroll offset"
+    );
+    window.close();
+}
+
 #[gtk::test]
 fn inactive_grid_defers_its_initial_window_until_activated() {
     let _ = gtk::init();
@@ -251,6 +393,10 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
             .iter()
             .all(|cell| cell.tile.allows_width_shrink()),
         "GridView factory tiles must not turn the preferred target into a hard measure minimum"
+    );
+    assert!(
+        grid.focus_visible_tile(),
+        "a realized GridView item must accept focus before transient toolbar controls hide"
     );
     assert_eq!(first_tile.width(), metrics.tile_size());
     assert_eq!(first_tile.height(), metrics.tile_size());

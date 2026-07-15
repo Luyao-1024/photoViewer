@@ -2,7 +2,7 @@ use super::*;
 use crate::core::section_model::SectionKey;
 use chrono::{TimeZone, Utc};
 use gtk4::glib;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn item(id: i64) -> MediaItem {
     let stamp = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
@@ -193,4 +193,42 @@ fn layout_reflow_preserves_ready_media_when_columns_change() {
         model.slot_state(0),
         Some(GridSlotState::Ready { ref item, .. }) if item.id == 10
     ));
+}
+
+#[test]
+fn favorite_update_keeps_resident_slot_identity_and_emits_no_model_change() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..2, vec![item(10), item(11)]);
+    let first = model.item(0).expect("ready slot should have an object");
+
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured_changes = changes.clone();
+    model.connect_items_changed(move |_, position, removed, added| {
+        captured_changes
+            .borrow_mut()
+            .push((position, removed, added));
+    });
+
+    model.update_ready_favorite_flags(&HashSet::from([MediaId::from(10)]), true);
+
+    assert!(matches!(
+        model.slot_state(0),
+        Some(GridSlotState::Ready { ref item, .. }) if item.is_favorite
+    ));
+    assert_eq!(
+        model.item(0).expect("slot identity should remain stable"),
+        first,
+        "favorite-only updates must not replace a GridView list item"
+    );
+    let first = first
+        .downcast::<glib::BoxedAnyObject>()
+        .expect("virtual slot items use BoxedAnyObject");
+    assert!(matches!(
+        *first.borrow::<GridSlotState>(),
+        GridSlotState::Ready { ref item, .. } if item.is_favorite
+    ));
+    assert!(
+        changes.borrow().is_empty(),
+        "favorite-only updates must not trigger GtkGridView rebinding"
+    );
 }

@@ -14,7 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
 /// Immutable state a GridView factory reads for one physical list position.
@@ -346,6 +346,48 @@ impl VirtualMediaModel {
             .values()
             .map(|item| MediaId::from(item.id))
             .collect()
+    }
+
+    /// Apply a favorite-only mutation to currently resident media without
+    /// emitting a `ListModel::items_changed` signal. Favorite state does not
+    /// alter the live query's sort order, count, or section layout; replacing
+    /// list items here would make GtkGridView unbind and briefly repaint the
+    /// corresponding thumbnails.
+    pub fn update_ready_favorite_flags(&self, ids: &HashSet<MediaId>, is_favorite: bool) {
+        if ids.is_empty() {
+            return;
+        }
+
+        let mut state = self.imp().state.borrow_mut();
+        let layout = state.layout.clone();
+        let updated_slots = state
+            .ready_by_offset
+            .iter_mut()
+            .filter_map(|(offset, item)| {
+                if !ids.contains(&MediaId::from(item.id)) || item.is_favorite == is_favorite {
+                    return None;
+                }
+                item.is_favorite = is_favorite;
+                layout.slot_for_media_offset(*offset)
+            })
+            .collect::<Vec<_>>();
+
+        // GridView may still hold a live BoxedAnyObject for a resident slot.
+        // Keep that immutable-by-convention snapshot in sync as well, while
+        // retaining its GObject identity and avoiding an items-changed rebind.
+        for slot in updated_slots {
+            let Some(object) = state
+                .slot_objects
+                .get(&slot)
+                .and_then(|weak| weak.upgrade())
+            else {
+                continue;
+            };
+            let mut snapshot = object.borrow_mut::<GridSlotState>();
+            if let GridSlotState::Ready { item, .. } = &mut *snapshot {
+                item.is_favorite = is_favorite;
+            }
+        }
     }
 
     fn emit_replacements(&self, mut positions: Vec<u32>) {

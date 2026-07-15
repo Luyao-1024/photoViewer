@@ -45,6 +45,11 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             tile.set_hexpand(true);
             tile.set_valign(gtk::Align::Fill);
             tile.set_vexpand(true);
+            // The custom context-menu layer must return focus to the tile
+            // that opened it before it disappears. Without a focusable tile,
+            // GTK falls back to GridView's first item and visibly scrolls the
+            // viewport to the top for one frame.
+            tile.set_can_focus(true);
             let binding = Rc::new(RefCell::new(None));
             let binding_for_context = binding.clone();
             let weak_for_context = grid.downgrade();

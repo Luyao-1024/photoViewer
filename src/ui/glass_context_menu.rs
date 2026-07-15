@@ -80,6 +80,19 @@ pub fn show(
     anchor_y: f64,
     items: Vec<GlassMenuItem>,
 ) {
+    show_with_on_close(overlay, anchor, anchor_x, anchor_y, items, None);
+}
+
+/// Show the shared context menu and invoke `on_close` immediately before its
+/// focus-owning overlay layer is removed.
+pub fn show_with_on_close(
+    overlay: &gtk::Overlay,
+    anchor: &gtk::Widget,
+    anchor_x: f64,
+    anchor_y: f64,
+    items: Vec<GlassMenuItem>,
+    on_close: Option<Rc<dyn Fn()>>,
+) {
     dismiss_open_menu();
 
     let layer = gtk::Fixed::builder()
@@ -93,6 +106,8 @@ pub fn show(
 
     let overlay_weak = overlay.downgrade();
     let layer_weak = layer.downgrade();
+    let anchor_weak = anchor.downgrade();
+    let on_close = on_close.unwrap_or_else(|| Rc::new(|| {}));
     let close: Rc<dyn Fn()> = Rc::new(move || {
         let Some(overlay) = overlay_weak.upgrade() else {
             return;
@@ -100,6 +115,15 @@ pub fn show(
         let Some(layer) = layer_weak.upgrade() else {
             return;
         };
+        // Let the caller transfer focus to the active grid before removing
+        // the layer. Removing
+        // the focused layer first makes GTK briefly fall back to GridView's
+        // first item, producing a visible jump to the top even if a later
+        // scroll restore corrects it.
+        on_close();
+        if let Some(anchor) = anchor_weak.upgrade() {
+            anchor.grab_focus();
+        }
         close_menu_layer(&overlay, &layer);
     });
 
@@ -117,6 +141,7 @@ pub fn show(
     layer.grab_focus();
 
     let panel_weak = panel.downgrade();
+    let close_for_pointer = close.clone();
     let click = gtk::GestureClick::new();
     click.set_button(0);
     click.connect_pressed(move |_, _, x, y| {
@@ -128,16 +153,15 @@ pub fn show(
                 return;
             }
         }
-        close();
+        close_for_pointer();
     });
     layer.add_controller(click);
 
-    let overlay_for_key = overlay.clone();
-    let layer_for_key = layer.clone();
+    let close_for_key = close.clone();
     let key = gtk::EventControllerKey::new();
     key.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
-            overlay_for_key.remove_overlay(&layer_for_key);
+            close_for_key();
             return gtk::glib::Propagation::Stop;
         }
         gtk::glib::Propagation::Proceed

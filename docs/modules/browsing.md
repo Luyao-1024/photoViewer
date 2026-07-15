@@ -214,7 +214,27 @@ off the GTK thread.
 `MediaRepository` after its seed paint. Those counts define the layout index and
 floating-date projection, so a bounded shared `media_list` can never truncate a
 year, month, or day section's logical extent. Metadata queries must remain off
-the GTK thread and stale results must be ignored by generation.
+the GTK thread and stale results must be ignored by generation. A metadata
+layout replacement must preserve the current logical media anchor and restore
+its scroll position after GTK allocates the replacement model; metadata-only
+updates such as batch favorite changes must not jump the Photos grid to top.
+The favorite path first transfers focus from the batch toolbar to a currently
+visible GridView item before the toolbar hides. This prevents GTK from briefly
+focusing the first GridView item. It also locks the exact pre-mutation
+adjustment until the authoritative model replacement has settled: GTK may
+otherwise write zero or a non-zero remembered focus position for one frame,
+both of which visibly flash the viewport before an asynchronous restore.
+Favorite-only mutations must not replace the authoritative virtual layout: they
+do not change the live Photos query's ordering, sections, or count. Update the
+resident model snapshots and realized Day-view heart badges in place, and
+briefly suppress the matching shared-ListStore metadata reload; a full
+`items_changed(0, old_slots, new_slots)` rebinds visible thumbnails and causes
+a perceptible image flash.
+The custom GridView context-menu layer temporarily owns keyboard focus so
+Escape can dismiss it; it must return focus to its active GridView item before
+removing the layer. The captured-offset watcher remains only as a fallback,
+rather than letting GTK visibly fall back to the GridView's first item and
+scroll the viewport to top.
 
 Media activation is debounced while opening `ViewerPage` on the shared `AdwNavigationView`. Rapid repeated clicks in Year/Month/Day views must open only one viewer page: every viewer entry point (Photos, album details, search results) arms a short `viewer_open_pending` window that ignores duplicate activations during the push transition. There is no initial-open navigation-pop guard — a second click does not close the viewer (it cannot produce a pop), and an immediate back / Escape / swipe-back right after opening is intentional user input and is honored, so `can_pop` stays true from the first `show_at`.
 

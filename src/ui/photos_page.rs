@@ -1167,6 +1167,17 @@ impl PhotosPage {
             return;
         }
 
+        if let Some(grid) = self.current_grid() {
+            grid.arm_favorite_scroll_restore();
+            // The favorite button is hidden after the mutation completes.
+            // Transfer focus now, while its selected tile is still realized,
+            // so GTK does not later focus the first GridView item and flash
+            // the viewport at the top.
+            grid.focus_visible_tile();
+        }
+        for grid in self.imp().grids.borrow().iter() {
+            grid.begin_favorite_item_update();
+        }
         let weak = self.downgrade();
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
@@ -1177,34 +1188,50 @@ impl PhotosPage {
                 })
                 .await;
 
-            if result.is_ok() {
-                if let Some(this) = weak.upgrade() {
-                    this.clear_selection();
+            match result {
+                Ok(crate::core::DbCommandResult::MediaItems(items)) => {
+                    if let Some(this) = weak.upgrade() {
+                        let changed_ids = items
+                            .iter()
+                            .map(|item| MediaId::from(item.id))
+                            .collect::<Vec<_>>();
+                        this.update_virtual_favorite_flags(&changed_ids, is_favorite);
+                        this.clear_selection();
+                    }
                 }
+                Ok(other) => tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "favorite batch returned unexpected result: {other:?}"
+                ),
+                Err(error) => tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "favorite batch failed: {error}"
+                ),
             }
         });
     }
 
     fn update_media_favorite_flags(&self, ids: &[i64], is_favorite: bool) {
-        let Some(list) = self.imp().media_list.borrow().as_ref().cloned() else {
-            return;
-        };
         let ids: HashSet<i64> = ids.iter().copied().collect();
-        for i in 0..list.n_items() {
-            let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
-                continue;
-            };
-            let mut item = obj.borrow::<MediaItem>().clone();
-            if ids.contains(&item.id) {
-                item.is_favorite = is_favorite;
-                list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+        if let Some(list) = self.imp().media_list.borrow().as_ref().cloned() {
+            for i in 0..list.n_items() {
+                let Some(obj) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
+                    continue;
+                };
+                let mut item = obj.borrow::<MediaItem>().clone();
+                if ids.contains(&item.id) {
+                    item.is_favorite = is_favorite;
+                    list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+                }
             }
         }
-        // A viewer can update an item that sits outside the bounded shared
-        // list. Let the virtual backend refresh its authoritative range even
-        // when no ListStore splice was emitted for that media id.
+        let ids = ids.iter().copied().map(MediaId::from).collect::<Vec<_>>();
+        self.update_virtual_favorite_flags(&ids, is_favorite);
+    }
+
+    fn update_virtual_favorite_flags(&self, ids: &[MediaId], is_favorite: bool) {
         for grid in self.imp().grids.borrow().iter() {
-            grid.refresh_from_shared_projection();
+            grid.update_favorite_flags(ids, is_favorite);
         }
     }
 
@@ -1212,6 +1239,13 @@ impl PhotosPage {
     /// Called after a successful batch operation so the user can continue
     /// browsing without the previous selection leaking in.
     pub fn clear_selection(&self) {
+        // Batch action buttons live inside revealers. If the clicked button
+        // remains focused while its revealer hides, GTK falls back to the
+        // first GridView item. Keep focus on a visible tile before changing
+        // the selection UI so the viewport never takes that detour.
+        if let Some(grid) = self.current_grid() {
+            grid.focus_visible_tile();
+        }
         for grid in self.imp().grids.borrow().iter() {
             grid.clear_selection();
         }
