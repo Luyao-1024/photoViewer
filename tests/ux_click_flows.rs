@@ -24,6 +24,7 @@ use photo_viewer::ui::{
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,23 @@ struct PhotosFixture {
     nav: adw::NavigationView,
     items: Vec<MediaItem>,
 }
+
+#[allow(dead_code)] // reusable fixture; fields are read by later sub-flows
+struct AppShell {
+    _app: adw::Application,
+    _tmp: tempfile::TempDir,
+    pool: db::DbPool,
+    loader: Arc<ThumbnailLoader>,
+    media_list: gtk::gio::ListStore,
+    db_actor: photo_viewer::core::db_actor::DbActorHandle,
+    items: Vec<MediaItem>,
+    window: MainWindow,
+    photos: PhotosPage,
+}
+
+/// Monotonic counter so every full-shell fixture registers a unique
+/// `adw::Application` id (GApplication is single-instance per id per process).
+static FULL_SHELL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums() {
@@ -54,6 +72,7 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
     album_pages_clicks_open_album_and_viewer();
     album_browser_reorder_persists_full_album_order();
     trash_page_clicks_selection_cancel_restore_and_delete();
+    full_app_shell_renders_photos_and_opens_trash_via_sidebar();
 }
 
 fn search_result_activation_opens_one_viewer_while_pending() {
@@ -679,6 +698,32 @@ fn album_browser_reorder_persists_full_album_order() {
     );
 }
 
+fn full_app_shell_renders_photos_and_opens_trash_via_sidebar() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    assert!(
+        nav.visible_page().is_some(),
+        "full app shell should have a visible browsing root"
+    );
+    assert_eq!(
+        shell
+            .window
+            .imp()
+            .trash_list
+            .get()
+            .observe_children()
+            .n_items(),
+        1,
+        "sidebar should contain one Trash row"
+    );
+    let trash = open_trash_via_sidebar(&shell.window);
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "selecting the Trash sidebar row should show the TrashPage"
+    );
+    let _ = trash;
+}
+
 fn trash_page_clicks_selection_cancel_restore_and_delete() {
     let fixture = build_photos_page_with_nav();
     common::db::mark_trashed(&fixture.pool, fixture.items[0].id).unwrap();
@@ -746,6 +791,77 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         .unwrap_or(false)),
         "clicking Delete Permanently should remove selected trash rows from DB"
     );
+}
+
+fn build_full_app_shell() -> AppShell {
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("shell.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let items = seed_media(&pool, tmp.path());
+    albums::refresh(&pool).unwrap();
+
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for item in &items {
+        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+    }
+    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
+    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
+
+    let seq = FULL_SHELL_SEQ.fetch_add(1, AtomicOrdering::Relaxed);
+    let app = adw::Application::builder()
+        .application_id(format!("io.github.luyao_1024.photoviewer.UxFullShell{seq}"))
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    photo_viewer::ui::grid_css::install();
+
+    let window = MainWindow::new(&app);
+    window.populate_sidebar();
+    window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+    window.set_db_actor(db_actor.clone());
+    window.populate_album_rows();
+
+    let nav = window.nav_view();
+    let photos = PhotosPage::new(media_list.clone(), loader.clone());
+    photos.set_nav_target(&nav);
+    photos.set_db_pool(pool.clone());
+    photos.set_db_actor(db_actor.clone());
+    window.show_photos_browsing_page(&photos);
+    window.connect_sidebar(&nav);
+
+    AppShell {
+        _app: app,
+        _tmp: tmp,
+        pool,
+        loader,
+        media_list,
+        db_actor,
+        items,
+        window,
+        photos,
+    }
+}
+
+/// Open the Trash page the way a user does: select the Trash sidebar row.
+/// Returns the `TrashPage` that `show_trash_page` built from the window's
+/// real pool/loader/media_list/db_actor.
+fn open_trash_via_sidebar(window: &MainWindow) -> TrashPage {
+    let trash_list = window.imp().trash_list.get();
+    let trash_row = trash_list.row_at_index(0).expect("Trash row exists");
+    trash_list.select_row(Some(&trash_row));
+    let nav = window.nav_view();
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<TrashPage>().is_some()
+        }),
+        "selecting the Trash sidebar row should show TrashPage"
+    );
+    nav.visible_page()
+        .and_downcast::<TrashPage>()
+        .expect("TrashPage is visible")
 }
 
 fn build_photos_page_with_nav() -> PhotosFixture {
