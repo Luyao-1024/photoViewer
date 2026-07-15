@@ -280,6 +280,15 @@ mod imp {
         /// Set while we programmatically `select_row`, so the `row-selected`
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
+        /// True while GTK is propagating a focus traversal through the window
+        /// (Tab, or the automatic fallback when the focused widget disappears).
+        /// `GtkListBox` selects whichever row receives focus, which would fire
+        /// `row-selected` and — for the Photos row — pop a pushed page (Trash,
+        /// Search, …) back to the browsing root. That is a focus side effect,
+        /// not a user navigation, so the sidebar handlers ignore selections
+        /// raised while this is set. Real clicks do not go through the `focus`
+        /// vfunc, so genuine navigation is unaffected.
+        pub focus_traversal_active: Cell<bool>,
         /// Guard so diagnostic sidebar layout notify logging is connected once.
         pub sidebar_layout_trace_installed: Cell<bool>,
         /// Latest requested Day column count. Updates are coalesced until the
@@ -346,7 +355,17 @@ mod imp {
 
     #[gtk::glib::derived_properties]
     impl ObjectImpl for MainWindow {}
-    impl WidgetImpl for MainWindow {}
+    impl WidgetImpl for MainWindow {
+        /// Bracket GTK's focus traversal so sidebar `row-selected` handlers can
+        /// tell focus-driven selections (which must not navigate) apart from
+        /// genuine clicks. See `focus_traversal_active`.
+        fn focus(&self, direction: gtk::DirectionType) -> bool {
+            self.obj().imp().focus_traversal_active.set(true);
+            let handled = self.parent_focus(direction);
+            self.obj().imp().focus_traversal_active.set(false);
+            handled
+        }
+    }
     impl WindowImpl for MainWindow {}
     impl ApplicationWindowImpl for MainWindow {}
     impl AdwApplicationWindowImpl for MainWindow {}

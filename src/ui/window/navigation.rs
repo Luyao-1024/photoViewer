@@ -37,7 +37,14 @@ impl MainWindow {
                 let Some(row) = row else {
                     return;
                 };
-                if window.imp().selecting_programmatically.get() {
+                if window.imp().selecting_programmatically.get()
+                    || window.imp().focus_traversal_active.get()
+                {
+                    // Ignore selections that we drove programmatically, or that
+                    // GTK raised as a side effect of a focus traversal (a
+                    // focused sidebar row is auto-selected). Neither is a user
+                    // navigation request; acting on the Photos row here would
+                    // pop a pushed Trash/Search page back to the browsing root.
                     return;
                 }
                 let target = {
@@ -73,7 +80,14 @@ impl MainWindow {
                 let Some(row) = row else {
                     return;
                 };
-                if window.imp().selecting_programmatically.get() {
+                if window.imp().selecting_programmatically.get()
+                    || window.imp().focus_traversal_active.get()
+                {
+                    // Ignore selections that we drove programmatically, or that
+                    // GTK raised as a side effect of a focus traversal (a
+                    // focused sidebar row is auto-selected). Neither is a user
+                    // navigation request; acting on the Photos row here would
+                    // pop a pushed Trash/Search page back to the browsing root.
                     return;
                 }
                 let target = {
@@ -113,7 +127,14 @@ impl MainWindow {
                 let Some(row) = row else {
                     return;
                 };
-                if window.imp().selecting_programmatically.get() {
+                if window.imp().selecting_programmatically.get()
+                    || window.imp().focus_traversal_active.get()
+                {
+                    // Ignore selections that we drove programmatically, or that
+                    // GTK raised as a side effect of a focus traversal (a
+                    // focused sidebar row is auto-selected). Neither is a user
+                    // navigation request; acting on the Photos row here would
+                    // pop a pushed Trash/Search page back to the browsing root.
                     return;
                 }
                 let album = {
@@ -136,7 +157,14 @@ impl MainWindow {
                 let Some(row) = row else {
                     return;
                 };
-                if window.imp().selecting_programmatically.get() {
+                if window.imp().selecting_programmatically.get()
+                    || window.imp().focus_traversal_active.get()
+                {
+                    // Ignore selections that we drove programmatically, or that
+                    // GTK raised as a side effect of a focus traversal (a
+                    // focused sidebar row is auto-selected). Neither is a user
+                    // navigation request; acting on the Photos row here would
+                    // pop a pushed Trash/Search page back to the browsing root.
                     return;
                 }
                 let album = {

@@ -199,6 +199,15 @@ When touching trash flows, verify:
 - Restoring makes it visible again.
 - Permanent delete removes the expected record/file state.
 - Multi-select actions keep selection and empty states coherent.
+- Restoring or deleting items must keep the user on the Trash page. After the
+  action runs, the bottom action bar hides and the focused Restore/Delete button
+  vanishes, so GTK runs a focus fallback. That fallback can land on the sidebar,
+  where `GtkListBox` auto-selects the focused row — the Photos row — firing
+  `row-selected` and popping the Trash page back to Photos. The sidebar
+  `row-selected` handlers therefore ignore any selection raised while a focus
+  traversal is in progress (`MainWindow`'s `focus_traversal_active` guard, set
+  in the `WidgetImpl::focus` override). Genuine clicks do not go through the
+  `focus` vfunc, so real sidebar navigation is unaffected.
 
 For Flatpak/Flathub trash regressions, reproduce with
 `tools/flatpak-trash-portal-repro.sh` instead of host `gio trash`. Host GIO does

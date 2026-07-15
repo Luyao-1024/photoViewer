@@ -413,3 +413,60 @@ fn opening_album_pops_viewer_pushed_above_browsing_root() {
         "viewer must no longer be the visible page after switching albums"
     );
 }
+
+#[gtk::test]
+fn focus_driven_sidebar_selection_does_not_pop_pushed_page() {
+    // Regression: after Restore the bottom action bar hides, the focused
+    // Restore button vanishes, and GTK's focus fallback reaches the sidebar.
+    // GtkListBox auto-selects the focused row (Photos), firing `row-selected`,
+    // which popped the Trash page back to Photos. A focus-driven selection is
+    // not a user navigation request, so the sidebar handlers must ignore it.
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.FocusSidebarNoPop")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+    crate::ui::grid_css::install();
+    let window = MainWindow::new(&app);
+    let nav = window.nav_view();
+    let media_list = keyboard_media_list();
+    let (_tmp, loader) = keyboard_thumbnail_loader();
+    let pool = crate::core::db::init_pool(&_tmp.path().join("focus-sidebar-nopop.db")).unwrap();
+    window.set_resources(pool.clone(), loader.clone(), media_list.clone());
+    window.populate_sidebar();
+    let root = PhotosPage::new(media_list.clone(), loader.clone());
+    root.set_nav_target(&nav);
+    window.show_photos_browsing_page(&root);
+    window.connect_sidebar(&nav);
+
+    let trash = TrashPage::with_media_list(pool, loader, media_list);
+    nav.push(&trash);
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "TrashPage should be pushed on top of the browsing root"
+    );
+
+    let sidebar = window.imp().sidebar_list.get();
+    let photos_row = sidebar.row_at_index(0).expect("Photos row exists");
+
+    // A focus traversal is in progress (the focus fallback). Selecting the
+    // Photos row now must NOT navigate — the Trash page stays.
+    window.imp().focus_traversal_active.set(true);
+    sidebar.unselect_all();
+    sidebar.select_row(Some(&photos_row));
+    while glib::MainContext::default().iteration(false) {}
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "a focus-driven Photos row selection must not pop the Trash page"
+    );
+
+    // A genuine (non-focus) Photos selection still navigates back to Photos.
+    window.imp().focus_traversal_active.set(false);
+    sidebar.unselect_all();
+    sidebar.select_row(Some(&photos_row));
+    while glib::MainContext::default().iteration(false) {}
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_none(),
+        "a genuine Photos row selection should pop the Trash page"
+    );
+}
