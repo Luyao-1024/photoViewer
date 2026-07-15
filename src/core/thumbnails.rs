@@ -19,7 +19,7 @@ use crate::core::runtime_config;
 use cache::cache_stem_for;
 #[cfg(test)]
 use cache::load_pixbuf_sync;
-use cache::{cache_key_str, existing_cache_path, load_pixbuf_sync_or_remove};
+use cache::{cache_key_str, exif_cache_key, existing_cache_path, load_pixbuf_sync_or_remove};
 use decode::pixbuf_is_light;
 #[cfg(test)]
 use decode::{
@@ -86,6 +86,18 @@ impl ThumbnailSize {
 pub struct LoadedThumb {
     pub texture: Texture,
     pub is_light: Option<bool>,
+}
+
+/// Build a `LoadedThumb` (texture + lightness) from a decoded pixbuf.
+///
+/// Used by the EXIF-placeholder preload path: it decodes the embedded JPEG thumb
+/// off the main thread and hands the resulting pixbuf here so the UI does not
+/// reach into thumbnail internals.
+pub fn loaded_thumb_from_pixbuf(pb: &gdk_pixbuf::Pixbuf) -> LoadedThumb {
+    LoadedThumb {
+        texture: Texture::for_pixbuf(pb),
+        is_light: pixbuf_is_light(pb),
+    }
 }
 
 // ── 优先级队列 ──────────────────────────────────────────────────────────────
@@ -180,6 +192,9 @@ pub(in crate::core::thumbnails) type SharedStatsDirtyCallback =
 /// （否则一个刚完成的 key 可能被新请求当作未生成而重复入队）。
 pub(in crate::core::thumbnails) struct LoaderState {
     mem_cache: LruCache<String, LoadedThumb>,
+    /// Low-res embedded-EXIF thumbnails (Android-style instant placeholders).
+    /// Size-independent key; capped separately so it survives full-thumb churn.
+    exif_cache: LruCache<String, LoadedThumb>,
     /// `cache_key` → 正在生成的请求的等待者列表。
     ///
     /// 同 key 的后续 request 直接 append 到这里、**不再单独入队**，因此：
@@ -235,6 +250,7 @@ impl ThumbnailLoader {
         let runtime = runtime_config::load();
         let state = Arc::new(Mutex::new(LoaderState {
             mem_cache: LruCache::new(NonZeroUsize::new(runtime.thumbnail_mem_cache_cap).unwrap()),
+            exif_cache: LruCache::new(NonZeroUsize::new(runtime.thumbnail_exif_cache_cap).unwrap()),
             in_flight: HashMap::new(),
         }));
         let queue = Arc::new((
@@ -526,6 +542,44 @@ impl ThumbnailLoader {
         Some(loaded)
     }
 
+    /// Memory-only lookup of the embedded-EXIF placeholder thumbnail. Instant,
+    /// no I/O — used on the GTK main thread in the factory bind path so a
+    /// mem-miss tile can paint a low-res preview immediately while the full
+    /// thumbnail generates off-thread. Returns `None` until the landing preload
+    /// (or a prior worker fill) has populated the entry.
+    pub fn try_load_exif_thumb_cached(
+        &self,
+        uri: &str,
+        mtime: Option<SystemTime>,
+    ) -> Option<LoadedThumb> {
+        let cache_key = exif_cache_key(uri, mtime)?;
+        let loaded = self
+            .state
+            .lock()
+            .ok()?
+            .exif_cache
+            .get(&cache_key)
+            .cloned()?;
+        debug!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB_LOADER_TRACE exif_cache_hit uri={} cache_key={}",
+            uri, cache_key
+        );
+        Some(loaded)
+    }
+
+    /// Insert an embedded-EXIF placeholder into the in-memory LRU. `Send`-safe
+    /// (locks the shared `state` mutex), so the landing preload can call this
+    /// from off-main-thread worker tasks.
+    pub fn insert_exif_thumb(&self, uri: &str, mtime: Option<SystemTime>, loaded: LoadedThumb) {
+        let Some(cache_key) = exif_cache_key(uri, mtime) else {
+            return;
+        };
+        if let Ok(mut state) = self.state.lock() {
+            state.exif_cache.put(cache_key, loaded);
+        }
+    }
+
     fn request_inner(
         &self,
         media_id: i64,
@@ -738,6 +792,7 @@ impl ThumbnailLoader {
     pub fn clear_mem_cache(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.mem_cache.clear();
+            state.exif_cache.clear();
             state.in_flight.clear();
         }
     }

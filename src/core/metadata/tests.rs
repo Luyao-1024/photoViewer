@@ -515,3 +515,73 @@ fn exif_from_recovers_datetime_from_truncated_secondary_ifd() {
         "DateTime must survive a truncated tail IFD (streaming path)"
     );
 }
+
+/// Build a TIFF block (little-endian) carrying an IFD1 JPEG thumbnail and the
+/// given primary-IFD orientation, mirroring how phone cameras embed a low-res
+/// preview. The thumbnail payload is arbitrary bytes here — the offset/length
+/// extraction is what's under test, not the JPEG decode.
+fn tiff_with_jpeg_thumb(thumb: &[u8], orientation: u16) -> Vec<u8> {
+    let orientation_field = exif::Field {
+        tag: exif::Tag::Orientation,
+        ifd_num: exif::In::PRIMARY,
+        value: exif::Value::Short(vec![orientation]),
+    };
+    let mut writer = exif::experimental::Writer::new();
+    writer.push_field(&orientation_field);
+    writer.set_jpeg(thumb, exif::In::THUMBNAIL);
+    let mut buf = Vec::new();
+    let mut cursor = Cursor::new(&mut buf);
+    cursor.seek(SeekFrom::Start(0)).unwrap();
+    writer.write(&mut cursor, true).unwrap();
+    assert!(
+        buf.starts_with(b"II*\x00"),
+        "writer should emit a TIFF LE block"
+    );
+    buf
+}
+
+#[test]
+fn exif_thumbnail_helper_finds_embedded_jpeg_thumb_and_orientation() {
+    let thumb = b"JPEG-BYTES";
+    let tiff = tiff_with_jpeg_thumb(thumb, 6);
+
+    let (found, orientation) = super::exif_thumbnail_jpeg_and_orientation(&tiff)
+        .expect("IFD1 JPEG thumbnail must be located");
+    assert_eq!(
+        found, thumb,
+        "the exact embedded thumb bytes must be sliced"
+    );
+    assert_eq!(orientation, 6, "primary-IFD orientation must be read back");
+}
+
+#[test]
+fn exif_thumbnail_helper_returns_none_without_ifd1_thumb() {
+    // Primary-only TIFF: no THUMBNAIL IFD, so no JPEGInterchangeFormat.
+    let field = exif::Field {
+        tag: exif::Tag::ImageDescription,
+        ifd_num: exif::In::PRIMARY,
+        value: exif::Value::Ascii(vec![b"no thumb".to_vec()]),
+    };
+    let mut writer = exif::experimental::Writer::new();
+    writer.push_field(&field);
+    let mut buf = Vec::new();
+    let mut cursor = Cursor::new(&mut buf);
+    cursor.seek(SeekFrom::Start(0)).unwrap();
+    writer.write(&mut cursor, true).unwrap();
+
+    assert!(
+        super::exif_thumbnail_jpeg_and_orientation(&buf).is_none(),
+        "a TIFF without an IFD1 JPEG thumb must yield None"
+    );
+}
+
+#[test]
+fn extract_exif_thumbnail_returns_none_for_non_jpeg_extension() {
+    // The mime guard short-circuits before any read, so a `.png` path with no
+    // real image content is enough to prove non-JPEG files are skipped.
+    let png = tempfile::Builder::new()
+        .suffix(".png")
+        .tempfile()
+        .expect("create temp png");
+    assert!(extract_exif_thumbnail(png.path()).is_none());
+}

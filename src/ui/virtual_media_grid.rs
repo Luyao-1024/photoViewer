@@ -18,7 +18,7 @@ use crate::core::runtime_config;
 use crate::core::section_model::{GroupBy, SectionKey};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
-use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
+use crate::ui::media_grid::{thumbnail_request_mtime, FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
 use chrono::Datelike;
 use gtk4 as gtk;
@@ -88,6 +88,60 @@ impl TileBinding {
 
     pub(super) fn media_id(&self) -> MediaId {
         self.media_id
+    }
+}
+
+/// Coalesces per-tile thumbnail requests issued during factory binds and
+/// releases them in bounded batches.
+///
+/// A landing can realize ~100 tiles in a single frame; letting each bind call
+/// `request_thumbnail` synchronously floods the worker queue with ~100 items at
+/// once (the measured p99 queue_wait tail). Instead the factory builds the full
+/// request closure and hands it here; the grid drains at most
+/// `thumbnail_batch_per_frame()` per main-loop idle and re-arms while the queue
+/// is non-empty, so the queue stays shallow and delivery spreads across frames.
+/// Staleness is still guarded downstream by `defer_thumbnail_paint` — the
+/// batcher only throttles *when* a request is issued, not its result.
+pub(super) struct ThumbnailBatcher {
+    pending: Vec<Box<dyn FnOnce()>>,
+    scheduled: Cell<bool>,
+}
+
+impl ThumbnailBatcher {
+    fn enqueue(&mut self, request: Box<dyn FnOnce()>) {
+        self.pending.push(request);
+    }
+
+    /// Remove up to `batch` requests (FIFO) for the caller to invoke.
+    fn drain(&mut self, batch: usize) -> Vec<Box<dyn FnOnce()>> {
+        let take = batch.min(self.pending.len());
+        self.pending.drain(..take).collect()
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+        self.scheduled.set(false);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn scheduled(&self) -> bool {
+        self.scheduled.get()
+    }
+
+    fn set_scheduled(&self, value: bool) {
+        self.scheduled.set(value);
+    }
+}
+
+impl Default for ThumbnailBatcher {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            scheduled: Cell::new(false),
+        }
     }
 }
 
@@ -189,6 +243,7 @@ mod imp {
         pub column_update_source: RefCell<Option<glib::SourceId>>,
         pub range: RefCell<RangeCoordinator>,
         pub last_top_slot: Cell<u32>,
+        pub(super) thumb_batcher: RefCell<ThumbnailBatcher>,
     }
 
     impl Default for VirtualMediaGrid {
@@ -223,6 +278,7 @@ mod imp {
                 column_update_source: RefCell::new(None),
                 range: RefCell::new(RangeCoordinator::default()),
                 last_top_slot: Cell::new(0),
+                thumb_batcher: RefCell::new(ThumbnailBatcher::default()),
             }
         }
     }
@@ -263,6 +319,7 @@ mod imp {
                 }
             }
             self.factory_cells.borrow_mut().clear();
+            self.thumb_batcher.borrow_mut().clear();
         }
     }
 
@@ -589,6 +646,59 @@ impl VirtualMediaGrid {
             .factory_cells
             .borrow_mut()
             .retain(|cell| cell.tile != *tile);
+    }
+
+    /// Throttle a factory bind's thumbnail request so a ~100-tile landing does
+    /// not flood the worker queue in one frame. `request` is the full
+    /// `request_thumbnail` capture; it is invoked on a later main-loop idle, at
+    /// most `thumbnail_batch_per_frame()` per drain. Paint-time staleness is
+    /// still guarded downstream by `defer_thumbnail_paint`.
+    pub(super) fn enqueue_thumbnail(&self, request: impl FnOnce() + 'static) {
+        self.imp()
+            .thumb_batcher
+            .borrow_mut()
+            .enqueue(Box::new(request));
+        self.schedule_thumb_flush();
+    }
+
+    fn schedule_thumb_flush(&self) {
+        {
+            let batcher = self.imp().thumb_batcher.borrow();
+            if batcher.scheduled() {
+                return;
+            }
+        }
+        self.imp().thumb_batcher.borrow().set_scheduled(true);
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            let Some(grid) = weak.upgrade() else {
+                return;
+            };
+            grid.tick_thumb_flush();
+        });
+    }
+
+    /// Drain one bounded batch of pending thumbnail requests, then re-arm while
+    /// any remain. A request closure only issues `loader.request_for_media`
+    /// (never enqueues again) and this runs on the main thread, so there is no
+    /// re-entrancy: no new request can arrive during the drain loop.
+    fn tick_thumb_flush(&self) {
+        let batch = runtime_config::thumbnail_batch_per_frame();
+        let drained = self.imp().thumb_batcher.borrow_mut().drain(batch);
+        for request in drained {
+            request();
+        }
+        if self.imp().thumb_batcher.borrow().is_empty() {
+            self.imp().thumb_batcher.borrow().set_scheduled(false);
+        } else {
+            let weak = self.downgrade();
+            glib::idle_add_local_once(move || {
+                let Some(grid) = weak.upgrade() else {
+                    return;
+                };
+                grid.tick_thumb_flush();
+            });
+        }
     }
 
     pub(super) fn show_context_menu(
@@ -1099,6 +1209,10 @@ impl VirtualMediaGrid {
             if completion.apply_result {
                 match result {
                     Ok(Ok(items)) => {
+                        // Kick off the EXIF-placeholder preload before `items`
+                        // move into the model. It runs concurrently in its own
+                        // future and never delays the landing's rebind below.
+                        grid.preload_exif_placeholders(&items);
                         grid.model()
                             .replace_ready_range(range.start..range.end, items);
                         let keep = grid
@@ -1131,6 +1245,119 @@ impl VirtualMediaGrid {
                 grid.start_range_request(next);
             }
         });
+    }
+
+    /// Concurrently extract embedded-EXIF thumbnails for a freshly landed range
+    /// and cache them in memory, so mem-miss binds can paint an instant low-res
+    /// placeholder (Android-style) while the full thumbnail generates off-thread.
+    ///
+    /// Runs in its own main-loop future so it never delays the landing's
+    /// structural rebind. Each extraction reads only the file head, work is
+    /// parallelised across blocking-worker chunks, and items whose full
+    /// thumbnail (or a prior EXIF entry) is already resident are skipped. When
+    /// every chunk finishes, visible ready slots are refreshed so already-bound
+    /// tiles pick up their EXIF placeholder on the next bind.
+    fn preload_exif_placeholders(&self, items: &[MediaItem]) {
+        let size = self.spec().thumbnail_size();
+        let loader = self.loader();
+        let targets: Vec<(String, std::time::SystemTime, std::path::PathBuf)> = items
+            .iter()
+            .filter_map(|item| {
+                let mtime = thumbnail_request_mtime(item);
+                let uri = item.uri.clone();
+                // Skip tiles that already have a full thumbnail or an EXIF
+                // placeholder resident — no point re-reading the file head.
+                if loader
+                    .try_load_mem_cached(&uri, size, Some(mtime))
+                    .is_some()
+                    || loader
+                        .try_load_exif_thumb_cached(&uri, Some(mtime))
+                        .is_some()
+                {
+                    return None;
+                }
+                let path_str = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
+                Some((uri, mtime, std::path::PathBuf::from(path_str)))
+            })
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+
+        // Bound parallelism: ~8 chunks across the GIO blocking pool.
+        let chunk_size = targets.len().div_ceil(8).max(1);
+        let _span = tracing::debug_span!(
+            "vgrid:exif_preload",
+            targets = targets.len(),
+            chunks = targets.len().div_ceil(chunk_size),
+        );
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let mut handles = Vec::new();
+            for chunk in targets.chunks(chunk_size) {
+                let chunk: Vec<_> = chunk.to_vec();
+                let loader = loader.clone();
+                handles.push(gio::spawn_blocking(move || {
+                    let _span =
+                        tracing::debug_span!("vgrid:exif_preload_chunk", items = chunk.len())
+                            .entered();
+                    for (uri, mtime, path) in chunk {
+                        if let Some(pb) = crate::core::metadata::extract_exif_thumbnail(&path) {
+                            loader.insert_exif_thumb(
+                                &uri,
+                                Some(mtime),
+                                crate::core::thumbnails::loaded_thumb_from_pixbuf(&pb),
+                            );
+                        }
+                    }
+                }));
+            }
+            for handle in handles {
+                let _ = handle.await;
+            }
+            if let Some(grid) = weak.upgrade() {
+                grid.fill_exif_placeholders();
+            }
+        });
+    }
+
+    /// Paint cached EXIF placeholders into still-loading tiles without rebinding.
+    ///
+    /// Called once the landing preload has populated the EXIF mem cache. Unlike
+    /// `refresh_ready_slots` (which rebinds and would clear already-painted
+    /// thumbnails), this walks the factory cells and only fills tiles still
+    /// showing the shimmer. `defer_thumbnail_paint`'s placeholder guard then
+    /// ensures a tile whose full thumbnail already arrived is left untouched.
+    fn fill_exif_placeholders(&self) {
+        let loader = self.loader();
+        let model = self.model();
+        let cells: Vec<FactoryCell> = self.imp().factory_cells.borrow().clone();
+        for cell in cells {
+            // Only tiles still waiting for their thumbnail should get a preview.
+            if !cell.tile.has_css_class("thumb-loading") {
+                continue;
+            }
+            let Some(binding) = cell.binding.borrow().clone() else {
+                continue;
+            };
+            let Some(item) = model.ready_item_for_media_id(binding.media_id()) else {
+                continue;
+            };
+            let mtime = thumbnail_request_mtime(&item);
+            let Some(exif) = loader.try_load_exif_thumb_cached(&item.uri, Some(mtime)) else {
+                continue;
+            };
+            factory::defer_thumbnail_paint(
+                cell.tile.downgrade(),
+                self.downgrade(),
+                cell.binding.clone(),
+                binding,
+                exif,
+                std::time::Instant::now(),
+                true,
+                true,
+            );
+        }
     }
 
     fn activate_slot(&self, position: u32) {

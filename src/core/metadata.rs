@@ -225,6 +225,66 @@ pub fn read_image_head(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Decode the embedded JPEG thumbnail from a JPEG's EXIF IFD1, oriented, for an
+/// instant low-res placeholder (Android-style) while the full thumbnail
+/// generates.
+///
+/// Returns `None` for non-JPEG files, JPEGs without an IFD1 JPEG thumbnail, or
+/// any malformed/undecodable case — callers fall back to the shimmer
+/// placeholder, so `None` is never an error. Only the JPEG IFD1 path is
+/// supported; HEIC/HEIF previews live in a separate HEIF-item path (out of
+/// scope). Reads only [`IMAGE_HEAD_CAP`] bytes (APP1 + thumbnail sit at the file
+/// head), so a landing can extract a whole range in parallel off the main
+/// thread cheaply.
+pub fn extract_exif_thumbnail(path: &Path) -> Option<gdk_pixbuf::Pixbuf> {
+    use gdk_pixbuf::prelude::PixbufLoaderExt;
+    if mime_from_extension(path) != Some("image/jpeg") {
+        return None;
+    }
+    let head = read_image_head(path).ok()?;
+    let mut cursor = std::io::Cursor::new(&head[..]);
+    // `get_exif_attr_from_jpeg` strips the "Exif\0\0" prefix, so the returned
+    // bytes start at the TIFF header (II/MM) and IFD offsets index from there.
+    let tiff = exif::get_exif_attr_from_jpeg(&mut cursor).ok()?;
+    let (thumb, orientation) = exif_thumbnail_jpeg_and_orientation(&tiff)?;
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    loader.write(thumb).ok()?;
+    loader.close().ok()?;
+    let pixbuf = loader.pixbuf()?;
+    Some(crate::core::orientation::apply_orientation_to_pixbuf(
+        &pixbuf,
+        orientation,
+    ))
+}
+
+/// From a JPEG's EXIF TIFF block, return the IFD1 embedded JPEG thumbnail bytes
+/// and the primary-IFD orientation. Separated from [`extract_exif_thumbnail`] so
+/// the offset/length/orientation logic is unit-testable without gdk-pixbuf.
+fn exif_thumbnail_jpeg_and_orientation(tiff: &[u8]) -> Option<(&[u8], u16)> {
+    let exif = distill_partial_exif(lenient_exif_reader().read_raw(tiff.to_vec()))?;
+    let offset = exif
+        .get_field(exif::Tag::JPEGInterchangeFormat, exif::In::THUMBNAIL)
+        .and_then(|field| field.value.get_uint(0))?;
+    let length = exif
+        .get_field(exif::Tag::JPEGInterchangeFormatLength, exif::In::THUMBNAIL)
+        .and_then(|field| field.value.get_uint(0))?;
+    let offset = usize::try_from(offset).ok()?;
+    let length = usize::try_from(length).ok()?;
+    if length == 0 {
+        return None;
+    }
+    let thumb = tiff
+        .get(offset..offset.checked_add(length)?)
+        .filter(|slice| slice.len() == length)?;
+    let orientation = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+        .and_then(|field| field.value.get_uint(0))
+        .map(|value| value as u16)
+        .filter(|value| (1..=8).contains(value))
+        .unwrap_or(1);
+    Some((thumb, orientation))
+}
+
 /// Extract metadata from a file at `path`.
 ///
 /// Convenience wrapper for callers that don't have a pre-read head; equivalent

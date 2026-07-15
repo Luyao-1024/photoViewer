@@ -31,6 +31,17 @@ pub(in crate::core::thumbnails) fn cache_key_str(
     Some(format!("{path:?}:{mtime:?}:{size:?}"))
 }
 
+/// Size-independent mem-cache key for the embedded EXIF thumbnail (the low-res
+/// instant placeholder). Mirrors [`cache_key_str`] but drops the size, since a
+/// source file has exactly one embedded EXIF thumb regardless of grid mode.
+pub(in crate::core::thumbnails) fn exif_cache_key(
+    uri: &str,
+    mtime: Option<SystemTime>,
+) -> Option<String> {
+    let (path, mtime) = resolve_src(uri, mtime).ok()?;
+    Some(format!("exif:{path:?}:{mtime:?}"))
+}
+
 /// 同步加载缩略图缓存文件，确保文件完全写入后再解码。
 ///
 /// 使用 `std::fs::read` 读取整个文件到内存，然后从内存构造 Pixbuf。

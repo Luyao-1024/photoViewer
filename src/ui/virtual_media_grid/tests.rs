@@ -263,3 +263,87 @@ fn viewport_width_does_not_shrink_day_tiles_when_column_count_is_unchanged() {
     assert_eq!(wide.columns(), 4);
     assert_eq!(wide.row_extent(), 278);
 }
+
+/// Pure drain behaviour: bounded batch size, FIFO order, empties exactly.
+#[test]
+fn thumbnail_batcher_drain_is_bounded_and_fifo() {
+    let mut batcher = ThumbnailBatcher::default();
+    let order = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+    for index in 0..50usize {
+        let captured = order.clone();
+        batcher.enqueue(Box::new(move || captured.borrow_mut().push(index)));
+    }
+    assert!(!batcher.is_empty());
+
+    let drained = batcher.drain(24);
+    assert_eq!(drained.len(), 24, "first drain must respect the batch size");
+    assert!(!batcher.is_empty());
+    for request in drained {
+        request();
+    }
+
+    let drained = batcher.drain(24);
+    assert_eq!(drained.len(), 24, "second drain takes the next full batch");
+    for request in drained {
+        request();
+    }
+
+    let drained = batcher.drain(24);
+    assert_eq!(
+        drained.len(),
+        2,
+        "final drain takes only the remainder, not a full batch"
+    );
+    for request in drained {
+        request();
+    }
+    assert!(batcher.is_empty());
+
+    assert_eq!(
+        *order.borrow(),
+        (0..50).collect::<Vec<_>>(),
+        "requests must fire in FIFO enqueue order"
+    );
+}
+
+/// End-to-end: the idle-driven flush drains every enqueued request without
+/// losing any and terminates (re-arms while non-empty, releases when empty).
+#[gtk::test]
+fn thumbnail_batcher_eventually_drains_all_requests() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), false);
+
+    let count = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    // More than one batch plus a remainder, so re-arming is exercised.
+    let total = runtime_config::thumbnail_batch_per_frame() * 5 + 3;
+    for _ in 0..total {
+        let captured = count.clone();
+        grid.enqueue_thumbnail(move || {
+            captured.set(captured.get() + 1);
+        });
+    }
+
+    let context = glib::MainContext::default();
+    let deadline_reached = std::rc::Rc::new(std::cell::Cell::new(false));
+    let deadline_callback = deadline_reached.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+        deadline_callback.set(true);
+    });
+    while !deadline_reached.get() && count.get() < total {
+        context.iteration(true);
+    }
+    assert!(
+        !deadline_reached.get(),
+        "batcher stalled: only {} of {total} requests fired",
+        count.get()
+    );
+    assert_eq!(count.get(), total);
+    assert!(
+        !grid.imp().thumb_batcher.borrow().scheduled(),
+        "the schedule flag must be released once the batcher is empty"
+    );
+}

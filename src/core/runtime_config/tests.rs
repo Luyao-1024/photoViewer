@@ -43,6 +43,14 @@ fn missing_runtime_file_uses_central_defaults() {
     assert_eq!(config.thumbnail_disk_cache_bytes, 2 * 1024 * 1024 * 1024);
     assert_eq!(config.thumbnail_prewarm_poll_ms, 500);
     assert_eq!(config.thumbnail_idle_wait_ms, 30_000);
+    assert_eq!(
+        config.thumbnail_batch_per_frame,
+        DEFAULT_THUMBNAIL_BATCH_PER_FRAME
+    );
+    assert_eq!(
+        config.thumbnail_exif_cache_cap,
+        DEFAULT_THUMBNAIL_EXIF_CACHE_CAP
+    );
     assert_eq!(config.notify_trash_debounce_ms, 400);
     assert_eq!(config.notify_file_settle_ms, 50);
     assert!(config.startup_progressive_render);
@@ -75,6 +83,8 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
               "thumbnail_disk_cache_bytes": 104857600,
               "thumbnail_prewarm_poll_ms": 750,
               "thumbnail_idle_wait_ms": 45000,
+              "thumbnail_batch_per_frame": 12,
+              "thumbnail_exif_cache_cap": 512,
               "notify_trash_debounce_ms": 900,
               "notify_file_settle_ms": 125,
               "startup_progressive_render": false,
@@ -102,6 +112,8 @@ fn runtime_file_overrides_sizing_and_strategy_values() {
     assert_eq!(config.thumbnail_disk_cache_bytes, 104857600);
     assert_eq!(config.thumbnail_prewarm_poll_ms, 750);
     assert_eq!(config.thumbnail_idle_wait_ms, 45000);
+    assert_eq!(config.thumbnail_batch_per_frame, 12);
+    assert_eq!(config.thumbnail_exif_cache_cap, 512);
     assert_eq!(config.notify_trash_debounce_ms, 900);
     assert_eq!(config.notify_file_settle_ms, 125);
     assert!(!config.startup_progressive_render);
@@ -134,6 +146,8 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
               "thumbnail_disk_cache_bytes": 0,
               "thumbnail_prewarm_poll_ms": 0,
               "thumbnail_idle_wait_ms": 0,
+              "thumbnail_batch_per_frame": 0,
+              "thumbnail_exif_cache_cap": 0,
               "notify_trash_debounce_ms": 0,
               "notify_file_settle_ms": 0,
               "startup_render_seed": 0,
@@ -160,6 +174,8 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
     assert_eq!(config.thumbnail_disk_cache_bytes, 1);
     assert_eq!(config.thumbnail_prewarm_poll_ms, 1);
     assert_eq!(config.thumbnail_idle_wait_ms, 1);
+    assert_eq!(config.thumbnail_batch_per_frame, 1);
+    assert_eq!(config.thumbnail_exif_cache_cap, 1);
     assert_eq!(config.notify_trash_debounce_ms, 1);
     assert_eq!(config.notify_file_settle_ms, 1);
     // Numeric startup keys clamp to 1 like other counts; the bool switch

@@ -250,20 +250,48 @@ fn bind_ready_cell(
             loaded,
             load_started,
             true,
+            false,
         );
         return;
     }
 
     cell.tile.show_loading_placeholder();
-    request_thumbnail(
-        grid,
-        cell.tile.clone(),
-        cell.binding.clone(),
-        binding,
-        item,
-        loader,
-        load_started,
-    );
+    // Instant low-res placeholder from the embedded EXIF thumbnail, if the
+    // landing preload (or a prior pass) put one in mem. Painted via the same
+    // guarded path as a full thumb; `defer_thumbnail_paint` skips it if a full
+    // thumbnail already arrived. The full-thumb request below still fires and
+    // upgrades the preview.
+    if let Some(exif) = loader.try_load_exif_thumb_cached(&item.uri, Some(item_mtime)) {
+        defer_thumbnail_paint(
+            cell.tile.downgrade(),
+            grid.downgrade(),
+            cell.binding.clone(),
+            binding.clone(),
+            exif,
+            load_started,
+            true,
+            true,
+        );
+    }
+    // Throttle the request through the grid's batcher so a ~100-tile landing
+    // does not enqueue ~100 requests in one frame (the p99 queue_wait tail).
+    let tile = cell.tile.clone();
+    let binding_state = cell.binding.clone();
+    let grid_weak = grid.downgrade();
+    grid.enqueue_thumbnail(move || {
+        let Some(grid) = grid_weak.upgrade() else {
+            return;
+        };
+        request_thumbnail(
+            &grid,
+            tile,
+            binding_state,
+            binding,
+            item,
+            loader,
+            load_started,
+        );
+    });
 }
 
 /// Apply a thumbnail outside `GtkSignalListItemFactory::bind`.
@@ -273,7 +301,7 @@ fn bind_ready_cell(
 /// re-enter that bookkeeping. An idle callback also naturally coalesces a
 /// burst of in-memory cache hits, while the binding comparison prevents a
 /// recycled cell from receiving an old texture.
-fn defer_thumbnail_paint(
+pub(super) fn defer_thumbnail_paint(
     tile_weak: glib::WeakRef<SquareTile>,
     grid_weak: glib::WeakRef<VirtualMediaGrid>,
     binding_state: Rc<RefCell<Option<TileBinding>>>,
@@ -281,6 +309,7 @@ fn defer_thumbnail_paint(
     loaded: crate::core::thumbnails::LoadedThumb,
     load_started: std::time::Instant,
     mem_hit: bool,
+    is_placeholder: bool,
 ) {
     glib::idle_add_local_once(move || {
         let current_matches = binding_state
@@ -293,6 +322,11 @@ fn defer_thumbnail_paint(
         let Some(tile) = tile_weak.upgrade() else {
             return;
         };
+        // A low-res EXIF placeholder must never overwrite a full thumbnail that
+        // already arrived; full thumbnails always win (and mark the flag).
+        if is_placeholder && tile.full_thumbnail_painted() {
+            return;
+        }
         if let Some(is_light) = loaded.is_light {
             tile.set_background_is_light(is_light);
             if let Some(grid) = grid_weak.upgrade() {
@@ -300,6 +334,9 @@ fn defer_thumbnail_paint(
             }
         }
         tile.set_paintable(Some(&loaded.texture));
+        if !is_placeholder {
+            tile.mark_full_thumbnail_painted();
+        }
         // 端到端 bind→paint 延迟（主线程墙钟；worker 解码在 request 与 rx 之间于
         // 另一线程完成）。用 span 承载点测量：稳定名 "tile:paint"，elapsed_ms 在
         // 构造时（=上屏时刻）求值。mem_hit=true 表示 bind 时即命中 mem_cache（仅
@@ -351,6 +388,7 @@ fn request_thumbnail(
             binding,
             loaded,
             load_started,
+            false,
             false,
         );
     });

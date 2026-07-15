@@ -23,6 +23,14 @@ const THUMBNAIL_MEM_CACHE_CAP_KEY: &str = "thumbnail_mem_cache_cap";
 const THUMBNAIL_DISK_CACHE_BYTES_KEY: &str = "thumbnail_disk_cache_bytes";
 const THUMBNAIL_PREWARM_POLL_MS_KEY: &str = "thumbnail_prewarm_poll_ms";
 const THUMBNAIL_IDLE_WAIT_MS_KEY: &str = "thumbnail_idle_wait_ms";
+/// Max thumbnail requests a grid landing flushes per frame. A landing can realize
+/// ~100 tiles at once; flushing them all in one frame floods the worker queue
+/// (the measured p99 queue_wait tail). Draining a bounded batch per frame keeps
+/// the queue shallow and spreads delivery progressively. See `ThumbnailBatcher`.
+const THUMBNAIL_BATCH_PER_FRAME_KEY: &str = "thumbnail_batch_per_frame";
+/// Cap of the EXIF-thumbnail in-memory LRU (low-res instant placeholders).
+/// Each entry is a ~160×120 texture (≈75 KB), so 768 ≈ 57 MB worst case.
+const THUMBNAIL_EXIF_CACHE_CAP_KEY: &str = "thumbnail_exif_cache_cap";
 const NOTIFY_TRASH_DEBOUNCE_MS_KEY: &str = "notify_trash_debounce_ms";
 const NOTIFY_FILE_SETTLE_MS_KEY: &str = "notify_file_settle_ms";
 // Progressive first-page render: render a viewport-sized seed of tiles first,
@@ -59,6 +67,10 @@ pub const DEFAULT_THUMBNAIL_MEM_CACHE_CAP: usize = 256;
 pub const DEFAULT_THUMBNAIL_DISK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_THUMBNAIL_PREWARM_POLL_MS: u64 = 500;
 pub const DEFAULT_THUMBNAIL_IDLE_WAIT_MS: u64 = 30_000;
+/// Bounds the per-frame thumbnail-request flush so a ~100-tile landing spreads
+/// its full-thumb requests across frames instead of flooding the worker queue.
+pub const DEFAULT_THUMBNAIL_BATCH_PER_FRAME: usize = 24;
+pub const DEFAULT_THUMBNAIL_EXIF_CACHE_CAP: usize = 768;
 pub const DEFAULT_NOTIFY_TRASH_DEBOUNCE_MS: u64 = 400;
 pub const DEFAULT_NOTIFY_FILE_SETTLE_MS: u64 = 50;
 /// Master switch for progressive first-page grid rendering.
@@ -94,6 +106,8 @@ pub struct RuntimeConfig {
     pub thumbnail_disk_cache_bytes: u64,
     pub thumbnail_prewarm_poll_ms: u64,
     pub thumbnail_idle_wait_ms: u64,
+    pub thumbnail_batch_per_frame: usize,
+    pub thumbnail_exif_cache_cap: usize,
     pub notify_trash_debounce_ms: u64,
     pub notify_file_settle_ms: u64,
     pub startup_progressive_render: bool,
@@ -300,6 +314,16 @@ fn read_runtime_config_at(path: &Path) -> RuntimeConfig {
             THUMBNAIL_IDLE_WAIT_MS_KEY,
             DEFAULT_THUMBNAIL_IDLE_WAIT_MS,
         ),
+        thumbnail_batch_per_frame: read_usize(
+            &obj,
+            THUMBNAIL_BATCH_PER_FRAME_KEY,
+            DEFAULT_THUMBNAIL_BATCH_PER_FRAME,
+        ),
+        thumbnail_exif_cache_cap: read_usize(
+            &obj,
+            THUMBNAIL_EXIF_CACHE_CAP_KEY,
+            DEFAULT_THUMBNAIL_EXIF_CACHE_CAP,
+        ),
         notify_trash_debounce_ms: read_u64(
             &obj,
             NOTIFY_TRASH_DEBOUNCE_MS_KEY,
@@ -424,6 +448,14 @@ pub fn thumbnail_prewarm_poll_ms() -> u64 {
 
 pub fn thumbnail_idle_wait_ms() -> u64 {
     load().thumbnail_idle_wait_ms
+}
+
+pub fn thumbnail_batch_per_frame() -> usize {
+    load().thumbnail_batch_per_frame
+}
+
+pub fn thumbnail_exif_cache_cap() -> usize {
+    load().thumbnail_exif_cache_cap
 }
 
 pub fn notify_trash_debounce_ms() -> u64 {

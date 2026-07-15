@@ -39,6 +39,10 @@ mod imp {
         /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
         pub cache_key: RefCell<Option<String>>,
         pub thumbnail_request: RefCell<Option<Rc<dyn Fn()>>>,
+        /// Whether a full-resolution thumbnail has been delivered to this tile.
+        /// Guards the EXIF placeholder path so a low-res preview is never painted
+        /// over a full thumbnail that already arrived (and vice-versa orderings).
+        pub full_thumbnail_painted: Cell<bool>,
     }
 
     impl Default for SquareTile {
@@ -57,6 +61,7 @@ mod imp {
                 background_is_light: Cell::new(None),
                 cache_key: RefCell::new(None),
                 thumbnail_request: RefCell::new(None),
+                full_thumbnail_painted: Cell::new(false),
             }
         }
     }
@@ -315,6 +320,7 @@ impl SquareTile {
         self.imp().background_is_light.set(None);
         *self.imp().cache_key.borrow_mut() = None;
         *self.imp().thumbnail_request.borrow_mut() = None;
+        self.imp().full_thumbnail_painted.set(false);
         self.set_motion_badge_visible(false);
         self.set_video_duration(None);
         self.set_favorite_badge_visible(false);
@@ -341,6 +347,19 @@ impl SquareTile {
 
     pub fn background_is_light(&self) -> Option<bool> {
         self.imp().background_is_light.get()
+    }
+
+    /// Whether a full-resolution thumbnail has been delivered since the last
+    /// rebind. The EXIF-placeholder path consults this so it never paints a
+    /// low-res preview over an already-delivered full thumbnail.
+    pub fn full_thumbnail_painted(&self) -> bool {
+        self.imp().full_thumbnail_painted.get()
+    }
+
+    /// Mark that a full-resolution thumbnail has been delivered. Set by the
+    /// paint path for full thumbnails; reset by [`clear_for_rebind`].
+    pub fn mark_full_thumbnail_painted(&self) {
+        self.imp().full_thumbnail_painted.set(true);
     }
 
     /// 缩略图缓存键（建 tile 时预算；可见区提权时用它匹配队列项）。

@@ -5,6 +5,7 @@ use crate::core::orientation;
 use crate::core::thumbnails::jpeg_turbo::decode_jpeg_scaled;
 use crate::core::thumbnails::queue::{pull_batch_and_enqueue, worker_loop};
 use crate::core::thumbnails::video::extract_video_frame;
+use gtk4::prelude::Cast;
 use gtk4::prelude::TextureExt;
 use image::ImageEncoder;
 use std::fs::File;
@@ -1374,4 +1375,39 @@ fn real_library_thumbnail_bench() {
             old_mem_mb,
             new_mem_mb,
         );
+}
+
+/// The embedded-EXIF placeholder mem cache: insert, look up, and evict.
+/// `exif_cache_key` needs no real file (the supplied mtime avoids a stat), so
+/// this is a pure in-memory round-trip.
+#[test]
+fn exif_thumb_cache_round_trips_and_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("s.db")).unwrap();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+
+    let uri = "file:///nonexistent/exif-roundtrip.jpg";
+    let mtime = Some(std::time::UNIX_EPOCH);
+    let bytes = gtk4::glib::Bytes::from_owned(vec![10_u8, 20, 30, 40]);
+    let loaded = LoadedThumb {
+        texture: gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &bytes, 4)
+            .upcast(),
+        is_light: Some(false),
+    };
+
+    assert!(
+        loader.try_load_exif_thumb_cached(uri, mtime).is_none(),
+        "EXIF cache must be empty before any insert"
+    );
+    loader.insert_exif_thumb(uri, mtime, loaded.clone());
+    let got = loader
+        .try_load_exif_thumb_cached(uri, mtime)
+        .expect("an inserted EXIF thumb must be retrievable");
+    assert_eq!(got.is_light, Some(false));
+
+    loader.clear_mem_cache();
+    assert!(
+        loader.try_load_exif_thumb_cached(uri, mtime).is_none(),
+        "clear_mem_cache must also evict the EXIF cache"
+    );
 }
