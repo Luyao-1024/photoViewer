@@ -818,9 +818,11 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         "TrashPage must stay visible after deleting the last item"
     );
 
-    // Clean up the host trash so the test leaves nothing behind. Restore moved
-    // trash-a.jpg back into `trash_dir`; delete-permanently already cleared
-    // trash-b's trash entry, so the delete calls below are idempotent no-ops.
+    // Clean up the host trash so the test leaves nothing behind. Which slot
+    // `first_ready_media_slot()` picked is ordering-dependent, so clean both
+    // URIs: the restored item (whichever it was) moved back into `trash_dir`
+    // (removed below), and the other was already delete-permanently'd — both
+    // delete_permanently calls are idempotent no-ops.
     let _ = std::fs::remove_dir_all(&trash_dir);
     let _ = photo_viewer::core::trash::delete_permanently(&trash_items[0].uri);
     let _ = photo_viewer::core::trash::delete_permanently(&trash_items[1].uri);
