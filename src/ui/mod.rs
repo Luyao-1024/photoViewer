@@ -1,6 +1,5 @@
 //! UI module: top-level window and (later) pages/widgets.
 
-pub mod album_browser_page;
 pub mod album_detail_page;
 pub mod album_picker;
 pub mod apply_to_media_list;
@@ -28,7 +27,6 @@ pub mod viewer_page;
 pub mod virtual_media_grid;
 pub mod window;
 
-pub use album_browser_page::AlbumBrowserPage;
 pub use album_detail_page::AlbumDetailPage;
 pub use album_picker::AlbumPickerDialog;
 pub use editor_panel::EditorPanel;

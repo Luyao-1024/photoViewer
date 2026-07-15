@@ -11,15 +11,14 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
-use photo_viewer::core::albums::Album;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use photo_viewer::core::thumbnails::ThumbnailLoader;
 use photo_viewer::core::{albums, db};
 use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
 use photo_viewer::ui::{
-    album_picker, AlbumBrowserPage, AlbumDetailPage, MainWindow, ModeSelector, PhotosPage,
-    SearchPage, TrashPage, ViewerPage,
+    album_picker, AlbumDetailPage, MainWindow, ModeSelector, PhotosPage, SearchPage, TrashPage,
+    ViewerPage,
 };
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -73,8 +72,7 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
     sidebar_clicks_drive_top_level_navigation();
     album_sidebar_multi_select_deletes_real_albums();
     album_picker_clicks_album_row_and_copy_move();
-    album_pages_clicks_open_album_and_viewer();
-    album_browser_reorder_persists_full_album_order();
+    album_sidebar_open_then_tile_opens_viewer();
     trash_page_clicks_selection_cancel_restore_and_delete();
     full_app_shell_renders_photos_and_opens_trash_via_sidebar();
 }
@@ -578,115 +576,67 @@ fn album_picker_clicks_album_row_and_copy_move() {
     drop(window);
 }
 
-fn album_pages_clicks_open_album_and_viewer() {
-    let fixture = build_photos_page_with_nav();
-    let opened_albums = Rc::new(RefCell::new(Vec::<Album>::new()));
-    let opened_albums_for_cb = opened_albums.clone();
-    let browser = AlbumBrowserPage::new(
-        fixture.pool.clone(),
-        fixture.loader.clone(),
-        Rc::new(move |album| {
-            opened_albums_for_cb.borrow_mut().push(album);
-        }),
-    );
-    let browser_tile =
-        first_flowbox_child(browser.upcast_ref()).expect("Album browser should render albums");
-    let browser_card = browser_tile
-        .first_child()
-        .expect("Album browser FlowBoxChild should contain a clickable card");
-    release_click_on_widget(&browser_card);
-    assert_eq!(
-        opened_albums.borrow().len(),
-        1,
-        "clicking an AlbumBrowser card should invoke the open-album callback"
-    );
+fn album_sidebar_open_then_tile_opens_viewer() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
 
-    let album = albums::list(&fixture.pool)
-        .unwrap()
-        .into_iter()
-        .find(|album| !album.is_virtual)
-        .expect("fixture should create a real folder album");
-    let album_items = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    for item in fixture
-        .items
+    // Open the first real folder album the way a user does: select its
+    // sidebar row. `open_album` is deferred via an idle, so drain the main
+    // context until the browsing stack swaps to the album detail page.
+    let album_list = shell.window.imp().album_list.get();
+    let album_idx = shell
+        .window
+        .imp()
+        .album_targets
+        .borrow()
         .iter()
-        .filter(|item| item.folder_path == album.folder_path)
-    {
-        album_items.append(&glib::BoxedAnyObject::new(item.clone()));
-    }
-    let detail = AlbumDetailPage::new(
-        album,
-        album_items,
-        fixture.media_list.clone(),
-        fixture.pool.clone(),
-        fixture.loader.clone(),
+        .position(|album| !album.is_virtual)
+        .expect("fixture should seed at least one real folder album");
+    let album_row = album_list
+        .row_at_index(album_idx as i32)
+        .expect("real album row should be present");
+    album_list.select_row(Some(&album_row));
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            shell
+                .window
+                .browsing_stack()
+                .visible_child_name()
+                .as_deref()
+                == Some("album")
+        }),
+        "selecting a real album row should open its AlbumDetailPage"
     );
-    detail.set_nav_target(&fixture.nav);
-    fixture.nav.push(&detail);
+    let detail = shell
+        .window
+        .browsing_stack()
+        .visible_child()
+        .and_downcast::<AlbumDetailPage>()
+        .expect("album detail page should be visible");
 
     let detail_grid = find_descendant::<VirtualMediaGrid>(detail.upcast_ref())
         .expect("Album detail should use VirtualMediaGrid");
-    activate_virtual_grid_slot(&detail_grid, 0);
+    assert!(
+        wait_until(Duration::from_secs(2), || detail_grid
+            .first_media_slot()
+            .is_some()),
+        "AlbumDetailPage should load a media slot for the album"
+    );
+    let first_slot = detail_grid.first_media_slot().expect("album media slot");
+    activate_virtual_grid_slot(&detail_grid, first_slot);
     assert!(
         !detail.is_sensitive(),
         "AlbumDetailPage should ignore pointer input while viewer push is guarded"
     );
-    activate_virtual_grid_slot(&detail_grid, 0);
+    activate_virtual_grid_slot(&detail_grid, first_slot);
     assert!(
-        fixture
-            .nav
-            .visible_page()
-            .and_downcast::<ViewerPage>()
-            .is_some(),
+        nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "activating an AlbumDetail tile should open the viewer"
     );
     assert_eq!(
-        fixture.nav.navigation_stack().n_items(),
-        3,
+        nav.navigation_stack().n_items(),
+        2,
         "rapid repeated AlbumDetail tile activation should push only one viewer page"
-    );
-}
-
-fn album_browser_reorder_persists_full_album_order() {
-    let fixture = build_photos_page_with_nav();
-    let browser = AlbumBrowserPage::new(
-        fixture.pool.clone(),
-        fixture.loader.clone(),
-        Rc::new(|_| {}),
-    );
-    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
-    browser.set_db_actor(photo_viewer::core::start_db_actor(
-        fixture.pool.clone(),
-        event_sender,
-    ));
-
-    let before: Vec<String> = albums::list_with_favorites(&fixture.pool)
-        .unwrap()
-        .into_iter()
-        .map(|album| album.folder_path.to_string_lossy().into_owned())
-        .collect();
-    assert!(
-        before.len() >= 4,
-        "fixture should include virtual albums plus at least one folder album"
-    );
-
-    let source = before[3].clone();
-    let target = before[0].clone();
-    browser.reorder_album(&source, &target, false);
-
-    let after: Vec<String> = albums::list_with_favorites(&fixture.pool)
-        .unwrap()
-        .into_iter()
-        .map(|album| album.folder_path.to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(
-        after[0], source,
-        "dragging an album browser card above the first card should persist it first"
-    );
-    assert_eq!(
-        browser.album_folder_paths()[0],
-        source,
-        "AlbumBrowserPage should refresh into the persisted order"
     );
 }
 

@@ -137,12 +137,6 @@ leaves media files untouched.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 
-`AlbumBrowserPage` uses the same persistent ordering for its full album grid.
-Each album card is a drag source/drop target with the same `folder_path`
-payload; dropping on the upper/lower half inserts before/after that card,
-writes the complete order through `albums::set_album_order`, refreshes the
-page, and notifies `MainWindow` to rebuild the sidebar rows.
-
 The Albums page also has virtual logical albums:
 
 - Favorites: filtered by `is_favorite`.

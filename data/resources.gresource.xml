@@ -2,7 +2,6 @@
 <gresources>
   <gresource prefix="/io/github/luyao_1024/photoviewer">
     <file>ui/window.ui</file>
-    <file>ui/album-browser-page.ui</file>
     <file>ui/photos-page.ui</file>
     <file>ui/album-detail-page.ui</file>
     <file>ui/media-grid.ui</file>
