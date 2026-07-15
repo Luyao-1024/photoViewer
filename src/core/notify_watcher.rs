@@ -18,6 +18,7 @@ use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::events::ChangeSource;
 use crate::core::media::is_supported_media_path;
 use crate::core::runtime_config;
+use crate::core::telemetry::{log_error, log_warning, OperationTrace, TraceChain};
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -163,10 +164,15 @@ fn flush_trash_reconcile(db_actor: &DbActorHandle, pictures_root: &Path, trash_d
         return;
     }
     *trash_dirty = false;
-    if let Err(e) = db_actor.execute_blocking(DbCommand::ReconcileTrash {
-        pictures_root: pictures_root.to_path_buf(),
-    }) {
-        tracing::warn!("watcher 触发的回收站对账失败: {e}");
+    let trace = OperationTrace::start(TraceChain::Filesystem, "reconcile_trash");
+    let result = db_actor.execute_blocking_in_trace(
+        trace.clone(),
+        DbCommand::ReconcileTrash {
+            pictures_root: pictures_root.to_path_buf(),
+        },
+    );
+    if let Err(error) = result {
+        log_error(&trace, "db_reconcile", &error);
     }
 }
 
@@ -178,6 +184,9 @@ fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Err
             return;
         }
     };
+    let trace = OperationTrace::start(TraceChain::Filesystem, "watcher_event");
+    let stage = trace.stage("dispatch");
+    stage.record("item_count", evt.paths.len());
 
     match evt.kind {
         EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
@@ -194,17 +203,27 @@ fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Err
                 match LocalBackend::new_item_from_path(path) {
                     Ok(Some(item)) => {
                         tracing::debug!(target: crate::core::log_targets::STORAGE, "增量 upsert 成功: {}", path.display());
-                        if let Err(e) = db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
-                            source: ChangeSource::FilesystemWatcher,
-                            items: vec![item],
-                        }) {
+                        if let Err(e) = db_actor.execute_blocking_in_trace(
+                            trace.clone(),
+                            DbCommand::UpsertMediaBatch {
+                                source: ChangeSource::FilesystemWatcher,
+                                items: vec![item],
+                            },
+                        ) {
                             tracing::warn!("actor upsert 失败 {}: {}", path.display(), e);
                         }
                     }
                     Ok(None) => {
                         // 非文件 / 已消失；不通知 UI。
                     }
-                    Err(e) => tracing::warn!("upsert 失败 {}: {}", path.display(), e),
+                    Err(e) => {
+                        log_warning(
+                            &trace,
+                            "metadata_extract",
+                            format!("{}: {e}", path.display()),
+                        );
+                        tracing::warn!("upsert 失败 {}: {}", path.display(), e);
+                    }
                 }
             }
         }
@@ -213,10 +232,13 @@ fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Err
                 if !is_supported_media_path(path) {
                     continue;
                 }
-                match db_actor.execute_blocking(DbCommand::DeleteLiveByPath {
-                    source: ChangeSource::FilesystemWatcher,
-                    path: path.clone(),
-                }) {
+                match db_actor.execute_blocking_in_trace(
+                    trace.clone(),
+                    DbCommand::DeleteLiveByPath {
+                        source: ChangeSource::FilesystemWatcher,
+                        path: path.clone(),
+                    },
+                ) {
                     Ok(crate::core::db_actor::DbCommandResult::RemovedUris(removed))
                         if !removed.is_empty() =>
                     {
@@ -239,10 +261,13 @@ fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Err
                     match LocalBackend::new_item_from_path(path) {
                         Ok(Some(item)) => {
                             tracing::debug!(target: crate::core::log_targets::STORAGE, "rename upsert 成功: {}", path.display());
-                            if let Err(e) = db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
-                                source: ChangeSource::FilesystemWatcher,
-                                items: vec![item],
-                            }) {
+                            if let Err(e) = db_actor.execute_blocking_in_trace(
+                                trace.clone(),
+                                DbCommand::UpsertMediaBatch {
+                                    source: ChangeSource::FilesystemWatcher,
+                                    items: vec![item],
+                                },
+                            ) {
                                 tracing::warn!(
                                     "actor rename upsert 失败 {}: {}",
                                     path.display(),
@@ -251,13 +276,23 @@ fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Err
                             }
                         }
                         Ok(None) => {}
-                        Err(e) => tracing::warn!("rename upsert 失败 {}: {}", path.display(), e),
+                        Err(e) => {
+                            log_warning(
+                                &trace,
+                                "metadata_extract",
+                                format!("{}: {e}", path.display()),
+                            );
+                            tracing::warn!("rename upsert 失败 {}: {}", path.display(), e);
+                        }
                     }
                 } else {
-                    match db_actor.execute_blocking(DbCommand::DeleteLiveByPath {
-                        source: ChangeSource::FilesystemWatcher,
-                        path: path.clone(),
-                    }) {
+                    match db_actor.execute_blocking_in_trace(
+                        trace.clone(),
+                        DbCommand::DeleteLiveByPath {
+                            source: ChangeSource::FilesystemWatcher,
+                            path: path.clone(),
+                        },
+                    ) {
                         Ok(crate::core::db_actor::DbCommandResult::RemovedUris(removed))
                             if !removed.is_empty() =>
                         {

@@ -79,31 +79,7 @@ fn high_volume_trace_logs_stay_debug_across_modules() {
         (
             "ui/apply_to_media_list.rs",
             include_str!("../ui/apply_to_media_list.rs"),
-            &[
-                "TRASH_TRACE ui_apply_moved_to_trash_begin",
-                "TRASH_TRACE ui_apply_moved_to_trash_done",
-                "TRASH_TRACE ui_remove_uris_batch",
-            ],
-        ),
-        (
-            "ui/photos_page.rs",
-            include_str!("../ui/photos_page.rs"),
-            &["TRASH_TRACE photos_delete_requested count="],
-        ),
-        (
-            "ui/search_page.rs",
-            include_str!("../ui/search_page.rs"),
-            &["TRASH_TRACE search_delete_requested count="],
-        ),
-        (
-            "ui/album_detail_page.rs",
-            include_str!("../ui/album_detail_page.rs"),
-            &["TRASH_TRACE album_detail_delete_requested count="],
-        ),
-        (
-            "ui/viewer/actions.rs",
-            include_str!("../ui/viewer/actions.rs"),
-            &["TRASH_TRACE viewer_delete_requested id="],
+            &["UI_LIST_REMOVE_BATCH"],
         ),
         (
             "ui/window/albums.rs",

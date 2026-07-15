@@ -7,6 +7,7 @@ use crate::core::error::{AppError, Result};
 use crate::core::events::ChangeSource;
 use crate::core::media_change_notifier::MediaChangeNotifier;
 use crate::core::prefs;
+use crate::core::telemetry::{log_error, OperationTrace, TraceChain};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -38,9 +39,12 @@ fn notify_interval(scanned: usize) -> Duration {
 /// 替代 app.rs 里直接调 spawn_scan + ignore 的写法。
 #[tracing::instrument(name = "scan:scan_and_aggregate", skip(pool, roots), fields(root_count = roots.len()))]
 pub async fn scan_and_aggregate(pool: &DbPool, roots: &[PathBuf]) -> Result<()> {
+    let trace = OperationTrace::start(TraceChain::Scan, "scan_and_aggregate");
     let pool = pool.clone();
     let roots = roots.to_vec();
     tokio::task::spawn_blocking(move || -> Result<()> {
+        let stage = trace.stage("scan_and_aggregate");
+        stage.record("item_count", roots.len());
         let backend = LocalBackend::new(pool.clone());
         let excluded_roots = prefs::excluded_scan_roots();
         for root in &roots {
@@ -70,10 +74,17 @@ pub async fn scan_and_aggregate_with_notifier(
     roots: &[PathBuf],
     notifier: MediaChangeNotifier,
 ) -> Result<()> {
+    let trace = OperationTrace::start(TraceChain::Scan, "scan_and_aggregate");
     let pool = pool.clone();
     let roots = roots.to_vec();
     tokio::task::spawn_blocking(move || {
-        scan_and_aggregate_with_notifier_blocking(pool, roots, notifier)
+        let stage = trace.stage("scan_with_notifier");
+        stage.record("item_count", roots.len());
+        let result = scan_and_aggregate_with_notifier_blocking(pool, roots, notifier);
+        if let Err(error) = &result {
+            log_error(&trace, "scan_with_notifier", error);
+        }
+        result
     })
     .await
     .map_err(|e| AppError::Backend(format!("scan_and_aggregate_with_notifier join error: {e}")))?
@@ -84,20 +95,43 @@ pub async fn scan_and_aggregate_with_actor(
     roots: &[PathBuf],
     db_actor: DbActorHandle,
 ) -> Result<()> {
+    scan_and_aggregate_with_actor_traced(
+        pool,
+        roots,
+        db_actor,
+        OperationTrace::start(TraceChain::Scan, "scan_and_aggregate"),
+    )
+    .await
+}
+
+/// Actor-backed startup scan that continues an existing operation trace.
+pub async fn scan_and_aggregate_with_actor_traced(
+    pool: &DbPool,
+    roots: &[PathBuf],
+    db_actor: DbActorHandle,
+    trace: OperationTrace,
+) -> Result<()> {
     let pool = pool.clone();
     let roots = roots.to_vec();
     tokio::task::spawn_blocking(move || {
-        scan_and_aggregate_with_actor_blocking(pool, roots, db_actor)
+        let stage = trace.stage("scan_with_actor");
+        stage.record("item_count", roots.len());
+        let result = scan_and_aggregate_with_actor_blocking(pool, roots, db_actor, trace.clone());
+        if let Err(error) = &result {
+            log_error(&trace, "scan_with_actor", error);
+        }
+        result
     })
     .await
     .map_err(|e| AppError::Backend(format!("scan_and_aggregate_with_actor join error: {e}")))?
 }
 
-#[tracing::instrument(name = "scan:actor_blocking", skip(pool, roots, db_actor), fields(root_count = roots.len()))]
+#[tracing::instrument(name = "scan:actor_blocking", skip(pool, roots, db_actor, trace), fields(root_count = roots.len()))]
 fn scan_and_aggregate_with_actor_blocking(
     pool: DbPool,
     roots: Vec<PathBuf>,
     db_actor: DbActorHandle,
+    trace: OperationTrace,
 ) -> Result<()> {
     let backend = LocalBackend::new(pool);
     let excluded_roots = prefs::excluded_scan_roots();
@@ -107,10 +141,14 @@ fn scan_and_aggregate_with_actor_blocking(
             &excluded_roots,
             {
                 let db_actor = db_actor.clone();
-                move |items| match db_actor.execute_blocking(DbCommand::UpsertMediaBatch {
-                    source: ChangeSource::StartupScan,
-                    items,
-                })? {
+                let trace = trace.clone();
+                move |items| match db_actor.execute_blocking_in_trace(
+                    trace.clone(),
+                    DbCommand::UpsertMediaBatch {
+                        source: ChangeSource::StartupScan,
+                        items,
+                    },
+                )? {
                     DbCommandResult::MediaItems(items) => Ok(items),
                     other => Err(AppError::Backend(format!(
                         "unexpected startup scan upsert result: {other:?}"
@@ -122,10 +160,13 @@ fn scan_and_aggregate_with_actor_blocking(
         tracing::info!("扫描完成 {}: {} 张新增/更新", root.display(), indexed);
     }
 
-    let removed = match db_actor.execute_blocking(DbCommand::PruneMissingLiveRows {
-        roots: roots.clone(),
-        excluded_roots,
-    })? {
+    let removed = match db_actor.execute_blocking_in_trace(
+        trace.clone(),
+        DbCommand::PruneMissingLiveRows {
+            roots: roots.clone(),
+            excluded_roots,
+        },
+    )? {
         DbCommandResult::RemovedUris(uris) => uris,
         other => {
             return Err(AppError::Backend(format!(
@@ -140,9 +181,12 @@ fn scan_and_aggregate_with_actor_blocking(
             removed.len()
         );
     }
-    db_actor.execute_blocking(DbCommand::RefreshAlbums {
-        source: ChangeSource::StartupScan,
-    })?;
+    db_actor.execute_blocking_in_trace(
+        trace,
+        DbCommand::RefreshAlbums {
+            source: ChangeSource::StartupScan,
+        },
+    )?;
     Ok(())
 }
 

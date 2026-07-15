@@ -108,7 +108,6 @@ async fn trash_commit_emits_precise_moved_event_after_mark_without_sync_album_re
     let prepared = actor
         .execute(DbCommand::MarkTrashed {
             ids: vec![MediaId::from(id)],
-            trace_id: None,
         })
         .await
         .unwrap();
@@ -120,7 +119,6 @@ async fn trash_commit_emits_precise_moved_event_after_mark_without_sync_album_re
     actor
         .execute(DbCommand::CommitMovedToTrash {
             items: items.clone(),
-            trace_id: None,
         })
         .await
         .unwrap();

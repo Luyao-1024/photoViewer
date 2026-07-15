@@ -35,12 +35,17 @@ impl ViewerPage {
                     return;
                 }
                 let Some(this) = weak2.upgrade() else { return };
+                let trace = crate::core::telemetry::OperationTrace::start(
+                    crate::core::telemetry::TraceChain::Mutation,
+                    "move_to_trash",
+                );
                 let db_actor = match this.imp().db_actor.borrow().as_ref() {
                     Some(actor) => actor.clone(),
                     None => {
-                        tracing::warn!(
-                            target: crate::core::log_targets::VIEWER,
-                            "TRASH_TRACE viewer_delete_no_actor"
+                        crate::core::telemetry::log_warning(
+                            &trace,
+                            "precondition",
+                            "DB actor is not initialized",
                         );
                         return;
                     }
@@ -51,26 +56,17 @@ impl ViewerPage {
                 };
 
                 let item_id = item.id;
-                tracing::debug!(
-                    target: crate::core::log_targets::VIEWER,
-                    "TRASH_TRACE viewer_delete_requested id={} uri={}",
-                    item.id,
-                    item.uri
-                );
-                let trash_trace = crate::ui::trash_fallback::TrashMoveTrace::begin("viewer", 1);
                 let weak_after = this.downgrade();
                 glib::spawn_future_local(async move {
                     let prepared = db_actor
-                        .execute(DbCommand::MarkTrashed {
-                            ids: vec![MediaId::from(item_id)],
-                            trace_id: Some(trash_trace.operation_id()),
-                        })
+                        .execute_in_trace(
+                            trace.clone(),
+                            DbCommand::MarkTrashed {
+                                ids: vec![MediaId::from(item_id)],
+                            },
+                        )
                         .await;
                     let Ok(crate::core::DbCommandResult::MediaItems(mut items)) = prepared else {
-                        tracing::warn!(
-                            target: crate::core::log_targets::VIEWER,
-                            "TRASH_TRACE viewer_mark_failed id={item_id}"
-                        );
                         if let Some(this) = weak_after.upgrade() {
                             toasts::error(
                                 &this.imp().toast_overlay.get(),
@@ -83,34 +79,49 @@ impl ViewerPage {
                         return;
                     };
                     let Some(this) = weak_after.upgrade() else {
-                        let _ = db_actor
-                            .execute(DbCommand::RollbackTrashed {
-                                ids: vec![MediaId::from(item_id)],
-                            })
-                            .await;
+                        if let Err(error) = db_actor
+                            .execute_in_trace(
+                                trace.clone(),
+                                DbCommand::RollbackTrashed {
+                                    ids: vec![MediaId::from(item_id)],
+                                },
+                            )
+                            .await
+                        {
+                            crate::core::telemetry::log_error(&trace, "db_rollback", error);
+                        }
                         return;
                     };
                     let Some(pool) = this.imp().pool.borrow().as_ref().cloned() else {
-                        let _ = db_actor
-                            .execute(DbCommand::RollbackTrashed {
-                                ids: vec![MediaId::from(item_id)],
-                            })
-                            .await;
+                        crate::core::telemetry::log_warning(
+                            &trace,
+                            "precondition",
+                            "database pool is not initialized",
+                        );
+                        if let Err(error) = db_actor
+                            .execute_in_trace(
+                                trace.clone(),
+                                DbCommand::RollbackTrashed {
+                                    ids: vec![MediaId::from(item_id)],
+                                },
+                            )
+                            .await
+                        {
+                            crate::core::telemetry::log_error(&trace, "db_rollback", error);
+                        }
                         toasts::error(
                             &this.imp().toast_overlay.get(),
                             &tr("viewer.toast.move_to_trash_failed"),
                         );
                         return;
                     };
-                    trash_trace.marked(1);
-
                     let weak_for_callback = this.downgrade();
                     crate::ui::trash_fallback::move_marked_items_with_fallback(
                         &this,
                         pool,
                         db_actor,
                         vec![item],
-                        trash_trace,
+                        trace,
                         move |moved_ids| {
                             if !moved_ids.iter().any(|id| id.get() == item_id) {
                                 return;

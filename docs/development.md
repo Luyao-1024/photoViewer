@@ -22,10 +22,22 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
 
 ```bash
 cargo build
-cargo run
+./run-flatpak.sh
 ```
 
-`cargo build` runs `build.rs`, which compiles `data/ui/*.blp` to `.ui` and bundles resources. `meson.build` is for install-time desktop integration; the normal inner loop is Cargo.
+`cargo build` runs `build.rs`, which compiles `data/ui/*.blp` to `.ui` and bundles resources. `meson.build` is for install-time desktop integration. Use `./run-flatpak.sh` as the canonical interactive startup entry point: it builds in the GNOME SDK but launches through the installed app sandbox, preserving the real thumbnail/cache/GIO behavior. `cargo run` remains useful for a narrow local debugger session, but it does not share the Flatpak cache or reproduce sandbox integration.
+
+The runner is also the single entry point for launch variants:
+
+```bash
+./run-flatpak.sh                 # debug build, normal app run
+./run-flatpak.sh -r              # production-like release run
+./run-flatpak.sh -T startup,scan # focused reusable performance trace
+./run-flatpak.sh -t              # legacy whole-process Perfetto trace
+./run-flatpak.sh -L storage=debug
+```
+
+`-T` accepts `startup`, `database`, `scan`, `filesystem`, `thumbnail`, `mutation`, or `all`, and may be repeated. See `docs/modules/diagnostics.md` for the capture contract and Perfetto analysis workflow.
 
 Before pushing or handing off changes, follow the CI policy in
 [`docs/testing.md`](testing.md): verify the CI-equivalent commands for the exact

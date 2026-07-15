@@ -32,27 +32,14 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             remove_uris_batch(list, uris);
         }
         DomainEvent::MediaMovedToTrash { items, .. } => {
-            let span = tracing::info_span!(
-                target: crate::core::log_targets::BROWSING,
-                "trash:apply_live_list_removal",
-                item_count = items.len(),
-                list_len_before = list.n_items(),
+            let trace = crate::core::telemetry::OperationTrace::start(
+                crate::core::telemetry::TraceChain::Mutation,
+                "apply_media_list_change",
             );
-            let _entered = span.enter();
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "TRASH_TRACE ui_apply_moved_to_trash_begin list_len={} count={} ids={:?}",
-                list.n_items(),
-                items.len(),
-                items.iter().map(|item| item.id).collect::<Vec<_>>()
-            );
+            let stage = trace.stage("remove_live_items");
+            stage.record("item_count", items.len());
             let uris: Vec<String> = items.iter().map(|item| item.uri.clone()).collect();
             remove_uris_batch(list, &uris);
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "TRASH_TRACE ui_apply_moved_to_trash_done list_len={}",
-                list.n_items()
-            );
         }
         DomainEvent::TrashChanged { .. }
         | DomainEvent::MediaRestored { .. }
@@ -111,7 +98,7 @@ fn remove_uris_batch(list: &gtk::gio::ListStore, uris: &[String]) {
     }
     tracing::debug!(
         target: crate::core::log_targets::BROWSING,
-        "TRASH_TRACE ui_remove_uris_batch removed={} before={} after={} requested={}",
+        "UI_LIST_REMOVE_BATCH removed={} before={} after={} requested={}",
         removed,
         before,
         list.n_items(),

@@ -753,61 +753,54 @@ impl SearchPage {
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
+        if ids.is_empty() {
+            return;
+        }
+        let trace = crate::core::telemetry::OperationTrace::start(
+            crate::core::telemetry::TraceChain::Mutation,
+            "move_to_trash",
+        );
         let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
-            tracing::warn!(
-                target: crate::core::log_targets::BROWSING,
-                "TRASH_TRACE search_delete_no_actor count={} ids={:?}",
-                ids.len(),
-                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            crate::core::telemetry::log_warning(
+                &trace,
+                "precondition",
+                "DB actor is not initialized",
             );
             return;
         };
         let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
-            tracing::warn!(
-                target: crate::core::log_targets::BROWSING,
-                "TRASH_TRACE search_delete_no_pool count={} ids={:?}",
-                ids.len(),
-                ids.iter().map(|id| id.get()).collect::<Vec<_>>()
+            crate::core::telemetry::log_warning(
+                &trace,
+                "precondition",
+                "database pool is not initialized",
             );
             return;
         };
-        if ids.is_empty() {
-            return;
-        }
-        let trash_trace = crate::ui::trash_fallback::TrashMoveTrace::begin("search", ids.len());
-        tracing::debug!(
-            target: crate::core::log_targets::BROWSING,
-            "TRASH_TRACE search_delete_requested count={} ids={:?}",
-            ids.len(),
-            ids.iter().map(|id| id.get()).collect::<Vec<_>>()
-        );
 
         let weak = self.downgrade();
         let ids_for_worker = ids.clone();
         glib::spawn_future_local(async move {
             let prepared = db_actor
-                .execute(DbCommand::MarkTrashed {
-                    ids: ids_for_worker,
-                    trace_id: Some(trash_trace.operation_id()),
-                })
+                .execute_in_trace(
+                    trace.clone(),
+                    DbCommand::MarkTrashed {
+                        ids: ids_for_worker,
+                    },
+                )
                 .await
+                .inspect_err(|error| crate::core::telemetry::log_error(&trace, "db_mark", error))
                 .ok();
 
             let Some(crate::core::DbCommandResult::MediaItems(items)) = prepared else {
-                tracing::warn!(
-                    target: crate::core::log_targets::BROWSING,
-                    "TRASH_TRACE search_mark_failed"
-                );
                 return;
             };
-            trash_trace.marked(items.len());
             if let Some(this) = weak.upgrade() {
                 crate::ui::trash_fallback::move_marked_items_with_fallback(
                     &this,
                     pool,
                     db_actor,
                     items,
-                    trash_trace,
+                    trace,
                     move |moved_ids| {
                         if let Some(this) = weak.upgrade() {
                             this.remove_media_ids_from_results(&moved_ids);

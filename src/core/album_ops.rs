@@ -141,12 +141,18 @@ pub fn delete_albums_to_trash_with_actor(
     db_actor: &DbActorHandle,
     albums_to_delete: &[albums::Album],
 ) -> Result<MediaMutation> {
+    let trace = crate::core::telemetry::OperationTrace::start(
+        crate::core::telemetry::TraceChain::Mutation,
+        "delete_album_to_trash",
+    );
     for album in albums_to_delete {
         if album.is_virtual {
-            return Err(AppError::Backend(format!(
+            let error = AppError::Backend(format!(
                 "cannot delete virtual album: {}",
                 album.display_name()
-            )));
+            ));
+            crate::core::telemetry::log_warning(&trace, "validate_album", &error);
+            return Err(error);
         }
     }
 
@@ -154,10 +160,12 @@ pub fn delete_albums_to_trash_with_actor(
     for album in albums_to_delete {
         let items = db::list_media_by_folder(pool, &album.folder_path)?;
         for item in items {
-            let prepared = db_actor.execute_blocking(DbCommand::MarkTrashed {
-                ids: vec![MediaId::from(item.id)],
-                trace_id: None,
-            })?;
+            let prepared = db_actor.execute_blocking_in_trace(
+                trace.clone(),
+                DbCommand::MarkTrashed {
+                    ids: vec![MediaId::from(item.id)],
+                },
+            )?;
             let DbCommandResult::MediaItems(mut marked) = prepared else {
                 return Err(AppError::Backend(
                     "album trash mark returned no media item".into(),
@@ -168,16 +176,24 @@ pub fn delete_albums_to_trash_with_actor(
             })?;
 
             if let Err(err) = crate::core::trash::move_to_configured_trash(&item.uri) {
-                let _ = db_actor.execute_blocking(DbCommand::RollbackTrashed {
-                    ids: vec![MediaId::from(item.id)],
-                });
+                crate::core::telemetry::log_error(&trace, "filesystem_move", &err);
+                if let Err(rollback_error) = db_actor.execute_blocking_in_trace(
+                    trace.clone(),
+                    DbCommand::RollbackTrashed {
+                        ids: vec![MediaId::from(item.id)],
+                    },
+                ) {
+                    crate::core::telemetry::log_error(&trace, "db_rollback", rollback_error);
+                }
                 return Err(err);
             }
 
-            db_actor.execute_blocking(DbCommand::CommitMovedToTrash {
-                items: vec![marked_item.clone()],
-                trace_id: None,
-            })?;
+            db_actor.execute_blocking_in_trace(
+                trace.clone(),
+                DbCommand::CommitMovedToTrash {
+                    items: vec![marked_item.clone()],
+                },
+            )?;
             combined.changed_ids.push(MediaId::from(item.id));
             combined.changed_items.push(marked_item);
             combined.removed_uris.push(item.uri);

@@ -6,6 +6,7 @@ use crate::core::events::DomainEvent;
 use crate::core::init_pool;
 use crate::core::media::MediaItem;
 use crate::core::runtime_config;
+use crate::core::telemetry::{log_error, log_warning, OperationTrace, TraceChain};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::apply_to_media_list::ui_media_list_cap;
 use crate::ui::{theme, MainWindow, PhotosPage};
@@ -38,6 +39,17 @@ fn install_tokio_runtime() -> &'static tokio::runtime::Runtime {
 }
 
 pub fn build_app() -> adw::Application {
+    build_app_with_startup_trace(OperationTrace::start(
+        TraceChain::Startup,
+        "application_start",
+    ))
+}
+
+/// Build the application while continuing the startup operation created by
+/// `main`. Keeping this separate preserves the lightweight `build_app()` test
+/// helper and lets the production entry point correlate pre-GTK and async
+/// initialization stages under one operation id.
+pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Application {
     // Build a multi-thread tokio runtime and enter its context for the
     // lifetime of the application. GTK's main loop is *not* a tokio
     // runtime, so `tokio::task::spawn_blocking` (used by the thumbnail
@@ -50,6 +62,7 @@ pub fn build_app() -> adw::Application {
     let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(move |app| {
+        let _activate_stage = startup_trace.stage("activate");
         theme::apply(crate::core::prefs::theme_preference());
 
         // Register the grid + glass CSS before the first widget is realized so
@@ -63,8 +76,9 @@ pub fn build_app() -> adw::Application {
 
         // 异步初始化 DB + 扫描
         let app_handle = app.clone();
+        let trace_for_initialize = startup_trace.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
-            match initialize().await {
+            match initialize(trace_for_initialize.clone()).await {
                 Ok((media_list, loader, pool, change_rx, db_actor, db_event_rx)) => {
                     let window: MainWindow = app_handle
                         .active_window()
@@ -152,7 +166,7 @@ pub fn build_app() -> adw::Application {
                     });
                 }
                 Err(e) => {
-                    tracing::error!("初始化失败: {}", e);
+                    log_error(&trace_for_initialize, "initialize", &e);
                 }
             }
         });
@@ -281,7 +295,9 @@ fn visible_album_detail_should_refresh(event: &DomainEvent) -> bool {
     )
 }
 
-async fn initialize() -> anyhow::Result<(
+async fn initialize(
+    trace: OperationTrace,
+) -> anyhow::Result<(
     gtk::gio::ListStore,
     Arc<ThumbnailLoader>,
     DbPool,
@@ -290,26 +306,44 @@ async fn initialize() -> anyhow::Result<(
     tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
 )> {
     let data_dir = crate::config::data_dir();
-    std::fs::create_dir_all(&data_dir)?;
-    if let Err(err) =
-        gtk::gio::spawn_blocking(crate::core::trash::ensure_startup_trash_backend).await
     {
-        tracing::warn!("startup trash backend probe worker failed: {err:?}");
+        let _stage = trace.stage("data_directory");
+        if let Err(error) = std::fs::create_dir_all(&data_dir) {
+            log_error(&trace, "data_directory", &error);
+            return Err(error.into());
+        }
+    }
+    let probe_trace = trace.clone();
+    if let Err(err) = gtk::gio::spawn_blocking(move || {
+        let _stage = probe_trace.stage("trash_backend_probe");
+        crate::core::trash::ensure_startup_trash_backend();
+    })
+    .await
+    {
+        log_warning(&trace, "trash_backend_probe", format!("{err:?}"));
     }
     let db_path = data_dir.join("photos.db");
     let initial_media_page_size = runtime_config::initial_media_page_size();
     let pictures = crate::config::pictures_dir();
-    let (pool, items, db_actor, db_event_rx) =
-        initialize_db_once_with_retry(db_path.clone(), initial_media_page_size, pictures.clone())
-            .await?;
+    let (pool, items, db_actor, db_event_rx) = initialize_db_once_with_retry(
+        db_path.clone(),
+        initial_media_page_size,
+        pictures.clone(),
+        trace.clone(),
+    )
+    .await?;
 
     // 缩略图加载器单例（M2-T1）
-    let thumbnail_loader = Arc::new(ThumbnailLoader::new(
-        pool.clone(),
-        crate::config::cache_dir(),
-    ));
-    thumbnail_loader.set_db_actor(db_actor.clone());
-    thumbnail_loader.spawn_workers(runtime_config::thumbnail_worker_count());
+    let thumbnail_loader = {
+        let _stage = trace.stage("thumbnail_workers_start");
+        let loader = Arc::new(ThumbnailLoader::new(
+            pool.clone(),
+            crate::config::cache_dir(),
+        ));
+        loader.set_db_actor(db_actor.clone());
+        loader.spawn_workers(runtime_config::thumbnail_worker_count());
+        loader
+    };
 
     let media_roots = crate::config::media_roots();
 
@@ -324,18 +358,25 @@ async fn initialize() -> anyhow::Result<(
     let excluded_scan_roots = crate::core::prefs::excluded_scan_roots();
     let mut watch_paths = media_roots.clone();
     watch_paths.extend(trash_roots.iter().filter(|r| r.exists()).cloned());
-    let _watcher = crate::core::notify_watcher::start_watching(
-        db_actor.clone(),
-        watch_paths,
-        trash_roots,
-        excluded_scan_roots,
-        pictures.clone(),
-    );
+    let _watcher = {
+        let _stage = trace.stage("watcher_start");
+        crate::core::notify_watcher::start_watching(
+            db_actor.clone(),
+            watch_paths,
+            trash_roots,
+            excluded_scan_roots,
+            pictures.clone(),
+        )
+    };
 
     // 首屏只加载一页，让窗口尽快可操作；之后由照片网格按全库滚动比例
     // 从 DB 换入当前窗口，避免启动时把超大图库全部灌进 GTK 模型。
     let list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    append_media_items(&list, items);
+    {
+        let stage = trace.stage("initial_page_apply");
+        stage.record("item_count", items.len());
+        append_media_items(&list, items);
+    }
     tracing::debug!(
         target: crate::core::log_targets::BROWSING,
         "STARTUP_INITIAL_PAGE list_len={} cap={} page_size={}",
@@ -369,16 +410,19 @@ async fn initialize_db_once_with_retry(
     path: PathBuf,
     page_size: u32,
     pictures: PathBuf,
+    trace: OperationTrace,
 ) -> anyhow::Result<(
     DbPool,
     Vec<MediaItem>,
     crate::core::db_actor::DbActorHandle,
     tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
 )> {
+    let first_trace = trace.clone();
     let first = match gtk::gio::spawn_blocking({
         let path = path.clone();
         let pictures = pictures.clone();
         move || -> CoreResult<_> {
+            let _stage = first_trace.stage("database_bootstrap");
             let pool = crate::core::init_pool(&path)?;
             let (sender, receiver) = crate::core::events::DomainEventSender::new();
             let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
@@ -402,15 +446,21 @@ async fn initialize_db_once_with_retry(
     if let Ok(data) = first {
         Ok(data)
     } else {
-        tracing::warn!(
-            "first DB init/query attempt failed at {}: {} ; retrying once after cleanup path",
-            path.display(),
-            first.as_ref().err().unwrap()
+        let error = first
+            .as_ref()
+            .err()
+            .expect("failed DB initialization has an error");
+        log_warning(
+            &trace,
+            "database_bootstrap_retry",
+            format!("{}: {error}; retrying once", path.display()),
         );
+        let second_trace = trace.clone();
         let second = match gtk::gio::spawn_blocking({
             let path = path.clone();
             let pictures = pictures.clone();
             move || -> CoreResult<_> {
+                let _stage = second_trace.stage("database_bootstrap_retry");
                 let pool = crate::core::init_pool(&path)?;
                 let (sender, receiver) = crate::core::events::DomainEventSender::new();
                 let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
@@ -430,7 +480,10 @@ async fn initialize_db_once_with_retry(
             Ok(r) => r,
             Err(e) => return Err(anyhow::anyhow!("spawn_blocking join error: {:?}", e)),
         };
-        second.map_err(anyhow::Error::from)
+        second.map_err(|error| {
+            log_error(&trace, "database_bootstrap_retry", &error);
+            anyhow::Error::from(error)
+        })
     }
 }
 
@@ -490,23 +543,30 @@ fn start_background_startup_work(
     loader: Arc<ThumbnailLoader>,
 ) {
     glib::MainContext::default().spawn_local(async move {
-        if let Err(e) = crate::core::bootstrap::scan_and_aggregate_with_actor(
+        let scan_trace = OperationTrace::start(TraceChain::Scan, "startup_scan");
+        if let Err(e) = crate::core::bootstrap::scan_and_aggregate_with_actor_traced(
             &pool,
             &media_roots,
             db_actor.clone(),
+            scan_trace.clone(),
         )
         .await
         {
-            tracing::error!("后台扫描失败: {}", e);
+            log_error(&scan_trace, "scan_and_aggregate", &e);
         }
 
+        let reconcile_trace =
+            OperationTrace::start(TraceChain::Filesystem, "startup_trash_reconcile");
         if let Err(e) = db_actor
-            .execute(crate::core::db_actor::DbCommand::ReconcileTrash {
-                pictures_root: pictures.clone(),
-            })
+            .execute_in_trace(
+                reconcile_trace.clone(),
+                crate::core::db_actor::DbCommand::ReconcileTrash {
+                    pictures_root: pictures.clone(),
+                },
+            )
             .await
         {
-            tracing::warn!("回收站对账失败: {e}");
+            log_warning(&reconcile_trace, "background_trash_reconcile", e);
         }
 
         // 扫描 + 回收站对账完毕后即可启动后台缩略图预热。剩余 DB 分页可能在

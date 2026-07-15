@@ -135,3 +135,16 @@ fn chrome_layer_serializes_span_fields() {
         "ChromeLayerBuilder must call .include_args(true) so span fields are serialized into the trace"
     );
 }
+
+#[test]
+fn chrome_layer_uses_flow_target_for_selective_chain_capture() {
+    let src = include_str!("../diagnostics.rs");
+    assert!(
+        src.contains("telemetry::selective_trace_requested()"),
+        "diagnostics must recognize a focused trace-chain selection"
+    );
+    assert!(
+        src.contains("metadata.target() == log_targets::FLOW"),
+        "focused capture must exclude unrelated process-wide spans"
+    );
+}

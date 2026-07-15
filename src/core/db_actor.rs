@@ -4,6 +4,7 @@ use crate::core::error::{AppError, Result};
 use crate::core::events::{ChangeSource, DomainEvent, DomainEventSender, MediaFields};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem};
+use crate::core::telemetry::{log_error, OperationTrace, TraceChain};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::path::PathBuf;
@@ -66,7 +67,6 @@ pub enum DbCommand {
     },
     MarkTrashed {
         ids: Vec<MediaId>,
-        trace_id: Option<u64>,
     },
     RestoreTrashed {
         ids: Vec<MediaId>,
@@ -76,7 +76,6 @@ pub enum DbCommand {
     },
     CommitMovedToTrash {
         items: Vec<MediaItem>,
-        trace_id: Option<u64>,
     },
     RollbackTrashed {
         ids: Vec<MediaId>,
@@ -150,6 +149,11 @@ struct DbEnvelope {
     command: DbCommand,
     reply: oneshot::Sender<Result<DbCommandResult>>,
     enqueued_at: Instant,
+    /// The caller's operation (for example a user mutation or scan).
+    trace: OperationTrace,
+    /// A database-only projection of a non-database caller trace. This keeps
+    /// `-T database` useful even when the caller selected another chain.
+    database_trace: Option<OperationTrace>,
 }
 
 struct QueuedEnvelope {
@@ -187,37 +191,124 @@ pub struct DbActorHandle {
 
 impl DbActorHandle {
     pub async fn execute(&self, command: DbCommand) -> Result<DbCommandResult> {
+        let trace = OperationTrace::start(TraceChain::Database, db_command_name(&command));
+        self.execute_with_traces(trace, None, command).await
+    }
+
+    /// Submit a command as one stage of an already-running operation trace.
+    ///
+    /// Use this for a cross-thread workflow such as edit, move, import, or
+    /// restore. Calls that do not have a parent flow should use [`Self::execute`]
+    /// and receive their own `database` operation automatically.
+    pub async fn execute_in_trace(
+        &self,
+        trace: OperationTrace,
+        command: DbCommand,
+    ) -> Result<DbCommandResult> {
+        let database_trace = (trace.chain() != TraceChain::Database)
+            .then(|| OperationTrace::start(TraceChain::Database, db_command_name(&command)));
+        self.execute_with_traces(trace, database_trace, command)
+            .await
+    }
+
+    async fn execute_with_traces(
+        &self,
+        trace: OperationTrace,
+        database_trace: Option<OperationTrace>,
+        command: DbCommand,
+    ) -> Result<DbCommandResult> {
         let (reply, rx) = oneshot::channel();
-        self.send_envelope(command, reply)
-            .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))?;
-        rx.await
-            .map_err(|err| AppError::Backend(format!("db actor dropped response: {err}")))?
+        if let Err(err) = self.send_envelope(command, reply, trace.clone(), database_trace.clone())
+        {
+            let error = AppError::Backend(format!("db actor stopped: {err}"));
+            log_error(&trace, "enqueue", &error);
+            if let Some(database_trace) = &database_trace {
+                log_error(database_trace, "enqueue", &error);
+            }
+            return Err(error);
+        }
+        match rx.await {
+            Ok(result) => result,
+            Err(err) => {
+                let error = AppError::Backend(format!("db actor dropped response: {err}"));
+                log_error(&trace, "response", &error);
+                if let Some(database_trace) = &database_trace {
+                    log_error(database_trace, "response", &error);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub fn execute_blocking(&self, command: DbCommand) -> Result<DbCommandResult> {
+        let trace = OperationTrace::start(TraceChain::Database, db_command_name(&command));
+        self.execute_blocking_with_traces(trace, None, command)
+    }
+
+    pub fn execute_blocking_in_trace(
+        &self,
+        trace: OperationTrace,
+        command: DbCommand,
+    ) -> Result<DbCommandResult> {
+        let database_trace = (trace.chain() != TraceChain::Database)
+            .then(|| OperationTrace::start(TraceChain::Database, db_command_name(&command)));
+        self.execute_blocking_with_traces(trace, database_trace, command)
+    }
+
+    fn execute_blocking_with_traces(
+        &self,
+        trace: OperationTrace,
+        database_trace: Option<OperationTrace>,
+        command: DbCommand,
+    ) -> Result<DbCommandResult> {
         let (reply, rx) = oneshot::channel();
-        self.send_envelope(command, reply)
-            .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))?;
-        rx.blocking_recv()
-            .map_err(|err| AppError::Backend(format!("db actor dropped response: {err}")))?
+        if let Err(err) = self.send_envelope(command, reply, trace.clone(), database_trace.clone())
+        {
+            let error = AppError::Backend(format!("db actor stopped: {err}"));
+            log_error(&trace, "enqueue", &error);
+            if let Some(database_trace) = &database_trace {
+                log_error(database_trace, "enqueue", &error);
+            }
+            return Err(error);
+        }
+        match rx.blocking_recv() {
+            Ok(result) => result,
+            Err(err) => {
+                let error = AppError::Backend(format!("db actor dropped response: {err}"));
+                log_error(&trace, "response", &error);
+                if let Some(database_trace) = &database_trace {
+                    log_error(database_trace, "response", &error);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub fn enqueue(&self, command: DbCommand) -> Result<()> {
         let (reply, _rx) = oneshot::channel();
-        self.send_envelope(command, reply)
-            .map_err(|err| AppError::Backend(format!("db actor stopped: {err}")))
+        let trace = OperationTrace::start(TraceChain::Database, db_command_name(&command));
+        if let Err(err) = self.send_envelope(command, reply, trace.clone(), None) {
+            let error = AppError::Backend(format!("db actor stopped: {err}"));
+            log_error(&trace, "enqueue", &error);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn send_envelope(
         &self,
         command: DbCommand,
         reply: oneshot::Sender<Result<DbCommandResult>>,
+        trace: OperationTrace,
+        database_trace: Option<OperationTrace>,
     ) -> std::result::Result<(), Box<mpsc::SendError<DbEnvelope>>> {
         self.tx
             .send(DbEnvelope {
                 command,
                 reply,
                 enqueued_at: Instant::now(),
+                trace,
+                database_trace,
             })
             .map_err(Box::new)
     }
@@ -228,7 +319,14 @@ pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle 
     std::thread::Builder::new()
         .name("photo-viewer-db-actor".into())
         .spawn(move || run_db_actor(pool, events, rx))
-        .expect("failed to spawn DB actor thread");
+        .unwrap_or_else(|error| {
+            tracing::error!(
+                target: crate::core::log_targets::STORAGE,
+                error = %error,
+                "database actor thread failed to start"
+            );
+            panic!("failed to spawn DB actor thread: {error}");
+        });
     DbActorHandle { tx }
 }
 
@@ -255,68 +353,41 @@ fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEn
         }
         let QueuedEnvelope { envelope, .. } = queue.pop().expect("queue is not empty");
         let command_name = db_command_name(&envelope.command);
-        let started = Instant::now();
-        let is_trash_command = is_trash_command(&envelope.command);
-        let trash_item_count = trash_command_item_count(&envelope.command);
-        let trash_trace_id = trash_command_trace_id(&envelope.command);
         let queue_wait_ms = envelope.enqueued_at.elapsed().as_millis() as u64;
-        let trash_span = is_trash_command.then(|| {
-            tracing::info_span!(
-                target: crate::core::log_targets::ALBUMS,
-                "trash:db_actor_command",
-                command = command_name,
-                item_count = trash_item_count,
-                queue_wait_ms,
-                operation_id = ?trash_trace_id,
-            )
-        });
-        let _trash_entered = trash_span.as_ref().map(tracing::Span::enter);
-        tracing::trace!(
-            target: crate::core::log_targets::STORAGE,
-            "DB_ACTOR_FLOW phase=begin command={}",
-            command_name
-        );
+        let item_count = db_command_item_count(&envelope.command);
+        let stage = envelope.trace.stage("db_actor_execute");
+        let database_stage = envelope
+            .database_trace
+            .as_ref()
+            .map(|trace| trace.stage("db_actor_execute"));
+        for stage in std::iter::once(&stage).chain(database_stage.iter()) {
+            stage.record("detail", command_name);
+            stage.record("item_count", item_count);
+            stage.record("queue_wait_ms", queue_wait_ms);
+        }
         let result = execute_command(&pool, &events, envelope.command);
-        tracing::trace!(
-            target: crate::core::log_targets::STORAGE,
-            "DB_ACTOR_FLOW phase=end command={} success={} elapsed_ms={}",
-            command_name,
-            result.is_ok(),
-            started.elapsed().as_millis()
-        );
+        if let Err(error) = &result {
+            log_error(&envelope.trace, "db_actor_execute", error);
+            if let Some(database_trace) = &envelope.database_trace {
+                log_error(database_trace, "db_actor_execute", error);
+            }
+        }
         let _ = envelope.reply.send(result);
     }
 }
 
-fn is_trash_command(command: &DbCommand) -> bool {
-    matches!(
-        command,
-        DbCommand::MarkTrashed { .. }
-            | DbCommand::RestoreTrashed { .. }
-            | DbCommand::DeleteTrashedRows { .. }
-            | DbCommand::CommitMovedToTrash { .. }
-            | DbCommand::RollbackTrashed { .. }
-            | DbCommand::ReconcileTrash { .. }
-    )
-}
-
-fn trash_command_item_count(command: &DbCommand) -> usize {
+fn db_command_item_count(command: &DbCommand) -> usize {
     match command {
-        DbCommand::MarkTrashed { ids, .. }
+        DbCommand::UpsertMediaBatch { items, .. } => items.len(),
+        DbCommand::SetFavorite { ids, .. }
+        | DbCommand::DeleteMediaRows { ids }
+        | DbCommand::MarkThumbnailsGenerated { ids }
+        | DbCommand::MarkTrashed { ids }
         | DbCommand::RestoreTrashed { ids }
         | DbCommand::DeleteTrashedRows { ids }
         | DbCommand::RollbackTrashed { ids } => ids.len(),
-        DbCommand::CommitMovedToTrash { items, .. } => items.len(),
-        DbCommand::ReconcileTrash { .. } => 0,
+        DbCommand::CommitMovedToTrash { items } => items.len(),
         _ => 0,
-    }
-}
-
-fn trash_command_trace_id(command: &DbCommand) -> Option<u64> {
-    match command {
-        DbCommand::MarkTrashed { trace_id, .. }
-        | DbCommand::CommitMovedToTrash { trace_id, .. } => *trace_id,
-        _ => None,
     }
 }
 
@@ -505,14 +576,7 @@ fn execute_command(
             db::mark_thumbnails_generated(pool, &ids)?;
             Ok(DbCommandResult::None)
         }
-        DbCommand::MarkTrashed { ids, trace_id } => {
-            let span = tracing::info_span!(
-                target: crate::core::log_targets::ALBUMS,
-                "trash:db_mark_rows",
-                item_count = ids.len(),
-                operation_id = ?trace_id,
-            );
-            let _entered = span.enter();
+        DbCommand::MarkTrashed { ids } => {
             let mut changed = Vec::new();
             for id in ids {
                 let item = db::get_media_item(pool, id.get())?;
@@ -529,7 +593,7 @@ fn execute_command(
             }
             Ok(DbCommandResult::MediaItems(changed))
         }
-        DbCommand::CommitMovedToTrash { items, .. } => {
+        DbCommand::CommitMovedToTrash { items } => {
             if !items.is_empty() {
                 events.send(DomainEvent::MediaMovedToTrash {
                     source: ChangeSource::UserInteractive,

@@ -7,6 +7,7 @@ use super::{
 use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::identity::MediaId;
+use crate::core::telemetry::{OperationTrace, TraceChain};
 use gtk4::gdk::Texture;
 use std::cmp::Reverse;
 use std::path::PathBuf;
@@ -25,6 +26,17 @@ pub(in crate::core::thumbnails) fn worker_loop(
     stats_dirty_callback: SharedStatsDirtyCallback,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
+        // This INFO-level wrapper is dormant unless the `thumbnail` chain (or
+        // legacy all-span Chrome trace) is selected. It remains available in
+        // release builds, unlike the high-volume debug-only decode spans.
+        let operation_trace = OperationTrace::start(TraceChain::Thumbnail, "generate_thumbnail");
+        let operation_stage = operation_trace.stage("worker_process");
+        operation_stage.record("detail", req.uri.as_str());
+        operation_stage.record("item_count", 1);
+        operation_stage.record(
+            "queue_wait_ms",
+            req.enqueued_at.elapsed().as_millis() as u64,
+        );
         // `thumb:process` spans the worker's per-item work (queue pickup →
         // result), with `queue_wait_ms` recorded as a field. It parents the
         // `thumb:generate` span created inside `generate`.
@@ -97,9 +109,12 @@ pub(in crate::core::thumbnails) fn worker_loop(
                                 tracing::debug_span!("thumb:mark_generated", media_id,).entered();
                             if let Some(actor) = db_actor.as_ref() {
                                 actor
-                                    .execute_blocking(DbCommand::MarkThumbnailsGenerated {
-                                        ids: vec![MediaId::from(media_id)],
-                                    })
+                                    .execute_blocking_in_trace(
+                                        operation_trace.clone(),
+                                        DbCommand::MarkThumbnailsGenerated {
+                                            ids: vec![MediaId::from(media_id)],
+                                        },
+                                    )
                                     .map(|_| ())
                             } else {
                                 crate::core::db::mark_thumbnails_generated(&pool, &[media_id])
@@ -107,6 +122,11 @@ pub(in crate::core::thumbnails) fn worker_loop(
                             }
                         };
                         if let Err(e) = result {
+                            crate::core::telemetry::log_warning(
+                                &operation_trace,
+                                "mark_generated",
+                                &e,
+                            );
                             warn!("更新缩略图状态失败: {}", e);
                         } else if let Ok(callback) = stats_dirty_callback.lock() {
                             debug!(
@@ -128,6 +148,7 @@ pub(in crate::core::thumbnails) fn worker_loop(
             }
             Err(e) => {
                 drop_in_flight(&state, &req.cache_key);
+                crate::core::telemetry::log_error(&operation_trace, "generate", &e);
                 warn!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB worker_failed uri={} size={:?} tier={} error={}",

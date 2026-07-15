@@ -19,7 +19,7 @@ All under `$XDG_CACHE_HOME/<app>/logs/`:
 
 - `app.log` — current session trace (every `tracing` event plus redirected GLib messages). **Truncated each launch.**
 - `crash-<unix_seconds>.log` — written by the panic hook (Rust panic) or the signal handler (native crash). Self-contained: a header + (panic: a `force_capture` backtrace) + the last 32 KiB of `app.log` as the lead-up.
-- `trace.json` — **only when `PHOTOVIEWER_CHROME_TRACE` is set.** A Chrome/Perfetto-format flow trace (see [Flow tracing](#flow-tracing-chromeperfetto)). Finalized on normal process exit; an unfinished/missing file means the process was killed/crashed mid-trace.
+- `trace.json` — **only when `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` is set.** A Chrome/Perfetto-format flow trace (see [Flow tracing](#flow-tracing-chromeperfetto)). Finalized on normal process exit; an unfinished/missing file means the process was killed/crashed mid-trace.
 - Retention: on every launch, only the **5 newest** `crash-*.log` are kept; older ones are deleted. `app.log` (and `trace.json`) are never pruned by retention.
 
 The launch log prints the resolved logs dir via `tracing::info!(target: "app", ...)`.
@@ -30,7 +30,7 @@ The launch log prints the resolved logs dir via `tracing::info!(target: "app", .
 2. **Panic hook** writes `crash-<ts>.log` with payload, location, thread, `Backtrace::force_capture()`, and the `app.log` tail, then prints a short summary + the path to stderr.
 3. **GLib log redirect** via `glib::log_set_writer_func`: GObject/GTK/GStreamer warnings and errors are re-emitted on tracing target `"glib"` (domain embedded in the message), while message/info/debug entries are downgraded to `debug` and high-frequency known render noise is dropped. `Handled` is returned so GLib's own stderr writer doesn't duplicate retained messages.
 4. **Native signal handler** for `SIGSEGV`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGBUS`, `SIGTRAP`, installed with `SA_SIGINFO | SA_ONSTACK` plus `sigaltstack` (so a stack-exhaustion `SIGSEGV` can still run the handler).
-5. **Optional Chrome trace layer** (off unless `PHOTOVIEWER_CHROME_TRACE` is set) — see [Flow tracing](#flow-tracing-chromeperfetto). Not a crash-diagnostic layer; it captures per-flow timing for performance work.
+5. **Optional Chrome trace layer** (off unless `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` is set) — see [Flow tracing](#flow-tracing-chromeperfetto). Not a crash-diagnostic layer; it captures per-flow timing for performance work.
 
 ### Async-signal-safety (Layer 4)
 
@@ -42,9 +42,45 @@ This is the **only** layer that can catch the native-crash class. A Rust panic h
 
 The four layers above always run. A separate **opt-in** layer captures per-flow wall-clock timing for performance work, replacing the ad-hoc `elapsed_ms` log lines that used to be sprinkled through the hot paths.
 
-**Enabling:** set `PHOTOVIEWER_CHROME_TRACE=1` (any non-falsey value: `0`/`false`/`off`/`no`/empty disable it). `init()` then attaches a `tracing_chrome::ChromeLayer` writing `<logs>/trace.json`; the `FlushGuard` is held in `main()` and finalizes the file on normal exit.
+### Reusable chain selection
+
+There are two capture modes:
+
+- `PHOTOVIEWER_CHROME_TRACE=1` (or `./run-flatpak.sh -t`) keeps the legacy **whole-process** capture: every INFO `tracing` span is written to `<logs>/trace.json`.
+- `PHOTOVIEWER_TRACE_CHAINS=<comma list>` (or `./run-flatpak.sh -T <types>`) is the preferred focused capture. It enables the trace layer automatically, but writes only the reusable `OperationTrace` stages for the selected types. Repeating `-T` combines types, for example `-T startup,database -T scan`.
+
+| Chain type | Covers | Typical command |
+|---|---|---|
+| `startup` | Resources, XDG dirs, DB bootstrap, watcher/worker startup, first page | `-T startup` |
+| `database` | Any DB actor command: enqueue → priority queue wait → execution | `-T database` |
+| `scan` | Startup/full scan and its actor-backed DB submissions | `-T scan` |
+| `filesystem` | Watcher event metadata extraction, incremental DB work, trash reconcile | `-T filesystem` |
+| `thumbnail` | Per-thumbnail worker request, generation, DB state mark | `-T thumbnail` |
+| `mutation` | User data-changing work: move-to-trash, album deletion, editor save | `-T mutation` |
+| `all` | Every chain above, but still excludes unrelated process-wide spans | `-T all` |
+
+`OperationTrace` is in `src/core/telemetry.rs`. It assigns a shared `operation_id` and exposes generic stage spans (`flow:stage`) with fields `chain`, `operation`, `stage`, `detail`, `item_count`, `bytes`, and `queue_wait_ms`. It can therefore cross GTK, worker, and DB-actor thread boundaries without a feature-specific `*_PERF` schema. A trace selector is intentionally strict: unknown values are ignored and reported in `app.log` along with the valid types.
+
+Stages are RAII guards: construct `let _stage = trace.stage("copy_files");` immediately before synchronous work and scope it to exactly the work being measured. Dropping the guard closes the Perfetto span, so there is no `complete`, success, or failure call to remember. Do not hold a stage guard across an `await`; create one inside the synchronous worker/callback section instead. Optional metadata such as item count is recorded on the guard:
+
+```rust
+let trace = OperationTrace::start(TraceChain::Mutation, "import_media");
+{
+    let stage = trace.stage("copy_files");
+    stage.record("item_count", sources.len());
+    if let Err(error) = copy_files(&sources, &destination) {
+        log_error(&trace, "copy_files", &error);
+        return Err(error);
+    }
+}
+// `stage` is dropped here and Perfetto receives the end timestamp.
+```
+
+Errors are independent from timing traces: use `telemetry::log_error` or `telemetry::log_warning` at a critical boundary. They always reach `app.log`, even when no chain is selected; the trace itself contains timing and neutral work metadata only.
 
 **Reading:** drop `trace.json` into <https://ui.perfetto.dev> (or `chrome://tracing`) for a timeline/flamechart view. The Chrome-trace JSON schema (`traceEvents` with `ts`/`dur`/`name`/`pid`/`tid`) is also directly parseable, so the same file serves both human inspection and AI analysis.
+
+### Existing span coverage
 
 **Instrumented flows** (`#[tracing::instrument]`; the Perfetto span `name` is shown):
 
@@ -60,7 +96,7 @@ The four layers above always run. A separate **opt-in** layer captures per-flow 
 | `sidebar:rebuild_album_rows`, `sidebar:apply_album_rows`, `sidebar:apply_album_snapshot` | `ui/window/sidebar.rs` sidebar album rows |
 | `album:select_row`, `album:open_idle`, `album:open` (+ `album:already_visible_check`/`pop`/`load`/`store`/`page_build`/`bind_page`/`push`), `album:backfill_schedule`, `album:backfill_fetch` | `ui/window/navigation.rs` owns sidebar album selection → idle handoff → album open/page-build phases, while `ui/window.rs` still owns the background backfill helper used by navigation |
 | `album_detail:new` (+ `empty_state`/`grid_build`/`splice`), `album_detail:refresh_virtual`, `album_detail:filter_items` | `ui/album_detail_page.rs` album-detail page build + virtual refresh |
-| `trash:db_actor_command`, `trash:db_mark_rows`, `trash:filesystem_batch` (+ `trash:filesystem_item`), `trash:apply_live_list_removal`, `albums:refresh` (+ `refresh_folder_rows`/`refresh_virtual_rows`) | Batch move-to-trash tracing. Every initiating UI path writes `TRASH_PERF` INFO events with a shared `operation_id`, covering request → mark → filesystem batch → DB commit → UI callback; use the ID to join the cross-thread spans. Album projection refreshes are coalesced background work after the commit. |
+| `flow:stage` (chain `mutation`) plus `albums:refresh` (+ `refresh_folder_rows`/`refresh_virtual_rows`) | Batch move-to-trash uses the shared operation trace: DB mark → filesystem batch/item → DB commit → UI callback carry one `operation_id`. Album projection refreshes remain coalesced background work after the commit. |
 
 **Coverage caveat:** a span captures wall-clock of the function body on the calling thread. Work that escapes the function — a `spawn_blocking` DB query or an async decode that resolves *after* the caller returns — gets its own dedicated span entered in the async completion (e.g. `grid:db_page` inside the page-query worker, `viewer:orig_decode` for the original-image decode, `album:backfill_fetch`). Read end-to-end latency as the sequence of spans on the timeline.
 
@@ -79,9 +115,9 @@ For **fast-scroll stalls on the Photos page** ("thumbnails freeze / stop loading
 
 Read end-to-end: if `thumb:process` spans keep completing but tiles do not paint, the main thread is saturated by long/dense `grid:reprioritize` / `grid:rebuild` spans (mechanism A). If `thumb:process` spans are sparse/long and `in_flight` stays high, workers are the bottleneck (mechanism B). If `visible_keys` drops to 0 after a rebuild or `enqueue_failed`/tile-drop warnings appear, requests were dropped or never re-issued (mechanism C).
 
-For **slow multi-select move-to-trash**, launch with `./run-flatpak.sh -r -t`, select a representative batch, move it to Trash, wait for the UI to settle, and close normally. In `app.log`, filter `TRASH_PERF`, then group the lines by `operation_id`; the `elapsed_ms` values identify DB marking, filesystem movement, commit, and UI callback time. In Perfetto, inspect `trash:filesystem_item` for slow individual files, `trash:db_actor_command.queue_wait_ms` for actor contention, and `albums:refresh_folder_rows` / `albums:refresh_virtual_rows` for the coalesced derived-album refresh. The operation ID is explicit because the filesystem worker, DB actor, and GTK main thread do not share one tracing span stack.
+For **slow multi-select move-to-trash**, launch with `./run-flatpak.sh -r -T mutation`, select a representative batch, move it to Trash, wait for the UI to settle, and close normally. In Perfetto, filter `chain=mutation` and group `flow:stage` spans by `operation_id`: `db_actor_execute` exposes `queue_wait_ms`, `filesystem_batch` / `filesystem_item` isolate slow files, and `ui_callback` covers the live-list change. Add `-T database` only when comparing this operation against unrelated actor contention. To investigate the coalesced album projection separately, use the legacy full capture (`-t`) and inspect `albums:refresh_folder_rows` / `albums:refresh_virtual_rows`.
 
-**Release gating:** `tracing` is built with `release_max_level_info`, so in release builds `#[instrument]` spans plus `info!`/`warn!`/`error!` events are compiled in (flow timing available on demand), while `debug!`/`trace!` events compile out (zero overhead, zero log noise). High-volume diagnostics such as per-thumbnail `thumb:process` / `thumb:generate` / `thumb:pb_*`, `grid:reprioritize`, `grid:thumb_request`, batch `ui:apply_*` spans, `SIDEBAR_TRACE`, `SIDEBAR_ALBUM_*`, `UI_CHANGE_APPLY`, `TRASH_TRACE` request/apply summaries, `PHOTO_REFRESH_TRACE`, and startup scan interval progress are intentionally debug-level and absent from normal release `app.log`. The Chrome layer itself attaches only when the env var is set, so a normal release run pays nothing extra. To capture `debug!`-level detail in a trace, rebuild with `release_max_level_debug` (or trace in a debug build) and raise `RUST_LOG`, e.g. `RUST_LOG=photo_viewer=trace`.
+**Release gating:** `tracing` is built with `release_max_level_info`, so in release builds `#[instrument]` spans plus `info!`/`warn!`/`error!` events are compiled in, while `debug!`/`trace!` events compile out. The focused `OperationTrace` stages are INFO-level and only emitted when a trace mode is selected; normal runs do not attach a Chrome layer. High-volume diagnostics such as per-thumbnail `thumb:process` / `thumb:generate` / `thumb:pb_*`, `grid:reprioritize`, `grid:thumb_request`, batch `ui:apply_*` spans, `SIDEBAR_TRACE`, `SIDEBAR_ALBUM_*`, `UI_CHANGE_APPLY`, `PHOTO_REFRESH_TRACE`, and startup scan interval progress remain debug-level and absent from normal release `app.log`. To capture that extra detail, use a debug build or rebuild release with `release_max_level_debug`, then raise `RUST_LOG`, e.g. `RUST_LOG=photo_viewer=trace`.
 
 **Complementary sampling profilers** (for CPU hotspots you did not instrument): `samply record ./target/release/photo-viewer` → <https://profiler.firefox.com>; or GNOME's `sysprof` for GSK/GLib-aware capture including render frames.
 
@@ -89,13 +125,15 @@ For **slow multi-select move-to-trash**, launch with `./run-flatpak.sh -r -t`, s
 
 The fast-scroll investigation followed a repeatable **capture → aggregate → diagnose → fix → re-capture** loop. Use it for any scroll/render perf regression.
 
-**1. Capture.** Always through the Flatpak runner — `cargo run` uses a separate cold thumbnail cache and will not reproduce real timing:
+**1. Capture.** Always through the Flatpak runner — `cargo run` uses a separate cold thumbnail cache and will not reproduce real timing. Start with the narrowest reusable chain, then use the legacy whole-process capture only when the interaction between existing spans is needed:
 
 ```bash
-./run-flatpak.sh -r -t
+./run-flatpak.sh -r -T mutation       # focused user mutation
+./run-flatpak.sh -r -T startup,scan   # startup diagnosis
+./run-flatpak.sh -r -t                # legacy all-span capture
 ```
 
-`-r` release build (the production config; `release_max_level_info` keeps INFO spans but compiles debug diagnostics out), and `-t` sets `PHOTOVIEWER_CHROME_TRACE=1` (the script places it as a Flatpak option before the appid, where it must be). Add `-a` only when the details you need are compiled into the build; it raises `RUST_LOG=trace` so custom-target (`browsing`/`thumbnails`/...) debug events and span *fields* can be captured. For the high-volume debug-only diagnostics (`grid:reprioritize`, `grid:thumb_request`, `SIDEBAR_TRACE`), use a debug build such as `./run-flatpak.sh -t -a`, or rebuild release with `release_max_level_debug`. Reproduce the gesture, then **close the app normally** (window close / app quit). Killing it (`kill`/`pkill`/SIGTERM) drops the trace mid-write.
+`-r` is the production config; `release_max_level_info` keeps focused INFO operation stages but compiles debug diagnostics out. `-T` sets `PHOTOVIEWER_TRACE_CHAINS` and the runner places the env option before the appid. Add `-a` only when the details you need are compiled into the build; it raises `RUST_LOG=trace` so custom-target (`browsing`/`thumbnails`/...) debug events and span *fields* can be captured. For high-volume debug-only diagnostics (`grid:reprioritize`, `grid:thumb_request`, `SIDEBAR_TRACE`), use a debug build such as `./run-flatpak.sh -t -a`, or rebuild release with `release_max_level_debug`. Reproduce the gesture, then **close the app normally** (window close / app quit). Killing it (`kill`/`pkill`/SIGTERM) drops the trace mid-write.
 
 The trace lands at `<cache-dir>/logs/trace.json` (`~/.var/app/io.github.luyao_1024.photoviewer/cache/io.github.luyao_1024.photoviewer/logs/trace.json` under Flatpak). It is a JSON array; a process killed mid-write is missing its closing `]` — repair by keeping the complete `{...}` lines and appending `]`. `app.log` (same dir) carries the `WARN`/`ERROR`/`[Gtk]` lines that often explain *why* a span produced a bad result (e.g. the `gtk_flow_box_child_set_child` assertion explained the "stuck tiles" case — spans showed rebuilds, the log showed the tiles came out blank).
 

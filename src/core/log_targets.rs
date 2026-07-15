@@ -44,3 +44,10 @@ pub const ALBUMS: &str = "albums";
 
 /// 应用初始化与启动生命周期
 pub const APP: &str = "app";
+
+/// 可选性能链路追踪。
+///
+/// 这个 target 只由 `core::telemetry::OperationTrace` 使用。设置
+/// `PHOTOVIEWER_TRACE_CHAINS` 时，Chrome/Perfetto 层只保留这个 target，
+/// 从而能在不采集整进程噪声的情况下查看一个或多个独立链路。
+pub const FLOW: &str = "photo_viewer::flow";

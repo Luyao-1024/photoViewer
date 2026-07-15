@@ -68,6 +68,20 @@ startup scan work, derived album refreshes, and thumbnail bookkeeping. Commands
 with the same priority are FIFO. A running SQL transaction is not interrupted;
 priority is applied at the next queue selection.
 
+Every actor envelope also carries the reusable `OperationTrace` context. A
+plain `execute` / `execute_blocking` creates a `database` chain automatically;
+a higher-level cross-thread operation can use `execute_in_trace` /
+`execute_blocking_in_trace` to retain its original `operation_id`. The actor
+records command name, item count, and priority-queue wait; its RAII stage closes
+automatically when execution returns. It separately logs any command, enqueue,
+or response failure at the boundary. It also emits
+the independent `database` projection of a higher-level operation, so `-T
+database` sees **every** actor command even when the caller is `scan`,
+`thumbnail`, or `mutation` (selecting both views intentionally shows the same
+actor time in both operation contexts). This keeps DB contention diagnosis
+generic across scanning, watcher work, thumbnails, edits, and user mutations;
+see `diagnostics.md` for selective `-T database` capture.
+
 Filesystem work may happen outside the actor, but its database commit must be a
 `DbCommand` (for example `UpdateMediaLocation`, `CommitMovedToTrash`, or
 `RestoreTrashed`). The actor emits `DomainEvent` values; UI pages should

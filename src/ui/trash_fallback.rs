@@ -1,6 +1,4 @@
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -14,6 +12,7 @@ use crate::core::i18n::{tr, trf};
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::prefs::{self, TrashBackend};
+use crate::core::telemetry::OperationTrace;
 use crate::core::trash;
 
 #[derive(Debug)]
@@ -22,60 +21,12 @@ struct MoveBatch {
     failed: Vec<MediaItem>,
 }
 
-/// Correlates every phase of one user-initiated move-to-trash operation.
-///
-/// The filesystem worker and DB actor run on different threads, so a tracing
-/// span alone cannot carry this context across the whole operation. Keep this
-/// small explicit ID on every performance event instead.
-#[derive(Debug, Clone, Copy)]
-pub struct TrashMoveTrace {
-    operation_id: u64,
-    requested_at: Instant,
-}
-
-static NEXT_TRASH_OPERATION_ID: AtomicU64 = AtomicU64::new(1);
-
-impl TrashMoveTrace {
-    pub fn begin(source: &'static str, requested_count: usize) -> Self {
-        let trace = Self {
-            operation_id: NEXT_TRASH_OPERATION_ID.fetch_add(1, Ordering::Relaxed),
-            requested_at: Instant::now(),
-        };
-        tracing::info!(
-            target: crate::core::log_targets::ALBUMS,
-            operation_id = trace.operation_id,
-            source,
-            requested_count,
-            "TRASH_PERF phase=requested"
-        );
-        trace
-    }
-
-    pub fn marked(&self, marked_count: usize) {
-        tracing::info!(
-            target: crate::core::log_targets::ALBUMS,
-            operation_id = self.operation_id,
-            marked_count,
-            elapsed_ms = self.requested_at.elapsed().as_millis() as u64,
-            "TRASH_PERF phase=db_marked"
-        );
-    }
-
-    pub fn operation_id(self) -> u64 {
-        self.operation_id
-    }
-
-    fn elapsed_ms(self) -> u64 {
-        self.requested_at.elapsed().as_millis() as u64
-    }
-}
-
 pub fn move_marked_items_with_fallback<W, F>(
     parent: &W,
     pool: DbPool,
     db_actor: DbActorHandle,
     items: Vec<MediaItem>,
-    trace: TrashMoveTrace,
+    trace: OperationTrace,
     on_moved: F,
 ) where
     W: IsA<gtk::Widget> + Clone + 'static,
@@ -90,72 +41,51 @@ pub fn move_marked_items_with_fallback<W, F>(
     glib::spawn_future_local(async move {
         let backend = prefs::trash_backend();
         let items_for_worker = items.clone();
-        let filesystem_wait_started = Instant::now();
-        let operation_id = trace.operation_id();
+        let trace_for_worker = trace.clone();
         let move_result = gtk::gio::spawn_blocking(move || {
-            let span = tracing::info_span!(
-                target: crate::core::log_targets::ALBUMS,
-                "trash:filesystem_batch",
-                operation_id,
-                backend = ?backend,
-                item_count = items_for_worker.len(),
-            );
-            let _entered = span.enter();
-            move_items_to_backend(items_for_worker, backend, operation_id)
+            let stage = trace_for_worker.stage("filesystem_batch");
+            stage.record("detail", format!("{backend:?}"));
+            stage.record("item_count", items_for_worker.len());
+            move_items_to_backend(items_for_worker, backend, &trace_for_worker)
         })
         .await;
 
         let Ok(batch) = move_result else {
-            tracing::warn!(
-                target: crate::core::log_targets::ALBUMS,
-                operation_id,
-                elapsed_ms = filesystem_wait_started.elapsed().as_millis() as u64,
-                "TRASH_PERF phase=filesystem_worker_failed"
+            crate::core::telemetry::log_error(
+                &trace,
+                "filesystem_worker",
+                "blocking filesystem worker failed",
             );
-            rollback_items(&db_actor, &items).await;
+            rollback_items(&db_actor, &items, &trace).await;
             show_error_dialog(&parent, &tr("trash.move_failed"));
             return;
         };
 
-        tracing::info!(
-            target: crate::core::log_targets::ALBUMS,
-            operation_id,
-            backend = ?backend,
-            moved_count = batch.moved.len(),
-            failed_count = batch.failed.len(),
-            elapsed_ms = filesystem_wait_started.elapsed().as_millis() as u64,
-            total_elapsed_ms = trace.elapsed_ms(),
-            "TRASH_PERF phase=filesystem_complete"
-        );
-
-        commit_moved(&db_actor, batch.moved.clone(), trace).await;
+        commit_moved(&db_actor, batch.moved.clone(), trace.clone()).await;
         let moved_ids = ids_for_items(&batch.moved);
         if !moved_ids.is_empty() {
-            let callback_started = Instant::now();
+            let callback_stage = trace.stage("ui_callback");
+            callback_stage.record("item_count", moved_ids.len());
             on_moved(moved_ids);
-            tracing::info!(
-                target: crate::core::log_targets::ALBUMS,
-                operation_id,
-                elapsed_ms = callback_started.elapsed().as_millis() as u64,
-                total_elapsed_ms = trace.elapsed_ms(),
-                "TRASH_PERF phase=ui_callback_complete"
-            );
         }
 
         if batch.failed.is_empty() {
-            tracing::info!(
-                target: crate::core::log_targets::ALBUMS,
-                operation_id,
-                total_elapsed_ms = trace.elapsed_ms(),
-                "TRASH_PERF phase=complete"
-            );
             return;
         }
 
+        crate::core::telemetry::log_warning(
+            &trace,
+            "filesystem_partial_failure",
+            format!(
+                "{} of {} items could not be moved",
+                batch.failed.len(),
+                items.len()
+            ),
+        );
         if backend == TrashBackend::System {
             prompt_switch_to_app_trash(parent, pool, db_actor, batch.failed, trace, on_moved);
         } else {
-            rollback_items(&db_actor, &batch.failed).await;
+            rollback_items(&db_actor, &batch.failed, &trace).await;
             show_error_dialog(&parent, &tr("trash.move_failed"));
         }
     });
@@ -164,31 +94,22 @@ pub fn move_marked_items_with_fallback<W, F>(
 fn move_items_to_backend(
     items: Vec<MediaItem>,
     backend: TrashBackend,
-    operation_id: u64,
+    trace: &OperationTrace,
 ) -> MoveBatch {
     let mut moved = Vec::new();
     let mut failed = Vec::new();
     for item in items {
-        let span = tracing::info_span!(
-            target: crate::core::log_targets::ALBUMS,
-            "trash:filesystem_item",
-            operation_id,
-            media_id = item.id,
-            bytes = item.file_size,
-            backend = ?backend,
-            outcome = tracing::field::Empty,
-        );
-        let _entered = span.enter();
+        let stage = trace.stage("filesystem_item");
+        stage.record("detail", item.id);
+        stage.record("item_count", 1);
+        stage.record("bytes", item.file_size);
         match trash::move_to_backend(&item.uri, backend) {
-            Ok(()) => {
-                span.record("outcome", "moved");
-                moved.push(item);
-            }
+            Ok(()) => moved.push(item),
             Err(err) => {
-                span.record("outcome", "failed");
-                tracing::warn!(
-                    "failed to move {} to {backend:?} trash backend: {err}",
-                    item.uri,
+                crate::core::telemetry::log_warning(
+                    trace,
+                    "filesystem_item",
+                    format!("{}: {err}", item.uri),
                 );
                 failed.push(item);
             }
@@ -202,7 +123,7 @@ fn prompt_switch_to_app_trash(
     pool: DbPool,
     db_actor: DbActorHandle,
     failed: Vec<MediaItem>,
-    trace: TrashMoveTrace,
+    trace: OperationTrace,
     on_moved: Rc<dyn Fn(Vec<MediaId>)>,
 ) {
     let count = failed.len().to_string();
@@ -224,12 +145,12 @@ fn prompt_switch_to_app_trash(
         let db_actor = db_actor.clone();
         let parent = parent_for_response.clone();
         let failed = failed.clone();
-        let trace = trace;
+        let trace = trace.clone();
         let on_moved = on_moved.clone();
 
         glib::spawn_future_local(async move {
             if response != "switch" {
-                rollback_items(&db_actor, &failed).await;
+                rollback_items(&db_actor, &failed, &trace).await;
                 return;
             }
 
@@ -241,14 +162,15 @@ fn prompt_switch_to_app_trash(
 
             match result {
                 Ok(Ok(moved)) => {
-                    commit_moved(&db_actor, moved.clone(), trace).await;
+                    commit_moved(&db_actor, moved.clone(), trace.clone()).await;
                     let moved_ids = ids_for_items(&moved);
                     if !moved_ids.is_empty() {
                         on_moved(moved_ids);
                     }
                 }
                 Ok(Err(err)) => {
-                    rollback_items(&db_actor, &failed).await;
+                    crate::core::telemetry::log_error(&trace, "fallback_filesystem", &err);
+                    rollback_items(&db_actor, &failed, &trace).await;
                     show_error_dialog(
                         &parent,
                         &trf(
@@ -258,7 +180,12 @@ fn prompt_switch_to_app_trash(
                     );
                 }
                 Err(err) => {
-                    rollback_items(&db_actor, &failed).await;
+                    crate::core::telemetry::log_error(
+                        &trace,
+                        "fallback_worker",
+                        format!("{err:?}"),
+                    );
+                    rollback_items(&db_actor, &failed, &trace).await;
                     show_error_dialog(
                         &parent,
                         &trf(
@@ -310,30 +237,26 @@ fn switch_to_app_trash_and_move_failed(
     Ok(moved)
 }
 
-async fn commit_moved(db_actor: &DbActorHandle, items: Vec<MediaItem>, trace: TrashMoveTrace) {
+async fn commit_moved(db_actor: &DbActorHandle, items: Vec<MediaItem>, trace: OperationTrace) {
     if !items.is_empty() {
-        let started = Instant::now();
         let result = db_actor
-            .execute(DbCommand::CommitMovedToTrash {
-                items,
-                trace_id: Some(trace.operation_id()),
-            })
+            .execute_in_trace(trace.clone(), DbCommand::CommitMovedToTrash { items })
             .await;
-        tracing::info!(
-            target: crate::core::log_targets::ALBUMS,
-            operation_id = trace.operation_id(),
-            success = result.is_ok(),
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            total_elapsed_ms = trace.elapsed_ms(),
-            "TRASH_PERF phase=db_commit_complete"
-        );
+        if let Err(error) = result {
+            crate::core::telemetry::log_error(&trace, "db_commit", error);
+        }
     }
 }
 
-async fn rollback_items(db_actor: &DbActorHandle, items: &[MediaItem]) {
+async fn rollback_items(db_actor: &DbActorHandle, items: &[MediaItem], trace: &OperationTrace) {
     let ids = ids_for_items(items);
     if !ids.is_empty() {
-        let _ = db_actor.execute(DbCommand::RollbackTrashed { ids }).await;
+        if let Err(error) = db_actor
+            .execute_in_trace(trace.clone(), DbCommand::RollbackTrashed { ids })
+            .await
+        {
+            crate::core::telemetry::log_error(trace, "db_rollback", error);
+        }
     }
 }
 
