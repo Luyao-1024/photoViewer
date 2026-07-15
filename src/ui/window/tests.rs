@@ -80,6 +80,32 @@ fn main_window_installs_single_keyboard_router() {
 }
 
 #[gtk::test]
+fn changing_day_grid_columns_while_settings_is_open_defers_window_resize() {
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.DeferredGridColumns")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let window = MainWindow::new(&app);
+    let host = window.clone().upcast::<gtk::Widget>();
+    let dialog = window.build_settings_dialog(&host);
+    window.imp().settings_dialog.borrow_mut().replace(dialog);
+
+    window.set_photos_grid_columns(runtime_config::MAX_PHOTOS_GRID_COLUMNS);
+
+    assert_eq!(
+        window.imp().deferred_day_grid_columns.get(),
+        Some(runtime_config::MAX_PHOTOS_GRID_COLUMNS),
+        "the resize request must wait until Settings has closed"
+    );
+    assert!(
+        window.imp().day_grid_apply_source.borrow().is_none(),
+        "the Day grid must not reflow while its centered Settings dialog is visible"
+    );
+}
+
+#[gtk::test]
 fn navigation_view_has_no_touch_swipe_controller() {
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.NoSwipeRouter")

@@ -190,6 +190,26 @@ fn invalid_or_tiny_runtime_values_are_clamped() {
 }
 
 #[test]
+fn photos_grid_columns_are_clamped_to_the_settings_slider_range() {
+    let path = tmp_path("photos-grid-columns-range");
+    cleanup(&path);
+
+    std::fs::write(&path, r#"{"photos_grid_columns": 1}"#).unwrap();
+    assert_eq!(
+        read_runtime_config_at(&path).photos_grid_columns,
+        MIN_PHOTOS_GRID_COLUMNS
+    );
+
+    std::fs::write(&path, r#"{"photos_grid_columns": 9}"#).unwrap();
+    assert_eq!(
+        read_runtime_config_at(&path).photos_grid_columns,
+        MAX_PHOTOS_GRID_COLUMNS
+    );
+
+    cleanup(&path);
+}
+
+#[test]
 fn startup_bool_and_progressive_render_plan_behaviour() {
     let path = tmp_path("startup-bool");
     cleanup(&path);

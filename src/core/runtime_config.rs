@@ -50,8 +50,8 @@ pub const DEFAULT_GRID_RENDER_ABSOLUTE_CAP: usize = 1_200;
 pub const DEFAULT_GRID_RENDER_EXPAND_STEP: usize = 200;
 pub const DEFAULT_GRID_REPRIORITIZE_DEBOUNCE_MS: u64 = 120;
 pub const DEFAULT_PHOTOS_GRID_COLUMNS: usize = 4;
-pub const MIN_PHOTOS_GRID_COLUMNS: usize = 1;
-pub const MAX_PHOTOS_GRID_COLUMNS: usize = 12;
+pub const MIN_PHOTOS_GRID_COLUMNS: usize = 3;
+pub const MAX_PHOTOS_GRID_COLUMNS: usize = 8;
 pub const DEFAULT_THUMBNAIL_QUEUE_CAPACITY: usize = 8192;
 /// Sized for the **grid scroll working set** (Day/Month Medium tiles), not just
 /// viewer swipe-back. A traced warm-cache scroll showed ~84% of worker time was

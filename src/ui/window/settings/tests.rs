@@ -104,6 +104,48 @@ fn settings_page_exposes_liquid_glass_transparency_slider() {
 }
 
 #[gtk::test]
+fn settings_page_exposes_day_grid_columns_slider_with_three_to_eight_range() {
+    let _ = gtk::init();
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.WindowGridColumns")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let window = MainWindow::new(&app);
+    let host = window.clone().upcast::<gtk::Widget>();
+    let page = window.build_settings_page(&host);
+    let page = page.upcast::<gtk::Widget>();
+
+    let mut labels = Vec::new();
+    collect_labels(&page, &mut labels);
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == &tr("setting.photos_grid_columns")),
+        "settings page should expose the Day grid column preference, got {labels:?}"
+    );
+    for mark in ["3", "4", "5", "6", "7", "8"] {
+        assert!(
+            labels.iter().any(|label| label == mark),
+            "Day grid column scale should expose mark {mark}, got {labels:?}"
+        );
+    }
+
+    let mut scales = Vec::new();
+    collect_scales(&page, &mut scales);
+    assert!(
+        scales.iter().any(|scale| {
+            let adjustment = scale.adjustment();
+            adjustment.lower() == 3.0
+                && adjustment.upper() == 8.0
+                && adjustment.step_increment() == 1.0
+        }),
+        "settings page should expose a 3-8 Day grid column scale"
+    );
+}
+
+#[gtk::test]
 fn settings_page_exposes_theme_selector() {
     let _ = gtk::init();
     let app = adw::Application::builder()

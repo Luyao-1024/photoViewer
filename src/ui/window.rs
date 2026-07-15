@@ -286,6 +286,10 @@ mod imp {
         /// window has had one layout turn to negotiate its new width.
         pub pending_day_grid_columns: Cell<usize>,
         pub day_grid_apply_source: RefCell<Option<glib::SourceId>>,
+        /// The most recent Day column preference selected while Settings is
+        /// open. Applying it after the dialog closes prevents the centered
+        /// dialog from being repositioned by its parent window's resize.
+        pub deferred_day_grid_columns: Cell<Option<usize>>,
         pub settings_dialog: RefCell<Option<adw::Dialog>>,
         #[template_child]
         pub root_overlay: TemplateChild<gtk::Overlay>,
@@ -613,6 +617,10 @@ impl MainWindow {
     }
 
     pub fn set_photos_grid_columns(&self, columns: usize) {
+        let columns = columns.clamp(
+            runtime_config::MIN_PHOTOS_GRID_COLUMNS,
+            runtime_config::MAX_PHOTOS_GRID_COLUMNS,
+        );
         tracing::trace!(
             target: "ui::grid_settings",
             columns,
@@ -620,6 +628,15 @@ impl MainWindow {
             window_height = self.height(),
             "main_window_apply_day_grid_columns_start"
         );
+        if self.imp().settings_dialog.borrow().is_some() {
+            self.imp().deferred_day_grid_columns.set(Some(columns));
+            tracing::trace!(
+                target: "ui::grid_settings",
+                columns,
+                "main_window_defer_day_grid_columns_until_settings_closed"
+            );
+            return;
+        }
         if self
             .browsing_stack()
             .child_by_name("photos")
@@ -825,6 +842,7 @@ impl MainWindow {
         dialog.connect_closed(move |dialog| {
             if let Some(window) = weak.upgrade() {
                 window.close_settings_dialog_state(dialog);
+                window.apply_deferred_day_grid_columns();
             }
         });
         dialog.present(self);
@@ -847,6 +865,15 @@ impl MainWindow {
             .is_some_and(|current| current == dialog);
         if should_take {
             self.imp().settings_dialog.borrow_mut().take();
+        }
+    }
+
+    fn apply_deferred_day_grid_columns(&self) {
+        if self.imp().settings_dialog.borrow().is_some() {
+            return;
+        }
+        if let Some(columns) = self.imp().deferred_day_grid_columns.take() {
+            self.set_photos_grid_columns(columns);
         }
     }
 }

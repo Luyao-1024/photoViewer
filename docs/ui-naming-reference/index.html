@@ -273,6 +273,7 @@
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch"></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；影响背景 alpha、边框/阴影 floor、blur/saturate/brightness 强度。"><span>透明度</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
         </div>
       </div>

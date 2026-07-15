@@ -90,17 +90,20 @@ intentionally reflows the three mode grids once. Updates never run
 re-entrantly during GTK allocation. Hidden modes stay inactive and do not seed
 or query ranges until selected.
 
-The Day-view column count is a persisted Settings preference. Window resizing
-never changes the Day column count. Day thumbnails keep the preferred 270 px
-side; changing the preference raises the GridView/content minimum width and
-requests a main-window width that fits the new number of columns, so the
-setting does not silently shrink thumbnails. The same width request must be
-applied before the main window is first presented, using the persisted
-preference; waiting for a Settings interaction leaves the initial grid narrower
-than its configured cells and produces GTK measurement warnings. Year and Month retain their
-smaller-tile adaptive column count and may reflow when their natural width
-thresholds are crossed. Changing the Day preference intentionally reflows the
-Day grid once.
+The Day-view column count is a persisted Settings preference, presented as a
+one-column-step slider from 3 to 8. Window resizing never changes the Day
+column count. Day thumbnails keep the preferred 270 px side; changing the
+preference raises the GridView/content minimum width and requests a
+main-window width that fits the new number of columns, so the setting does not
+silently shrink thumbnails. The selected value is saved immediately, but the
+width request and Day-grid reflow wait until the Settings dialog closes; this
+keeps the centered dialog stationary while its parent window resizes. The same
+width request must be applied before the main window is first presented, using
+the persisted preference; waiting for a Settings interaction leaves the
+initial grid narrower than its configured cells and produces GTK measurement
+warnings. Year and Month retain their smaller-tile adaptive column count and
+may reflow when their natural width thresholds are crossed. Changing the Day
+preference intentionally reflows the Day grid once.
 
 GTK 4.22 measures an installed height-for-width `GtkGridView` factory before
 the scroller has a real width. Keep its own `border-spacing` at zero and model
