@@ -877,6 +877,10 @@ fn build_full_app_shell() -> AppShell {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    assert!(
+        photos.is_visible(),
+        "full app shell failed to realize the browsing page within 2s"
+    );
 
     AppShell {
         _app: app,
