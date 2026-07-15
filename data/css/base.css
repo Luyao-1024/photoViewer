@@ -185,10 +185,9 @@ gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selecte
     inset 0 0 0 1px alpha(@window_fg_color, 0.48);
 }
 
-/* Pointer emphasis and multi-selection are one interaction language. Keep
-   the exact same material for both states and make the veil visible over
-   dark thumbnails: the upper light is the glass reflection, the lower wash
-   gives the card body depth, and the shadow separates it from the image. */
+/* Pointer emphasis and multi-selection are one interaction language. Use a
+   shared dark scrim that covers the full thumbnail: it makes both states easy
+   to recognize over light photos without losing the image entirely. */
 .glass-thumb-card.media-selected,
 .glass-thumb-card.thumb-pointer-hover,
 flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card,
@@ -196,16 +195,31 @@ gridview.virtual-media-grid-view > child:hover > .glass-thumb-card,
 gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected,
 .glass-thumb-card.media-selected.thumb-pointer-hover {
   background:
-    radial-gradient(circle at 20% 8%, alpha(@window_fg_color, 0.42), transparent 44%),
-    radial-gradient(circle at 84% 96%, alpha(@window_fg_color, 0.24), transparent 68%),
-    alpha(@window_fg_color, 0.16);
-  border-color: alpha(@window_fg_color, 0.72);
+    radial-gradient(circle at 20% 8%, alpha(black, 0.22), transparent 44%),
+    radial-gradient(circle at 84% 96%, alpha(black, 0.38), transparent 68%),
+    alpha(black, 0.30);
+  border-color: alpha(black, 0.72);
   box-shadow:
-    0 0 0 1px alpha(@window_fg_color, 0.54),
-    0 8px 24px alpha(black, 0.34),
-    inset 0 1px alpha(@window_fg_color, 0.72),
-    inset 0 -1px alpha(black, 0.20),
-    inset 0 0 0 1px alpha(@window_fg_color, 0.52);
+    0 0 0 1px alpha(black, 0.60),
+    0 8px 24px alpha(black, 0.42),
+    inset 0 1px alpha(white, 0.20),
+    inset 0 -1px alpha(black, 0.44),
+    inset 0 0 0 1px alpha(black, 0.34);
+}
+
+/* FlowBox and GridView have legacy state selectors with higher specificity
+   than the shared material above. Override their rings here so hover and
+   multi-selection are expressed exclusively by the full-image dark scrim. */
+.glass-thumb-card.media-selected,
+.glass-thumb-card.thumb-pointer-hover,
+flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card,
+flowbox.thumb-grid > flowboxchild:selected > .glass-thumb-card,
+gridview.virtual-media-grid-view > child > .glass-thumb-card.media-selected,
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card,
+gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected,
+.glass-thumb-card.media-selected.thumb-pointer-hover {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* The marker itself is targetable, so hovering the heart/play glyph gives a
@@ -818,15 +832,25 @@ video.viewer-media-surface controls scale slider {
 .glass-thumb-card.thumb-pointer-hover .thumb-state-glass,
 flowbox.thumb-grid > flowboxchild:hover .thumb-state-glass,
 gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
-  opacity: 0.46;
+  opacity: 1;
   background:
-    radial-gradient(circle at center, transparent 72%, alpha(@window_fg_color, 0.055) 100%),
-    linear-gradient(180deg, alpha(@window_fg_color, 0.055), transparent 14%, transparent 86%, alpha(black, 0.035));
-  border-color: alpha(@window_fg_color, 0.32);
+    radial-gradient(circle at center, transparent 62%, alpha(black, 0.16) 100%),
+    linear-gradient(180deg, alpha(black, 0.30), alpha(black, 0.42));
+  border-color: alpha(black, 0.60);
   box-shadow:
-    inset 0 1px alpha(@window_fg_color, 0.24),
-    inset 0 -1px alpha(black, 0.05),
-    inset 0 0 0 1px alpha(@window_fg_color, 0.16);
+    inset 0 1px alpha(white, 0.18),
+    inset 0 -1px alpha(black, 0.42),
+    inset 0 0 0 1px alpha(black, 0.26);
+}
+
+/* The paint overlay also stays edge-free. The darkened image itself, plus the
+   white selection checkmark where applicable, is the complete state signal. */
+.glass-thumb-card.media-selected .thumb-state-glass,
+.glass-thumb-card.thumb-pointer-hover .thumb-state-glass,
+flowbox.thumb-grid > flowboxchild:hover .thumb-state-glass,
+gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .thumb-motion-badge {

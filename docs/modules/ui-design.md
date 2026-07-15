@@ -155,10 +155,11 @@ Design intent:
   Dynamic photos use a bottom-left playback glyph; ordinary videos use a
   bottom-left duration badge from persisted metadata.
 - Tile hover, selection, and focus states should be visible but restrained.
-  Avoid large opaque overlays that obscure thumbnail content.
+  Hover and selection use the same full-tile dark scrim, strong enough to
+  stand out over light photos while preserving the thumbnail content.
 - Selection is shown primarily by a translucent-white checkmark
   (`object-select-symbolic`) pinned to the tile's bottom-right corner, plus a
-  softer secondary glass border. The checkmark widget (`SquareTile`'s
+  full-tile dark scrim with no border. The checkmark widget (`SquareTile`'s
   `.thumb-checkmark` child) is always present but invisible (CSS `opacity: 0`)
   and revealed via `flowboxchild:selected .thumb-checkmark { opacity: 1 }`, so
   it tracks the FlowBox selection automatically. Keep this as the canonical

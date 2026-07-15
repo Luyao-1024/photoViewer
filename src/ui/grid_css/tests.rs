@@ -292,26 +292,30 @@ fn thumb_checkmark_shows_only_on_selected() {
     );
 }
 
-/// Selected thumbnails use the same neutral glass material in FlowBox and
-/// GridView: a layered gradient, a highlight edge, and a neutral ring.
-/// Keep this contract explicit so a later visual cleanup does not regress to
-/// the flat translucent fill that made selected rows hard to distinguish.
+/// Selected thumbnails use the same full-tile dark material in FlowBox and
+/// GridView. Keep this contract explicit so a later visual cleanup does not
+/// restore the bright veil that made selection unclear on light photos.
 #[test]
-fn selected_thumbnail_uses_glass_accent_gradient() {
+fn selected_thumbnail_uses_dark_emphasis_material() {
     let css = build_css(true);
 
     assert!(
         css.contains(".glass-thumb-card.media-selected {\n  background:\n    radial-gradient")
-            && css.contains("alpha(@window_fg_color, 0.10)")
-            && css.contains("inset 0 1px alpha(@window_fg_color, 0.52)"),
-        "selected thumbnails should use a layered accent glass material"
+            && css.contains("alpha(black, 0.30)")
+            && css.contains(
+                "gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected,\n.glass-thumb-card.media-selected.thumb-pointer-hover {\n  border-color: transparent;\n  box-shadow: none;"
+            ),
+        "selected thumbnails should use a layered dark emphasis material"
     );
 
     assert!(
         css.contains(
             "gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selected"
-        ) && css.contains("alpha(@window_fg_color, 0.74)"),
-        "hovering a selected GridView tile should preserve and strengthen its glass ring"
+        ) && css.contains(
+            "gridview.virtual-media-grid-view > child:hover .thumb-state-glass {\n  opacity: 1;"
+        ) && css.contains("linear-gradient(180deg, alpha(black, 0.30), alpha(black, 0.42))")
+            && css.contains("border-color: transparent;\n  box-shadow: none;"),
+        "hovering a selected GridView tile should retain the borderless dark scrim"
     );
 
     assert!(
