@@ -27,21 +27,6 @@ use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[allow(dead_code)] // retired in Task 4 along with build_photos_page_with_nav
-struct PhotosFixture {
-    _tmp: tempfile::TempDir,
-    pool: db::DbPool,
-    loader: Arc<ThumbnailLoader>,
-    media_list: gtk::gio::ListStore,
-    // Stage 5 retires `build_photos_page_with_nav` (and this struct) entirely;
-    // the migrated flows now read `shell.photos`, so this field is only
-    // constructed, never read, until the remaining flows move over.
-    #[allow(dead_code)]
-    page: PhotosPage,
-    nav: adw::NavigationView,
-    items: Vec<MediaItem>,
-}
-
 #[allow(dead_code)] // reusable fixture; fields are read by later sub-flows
 struct AppShell {
     _app: adw::Application,
@@ -783,9 +768,8 @@ fn build_full_app_shell() -> AppShell {
     // bails when a viewer/search/trash page is on top of the nav stack) treat
     // the browsing root as actually shown. Without `present()`, the GtkWindow
     // ancestor stays `visible == false` and every `is_visible()` check below
-    // the window reports false — the bare `build_photos_page_with_nav` fixture
-    // sidesteps this because its nav has no window ancestor. Pump the main
-    // loop so realization/map complete before the flow bodies run.
+    // the window reports false. Pump the main loop so realization/map complete
+    // before the flow bodies run.
     window.present();
     let ctx = glib::MainContext::default();
     let realize_deadline = Instant::now() + Duration::from_secs(2);
@@ -831,42 +815,6 @@ fn open_trash_via_sidebar(window: &MainWindow) -> TrashPage {
     nav.visible_page()
         .and_downcast::<TrashPage>()
         .expect("TrashPage is visible")
-}
-
-#[allow(dead_code)] // retired in Task 4
-fn build_photos_page_with_nav() -> PhotosFixture {
-    let tmp = tempfile::tempdir().unwrap();
-    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    let loader = Arc::new(ThumbnailLoader::new(
-        pool.clone(),
-        tmp.path().join("thumbs"),
-    ));
-    let items = seed_media(&pool, tmp.path());
-    albums::refresh(&pool).unwrap();
-
-    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    for item in &items {
-        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
-    }
-
-    let nav = adw::NavigationView::new();
-    let page = PhotosPage::new(media_list.clone(), loader.clone());
-    let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
-    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
-    page.set_nav_target(&nav);
-    page.set_db_pool(pool.clone());
-    page.set_db_actor(db_actor);
-    nav.push(&page);
-
-    PhotosFixture {
-        _tmp: tmp,
-        pool,
-        loader,
-        media_list,
-        page,
-        nav,
-        items,
-    }
 }
 
 fn seed_media(pool: &db::DbPool, root: &std::path::Path) -> Vec<MediaItem> {
