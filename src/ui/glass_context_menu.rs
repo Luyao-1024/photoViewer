@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 thread_local! {
-    static OPEN_MENU: RefCell<Option<(gtk::glib::WeakRef<gtk::Overlay>, gtk::glib::WeakRef<gtk::Fixed>)>> =
+    static OPEN_MENU: RefCell<Option<(gtk::glib::WeakRef<gtk::Overlay>, gtk::glib::WeakRef<gtk::Fixed>, Option<gtk::glib::WeakRef<gtk::EventControllerKey>>)>> =
         const { RefCell::new(None) };
 }
 
@@ -100,7 +100,6 @@ pub fn show_with_on_close(
         .vexpand(true)
         .halign(gtk::Align::Fill)
         .valign(gtk::Align::Fill)
-        .can_focus(true)
         .css_classes(["glass-context-menu-layer"])
         .build();
 
@@ -108,6 +107,12 @@ pub fn show_with_on_close(
     let layer_weak = layer.downgrade();
     let anchor_weak = anchor.downgrade();
     let on_close = on_close.unwrap_or_else(|| Rc::new(|| {}));
+    let key = gtk::EventControllerKey::new();
+    // Keep the tile focused while the menu is open. The overlay is an
+    // ancestor of that tile, so a capture-phase controller still receives
+    // Escape without transferring focus to the full-window menu layer.
+    key.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let key_weak = key.downgrade();
     let close: Rc<dyn Fn()> = Rc::new(move || {
         let Some(overlay) = overlay_weak.upgrade() else {
             return;
@@ -115,14 +120,15 @@ pub fn show_with_on_close(
         let Some(layer) = layer_weak.upgrade() else {
             return;
         };
-        // Let the caller transfer focus to the active grid before removing
-        // the layer. Removing
-        // the focused layer first makes GTK briefly fall back to GridView's
-        // first item, producing a visible jump to the top even if a later
-        // scroll restore corrects it.
-        on_close();
+        // The context layer never owns focus. Return it to the exact anchor
+        // before removing the layer so GTK cannot fall back to GridView's
+        // first item (which scrolls the viewport to the top).
         if let Some(anchor) = anchor_weak.upgrade() {
-            anchor.grab_focus();
+            focus_anchor(&anchor);
+        }
+        on_close();
+        if let Some(key) = key_weak.upgrade() {
+            overlay.remove_controller(&key);
         }
         close_menu_layer(&overlay, &layer);
     });
@@ -136,9 +142,12 @@ pub fn show_with_on_close(
         return;
     };
 
+    // A right click does not necessarily update GTK focus. Establish the
+    // clicked item's focus before the non-focusable menu layer is added.
+    focus_anchor(anchor);
     overlay.add_overlay(&layer);
-    remember_open_menu(overlay, &layer);
-    layer.grab_focus();
+    overlay.add_controller(key.clone());
+    remember_open_menu_with_key(overlay, &layer, Some(key.downgrade()));
 
     let panel_weak = panel.downgrade();
     let close_for_pointer = close.clone();
@@ -158,7 +167,6 @@ pub fn show_with_on_close(
     layer.add_controller(click);
 
     let close_for_key = close.clone();
-    let key = gtk::EventControllerKey::new();
     key.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
             close_for_key();
@@ -166,7 +174,6 @@ pub fn show_with_on_close(
         }
         gtk::glib::Propagation::Proceed
     });
-    layer.add_controller(key);
 
     let panel_min = panel.measure(gtk::Orientation::Horizontal, -1).1.max(128);
     let panel_height = panel
@@ -193,20 +200,32 @@ pub fn show_with_on_close(
     });
 }
 
+#[cfg(test)]
 fn remember_open_menu(overlay: &gtk::Overlay, layer: &gtk::Fixed) {
+    remember_open_menu_with_key(overlay, layer, None);
+}
+
+fn remember_open_menu_with_key(
+    overlay: &gtk::Overlay,
+    layer: &gtk::Fixed,
+    key: Option<gtk::glib::WeakRef<gtk::EventControllerKey>>,
+) {
     OPEN_MENU.with(|open| {
-        *open.borrow_mut() = Some((overlay.downgrade(), layer.downgrade()));
+        *open.borrow_mut() = Some((overlay.downgrade(), layer.downgrade(), key));
     });
 }
 
 fn dismiss_open_menu() {
     let current = OPEN_MENU.with(|open| open.borrow_mut().take());
-    let Some((overlay_weak, layer_weak)) = current else {
+    let Some((overlay_weak, layer_weak, key_weak)) = current else {
         return;
     };
     let Some(overlay) = overlay_weak.upgrade() else {
         return;
     };
+    if let Some(key) = key_weak.and_then(|key| key.upgrade()) {
+        overlay.remove_controller(&key);
+    }
     let Some(layer) = layer_weak.upgrade() else {
         return;
     };
@@ -223,13 +242,33 @@ fn close_menu_layer(overlay: &gtk::Overlay, layer: &gtk::Fixed) {
         let should_clear = open
             .borrow()
             .as_ref()
-            .and_then(|(_, weak_layer)| weak_layer.upgrade())
+            .and_then(|(_, weak_layer, _)| weak_layer.upgrade())
             .as_ref()
             .is_some_and(|open_layer| open_layer == layer);
         if should_clear {
             *open.borrow_mut() = None;
         }
     });
+}
+
+/// Whether a glass context menu is currently visible. Keyboard routing uses
+/// this instead of relying on the menu layer to own focus.
+pub fn is_open() -> bool {
+    OPEN_MENU.with(|open| {
+        open.borrow()
+            .as_ref()
+            .and_then(|(_, layer, _)| layer.upgrade())
+            .is_some_and(|layer| layer.parent().is_some())
+    })
+}
+
+fn focus_anchor(anchor: &gtk::Widget) {
+    // GridView keeps focus on its internal list-item wrapper. Prefer that
+    // parent, then fall back to ordinary focusable anchors used by other
+    // context menus.
+    if !anchor.parent().is_some_and(|parent| parent.grab_focus()) {
+        anchor.grab_focus();
+    }
 }
 
 #[cfg(test)]

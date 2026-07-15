@@ -4,6 +4,7 @@ use gtk4::prelude::*;
 
 use super::action::{KeyboardAction, KeyboardResult};
 use super::binding::{resolve_binding, KeyCombo, KeyboardScope};
+use crate::ui::glass_context_menu;
 
 pub fn install<W, F, H>(widget: &W, resolve_scope: F, handle_action: H)
 where
@@ -32,7 +33,9 @@ where
 pub fn scope_for_focus(root: &gtk::Widget) -> KeyboardScope {
     if focus_is_text_input(root) {
         KeyboardScope::TextInput
-    } else if focus_has_ancestor_class(root, "glass-context-menu-layer") {
+    } else if glass_context_menu::is_open()
+        || focus_has_ancestor_class(root, "glass-context-menu-layer")
+    {
         KeyboardScope::Modal
     } else {
         KeyboardScope::Global

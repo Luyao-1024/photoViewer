@@ -224,59 +224,6 @@ fn layout_replacement_restores_scroll_after_the_next_frame() {
         "returning focus to a visible GridView item must not move the viewport"
     );
 
-    // A context-menu layer can steal focus, then GTK performs its fallback to
-    // the first GridView item one frame later. The bounded frame watcher must
-    // restore the pixel offset captured before that delayed reset.
-    let captured_scroll_value = adjustment.value();
-    grid.restore_scroll_after_transient_reset(captured_scroll_value, 8);
-    adjustment.set_value(0.0);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while adjustment.value() <= 0.0 && std::time::Instant::now() < deadline {
-        context.iteration(true);
-    }
-    assert!(
-        adjustment.value() > 0.0,
-        "context-menu focus fallback should restore the captured scroll offset"
-    );
-
-    // Favorite mutations register their captured offset before the database
-    // event arrives. The adjustment signal, rather than a guessed delay,
-    // triggers the same bounded recovery when GTK resets to zero.
-    adjustment.set_value(captured_scroll_value);
-    grid.arm_favorite_scroll_restore();
-    adjustment.set_value(0.0);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while adjustment.value() <= 0.0 && std::time::Instant::now() < deadline {
-        context.iteration(true);
-    }
-    assert!(
-        adjustment.value() > 0.0,
-        "favorite mutation reset should restore the captured scroll offset"
-    );
-
-    // The full authoritative replacement can later scroll a remembered
-    // GridView focus position into view without passing through zero. Keep
-    // the exact captured offset for every favorite mutation, not only ones
-    // that happened to reset to zero first.
-    let layout = grid.model().layout();
-    grid.replace_layout_with_initial_items(layout, media_items_from_list(&list));
-    let (favorite_guard_generation, favorite_scroll_value) = grid
-        .favorite_scroll_restore_for_layout()
-        .expect("favorite mutation should retain its pre-mutation scroll value");
-    grid.hold_favorite_scroll_after_layout(favorite_guard_generation, favorite_scroll_value, 8);
-    adjustment.set_value(
-        (favorite_scroll_value + 278.0).min((adjustment.upper() - adjustment.page_size()).max(0.0)),
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while (adjustment.value() - favorite_scroll_value).abs() > 0.5
-        && std::time::Instant::now() < deadline
-    {
-        context.iteration(true);
-    }
-    assert!(
-        (adjustment.value() - favorite_scroll_value).abs() <= 0.5,
-        "favorite layout replacement should preserve the captured scroll offset"
-    );
     window.close();
 }
 

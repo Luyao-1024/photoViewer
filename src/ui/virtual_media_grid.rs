@@ -262,13 +262,6 @@ mod imp {
         pub column_update_source: RefCell<Option<glib::SourceId>>,
         pub range: RefCell<RangeCoordinator>,
         pub last_top_slot: Cell<u32>,
-        /// The viewport offset captured immediately before a batch-favorite
-        /// mutation. It remains available through the authoritative layout
-        /// replacement and synchronously rejects GTK focus/layout scrolls.
-        pub pending_favorite_scroll_restore: Cell<Option<f64>>,
-        /// Distinguishes overlapping favorite mutations so an old timeout or
-        /// layout-settle callback cannot release a newer viewport guard.
-        pub favorite_scroll_guard_generation: Cell<u64>,
         /// A batch favorite updates the shared seed ListStore as a domain
         /// event. Its live layout is unchanged, so suppress that short-lived
         /// generic metadata reload and update resident favorite badges in
@@ -311,8 +304,6 @@ mod imp {
                 column_update_source: RefCell::new(None),
                 range: RefCell::new(RangeCoordinator::default()),
                 last_top_slot: Cell::new(0),
-                pending_favorite_scroll_restore: Cell::new(None),
-                favorite_scroll_guard_generation: Cell::new(0),
                 suppress_shared_projection_until: Cell::new(None),
                 thumb_batcher: RefCell::new(ThumbnailBatcher::default()),
             }
@@ -783,36 +774,6 @@ impl VirtualMediaGrid {
         self.refresh_from_shared_projection();
     }
 
-    /// Preserve the pre-mutation viewport until the favorite mutation's
-    /// authoritative layout has settled. This is separate from tracing: GTK
-    /// can write zero *or an arbitrary focus position* before that point, and
-    /// either write must be rejected synchronously to avoid a visible flash.
-    pub(crate) fn arm_favorite_scroll_restore(&self) {
-        let captured_value = self.imp().scroller.get().vadjustment().value();
-        if captured_value <= f64::EPSILON {
-            return;
-        }
-        let generation = self
-            .imp()
-            .favorite_scroll_guard_generation
-            .get()
-            .saturating_add(1);
-        self.imp().favorite_scroll_guard_generation.set(generation);
-        self.imp()
-            .pending_favorite_scroll_restore
-            .set(Some(captured_value));
-        let weak = self.downgrade();
-        glib::timeout_add_local_once(Duration::from_secs(5), move || {
-            if let Some(grid) = weak.upgrade() {
-                if grid.imp().favorite_scroll_guard_generation.get() == generation
-                    && grid.imp().pending_favorite_scroll_restore.get().is_some()
-                {
-                    grid.imp().pending_favorite_scroll_restore.set(None);
-                }
-            }
-        });
-    }
-
     pub(super) fn spec(&self) -> VirtualGridModeSpec {
         VirtualGridModeSpec::for_mode(self.mode())
     }
@@ -1035,15 +996,7 @@ impl VirtualMediaGrid {
                 },
             ));
         }
-        let scroll_value = self.imp().scroller.get().vadjustment().value();
-        let weak = self.downgrade();
-        let restore_scroll = Rc::new(move || {
-            if let Some(grid) = weak.upgrade() {
-                grid.focus_visible_tile();
-                grid.restore_scroll_after_transient_reset(scroll_value, 8);
-            }
-        });
-        glass_context_menu::show_with_on_close(&overlay, anchor, x, y, items, Some(restore_scroll));
+        glass_context_menu::show(&overlay, anchor, x, y, items);
     }
 
     fn connect_grid_signals(&self, media_list: &gio::ListStore) {
@@ -1061,7 +1014,6 @@ impl VirtualMediaGrid {
             .vadjustment()
             .connect_value_changed(move |_| {
                 if let Some(grid) = weak.upgrade() {
-                    grid.restore_pending_favorite_scroll_after_reset();
                     grid.schedule_visible_range();
                     if let Some(callback) = grid.imp().on_view_changed.get() {
                         callback();
@@ -1203,10 +1155,7 @@ impl VirtualMediaGrid {
             .unwrap_or_default();
         seed.truncate(total as usize);
         self.replace_layout_with_initial_items(layout, seed);
-        if let Some((guard_generation, captured_value)) = self.favorite_scroll_restore_for_layout()
-        {
-            self.hold_favorite_scroll_after_layout(guard_generation, captured_value, 24);
-        } else if let Some(slot) = restored_slot {
+        if let Some(slot) = restored_slot {
             self.restore_top_slot(slot);
         }
         self.schedule_visible_range_after_layout();
@@ -1392,109 +1341,6 @@ impl VirtualMediaGrid {
             let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
             let expected_value = desired.min(maximum);
             adjustment.set_value(expected_value);
-            glib::ControlFlow::Break
-        });
-    }
-
-    /// Watch a bounded frame window for GTK's delayed fallback-to-first-item
-    /// behavior. Restore only a hard reset to zero, preserving the exact
-    /// pixel offset captured before the triggering interaction without
-    /// interfering with intentional scrolling.
-    fn restore_scroll_after_transient_reset(&self, captured_value: f64, frames_to_watch: u8) {
-        if captured_value <= f64::EPSILON {
-            return;
-        }
-        let frames_seen = Rc::new(Cell::new(0_u8));
-        let weak = self.downgrade();
-        self.imp().grid.get().add_tick_callback(move |_, _| {
-            let Some(grid) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let frames = frames_seen.get().saturating_add(1);
-            frames_seen.set(frames);
-
-            let adjustment = grid.imp().scroller.get().vadjustment();
-            if adjustment.value() <= f64::EPSILON {
-                let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
-                let restored_value = captured_value.min(maximum);
-                if restored_value > f64::EPSILON {
-                    adjustment.set_value(restored_value);
-                }
-            }
-
-            if frames < frames_to_watch {
-                glib::ControlFlow::Continue
-            } else {
-                glib::ControlFlow::Break
-            }
-        });
-    }
-
-    fn restore_pending_favorite_scroll_after_reset(&self) {
-        let Some(captured_value) = self.imp().pending_favorite_scroll_restore.get() else {
-            return;
-        };
-        let adjustment = self.imp().scroller.get().vadjustment();
-        let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
-        let expected_value = captured_value.min(maximum);
-        let current_value = adjustment.value();
-        if (current_value - expected_value).abs() <= 0.5 {
-            return;
-        }
-
-        adjustment.set_value(expected_value);
-    }
-
-    /// A live favorite guard takes precedence over the generic logical-slot
-    /// restore: its exact pixel offset is what makes the mutation invisible.
-    fn favorite_scroll_restore_for_layout(&self) -> Option<(u64, f64)> {
-        self.imp()
-            .pending_favorite_scroll_restore
-            .get()
-            .map(|captured_value| {
-                (
-                    self.imp().favorite_scroll_guard_generation.get(),
-                    captured_value,
-                )
-            })
-    }
-
-    /// GtkGridView can scroll a remembered focused list item into view on the
-    /// frame after a full ListModel replacement. That write is non-zero, so
-    /// the zero-reset recovery above cannot see it. During the short,
-    /// favorite-specific replacement window, hold the exact offset captured
-    /// before the mutation until GTK has settled.
-    fn hold_favorite_scroll_after_layout(
-        &self,
-        guard_generation: u64,
-        captured_value: f64,
-        frames_to_watch: u8,
-    ) {
-        let frames_seen = Rc::new(Cell::new(0_u8));
-        let weak = self.downgrade();
-        self.imp().grid.get().add_tick_callback(move |_, _| {
-            let Some(grid) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let frames = frames_seen.get().saturating_add(1);
-            frames_seen.set(frames);
-
-            let adjustment = grid.imp().scroller.get().vadjustment();
-            let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
-            let expected_value = captured_value.min(maximum);
-            if (adjustment.value() - expected_value).abs() > 0.5 {
-                adjustment.set_value(expected_value);
-            }
-
-            if frames < frames_to_watch {
-                return glib::ControlFlow::Continue;
-            }
-
-            if grid.imp().favorite_scroll_guard_generation.get() == guard_generation
-                && grid.imp().pending_favorite_scroll_restore.get() == Some(captured_value)
-            {
-                grid.imp().pending_favorite_scroll_restore.set(None);
-            }
             glib::ControlFlow::Break
         });
     }

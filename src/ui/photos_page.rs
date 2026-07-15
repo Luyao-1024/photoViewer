@@ -1167,14 +1167,6 @@ impl PhotosPage {
             return;
         }
 
-        if let Some(grid) = self.current_grid() {
-            grid.arm_favorite_scroll_restore();
-            // The favorite button is hidden after the mutation completes.
-            // Transfer focus now, while its selected tile is still realized,
-            // so GTK does not later focus the first GridView item and flash
-            // the viewport at the top.
-            grid.focus_visible_tile();
-        }
         for grid in self.imp().grids.borrow().iter() {
             grid.begin_favorite_item_update();
         }
@@ -1239,12 +1231,21 @@ impl PhotosPage {
     /// Called after a successful batch operation so the user can continue
     /// browsing without the previous selection leaking in.
     pub fn clear_selection(&self) {
+        let selection_chrome_visible = self.imp().select_all_revealer.get().reveals_child()
+            || self.imp().add_to_album_revealer.get().reveals_child()
+            || self.imp().favorite_revealer.get().reveals_child()
+            || self.imp().delete_to_trash_revealer.get().reveals_child()
+            || self.imp().exit_multi_select_revealer.get().reveals_child();
         // Batch action buttons live inside revealers. If the clicked button
         // remains focused while its revealer hides, GTK falls back to the
         // first GridView item. Keep focus on a visible tile before changing
-        // the selection UI so the viewport never takes that detour.
-        if let Some(grid) = self.current_grid() {
-            grid.focus_visible_tile();
+        // the selection UI so the viewport never takes that detour. A
+        // single-item context-menu favorite has no selection toolbar to hide,
+        // so leave the right-clicked tile's focus untouched.
+        if selection_chrome_visible {
+            if let Some(grid) = self.current_grid() {
+                grid.focus_visible_tile();
+            }
         }
         for grid in self.imp().grids.borrow().iter() {
             grid.clear_selection();

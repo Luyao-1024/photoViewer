@@ -218,12 +218,14 @@ the GTK thread and stale results must be ignored by generation. A metadata
 layout replacement must preserve the current logical media anchor and restore
 its scroll position after GTK allocates the replacement model; metadata-only
 updates such as batch favorite changes must not jump the Photos grid to top.
-The favorite path first transfers focus from the batch toolbar to a currently
-visible GridView item before the toolbar hides. This prevents GTK from briefly
-focusing the first GridView item. It also locks the exact pre-mutation
-adjustment until the authoritative model replacement has settled: GTK may
-otherwise write zero or a non-zero remembered focus position for one frame,
-both of which visibly flash the viewport before an asynchronous restore.
+When the batch toolbar is visible, the favorite path first transfers focus to a
+currently visible GridView item before hiding it. This prevents GTK from
+briefly focusing the first GridView item. A single-item context-menu favorite
+has no selection controls to hide and therefore leaves the right-clicked tile
+focused. The custom GridView context menu keeps focus on that exact tile while
+its non-focusable overlay is open, then returns to it before removal. It must
+not use adjustment restoration or intercept normal wheel/touchpad scrolling as
+a focus workaround.
 Favorite-only mutations must not replace the authoritative virtual layout: they
 do not change the live Photos query's ordering, sections, or count. Update the
 resident model snapshots and realized Day-view heart badges in place, and

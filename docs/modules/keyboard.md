@@ -70,9 +70,9 @@ until the grid exposes a focus cursor.
 
 Modal and editor scopes do not fall back to global shortcuts. This prevents
 Search, Settings, and navigation commands from leaking through dialogs, glass
-context menus, or editing surfaces. `MainWindow` treats a visible
-`.glass-context-menu-layer` under the root overlay as modal even if focus has
-not moved into the menu layer yet.
+context menus, or editing surfaces. `MainWindow` treats any open glass context
+menu as modal while focus remains on its triggering control; the menu handles
+Escape from the root overlay's capture phase rather than taking focus itself.
 
 Text input scope deliberately does not map printable shortcuts, including
 `Ctrl+F`, so entries and search fields keep native editing behavior unless a
