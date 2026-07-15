@@ -222,27 +222,33 @@ impl MediaGrid {
         }
     }
 
+    /// Targets for a context menu opened on `media_id`, **without modifying the
+    /// selection**. In multi-select mode the menu acts on the full current
+    /// selection when the right-clicked photo is already part of it; otherwise
+    /// it acts on just the right-clicked photo. Right-click never adds or
+    /// removes a checkmark, so it cannot contradict the menu's own "exit
+    /// multi-select" entry.
+    pub(super) fn context_menu_targets(&self, media_id: MediaId) -> Vec<MediaId> {
+        if self.is_multi_select_mode() && self.imp().selected.borrow().contains(&media_id) {
+            self.selected_ids()
+        } else {
+            vec![media_id]
+        }
+    }
+
+    /// Add `media_id` to the selection (no-op if already selected) and return
+    /// the resulting set. Used only by the "enter multi-select" context-menu
+    /// entry to select its target photo — that is an explicit user action, so
+    /// adding the checkmark there is intentional. The right-click gesture
+    /// itself never modifies the selection; see `context_menu_targets`.
     pub(super) fn ensure_context_selection(
         &self,
         flow: &gtk::FlowBox,
         clicked_child: &gtk::FlowBoxChild,
         media_id: MediaId,
     ) -> Vec<MediaId> {
-        let was_selected = self.imp().selected.borrow().contains(&media_id);
-        if !was_selected {
-            {
-                let mut s = self.imp().selected.borrow_mut();
-                s.clear();
-                s.insert(media_id);
-            }
-            let content = self.imp().content.get();
-            let mut section_child = content.first_child();
-            while let Some(child) = section_child {
-                if let Some(flow_box) = child.downcast_ref::<gtk::FlowBox>() {
-                    flow_box.unselect_all();
-                }
-                section_child = child.next_sibling();
-            }
+        let inserted = self.imp().selected.borrow_mut().insert(media_id);
+        if inserted {
             flow.select_child(clicked_child);
             self.fire_selection_changed();
         }

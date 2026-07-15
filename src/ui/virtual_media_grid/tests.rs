@@ -67,6 +67,78 @@ fn selection_updates_realized_tile_without_replacing_the_list_model() {
 }
 
 #[gtk::test]
+fn context_menu_does_not_add_a_checkmark_on_right_click() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.jpg")));
+    list.append(&glib::BoxedAnyObject::new(sample_item(2, "two.jpg")));
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), true);
+
+    let first = MediaId::from(1);
+    let second = MediaId::from(2);
+
+    let tile_first = SquareTile::new();
+    grid.register_factory_cell(factory::FactoryCell {
+        tile: tile_first.clone(),
+        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+            grid.layout_generation(),
+            0,
+            first,
+            None,
+        )))),
+    });
+    let tile_second = SquareTile::new();
+    grid.register_factory_cell(factory::FactoryCell {
+        tile: tile_second.clone(),
+        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+            grid.layout_generation(),
+            1,
+            second,
+            None,
+        )))),
+    });
+
+    // Build a multi-selection on the first photo.
+    grid.set_multi_select_mode(true);
+    grid.toggle_selection(first);
+    assert!(tile_first.has_css_class("media-selected"));
+
+    // Right-clicking the second (unselected) photo only summons the menu: the
+    // menu targets just that photo, the second gains NO checkmark, and the
+    // first keeps its checkmark. Right-click must not modify the selection —
+    // adding a checkmark while the menu offers "exit multi-select" is
+    // self-contradictory.
+    let targets = grid.context_menu_targets(second);
+    assert_eq!(targets, vec![second]);
+    assert!(
+        !tile_second.has_css_class("media-selected"),
+        "right-click must not add a checkmark"
+    );
+    assert!(
+        tile_first.has_css_class("media-selected"),
+        "existing selection must be untouched"
+    );
+
+    // Right-clicking a photo already in the selection targets the full set and
+    // still changes nothing visually.
+    let targets = grid.context_menu_targets(first);
+    assert!(targets.contains(&first));
+    assert_eq!(targets.len(), 1);
+    assert!(tile_first.has_css_class("media-selected"));
+    assert!(!tile_second.has_css_class("media-selected"));
+
+    // The "enter multi-select" entry, by contrast, is an explicit action and
+    // selects its target photo.
+    grid.set_multi_select_mode(false);
+    grid.imp().is_multi_select_mode.set(true);
+    grid.ensure_context_selection(second);
+    assert!(tile_second.has_css_class("media-selected"));
+}
+
+#[gtk::test]
 fn query_backed_grid_uses_album_counts_instead_of_the_live_library() {
     let _ = gtk::init();
     let dir = tempfile::tempdir().unwrap();

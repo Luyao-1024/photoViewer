@@ -1095,15 +1095,14 @@ impl MediaGrid {
                             let media_id = displayed_item.media_id;
 
                             let in_multi_mode = this.is_multi_select_mode();
-                            let target_indices = if in_multi_mode {
-                                this.ensure_context_selection(
-                                    &flow_for_ctx,
-                                    &flow_child_for_ctx,
-                                    media_id,
-                                )
-                            } else {
-                                vec![media_id]
-                            };
+                            // Right-click only summons the menu; it never
+                            // modifies the selection, so no checkmark appears
+                            // (and none disappear). Acting on the selection
+                            // while offering "exit multi-select" would
+                            // contradict itself. The menu targets the full
+                            // selection only when the right-clicked photo is
+                            // already part of it, otherwise just that photo.
+                            let target_indices = this.context_menu_targets(media_id);
                             let favorite_state =
                                 (on_query_favorite_state_ctx)(target_indices.clone());
 

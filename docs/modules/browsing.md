@@ -251,8 +251,13 @@ Changing selection updates the CSS class only on realized factory cells whose
 replacement can recreate a GridView cell, reset its scroll adjustment, and
 flash the page.
 Context-menu entry enables multi-select before selecting its target, and
-`clear_selection` updates every mode grid. See [`ui-design.md`](ui-design.md)
-"Media Grids And Tiles".
+`clear_selection` updates every mode grid. The right-click gesture itself never
+modifies the selection — it only summons the menu, so no checkmark appears and
+none disappear (adding a checkmark while the menu offers "exit multi-select"
+would contradict itself). The menu acts on the full current selection when the
+right-clicked photo is already part of it, otherwise on just that photo. The
+explicit "enter multi-select" entry is the only context-menu path that selects
+its target. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
 Photos page "Select All" is intentionally capped at 2,000 live media items. For
 large virtualized libraries it loads the first 2,000 ids from the database's
 canonical live ordering, not from the current GTK seed or ready range.

@@ -902,11 +902,12 @@ impl VirtualMediaGrid {
         };
         let media_id = binding.media_id();
         let in_multi = self.is_multi_select_mode();
-        let target_ids = if in_multi {
-            self.ensure_context_selection(media_id)
-        } else {
-            vec![media_id]
-        };
+        // Right-click only summons the menu; it never modifies the selection,
+        // so no checkmark appears (and none disappear). Acting on the selection
+        // while simultaneously offering "exit multi-select" would contradict
+        // itself. The menu targets the full selection only when the
+        // right-clicked photo is already part of it, otherwise just that photo.
+        let target_ids = self.context_menu_targets(media_id);
         let callbacks = self
             .imp()
             .callbacks
@@ -1585,21 +1586,29 @@ impl VirtualMediaGrid {
         }
     }
 
+    /// Targets for a context menu opened on `media_id`, **without modifying the
+    /// selection**. In multi-select mode the menu acts on the full current
+    /// selection when the right-clicked photo is already part of it; otherwise
+    /// it acts on just the right-clicked photo. Right-click never adds or
+    /// removes a checkmark, so it cannot contradict the menu's own "exit
+    /// multi-select" entry.
+    fn context_menu_targets(&self, media_id: MediaId) -> Vec<MediaId> {
+        if self.is_multi_select_mode() && self.is_selected(media_id) {
+            self.selected_ids()
+        } else {
+            vec![media_id]
+        }
+    }
+
+    /// Add `media_id` to the selection (no-op if already selected) and return
+    /// the resulting set. Used only by the "enter multi-select" context-menu
+    /// entry to select its target photo — that is an explicit user action, so
+    /// adding the checkmark there is intentional. The right-click gesture
+    /// itself never modifies the selection; see `context_menu_targets`.
     fn ensure_context_selection(&self, media_id: MediaId) -> Vec<MediaId> {
-        let changed_ids = {
-            let mut selected = self.imp().selected.borrow_mut();
-            if selected.contains(&media_id) {
-                HashSet::new()
-            } else {
-                let mut changed_ids = std::mem::take(&mut *selected);
-                selected.clear();
-                selected.insert(media_id);
-                changed_ids.insert(media_id);
-                changed_ids
-            }
-        };
-        if !changed_ids.is_empty() {
-            self.sync_visible_selection(&changed_ids);
+        let inserted = self.imp().selected.borrow_mut().insert(media_id);
+        if inserted {
+            self.sync_visible_selection(&HashSet::from([media_id]));
             self.fire_selection_changed();
         }
         self.selected_ids_sorted()
