@@ -725,27 +725,47 @@ fn full_app_shell_renders_photos_and_opens_trash_via_sidebar() {
 }
 
 fn trash_page_clicks_selection_cancel_restore_and_delete() {
-    let fixture = build_photos_page_with_nav();
-    common::db::mark_trashed(&fixture.pool, fixture.items[0].id).unwrap();
-    common::db::mark_trashed(&fixture.pool, fixture.items[1].id).unwrap();
-    let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    let trash =
-        TrashPage::with_media_list(fixture.pool.clone(), fixture.loader.clone(), shared.clone());
+    let shell = build_full_app_shell();
+
+    // The fixture tempdir lives on tmpfs, where gio's `move_to_trash` errors
+    // with "not supported on internal mount". Create the two trash-test files
+    // on a real mount under `$HOME` so restore/delete perform real operations
+    // and the grid genuinely reloads. Mirrors `real_scratch()` in
+    // `src/ui/trash_page/tests.rs`.
+    let real_scratch = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"));
+    let trash_dir = real_scratch.join(format!("pv-ux-trash-{}", std::process::id()));
+    std::fs::create_dir_all(&trash_dir).unwrap();
+
+    let mut trash_items = Vec::new();
+    for name in ["trash-a.jpg", "trash-b.jpg"] {
+        let path = trash_dir.join(name);
+        std::fs::write(&path, b"ux-trash-test").unwrap();
+        let item = sample_item(0, path);
+        let id = common::db::insert_media_item(&shell.pool, &NewMediaItem::from(&item)).unwrap();
+        let item = db::get_media_item(&shell.pool, id).unwrap();
+        photo_viewer::core::trash::move_to_trash(&item.uri).unwrap();
+        common::db::mark_trashed(&shell.pool, id).unwrap();
+        trash_items.push(item);
+    }
+
+    let nav = shell.window.nav_view();
+    let trash = open_trash_via_sidebar(&shell.window);
     let grid = trash.imp().grid.borrow().as_ref().cloned().unwrap();
     assert!(
         wait_until(Duration::from_secs(2), || grid.logical_media_count() == 2),
-        "TrashPage should render trashed media"
+        "TrashPage should render the two trashed items"
     );
 
+    // Select one tile, then Cancel: action bar hides, page stays.
     assert!(
         wait_until(Duration::from_secs(2), || grid
             .first_ready_media_slot()
             .is_some()),
         "Trash should load an interactive media slot"
     );
-    let first_slot = grid
-        .first_ready_media_slot()
-        .expect("Trash should retain a ready media slot");
+    let first_slot = grid.first_ready_media_slot().expect("ready media slot");
     activate_virtual_grid_slot(&grid, first_slot);
     assert!(
         trash.imp().action_bar.get().is_revealed(),
@@ -757,40 +777,53 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         "clicking Trash cancel should clear selection and hide actions"
     );
 
+    // Restore one item: selection clears, grid reloads, AND the page must stay.
     activate_virtual_grid_slot(&grid, first_slot);
     click_button(&trash.imp().restore_btn.get());
     assert!(
-        wait_until(Duration::from_secs(2), || !trash
-            .imp()
-            .action_bar
-            .get()
-            .is_revealed()),
+        wait_until(Duration::from_secs(2), || {
+            !trash.imp().action_bar.get().is_revealed()
+        }),
         "clicking Restore should clear the current Trash selection"
     );
     assert!(
-        wait_until(Duration::from_secs(2), || grid.logical_media_count() > 0),
-        "TrashPage should reload remaining rows after Restore"
+        wait_until(Duration::from_secs(2), || grid.logical_media_count() == 1),
+        "TrashPage should reload to the one remaining item after Restore"
+    );
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "TrashPage must stay visible after restoring one item"
     );
 
+    // Delete the remaining item permanently: row leaves the DB, page stays.
     assert!(
         wait_until(Duration::from_secs(2), || grid
             .first_ready_media_slot()
             .is_some()),
         "Trash should load the remaining media slot"
     );
-    let remaining_slot = grid
-        .first_ready_media_slot()
-        .expect("Trash should retain a ready media slot");
+    let remaining_slot = grid.first_ready_media_slot().expect("ready media slot");
     activate_virtual_grid_slot(&grid, remaining_slot);
     click_button(&trash.imp().delete_btn.get());
     assert!(
-        wait_until(Duration::from_secs(2), || db::list_trashed_media(
-            &fixture.pool
-        )
-        .map(|items| items.len() < 2)
-        .unwrap_or(false)),
-        "clicking Delete Permanently should remove selected trash rows from DB"
+        wait_until(Duration::from_secs(2), || {
+            db::list_trashed_media(&shell.pool)
+                .map(|items| items.is_empty())
+                .unwrap_or(false)
+        }),
+        "clicking Delete Permanently should empty the trashed rows"
     );
+    assert!(
+        nav.visible_page().and_downcast::<TrashPage>().is_some(),
+        "TrashPage must stay visible after deleting the last item"
+    );
+
+    // Clean up the host trash so the test leaves nothing behind. Restore moved
+    // trash-a.jpg back into `trash_dir`; delete-permanently already cleared
+    // trash-b's trash entry, so the delete calls below are idempotent no-ops.
+    let _ = std::fs::remove_dir_all(&trash_dir);
+    let _ = photo_viewer::core::trash::delete_permanently(&trash_items[0].uri);
+    let _ = photo_viewer::core::trash::delete_permanently(&trash_items[1].uri);
 }
 
 fn build_full_app_shell() -> AppShell {
