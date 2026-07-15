@@ -409,29 +409,48 @@ fn refresh_with_observer<F>(pool: &DbPool, after_clear: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
+    let refresh_span = tracing::info_span!(
+        target: crate::core::log_targets::ALBUMS,
+        "albums:refresh",
+    );
+    let _refresh_entered = refresh_span.enter();
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM albums", [])?;
     after_clear()?;
-    tx.execute(
-        "INSERT INTO albums (folder_path, name, cover_uri, photo_count, last_modified)
-         SELECT
-             folder_path,
-             folder_path,
-             COALESCE(
-             (SELECT cover_uri FROM album_covers c
-              WHERE c.folder_path = m.folder_path),
-             (SELECT uri FROM media_items m2
-              WHERE m2.folder_path = m.folder_path AND m2.trashed_at IS NULL
-              ORDER BY m2.file_mtime DESC LIMIT 1)),
-             COUNT(*),
-             MAX(file_mtime)
-         FROM media_items m
-         WHERE trashed_at IS NULL
-         GROUP BY folder_path",
-        [],
-    )?;
-    refresh_virtual_album_rows(&tx)?;
+    {
+        let folder_rows_span = tracing::info_span!(
+            target: crate::core::log_targets::ALBUMS,
+            "albums:refresh_folder_rows",
+        );
+        let _folder_rows_entered = folder_rows_span.enter();
+        tx.execute(
+            "INSERT INTO albums (folder_path, name, cover_uri, photo_count, last_modified)
+             SELECT
+                 folder_path,
+                 folder_path,
+                 COALESCE(
+                 (SELECT cover_uri FROM album_covers c
+                  WHERE c.folder_path = m.folder_path),
+                 (SELECT uri FROM media_items m2
+                  WHERE m2.folder_path = m.folder_path AND m2.trashed_at IS NULL
+                  ORDER BY m2.file_mtime DESC LIMIT 1)),
+                 COUNT(*),
+                 MAX(file_mtime)
+             FROM media_items m
+             WHERE trashed_at IS NULL
+             GROUP BY folder_path",
+            [],
+        )?;
+    }
+    {
+        let virtual_rows_span = tracing::info_span!(
+            target: crate::core::log_targets::ALBUMS,
+            "albums:refresh_virtual_rows",
+        );
+        let _virtual_rows_entered = virtual_rows_span.enter();
+        refresh_virtual_album_rows(&tx)?;
+    }
     tx.commit()?;
     Ok(())
 }

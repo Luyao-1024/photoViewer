@@ -97,16 +97,18 @@ async fn delete_live_by_path_removes_row_and_emits_uri() {
 }
 
 #[tokio::test]
-async fn trash_commit_emits_precise_moved_event_after_mark() {
+async fn trash_commit_emits_precise_moved_event_after_mark_without_sync_album_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
     let id = db::insert_media_item(&pool, &new_item(dir.path().join("a.jpg"))).unwrap();
     let (events, mut rx) = DomainEventSender::new();
     let actor = start_db_actor(pool.clone(), events);
+    crate::core::albums::refresh(&pool).unwrap();
 
     let prepared = actor
         .execute(DbCommand::MarkTrashed {
             ids: vec![MediaId::from(id)],
+            trace_id: None,
         })
         .await
         .unwrap();
@@ -118,14 +120,28 @@ async fn trash_commit_emits_precise_moved_event_after_mark() {
     actor
         .execute(DbCommand::CommitMovedToTrash {
             items: items.clone(),
+            trace_id: None,
         })
         .await
         .unwrap();
+
+    let albums = crate::core::albums::list(&pool).unwrap();
+    assert_eq!(
+        albums[0].photo_count, 1,
+        "commit should publish the media event immediately; RefreshCoordinator rebuilds the derived album projection asynchronously"
+    );
 
     match rx.recv().await.unwrap() {
         DomainEvent::MediaMovedToTrash { items, .. } => assert_eq!(items[0].id, id),
         other => panic!("expected MediaMovedToTrash, got {other:?}"),
     }
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "the precise media event already drives RefreshCoordinator; do not queue a duplicate AlbumsChanged refresh"
+    );
 }
 
 #[tokio::test]

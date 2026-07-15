@@ -39,6 +39,7 @@ pub fn mark_trashed(pool: &DbPool, id: i64) -> photo_viewer::core::Result<()> {
     actor(pool)
         .execute_blocking(DbCommand::MarkTrashed {
             ids: vec![MediaId::from(id)],
+            trace_id: None,
         })
         .map(|_| ())
 }

@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Instant;
 use tokio::sync::oneshot;
 
 #[derive(Debug)]
@@ -65,6 +66,7 @@ pub enum DbCommand {
     },
     MarkTrashed {
         ids: Vec<MediaId>,
+        trace_id: Option<u64>,
     },
     RestoreTrashed {
         ids: Vec<MediaId>,
@@ -74,6 +76,7 @@ pub enum DbCommand {
     },
     CommitMovedToTrash {
         items: Vec<MediaItem>,
+        trace_id: Option<u64>,
     },
     RollbackTrashed {
         ids: Vec<MediaId>,
@@ -146,6 +149,7 @@ pub enum DbCommandResult {
 struct DbEnvelope {
     command: DbCommand,
     reply: oneshot::Sender<Result<DbCommandResult>>,
+    enqueued_at: Instant,
 }
 
 struct QueuedEnvelope {
@@ -210,7 +214,11 @@ impl DbActorHandle {
         reply: oneshot::Sender<Result<DbCommandResult>>,
     ) -> std::result::Result<(), Box<mpsc::SendError<DbEnvelope>>> {
         self.tx
-            .send(DbEnvelope { command, reply })
+            .send(DbEnvelope {
+                command,
+                reply,
+                enqueued_at: Instant::now(),
+            })
             .map_err(Box::new)
     }
 }
@@ -247,7 +255,22 @@ fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEn
         }
         let QueuedEnvelope { envelope, .. } = queue.pop().expect("queue is not empty");
         let command_name = db_command_name(&envelope.command);
-        let started = std::time::Instant::now();
+        let started = Instant::now();
+        let is_trash_command = is_trash_command(&envelope.command);
+        let trash_item_count = trash_command_item_count(&envelope.command);
+        let trash_trace_id = trash_command_trace_id(&envelope.command);
+        let queue_wait_ms = envelope.enqueued_at.elapsed().as_millis() as u64;
+        let trash_span = is_trash_command.then(|| {
+            tracing::info_span!(
+                target: crate::core::log_targets::ALBUMS,
+                "trash:db_actor_command",
+                command = command_name,
+                item_count = trash_item_count,
+                queue_wait_ms,
+                operation_id = ?trash_trace_id,
+            )
+        });
+        let _trash_entered = trash_span.as_ref().map(tracing::Span::enter);
         tracing::trace!(
             target: crate::core::log_targets::STORAGE,
             "DB_ACTOR_FLOW phase=begin command={}",
@@ -262,6 +285,38 @@ fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEn
             started.elapsed().as_millis()
         );
         let _ = envelope.reply.send(result);
+    }
+}
+
+fn is_trash_command(command: &DbCommand) -> bool {
+    matches!(
+        command,
+        DbCommand::MarkTrashed { .. }
+            | DbCommand::RestoreTrashed { .. }
+            | DbCommand::DeleteTrashedRows { .. }
+            | DbCommand::CommitMovedToTrash { .. }
+            | DbCommand::RollbackTrashed { .. }
+            | DbCommand::ReconcileTrash { .. }
+    )
+}
+
+fn trash_command_item_count(command: &DbCommand) -> usize {
+    match command {
+        DbCommand::MarkTrashed { ids, .. }
+        | DbCommand::RestoreTrashed { ids }
+        | DbCommand::DeleteTrashedRows { ids }
+        | DbCommand::RollbackTrashed { ids } => ids.len(),
+        DbCommand::CommitMovedToTrash { items, .. } => items.len(),
+        DbCommand::ReconcileTrash { .. } => 0,
+        _ => 0,
+    }
+}
+
+fn trash_command_trace_id(command: &DbCommand) -> Option<u64> {
+    match command {
+        DbCommand::MarkTrashed { trace_id, .. }
+        | DbCommand::CommitMovedToTrash { trace_id, .. } => *trace_id,
+        _ => None,
     }
 }
 
@@ -450,7 +505,14 @@ fn execute_command(
             db::mark_thumbnails_generated(pool, &ids)?;
             Ok(DbCommandResult::None)
         }
-        DbCommand::MarkTrashed { ids } => {
+        DbCommand::MarkTrashed { ids, trace_id } => {
+            let span = tracing::info_span!(
+                target: crate::core::log_targets::ALBUMS,
+                "trash:db_mark_rows",
+                item_count = ids.len(),
+                operation_id = ?trace_id,
+            );
+            let _entered = span.enter();
             let mut changed = Vec::new();
             for id in ids {
                 let item = db::get_media_item(pool, id.get())?;
@@ -467,18 +529,11 @@ fn execute_command(
             }
             Ok(DbCommandResult::MediaItems(changed))
         }
-        DbCommand::CommitMovedToTrash { items } => {
+        DbCommand::CommitMovedToTrash { items, .. } => {
             if !items.is_empty() {
-                crate::core::albums::refresh(pool)?;
                 events.send(DomainEvent::MediaMovedToTrash {
                     source: ChangeSource::UserInteractive,
                     items: items.clone(),
-                });
-                events.send(DomainEvent::AlbumsChanged {
-                    source: ChangeSource::UserInteractive,
-                    affected_folders: items.iter().map(|item| item.folder_path.clone()).collect(),
-                    affected_virtual: Vec::new(),
-                    live_count_delta: -(items.len() as i64),
                 });
             }
             Ok(DbCommandResult::MediaItems(items))

@@ -93,3 +93,34 @@ fn refresh_caches_virtual_albums_but_folder_list_excludes_them() {
             "list_with_favorites should use cached virtual album rows instead of rescanning media_items"
         );
 }
+
+#[test]
+fn folder_cover_lookup_uses_file_mtime_index() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("albums-cover-index.db")).unwrap();
+    let conn = pool.get().unwrap();
+    let mut stmt = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT uri FROM media_items
+             WHERE folder_path = ?1 AND trashed_at IS NULL
+             ORDER BY file_mtime DESC
+             LIMIT 1",
+        )
+        .unwrap();
+    let plan = stmt
+        .query_map(["/pictures"], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+
+    assert!(
+        plan.contains("idx_media_folder_mtime"),
+        "folder-cover lookup must use the ordered partial index: {plan}"
+    );
+    assert!(
+        !plan.contains("TEMP B-TREE"),
+        "folder-cover lookup must not sort each folder in a temporary B-tree: {plan}"
+    );
+}

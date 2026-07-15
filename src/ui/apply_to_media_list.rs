@@ -32,6 +32,13 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             remove_uris_batch(list, uris);
         }
         DomainEvent::MediaMovedToTrash { items, .. } => {
+            let span = tracing::info_span!(
+                target: crate::core::log_targets::BROWSING,
+                "trash:apply_live_list_removal",
+                item_count = items.len(),
+                list_len_before = list.n_items(),
+            );
+            let _entered = span.enter();
             tracing::debug!(
                 target: crate::core::log_targets::BROWSING,
                 "TRASH_TRACE ui_apply_moved_to_trash_begin list_len={} count={} ids={:?}",

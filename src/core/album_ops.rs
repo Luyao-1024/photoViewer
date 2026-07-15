@@ -156,6 +156,7 @@ pub fn delete_albums_to_trash_with_actor(
         for item in items {
             let prepared = db_actor.execute_blocking(DbCommand::MarkTrashed {
                 ids: vec![MediaId::from(item.id)],
+                trace_id: None,
             })?;
             let DbCommandResult::MediaItems(mut marked) = prepared else {
                 return Err(AppError::Backend(
@@ -175,6 +176,7 @@ pub fn delete_albums_to_trash_with_actor(
 
             db_actor.execute_blocking(DbCommand::CommitMovedToTrash {
                 items: vec![marked_item.clone()],
+                trace_id: None,
             })?;
             combined.changed_ids.push(MediaId::from(item.id));
             combined.changed_items.push(marked_item);

@@ -774,6 +774,7 @@ impl SearchPage {
         if ids.is_empty() {
             return;
         }
+        let trash_trace = crate::ui::trash_fallback::TrashMoveTrace::begin("search", ids.len());
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "TRASH_TRACE search_delete_requested count={} ids={:?}",
@@ -787,6 +788,7 @@ impl SearchPage {
             let prepared = db_actor
                 .execute(DbCommand::MarkTrashed {
                     ids: ids_for_worker,
+                    trace_id: Some(trash_trace.operation_id()),
                 })
                 .await
                 .ok();
@@ -798,12 +800,14 @@ impl SearchPage {
                 );
                 return;
             };
+            trash_trace.marked(items.len());
             if let Some(this) = weak.upgrade() {
                 crate::ui::trash_fallback::move_marked_items_with_fallback(
                     &this,
                     pool,
                     db_actor,
                     items,
+                    trash_trace,
                     move |moved_ids| {
                         if let Some(this) = weak.upgrade() {
                             this.remove_media_ids_from_results(&moved_ids);

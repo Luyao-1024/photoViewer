@@ -56,6 +56,15 @@ thumbnail tile when the user returns to the page.
 SQLite transaction. Sidebar snapshots can run on another pooled connection; if
 the refresh exposes the post-`DELETE`/pre-`INSERT` state, the sidebar briefly
 sees only virtual albums and the Albums group shrinks before expanding again.
+The refresh selects each folder's latest `file_mtime` media as its implicit
+cover. That correlated lookup must remain supported by the partial
+`idx_media_folder_mtime(folder_path, file_mtime DESC) WHERE trashed_at IS NULL`
+index; otherwise a large library sorts each folder into a temporary B-tree on
+every refresh, making a small trash mutation slow.
+`CommitMovedToTrash` must not synchronously rebuild this projection. It commits
+the media mutation and emits `MediaMovedToTrash`; the UI's
+`RefreshCoordinator` performs the coalesced background rebuild, so selection
+and the live photo grid update immediately while sidebar counts converge.
 
 Startup must not synchronously block on sidebar album projections. The window
 initially shows the Photos row count from the already-loaded GTK model window,

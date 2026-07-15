@@ -31,6 +31,12 @@ CREATE INDEX IF NOT EXISTS idx_media_folder
 CREATE INDEX IF NOT EXISTS idx_media_folder_sort
     ON media_items(folder_path, COALESCE(taken_at, file_mtime) DESC, id DESC)
     WHERE trashed_at IS NULL;
+-- `albums::refresh` selects the newest file-mtime cover for every folder.
+-- Keep that correlated lookup ordered by the index, rather than building a
+-- temporary sort for each folder during a full materialized-view refresh.
+CREATE INDEX IF NOT EXISTS idx_media_folder_mtime
+    ON media_items(folder_path, file_mtime DESC)
+    WHERE trashed_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_media_trashed
     ON media_items(trashed_at)     WHERE trashed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_blake3

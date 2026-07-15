@@ -57,11 +57,13 @@ impl ViewerPage {
                     item.id,
                     item.uri
                 );
+                let trash_trace = crate::ui::trash_fallback::TrashMoveTrace::begin("viewer", 1);
                 let weak_after = this.downgrade();
                 glib::spawn_future_local(async move {
                     let prepared = db_actor
                         .execute(DbCommand::MarkTrashed {
                             ids: vec![MediaId::from(item_id)],
+                            trace_id: Some(trash_trace.operation_id()),
                         })
                         .await;
                     let Ok(crate::core::DbCommandResult::MediaItems(mut items)) = prepared else {
@@ -100,6 +102,7 @@ impl ViewerPage {
                         );
                         return;
                     };
+                    trash_trace.marked(1);
 
                     let weak_for_callback = this.downgrade();
                     crate::ui::trash_fallback::move_marked_items_with_fallback(
@@ -107,6 +110,7 @@ impl ViewerPage {
                         pool,
                         db_actor,
                         vec![item],
+                        trash_trace,
                         move |moved_ids| {
                             if !moved_ids.iter().any(|id| id.get() == item_id) {
                                 return;
