@@ -348,22 +348,6 @@ impl VirtualMediaModel {
             .collect()
     }
 
-    /// Rebind all currently warm media positions without changing their data.
-    /// Selection is application-owned by stable `MediaId`, so a GridView cell
-    /// needs this small notification when selection changes while it remains
-    /// bound to the same slot object.
-    pub fn refresh_ready_slots(&self) {
-        let positions = {
-            let state = self.imp().state.borrow();
-            state
-                .ready_by_offset
-                .keys()
-                .filter_map(|offset| state.layout.slot_for_media_offset(*offset))
-                .collect()
-        };
-        self.emit_replacements(positions);
-    }
-
     fn emit_replacements(&self, mut positions: Vec<u32>) {
         let _span =
             tracing::debug_span!("vgrid:emit_replacements", positions = positions.len(),).entered();

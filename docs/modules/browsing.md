@@ -221,6 +221,10 @@ Media activation is debounced while opening `ViewerPage` on the shared `AdwNavig
 Photos multi-select state is owned by each `VirtualMediaGrid` as a stable
 `MediaId` set. A recycled factory cell derives its checkmark from that set when
 it binds; selection must not depend on a realized cell or a FlowBox child.
+Changing selection updates the CSS class only on realized factory cells whose
+`MediaId` changed; it must not emit a `ListModel` replacement, because even one
+replacement can recreate a GridView cell, reset its scroll adjustment, and
+flash the page.
 Context-menu entry enables multi-select before selecting its target, and
 `clear_selection` updates every mode grid. See [`ui-design.md`](ui-design.md)
 "Media Grids And Tiles".

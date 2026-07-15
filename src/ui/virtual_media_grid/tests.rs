@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::media_grid::test_support::{insert_sample_item, noop_callbacks, sample_item};
+use crate::ui::square_tile::SquareTile;
 
 #[gtk::test]
 fn active_grid_seeds_the_initial_window_without_waiting_for_metadata() {
@@ -22,6 +23,47 @@ fn active_grid_seeds_the_initial_window_without_waiting_for_metadata() {
         crate::ui::media_list::media_item_at(&viewer_seed, 0).map(|item| item.id),
         Some(2)
     );
+}
+
+#[gtk::test]
+fn selection_updates_realized_tile_without_replacing_the_list_model() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.jpg")));
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), true);
+    let media_id = MediaId::from(1);
+
+    let tile = SquareTile::new();
+    grid.register_factory_cell(factory::FactoryCell {
+        tile: tile.clone(),
+        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+            grid.layout_generation(),
+            0,
+            media_id,
+            None,
+        )))),
+    });
+
+    let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let captured_changes = changes.clone();
+    grid.model()
+        .connect_items_changed(move |_, position, removed, added| {
+            captured_changes
+                .borrow_mut()
+                .push((position, removed, added));
+        });
+
+    grid.set_multi_select_mode(true);
+    grid.toggle_selection(media_id);
+    assert!(tile.has_css_class("media-selected"));
+    assert!(changes.borrow().is_empty());
+
+    grid.toggle_selection(media_id);
+    assert!(!tile.has_css_class("media-selected"));
+    assert!(changes.borrow().is_empty());
 }
 
 #[gtk::test]

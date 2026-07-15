@@ -608,19 +608,26 @@ impl VirtualMediaGrid {
     pub fn select_ids(&self, ids: &[MediaId]) {
         self.imp().is_multi_select_mode.set(!ids.is_empty());
         let next = ids.iter().copied().collect::<HashSet<_>>();
-        let changed = *self.imp().selected.borrow() != next;
+        let changed_ids = self
+            .imp()
+            .selected
+            .borrow()
+            .symmetric_difference(&next)
+            .copied()
+            .collect::<HashSet<_>>();
+        let changed = !changed_ids.is_empty();
         *self.imp().selected.borrow_mut() = next;
-        self.sync_visible_selection();
+        self.sync_visible_selection(&changed_ids);
         if changed {
             self.fire_selection_changed();
         }
     }
 
     pub fn clear_selection(&self) {
-        let changed = !self.imp().selected.borrow().is_empty();
-        self.imp().selected.borrow_mut().clear();
+        let changed_ids = std::mem::take(&mut *self.imp().selected.borrow_mut());
+        let changed = !changed_ids.is_empty();
         self.imp().is_multi_select_mode.set(false);
-        self.sync_visible_selection();
+        self.sync_visible_selection(&changed_ids);
         if changed {
             self.fire_selection_changed();
         }
@@ -1468,18 +1475,20 @@ impl VirtualMediaGrid {
     }
 
     fn ensure_context_selection(&self, media_id: MediaId) -> Vec<MediaId> {
-        let changed = {
+        let changed_ids = {
             let mut selected = self.imp().selected.borrow_mut();
             if selected.contains(&media_id) {
-                false
+                HashSet::new()
             } else {
+                let mut changed_ids = std::mem::take(&mut *selected);
                 selected.clear();
                 selected.insert(media_id);
-                true
+                changed_ids.insert(media_id);
+                changed_ids
             }
         };
-        if changed {
-            self.sync_visible_selection();
+        if !changed_ids.is_empty() {
+            self.sync_visible_selection(&changed_ids);
             self.fire_selection_changed();
         }
         self.selected_ids_sorted()
@@ -1491,7 +1500,7 @@ impl VirtualMediaGrid {
             selected.remove(&media_id);
         }
         drop(selected);
-        self.sync_visible_selection();
+        self.sync_visible_selection(&HashSet::from([media_id]));
         self.fire_selection_changed();
     }
 
@@ -1501,8 +1510,28 @@ impl VirtualMediaGrid {
         ids
     }
 
-    fn sync_visible_selection(&self) {
-        self.model().refresh_ready_slots();
+    fn sync_visible_selection(&self, changed_ids: &HashSet<MediaId>) {
+        if changed_ids.is_empty() {
+            return;
+        }
+        // Do not emit ListModel replacements for selection. GtkGridView
+        // recreates even a single replacement cell, which flashes that tile
+        // and can reset the scroll adjustment. Factory cells already retain
+        // their stable MediaId binding, so update only their CSS state.
+        for cell in self.imp().factory_cells.borrow().iter() {
+            let Some(binding) = cell.binding.borrow().as_ref().cloned() else {
+                continue;
+            };
+            let media_id = binding.media_id();
+            if !changed_ids.contains(&media_id) {
+                continue;
+            }
+            if self.is_selected(media_id) {
+                cell.tile.add_css_class("media-selected");
+            } else {
+                cell.tile.remove_css_class("media-selected");
+            }
+        }
     }
 
     fn fire_selection_changed(&self) {
