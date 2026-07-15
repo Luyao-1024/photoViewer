@@ -33,6 +33,10 @@ struct PhotosFixture {
     pool: db::DbPool,
     loader: Arc<ThumbnailLoader>,
     media_list: gtk::gio::ListStore,
+    // Stage 5 retires `build_photos_page_with_nav` (and this struct) entirely;
+    // the migrated flows now read `shell.photos`, so this field is only
+    // constructed, never read, until the remaining flows move over.
+    #[allow(dead_code)]
     page: PhotosPage,
     nav: adw::NavigationView,
     items: Vec<MediaItem>,
@@ -76,17 +80,17 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
 }
 
 fn search_result_activation_opens_one_viewer_while_pending() {
-    let fixture = build_photos_page_with_nav();
-    let page = SearchPage::new(fixture.pool.clone(), fixture.loader.clone());
-    page.set_nav_target(&fixture.nav);
-    fixture.nav.push(&page);
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let page = SearchPage::new(shell.pool.clone(), shell.loader.clone());
+    page.set_nav_target(&nav);
+    nav.push(&page);
 
     page.imp().search_entry.get().set_text("one");
     assert!(
-        wait_until(Duration::from_secs(2), || first_flowbox_child(
-            page.upcast_ref()
-        )
-        .is_some()),
+        wait_until(Duration::from_secs(2), || {
+            first_flowbox_child(page.upcast_ref()).is_some()
+        }),
         "SearchPage should render a result tile for the fixture query"
     );
 
@@ -103,25 +107,21 @@ fn search_result_activation_opens_one_viewer_while_pending() {
     flow.emit_by_name::<()>("child-activated", &[&first_tile]);
 
     assert_eq!(
-        fixture.nav.navigation_stack().n_items(),
+        nav.navigation_stack().n_items(),
         3,
         "rapid repeated Search result activation should push only one viewer page"
     );
     assert!(
-        fixture
-            .nav
-            .visible_page()
-            .and_downcast::<ViewerPage>()
-            .is_some(),
+        nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "search result activation should open the viewer page"
     );
 }
 
 fn mode_selector_click_switches_photos_view() {
-    let fixture = build_photos_page_with_nav();
-    let selector = find_descendant::<ModeSelector>(fixture.page.upcast_ref())
+    let shell = build_full_app_shell();
+    let selector = find_descendant::<ModeSelector>(shell.photos.upcast_ref())
         .expect("PhotosPage should contain a ModeSelector");
-    let stack = find_descendant::<gtk::Stack>(fixture.page.upcast_ref())
+    let stack = find_descendant::<gtk::Stack>(shell.photos.upcast_ref())
         .expect("PhotosPage should contain a GtkStack");
 
     assert_eq!(
@@ -153,8 +153,9 @@ fn mode_selector_click_switches_photos_view() {
 }
 
 fn thumbnail_activation_opens_one_viewer() {
-    let fixture = build_photos_page_with_nav();
-    let grid = visible_photos_grid(&fixture.page);
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let grid = visible_photos_grid(&shell.photos);
 
     let first_slot = grid
         .first_media_slot()
@@ -163,30 +164,27 @@ fn thumbnail_activation_opens_one_viewer() {
     activate_virtual_grid_slot(&grid, first_slot);
 
     assert_eq!(
-        fixture.nav.navigation_stack().n_items(),
+        nav.navigation_stack().n_items(),
         2,
         "rapid repeated tile activation should push only one viewer page"
     );
     assert!(
-        fixture
-            .nav
-            .visible_page()
-            .and_downcast::<ViewerPage>()
-            .is_some(),
+        nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "thumbnail activation should open the viewer page"
     );
 }
 
 fn photos_batch_toolbar_clicks_select_favorite_and_album() {
-    let fixture = build_photos_page_with_nav();
-    let grid = visible_photos_grid(&fixture.page);
-    let first_id = MediaId::from(fixture.items[0].id);
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let grid = visible_photos_grid(&shell.photos);
+    let first_id = MediaId::from(shell.items[0].id);
 
     grid.select_ids(&[first_id]);
 
     assert!(
-        fixture
-            .page
+        shell
+            .photos
             .imp()
             .add_to_album_revealer
             .get()
@@ -194,12 +192,12 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         "selecting a tile should reveal the batch add-to-album action"
     );
     assert!(
-        fixture.page.imp().favorite_revealer.get().reveals_child(),
+        shell.photos.imp().favorite_revealer.get().reveals_child(),
         "selecting a tile should reveal the batch favorite action"
     );
     assert!(
-        fixture
-            .page
+        shell
+            .photos
             .imp()
             .delete_to_trash_revealer
             .get()
@@ -207,65 +205,57 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         "selecting a tile should reveal the batch trash action"
     );
 
-    click_button(&fixture.page.imp().select_all_btn.get());
+    click_button(&shell.photos.imp().select_all_btn.get());
     assert!(
         grid.is_all_displayed_selected(),
         "clicking Select All selects every rendered tile in the current mode"
     );
-    click_button(&fixture.page.imp().select_all_btn.get());
+    click_button(&shell.photos.imp().select_all_btn.get());
     assert!(
-        !fixture.page.imp().favorite_revealer.get().reveals_child(),
+        !shell.photos.imp().favorite_revealer.get().reveals_child(),
         "clicking the toggled Select All button clears selection and hides batch actions"
     );
 
     grid.select_ids(&[first_id]);
-    click_button(&fixture.page.imp().favorite_btn.get());
-    let favorite_id = fixture.items[0].id;
+    click_button(&shell.photos.imp().favorite_btn.get());
+    let favorite_id = shell.items[0].id;
     assert!(
-        wait_until(Duration::from_secs(2), || db::is_media_favorite(
-            &fixture.pool,
-            favorite_id
-        )
-        .unwrap_or(false)),
+        wait_until(Duration::from_secs(2), || {
+            db::is_media_favorite(&shell.pool, favorite_id).unwrap_or(false)
+        }),
         "clicking the batch favorite button should persist favorite state"
     );
     assert!(
-        wait_until(Duration::from_secs(2), || !fixture
-            .page
-            .imp()
-            .favorite_revealer
-            .get()
-            .reveals_child()),
+        wait_until(Duration::from_secs(2), || {
+            !shell.photos.imp().favorite_revealer.get().reveals_child()
+        }),
         "favorite action should clear the previous selection before the next batch action"
     );
 
     grid.select_ids(&[first_id]);
     assert!(
-        wait_until(Duration::from_secs(2), || fixture
-            .page
-            .imp()
-            .add_to_album_btn
-            .get()
-            .is_visible()),
+        wait_until(Duration::from_secs(2), || {
+            shell.photos.imp().add_to_album_btn.get().is_visible()
+        }),
         "selecting a tile after favorite should expose the batch add-to-album action"
     );
-    click_button(&fixture.page.imp().add_to_album_btn.get());
+    click_button(&shell.photos.imp().add_to_album_btn.get());
     assert_eq!(
-        fixture.nav.navigation_stack().n_items(),
+        nav.navigation_stack().n_items(),
         2,
         "clicking Add to Album should push the album picker page"
     );
 }
 
 fn viewer_chrome_clicks_drive_visible_operations() {
-    photo_viewer::ui::grid_css::install();
-    let fixture = build_photos_page_with_nav();
-    let viewer = ViewerPage::new(fixture.media_list.clone(), 0);
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let viewer = ViewerPage::new(shell.media_list.clone(), 0);
     let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
-    let db_actor = photo_viewer::core::start_db_actor(fixture.pool.clone(), event_sender);
-    viewer.set_edit_target(&fixture.nav, fixture.pool.clone());
+    let db_actor = photo_viewer::core::start_db_actor(shell.pool.clone(), event_sender);
+    viewer.set_edit_target(&nav, shell.pool.clone());
     viewer.set_db_actor(db_actor);
-    viewer.set_thumbnail_loader(fixture.loader.clone());
+    viewer.set_thumbnail_loader(shell.loader.clone());
     viewer.show_at(0);
 
     let nav_events = Rc::new(RefCell::new(Vec::new()));
@@ -307,12 +297,14 @@ fn viewer_chrome_clicks_drive_visible_operations() {
         .name_entry
         .get()
         .emit_by_name::<()>("activate", &[]);
-    let renamed_path = fixture._tmp.path().join("photos").join("renamed.jpg");
+    let renamed_path = shell._tmp.path().join("photos").join("renamed.jpg");
     assert!(
-        wait_until(Duration::from_secs(2), || renamed_path.exists()
-            && db::get_media_item(&fixture.pool, fixture.items[0].id)
-                .map(|item| item.display_name() == "renamed.jpg")
-                .unwrap_or(false)),
+        wait_until(Duration::from_secs(2), || {
+            renamed_path.exists()
+                && db::get_media_item(&shell.pool, shell.items[0].id)
+                    .map(|item| item.display_name() == "renamed.jpg")
+                    .unwrap_or(false)
+        }),
         "inline rename should preserve the original extension and update the DB item"
     );
     click_button(&viewer.imp().details_close_btn.get());
@@ -357,10 +349,10 @@ fn viewer_chrome_clicks_drive_visible_operations() {
     );
 
     click_button(&viewer.imp().favorite_btn.get());
-    let favorite_id = fixture.items[0].id;
+    let favorite_id = shell.items[0].id;
     assert!(
         wait_until(Duration::from_secs(2), || db::is_media_favorite(
-            &fixture.pool,
+            &shell.pool,
             favorite_id
         )
         .unwrap_or(false)),
@@ -866,6 +858,25 @@ fn build_full_app_shell() -> AppShell {
     photos.set_db_actor(db_actor.clone());
     window.show_photos_browsing_page(&photos);
     window.connect_sidebar(&nav);
+
+    // Realize the window so production code paths that gate on widget
+    // visibility (e.g. PhotosPage::open_viewer's `is_visible()` guard, which
+    // bails when a viewer/search/trash page is on top of the nav stack) treat
+    // the browsing root as actually shown. Without `present()`, the GtkWindow
+    // ancestor stays `visible == false` and every `is_visible()` check below
+    // the window reports false — the bare `build_photos_page_with_nav` fixture
+    // sidesteps this because its nav has no window ancestor. Pump the main
+    // loop so realization/map complete before the flow bodies run.
+    window.present();
+    let ctx = glib::MainContext::default();
+    let realize_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < realize_deadline {
+        while ctx.iteration(false) {}
+        if photos.is_visible() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     AppShell {
         _app: app,
