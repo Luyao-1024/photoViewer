@@ -103,10 +103,9 @@ These album detail loads must stay behind `MediaRepository` and use SQL-level
 filtering/counting; do not load the full live media table and filter in Rust
 when switching albums. Opening an album synchronously loads only the initial
 model window chosen by the shared `runtime_config::progressive_render_plan`,
-then the `MediaGrid` renders a viewport-sized seed and progressively fills the
-rest of that loaded window. A bounded continuation window may be backfilled up
-to the UI media-list cap. Do not backfill the full album into the GTK
-`ListStore`; viewer navigation can resolve off-window neighbours through
+then the Day `VirtualMediaGrid` renders that viewport-sized seed and loads the
+remaining album query by virtual ranges. Do not backfill the full album into
+the GTK `ListStore`; viewer navigation can resolve off-window neighbours through
 repository queries. A favorite/trash change refreshes the visible virtual-album
 window and sidebar counts without materializing the complete virtual album.
 
@@ -174,11 +173,13 @@ a fallback, but restore and permanent-delete use the same DB projection and
 **The Trash view is fully reconciled with the configured trash roots at startup (`trash::reconcile_trash`), and kept live thereafter.** Bidirectional: it adds trashed rows for trash entries whose original path was under the pictures dir (inserting from the `Trash/files` copy under the original uri, or marking an existing live row), and prunes DB trashed rows whose file is no longer in any known trash root (externally emptied). Restored files (original present) are left to the scan. The watcher also watches the trash dirs: external restore/empty/delete is debounced → re-reconciled → `TrashChanged` → the visible Trash view refreshes without a page switch. See [`storage.md`](storage.md).
 System trash roots contain documents and other non-media files too; entries whose original path is not a supported image/video extension are normal skips and must not be sent through metadata decoding or logged as reconciliation warnings.
 
-Trash UI loads a bounded initial repository page capped by
-`runtime_config::ui_media_list_cap()`; do not populate the GTK model with the
-entire trash table during page construction. Viewer previous/next from Trash
-uses a DB-level `trashed_at DESC, id DESC` neighbor query, so navigation should
-not re-materialize the full trash page either. Empty Trash is the only flow that
+Trash uses a query-backed Day `VirtualMediaGrid`. It exposes a logical slot for
+every trashed media row while keeping only viewport-adjacent records resident;
+thumbnail reads resolve the actual trash-file URI while the grid keeps the
+original media identity for selection and mutations. Do not populate the GTK
+model with the entire trash table. Viewer previous/next from Trash uses a
+DB-level `trashed_at DESC, id DESC` neighbor query, so navigation should not
+re-materialize the full trash page either. Empty Trash is the only flow that
 intentionally walks the full trash set because it is applying a destructive
 operation to every item.
 

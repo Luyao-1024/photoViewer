@@ -135,13 +135,13 @@
           <div class="row active hotspot" tabindex="0" data-ui="trash-nav-row" data-name="回收站导航行" data-impl="trash_list row" data-props="进入 TrashPage；位于侧栏稳定底部。"><span class="icon">T</span><span>回收站</span><span class="count">9</span></div>
         </div>
       </aside>
-      <main class="content hotspot" tabindex="0" data-ui="trash-page" data-name="回收站页" data-impl="$TrashPage : Adw.NavigationPage" data-props="header + Adw.Banner + Gtk.FlowBox + Gtk.ActionBar。">
+      <main class="content hotspot" tabindex="0" data-ui="trash-page" data-name="回收站页" data-impl="$TrashPage : Adw.NavigationPage" data-props="header + Adw.Banner + VirtualMediaGrid + Gtk.ActionBar。">
         <div class="headerbar hotspot" tabindex="0" data-ui="trash-header" data-name="回收站顶栏" data-impl="Adw.HeaderBar header_bar" data-props="右侧清空回收站是 destructive action。">
           <span class="header-title">回收站</span>
           <button class="button danger hotspot" tabindex="0" data-ui="empty-trash-button" data-name="清空回收站" data-impl="Gtk.Button empty_btn .destructive-action" data-props="永久删除入口，应有确认。">清空</button>
         </div>
         <div class="banner hotspot" tabindex="0" data-ui="trash-banner" data-name="回收站横幅" data-impl="Adw.Banner trash_banner" data-props="解释恢复窗口和永久删除行为。">回收站中的项目将在保留期后永久删除。</div>
-        <div class="grid-page hotspot" tabindex="0" data-ui="trash-flowbox" data-name="回收站缩略图网格" data-impl="Gtk.FlowBox flow_box .thumb-grid" data-props="多选；复用缩略图视觉，但数据来自 trash projection。">
+        <div class="grid-page hotspot" tabindex="0" data-ui="trash-content-stack" data-name="回收站虚拟缩略图网格" data-impl="Gtk.Stack content_stack → VirtualMediaGrid (MediaQuery::Trash)" data-props="多选；只保持视口附近的 trash projection，缩略图从实际回收站文件读取。">
           <div class="tile-grid compact">
             <div class="tile selected"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
             <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>

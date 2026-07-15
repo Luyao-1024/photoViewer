@@ -19,8 +19,9 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
-use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
+use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
+use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -37,6 +38,7 @@ mod imp {
         pub album: RefCell<Option<Album>>,
         pub nav_view: RefCell<Option<adw::NavigationView>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
+        pub grid: RefCell<Option<VirtualMediaGrid>>,
         /// Debounces media activation while NavigationView is pushing the
         /// viewer, matching PhotosPage's grid behavior.
         pub viewer_open_pending: Cell<bool>,
@@ -78,7 +80,7 @@ gtk::glib::wrapper! {
 
 impl AlbumDetailPage {
     /// Build an `AlbumDetailPage` populated with a pre-filtered media list.
-    /// The grid uses the same `MediaGrid` Day grouping as `PhotosPage`.
+    /// The grid uses the same virtual Day grouping as `PhotosPage`.
     #[tracing::instrument(
         name = "album_detail:new",
         skip(album, media_list, master_media_list, pool, loader)
@@ -130,14 +132,7 @@ impl AlbumDetailPage {
                 let weak = obj.downgrade();
                 Rc::new(move |media_id| {
                     if let Some(this) = weak.upgrade() {
-                        let Some(media_list) = this.imp().media_list.borrow().as_ref().cloned()
-                        else {
-                            return;
-                        };
-                        let Some(index) = index_for_media_id(&media_list, media_id) else {
-                            return;
-                        };
-                        this.open_viewer(media_id, index);
+                        this.open_viewer_for_media_id(media_id);
                     }
                 })
             };
@@ -158,8 +153,15 @@ impl AlbumDetailPage {
                     }
                 })
             };
-            let grid = MediaGrid::new_for_album_with_context_menu(
+            let grid = VirtualMediaGrid::new_for_query(
                 media_list,
+                media_query_for_album(
+                    obj.imp()
+                        .album
+                        .borrow()
+                        .as_ref()
+                        .expect("album detail album initialized"),
+                ),
                 GroupBy::Day,
                 loader,
                 MediaGridCallbacks {
@@ -171,8 +173,10 @@ impl AlbumDetailPage {
                     on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                     on_set_album_cover: Some(on_set_album_cover),
                 },
+                true,
             );
             grid.set_context_menu_overlay(Some(&obj.imp().grid_overlay.get()));
+            *obj.imp().grid.borrow_mut() = Some(grid.clone());
             obj.imp().content_box.get().append(&grid);
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
@@ -347,7 +351,33 @@ impl AlbumDetailPage {
             .map(|album| album.folder_path.clone())
     }
 
-    fn open_viewer(&self, media_id: MediaId, global_index: u32) {
+    fn open_viewer_for_media_id(&self, media_id: MediaId) {
+        let media_list = self
+            .imp()
+            .grid
+            .borrow()
+            .as_ref()
+            .and_then(|grid| grid.viewer_seed_for(media_id))
+            .or_else(|| {
+                self.imp()
+                    .media_list
+                    .borrow()
+                    .as_ref()
+                    .filter(|list| index_for_media_id(list, media_id).is_some())
+                    .cloned()
+            });
+        let Some(media_list) = media_list else {
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                media_id = media_id.get(),
+                "AlbumDetailPage: ignoring viewer activation for an unready virtual slot"
+            );
+            return;
+        };
+        self.open_viewer(media_id, media_list);
+    }
+
+    fn open_viewer(&self, media_id: MediaId, media_list: gtk::gio::ListStore) {
         if self.imp().viewer_open_pending.get() {
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
@@ -356,10 +386,6 @@ impl AlbumDetailPage {
             return;
         }
 
-        let media_list = match self.imp().media_list.borrow().as_ref() {
-            Some(l) => l.clone(),
-            None => return,
-        };
         let nav = match self.imp().nav_view.borrow().as_ref() {
             Some(n) => n.clone(),
             None => return,
@@ -379,6 +405,7 @@ impl AlbumDetailPage {
             .as_ref()
             .map(media_query_for_album)
             .unwrap_or(MediaQuery::LiveAll);
+        let initial_index = index_for_media_id(&media_list, media_id).unwrap_or(0);
         let viewer = ViewerPage::new_for_query(query, media_id, media_list);
         if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
             viewer.set_edit_target(&nav, pool.clone());
@@ -409,7 +436,7 @@ impl AlbumDetailPage {
         if let Some(loader) = self.imp().loader.borrow().as_ref().cloned() {
             viewer.set_thumbnail_loader(loader);
         }
-        viewer.show_at(global_index);
+        viewer.show_at(initial_index);
 
         if let Some(master_list) = self.imp().master_media_list.borrow().as_ref().cloned() {
             viewer.connect_item_trashed(move |item_id| {

@@ -24,29 +24,11 @@ template $TrashPage : Adw.NavigationPage {
       revealed: true;
     }
 
-    Gtk.ScrolledWindow scrolled {
+    Gtk.Stack content_stack {
       vexpand: true;
-
-      child: Gtk.Viewport grid_viewport {
-        scroll-to-focus: true;
-
-        child: Gtk.Box grid_content {
-          orientation: vertical;
-
-          Gtk.FlowBox flow_box {
-            homogeneous: true;
-            selection-mode: multiple;
-            column-spacing: 2;
-            row-spacing: 2;
-            margin-start: 12;
-            margin-end: 12;
-            margin-top: 12;
-            margin-bottom: 12;
-            max-children-per-line: 100;
-            css-classes: ["thumb-grid"];
-          }
-        };
-      };
+      hexpand: true;
+      transition-type: crossfade;
+      transition-duration: 200;
     }
 
     Gtk.ActionBar action_bar {

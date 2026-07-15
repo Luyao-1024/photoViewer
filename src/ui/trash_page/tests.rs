@@ -2,9 +2,8 @@ use super::*;
 use chrono::Utc;
 use std::path::PathBuf;
 
-fn empty_loader() -> Arc<ThumbnailLoader> {
+fn loader_for(pool: DbPool) -> Arc<ThumbnailLoader> {
     let dir = tempfile::tempdir().unwrap().keep();
-    let pool = db::init_pool(&dir.join("test.db")).unwrap();
     Arc::new(ThumbnailLoader::new(pool, dir.join("cache")))
 }
 
@@ -37,43 +36,27 @@ fn selected_indices_map_to_media_item_ids_not_indices() {
 }
 
 #[gtk::test]
-fn trash_flow_box_matches_photo_grid_day_view_style() {
+fn trash_uses_query_backed_virtual_grid() {
     let _ = gtk::init();
     let page = TrashPage::default();
-    let flow = page.imp().flow_box.get();
-
-    // grid_viewport now wraps a crossfade Stack (holding the grid content +
-    // empty-state page); the flow_box still lives inside the grid_content Box
-    // that is the Stack's "content" child.
     assert!(page
         .imp()
-        .grid_viewport
+        .content_stack
         .get()
-        .child()
-        .and_then(|child| child.downcast::<gtk::Stack>().ok())
+        .child_by_name("empty")
         .is_some());
-    assert!(flow
-        .parent()
-        .and_then(|parent| parent.downcast::<gtk::Box>().ok())
-        .is_some());
-    assert!(flow.has_css_class("thumb-grid"));
-    assert!(!flow.has_css_class("trash-grid"));
-    assert!(flow.is_homogeneous());
-    assert_eq!(flow.column_spacing(), 2);
-    assert_eq!(flow.row_spacing(), 2);
-    assert_eq!(flow.max_children_per_line(), 100);
-    assert_eq!(flow.selection_mode(), gtk::SelectionMode::Multiple);
+    assert!(page.imp().grid.borrow().is_none());
 }
 
 #[gtk::test]
-fn trash_tile_uses_day_view_square_thumbnail_spec() {
+fn trash_virtual_grid_keeps_multi_select_enabled() {
     let _ = gtk::init();
-    let tile = build_trash_tile(media_item(7), empty_loader());
-
-    assert!(tile.is::<crate::ui::square_tile::SquareTile>());
-    assert_eq!(tile.target(), TRASH_TILE_PX);
-    assert_eq!(TRASH_TILE_PX, 270);
-    assert_eq!(TRASH_THUMB_SIZE, ThumbnailSize::Large);
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let page = TrashPage::new(pool.clone(), loader_for(pool));
+    let grid = page.imp().grid.borrow().as_ref().cloned().unwrap();
+    assert!(grid.is_multi_select_mode());
+    assert_eq!(grid.mode(), crate::core::section_model::GroupBy::Day);
 }
 
 /// 选取 gio 可支持的真实文件系统路径（拒绝 tmpfs）。
@@ -99,8 +82,7 @@ fn pump_until<F: Fn() -> bool>(ctx: &glib::MainContext, max_iters: usize, done: 
     }
 }
 
-/// Insert a single trashed item and pump the main loop until the
-/// `TrashPage`'s FlowBox has loaded exactly one tile for it.
+/// Insert a single trashed item and wait until the virtual query exposes it.
 fn page_with_one_trashed_item() -> (TrashPage, i64, std::path::PathBuf) {
     let _ = gtk::init();
     let ctx = glib::MainContext::default();
@@ -135,33 +117,32 @@ fn page_with_one_trashed_item() -> (TrashPage, i64, std::path::PathBuf) {
     trash::move_to_trash(&uri).unwrap();
     db::mark_trashed(&pool, id).unwrap();
 
-    let page = TrashPage::new(pool.clone(), empty_loader());
-    let flow = page.imp().flow_box.get();
-    pump_until(&ctx, 100, || flow.observe_children().n_items() == 1);
+    let page = TrashPage::new(pool.clone(), loader_for(pool.clone()));
+    let grid = page.imp().grid.borrow().as_ref().cloned().unwrap();
+    pump_until(&ctx, 100, || grid.logical_media_count() == 1);
     assert_eq!(
-        flow.observe_children().n_items(),
+        grid.logical_media_count(),
         1,
-        "TrashPage::new should load the one trashed item into FlowBox"
+        "TrashPage::new should load the one trashed item into VirtualMediaGrid"
     );
     (page, id, real_path)
 }
 
-/// 点 Restore 后，FlowBox 必须立即清掉已还原的项 —— 之前因为没调
-/// `page.refresh()`，tile 还残留在界面上让用户以为还原失败。
+/// Restoring must remove the item from the virtual Trash query immediately.
 #[gtk::test]
-fn restore_btn_refreshes_flow_box_after_restoring_items() {
+fn restore_btn_refreshes_virtual_grid_after_restoring_items() {
     let (page, id, real_path) = page_with_one_trashed_item();
     let ctx = glib::MainContext::default();
-    let flow = page.imp().flow_box.get();
+    let grid = page.imp().grid.borrow().as_ref().cloned().unwrap();
 
     *page.imp().trashed_ids.borrow_mut() = vec![id];
     page.imp().restore_btn.get().emit_clicked();
 
-    pump_until(&ctx, 200, || flow.observe_children().n_items() == 0);
+    pump_until(&ctx, 200, || grid.logical_media_count() == 0);
     assert_eq!(
-        flow.observe_children().n_items(),
+        grid.logical_media_count(),
         0,
-        "Flow box should be empty after restoring the only item (refresh wasn't called?)"
+        "Virtual grid should be empty after restoring the only item"
     );
 
     let _ = std::fs::remove_file(&real_path);
@@ -172,7 +153,7 @@ fn header_bar_uses_glass_header() {
     let _ = gtk::init();
     let dir = tempfile::tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
-    let page = TrashPage::new(pool, empty_loader());
+    let page = TrashPage::new(pool.clone(), loader_for(pool));
     let header_classes: Vec<String> = page
         .imp()
         .header_bar
@@ -223,10 +204,10 @@ fn restore_btn_reinserts_item_into_shared_media_list() {
     db::mark_trashed(&pool, id).unwrap();
 
     let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
-    let page = TrashPage::with_media_list(pool.clone(), empty_loader(), shared.clone());
-    let flow = page.imp().flow_box.get();
-    pump_until(&ctx, 100, || flow.observe_children().n_items() == 1);
-    assert_eq!(flow.observe_children().n_items(), 1);
+    let page = TrashPage::with_media_list(pool.clone(), loader_for(pool.clone()), shared.clone());
+    let grid = page.imp().grid.borrow().as_ref().cloned().unwrap();
+    pump_until(&ctx, 100, || grid.logical_media_count() == 1);
+    assert_eq!(grid.logical_media_count(), 1);
 
     *page.imp().trashed_ids.borrow_mut() = vec![id];
     page.imp().restore_btn.get().emit_clicked();
@@ -245,10 +226,9 @@ fn restore_btn_reinserts_item_into_shared_media_list() {
     let _ = std::fs::remove_file(&real_path);
 }
 
-/// 部分永久删除后，FlowBox 必须移除被删的项；只保留剩余的 trashed 项。
-/// 之前因为只在全空时才 `show_empty_trash`，部分删除后残留旧 tile。
+/// Partial permanent delete must retain only the remaining virtual item.
 #[gtk::test]
-fn delete_btn_refreshes_flow_box_after_partial_delete() {
+fn delete_btn_refreshes_virtual_grid_after_partial_delete() {
     let _ = gtk::init();
     let ctx = glib::MainContext::default();
 
@@ -290,24 +270,24 @@ fn delete_btn_refreshes_flow_box_after_partial_delete() {
     let id_a = mk(&path_a, "a");
     let _id_b = mk(&path_b, "b");
 
-    let page = TrashPage::new(pool.clone(), empty_loader());
-    let flow = page.imp().flow_box.get();
-    pump_until(&ctx, 100, || flow.observe_children().n_items() == 2);
+    let page = TrashPage::new(pool.clone(), loader_for(pool.clone()));
+    let grid = page.imp().grid.borrow().as_ref().cloned().unwrap();
+    pump_until(&ctx, 100, || grid.logical_media_count() == 2);
     assert_eq!(
-        flow.observe_children().n_items(),
+        grid.logical_media_count(),
         2,
-        "Both trashed items should be loaded into FlowBox"
+        "Both trashed items should be loaded into VirtualMediaGrid"
     );
 
     // 只删 A
     *page.imp().trashed_ids.borrow_mut() = vec![id_a];
     page.imp().delete_btn.get().emit_clicked();
 
-    pump_until(&ctx, 200, || flow.observe_children().n_items() == 1);
+    pump_until(&ctx, 200, || grid.logical_media_count() == 1);
     assert_eq!(
-        flow.observe_children().n_items(),
+        grid.logical_media_count(),
         1,
-        "Flow box should retain only the remaining trashed item after partial delete"
+        "Virtual grid should retain only the remaining trashed item after partial delete"
     );
 
     let _ = std::fs::remove_file(&path_a);

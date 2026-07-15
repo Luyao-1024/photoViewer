@@ -17,7 +17,8 @@ use libadwaita::prelude::*;
 use photo_viewer::core::albums::Album;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
-use photo_viewer::ui::{AlbumDetailPage, MediaGrid, ViewerPage};
+use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
+use photo_viewer::ui::{AlbumDetailPage, ViewerPage};
 
 fn item(id: i64, folder: &str, file: &str) -> MediaItem {
     MediaItem {
@@ -116,19 +117,13 @@ fn album_detail_pushes_day_grouped_grid_and_viewer() {
         .content_box
         .get()
         .first_child()
-        .and_downcast::<MediaGrid>()
-        .expect("album detail should reuse MediaGrid");
+        .and_downcast::<VirtualMediaGrid>()
+        .expect("album detail should use VirtualMediaGrid");
     assert_eq!(grid.mode(), photo_viewer::core::section_model::GroupBy::Day);
 
-    let flow = grid
-        .imp()
-        .content
-        .get()
-        .last_child()
-        .and_downcast::<gtk::FlowBox>()
-        .expect("album detail should contain a thumbnail flow box");
-    let photo = flow.child_at_index(0).expect("photo tile exists");
-    flow.emit_by_name::<()>("child-activated", &[&photo]);
+    let view = find_descendant::<gtk::GridView>(grid.upcast_ref())
+        .expect("album detail should contain a virtual GtkGridView");
+    view.emit_by_name::<()>("activate", &[&0u32]);
 
     let viewer = nav
         .visible_page()
@@ -138,4 +133,21 @@ fn album_detail_pushes_day_grouped_grid_and_viewer() {
         viewer.imp().pool.borrow().is_some(),
         "album detail viewer must receive DbPool so Delete works"
     );
+}
+
+fn find_descendant<T>(root: &gtk::Widget) -> Option<T>
+where
+    T: glib::object::IsA<gtk::Widget> + glib::object::ObjectType,
+{
+    if let Some(found) = root.downcast_ref::<T>() {
+        return Some(found.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_descendant::<T>(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
 }

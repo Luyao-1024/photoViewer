@@ -22,6 +22,7 @@ use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
+use crate::ui::virtual_media_grid::VirtualMediaGrid;
 
 const SEARCH_PREVIEW_FALLBACK_COLUMNS: usize = 8;
 const SEARCH_PREVIEW_MIN_ROWS: usize = 2;
@@ -45,6 +46,7 @@ mod imp {
         pub video_full_results: RefCell<Vec<MediaItem>>,
         pub image_grid: RefCell<Option<MediaGrid>>,
         pub video_grid: RefCell<Option<MediaGrid>>,
+        pub detail_grids: RefCell<Vec<VirtualMediaGrid>>,
         pub image_more_tile: RefCell<Option<gtk::Button>>,
         pub video_more_tile: RefCell<Option<gtk::Button>>,
         pub preview_capacity: Cell<usize>,
@@ -591,12 +593,27 @@ impl SearchPage {
             .vexpand(true)
             .hexpand(true)
             .build();
+        let term = self.imp().search_entry.get().text().trim().to_string();
+        let field = self.imp().search_field.get();
+        let query = MediaQuery::SearchKind {
+            term,
+            media_kind: media_kind.into(),
+            field,
+        };
+        let grid_ref = Rc::new(RefCell::new(None::<VirtualMediaGrid>));
         let on_activate: Rc<dyn Fn(MediaId)> = {
             let weak = self.downgrade();
-            let media_list = media_list.clone();
+            let grid_ref = grid_ref.clone();
             Rc::new(move |media_id| {
+                let Some(seed) = grid_ref
+                    .borrow()
+                    .as_ref()
+                    .and_then(|grid| grid.viewer_seed_for(media_id))
+                else {
+                    return;
+                };
                 if let Some(this) = weak.upgrade() {
-                    this.open_viewer(media_id, media_kind, media_list.clone());
+                    this.open_viewer(media_id, media_kind, seed);
                 }
             })
         };
@@ -608,8 +625,9 @@ impl SearchPage {
                 }
             })
         };
-        let grid = MediaGrid::new_for_album(
+        let grid = VirtualMediaGrid::new_for_query(
             media_list,
+            query,
             GroupBy::Year,
             loader,
             MediaGridCallbacks {
@@ -621,7 +639,10 @@ impl SearchPage {
                 on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
                 on_set_album_cover: None,
             },
+            true,
         );
+        *grid_ref.borrow_mut() = Some(grid.clone());
+        self.imp().detail_grids.borrow_mut().push(grid.clone());
         content.append(&grid);
         root.append(&content);
 
@@ -818,6 +839,9 @@ impl SearchPage {
             .video_full_results
             .borrow_mut()
             .retain(|item| !raw_ids.contains(&item.id));
+        for grid in self.imp().detail_grids.borrow().iter() {
+            grid.refresh_from_shared_projection();
+        }
     }
 }
 

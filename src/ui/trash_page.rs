@@ -3,16 +3,14 @@
 //! 布局：
 //! - `AdwHeaderBar`：标题栏
 //! - `AdwBanner`：还原 / 手动永久删除提示
-//! - `GtkScrolledWindow` + `GtkFlowBox`（multi-select）：显示已删除的媒体项
+//! - `VirtualMediaGrid`（multi-select）：显示已删除的媒体项
 //! - `GtkActionBar`：底部操作栏（仅在有选中项时 reveal）
 //!   - Cancel：清空选择
 //!   - Restore：批量还原
 //!   - Delete Permanently：批量永久删除
 //!
-//! 多选用 `GtkFlowBox::selected_children()` 收集被选中的子项索引，
-//! 这些索引对应 repository trash projection 返回的顺序 — 因此可用作
-//! `MediaItem.id` 的查找键。
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gtk4 as gtk;
@@ -31,13 +29,11 @@ use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
-use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
+use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::trash;
 use crate::ui::empty_states;
-use crate::ui::square_tile::SquareTile;
-
-const TRASH_TILE_PX: i32 = 270;
-const TRASH_THUMB_SIZE: ThumbnailSize = ThumbnailSize::Large;
+use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
+use crate::ui::virtual_media_grid::VirtualMediaGrid;
 
 fn restore_items(pool: &DbPool, db_actor: Option<&DbActorHandle>, ids: Vec<i64>) -> Vec<MediaItem> {
     let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
@@ -87,13 +83,6 @@ fn empty_trash(pool: &DbPool, db_actor: Option<&DbActorHandle>) {
     delete_items_permanently(pool, db_actor, ids);
 }
 
-fn load_trash_items(pool: DbPool) -> crate::core::Result<Vec<MediaItem>> {
-    let limit = crate::core::runtime_config::ui_media_list_cap().min(u32::MAX as usize) as u32;
-    Ok(MediaRepository::new(pool)
-        .page(MediaQuery::Trash, 0, limit)?
-        .items)
-}
-
 mod imp {
     use super::*;
 
@@ -104,22 +93,14 @@ mod imp {
         pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
-        pub visible_items: RefCell<Vec<MediaItem>>,
         pub trashed_ids: RefCell<Vec<i64>>,
-        /// Crossfade Stack (inside grid_viewport) holding the grid content and
-        /// the empty-state page, so empty<->content swaps crossfade instead of
-        /// snapping. Built in ObjectImpl::constructed.
-        pub content_stack: RefCell<Option<gtk::Stack>>,
+        pub grid: RefCell<Option<VirtualMediaGrid>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub trash_banner: TemplateChild<adw::Banner>,
         #[template_child]
-        pub scrolled: TemplateChild<gtk::ScrolledWindow>,
-        #[template_child]
-        pub grid_viewport: TemplateChild<gtk::Viewport>,
-        #[template_child]
-        pub flow_box: TemplateChild<gtk::FlowBox>,
+        pub content_stack: TemplateChild<gtk::Stack>,
         #[template_child]
         pub action_bar: TemplateChild<gtk::ActionBar>,
         #[template_child]
@@ -151,40 +132,17 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
-            // Wrap the grid content in a crossfade Stack that also holds the
-            // empty-state page, so empty<->content swaps crossfade. The Stack
-            // lives INSIDE grid_viewport: the Viewport stays scrolled's child
-            // (so the grid keeps scrolling — GtkStack is not Scrollable and
-            // cannot be scrolled's direct child), and the Stack crossfades its
-            // two children. We reparent the existing grid_content Box (the
-            // flow_box's parent) into it rather than restructuring the BLP.
-            let grid_viewport = obj.imp().grid_viewport.get();
-            // flow_box's parent is the grid_content Box (grid_viewport's child).
-            // Hold a strong ref so unparenting it below does not free it.
-            let grid_content = obj
-                .imp()
-                .flow_box
-                .get()
-                .parent()
-                .and_then(|p| p.downcast::<gtk::Box>().ok());
-            let content_stack = gtk::Stack::builder()
-                .transition_type(gtk::StackTransitionType::Crossfade)
-                .transition_duration(200)
-                .build();
-            // Set the Stack as grid_viewport's child FIRST: this unparents
-            // grid_content (the Viewport's previous child) so the add_named
-            // below does not trip gtk_widget_set_parent's "already has a
-            // parent" critical. grid_content stays alive via the local ref.
-            grid_viewport.set_child(Some(&content_stack));
-            if let Some(grid_content) = grid_content.as_ref() {
-                content_stack.add_named(grid_content, Some("content"));
-            }
             let empty = empty_states::empty_trash();
             empty.set_hexpand(true);
             empty.set_vexpand(true);
-            content_stack.add_named(&empty, Some("empty"));
-            content_stack.set_visible_child_name("content");
-            *obj.imp().content_stack.borrow_mut() = Some(content_stack);
+            obj.imp()
+                .content_stack
+                .get()
+                .add_named(&empty, Some("empty"));
+            obj.imp()
+                .content_stack
+                .get()
+                .set_visible_child_name("empty");
         }
     }
     impl WidgetImpl for TrashPage {}
@@ -246,29 +204,55 @@ impl TrashPage {
             .get()
             .set_label(&tr("trash.delete_permanently"));
 
-        let flow = obj.imp().flow_box.get();
-
-        // 选择模式：FlowBox 多选
-        flow.set_selection_mode(gtk::SelectionMode::Multiple);
-
-        // 选中变化 → 维护 selected 列表 + 切换 ActionBar revealed
-        flow.connect_selected_children_changed(glib::clone!(@weak obj => move |flow| {
-            let visible_items = obj.imp().visible_items.borrow();
-            let selected_indices = flow
-                .selected_children()
-                .iter()
-                .filter_map(|c| c.downcast_ref::<gtk::FlowBoxChild>().map(|c| c.index()))
-                .collect::<Vec<_>>();
-            let selected = selected_ids_for_indices(&visible_items, selected_indices);
-            *obj.imp().trashed_ids.borrow_mut() = selected;
-            let revealed = !obj.imp().trashed_ids.borrow().is_empty();
-            obj.imp().action_bar.get().set_revealed(revealed);
-        }));
+        let grid = VirtualMediaGrid::new_for_query(
+            gtk::gio::ListStore::new::<glib::BoxedAnyObject>(),
+            MediaQuery::Trash,
+            crate::core::section_model::GroupBy::Day,
+            loader,
+            MediaGridCallbacks {
+                on_activate: Rc::new(|_| {}),
+                on_background_changed: Rc::new(|| {}),
+                on_add_to_album: Rc::new(|_| {}),
+                on_move_to_trash: Rc::new(|_| {}),
+                on_set_favorite: Rc::new(|_, _| {}),
+                on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                on_set_album_cover: None,
+            },
+            true,
+        );
+        grid.set_thumbnail_uri_resolver(|item| match trash::trashed_file_uri(&item.uri) {
+            Ok(uri) => Some(uri),
+            Err(error) => {
+                tracing::warn!("TrashPage: failed to resolve trash thumbnail URI: {error}");
+                None
+            }
+        });
+        grid.set_multi_select_mode(true);
+        {
+            let weak = obj.downgrade();
+            let grid = grid.clone();
+            grid.clone().connect_selection_changed(move || {
+                if let Some(page) = weak.upgrade() {
+                    let selected = grid.selected_ids().into_iter().map(MediaId::get).collect();
+                    *page.imp().trashed_ids.borrow_mut() = selected;
+                    page.imp()
+                        .action_bar
+                        .get()
+                        .set_revealed(!page.imp().trashed_ids.borrow().is_empty());
+                }
+            });
+        }
+        obj.imp()
+            .content_stack
+            .get()
+            .add_named(&grid, Some("content"));
+        *obj.imp().grid.borrow_mut() = Some(grid.clone());
 
         // Cancel：清空选择 + 隐藏 ActionBar
         obj.imp().cancel_btn.get().connect_clicked(
-            glib::clone!(@weak obj, @weak flow => move |_| {
-                flow.unselect_all();
+            glib::clone!(@weak obj, @weak grid => move |_| {
+                grid.clear_selection();
+                grid.set_multi_select_mode(true);
                 *obj.imp().trashed_ids.borrow_mut() = vec![];
                 obj.imp().action_bar.get().set_revealed(false);
             }),
@@ -276,7 +260,7 @@ impl TrashPage {
 
         // Restore：批量还原
         obj.imp().restore_btn.get().connect_clicked(
-            glib::clone!(@weak obj, @weak flow => move |_| {
+            glib::clone!(@weak obj, @weak grid => move |_| {
                 let pool = match obj.imp().pool.borrow().as_ref() {
                     Some(p) => p.clone(),
                     None => return,
@@ -295,8 +279,8 @@ impl TrashPage {
                             insert_media_item_sorted(&list, item);
                         }
                     }
-                    flow.unselect_all();
-                    // refresh — 让 FlowBox 反映 DB 最新状态（trashed_at=NULL 的项消失）
+                    grid.clear_selection();
+                    grid.set_multi_select_mode(true);
                     if let Some(page) = page_weak.upgrade() {
                         page.refresh();
                     }
@@ -306,7 +290,7 @@ impl TrashPage {
 
         // Delete Permanently：批量永久删除
         obj.imp().delete_btn.get().connect_clicked(
-            glib::clone!(@weak obj, @weak flow => move |_| {
+            glib::clone!(@weak obj, @weak grid => move |_| {
                 let pool = match obj.imp().pool.borrow().as_ref() {
                     Some(p) => p.clone(),
                     None => return,
@@ -317,9 +301,8 @@ impl TrashPage {
 
                 glib::spawn_future_local(async move {
                     let _ = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, db_actor.as_ref(), ids)).await;
-                    flow.unselect_all();
-                    // refresh — 完整刷新 FlowBox（全空时自动切到空状态页面），
-                    // 避免部分删除后残留旧 tile。
+                    grid.clear_selection();
+                    grid.set_multi_select_mode(true);
                     if let Some(page) = page_weak.upgrade() {
                         page.refresh();
                     }
@@ -369,115 +352,41 @@ impl TrashPage {
                 dialog.present(&obj);
             }));
 
-        // 加载初始数据
-        let pool_clone = pool.clone();
-        let loader_clone = loader.clone();
-        let flow_weak = obj.downgrade();
-        glib::spawn_future_local(async move {
-            if let Ok(Ok(items)) =
-                gtk::gio::spawn_blocking(move || load_trash_items(pool_clone)).await
-            {
-                render_trash_items(&flow_weak, loader_clone, items);
-            }
-        });
+        obj.refresh();
 
         obj
     }
 
-    /// 刷新回收站项（清空当前 FlowBox 并重新加载）
+    /// Refresh the virtual Trash query and its empty state.
     pub fn refresh(&self) {
         let Some(pool) = self.imp().pool.borrow().clone() else {
             return;
         };
-        let Some(loader) = self.imp().loader.borrow().clone() else {
+        let Some(grid) = self.imp().grid.borrow().as_ref().cloned() else {
             return;
         };
-        // 清空当前条目与已选
-        let flow = self.imp().flow_box.get();
-        while let Some(child) = flow.first_child() {
-            flow.remove(&child);
-        }
         *self.imp().trashed_ids.borrow_mut() = vec![];
-        *self.imp().visible_items.borrow_mut() = vec![];
         self.imp().action_bar.get().set_revealed(false);
+        grid.clear_selection();
+        grid.set_multi_select_mode(true);
+        grid.refresh_from_shared_projection();
 
-        // 重新加载
         let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(Ok(items)) = gtk::gio::spawn_blocking(move || load_trash_items(pool)).await {
+            if let Ok(Ok(total)) = gtk::gio::spawn_blocking(move || {
+                MediaRepository::new(pool).count(MediaQuery::Trash)
+            })
+            .await
+            {
                 if let Some(page) = page_weak.upgrade() {
-                    render_trash_items_for_page(&page, &flow, loader, items);
+                    page.imp()
+                        .content_stack
+                        .get()
+                        .set_visible_child_name(if total == 0 { "empty" } else { "content" });
                 }
             }
         });
     }
-}
-
-fn render_trash_items(
-    page_weak: &glib::WeakRef<TrashPage>,
-    loader: Arc<ThumbnailLoader>,
-    items: Vec<MediaItem>,
-) {
-    if let Some(page) = page_weak.upgrade() {
-        let flow = page.imp().flow_box.get();
-        render_trash_items_for_page(&page, &flow, loader, items);
-    }
-}
-
-fn render_trash_items_for_page(
-    page: &TrashPage,
-    flow: &gtk::FlowBox,
-    loader: Arc<ThumbnailLoader>,
-    items: Vec<MediaItem>,
-) {
-    if items.is_empty() {
-        *page.imp().visible_items.borrow_mut() = vec![];
-        show_empty_trash(page);
-        return;
-    }
-
-    *page.imp().visible_items.borrow_mut() = items.clone();
-    if let Some(stack) = page.imp().content_stack.borrow().as_ref() {
-        stack.set_visible_child_name("content");
-    }
-    for item in items {
-        let tile = build_trash_tile(item, loader.clone());
-        flow.append(&tile);
-    }
-}
-
-fn trash_thumbnail_item(mut item: MediaItem) -> MediaItem {
-    match trash::trashed_file_uri(&item.uri) {
-        Ok(uri) => item.uri = uri,
-        Err(e) => tracing::warn!("TrashPage: failed to resolve trash thumbnail URI: {e}"),
-    }
-    item
-}
-
-fn build_trash_tile(item: MediaItem, loader: Arc<ThumbnailLoader>) -> SquareTile {
-    let tile = SquareTile::new();
-    tile.set_target(TRASH_TILE_PX);
-
-    let item = trash_thumbnail_item(item);
-    let mtime = std::time::SystemTime::from(item.file_mtime);
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    loader.request(
-        item.uri,
-        TRASH_THUMB_SIZE,
-        Some(mtime),
-        tx,
-        crate::core::thumbnails::TIER_NORMAL,
-    );
-    let tile_weak = tile.downgrade();
-    gtk::glib::spawn_future_local(async move {
-        if let Ok(loaded) = rx.await {
-            if let Some(tile) = tile_weak.upgrade() {
-                tile.set_paintable(Some(&loaded.texture));
-            }
-        }
-    });
-
-    tile
 }
 
 fn insert_media_item_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
@@ -504,6 +413,7 @@ fn media_list_contains_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
     })
 }
 
+#[cfg(test)]
 fn selected_ids_for_indices(
     items: &[MediaItem],
     indices: impl IntoIterator<Item = i32>,
@@ -512,16 +422,6 @@ fn selected_ids_for_indices(
         .into_iter()
         .filter_map(|index| items.get(index as usize).map(|item| item.id))
         .collect()
-}
-
-/// Crossfade the trash grid out and the empty-state `AdwStatusPage` in. The
-/// empty page was added to the content Stack at construction; here we just flip
-/// the visible child. Keeps the action bar (Empty All button) revealed in the
-/// header so the user can still see the page is the Trash.
-fn show_empty_trash(page: &TrashPage) {
-    if let Some(stack) = page.imp().content_stack.borrow().as_ref() {
-        stack.set_visible_child_name("empty");
-    }
 }
 
 impl Default for TrashPage {

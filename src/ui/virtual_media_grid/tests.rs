@@ -24,6 +24,51 @@ fn active_grid_seeds_the_initial_window_without_waiting_for_metadata() {
     );
 }
 
+#[gtk::test]
+fn query_backed_grid_uses_album_counts_instead_of_the_live_library() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        dir.path().join("thumbs"),
+    ));
+
+    let album_path = std::path::PathBuf::from("/tmp/album");
+    let mut album_item = sample_item(1, "album/one.jpg");
+    album_item.folder_path = album_path.clone();
+    album_item.path = album_path.join("one.jpg");
+    album_item.uri = "file:///tmp/album/one.jpg".into();
+    album_item.id = insert_sample_item(&pool, &album_item);
+
+    let other_item = sample_item(2, "elsewhere.jpg");
+    insert_sample_item(&pool, &other_item);
+
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    list.append(&glib::BoxedAnyObject::new(album_item));
+    let grid = VirtualMediaGrid::new_for_query(
+        list,
+        MediaQuery::AlbumFolder(album_path),
+        GroupBy::Day,
+        loader,
+        noop_callbacks(),
+        true,
+    );
+
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !grid.imp().metadata_ready.get() && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+
+    assert!(
+        grid.imp().metadata_ready.get(),
+        "album metadata should load"
+    );
+    assert_eq!(grid.imp().live_total.get(), 1);
+    assert_eq!(grid.model().layout().media_count(), 1);
+}
+
 #[test]
 fn authoritative_counts_keep_layout_and_range_total_in_sync_during_a_db_race() {
     let newest = SectionKey {

@@ -9,14 +9,14 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | File | Role |
 |---|---|
 | `src/ui/photos_page.rs` | Photos root page, view stack, shared store wiring |
-| `src/ui/media_grid.rs` | Bounded FlowBox grid retained for album and search surfaces |
+| `src/ui/media_grid.rs` | Bounded FlowBox grid retained for search preview surfaces |
 | `src/ui/media_grid/selection.rs` | Multi-select state, visible selection sync, context selection, and selection callbacks |
 | `src/ui/media_grid/updates.rs` | Incremental add/remove handling, deferred thumbnail-ready insertions, metadata cache adjustments, and grid rebuild implementation |
 | `src/ui/media_grid/viewport.rs` | Scroll-position viewport scan, visible thumbnail reprioritization, and scroll-triggered loading hooks |
 | `src/ui/media_grid/loading.rs` | Virtual page loading, progressive render fill, async library metadata/stats refresh, and rebuild scheduling |
 | `src/ui/media_grid/render.rs` | Tile construction, reused-tile preparation, and FlowBox child visibility sync |
 | `src/ui/media_grid/virtual_paging.rs` | Virtual scroll offset, spacer, and placeholder window helpers |
-| `src/ui/virtual_media_grid.rs` | Photos-only `GtkGridView`, lifecycle, range scheduling, and Photos-grid callbacks |
+| `src/ui/virtual_media_grid.rs` | Query-backed `GtkGridView`, lifecycle, range scheduling, and grid callbacks |
 | `src/ui/virtual_media_grid/` | Pure layout index, virtual list model, range residency coordinator, factory, and focused tests |
 | `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
@@ -24,7 +24,7 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/ui/section_header.rs` | Date/group section headers |
 | `src/core/section_model.rs` | Year/Month/Day grouping model |
 | `data/ui/photos-page.blp` | Photos page template |
-| `data/ui/media-grid.blp` | Bounded FlowBox grid template for album and search surfaces |
+| `data/ui/media-grid.blp` | Bounded FlowBox grid template for search preview surfaces |
 | `data/ui/virtual-media-grid.blp` | Direct `GtkScrolledWindow` → `GtkGridView` virtual-grid template |
 | `data/ui/mode-selector.blp` | Mode selector template |
 
@@ -47,9 +47,11 @@ NavigationView back button so it can return to the browsing root.
 `PhotosPage` owns three Year/Month/Day `VirtualMediaGrid` instances backed by
 the same bounded `gio::ListStore`. Photos always uses the virtual
 `GtkGridView`; there is no runtime backend selector or FlowBox fallback. A
-legacy `photos_grid_backend` value left in `runtime.json` is ignored. Albums,
-search previews, and trash continue to use their separate `MediaGrid`/FlowBox
-implementations.
+legacy `photos_grid_backend` value left in `runtime.json` is ignored. Album
+detail pages and Trash use a Day `VirtualMediaGrid` backed by their respective
+queries. Search previews remain bounded `MediaGrid`/FlowBox surfaces, while a
+search "More" result page uses a Year `VirtualMediaGrid` scoped to its term,
+field, and media kind.
 
 The GridView path exposes one logical slot for every full-library media item,
 plus deterministic non-interactive filler slots that preserve section-row
@@ -127,7 +129,7 @@ Both "/" and "-" separators are accepted; Chinese "年/月/日" characters are a
 normalized. The DB layer converts all separators to "-" for matching against
 SQLite's `strftime('%Y-%m-%d', ...)` output.
 
-Search results are rendered in separate image and video result sections, each
+Search previews are rendered in separate image and video result sections, each
 backed by its own bounded `ListStore` and a Year-mode `MediaGrid` so result
 thumbnails use the compact overview size. Search preview grids are flat and
 disable horizontal scrolling: they do not render per-year section headers, so
@@ -153,10 +155,10 @@ backed by top-level `media_attributes` JSON booleans. If no media type album has
 any live media, hide the whole Media Types group instead of showing an empty
 header.
 
-### Bounded FlowBox Grids (Albums And Search)
+### Bounded FlowBox Grids (Search Previews)
 
-`MediaGrid` remains the bounded FlowBox renderer for album detail and search
-surfaces; it is not a Photos renderer. `MediaGrid::spec_for_mode` owns its tile
+`MediaGrid` remains the bounded FlowBox renderer for search preview surfaces;
+it is not a Photos, album-detail, Trash, or search-detail renderer. `MediaGrid::spec_for_mode` owns its tile
 sizing, and its date headers are separate GTK labels because a FlowBox cannot
 span a header across a thumbnail row. Pure `ListStore` removals and insertions
 should update the affected `GtkFlowBoxChild` in place where possible, preserving
@@ -177,7 +179,7 @@ evicts distant ready data; it never rebuilds a FlowBox page. Thumbnail prewarm
 is redirected to the current viewport offset, while visible requests retain
 their higher priority. See [`storage.md`](storage.md) "Thumbnails".
 
-**FlowBox tile reuse must detach cleanly.** On album and search surfaces,
+**FlowBox tile reuse must detach cleanly.** On search preview surfaces,
 `detach_reusable_loaded_tiles` must call `set_child(None)` before clearing a
 `FlowBoxChild`; GTK finalization can otherwise leave a reused tile parented and
 blank. This is not part of the Photos renderer. `ui_media_list_cap` remains the
@@ -187,7 +189,7 @@ Day `VirtualMediaGrid`; Year and Month remain inactive until selected, so they
 do not create metadata or range work while hidden.
 
 Progressive first-page rendering remains an optimization for eligible bounded
-`MediaGrid` surfaces such as album detail. It must not be reintroduced as a
+`MediaGrid` surfaces such as search previews. It must not be reintroduced as a
 Photos FlowBox fallback; Photos first paints its virtual seed and then lets GTK
 recycle cells as authoritative ranges arrive.
 

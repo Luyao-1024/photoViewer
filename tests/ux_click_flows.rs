@@ -137,8 +137,11 @@ fn thumbnail_activation_opens_one_viewer() {
     let fixture = build_photos_page_with_nav();
     let grid = visible_photos_grid(&fixture.page);
 
-    activate_virtual_grid_slot(&grid, 0);
-    activate_virtual_grid_slot(&grid, 0);
+    let first_slot = grid
+        .first_media_slot()
+        .expect("Photos should expose a media slot");
+    activate_virtual_grid_slot(&grid, first_slot);
+    activate_virtual_grid_slot(&grid, first_slot);
 
     assert_eq!(
         fixture.nav.navigation_stack().n_items(),
@@ -610,18 +613,14 @@ fn album_pages_clicks_open_album_and_viewer() {
     detail.set_nav_target(&fixture.nav);
     fixture.nav.push(&detail);
 
-    let detail_tile =
-        first_flowbox_child(detail.upcast_ref()).expect("Album detail should render media tiles");
-    let detail_flow = detail_tile
-        .parent()
-        .and_then(|w| w.downcast::<gtk::FlowBox>().ok())
-        .expect("Album detail tile should belong to a FlowBox");
-    detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
+    let detail_grid = find_descendant::<VirtualMediaGrid>(detail.upcast_ref())
+        .expect("Album detail should use VirtualMediaGrid");
+    activate_virtual_grid_slot(&detail_grid, 0);
     assert!(
         !detail.is_sensitive(),
         "AlbumDetailPage should ignore pointer input while viewer push is guarded"
     );
-    detail_flow.emit_by_name::<()>("child-activated", &[&detail_tile]);
+    activate_virtual_grid_slot(&detail_grid, 0);
     assert!(
         fixture
             .nav
@@ -687,18 +686,22 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
     let shared = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
     let trash =
         TrashPage::with_media_list(fixture.pool.clone(), fixture.loader.clone(), shared.clone());
-    let flow = trash.imp().flow_box.get();
+    let grid = trash.imp().grid.borrow().as_ref().cloned().unwrap();
     assert!(
-        wait_until(Duration::from_secs(2), || flow.observe_children().n_items()
-            == 2),
+        wait_until(Duration::from_secs(2), || grid.logical_media_count() == 2),
         "TrashPage should render trashed media"
     );
 
-    let first = flow
-        .first_child()
-        .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
-        .expect("TrashPage should render a selectable tile");
-    flow.select_child(&first);
+    assert!(
+        wait_until(Duration::from_secs(2), || grid
+            .first_ready_media_slot()
+            .is_some()),
+        "Trash should load an interactive media slot"
+    );
+    let first_slot = grid
+        .first_ready_media_slot()
+        .expect("Trash should retain a ready media slot");
+    activate_virtual_grid_slot(&grid, first_slot);
     assert!(
         trash.imp().action_bar.get().is_revealed(),
         "selecting a Trash tile should reveal the action bar"
@@ -709,7 +712,7 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         "clicking Trash cancel should clear selection and hide actions"
     );
 
-    flow.select_child(&first);
+    activate_virtual_grid_slot(&grid, first_slot);
     click_button(&trash.imp().restore_btn.get());
     assert!(
         wait_until(Duration::from_secs(2), || !trash
@@ -720,16 +723,20 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         "clicking Restore should clear the current Trash selection"
     );
     assert!(
-        wait_until(Duration::from_secs(2), || flow.observe_children().n_items()
-            > 0),
+        wait_until(Duration::from_secs(2), || grid.logical_media_count() > 0),
         "TrashPage should reload remaining rows after Restore"
     );
 
-    let remaining = flow
-        .first_child()
-        .and_then(|child| child.downcast::<gtk::FlowBoxChild>().ok())
-        .expect("TrashPage should still expose a tile for delete-path coverage");
-    flow.select_child(&remaining);
+    assert!(
+        wait_until(Duration::from_secs(2), || grid
+            .first_ready_media_slot()
+            .is_some()),
+        "Trash should load the remaining media slot"
+    );
+    let remaining_slot = grid
+        .first_ready_media_slot()
+        .expect("Trash should retain a ready media slot");
+    activate_virtual_grid_slot(&grid, remaining_slot);
     click_button(&trash.imp().delete_btn.get());
     assert!(
         wait_until(Duration::from_secs(2), || db::list_trashed_media(

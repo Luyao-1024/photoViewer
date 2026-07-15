@@ -203,8 +203,9 @@ fn bind_ready_cell(
 ) {
     let spec = grid.spec();
     let item_mtime = thumbnail_request_mtime(&item);
+    let thumbnail_uri = grid.thumbnail_uri_for(&item);
     let cache_key =
-        ThumbnailLoader::cache_key_for(&item.uri, spec.thumbnail_size(), Some(item_mtime));
+        ThumbnailLoader::cache_key_for(&thumbnail_uri, spec.thumbnail_size(), Some(item_mtime));
     let binding = TileBinding::new(
         grid.layout_generation(),
         slot,
@@ -236,7 +237,7 @@ fn bind_ready_cell(
     let loader = grid.loader();
     let load_started = std::time::Instant::now();
     if let Some(loaded) =
-        loader.try_load_mem_cached(&item.uri, spec.thumbnail_size(), Some(item_mtime))
+        loader.try_load_mem_cached(&thumbnail_uri, spec.thumbnail_size(), Some(item_mtime))
     {
         // A cache hit is painted on the next idle turn just like an async
         // result. Keep the visible skeleton in the intervening frame instead
@@ -261,7 +262,7 @@ fn bind_ready_cell(
     // guarded path as a full thumb; `defer_thumbnail_paint` skips it if a full
     // thumbnail already arrived. The full-thumb request below still fires and
     // upgrades the preview.
-    if let Some(exif) = loader.try_load_exif_thumb_cached(&item.uri, Some(item_mtime)) {
+    if let Some(exif) = loader.try_load_exif_thumb_cached(&thumbnail_uri, Some(item_mtime)) {
         defer_thumbnail_paint(
             cell.tile.downgrade(),
             grid.downgrade(),
@@ -287,7 +288,10 @@ fn bind_ready_cell(
             tile,
             binding_state,
             binding,
-            item,
+            crate::core::media::MediaItem {
+                uri: thumbnail_uri,
+                ..item
+            },
             loader,
             load_started,
         );

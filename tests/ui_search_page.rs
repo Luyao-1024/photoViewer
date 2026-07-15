@@ -156,3 +156,27 @@ fn search_page_has_dedicated_search_surface_and_split_result_areas() {
         "video more tile should stay hidden until preview results overflow"
     );
 }
+
+#[test]
+fn search_more_results_use_the_virtual_grid_but_previews_remain_bounded_flowboxes() {
+    let source = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/ui/search_page.rs"
+    ))
+    .expect("search page source should be readable");
+    let preview_start = source
+        .find("fn build_result_section")
+        .expect("search preview builder should exist");
+    let detail_start = source
+        .find("fn open_more_results")
+        .expect("search detail builder should exist");
+
+    assert!(
+        source[preview_start..detail_start].contains("MediaGrid::new_for_album"),
+        "bounded search previews should retain MediaGrid"
+    );
+    assert!(
+        source[detail_start..].contains("VirtualMediaGrid::new_for_query"),
+        "the unbounded search detail page should use VirtualMediaGrid"
+    );
+}

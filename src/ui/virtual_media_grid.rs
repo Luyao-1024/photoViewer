@@ -1,8 +1,9 @@
-//! Virtual `GtkGridView` for the Photos main library.
+//! Virtual `GtkGridView` for large media queries.
 //!
-//! It exposes a stable logical model for the whole library and only keeps
-//! data/thumbnail work near the viewport. It is intentionally Photos-only;
-//! albums, search, and trash retain their bounded `MediaGrid` implementation.
+//! It exposes a stable logical model for the complete query and only keeps
+//! data/thumbnail work near the viewport. Photos, album detail, Trash, and
+//! search-detail pages use this renderer; bounded search previews retain
+//! `MediaGrid`.
 
 mod factory;
 mod layout_index;
@@ -222,6 +223,8 @@ mod imp {
         pub(super) grid_columns: Cell<u32>,
         pub loader: OnceCell<Arc<ThumbnailLoader>>,
         pub callbacks: OnceCell<MediaGridCallbacks>,
+        pub query: OnceCell<MediaQuery>,
+        pub thumbnail_uri_resolver: RefCell<Option<Rc<dyn Fn(&MediaItem) -> Option<String>>>>,
         pub media_list: RefCell<Option<gio::ListStore>>,
         pub model: OnceCell<VirtualMediaModel>,
         pub selection_model: OnceCell<gtk::NoSelection>,
@@ -257,6 +260,8 @@ mod imp {
                 grid_columns: Cell::new(1),
                 loader: OnceCell::new(),
                 callbacks: OnceCell::new(),
+                query: OnceCell::new(),
+                thumbnail_uri_resolver: RefCell::new(None),
                 media_list: RefCell::new(None),
                 model: OnceCell::new(),
                 selection_model: OnceCell::new(),
@@ -342,6 +347,26 @@ impl VirtualMediaGrid {
         callbacks: MediaGridCallbacks,
         initial_active: bool,
     ) -> Self {
+        Self::new_for_query(
+            media_list,
+            MediaQuery::LiveAll,
+            mode,
+            loader,
+            callbacks,
+            initial_active,
+        )
+    }
+
+    /// Build a virtual grid backed by a complete repository query rather than
+    /// the bounded GTK seed list. The seed is used only for instant paint.
+    pub fn new_for_query(
+        media_list: gio::ListStore,
+        query: MediaQuery,
+        mode: GroupBy,
+        loader: Arc<ThumbnailLoader>,
+        callbacks: MediaGridCallbacks,
+        initial_active: bool,
+    ) -> Self {
         // The Photos page normally installs this globally, but the widget is
         // also constructed directly by focused tests. Keep its GridView
         // spacing and selection rules self-contained and idempotent.
@@ -372,6 +397,10 @@ impl VirtualMediaGrid {
         assert!(
             imp.callbacks.set(callbacks).is_ok(),
             "VirtualMediaGrid callbacks initialized more than once"
+        );
+        assert!(
+            imp.query.set(query).is_ok(),
+            "VirtualMediaGrid query initialized more than once"
         );
         *imp.media_list.borrow_mut() = Some(media_list.clone());
 
@@ -415,8 +444,26 @@ impl VirtualMediaGrid {
         *self.imp().context_menu_overlay.borrow_mut() = overlay.cloned();
     }
 
+    /// Resolves the source used for thumbnail reads without changing the
+    /// repository item identity. Trash keeps its original URI in the database
+    /// but thumbnails must read the file from the configured trash root.
+    pub fn set_thumbnail_uri_resolver<F>(&self, resolver: F)
+    where
+        F: Fn(&MediaItem) -> Option<String> + 'static,
+    {
+        *self.imp().thumbnail_uri_resolver.borrow_mut() = Some(Rc::new(resolver));
+    }
+
     pub fn mode(&self) -> GroupBy {
         self.imp().mode.get()
+    }
+
+    fn query(&self) -> MediaQuery {
+        self.imp()
+            .query
+            .get()
+            .expect("VirtualMediaGrid query initialized in new")
+            .clone()
     }
 
     pub fn set_grid_columns(&self, columns: usize) {
@@ -546,6 +593,13 @@ impl VirtualMediaGrid {
         self.imp().is_multi_select_mode.get()
     }
 
+    pub fn set_multi_select_mode(&self, enabled: bool) {
+        self.imp().is_multi_select_mode.set(enabled);
+        if !enabled {
+            self.clear_selection();
+        }
+    }
+
     pub fn select_all(&self) {
         let ids = self.model().ready_media_ids();
         self.select_ids(&ids);
@@ -587,6 +641,26 @@ impl VirtualMediaGrid {
         Some(store)
     }
 
+    /// Total logical media slots in the current query, excluding structural
+    /// filler slots used to keep date sections aligned.
+    pub fn logical_media_count(&self) -> u32 {
+        self.model().layout().media_count()
+    }
+
+    /// First interactive media slot in the current layout. Section-boundary
+    /// filler slots may occupy position zero.
+    pub fn first_media_slot(&self) -> Option<u32> {
+        self.model().layout().slot_for_media_offset(0)
+    }
+
+    /// First currently resident interactive media slot. Callers that need to
+    /// synthesize activation should wait for this rather than a placeholder.
+    pub fn first_ready_media_slot(&self) -> Option<u32> {
+        let model = self.model();
+        (0..model.layout().slot_count())
+            .find(|slot| matches!(model.slot_state(*slot), Some(GridSlotState::Ready { .. })))
+    }
+
     /// Called by the bounded shared-list projection after filesystem/domain
     /// events.  The list is only a signal/initial-seed source: authoritative
     /// metadata and ranges always come from `MediaRepository`.
@@ -616,6 +690,15 @@ impl VirtualMediaGrid {
 
     pub(super) fn is_selected(&self, media_id: MediaId) -> bool {
         self.imp().selected.borrow().contains(&media_id)
+    }
+
+    pub(super) fn thumbnail_uri_for(&self, item: &MediaItem) -> String {
+        self.imp()
+            .thumbnail_uri_resolver
+            .borrow()
+            .as_ref()
+            .and_then(|resolver| resolver(item))
+            .unwrap_or_else(|| item.uri.clone())
     }
 
     pub(super) fn notify_background_changed(&self) {
@@ -754,6 +837,15 @@ impl VirtualMediaGrid {
 
         append_favorite_menu_items(&mut items, &callbacks, favorite_state, &target_ids);
         if !target_ids.is_empty() {
+            if !in_multi {
+                if let Some(on_set_album_cover) = callbacks.on_set_album_cover.clone() {
+                    items.push(GlassMenuItem::new(
+                        tr("album.context.set_cover"),
+                        GlassMenuItemKind::Normal,
+                        move || on_set_album_cover(media_id),
+                    ));
+                }
+            }
             let add_ids = target_ids.clone();
             let on_add = callbacks.on_add_to_album.clone();
             items.push(GlassMenuItem::new(
@@ -895,13 +987,14 @@ impl VirtualMediaGrid {
         let generation = self.imp().metadata_generation.get().saturating_add(1);
         self.imp().metadata_generation.set(generation);
         let mode = self.mode();
+        let query = self.query();
         let pool = self.loader().pool().clone();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || {
                 let repo = MediaRepository::new(pool);
-                let total = repo.count(MediaQuery::LiveAll)?;
-                let counts = repo.section_counts(mode)?;
+                let total = repo.count(query.clone())?;
+                let counts = repo.section_counts_for_query(query, mode)?;
                 Ok::<_, crate::core::error::AppError>((total, counts))
             })
             .await;
@@ -1186,11 +1279,12 @@ impl VirtualMediaGrid {
 
     fn start_range_request(&self, request: range_cache::RangeRequest) {
         let pool = self.loader().pool().clone();
+        let query = self.query();
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let range = request.range;
             let result = gio::spawn_blocking(move || {
-                MediaRepository::new(pool).items(MediaQuery::LiveAll, range.start, range.len())
+                MediaRepository::new(pool).items(query, range.start, range.len())
             })
             .await;
             let Some(grid) = weak.upgrade() else {
@@ -1264,7 +1358,7 @@ impl VirtualMediaGrid {
             .iter()
             .filter_map(|item| {
                 let mtime = thumbnail_request_mtime(item);
-                let uri = item.uri.clone();
+                let uri = self.thumbnail_uri_for(item);
                 // Skip tiles that already have a full thumbnail or an EXIF
                 // placeholder resident — no point re-reading the file head.
                 if loader
@@ -1344,7 +1438,8 @@ impl VirtualMediaGrid {
                 continue;
             };
             let mtime = thumbnail_request_mtime(&item);
-            let Some(exif) = loader.try_load_exif_thumb_cached(&item.uri, Some(mtime)) else {
+            let thumbnail_uri = self.thumbnail_uri_for(&item);
+            let Some(exif) = loader.try_load_exif_thumb_cached(&thumbnail_uri, Some(mtime)) else {
                 continue;
             };
             factory::defer_thumbnail_paint(
