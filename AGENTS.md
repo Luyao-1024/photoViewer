@@ -38,7 +38,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 - Prefer existing helpers and patterns over new abstractions.
 - Keep docs and tests close to the module being changed.
 - When you add/rename/remove a UI widget, change a template `child-id`, or alter a drag/resize affordance, update [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) to match. It is a maintained visual naming map (source of truth: `data/ui/*.blp`, `src/ui/*.rs`), not a one-time artifact.
-- **Run the full CI suite locally before committing or pushing to `main`.** This repo commits directly to `main` (no PR gate), so a red push lands on everyone — verify locally first. Run exactly what `.github/workflows/ci.yml` runs: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, and `cargo test --all`. The `#[gtk::test]` cases need a display — run `xvfb-run -a cargo test --all` to match CI, because timing/realization flakiness only shows up there. Do **not** substitute a single module filter (`cargo test --lib <module>`) for the full run: cross-module breakage and timing flakes surface only in the complete suite. If `main` is already red from an unrelated failure, say so explicitly instead of letting your commit look like the cause.
+- **Run the full CI suite locally before committing or pushing to `main`.** This repo commits directly to `main` (no PR gate), so a red push lands on everyone — verify locally first. Run exactly what `.github/workflows/ci.yml` runs: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, and `cargo test --all`. The `#[gtk::test]` cases need a display and accessibility session — run `tools/with-at-spi.sh xvfb-run -a cargo test --all` to match CI, because timing/realization flakiness and missing AT-SPI infrastructure only show up there. Do **not** substitute a single module filter (`cargo test --lib <module>`) for the full run: cross-module breakage and timing flakes surface only in the complete suite. If `main` is already red from an unrelated failure, say so explicitly instead of letting your commit look like the cause.
 
 ## UI Invariants
 
@@ -66,5 +66,5 @@ Run before pushing to `main` — mirrors `.github/workflows/ci.yml`:
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
-xvfb-run -a cargo test --all   # #[gtk::Test] needs a display; xvfb matches CI
+tools/with-at-spi.sh xvfb-run -a cargo test --all   # GTK tests need a display and AT-SPI; matches CI
 ```

@@ -322,6 +322,7 @@ RUN_CMD+=(
     "${RUST_LOG_ARG[@]}"
     "${CHROME_TRACE_ARG[@]}"
     "${TRACE_CHAINS_ARG[@]}"
+    --talk-name=org.a11y.Bus
     --filesystem="$PROJECT_DIR"
     --filesystem=home
     --command="$PROJECT_DIR/$TARGET_DIR/$CARGO_PROFILE/photo-viewer"

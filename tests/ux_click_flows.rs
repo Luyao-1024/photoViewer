@@ -11,6 +11,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use libadwaita::prelude::NavigationPageExt;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use photo_viewer::core::thumbnails::ThumbnailLoader;
@@ -52,6 +53,7 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
 
     mode_selector_click_switches_photos_view();
     thumbnail_activation_opens_one_viewer();
+    keyboard_shortcuts_drive_full_shell_navigation();
     search_result_activation_opens_one_viewer_while_pending();
     photos_batch_toolbar_clicks_select_favorite_and_album();
     viewer_chrome_clicks_drive_visible_operations();
@@ -155,6 +157,158 @@ fn thumbnail_activation_opens_one_viewer() {
     assert!(
         nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "thumbnail activation should open the viewer page"
+    );
+}
+
+/// Exercise the production capture-phase keyboard router through a realized
+/// `MainWindow`.  Unit tests cover individual key bindings; this keeps the
+/// user-visible transitions between browsing, Search, and Viewer covered by
+/// the same full shell used for click flows.
+fn keyboard_shortcuts_drive_full_shell_navigation() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let grid = visible_photos_grid(&shell.photos);
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::a,
+        gtk::gdk::ModifierType::CONTROL_MASK,
+    ));
+    assert!(
+        grid.is_all_displayed_selected(),
+        "Ctrl+A should select the rendered Photos tiles through the window keyboard router"
+    );
+    assert!(
+        shell.photos.imp().favorite_revealer.get().reveals_child(),
+        "keyboard selection should expose the same batch actions as pointer selection"
+    );
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(
+        !shell.photos.imp().favorite_revealer.get().reveals_child(),
+        "Escape should clear browsing selection before navigating away"
+    );
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        1,
+        "clearing a selection with Escape must keep the browsing root visible"
+    );
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::f,
+        gtk::gdk::ModifierType::CONTROL_MASK,
+    ));
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<SearchPage>().is_some()
+        }),
+        "Ctrl+F should open Search from the realized browsing shell"
+    );
+    let search = nav
+        .visible_page()
+        .and_downcast::<SearchPage>()
+        .expect("SearchPage should be visible after Ctrl+F");
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            widget_contains_focus(search.imp().search_entry.get().upcast_ref())
+        }),
+        "opening Search by keyboard should move focus into the query field"
+    );
+    assert!(
+        !emit_window_key(
+            &shell.window,
+            gtk::gdk::Key::f,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        ),
+        "Ctrl+F must not be intercepted while the Search entry owns text input"
+    );
+    assert_eq!(
+        nav.navigation_stack().n_items(),
+        2,
+        "Ctrl+F from the Search entry must not push a duplicate Search page"
+    );
+    assert!(
+        nav.pop(),
+        "test should return from Search to continue the flow"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<SearchPage>().is_none()
+        }),
+        "popping Search should restore the browsing root"
+    );
+
+    let first_slot = grid
+        .first_media_slot()
+        .expect("Photos should still expose a media slot after returning from Search");
+    activate_virtual_grid_slot(&grid, first_slot);
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<ViewerPage>().is_some()
+        }),
+        "activating a Photos tile should open Viewer before keyboard actions run"
+    );
+    let viewer = nav
+        .visible_page()
+        .and_downcast::<ViewerPage>()
+        .expect("ViewerPage should be visible after tile activation");
+    let viewer_media_id = viewer.imp().current_media_id.get();
+    assert_ne!(
+        viewer_media_id, 0,
+        "Viewer should resolve an active media id before keyboard actions run"
+    );
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::i,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(
+        viewer.imp().details_split_view.get().shows_sidebar(),
+        "I should reveal Viewer details through the window keyboard router"
+    );
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::i,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(
+        !viewer.imp().details_split_view.get().shows_sidebar(),
+        "pressing I again should close Viewer details"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || viewer.can_pop()),
+        "Viewer should re-enable Back/Escape after the details close transition"
+    );
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::h,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            db::is_media_favorite(&shell.pool, viewer_media_id).unwrap_or(false)
+        }),
+        "H should persist the Viewer favorite action"
+    );
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.navigation_stack().n_items() == 1
+                && nav.visible_page().and_downcast::<ViewerPage>().is_none()
+        }),
+        "Escape should return from Viewer to the browsing root"
     );
 }
 
@@ -899,6 +1053,37 @@ fn find_button_with_css(root: &gtk::Widget, css_class: &str) -> Option<gtk::Butt
 
 fn click_button(button: &gtk::Button) {
     button.emit_by_name::<()>("clicked", &[]);
+}
+
+/// Deliver a key through the same capture-phase controller installed on the
+/// production window.  This intentionally tests the router boundary rather
+/// than calling page-level keyboard handlers directly.
+fn emit_window_key(window: &MainWindow, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
+    let controller = window
+        .observe_controllers()
+        .snapshot()
+        .into_iter()
+        .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+        .filter(|controller| controller.name().as_deref() == Some("photo-viewer-keyboard-router"))
+        .expect("MainWindow should install the production keyboard router");
+    controller.emit_by_name("key-pressed", &[&key, &0_u32, &state])
+}
+
+/// Composite widgets such as `GtkSearchEntry` put focus on an internal text
+/// widget, so `has_focus()` on the public wrapper is not sufficient here.
+fn widget_contains_focus(widget: &gtk::Widget) -> bool {
+    let Some(mut focus) = widget.root().and_then(|root| root.focus()) else {
+        return false;
+    };
+    loop {
+        if focus == *widget {
+            return true;
+        }
+        let Some(parent) = focus.parent() else {
+            return false;
+        };
+        focus = parent;
+    }
 }
 
 fn release_click_on_widget(widget: &gtk::Widget) {

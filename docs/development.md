@@ -6,14 +6,16 @@ Fedora:
 
 ```bash
 sudo dnf install gtk4-devel libadwaita-devel gdk-pixbuf2-devel \
-                 libheif-devel sqlite-devel blueprint-compiler
+                 libheif-devel sqlite-devel blueprint-compiler \
+                 at-spi2-core dbus-daemon python3-pyatspi
 ```
 
 Ubuntu:
 
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
-                 libheif-dev libsqlite3-dev
+                 libheif-dev libsqlite3-dev at-spi2-core dbus-daemon \
+                 python3-pyatspi
 ```
 
 `blueprint-compiler` must be available on `PATH`.
@@ -62,7 +64,7 @@ sudo dnf install xorg-x11-server-Xvfb xdotool ImageMagick xorg-x11-utils
 Additional Ubuntu dependencies:
 
 ```bash
-sudo apt install xvfb xdotool imagemagick x11-utils
+sudo apt install xvfb xdotool imagemagick x11-utils python3-pyatspi
 ```
 
 Run the X11 visual smoke check:
@@ -76,6 +78,34 @@ headless environments it starts `Xvfb`, launches the app through
 `run-flatpak.sh`, waits for the window, and writes a screenshot to
 `target/visual-checks/`. If `XDG_SESSION_TYPE=wayland`, it prints a skip
 message and exits successfully.
+
+To verify a non-destructive real-input path as well as startup rendering, run:
+
+```bash
+tools/visual-check-x11.sh --keyboard-smoke
+```
+
+This sends `Ctrl+F` to the Flatpak window over X11 and captures both the
+startup screen and the resulting Search page. The check fails if the window
+does not visibly change. It is intentionally limited to navigation and does
+not alter library data. In headless runs it also starts a private session
+D-Bus and verifies the AT-SPI bus plus registry before GTK starts, so the
+Flatpak app can connect to its accessibility backend. The manifest and
+development runner both grant the narrowly scoped `org.a11y.Bus` permission;
+reinstall the Flatpak after changing the manifest for installed-app runs.
+
+To additionally verify the controls a screen reader receives, run:
+
+```bash
+tools/visual-check-x11.sh --a11y-smoke
+```
+
+This implies the non-destructive `Ctrl+F` keyboard smoke test, then uses
+`python3-pyatspi` to assert the running Flatpak exposes its localized
+application frame (currently `照片查看器`), a focused Search entry,
+and the `全部`、`文件名`、`日期` search-field toggle buttons. It is an X11/Xvfb
+check and complements, rather than replaces, manual screen-reader testing on a
+desktop session.
 
 For current-worktree debug runs:
 

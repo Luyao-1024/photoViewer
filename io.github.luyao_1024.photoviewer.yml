@@ -15,6 +15,9 @@ finish-args:
   - --filesystem=home
   - --filesystem=xdg-run/gvfsd
   - --talk-name=org.gtk.vfs.*
+  # GTK's accessibility backend asks this session-bus service for the
+  # per-user AT-SPI bus address. Without it Flatpak hides the service.
+  - --talk-name=org.a11y.Bus
 
 cleanup:
   - /include

@@ -11,7 +11,23 @@ cargo clippy --all-targets
 
 Use focused integration tests during development, then broaden when touching shared UI/CSS, storage, navigation, or edit behavior.
 
-Run `cargo test --test ux_click_flows` before pushing/uploading a branch with UI interaction changes. Local edits and commits do not require this gate, but upstream handoff does. These flows run against the full `MainWindow`+sidebar shell via `build_full_app_shell()`, not a standalone `PhotosPage`, so page-to-page navigation and sidebar/state interactions are covered.
+Run `tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows` before pushing/uploading a branch with UI interaction changes. Local edits and commits do not require this gate, but upstream handoff does. These flows run against the full `MainWindow`+sidebar shell via `build_full_app_shell()`, not a standalone `PhotosPage`, so page-to-page navigation and sidebar/state interactions are covered. The suite sends keyboard input through the production capture-phase router as well as exercising click/activation signals; it must not call page-level action handlers directly.
+
+`tools/with-at-spi.sh` starts an isolated session D-Bus when needed, then
+checks that both `org.a11y.Bus` and `org.a11y.atspi.Registry` are available
+before GTK initializes. It makes missing accessibility infrastructure a test
+failure instead of leaving an `AT-SPI bus` warning in the log. Run
+`tools/with-at-spi.sh --check` to verify the environment without running a
+test command. The Flatpak manifest and development runner also allow the
+narrow `org.a11y.Bus` session-bus permission, so GTK inside the sandbox can
+discover that accessibility bus.
+
+After a successful wrapped command, the registry may print `A connection to
+the bus can't be made` while the temporary session is shutting down. This is
+post-test service cleanup, not an application startup connection failure; the
+helper's readiness check remains the pass/fail signal.
+
+For a Flatpak-runtime check of the non-destructive keyboard entry path, run `tools/visual-check-x11.sh --keyboard-smoke`. It sends `Ctrl+F` through XTEST on X11 and saves startup and Search-page screenshots; it complements the deterministic GTK suite rather than replacing it. Run `tools/visual-check-x11.sh --a11y-smoke` to additionally use `python3-pyatspi` against the live AT-SPI tree: it requires the localized application frame, a focused Search entry, and the `全部`、`文件名`、`日期` field toggle buttons. This verifies the key Search navigation semantics available to assistive technology; it does not replace manual screen-reader usability testing.
 
 ## Pre-Submission CI Policy
 
@@ -22,7 +38,7 @@ covered by CI have run for the exact commit being handed off:
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
 cargo build --all-targets
-xvfb-run -a cargo test --all
+tools/with-at-spi.sh xvfb-run -a cargo test --all
 ```
 
 If GitHub Actions has already run these checks successfully for the exact
@@ -39,7 +55,7 @@ environment-specific Flatpak visual check, or a manual debugging path.
   tests, including phone HEIC/video coverage that must not be hidden behind
   `#[ignore]`.
 - `tests/e2e_*`: user-flow level coverage.
-- `tests/ux_*`: GTK signal-level UX flows that simulate user clicks/activations. They are driven through `build_full_app_shell()`, so each flow exercises the real `MainWindow` plus sidebar rather than an isolated page.
+- `tests/ux_*`: GTK signal-level UX flows that simulate user clicks, activations, and keyboard-router input. They are driven through `build_full_app_shell()`, so each flow exercises the real `MainWindow` plus sidebar rather than an isolated page.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
 - `tests/*_flow.rs`: module-level behavior such as trash and destructive rotate.
 - `src/**/tests.rs` and `src/**/tests/*.rs`: unit tests close to implementation.
