@@ -288,6 +288,12 @@ mod imp {
         pub column_update_source: RefCell<Option<glib::SourceId>>,
         pub range: RefCell<RangeCoordinator>,
         pub last_top_slot: Cell<u32>,
+        /// The last overscan window a real scroll adjustment asked for. Landing
+        /// reuses this frozen window for both eviction and gap re-driving so
+        /// that, at rest, the model does not chase the live visible range as it
+        /// jitters by a row under `items_changed` churn (which would evict a
+        /// sliver, re-fetch it, and flicker forever).
+        pub desired_window: Cell<Option<MediaRange>>,
         /// A batch favorite updates the shared seed ListStore as a domain
         /// event. Its live layout is unchanged, so suppress that short-lived
         /// generic metadata reload and update resident favorite badges in
@@ -331,6 +337,7 @@ mod imp {
                 column_update_source: RefCell::new(None),
                 range: RefCell::new(RangeCoordinator::default()),
                 last_top_slot: Cell::new(0),
+                desired_window: Cell::new(None),
                 suppress_shared_projection_until: Cell::new(None),
                 thumb_batcher: RefCell::new(ThumbnailBatcher::default()),
             }
@@ -1458,6 +1465,7 @@ impl VirtualMediaGrid {
         let top_slot = self.top_slot_for_adjustment();
         let moving_forward = top_slot >= self.imp().last_top_slot.replace(top_slot);
         let desired = expanded_visible_range(visible, self.imp().live_total.get(), moving_forward);
+        self.imp().desired_window.set(Some(desired));
         let disposition = self.imp().range.borrow_mut().request(desired);
         _scroll.record("top_slot", top_slot);
         _scroll.record("visible_start", visible.start);
@@ -1534,9 +1542,17 @@ impl VirtualMediaGrid {
                         grid.model()
                             .replace_ready_range(range.start..range.end, items);
                         let keep = grid
-                            .visible_media_range()
-                            .map(|visible| {
-                                expanded_visible_range(visible, grid.imp().live_total.get(), true)
+                            .imp()
+                            .desired_window
+                            .get()
+                            .or_else(|| {
+                                grid.visible_media_range().map(|visible| {
+                                    expanded_visible_range(
+                                        visible,
+                                        grid.imp().live_total.get(),
+                                        true,
+                                    )
+                                })
                             })
                             .unwrap_or(range);
                         grid.model().evict_outside(keep.start..keep.end);
@@ -1559,12 +1575,24 @@ impl VirtualMediaGrid {
                     ),
                 }
             }
-            if let Some(next) = completion.next {
-                // The just-landed range may cover most or all of the newest
-                // drag target. Re-submit it through the coordinator so it
-                // requests only an uncovered edge rather than reloading the
-                // full pending window.
-                let disposition = grid.imp().range.borrow_mut().request(next.range);
+            // Drain any remaining uncovered gaps of the target we set out to
+            // fetch. `request` returns only the FIRST uncovered gap, so a
+            // discontinuous resident window (a gap both before and after an
+            // already-resident island — e.g. the viewport's trailing edge)
+            // needs more than one request, and we cannot wait for a future
+            // scroll event: the user may have stopped, stranding those slots as
+            // permanent placeholder skeletons. Re-drive the FROZEN target (the
+            // same window eviction used), never the live visible range: chasing
+            // the live range re-evicts and re-fetches the row-sized jitter that
+            // `items_changed` induces at rest, flickering forever. This target
+            // is stable at rest, so once its gaps land the coordinator reports
+            // it Covered and the chain stops.
+            let next_target = completion
+                .next
+                .map(|request| request.range)
+                .or_else(|| grid.imp().desired_window.get());
+            if let Some(target) = next_target {
+                let disposition = grid.imp().range.borrow_mut().request(target);
                 if let RequestDisposition::Started(request) = disposition {
                     grid.start_range_request(request);
                 }
