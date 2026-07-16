@@ -489,12 +489,12 @@ fn programmatic_sidebar_selection_does_not_navigate() {
     let pool = crate::core::db::init_pool(&_tmp.path().join("programmatic-sidebar.db")).unwrap();
     window.set_resources(pool.clone(), loader.clone(), media_list.clone());
     window.populate_sidebar();
-    let root = PhotosPage::new(media_list.clone(), loader);
+    let root = PhotosPage::new(media_list.clone(), loader.clone());
     root.set_nav_target(&nav);
     window.show_photos_browsing_page(&root);
     window.connect_sidebar(&nav);
 
-    let trash = TrashPage::with_media_list(pool, keyboard_thumbnail_loader().1, media_list);
+    let trash = TrashPage::with_media_list(pool, loader, media_list);
     nav.push(&trash);
     assert!(
         nav.visible_page().and_downcast::<TrashPage>().is_some(),
