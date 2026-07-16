@@ -2,6 +2,23 @@ use super::*;
 use crate::ui::media_grid::test_support::{insert_sample_item, noop_callbacks, sample_item};
 use crate::ui::square_tile::SquareTile;
 
+#[test]
+fn initial_seed_is_bounded_to_the_visible_working_set() {
+    let metrics =
+        VirtualGridModeSpec::for_mode(GroupBy::Day).viewport_metrics_for_fixed_columns(834, 3);
+
+    assert_eq!(
+        initial_seed_limit(metrics, 0.0),
+        48,
+        "unallocated grids keep a bounded fallback seed rather than the full shared projection"
+    );
+    assert_eq!(
+        initial_seed_limit(metrics, 600.0),
+        48,
+        "a two-to-three-row viewport retains four visible windows"
+    );
+}
+
 #[gtk::test]
 fn active_grid_seeds_the_initial_window_without_waiting_for_metadata() {
     let _ = gtk::init();

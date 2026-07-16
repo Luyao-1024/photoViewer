@@ -79,9 +79,9 @@ pub struct RangeCoordinator {
 
 impl RangeCoordinator {
     pub fn request(&mut self, requested: MediaRange) -> RequestDisposition {
-        if requested.is_empty() || self.resident.iter().any(|range| range.covers(requested)) {
+        let Some(requested) = self.first_uncovered_range(requested) else {
             return RequestDisposition::Covered;
-        }
+        };
         if self
             .in_flight
             .is_some_and(|request| request.range.covers(requested))
@@ -92,15 +92,23 @@ impl RangeCoordinator {
             return RequestDisposition::Coalesced;
         }
 
-        self.generation = self.generation.saturating_add(1);
-        let request = RangeRequest {
-            generation: self.generation,
-            range: requested,
-        };
         if self.in_flight.is_some() {
-            self.pending = Some(request);
+            // Keep the in-flight generation valid. Its result is likely to
+            // overlap the latest viewport target, so discarding it would make
+            // a fast scroll re-query and rebind that overlap on the next
+            // landing. `finish` returns this latest intent for re-evaluation
+            // after the in-flight range becomes resident.
+            self.pending = Some(RangeRequest {
+                generation: self.generation,
+                range: requested,
+            });
             RequestDisposition::Coalesced
         } else {
+            self.generation = self.generation.saturating_add(1);
+            let request = RangeRequest {
+                generation: self.generation,
+                range: requested,
+            };
             self.in_flight = Some(request);
             RequestDisposition::Started(request)
         }
@@ -155,9 +163,11 @@ impl RangeCoordinator {
         let was_in_flight = self.in_flight.take();
         let apply_result = was_in_flight.is_some_and(|request| request.generation == generation)
             && generation == self.generation;
-        let next = self.pending.take().inspect(|request| {
-            self.in_flight = Some(*request);
-        });
+        // Do not make `next` in-flight yet. The caller first installs this
+        // result and marks its range resident, then resubmits the newest
+        // viewport target. That resubmission clips already-covered overlap
+        // before allocating a fresh generation.
+        let next = self.pending.take();
         Completion { apply_result, next }
     }
 
@@ -171,6 +181,39 @@ impl RangeCoordinator {
 
     pub fn in_flight(&self) -> Option<RangeRequest> {
         self.in_flight
+    }
+
+    /// Returns the first part of `requested` that is not already resident.
+    ///
+    /// Scroll overscan moves by only a few media offsets per adjustment
+    /// update. Fetching the complete shifted window would repeatedly query and
+    /// land almost identical ranges, even though the model already owns most
+    /// of the window. Resident ranges are sorted and non-overlapping, so the
+    /// first uncovered gap is the forward trailing edge or backward leading
+    /// edge in the normal scrolling case. A later viewport update requests a
+    /// second gap if a rare discontinuous resident window has two of them.
+    fn first_uncovered_range(&self, requested: MediaRange) -> Option<MediaRange> {
+        if requested.is_empty() {
+            return None;
+        }
+
+        let mut cursor = requested.start;
+        for resident in &self.resident {
+            if resident.end <= cursor {
+                continue;
+            }
+            if resident.start >= requested.end {
+                break;
+            }
+            if resident.start > cursor {
+                return Some(MediaRange::new(cursor, resident.start.min(requested.end)));
+            }
+            cursor = cursor.max(resident.end);
+            if cursor >= requested.end {
+                return None;
+            }
+        }
+        Some(MediaRange::new(cursor, requested.end))
     }
 }
 

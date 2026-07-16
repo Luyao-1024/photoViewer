@@ -14,7 +14,7 @@ fn adjacent_resident_ranges_are_merged() {
 }
 
 #[test]
-fn request_coalesces_to_latest_target_and_drops_stale_result() {
+fn request_applies_in_flight_overlap_before_retargeting_latest_intent() {
     let mut cache = RangeCoordinator::default();
     let first = match cache.request(MediaRange::new(0, 20)) {
         RequestDisposition::Started(request) => request,
@@ -26,18 +26,47 @@ fn request_coalesces_to_latest_target_and_drops_stale_result() {
     );
 
     let completion = cache.finish(first.generation);
-    assert!(!completion.apply_result);
+    assert!(completion.apply_result);
     assert_eq!(
         completion.next,
         Some(RangeRequest {
-            generation: 2,
+            generation: 1,
             range: MediaRange::new(80, 100),
         })
     );
 
-    let final_completion = cache.finish(2);
-    assert!(final_completion.apply_result);
-    assert_eq!(final_completion.next, None);
+    cache.mark_resident(first.range);
+    assert_eq!(
+        cache.request(completion.next.unwrap().range),
+        RequestDisposition::Started(RangeRequest {
+            generation: 2,
+            range: MediaRange::new(80, 100),
+        })
+    );
+}
+
+#[test]
+fn retarget_after_in_flight_landing_requests_only_the_uncovered_tail() {
+    let mut cache = RangeCoordinator::default();
+    let first = match cache.request(MediaRange::new(0, 48)) {
+        RequestDisposition::Started(request) => request,
+        disposition => panic!("unexpected disposition: {disposition:?}"),
+    };
+    assert_eq!(
+        cache.request(MediaRange::new(3, 51)),
+        RequestDisposition::Coalesced
+    );
+
+    let completion = cache.finish(first.generation);
+    assert!(completion.apply_result);
+    cache.mark_resident(first.range);
+    assert_eq!(
+        cache.request(completion.next.unwrap().range),
+        RequestDisposition::Started(RangeRequest {
+            generation: 2,
+            range: MediaRange::new(48, 51),
+        })
+    );
 }
 
 #[test]
@@ -50,6 +79,34 @@ fn covered_range_does_not_start_a_second_query() {
         RequestDisposition::Covered
     );
     assert_eq!(cache.in_flight(), None);
+}
+
+#[test]
+fn shifted_range_requests_only_the_missing_trailing_edge() {
+    let mut cache = RangeCoordinator::default();
+    cache.mark_resident(MediaRange::new(0, 48));
+
+    assert_eq!(
+        cache.request(MediaRange::new(3, 51)),
+        RequestDisposition::Started(RangeRequest {
+            generation: 1,
+            range: MediaRange::new(48, 51),
+        })
+    );
+}
+
+#[test]
+fn shifted_range_requests_only_the_missing_leading_edge() {
+    let mut cache = RangeCoordinator::default();
+    cache.mark_resident(MediaRange::new(3, 51));
+
+    assert_eq!(
+        cache.request(MediaRange::new(0, 48)),
+        RequestDisposition::Started(RangeRequest {
+            generation: 1,
+            range: MediaRange::new(0, 3),
+        })
+    );
 }
 
 #[test]

@@ -58,7 +58,12 @@ viewport-adjacent range; all other media slots are light loading placeholders.
 `VirtualGridLayoutIndex` maps section/media offsets to slots without materializing
 widgets or a full `MediaItem` list. Database metadata and ranges are fetched off
 the GTK thread, generation-checked, and coalesced while a scrollbar drag is in
-flight. The lazy `gio::ListModel` keeps a stable GObject identity for each
+flight. When a shifted overscan window overlaps the resident window, the range
+coordinator fetches only its missing leading or trailing edge instead of
+re-querying the overlap. During a drag it first lands an in-flight overlapping
+request, then re-evaluates the latest target against that newly resident range;
+it never discards the overlap and re-fetches it as a stale full window. The
+lazy `gio::ListModel` keeps a stable GObject identity for each
 queried slot until GTK releases it, and invalidates affected identities before
 emitting replacement notifications. GTK recycles `SquareTile` cells through
 `GtkSignalListItemFactory`; thumbnail results validate the current layout
@@ -170,7 +175,8 @@ generation before adding its FlowBox child so it does not appear as a gray
 placeholder.
 
 For large Photos libraries, `VirtualMediaGrid` keeps the database as the full
-source of truth. The shared `media_list` supplies instant-first-paint seed data;
+source of truth. The shared `media_list` supplies a bounded visible-working-set
+seed for instant first paint rather than materializing its full projection;
 afterward the virtual list model owns one lightweight slot per library item and
 loads only viewport-adjacent ranges through `MediaRepository`. A layout or range
 generation invalidates stale worker results, and the range coordinator coalesces

@@ -155,6 +155,28 @@ fn scroll_fraction_from_adjustment(adjustment: &gtk::Adjustment) -> f64 {
     }
 }
 
+/// Bound the shared-list seed to the initial visible working set.
+///
+/// The shared projection may contain hundreds of recent items, but virtual
+/// GridView needs only enough for an immediate first paint. Materializing the
+/// whole projection makes the first authoritative range landing evict hundreds
+/// of ready slots and emits an equally large `items_changed` replacement on
+/// the main thread. Keep four visible windows instead: the viewport plus the
+/// same directional overscan budget used by range residency. Before GTK has
+/// allocated a height, use a conservative sixteen-row fallback.
+fn initial_seed_limit(metrics: VirtualGridViewportMetrics, page_size: f64) -> usize {
+    let columns = usize::try_from(metrics.columns().max(1)).unwrap_or(usize::MAX);
+    let visible_rows = if page_size.is_finite() && page_size > 0.0 {
+        (page_size / f64::from(metrics.row_extent()))
+            .ceil()
+            .max(1.0) as usize
+            + 1
+    } else {
+        4
+    };
+    columns.saturating_mul(visible_rows.saturating_mul(4))
+}
+
 /// Map the current viewport's logical media anchor into a replacement layout.
 ///
 /// Metadata refreshes replace the whole `gio::ListModel` layout, which makes
@@ -883,7 +905,17 @@ impl VirtualMediaGrid {
     /// re-entrancy: no new request can arrive during the drain loop.
     fn tick_thumb_flush(&self) {
         let batch = runtime_config::thumbnail_batch_per_frame();
+        let pending = self.imp().thumb_batcher.borrow().pending.len();
+        let _flush = tracing::debug_span!(
+            "vgrid:thumbnail_flush",
+            mode = ?self.mode(),
+            pending,
+            batch,
+            drained = tracing::field::Empty,
+        )
+        .entered();
         let drained = self.imp().thumb_batcher.borrow_mut().drain(batch);
+        _flush.record("drained", drained.len());
         for request in drained {
             request();
         }
@@ -1097,7 +1129,9 @@ impl VirtualMediaGrid {
         let Some(media_list) = self.imp().media_list.borrow().as_ref().cloned() else {
             return;
         };
-        let items = media_items_from_list(&media_list);
+        let mut items = media_items_from_list(&media_list);
+        let page_size = self.imp().scroller.get().vadjustment().page_size();
+        items.truncate(initial_seed_limit(self.viewport_metrics(), page_size));
         let counts = counts_for_items(&items, self.mode());
         self.imp().metadata_counts.replace(Some(counts.clone()));
         let layout = VirtualGridLayoutIndex::new(&counts, self.viewport_metrics().columns());
@@ -1191,7 +1225,8 @@ impl VirtualMediaGrid {
             .as_ref()
             .map(media_items_from_list)
             .unwrap_or_default();
-        seed.truncate(total as usize);
+        let page_size = self.imp().scroller.get().vadjustment().page_size();
+        seed.truncate((total as usize).min(initial_seed_limit(self.viewport_metrics(), page_size)));
         self.replace_layout_with_initial_items(layout, seed);
         if let Some(slot) = restored_slot {
             self.restore_top_slot(slot);
@@ -1403,6 +1438,20 @@ impl VirtualMediaGrid {
         if !self.imp().active.get() || !self.imp().metadata_ready.get() {
             return;
         }
+        // This is the main-thread path called for every scroll-adjustment
+        // change. Keep the span tightly scoped: range DB work is traced
+        // separately in `vgrid:db_range` and its landing in `vgrid:landing`.
+        let _scroll = tracing::debug_span!(
+            "vgrid:scroll_range",
+            mode = ?self.mode(),
+            top_slot = tracing::field::Empty,
+            visible_start = tracing::field::Empty,
+            visible_end = tracing::field::Empty,
+            desired_start = tracing::field::Empty,
+            desired_end = tracing::field::Empty,
+            disposition = tracing::field::Empty,
+        )
+        .entered();
         let Some(visible) = self.visible_media_range() else {
             return;
         };
@@ -1410,6 +1459,12 @@ impl VirtualMediaGrid {
         let moving_forward = top_slot >= self.imp().last_top_slot.replace(top_slot);
         let desired = expanded_visible_range(visible, self.imp().live_total.get(), moving_forward);
         let disposition = self.imp().range.borrow_mut().request(desired);
+        _scroll.record("top_slot", top_slot);
+        _scroll.record("visible_start", visible.start);
+        _scroll.record("visible_end", visible.end);
+        _scroll.record("desired_start", desired.start);
+        _scroll.record("desired_end", desired.end);
+        _scroll.record("disposition", format_args!("{disposition:?}"));
         if let RequestDisposition::Started(request) = disposition {
             self.start_range_request(request);
         }
@@ -1447,6 +1502,12 @@ impl VirtualMediaGrid {
         glib::spawn_future_local(async move {
             let range = request.range;
             let result = gio::spawn_blocking(move || {
+                let _query = tracing::debug_span!(
+                    "vgrid:db_range",
+                    range_start = range.start,
+                    range_len = range.len(),
+                )
+                .entered();
                 MediaRepository::new(pool).items(query, range.start, range.len())
             })
             .await;
@@ -1499,7 +1560,14 @@ impl VirtualMediaGrid {
                 }
             }
             if let Some(next) = completion.next {
-                grid.start_range_request(next);
+                // The just-landed range may cover most or all of the newest
+                // drag target. Re-submit it through the coordinator so it
+                // requests only an uncovered edge rather than reloading the
+                // full pending window.
+                let disposition = grid.imp().range.borrow_mut().request(next.range);
+                if let RequestDisposition::Started(request) = disposition {
+                    grid.start_range_request(request);
+                }
             }
         });
     }
