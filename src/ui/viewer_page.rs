@@ -1,7 +1,7 @@
 //! ViewerPage — media viewer with preloading.
 //!
 //! `ViewerPage` is pushed onto the `AdwNavigationView` when the user clicks a
-//! `PhotoTile`. It decodes the **original** image (no thumbnail pipeline) for
+//! a thumbnail tile. It decodes the **original** image (no thumbnail pipeline) for
 //! the current item, plus preloads the ±1 neighbours so panning feels
 //! reasonably snappy. Keyboard interaction is routed through the main-window
 //! keyboard subsystem.

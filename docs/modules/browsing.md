@@ -20,8 +20,6 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/ui/virtual_media_grid/` | Pure layout index, virtual list model, range residency coordinator, factory, and focused tests |
 | `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
-| `src/ui/photo_tile.rs` | Thumbnail tile widget |
-| `src/ui/section_header.rs` | Date/group section headers |
 | `src/core/section_model.rs` | Year/Month/Day grouping model |
 | `data/ui/photos-page.blp` | Photos page template |
 | `data/ui/media-grid.blp` | Bounded FlowBox grid template for search preview surfaces |
@@ -150,7 +148,7 @@ inside that section's result set.
 
 When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
 
-Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids and legacy photo tiles display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
+Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
 
 The sidebar Media Types group contains only non-empty attribute virtual albums.
 Motion photos are backed by `media_subkind='motion_photo'`; Animated and HDR are

@@ -25,7 +25,7 @@ Key implementation locations:
 | Window shell and sidebar | `data/ui/window.blp`, `src/ui/window.rs` |
 | Photos browsing | `data/ui/photos-page.blp`, `data/ui/media-grid.blp`, `src/ui/photos_page.rs`, `src/ui/media_grid.rs` |
 | Mode selector | `data/ui/mode-selector.blp`, `src/ui/mode_selector.rs` |
-| Tiles and section headers | `data/ui/photo-tile.blp`, `data/ui/section-header.blp`, `src/ui/photo_tile.rs`, `src/ui/section_header.rs` |
+| Tiles | `src/ui/square_tile.rs` |
 | Viewer | `data/ui/viewer-page.blp`, `src/ui/viewer_page.rs` |
 | Editor panel | `data/ui/editor-panel.blp`, `src/ui/editor_panel.rs` |
 | Album detail | `data/ui/album-detail-page.blp`, `src/ui/album_detail_page.rs` |

@@ -80,7 +80,7 @@ impl ThumbnailSize {
 ///
 /// 把亮度判定（`is_light`）从主线程的 `Texture::download`（每张全像素回读 +
 /// 大 buffer 分配）下沉到 worker：worker 手里就有 pixbuf，直接就地采样，
-/// 主线程零分配、零回读。`PhotoTile`/相册/回收站等不需要亮度的调用方只取
+/// 主线程零分配、零回读。网格、相册、回收站等不需要亮度的调用方只取
 /// `.texture` 即可。
 #[derive(Clone)]
 pub struct LoadedThumb {
