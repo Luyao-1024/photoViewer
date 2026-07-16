@@ -16,7 +16,7 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
-use crate::core::section_model::{GroupBy, SectionKey};
+use crate::core::section_model::{counts_from_date_groups, GroupBy, SectionKey};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::media_grid::{thumbnail_request_mtime, FavoriteMenuState, MediaGridCallbacks};
@@ -251,6 +251,10 @@ mod imp {
         pub on_view_changed: OnceCell<Rc<dyn Fn()>>,
         pub(super) factory_cells: RefCell<Vec<FactoryCell>>,
         pub metadata_counts: RefCell<Option<HashMap<SectionKey, u32>>>,
+        /// Day-granularity index used by the Photos date-range overlay. It is
+        /// separate from the current Year/Month/Day visual layout so the
+        /// overlay can always report actual calendar-day bounds.
+        pub visible_date_layout: RefCell<Option<VirtualGridLayoutIndex>>,
         pub metadata_ready: Cell<bool>,
         pub metadata_loading: Cell<bool>,
         pub metadata_dirty: Cell<bool>,
@@ -293,6 +297,7 @@ mod imp {
                 on_view_changed: OnceCell::new(),
                 factory_cells: RefCell::new(Vec::new()),
                 metadata_counts: RefCell::new(None),
+                visible_date_layout: RefCell::new(None),
                 metadata_ready: Cell::new(false),
                 metadata_loading: Cell::new(false),
                 metadata_dirty: Cell::new(false),
@@ -570,15 +575,20 @@ impl VirtualMediaGrid {
         scroll_fraction_from_adjustment(&self.imp().scroller.get().vadjustment())
     }
 
-    pub fn current_scroll_section_key(&self) -> Option<SectionKey> {
-        let model = self.model();
-        let layout = model.layout();
-        if layout.section_count() <= 1 {
-            return None;
-        }
-        let top_slot = self.top_slot_for_adjustment();
-        let slot = top_slot.min(layout.slot_count().saturating_sub(1));
-        layout.section_for_slot(slot).cloned()
+    /// Returns the calendar-day bounds covered by the current viewport, from
+    /// the visual top (newest) to the visual bottom (oldest). This resolves
+    /// only against authoritative metadata, so it stays valid before
+    /// individual media tiles have been loaded or realized and is independent
+    /// of the active Year/Month/Day visual grouping.
+    pub fn visible_date_range(&self) -> Option<(SectionKey, SectionKey)> {
+        let date_layout = self.imp().visible_date_layout.borrow();
+        let date_layout = date_layout.as_ref()?;
+        let visible = self.visible_media_range()?;
+        let first = date_layout.section_for_media_offset(visible.start)?.clone();
+        let last = date_layout
+            .section_for_media_offset(visible.end.saturating_sub(1))?
+            .clone();
+        Some((first, last))
     }
 
     /// Resolve brightness from the small set of currently realized factory
@@ -1016,9 +1026,22 @@ impl VirtualMediaGrid {
             .connect_value_changed(move |_| {
                 if let Some(grid) = weak.upgrade() {
                     grid.schedule_visible_range();
-                    if let Some(callback) = grid.imp().on_view_changed.get() {
-                        callback();
-                    }
+                    grid.notify_view_changed();
+                }
+            });
+
+        // `value-changed` does not fire when the viewport height changes but
+        // its scroll position stays at zero. The visible date coverage still
+        // changes in that case, including immediately after first allocation.
+        let weak = self.downgrade();
+        self.imp()
+            .scroller
+            .get()
+            .vadjustment()
+            .connect_changed(move |_| {
+                if let Some(grid) = weak.upgrade() {
+                    grid.schedule_visible_range();
+                    grid.notify_view_changed();
                 }
             });
 
@@ -1101,8 +1124,10 @@ impl VirtualMediaGrid {
             let result = gio::spawn_blocking(move || {
                 let repo = MediaRepository::new(pool);
                 let total = repo.count(query.clone())?;
-                let counts = repo.section_counts_for_query(query, mode)?;
-                Ok::<_, crate::core::error::AppError>((total, counts))
+                let date_groups = repo.date_groups_for_query(query)?;
+                let counts = counts_from_date_groups(&date_groups, mode);
+                let day_counts = counts_from_date_groups(&date_groups, GroupBy::Day);
+                Ok::<_, crate::core::error::AppError>((total, counts, day_counts))
             })
             .await;
             let Some(grid) = weak.upgrade() else {
@@ -1113,7 +1138,9 @@ impl VirtualMediaGrid {
             }
             grid.imp().metadata_loading.set(false);
             match result {
-                Ok(Ok((total, counts))) => grid.apply_authoritative_metadata(total, counts),
+                Ok(Ok((total, counts, day_counts))) => {
+                    grid.apply_authoritative_metadata(total, counts, day_counts)
+                }
                 Ok(Err(error)) => tracing::warn!(
                     target: crate::core::log_targets::BROWSING,
                     mode = ?mode,
@@ -1131,15 +1158,25 @@ impl VirtualMediaGrid {
         });
     }
 
-    fn apply_authoritative_metadata(&self, total: u32, counts: HashMap<SectionKey, u32>) {
+    fn apply_authoritative_metadata(
+        &self,
+        total: u32,
+        counts: HashMap<SectionKey, u32>,
+        day_counts: HashMap<SectionKey, u32>,
+    ) {
         let (total, counts) = normalise_authoritative_counts(counts, total);
+        let (_, day_counts) = normalise_authoritative_counts(day_counts, total);
         let previous_layout = self.model().layout();
         let previous_top_slot = self.top_slot_for_adjustment();
         let layout = VirtualGridLayoutIndex::new(&counts, self.viewport_metrics().columns());
+        let visible_date_layout = VirtualGridLayoutIndex::new(&day_counts, 1);
         let restored_slot =
             restored_slot_after_layout_replacement(&previous_layout, previous_top_slot, &layout);
         self.imp().live_total.set(total);
         self.imp().metadata_counts.replace(Some(counts.clone()));
+        self.imp()
+            .visible_date_layout
+            .replace(Some(visible_date_layout));
         self.imp().metadata_ready.set(true);
         // Preserve instant first paint when the shared startup window matches
         // the beginning of the canonical live ordering; the authoritative
@@ -1160,6 +1197,7 @@ impl VirtualMediaGrid {
             self.restore_top_slot(slot);
         }
         self.schedule_visible_range_after_layout();
+        self.notify_view_changed();
     }
 
     fn schedule_metadata_reload(&self) {
@@ -1353,6 +1391,12 @@ impl VirtualMediaGrid {
                 grid.schedule_visible_range();
             }
         });
+    }
+
+    fn notify_view_changed(&self) {
+        if let Some(callback) = self.imp().on_view_changed.get() {
+            callback();
+        }
     }
 
     fn schedule_visible_range(&self) {

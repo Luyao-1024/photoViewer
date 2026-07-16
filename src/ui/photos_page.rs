@@ -83,9 +83,6 @@ mod imp {
         /// Coalescing flag for `schedule_scroll_date_update` (mirrors
         /// `contrast_update_pending`).
         pub scroll_date_update_pending: Cell<bool>,
-        /// One-shot hide timer: reset on every scroll event; fires ~700ms after
-        /// the last scroll to fade the pill out.
-        pub scroll_date_hide_timer: RefCell<Option<glib::SourceId>>,
         /// Debounces photo activation while NavigationView is pushing the
         /// viewer. Without this, rapid repeated clicks can stack viewer pages
         /// or race with viewer-level back handling during the transition.
@@ -148,7 +145,6 @@ mod imp {
                 selected_ids: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
                 scroll_date_update_pending: Cell::new(false),
-                scroll_date_hide_timer: RefCell::new(None),
                 viewer_open_pending: Cell::new(false),
                 scroll_date_revealer: TemplateChild::default(),
                 scroll_date_label: TemplateChild::default(),
@@ -378,7 +374,6 @@ impl PhotosPage {
                 if let Some(this) = weak.upgrade() {
                     this.schedule_mode_selector_contrast_update();
                     this.schedule_scroll_date_update();
-                    this.arm_scroll_date_hide();
                 }
             });
         }
@@ -449,6 +444,7 @@ impl PhotosPage {
                 let _trace = span.enter();
                 if let Some(this) = this {
                     this.sync_active_grid_rebuilds();
+                    this.schedule_scroll_date_update();
                     let contrast_span = tracing::info_span!(
                         target: crate::core::log_targets::BROWSING,
                         "photos:mode_contrast_schedule",
@@ -503,6 +499,7 @@ impl PhotosPage {
 
         obj.sync_active_grid_rebuilds();
         obj.schedule_mode_selector_contrast_update();
+        obj.schedule_scroll_date_update();
         // 初始化时也同步一次
         if let Some(loader) = obj.imp().loader.borrow().as_ref() {
             loader.set_prewarm_thumbnail_size(ThumbnailSize::Small); // Year 是默认模式
@@ -1006,36 +1003,26 @@ impl PhotosPage {
         });
     }
 
-    /// Refresh the scroll-date pill: resolve the current grid's date section,
-    /// update the label, position the pill alongside the scrollbar thumb, and
-    /// reveal it. Hides itself when there is nothing to show.
+    /// Refresh the scroll-date label from the active viewport's date coverage,
+    /// then reveal the fixed top-left overlay. Hides itself only while there is
+    /// no resolved media range.
     fn update_scroll_date(&self) {
         let Some(grid) = self.current_grid() else {
             self.imp().scroll_date_revealer.set_reveal_child(false);
             return;
         };
-        let Some(key) = grid.current_scroll_section_key() else {
+        let Some((first_visible, last_visible)) = grid.visible_date_range() else {
             self.imp().scroll_date_revealer.set_reveal_child(false);
             return;
         };
 
         let imp = self.imp();
         imp.scroll_date_label
-            .set_label(&crate::core::section_model::make_label_nocount(&key));
-
-        // Track the thumb vertically. Only position once the overlay is
-        // allocated; before that, heights are 0 and we just reveal at the top.
-        let overlay = imp.grid_overlay.get();
-        let revealer = imp.scroll_date_revealer.get();
-        let overlay_h = overlay.height() as f32;
-        let pill_h = revealer.height().max(1) as f32;
-        if overlay_h > pill_h {
-            let margin = 8.0_f32;
-            let usable = (overlay_h - pill_h - 2.0 * margin).max(0.0);
-            let top = margin + (grid.scroll_fraction() as f32) * usable;
-            revealer.set_margin_top(top.round() as i32);
-        }
-        revealer.set_reveal_child(true);
+            .set_label(&crate::core::section_model::make_visible_range_label(
+                &first_visible,
+                &last_visible,
+            ));
+        imp.scroll_date_revealer.set_reveal_child(true);
     }
 
     /// Coalesce scroll-date updates (the resolution is cheap but we still avoid
@@ -1052,35 +1039,6 @@ impl PhotosPage {
                 this.imp().scroll_date_update_pending.set(false);
             }
         });
-    }
-
-    /// (Re)arm the one-shot hide timer so the pill fades out ~700ms after the
-    /// last scroll event.
-    fn arm_scroll_date_hide(&self) {
-        let imp = self.imp();
-        // Cancel any previously-armed hide timer. A one-shot source is
-        // auto-destroyed by GLib once it fires, and `SourceId::remove` panics
-        // ("source not found") when called on such a stale id. The fire
-        // callback below clears the stored id; this guard is defense-in-depth —
-        // a fired source is simply gone, so there is nothing to remove.
-        if let Some(old) = imp.scroll_date_hide_timer.borrow_mut().take() {
-            if glib::MainContext::default()
-                .find_source_by_id(&old)
-                .is_some()
-            {
-                old.remove();
-            }
-        }
-        let weak = self.downgrade();
-        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-            if let Some(this) = weak.upgrade() {
-                this.imp().scroll_date_revealer.set_reveal_child(false);
-                // Drop the now-fired source's id so the next arm does not try
-                // to remove a source GLib has already destroyed.
-                *this.imp().scroll_date_hide_timer.borrow_mut() = None;
-            }
-        });
-        *imp.scroll_date_hide_timer.borrow_mut() = Some(id);
     }
 
     fn open_album_picker_for_ids(&self, ids: Vec<MediaId>) {

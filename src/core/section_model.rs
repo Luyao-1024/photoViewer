@@ -256,5 +256,28 @@ pub fn make_label_nocount(key: &SectionKey) -> String {
     }
 }
 
+/// Formats the date coverage of a visible portion of a newest-first grid.
+///
+/// `first_visible` is the date at the top of the viewport and is normally the
+/// newer bound; `last_visible` is the lower, older bound. The displayed range
+/// is put in chronological order so it reads naturally even though Photos is
+/// laid out newest-first. A one-section viewport stays compact as one label.
+pub fn make_visible_range_label(first_visible: &SectionKey, last_visible: &SectionKey) -> String {
+    if first_visible == last_visible {
+        return make_label_nocount(first_visible);
+    }
+
+    let (start, end) = if date_rank(first_visible) <= date_rank(last_visible) {
+        (first_visible, last_visible)
+    } else {
+        (last_visible, first_visible)
+    };
+    format!(
+        "{} – {}",
+        make_label_nocount(start),
+        make_label_nocount(end)
+    )
+}
+
 #[cfg(test)]
 mod tests;

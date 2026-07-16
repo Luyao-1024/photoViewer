@@ -145,6 +145,10 @@ has a full-width header followed by a grid of square thumbnail tiles.
 Design intent:
 
 - Section headers give time structure; thumbnails remain the visual focus.
+- The current date section is a large bold white label, fixed 12 px from the
+  grid's upper-left rather than following the scrollbar. It remains visible
+  after scrolling stops. It has no visible panel; Liquid Glass blurs only its
+  tight text bounds, while plain mode leaves it transparent.
 - Headers stay outside the `GridView` so they span the full width and do not
   distort tile rows.
 - Year, Month, and Day views use the same media store but different grouping and

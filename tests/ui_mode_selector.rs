@@ -219,7 +219,27 @@ fn mode_selector_integration_suite() {
     );
     assert!(
         !scroll_date_revealer.can_target(),
-        "scroll_date_revealer must be can-target:false (click-through) so it never steals pointer events from tiles or the scrollbar"
+        "scroll_date_revealer must be can-target:false (click-through) so it never steals pointer events from tiles"
+    );
+    assert_eq!(
+        scroll_date_revealer.halign(),
+        gtk::Align::Start,
+        "scroll date should stay anchored at the Photos grid's left edge instead of following the scrollbar"
+    );
+    assert_eq!(
+        scroll_date_revealer.valign(),
+        gtk::Align::Start,
+        "scroll date should stay anchored at the Photos grid's top edge instead of following the scrollbar"
+    );
+    assert_eq!(
+        scroll_date_revealer.margin_start(),
+        12,
+        "scroll date should sit close to the Photos grid's left edge"
+    );
+    assert_eq!(
+        scroll_date_revealer.margin_top(),
+        12,
+        "scroll date should sit close to the Photos grid's top edge"
     );
     assert_eq!(
         overlay_children.len(),

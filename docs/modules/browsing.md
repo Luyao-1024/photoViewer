@@ -83,7 +83,7 @@ ring. `GtkGridView` itself must keep `border-spacing: 0`: GTK 4.22 subtracts
 non-zero border spacing from an unallocated height-for-width probe and can
 pass an invalid size to its list-item wrappers.
 `VirtualGridViewportMetrics` mirrors GTK's integer
-cell-width calculation on every resize, so tile side, row stride, date pill,
+cell-width calculation on every resize, so tile side, row stride, date-range label,
 and visible-range calculations stay aligned. Resizing updates only viewport
 metrics and never rebuilds the section-slot index. Changing the setting
 intentionally reflows the three mode grids once. Updates never run
@@ -269,21 +269,28 @@ than `GtkPopover`, so they render through the same page-overlay path as the
 Year/Month/Day selector. Keep button-triggered popovers separate from this
 right-click menu path.
 
-While the Photos grid is scrolled, a compact glass date pill appears just left
-of the scrollbar and tracks the thumb vertically, fading out ~700ms after
-scrolling stops. It shows the date section at the current scroll position in the
-active mode (Year/Month/Day). The date is resolved from the virtual layout's
-section counts and top physical slot, NOT by reading realized tiles — so it
-stays correct in unloaded ranges. It is hidden when library metadata has not
-loaded, the library is empty, or there is a single section. The pill is `can-target: false`
-(click-through) and reuses `.glass-raised`; it is Photos-page only (album detail
-pages are a follow-up).
+The Photos grid's visible date-range label is anchored 12 px from the grid's
+upper-left. It is refreshed as soon as authoritative metadata lands (without
+waiting for a scroll), when the active Year/Month/Day grid changes, and on
+viewport resize or scroll. It remains visible and does not fade after scrolling
+stops. The range covers the top and bottom visible media slots and is displayed
+oldest-to-newest. Its bounds always use actual calendar days, independently of
+the active Year/Month/Day visual grouping: a one-day viewport shows just that
+date, while a multi-day viewport shows both dates as a range. Both bounds are
+resolved from the virtual layout's authoritative per-day counts, NOT by reading
+realized tiles — so the label stays correct in unloaded ranges. It is hidden
+only until metadata loads or when the library is empty. The label is large,
+bold, and white, with no visible background, border, or shadow. In Liquid Glass
+mode, its unpadded text bounds apply the backdrop blur; plain mode leaves it
+transparent. It is `can-target: false` (click-through) and Photos-page only
+(album detail pages are a follow-up).
 
-The virtual layout index resolves the date from the top physical slot rather
-than realized tile widgets, so dragging through unloaded ranges and switching
-to Year or Month remains immediate. The Photos renderer has no section-heading
-widgets; deterministic filler slots give each section a clean row boundary while
-the pill supplies the floating date context.
+The virtual layout index resolves the visible media offsets from physical slots,
+then maps both bounds through an authoritative per-day index rather than
+realized tile widgets. Dragging through unloaded ranges and switching to Year
+or Month therefore remains immediate. The Photos renderer has no
+section-heading widgets; deterministic filler slots give each section a clean
+row boundary while the label supplies the floating date context.
 
 ## Mode Selector
 

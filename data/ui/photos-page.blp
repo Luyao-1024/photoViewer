@@ -130,15 +130,16 @@ template $PhotosPage : Adw.NavigationPage {
         transition-type: crossfade;
         transition-duration: 200;
         reveal-child: false;
-        halign: end;
+        // Date context remains in one predictable place while the grid scrolls.
+        halign: start;
         valign: start;
-        margin-end: 14;
-        margin-top: 0;
-        // Click-through: never steal pointer events from tiles or the scrollbar.
+        margin-start: 12;
+        margin-top: 12;
+        // Click-through: never steal pointer events from tiles.
         can-target: false;
 
         Gtk.Label scroll_date_label {
-          css-classes: ["glass-raised", "scroll-date-pill"];
+          css-classes: ["scroll-date-label"];
         }
       }
     }

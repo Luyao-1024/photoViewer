@@ -8,6 +8,14 @@ fn css_block(css: &str, selector: &str) -> Option<String> {
     Some(css[start..=close].to_string())
 }
 
+fn last_css_block(css: &str, selector: &str) -> Option<String> {
+    let pattern = format!("{selector} {{");
+    let start = css.rfind(&pattern)?;
+    let open = css[start..].find('{')? + start;
+    let close = css[open..].find('}')? + open;
+    Some(css[start..=close].to_string())
+}
+
 /// `.viewer-favorite-btn.favorite-active:hover` must exist alongside the
 /// base `.viewer-favorite-btn.favorite-active` rule. Without the :hover
 /// override, the bare-at-rest/hover viewer-chrome rules would win and the
@@ -23,6 +31,56 @@ fn favorite_active_has_hover_override() {
     assert!(
         css.contains(".viewer-favorite-btn.favorite-active:hover"),
         "CSS must define a :hover override so the red heart brightens on pointer-over",
+    );
+}
+
+/// The Photos-page scrolling date should read as text over the content, not
+/// as a separate pill. Liquid Glass keeps its blur tightly bounded to the
+/// unpadded label while plain mode remains transparent.
+#[test]
+fn photos_scroll_date_is_large_white_text_with_no_visible_panel() {
+    let liquid_css = build_css(true);
+    let block = css_block(&liquid_css, ".scroll-date-label")
+        .expect("Photos scroll-date label should have a dedicated CSS block");
+
+    assert!(
+        block.contains("color: white"),
+        "scroll date must remain white over photo content, got {block}"
+    );
+    assert!(
+        block.contains("font-weight: 700"),
+        "scroll date must use a bold weight, got {block}"
+    );
+    assert!(
+        block.contains("font-size: 20px"),
+        "scroll date must be larger than a compact hint, got {block}"
+    );
+    assert!(
+        block.contains("padding: 0"),
+        "scroll date should blur only its tight text bounds, got {block}"
+    );
+
+    let liquid_material = last_css_block(&liquid_css, ".scroll-date-label")
+        .expect("Liquid Glass should define scroll-date material");
+    assert!(
+        liquid_material.contains("background: transparent")
+            && liquid_material.contains("border: none")
+            && liquid_material.contains("box-shadow: none"),
+        "scroll date must not draw a visible panel, got {liquid_material}"
+    );
+    assert!(
+        liquid_material.contains("backdrop-filter: blur("),
+        "Liquid Glass should blur only behind the date text, got {liquid_material}"
+    );
+
+    let plain_material = last_css_block(&build_css(false), ".scroll-date-label")
+        .expect("plain mode should define scroll-date material");
+    assert!(
+        plain_material.contains("background: transparent")
+            && plain_material.contains("border: none")
+            && plain_material.contains("box-shadow: none")
+            && !plain_material.contains("backdrop-filter"),
+        "plain mode should keep the date as unbacked text, got {plain_material}"
     );
 }
 

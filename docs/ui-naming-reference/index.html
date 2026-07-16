@@ -84,7 +84,7 @@
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
-        <div class="scroll-date-pill hotspot" tabindex="0" data-ui="scroll-date-pill" data-name="滚动日期气泡" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .glass-raised.scroll-date-pill" data-props="滚动时浮在滚动条左侧、随 thumb 垂直跟踪的玻璃日期胶囊；约 700ms 后淡出。日期由 VirtualGridLayoutIndex 的顶部物理 slot 与权威 section_counts 解析，不读已实现 tile，拖过未加载范围也正确。库元数据未加载/空库/仅一个段时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026 · 七月</div>
+        <div class="scroll-date-label hotspot" tabindex="0" data-ui="scroll-date-label" data-name="可见日期范围提示" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .scroll-date-label" data-props="固定在照片网格左上角、距边缘 12px 的白色粗体日期范围；权威元数据到达后立即显示并持续显示，不会在停止滚动后淡出。由 VirtualGridLayoutIndex 的可见媒体偏移映射到权威的逐日索引，不读已实现 tile，拖过未加载范围也正确；不受年/月/日视图分组影响。视口只含一天时仅显示该日期，跨多天时显示起止范围。无可见背景、边框或阴影；Liquid Glass 仅在紧贴文字的范围内模糊背景，plain 模式保持透明。库元数据未加载或空库时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026年7月10日 – 2026年7月12日</div>
       </main>
     </div>
   </section>

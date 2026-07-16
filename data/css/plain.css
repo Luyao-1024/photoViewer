@@ -12,6 +12,13 @@
   box-shadow: 0 4px 12px alpha(black, 0.22);
 }
 
+/* No visible panel when Liquid Glass is disabled. */
+.scroll-date-label {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
 .glass-menu > contents {
   padding: 6px;
   border-radius: 16px;

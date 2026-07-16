@@ -421,3 +421,32 @@ fn make_label_nocount_has_no_count_and_matches_mode() {
     assert!(month.contains("7"));
     assert!(day.contains("12"));
 }
+
+#[test]
+fn visible_range_label_is_chronological_and_collapses_one_section() {
+    let newer = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(12),
+    };
+    let older = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(10),
+    };
+
+    assert_eq!(
+        make_visible_range_label(&newer, &older),
+        format!(
+            "{} – {}",
+            make_label_nocount(&older),
+            make_label_nocount(&newer)
+        ),
+        "the newest-first grid should still present its coverage oldest to newest"
+    );
+    assert_eq!(
+        make_visible_range_label(&newer, &newer),
+        make_label_nocount(&newer),
+        "a viewport contained by one date section should not repeat the date"
+    );
+}

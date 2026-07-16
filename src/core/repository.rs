@@ -216,7 +216,20 @@ impl MediaRepository {
         query: MediaQuery,
         mode: GroupBy,
     ) -> Result<HashMap<SectionKey, u32>> {
-        let groups = match query {
+        Ok(counts_from_date_groups(
+            &self.date_groups_for_query(query)?,
+            mode,
+        ))
+    }
+
+    /// Returns authoritative per-day counts for a query. Callers that need
+    /// more than one grouping (for example a Month layout plus a Day-range
+    /// overlay) should derive both from this single aggregation result.
+    pub(crate) fn date_groups_for_query(
+        &self,
+        query: MediaQuery,
+    ) -> Result<Vec<(i32, u32, u32, u32)>> {
+        Ok(match query {
             MediaQuery::LiveAll => db::count_live_media_by_date(&self.pool)?,
             MediaQuery::Search { term, field } => {
                 let (where_clause, params) = search_count_filter(term, None, field);
@@ -267,8 +280,7 @@ impl MediaRepository {
                 "trashed_at IS NOT NULL",
                 Vec::new(),
             )?,
-        };
-        Ok(counts_from_date_groups(&groups, mode))
+        })
     }
 
     pub fn neighbor(

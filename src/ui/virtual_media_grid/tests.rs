@@ -26,6 +26,75 @@ fn active_grid_seeds_the_initial_window_without_waiting_for_metadata() {
 }
 
 #[gtk::test]
+fn authoritative_metadata_immediately_notifies_and_exposes_visible_date_range() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let grid = VirtualMediaGrid::new(list, GroupBy::Month, loader, noop_callbacks(), false);
+
+    let notifications = Rc::new(Cell::new(0));
+    let captured_notifications = notifications.clone();
+    grid.connect_view_changed(move || {
+        captured_notifications.set(captured_notifications.get() + 1);
+    });
+
+    let newer_month = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: None,
+    };
+    let older_month = SectionKey {
+        year: Some(2026),
+        month: Some(6),
+        day: None,
+    };
+    let counts = HashMap::from([(newer_month, 3), (older_month, 2)]);
+    let newer_day = SectionKey {
+        year: Some(2026),
+        month: Some(7),
+        day: Some(12),
+    };
+    let older_day = SectionKey {
+        year: Some(2026),
+        month: Some(6),
+        day: Some(10),
+    };
+    let day_counts = HashMap::from([
+        (newer_day.clone(), 2),
+        (
+            SectionKey {
+                year: Some(2026),
+                month: Some(7),
+                day: Some(11),
+            },
+            1,
+        ),
+        (older_day.clone(), 2),
+    ]);
+
+    // A viewport taller than the whole layout should include both date
+    // sections even before GTK has realized individual media tiles.
+    grid.imp()
+        .scroller
+        .get()
+        .vadjustment()
+        .set_page_size(10_000.0);
+    grid.apply_authoritative_metadata(5, counts, day_counts);
+
+    assert!(
+        notifications.get() >= 1,
+        "metadata landing must update the overlay without a scroll"
+    );
+    assert_eq!(
+        grid.visible_date_range(),
+        Some((newer_day, older_day)),
+        "Month view must still report the exact days covered by its viewport"
+    );
+}
+
+#[gtk::test]
 fn selection_updates_realized_tile_without_replacing_the_list_model() {
     let _ = gtk::init();
     let dir = tempfile::tempdir().unwrap();
