@@ -349,19 +349,24 @@ impl AlbumDetailPage {
     }
 
     fn open_viewer_for_media_id(&self, media_id: MediaId) {
+        // Prefer the bounded shared window when it already contains the item so
+        // the viewer opens with the full filmstrip populated (matching
+        // PhotosPage::open_viewer). Only fall back to a single-item seed for a
+        // virtual-range item outside that window; the Viewer then hydrates
+        // neighbours through the album query.
         let media_list = self
             .imp()
-            .grid
+            .media_list
             .borrow()
             .as_ref()
-            .and_then(|grid| grid.viewer_seed_for(media_id))
+            .filter(|list| index_for_media_id(list, media_id).is_some())
+            .cloned()
             .or_else(|| {
                 self.imp()
-                    .media_list
+                    .grid
                     .borrow()
                     .as_ref()
-                    .filter(|list| index_for_media_id(list, media_id).is_some())
-                    .cloned()
+                    .and_then(|grid| grid.viewer_seed_for(media_id))
             });
         let Some(media_list) = media_list else {
             tracing::debug!(
