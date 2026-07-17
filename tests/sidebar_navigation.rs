@@ -436,8 +436,15 @@ fn sidebar_navigation_suite() {
         "Photos row should show the total live media count"
     );
     assert!(
-        !window.imp().album_scroll.property::<bool>("vexpand"),
-        "album scroll should not expand — it sizes to content, wrapper handles fill",
+        window.imp().album_scroll.property::<bool>("vexpand"),
+        "virtual album list needs a finite expanding viewport instead of natural-height propagation",
+    );
+    assert!(
+        !window
+            .imp()
+            .album_scroll
+            .property::<bool>("propagate-natural-height"),
+        "natural-height propagation would force GTK to realize every virtual album row",
     );
 
     // Row 1 is the Albums group header — non-selectable (it only collapses).

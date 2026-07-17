@@ -77,6 +77,9 @@ sidebar viewport; snapshot refreshes replace model items while preserving the
 active album selection. Do not reintroduce a `GtkListBox` that creates every
 album widget during a snapshot delivery. Media Types stays a small `GtkListBox`
 because its bounded row count does not justify virtualization.
+`album_scroll` must keep a finite expanding viewport (`vexpand: true`) and
+must not use `propagate-natural-height`: natural-height measurement causes GTK
+to bind every `GtkListView` item, defeating virtualization.
 
 Album covers are persisted separately from the `albums` materialized view in
 `album_covers(folder_path, cover_uri)`. `albums::refresh` applies the same
