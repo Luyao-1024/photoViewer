@@ -210,8 +210,9 @@ activation, and cross-async work should use `MediaId`; indexes are render-local
 only.
 
 Virtual-grid thumbnail requests are driven by the current visible range, not by
-tile map signals. The range model keeps visible items and an overscan window
-resident, prioritizes their thumbnail work, and uses the `MediaItem` metadata
+tile map signals. The range model keeps visible items plus two viewports behind
+and four ahead (mirrored when scrolling backward) resident, prioritizes their
+thumbnail work, and uses the `MediaItem` metadata
 already fetched from the database (including `file_mtime`); never add per-tile
 filesystem metadata calls on the GTK thread. Factory binding may use only the
 in-memory thumbnail cache synchronously; disk-cache reads and generation stay

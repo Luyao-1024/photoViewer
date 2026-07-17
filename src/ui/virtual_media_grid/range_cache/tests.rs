@@ -161,10 +161,10 @@ fn directional_overscan_favors_scroll_direction() {
     let visible = MediaRange::new(50, 60);
     assert_eq!(
         expanded_visible_range(visible, 100, true),
-        MediaRange::new(40, 80)
+        MediaRange::new(30, 100)
     );
     assert_eq!(
         expanded_visible_range(visible, 100, false),
-        MediaRange::new(30, 70)
+        MediaRange::new(10, 80)
     );
 }

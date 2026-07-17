@@ -218,22 +218,24 @@ impl RangeCoordinator {
 }
 
 /// Convert an inclusive viewport plus overscan into a safe, bounded media
-/// range.  The directional side receives twice as much overscan so quick
-/// kinetic scrolling warms where the user is heading first.
+/// range. The directional side receives twice as much overscan, while the
+/// opposite side retains two whole viewports for an immediate direction
+/// reversal. This keeps recently browsed tiles in the ready model long enough
+/// to reuse their in-memory thumbnails instead of re-queuing disk-cache work.
 pub fn expanded_visible_range(visible: MediaRange, total: u32, moving_forward: bool) -> MediaRange {
     if visible.is_empty() || total == 0 {
         return MediaRange::new(0, 0);
     }
     let overscan = visible.len().max(1);
     let before = if moving_forward {
-        overscan
-    } else {
         overscan.saturating_mul(2)
+    } else {
+        overscan.saturating_mul(4)
     };
     let after = if moving_forward {
-        overscan.saturating_mul(2)
+        overscan.saturating_mul(4)
     } else {
-        overscan
+        overscan.saturating_mul(2)
     };
     MediaRange::new(
         visible.start.saturating_sub(before),
