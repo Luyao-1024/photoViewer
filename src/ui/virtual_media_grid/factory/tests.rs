@@ -14,6 +14,19 @@ fn tile_binding_key_requires_the_slot_generation_media_and_cache_identity() {
     assert_ne!(first, changed_mtime);
 }
 
+#[test]
+fn stale_batched_thumbnail_request_is_rejected_before_worker_submission() {
+    let binding = TileBinding::new(1, 3, MediaId::from(7), Some("old".into()));
+    let state = Rc::new(RefCell::new(Some(binding.clone())));
+    assert!(binding_is_current(&state, &binding));
+
+    *state.borrow_mut() = Some(TileBinding::new(2, 3, MediaId::from(7), Some("old".into())));
+    assert!(
+        !binding_is_current(&state, &binding),
+        "a queued request for a recycled tile must not enter the worker queue"
+    );
+}
+
 #[gtk::test]
 fn teardown_removes_the_permanent_list_item_child() {
     let _ = gtk::init();

@@ -321,11 +321,7 @@ pub(super) fn defer_thumbnail_paint(
     is_placeholder: bool,
 ) {
     glib::idle_add_local_once(move || {
-        let current_matches = binding_state
-            .borrow()
-            .as_ref()
-            .is_some_and(|current| current == &binding);
-        if !current_matches {
+        if !binding_is_current(&binding_state, &binding) {
             return;
         }
         let Some(tile) = tile_weak.upgrade() else {
@@ -372,6 +368,18 @@ fn request_thumbnail(
     loader: Arc<ThumbnailLoader>,
     load_started: std::time::Instant,
 ) {
+    // A rapid direction change can recycle the tile while its request is still
+    // waiting in the per-frame batcher. Do not let an obsolete closure consume
+    // a thumbnail worker: its result would be rejected at paint time anyway,
+    // while the newly visible reverse-scroll tiles wait behind it.
+    if !binding_is_current(&binding_state, &binding) {
+        tracing::debug!(
+            target: crate::core::log_targets::BROWSING,
+            media_id = binding.media_id().get(),
+            "VGRID_THUMBNAIL_STALE_REQUEST_DROPPED"
+        );
+        return;
+    }
     let spec = grid.spec();
     let mtime = thumbnail_request_mtime(&item);
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -401,6 +409,16 @@ fn request_thumbnail(
             false,
         );
     });
+}
+
+fn binding_is_current(
+    binding_state: &Rc<RefCell<Option<TileBinding>>>,
+    binding: &TileBinding,
+) -> bool {
+    binding_state
+        .borrow()
+        .as_ref()
+        .is_some_and(|current| current == binding)
 }
 
 #[cfg(test)]
