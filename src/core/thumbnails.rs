@@ -192,6 +192,9 @@ pub(in crate::core::thumbnails) type SharedStatsDirtyCallback =
 /// （否则一个刚完成的 key 可能被新请求当作未生成而重复入队）。
 pub(in crate::core::thumbnails) struct LoaderState {
     mem_cache: LruCache<String, LoadedThumb>,
+    /// Background prewarm must not evict textures from tiles the user already
+    /// browsed. The first foreground lookup promotes an entry to `mem_cache`.
+    prewarm_mem_cache: LruCache<String, LoadedThumb>,
     /// Low-res embedded-EXIF thumbnails (Android-style instant placeholders).
     /// Size-independent key; capped separately so it survives full-thumb churn.
     exif_cache: LruCache<String, LoadedThumb>,
@@ -200,7 +203,41 @@ pub(in crate::core::thumbnails) struct LoaderState {
     /// 同 key 的后续 request 直接 append 到这里、**不再单独入队**，因此：
     ///   - 同一张缩略图永远不会被重复生成；
     ///   - 重复请求永远不会因为队列满而被丢弃。
-    in_flight: HashMap<String, Vec<oneshot::Sender<LoadedThumb>>>,
+    in_flight: HashMap<String, Vec<ThumbnailWaiter>>,
+}
+
+/// One caller waiting for an in-flight thumbnail. A virtual grid cell gives
+/// its waiter a cancellation flag when it is recycled, allowing an orphaned
+/// queued job to leave the worker queue before it starts decoding.
+pub(in crate::core::thumbnails) struct ThumbnailWaiter {
+    pub(in crate::core::thumbnails) reply: oneshot::Sender<LoadedThumb>,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+impl ThumbnailWaiter {
+    fn active(reply: oneshot::Sender<LoadedThumb>, cancellation: Option<Arc<AtomicBool>>) -> Self {
+        Self {
+            reply,
+            cancellation,
+        }
+    }
+
+    pub(in crate::core::thumbnails) fn is_cancelled(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::Acquire))
+    }
+}
+
+/// Look up a thumbnail without disk I/O. A prewarmed image becomes browsing
+/// history on its first foreground use, so future prewarm cannot evict it.
+fn load_mem_cached_locked(state: &mut LoaderState, cache_key: &str) -> Option<LoadedThumb> {
+    if let Some(loaded) = state.mem_cache.get(cache_key).cloned() {
+        return Some(loaded);
+    }
+    let loaded = state.prewarm_mem_cache.pop(cache_key)?;
+    state.mem_cache.put(cache_key.to_owned(), loaded.clone());
+    Some(loaded)
 }
 
 /// 后台预热拉取状态：worker 在队列为空时据此从 DB 拉取下一个需生成的项。
@@ -250,6 +287,7 @@ impl ThumbnailLoader {
         let runtime = runtime_config::load();
         let state = Arc::new(Mutex::new(LoaderState {
             mem_cache: LruCache::new(NonZeroUsize::new(runtime.thumbnail_mem_cache_cap).unwrap()),
+            prewarm_mem_cache: LruCache::new(NonZeroUsize::new(64).unwrap()),
             exif_cache: LruCache::new(NonZeroUsize::new(runtime.thumbnail_exif_cache_cap).unwrap()),
             in_flight: HashMap::new(),
         }));
@@ -438,7 +476,7 @@ impl ThumbnailLoader {
         reply: oneshot::Sender<LoadedThumb>,
         tier: u8,
     ) {
-        self.request_inner(0, uri, size, mtime, reply, tier);
+        self.request_inner(0, uri, size, mtime, reply, tier, None);
     }
 
     /// Submit a thumbnail request for a known DB media row.
@@ -455,7 +493,59 @@ impl ThumbnailLoader {
         reply: oneshot::Sender<LoadedThumb>,
         tier: u8,
     ) {
-        self.request_inner(media_id, uri, size, mtime, reply, tier);
+        self.request_inner(media_id, uri, size, mtime, reply, tier, None);
+    }
+
+    /// Submit a visible request that may be cancelled when its GTK cell is
+    /// recycled. Cancellation only removes a queued job when this was its last
+    /// waiter; shared requests remain available to every still-visible cell.
+    pub fn request_for_media_cancellable(
+        &self,
+        media_id: i64,
+        uri: String,
+        size: ThumbnailSize,
+        mtime: Option<SystemTime>,
+        reply: oneshot::Sender<LoadedThumb>,
+        tier: u8,
+        cancellation: Arc<AtomicBool>,
+    ) {
+        self.request_inner(media_id, uri, size, mtime, reply, tier, Some(cancellation));
+    }
+
+    /// Mark one virtual-grid waiter stale and discard its queued work if no
+    /// other caller still needs that cache key. A worker that already popped
+    /// the item is deliberately allowed to finish and populate the cache.
+    pub fn cancel_cancellable_request(&self, cache_key: &str, cancellation: &Arc<AtomicBool>) {
+        cancellation.store(true, AtomicOrdering::Release);
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let Some(waiters) = state.in_flight.get_mut(cache_key) else {
+            return;
+        };
+        waiters.retain(|waiter| !waiter.is_cancelled());
+        if !waiters.is_empty() {
+            return;
+        }
+
+        // Keep the lock order consistent with request enqueue/pull paths:
+        // state first, then queue. Removing from `queued` invalidates its lazy
+        // heap entry; if a worker already popped it, leave `in_flight` intact
+        // so a later request can still join that in-progress generation.
+        let (lock, _) = &*self.queue;
+        let mut queue = match lock.lock() {
+            Ok(queue) => queue,
+            Err(_) => return,
+        };
+        if queue.queued.remove(cache_key).is_some() {
+            state.in_flight.remove(cache_key);
+            debug!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB_LOADER_TRACE cancelled_orphaned_queued cache_key={}",
+                cache_key
+            );
+        }
     }
 
     pub fn try_load_cached(
@@ -466,7 +556,7 @@ impl ThumbnailLoader {
     ) -> Option<LoadedThumb> {
         let cache_key = cache_key_str(uri, size, mtime)?;
         if let Ok(mut st) = self.state.lock() {
-            if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
+            if let Some(loaded) = load_mem_cached_locked(&mut st, &cache_key) {
                 debug!(
                     target: crate::core::log_targets::THUMBNAILS,
                     "THUMB_LOADER_TRACE try_load_cached_mem_hit uri={} size={:?} cache_key={}",
@@ -531,7 +621,8 @@ impl ThumbnailLoader {
         mtime: Option<SystemTime>,
     ) -> Option<LoadedThumb> {
         let cache_key = cache_key_str(uri, size, mtime)?;
-        let loaded = self.state.lock().ok()?.mem_cache.get(&cache_key).cloned()?;
+        let mut state = self.state.lock().ok()?;
+        let loaded = load_mem_cached_locked(&mut state, &cache_key)?;
         debug!(
             target: crate::core::log_targets::THUMBNAILS,
             "THUMB_LOADER_TRACE try_load_mem_cached_hit uri={} size={:?} cache_key={}",
@@ -588,7 +679,14 @@ impl ThumbnailLoader {
         mtime: Option<SystemTime>,
         reply: oneshot::Sender<LoadedThumb>,
         tier: u8,
+        cancellation: Option<Arc<AtomicBool>>,
     ) {
+        if cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(AtomicOrdering::Acquire))
+        {
+            return;
+        }
         let requested_at = Instant::now();
         let Some(cache_key) = cache_key_str(&uri, size, mtime) else {
             // 源文件不存在 / 无法 stat：无法去重，按"生成失败"处理。
@@ -615,7 +713,7 @@ impl ThumbnailLoader {
             Err(_) => return, // poisoned
         };
         // 1) 内存命中
-        if let Some(loaded) = st.mem_cache.get(&cache_key).cloned() {
+        if let Some(loaded) = load_mem_cached_locked(&mut st, &cache_key) {
             debug!(
                 target: crate::core::log_targets::THUMBNAILS,
                 "THUMB_LOADER_TRACE mem_cache_hit uri={} size={:?} tier={} cache_key={}",
@@ -639,11 +737,14 @@ impl ThumbnailLoader {
                 cache_key,
                 waiters.len()
             );
-            waiters.push(reply);
+            waiters.push(ThumbnailWaiter::active(reply, cancellation));
             return;
         }
         // 3) 新工作项：先登记在途，再入队
-        st.in_flight.insert(cache_key.clone(), vec![reply]);
+        st.in_flight.insert(
+            cache_key.clone(),
+            vec![ThumbnailWaiter::active(reply, cancellation)],
+        );
         drop(st);
 
         let (lock, cvar) = &*self.queue;
@@ -792,6 +893,7 @@ impl ThumbnailLoader {
     pub fn clear_mem_cache(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.mem_cache.clear();
+            state.prewarm_mem_cache.clear();
             state.exif_cache.clear();
             state.in_flight.clear();
         }

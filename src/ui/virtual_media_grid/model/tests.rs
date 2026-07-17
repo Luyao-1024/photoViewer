@@ -131,7 +131,7 @@ fn replacing_ready_range_only_retains_returned_items() {
 fn eviction_turns_distant_items_back_into_placeholders() {
     let model = VirtualMediaModel::new(layout());
     model.replace_ready_range(0..4, vec![item(10), item(11), item(12), item(13)]);
-    model.evict_outside(1..3);
+    model.evict_to_capacity(1..3, 2);
 
     assert_eq!(model.ready_item_count(), 2);
     assert!(matches!(
@@ -144,6 +144,26 @@ fn eviction_turns_distant_items_back_into_placeholders() {
     assert!(matches!(
         model.slot_state(1),
         Some(GridSlotState::Ready { ref item, .. }) if item.id == 11
+    ));
+}
+
+#[test]
+fn recent_ready_history_survives_a_small_active_window_shift() {
+    let model = VirtualMediaModel::new(layout());
+    model.replace_ready_range(0..4, vec![item(10), item(11), item(12), item(13)]);
+
+    // The normal path has a 1,500-item history budget, so a small current
+    // range must not turn just-browsed entries back into placeholders.
+    model.evict_outside(1..3);
+
+    assert_eq!(model.ready_item_count(), 4);
+    assert!(matches!(
+        model.slot_state(0),
+        Some(GridSlotState::Ready { ref item, .. }) if item.id == 10
+    ));
+    assert!(matches!(
+        model.slot_state(2),
+        Some(GridSlotState::Ready { ref item, .. }) if item.id == 12
     ));
 }
 

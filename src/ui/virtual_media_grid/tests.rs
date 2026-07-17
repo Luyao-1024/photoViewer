@@ -123,15 +123,15 @@ fn selection_updates_realized_tile_without_replacing_the_list_model() {
     let media_id = MediaId::from(1);
 
     let tile = SquareTile::new();
-    grid.register_factory_cell(factory::FactoryCell {
-        tile: tile.clone(),
-        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+    grid.register_factory_cell(factory::FactoryCell::new(
+        tile.clone(),
+        std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
             grid.layout_generation(),
             0,
             media_id,
             None,
         )))),
-    });
+    ));
 
     let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let captured_changes = changes.clone();
@@ -167,25 +167,25 @@ fn context_menu_does_not_add_a_checkmark_on_right_click() {
     let second = MediaId::from(2);
 
     let tile_first = SquareTile::new();
-    grid.register_factory_cell(factory::FactoryCell {
-        tile: tile_first.clone(),
-        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+    grid.register_factory_cell(factory::FactoryCell::new(
+        tile_first.clone(),
+        std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
             grid.layout_generation(),
             0,
             first,
             None,
         )))),
-    });
+    ));
     let tile_second = SquareTile::new();
-    grid.register_factory_cell(factory::FactoryCell {
-        tile: tile_second.clone(),
-        binding: std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
+    grid.register_factory_cell(factory::FactoryCell::new(
+        tile_second.clone(),
+        std::rc::Rc::new(std::cell::RefCell::new(Some(TileBinding::new(
             grid.layout_generation(),
             1,
             second,
             None,
         )))),
-    });
+    ));
 
     // Build a multi-selection on the first photo.
     grid.set_multi_select_mode(true);

@@ -70,11 +70,17 @@ pub(in crate::core::thumbnails) fn worker_loop(
                         Ok(s) => s,
                         Err(_) => return,
                     };
-                    // 无条件入 mem_cache：预热（TIER_BACKGROUND）结果也写入，使后续
-                    // 视口 bind 命中 try_load_mem_cached 而非重新解码磁盘 JPEG。
-                    // 预热只在队列为空时运行（可见请求先服务），且经 redirect_prewarm
-                    // 指向当前视口邻域，LRU recency 保护刚访问的可见 tile 不被驱逐。
-                    st.mem_cache.put(req.cache_key.clone(), loaded.clone());
+                    // Keep background prewarm separate from foreground browse
+                    // history. Otherwise a long idle prewarm pass can evict
+                    // thumbnails the user just saw, defeating instant reverse
+                    // scrolling. A foreground lookup promotes this small-cache
+                    // entry into `mem_cache` on first use.
+                    if req.tier == TIER_BACKGROUND {
+                        st.prewarm_mem_cache
+                            .put(req.cache_key.clone(), loaded.clone());
+                    } else {
+                        st.mem_cache.put(req.cache_key.clone(), loaded.clone());
+                    }
                     st.in_flight.remove(&req.cache_key).unwrap_or_default()
                 };
                 debug!(
@@ -142,8 +148,10 @@ pub(in crate::core::thumbnails) fn worker_loop(
                 }
                 // 交付纹理：冷路径下标记已先于此完成（保契约）；命中路径无 DB 记账，
                 // 纹理在 generate 后即刻送达。
-                for w in waiters {
-                    let _ = w.send(loaded.clone());
+                for waiter in waiters {
+                    if !waiter.is_cancelled() {
+                        let _ = waiter.reply.send(loaded.clone());
+                    }
                 }
             }
             Err(e) => {

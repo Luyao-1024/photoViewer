@@ -179,6 +179,54 @@ fn request_for_missing_source_drops_gracefully() {
     );
 }
 
+#[test]
+fn cancelling_a_recycled_waiter_only_discards_an_orphaned_queued_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let loader = ThumbnailLoader::new(pool, dir.path().join("cache"));
+    let cache_key = "queued-visible-thumb".to_string();
+    let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let second = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (first_tx, _first_rx) = oneshot::channel();
+    let (second_tx, _second_rx) = oneshot::channel();
+
+    loader.state.lock().unwrap().in_flight.insert(
+        cache_key.clone(),
+        vec![
+            ThumbnailWaiter::active(first_tx, Some(first.clone())),
+            ThumbnailWaiter::active(second_tx, Some(second.clone())),
+        ],
+    );
+    let (lock, _) = &*loader.queue;
+    lock.lock().unwrap().queued.insert(
+        cache_key.clone(),
+        QueuedEntry {
+            tier: TIER_BOOST,
+            uri: "file:///queued-visible-thumb.jpg".into(),
+            size: ThumbnailSize::Small,
+            mtime: None,
+            enqueued_at: Instant::now(),
+            media_id: 1,
+        },
+    );
+
+    loader.cancel_cancellable_request(&cache_key, &first);
+    assert_eq!(
+        loader.queue_len(),
+        1,
+        "a shared visible request must remain"
+    );
+    assert_eq!(loader.in_flight_len(), 1);
+
+    loader.cancel_cancellable_request(&cache_key, &second);
+    assert_eq!(
+        loader.queue_len(),
+        0,
+        "an orphaned queued request is removed"
+    );
+    assert_eq!(loader.in_flight_len(), 0);
+}
+
 /// 回归 gdk-pixbuf 缩略图生成路径（现为主路径）。
 /// HEIC 在 host 上不一定有 heif loader，故用 PNG（gdk-pixbuf 必带 loader）
 /// 做确定性验证：`generate_via_pixbuf` 解码 → 等比缩放 → 存 JPEG 必须可用。

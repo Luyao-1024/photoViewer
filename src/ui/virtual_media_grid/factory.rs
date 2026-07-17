@@ -11,6 +11,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Per-list-item objects created once in `setup` and reconfigured in `bind`.
@@ -18,6 +19,24 @@ use std::sync::Arc;
 pub(super) struct FactoryCell {
     pub tile: SquareTile,
     pub binding: Rc<RefCell<Option<TileBinding>>>,
+    thumbnail_request: Rc<RefCell<Option<PendingThumbnailRequest>>>,
+}
+
+impl FactoryCell {
+    pub(super) fn new(tile: SquareTile, binding: Rc<RefCell<Option<TileBinding>>>) -> Self {
+        Self {
+            tile,
+            binding,
+            thumbnail_request: Rc::new(RefCell::new(None)),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PendingThumbnailRequest {
+    cache_key: Option<String>,
+    cancellation: Arc<AtomicBool>,
+    loader: Arc<ThumbnailLoader>,
 }
 
 pub(super) fn install(grid: &VirtualMediaGrid) {
@@ -72,7 +91,7 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             tile.add_controller(gesture);
 
             list_item.set_child(Some(&tile));
-            grid.register_factory_cell(FactoryCell { tile, binding });
+            grid.register_factory_cell(FactoryCell::new(tile, binding));
         });
     }
 
@@ -123,6 +142,7 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             let Some(cell) = grid.factory_cell_for(&tile) else {
                 return;
             };
+            cancel_thumbnail_request(&cell);
             *cell.binding.borrow_mut() = None;
             cell.tile.clear_for_rebind();
             list_item.set_activatable(false);
@@ -157,6 +177,7 @@ fn teardown_list_item(grid: Option<&VirtualMediaGrid>, list_item: &gtk::ListItem
 
     if let (Some(grid), Some(tile)) = (grid, tile.as_ref()) {
         if let Some(cell) = grid.factory_cell_for(tile) {
+            cancel_thumbnail_request(&cell);
             *cell.binding.borrow_mut() = None;
             cell.tile.clear_for_rebind();
         }
@@ -174,6 +195,7 @@ fn bind_cell(
     cell: &FactoryCell,
     slot: GridSlotState,
 ) {
+    cancel_thumbnail_request(cell);
     cell.tile.clear_for_rebind();
     *cell.binding.borrow_mut() = None;
     cell.tile.set_target(grid.spec().tile_size());
@@ -207,6 +229,7 @@ fn bind_ready_cell(
     item: crate::core::media::MediaItem,
 ) {
     let spec = grid.spec();
+    let loader = grid.loader();
     let item_mtime = thumbnail_request_mtime(&item);
     let thumbnail_uri = grid.thumbnail_uri_for(&item);
     let cache_key =
@@ -218,7 +241,13 @@ fn bind_ready_cell(
         cache_key.clone(),
     );
     *cell.binding.borrow_mut() = Some(binding.clone());
-    cell.tile.set_cache_key(cache_key);
+    cell.tile.set_cache_key(cache_key.clone());
+    let cancellation = Arc::new(AtomicBool::new(false));
+    *cell.thumbnail_request.borrow_mut() = Some(PendingThumbnailRequest {
+        cache_key: cache_key.clone(),
+        cancellation: cancellation.clone(),
+        loader: loader.clone(),
+    });
     cell.tile.set_motion_badge_visible(
         spec.mode() == crate::core::section_model::GroupBy::Day && item.is_motion_photo(),
     );
@@ -239,7 +268,6 @@ fn bind_ready_cell(
     list_item.set_activatable(true);
     list_item.set_selectable(false);
 
-    let loader = grid.loader();
     let load_started = std::time::Instant::now();
     if let Some(loaded) =
         loader.try_load_mem_cached(&thumbnail_uri, spec.thumbnail_size(), Some(item_mtime))
@@ -299,6 +327,7 @@ fn bind_ready_cell(
             },
             loader,
             load_started,
+            cancellation,
         );
     });
 }
@@ -367,12 +396,13 @@ fn request_thumbnail(
     item: crate::core::media::MediaItem,
     loader: Arc<ThumbnailLoader>,
     load_started: std::time::Instant,
+    cancellation: Arc<AtomicBool>,
 ) {
     // A rapid direction change can recycle the tile while its request is still
     // waiting in the per-frame batcher. Do not let an obsolete closure consume
     // a thumbnail worker: its result would be rejected at paint time anyway,
     // while the newly visible reverse-scroll tiles wait behind it.
-    if !binding_is_current(&binding_state, &binding) {
+    if cancellation.load(Ordering::Acquire) || !binding_is_current(&binding_state, &binding) {
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             media_id = binding.media_id().get(),
@@ -383,13 +413,14 @@ fn request_thumbnail(
     let spec = grid.spec();
     let mtime = thumbnail_request_mtime(&item);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    loader.request_for_media(
+    loader.request_for_media_cancellable(
         item.id,
         item.uri,
         spec.thumbnail_size(),
         Some(mtime),
         tx,
         crate::core::thumbnails::TIER_BOOST,
+        cancellation,
     );
 
     let tile_weak = tile.downgrade();
@@ -409,6 +440,21 @@ fn request_thumbnail(
             false,
         );
     });
+}
+
+/// Drop a recycled cell's interest before its old thumbnail consumes a worker.
+/// `ThumbnailLoader` only removes the queued job when no other active cell is
+/// waiting on the same cache key, so deduplicated requests remain correct.
+fn cancel_thumbnail_request(cell: &FactoryCell) {
+    let Some(request) = cell.thumbnail_request.borrow_mut().take() else {
+        return;
+    };
+    request.cancellation.store(true, Ordering::Release);
+    if let Some(cache_key) = request.cache_key.as_deref() {
+        request
+            .loader
+            .cancel_cancellable_request(cache_key, &request.cancellation);
+    }
 }
 
 fn binding_is_current(

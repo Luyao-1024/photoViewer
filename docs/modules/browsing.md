@@ -210,13 +210,19 @@ activation, and cross-async work should use `MediaId`; indexes are render-local
 only.
 
 Virtual-grid thumbnail requests are driven by the current visible range, not by
-tile map signals. The range model keeps visible items plus two viewports behind
-and four ahead (mirrored when scrolling backward) resident, prioritizes their
-thumbnail work, and uses the `MediaItem` metadata
+tile map signals. The range model keeps one viewport on the trailing side and
+two on the scrolling side resident (mirrored when scrolling backward),
+prioritizes their thumbnail work, and uses the `MediaItem` metadata
 already fetched from the database (including `file_mtime`); never add per-tile
 filesystem metadata calls on the GTK thread. Factory binding may use only the
 in-memory thumbnail cache synchronously; disk-cache reads and generation stay
-off the GTK thread.
+off the GTK thread. The model retains the most recent 1,500 ready media entries
+around the browsing position, and user-browsed thumbnail textures are isolated
+from the smaller background-prewarm cache, so ordinary reverse scrolling keeps
+already-seen tiles visible without a disk decode. When GTK recycles a tile, its still-queued thumbnail waiter
+is cancelled; the loader drops that job only when no other visible cell shares
+the same cache key, so a reverse scroll cannot spend workers decoding obsolete
+tiles.
 
 `VirtualMediaGrid` loads the full live count and per-mode section counts through
 `MediaRepository` after its seed paint. Those counts define the layout index and

@@ -56,14 +56,16 @@ pub const DEFAULT_THUMBNAIL_QUEUE_CAPACITY: usize = 8192;
 /// Sized for the **grid scroll working set** (Day/Month Medium tiles), not just
 /// viewer swipe-back. A traced warm-cache scroll showed ~84% of worker time was
 /// re-decoding disk-cached JPEGs because the 128-entry LRU evicted visible tiles
-/// and they were re-decoded on scroll-back / overscan churn. 256 holds ~3.5× the
-/// ~72-tile Day landing window (visible + 4× overscan) plus scroll-back headroom,
-/// halving the re-decode ratio for ~+128 MB resident (Medium ≈ 0.75–1 MB/entry).
+/// and they were re-decoded on scroll-back / overscan churn. 512 holds several
+/// Day-grid windows plus meaningful scroll-back headroom. It is still bounded;
+/// background prewarm cannot consume this foreground history budget.
 /// Viewer ±1 prefetch remains a strict subset. The all-Large worst case
 /// (4 MB/entry) is hypothetical — no production path currently requests Large
 /// thumbnails; the scroll grid uses Small/Medium. Override via `runtime.json`
-/// `thumbnail_mem_cache_cap`.
-pub const DEFAULT_THUMBNAIL_MEM_CACHE_CAP: usize = 256;
+/// `thumbnail_mem_cache_cap`. A second browsing pass should normally stay in
+/// memory, like a mobile gallery; background prewarm uses a separate small
+/// cache and cannot evict these foreground entries.
+pub const DEFAULT_THUMBNAIL_MEM_CACHE_CAP: usize = 512;
 pub const DEFAULT_THUMBNAIL_DISK_CACHE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const DEFAULT_THUMBNAIL_PREWARM_POLL_MS: u64 = 500;
 pub const DEFAULT_THUMBNAIL_IDLE_WAIT_MS: u64 = 30_000;

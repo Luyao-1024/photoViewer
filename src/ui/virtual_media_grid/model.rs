@@ -73,6 +73,10 @@ pub(super) struct ModelState {
 }
 
 const SLOT_OBJECT_WEAK_CACHE_PRUNE_THRESHOLD: usize = 2_048;
+/// Keep a recent browsing history independently from the small active range.
+/// `MediaItem` snapshots are cheap, while retaining them keeps reverse scrolls
+/// in the Ready state instead of immediately showing placeholders again.
+const RECENT_READY_ITEM_CAP: usize = 1_500;
 
 mod imp {
     use super::*;
@@ -296,21 +300,41 @@ impl VirtualMediaModel {
         self.emit_replacements(changed_slots);
     }
 
-    /// Keep only a bounded logical media window in memory.  Existing GTK list
-    /// items retain their own boxed slot snapshots while bound; later re-entry
-    /// turns an evicted slot back into a placeholder and schedules a new range.
+    /// Keep a bounded recent-ready history rather than only the active range.
+    /// Entries nearest the current protected window survive, so a reverse
+    /// scroll reuses ready slots instead of reverting to skeletons.
     pub fn evict_outside(&self, keep: Range<u32>) {
+        self.evict_to_capacity(keep, RECENT_READY_ITEM_CAP);
+    }
+
+    fn evict_to_capacity(&self, keep: Range<u32>, capacity: usize) {
         let _span = tracing::debug_span!("vgrid:evict").entered();
         let mut changed_slots = Vec::new();
         {
             let mut state = self.imp().state.borrow_mut();
-            let evicted_offsets = state
+            if state.ready_by_offset.len() <= capacity {
+                return;
+            }
+            let excess = state.ready_by_offset.len().saturating_sub(capacity);
+            let mut candidates = state
                 .ready_by_offset
                 .keys()
                 .copied()
-                .filter(|offset| *offset < keep.start || *offset >= keep.end)
+                .filter_map(|offset| {
+                    let distance = if offset < keep.start {
+                        keep.start.saturating_sub(offset)
+                    } else if offset >= keep.end {
+                        offset.saturating_sub(keep.end).saturating_add(1)
+                    } else {
+                        return None;
+                    };
+                    Some((distance, offset))
+                })
                 .collect::<Vec<_>>();
-            for offset in evicted_offsets {
+            // Evict the furthest history first. Tie-breaking by offset keeps
+            // the result deterministic for tests and trace comparisons.
+            candidates.sort_unstable_by(|left, right| right.cmp(left));
+            for (_, offset) in candidates.into_iter().take(excess) {
                 state.ready_by_offset.remove(&offset);
                 if let Some(slot) = state.layout.slot_for_media_offset(offset) {
                     changed_slots.push(slot);
