@@ -187,7 +187,7 @@ fn sidebar_album_row_summary_logs_stay_debug() {
     for message in [
         "SIDEBAR_ALBUM_UPDATE_IN_PLACE",
         "SIDEBAR_ALBUM_REMOVE_IN_PLACE",
-        "SIDEBAR_ALBUM_REBUILD",
+        "SIDEBAR_ALBUM_MODEL_APPLIED",
     ] {
         let message_index = production_source
             .find(message)
@@ -204,4 +204,17 @@ fn sidebar_album_row_summary_logs_stay_debug() {
             "{message} is high-volume sidebar row diagnostics and should stay out of default INFO logs"
         );
     }
+}
+
+#[test]
+fn sidebar_album_content_comparison_detects_only_visible_data_changes() {
+    let original = sidebar_album("/tmp/camera", "Camera", 2);
+    let mut changed_count = original.clone();
+    changed_count.photo_count = 3;
+    let mut changed_name = original.clone();
+    changed_name.name = "Renamed".into();
+
+    assert!(same_sidebar_album_content(&original, &original));
+    assert!(!same_sidebar_album_content(&original, &changed_count));
+    assert!(!same_sidebar_album_content(&original, &changed_name));
 }

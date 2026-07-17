@@ -253,6 +253,15 @@ pub(super) fn same_sidebar_album_identity(current: &Album, next: &Album) -> bool
     current.folder_path == next.folder_path && current.is_virtual == next.is_virtual
 }
 
+pub(super) fn same_sidebar_album_content(current: &Album, next: &Album) -> bool {
+    current.folder_path == next.folder_path
+        && current.name == next.name
+        && current.cover_uri == next.cover_uri
+        && current.photo_count == next.photo_count
+        && current.last_modified == next.last_modified
+        && current.is_virtual == next.is_virtual
+}
+
 pub(super) fn sidebar_album_identities_are_ordered_subset(
     current: &[Album],
     next: &[Album],
@@ -569,16 +578,35 @@ impl MainWindow {
         let album_count = albums.len();
         let expanded = self.imp().albums_expanded.get();
         self.imp().album_scroll.set_visible(expanded);
-        let items = albums
-            .iter()
-            .cloned()
-            .map(glib::BoxedAnyObject::new)
-            .collect::<Vec<_>>();
         self.imp().selecting_programmatically.set(true);
         if let Some(model) = self.imp().album_model.borrow().as_ref() {
-            let span = tracing::debug_span!("sidebar:model_replace", item_count = items.len());
-            let _entered = span.enter();
-            model.splice(0, model.n_items(), &items);
+            if same_identities {
+                let changed = current_targets
+                    .iter()
+                    .zip(&albums)
+                    .enumerate()
+                    .filter_map(|(index, (current, next))| {
+                        (!same_sidebar_album_content(current, next)).then_some((index, next))
+                    })
+                    .collect::<Vec<_>>();
+                if !changed.is_empty() {
+                    let span =
+                        tracing::debug_span!("sidebar:model_update", changed = changed.len());
+                    let _entered = span.enter();
+                    for (index, album) in changed {
+                        model.splice(index as u32, 1, &[glib::BoxedAnyObject::new(album.clone())]);
+                    }
+                }
+            } else {
+                let items = albums
+                    .iter()
+                    .cloned()
+                    .map(glib::BoxedAnyObject::new)
+                    .collect::<Vec<_>>();
+                let span = tracing::debug_span!("sidebar:model_replace", item_count = items.len());
+                let _entered = span.enter();
+                model.splice(0, model.n_items(), &items);
+            }
         }
         *self.imp().album_targets.borrow_mut() = albums;
         self.imp().selecting_programmatically.set(false);
@@ -586,8 +614,9 @@ impl MainWindow {
         self.reselect_active_album_row();
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "SIDEBAR_ALBUM_MODEL_REPLACED rows={} realized_rows=viewport_only",
+            "SIDEBAR_ALBUM_MODEL_APPLIED rows={} same_identities={}",
             album_count
+            ,same_identities
         );
         self.log_sidebar_layout_state("album_rows_rebuild_after");
         self.log_sidebar_layout_state_next_idle("album_rows_rebuild_after");
