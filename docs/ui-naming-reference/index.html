@@ -25,9 +25,9 @@
           <div class="row group hotspot" tabindex="0" data-ui="album-group-row" data-name="相册分组头" data-impl="sidebar_list album header row" data-props="可折叠相册组；展开后下方 album_scroll 承载所有相册行。"><span>相册</span><span class="count">⌄</span></div>
         </div>
 
-        <div class="nav-group hotspot" tabindex="0" data-ui="album-list" data-name="相册列表" data-impl="Gtk.ScrolledWindow album_scroll → Gtk.ListBox album_list" data-props="相册行可拖拽重排；拖动时只显示上/下落点，drop 时提交排序。" data-source="data/ui/window.blp · src/ui/window/albums.rs attach_album_dnd()">
-          <div class="row indent hotspot" tabindex="0" data-ui="album-row" data-name="相册行" data-impl="album_list row" data-props="缩略封面固定尺寸，行高不因异步封面加载跳动。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
-          <div class="row indent hotspot" tabindex="0" data-ui="album-row-family" data-name="相册行" data-impl="album_list row" data-props="同一列表内可排序；普通点击进入 AlbumDetailPage。"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
+        <div class="nav-group hotspot" tabindex="0" data-ui="album-list" data-name="相册列表" data-impl="Gtk.ScrolledWindow album_scroll → Gtk.ListView album_list + Gio.ListStore" data-props="虚拟列表仅创建视口附近的相册行；行仍可拖拽重排，拖动时只显示上/下落点，drop 时提交排序。" data-source="data/ui/window.blp · src/ui/window/sidebar.rs ensure_virtual_album_list() · src/ui/window/albums.rs attach_album_dnd()">
+          <div class="row indent hotspot" tabindex="0" data-ui="album-row" data-name="相册行" data-impl="album_list virtual row" data-props="缩略封面固定尺寸，行高不因异步封面加载跳动。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
+          <div class="row indent hotspot" tabindex="0" data-ui="album-row-family" data-name="相册行" data-impl="album_list virtual row" data-props="同一列表内可排序；普通点击进入 AlbumDetailPage。"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
           <div class="row indent hotspot" tabindex="0" data-ui="album-row-fav" data-name="虚拟相册行" data-impl="album_list virtual album row" data-props="Favorites/Photos/Videos 等虚拟相册复用相册行视觉。"><span class="album-cover gold"></span><span>收藏</span><span class="count">18</span></div>
         </div>
 
@@ -99,7 +99,7 @@
         <div class="nav-group">
           <div class="row"><span class="icon">P</span><span>照片</span></div>
           <div class="row group"><span>相册</span><span class="count">⌄</span></div>
-          <div class="row indent active hotspot" tabindex="0" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected row" data-props="点击相册行切换 browsing_stack 到 AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
+          <div class="row indent active hotspot" tabindex="0" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected virtual row" data-props="点击相册行切换 browsing_stack 到 AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
           <div class="row indent"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
         </div>
       </aside>
@@ -248,7 +248,7 @@
       <aside class="overlay-sidebar hotspot" tabindex="0" data-ui="overlay-sidebar" data-name="浮层侧栏" data-impl="sidebar_page shown by split_view.show-sidebar" data-props="同一 sidebar_page；窄窗只改变呈现方式，不新增第二套侧栏。">
         <div class="row active"><span class="icon">P</span><span>照片</span><span class="count">1,248</span></div>
         <div class="row group"><span>相册</span><span class="count">⌄</span></div>
-        <div class="row indent hotspot" tabindex="0" data-ui="collapsed-album-row" data-name="折叠态相册行" data-impl="album_list row" data-props="仍支持拖拽排序；只是侧栏作为浮层显示。"><span class="album-cover"></span><span>2026 旅行</span></div>
+        <div class="row indent hotspot" tabindex="0" data-ui="collapsed-album-row" data-name="折叠态相册行" data-impl="album_list virtual row" data-props="仍支持拖拽排序；只是侧栏作为浮层显示。"><span class="album-cover"></span><span>2026 旅行</span></div>
         <div class="row push-bottom"><span class="icon">T</span><span>回收站</span></div>
         <button class="button round bare">⚙</button>
       </aside>

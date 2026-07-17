@@ -560,10 +560,9 @@ fn album_sidebar_multi_select_deletes_real_albums() {
     window.populate_album_rows();
 
     window.enter_album_selection_mode();
-    assert_eq!(
-        window.imp().album_list.get().selection_mode(),
-        gtk::SelectionMode::Multiple,
-        "album selection mode should switch the album list to multiple selection",
+    assert!(
+        window.imp().album_selection.borrow().as_ref().is_some(),
+        "album selection mode should keep the virtual album selection model enabled",
     );
     assert!(
         window.imp().album_selection_bar.get().is_revealed(),
@@ -574,7 +573,7 @@ fn album_sidebar_multi_select_deletes_real_albums() {
         "delete selected should stay disabled until real albums are selected",
     );
 
-    let real_rows: Vec<gtk::ListBoxRow> = window
+    let real_positions: Vec<u32> = window
         .imp()
         .album_targets
         .borrow()
@@ -582,15 +581,21 @@ fn album_sidebar_multi_select_deletes_real_albums() {
         .enumerate()
         .filter(|(_, album)| !album.is_virtual)
         .take(2)
-        .filter_map(|(idx, _)| window.imp().album_list.get().row_at_index(idx as i32))
+        .map(|(idx, _)| idx as u32)
         .collect();
     assert_eq!(
-        real_rows.len(),
+        real_positions.len(),
         2,
         "fixture should include two real album rows"
     );
-    for row in &real_rows {
-        window.imp().album_list.get().select_row(Some(row));
+    for position in real_positions {
+        window
+            .imp()
+            .album_selection
+            .borrow()
+            .as_ref()
+            .expect("virtual album selection should exist")
+            .select_item(position, false);
     }
     assert_eq!(window.selected_album_delete_count(), 2);
     assert!(
@@ -691,7 +696,6 @@ fn album_sidebar_open_then_tile_opens_viewer() {
     // Open the first real folder album the way a user does: select its
     // sidebar row. `open_album` is deferred via an idle, so drain the main
     // context until the browsing stack swaps to the album detail page.
-    let album_list = shell.window.imp().album_list.get();
     let album_idx = shell
         .window
         .imp()
@@ -700,10 +704,14 @@ fn album_sidebar_open_then_tile_opens_viewer() {
         .iter()
         .position(|album| !album.is_virtual)
         .expect("fixture should seed at least one real folder album");
-    let album_row = album_list
-        .row_at_index(album_idx as i32)
-        .expect("real album row should be present");
-    album_list.select_row(Some(&album_row));
+    shell
+        .window
+        .imp()
+        .album_selection
+        .borrow()
+        .as_ref()
+        .expect("virtual album selection should exist")
+        .select_item(album_idx as u32, true);
     assert!(
         wait_until(Duration::from_secs(2), || {
             shell

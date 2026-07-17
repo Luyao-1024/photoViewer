@@ -37,10 +37,9 @@ template $PhotoViewerWindow : Adw.ApplicationWindow {
               hscrollbar-policy: never;
               vscrollbar-policy: automatic;
 
-              Gtk.ListBox album_list {
+              Gtk.ListView album_list {
                 css-classes: ["glass-sidebar", "glass-sidebar-album-list"];
                 hexpand: true;
-                selection-mode: single;
               }
             }
 

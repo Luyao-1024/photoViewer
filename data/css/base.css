@@ -570,7 +570,8 @@ box.mode-dot {
   font-weight: 500;
 }
 
-.glass-sidebar-row:selected .glass-sidebar-count {
+.glass-sidebar-row:selected .glass-sidebar-count,
+.glass-sidebar-album-list > row:selected .glass-sidebar-row .glass-sidebar-count {
   opacity: 0.92;
   font-weight: 600;
 }

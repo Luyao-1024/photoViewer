@@ -21,11 +21,7 @@ use std::path::PathBuf;
 impl MainWindow {
     pub fn enter_album_selection_mode(&self) {
         self.imp().album_selection_mode.set(true);
-        self.imp()
-            .album_list
-            .get()
-            .set_selection_mode(gtk::SelectionMode::Multiple);
-        self.imp().album_list.get().unselect_all();
+        self.clear_album_selection();
         self.imp().selected_album_paths.borrow_mut().clear();
         self.imp().album_selection_bar.get().set_revealed(true);
         self.update_album_selection_actions();
@@ -33,11 +29,7 @@ impl MainWindow {
 
     pub(super) fn exit_album_selection_mode(&self) {
         self.imp().album_selection_mode.set(false);
-        self.imp().album_list.get().unselect_all();
-        self.imp()
-            .album_list
-            .get()
-            .set_selection_mode(gtk::SelectionMode::Single);
+        self.clear_album_selection();
         self.imp().selected_album_paths.borrow_mut().clear();
         self.imp().album_selection_bar.get().set_revealed(false);
         self.update_album_selection_actions();
@@ -48,24 +40,23 @@ impl MainWindow {
     }
 
     pub(super) fn sync_selected_album_paths(&self) {
-        let album_list = self.imp().album_list.get();
         let targets = self.imp().album_targets.borrow().clone();
         let mut selected = HashSet::new();
-        let mut virtual_rows = Vec::new();
+        let mut virtual_positions = Vec::new();
 
-        for row in album_list.selected_rows() {
-            let Some(album) = targets.get(row.index() as usize) else {
+        for (position, album) in targets.iter().enumerate() {
+            if !self.album_item_is_selected(position as u32) {
                 continue;
-            };
+            }
             if album.is_virtual {
-                virtual_rows.push(row);
+                virtual_positions.push(position as u32);
             } else {
                 selected.insert(album.folder_path.clone());
             }
         }
 
-        for row in virtual_rows {
-            album_list.unselect_row(&row);
+        for position in virtual_positions {
+            self.unselect_album_position(position);
         }
 
         *self.imp().selected_album_paths.borrow_mut() = selected;
@@ -142,7 +133,7 @@ impl MainWindow {
     /// `Gtk.DragSource` only begins a drag after the pointer moves past the
     /// drag threshold, so a plain click still selects the row normally - only
     /// a press-and-drag reorders.
-    pub(super) fn attach_album_dnd(&self, row: &gtk::ListBoxRow, folder_path: String) {
+    pub(super) fn attach_album_dnd(&self, row: &gtk::Widget, folder_path: String) {
         let drag = gtk::DragSource::new();
         drag.set_actions(gtk::gdk::DragAction::MOVE);
         let value = glib::Value::from(folder_path.as_str());
@@ -208,7 +199,7 @@ impl MainWindow {
         row.add_controller(drop);
     }
 
-    pub(super) fn attach_album_context_menu(&self, row: &gtk::ListBoxRow, album: Album) {
+    pub(super) fn attach_album_context_menu(&self, row: &gtk::Widget, album: Album) {
         let weak = self.downgrade();
         let row_weak = row.downgrade();
         let gesture = gtk::GestureClick::new();
@@ -239,7 +230,7 @@ impl MainWindow {
                         *window.imp().active_album.borrow_mut() =
                             Some(manage_album.folder_path.clone());
                         window.imp().selecting_programmatically.set(true);
-                        window.imp().album_list.get().select_row(Some(&row));
+                        window.select_album_by_identity(&manage_album);
                         window.imp().selecting_programmatically.set(false);
                         window.imp().sidebar_list.get().unselect_all();
                         window.imp().media_type_list.get().unselect_all();
@@ -265,7 +256,7 @@ impl MainWindow {
                     @strong select_album => move || {
                         window.enter_album_selection_mode();
                         if !select_album.is_virtual {
-                            window.imp().album_list.get().select_row(Some(&row));
+                            window.select_album_by_identity(&select_album);
                         }
                     }
                 ))),
@@ -372,7 +363,7 @@ impl MainWindow {
                         .is_some_and(|active| active == &result.folder_path);
                     if active_should_close {
                         *window.imp().active_album.borrow_mut() = None;
-                        window.imp().album_list.get().unselect_all();
+                        window.clear_album_selection();
                         window.imp().trash_list.get().unselect_all();
                         window.imp().selecting_programmatically.set(true);
                         if let Some(row) = window.imp().sidebar_list.get().row_at_index(0) {
@@ -528,7 +519,7 @@ impl MainWindow {
         );
         if active_should_close {
             *self.imp().active_album.borrow_mut() = None;
-            self.imp().album_list.get().unselect_all();
+            self.clear_album_selection();
             self.imp().trash_list.get().unselect_all();
             self.imp().selecting_programmatically.set(true);
             if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {

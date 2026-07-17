@@ -457,26 +457,27 @@ fn sidebar_navigation_suite() {
         "Media Types header should be non-selectable so it never claims the navigation slot",
     );
 
-    // Album rows are nested under the header. Even with an empty DB the three
-    // virtual albums (favorites / images / videos) are present.
+    // Album entries are nested under the header. Even with an empty DB the
+    // three virtual albums (favorites / images / videos) are present. The
+    // ListView realizes their widgets lazily, so assert against its model.
     {
-        let album_rows = window.imp().album_rows.borrow();
+        let album_targets = window.imp().album_targets.borrow();
         assert!(
-            album_rows.len() >= 3,
+            album_targets.len() >= 3,
             "sidebar should list the virtual albums, got {}",
-            album_rows.len()
+            album_targets.len()
         );
-        for row in album_rows.iter() {
-            assert!(
-                visible_flag(row.upcast_ref()),
-                "album rows start expanded/visible"
-            );
-            let classes: Vec<String> = row.css_classes().iter().map(|s| s.to_string()).collect();
-            assert!(
-                classes.iter().any(|c| c == "glass-sidebar-subrow"),
-                "album row should carry glass-sidebar-subrow, got {classes:?}",
-            );
-        }
+        assert_eq!(
+            window
+                .imp()
+                .album_model
+                .borrow()
+                .as_ref()
+                .expect("album ListStore should exist")
+                .n_items(),
+            album_targets.len() as u32,
+            "virtual album model should mirror all album targets",
+        );
     }
     {
         let media_type_rows = window.imp().media_type_rows.borrow();
@@ -496,14 +497,14 @@ fn sidebar_navigation_suite() {
             "media type row should carry glass-sidebar-subrow, got {classes:?}",
         );
     }
-    let first_album_row = window.imp().album_rows.borrow()[0].clone();
-
     // Selecting an album row schedules its AlbumDetailPage crossfade directly.
     window
         .imp()
-        .album_list
-        .get()
-        .select_row(Some(&first_album_row));
+        .album_selection
+        .borrow()
+        .as_ref()
+        .expect("album selection should exist")
+        .select_item(0, true);
     drain_main_context();
     assert_eq!(
         window.browsing_stack().visible_child_name().as_deref(),
@@ -676,7 +677,7 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
         "top sidebar targets should contain only Photos and AlbumsHeader",
     );
     assert_eq!(
-        window.imp().album_rows.borrow().len(),
+        window.imp().album_targets.borrow().len(),
         28,
         "sidebar album list should render all 25 folder albums plus 3 virtual albums",
     );
@@ -747,7 +748,6 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
     window.populate_album_rows();
     window.connect_sidebar(&nav);
 
-    let album_list = window.imp().album_list.get();
     let target_idx = window
         .imp()
         .album_targets
@@ -755,10 +755,14 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
         .iter()
         .position(|album| album.folder_path == std::path::Path::new(folder))
         .expect("folder album should be rendered");
-    let row = album_list
-        .row_at_index(target_idx as i32)
-        .expect("target album row should exist");
-    album_list.select_row(Some(&row));
+    let album_selection = window
+        .imp()
+        .album_selection
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("virtual album selection should exist");
+    album_selection.select_item(target_idx as u32, true);
     drain_main_context();
     assert_eq!(
         window.browsing_stack().visible_child_name().as_deref(),
@@ -774,12 +778,8 @@ fn assert_collapsed_album_refresh_restores_active_selection_after_expand() {
     );
     window.toggle_albums_expanded();
 
-    let selected = album_list
-        .selected_row()
-        .expect("expanded list should restore active album selection");
-    assert_eq!(
-        selected.index(),
-        target_idx as i32,
+    assert!(
+        album_selection.is_selected(target_idx as u32),
         "restored selection should point at the active album after collapsed refresh",
     );
 }

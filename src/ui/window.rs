@@ -250,9 +250,10 @@ mod imp {
         pub album_targets: RefCell<Vec<Album>>,
         /// Index→virtual media type mirror of the dedicated media type ListBox.
         pub media_type_targets: RefCell<Vec<Album>>,
-        /// The album rows nested under the "Albums" group header — kept so the
-        /// live refresh and tests can inspect/rebuild them precisely.
-        pub album_rows: RefCell<Vec<gtk::ListBoxRow>>,
+        /// Backing store and selection state for the virtualized album sidebar.
+        /// The `GtkListView` only realizes rows in or near its viewport.
+        pub album_model: RefCell<Option<gtk::gio::ListStore>>,
+        pub album_selection: RefCell<Option<gtk::MultiSelection>>,
         /// Rows nested under the "Media Types" group header.
         pub media_type_rows: RefCell<Vec<gtk::ListBoxRow>>,
         /// Right-aligned total live-media count on the Photos sidebar row.
@@ -277,7 +278,7 @@ mod imp {
         pub selected_album_paths: RefCell<HashSet<PathBuf>>,
         /// Monotonic names for retired album children during crossfade cleanup.
         pub browsing_generation: Cell<u64>,
-        /// Set while we programmatically `select_row`, so the `row-selected`
+        /// Set while we programmatically change a sidebar selection, so its
         /// handler does not re-enter navigation during a refresh.
         pub selecting_programmatically: Cell<bool>,
         /// True while GTK is propagating a focus traversal through the window
@@ -323,7 +324,7 @@ mod imp {
         #[template_child]
         pub album_selection_delete_btn: TemplateChild<gtk::Button>,
         #[template_child]
-        pub album_list: TemplateChild<gtk::ListBox>,
+        pub album_list: TemplateChild<gtk::ListView>,
         #[template_child]
         pub media_type_list: TemplateChild<gtk::ListBox>,
         #[template_child]
@@ -736,7 +737,7 @@ impl MainWindow {
         stack.set_visible_child_name("photos");
         *self.imp().active_album.borrow_mut() = None;
         self.imp().selecting_programmatically.set(true);
-        self.imp().album_list.get().unselect_all();
+        self.clear_album_selection();
         self.imp().media_type_list.get().unselect_all();
         self.imp().trash_list.get().unselect_all();
         if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {

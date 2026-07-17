@@ -71,13 +71,12 @@ initially shows the Photos row count from the already-loaded GTK model window,
 then `MainWindow::refresh_sidebar_snapshot_async()` refreshes the true live
 count, folder albums, virtual album counts, and media-type rows from a blocking
 worker after the Photos page is usable.
-When a refreshed sidebar snapshot has the same album/media-type identities in
-the same order, update existing row labels/counts/covers in place. Do not clear
-and append every row for a count-only favorite/trash change; that makes every
-left-sidebar album flash. When a refreshed snapshot only removes album or
-media-type identities and preserves the relative order of the survivors, remove
-only the missing rows and update the surviving rows in place so the group does
-not momentarily collapse before expanding again.
+Folder and virtual album entries are held in a `Gio.ListStore` and displayed by
+the `GtkListView album_list` factory. GTK realizes only the rows in or near the
+sidebar viewport; snapshot refreshes replace model items while preserving the
+active album selection. Do not reintroduce a `GtkListBox` that creates every
+album widget during a snapshot delivery. Media Types stays a small `GtkListBox`
+because its bounded row count does not justify virtualization.
 
 Album covers are persisted separately from the `albums` materialized view in
 `album_covers(folder_path, cover_uri)`. `albums::refresh` applies the same
@@ -88,10 +87,11 @@ from `albums` so scan/refresh rebuilds do not erase user choices.
 Albums are shown under a collapsible "Albums" group header. The group owns a
 fixed-height scroll region in the sidebar: Photos, media-type categories,
 Trash, and Settings remain stable while the album rows themselves scroll. All
-virtual and folder albums are rendered directly in that scroll region; there is
-no "More" row in the sidebar. Sidebar album rows show album cover thumbnails,
-not symbolic folder/type icons. Covers load through `ThumbnailLoader` so row
-construction does not decode media on the GTK main thread.
+virtual and folder albums are available directly in that scroll region; there
+is no "More" row in the sidebar. The ListView realizes their visible rows
+lazily. Sidebar album rows show album cover thumbnails, not symbolic folder/type
+icons. Covers load through `ThumbnailLoader` so row construction does not
+decode media on the GTK main thread.
 
 Below Albums, the sidebar has a matching collapsible "Media Types" group. It
 uses the same sub-row visual treatment and opens the same `AlbumDetailPage`

@@ -29,7 +29,14 @@ impl MainWindow {
         self.install_sidebar_layout_trace();
         let list = self.imp().sidebar_list.get();
         let trash_list = self.imp().trash_list.get();
-        let album_list = self.imp().album_list.get();
+        self.ensure_virtual_album_list();
+        let album_selection = self
+            .imp()
+            .album_selection
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("virtual album selection is initialized");
         let media_type_list = self.imp().media_type_list.get();
 
         list.connect_row_selected(
@@ -57,7 +64,7 @@ impl MainWindow {
                 match target {
                     SidebarTarget::Photos => {
                         *window.imp().active_album.borrow_mut() = None;
-                        window.imp().album_list.get().unselect_all();
+                        window.clear_album_selection();
                         window.imp().media_type_list.get().unselect_all();
                         window.imp().trash_list.get().unselect_all();
                         pop_to_photos_root(&nav_view);
@@ -111,35 +118,42 @@ impl MainWindow {
                     *window.imp().trash_return_album.borrow_mut() = return_album;
                     *window.imp().active_album.borrow_mut() = None;
                     window.imp().sidebar_list.get().unselect_all();
-                    window.imp().album_list.get().unselect_all();
+                    window.clear_album_selection();
                     window.imp().media_type_list.get().unselect_all();
                     window.show_trash_page(&nav_view);
                 }
             }),
         );
 
-        album_list.connect_row_selected(
-            glib::clone!(@weak self as window, @weak nav_view => move |_list, row| {
+        album_selection.connect_selection_changed(
+            glib::clone!(@weak self as window, @weak nav_view => move |_model, position, changed| {
                 if window.imp().album_selection_mode.get() {
                     window.sync_selected_album_paths();
                     return;
                 }
-                let Some(row) = row else {
-                    return;
-                };
                 if window.imp().selecting_programmatically.get()
                     || window.imp().focus_traversal_active.get()
                 {
-                    // Ignore selections that we drove programmatically, or that
-                    // GTK raised as a side effect of a focus traversal (a
-                    // focused sidebar row is auto-selected). Neither is a user
-                    // navigation request; acting on the Photos row here would
-                    // pop a pushed Trash/Search page back to the browsing root.
                     return;
+                }
+                let selected_position = (position..position.saturating_add(changed))
+                    .find(|&index| window.album_item_is_selected(index));
+                let Some(position) = selected_position else {
+                    return;
+                };
+                // MultiSelection is retained permanently so batch mode can be
+                // enabled without replacing the ListView model. Outside batch
+                // mode, keep the original ListBox single-selection behavior.
+                let selected_elsewhere = (0..window.imp().album_targets.borrow().len())
+                    .map(|index| index as u32)
+                    .filter(|&index| index != position && window.album_item_is_selected(index))
+                    .collect::<Vec<_>>();
+                for index in selected_elsewhere {
+                    window.unselect_album_position(index);
                 }
                 let album = {
                     let targets = window.imp().album_targets.borrow();
-                    let Some(album) = targets.get(row.index() as usize).cloned() else {
+                    let Some(album) = targets.get(position as usize).cloned() else {
                         return;
                     };
                     album
@@ -148,7 +162,7 @@ impl MainWindow {
                 window.imp().sidebar_list.get().unselect_all();
                 window.imp().media_type_list.get().unselect_all();
                 window.imp().trash_list.get().unselect_all();
-                window.schedule_album_open_from_sidebar(&nav_view, album, "album_list", row.index());
+                window.schedule_album_open_from_sidebar(&nav_view, album, "album_list", position as i32);
             }),
         );
 
@@ -176,7 +190,7 @@ impl MainWindow {
                 };
                 *window.imp().active_album.borrow_mut() = Some(album.folder_path.clone());
                 window.imp().sidebar_list.get().unselect_all();
-                window.imp().album_list.get().unselect_all();
+                window.clear_album_selection();
                 window.imp().trash_list.get().unselect_all();
                 window.schedule_album_open_from_sidebar(
                     &nav_view,
@@ -266,14 +280,12 @@ impl MainWindow {
                     .iter()
                     .position(|album| album.folder_path == active)
                 {
-                    if let Some(row) = self.imp().album_list.get().row_at_index(index as i32) {
-                        self.imp().album_list.get().select_row(Some(&row));
-                    }
+                    self.select_album_position(index as u32);
                 }
             }
         } else {
             self.imp().active_album.borrow_mut().take();
-            self.imp().album_list.get().unselect_all();
+            self.clear_album_selection();
             self.imp().media_type_list.get().unselect_all();
             if let Some(row) = self.imp().sidebar_list.get().row_at_index(0) {
                 self.imp().sidebar_list.get().select_row(Some(&row));

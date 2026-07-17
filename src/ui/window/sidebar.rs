@@ -127,6 +127,38 @@ pub(super) fn build_album_row(
     row
 }
 
+/// Build the visual contents of one virtual album item.  This deliberately
+/// keeps the same material classes and child layout as `build_album_row`; the
+/// outer selection row is now owned by `GtkListView` instead of `GtkListBox`.
+fn build_virtual_album_item(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> gtk::Box {
+    let cover = build_sidebar_album_cover(album, loader);
+    let name = gtk::Label::builder()
+        .label(album.display_name())
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .css_classes(["glass-sidebar-label"])
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(18)
+        .build();
+    let count = gtk::Label::builder()
+        .label(trf(
+            "album.count",
+            &[("count", &album.photo_count.to_string())],
+        ))
+        .halign(gtk::Align::End)
+        .css_classes(["glass-sidebar-count"])
+        .build();
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .css_classes(["glass-sidebar-row", "glass-sidebar-subrow"])
+        .build();
+    content.append(&cover);
+    content.append(&name);
+    content.append(&count);
+    content
+}
+
 pub(super) fn update_album_row_in_place(
     row: &gtk::ListBoxRow,
     previous: &Album,
@@ -335,11 +367,90 @@ pub(super) fn load_sidebar_album_snapshot(pool: &DbPool) -> SidebarAlbumSnapshot
 }
 
 impl MainWindow {
+    pub(super) fn ensure_virtual_album_list(&self) {
+        if self.imp().album_model.borrow().is_some() {
+            return;
+        }
+        let model = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+        let selection = gtk::MultiSelection::new(Some(model.clone()));
+        let factory = gtk::SignalListItemFactory::new();
+        let weak = self.downgrade();
+        factory.connect_bind(move |_, object| {
+            let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() else {
+                return;
+            };
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            let Some(album) = list_item
+                .item()
+                .and_then(|item| item.downcast::<glib::BoxedAnyObject>().ok())
+                .map(|boxed| boxed.borrow::<Album>().clone())
+            else {
+                return;
+            };
+            let content =
+                build_virtual_album_item(&album, window.imp().loader.borrow().as_ref().cloned());
+            window.attach_album_dnd(
+                content.upcast_ref(),
+                album.folder_path.to_string_lossy().into_owned(),
+            );
+            window.attach_album_context_menu(content.upcast_ref(), album);
+            list_item.set_child(Some(&content));
+        });
+        factory.connect_unbind(|_, object| {
+            if let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() {
+                list_item.set_child(Option::<&gtk::Widget>::None);
+            }
+        });
+        self.imp().album_list.set_factory(Some(&factory));
+        self.imp().album_list.set_model(Some(&selection));
+        *self.imp().album_model.borrow_mut() = Some(model);
+        *self.imp().album_selection.borrow_mut() = Some(selection);
+    }
+
+    pub(super) fn clear_album_selection(&self) {
+        if let Some(selection) = self.imp().album_selection.borrow().as_ref() {
+            selection.unselect_all();
+        }
+    }
+
+    pub(super) fn album_item_is_selected(&self, position: u32) -> bool {
+        self.imp()
+            .album_selection
+            .borrow()
+            .as_ref()
+            .is_some_and(|selection| selection.is_selected(position))
+    }
+
+    pub(super) fn unselect_album_position(&self, position: u32) {
+        if let Some(selection) = self.imp().album_selection.borrow().as_ref() {
+            selection.unselect_item(position);
+        }
+    }
+
+    pub(super) fn select_album_position(&self, position: u32) {
+        if let Some(selection) = self.imp().album_selection.borrow().as_ref() {
+            self.imp().selecting_programmatically.set(true);
+            selection.select_item(position, true);
+            self.imp().selecting_programmatically.set(false);
+        }
+    }
+
+    pub(super) fn select_album_by_identity(&self, needle: &Album) {
+        if let Some(position) =
+            find_sidebar_album_identity_index(&self.imp().album_targets.borrow(), needle)
+        {
+            self.select_album_position(position as u32);
+        }
+    }
+
     /// Insert the folder + virtual albums in the dedicated album list, fetched
     /// from the current DB snapshot. Called once after `set_resources` (and
     /// again by [`Self::refresh_album_rows`] on live changes). Safe to call
     /// before `connect_sidebar`; it only touches album rows + album targets.
     pub fn populate_album_rows(&self) {
+        self.ensure_virtual_album_list();
         self.update_photos_count_label_from_db();
         self.rebuild_album_rows();
         self.rebuild_media_type_rows();
@@ -356,21 +467,16 @@ impl MainWindow {
 
     #[tracing::instrument(name = "sidebar:apply_album_rows", skip(self, albums))]
     fn apply_album_rows(&self, albums: Vec<Album>) {
-        let album_list = self.imp().album_list.get();
+        self.ensure_virtual_album_list();
         let current_targets = self.imp().album_targets.borrow().clone();
-        let current_rows = self.imp().album_rows.borrow().clone();
         let same_identities = same_sidebar_album_identities(&current_targets, &albums);
-        let ordered_subset = current_rows.len() == current_targets.len()
-            && sidebar_album_identities_are_ordered_subset(&current_targets, &albums);
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "SIDEBAR_TRACE album_rows_begin current_targets={} current_rows={} list_children={} incoming={} same_identities={} ordered_subset={} expanded={} scroll_visible={} scroll_height={} wrapper_height={} current=[{}] incoming=[{}]",
+            "SIDEBAR_TRACE album_rows_begin current_targets={} model_items={} incoming={} same_identities={} virtualized=true expanded={} scroll_visible={} scroll_height={} wrapper_height={} current=[{}] incoming=[{}]",
             current_targets.len(),
-            current_rows.len(),
-            sidebar_list_child_count(&album_list),
+            self.imp().album_model.borrow().as_ref().map_or(0, |model| model.n_items()),
             albums.len(),
             same_identities,
-            ordered_subset,
             self.imp().albums_expanded.get(),
             self.imp().album_scroll.is_visible(),
             self.imp().album_scroll.height(),
@@ -378,108 +484,25 @@ impl MainWindow {
             sidebar_album_summary(&current_targets),
             sidebar_album_summary(&albums)
         );
-        if same_identities && current_rows.len() == albums.len() {
-            let loader = self.imp().loader.borrow().as_ref().cloned();
-            for ((row, previous), album) in current_rows
-                .iter()
-                .zip(current_targets.iter())
-                .zip(albums.iter())
-            {
-                update_album_row_in_place(row, previous, album, loader.clone());
-            }
-            let album_count = albums.len();
-            *self.imp().album_targets.borrow_mut() = albums;
-            self.reselect_active_album_row();
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "SIDEBAR_ALBUM_UPDATE_IN_PLACE rows={}",
-                album_count
-            );
-            self.log_sidebar_layout_state("album_rows_same_identities_after");
-            self.log_sidebar_layout_state_next_idle("album_rows_same_identities_after");
-            return;
-        }
-        if ordered_subset {
-            let loader = self.imp().loader.borrow().as_ref().cloned();
-            let mut next_rows = Vec::with_capacity(albums.len());
-            let mut previous_targets = Vec::with_capacity(albums.len());
-            for album in &albums {
-                if let Some(index) = find_sidebar_album_identity_index(&current_targets, album) {
-                    next_rows.push(current_rows[index].clone());
-                    previous_targets.push(current_targets[index].clone());
-                }
-            }
-            for ((row, previous), album) in next_rows
-                .iter()
-                .zip(previous_targets.iter())
-                .zip(albums.iter())
-            {
-                update_album_row_in_place(row, previous, album, loader.clone());
-            }
-            for (index, row) in current_rows.iter().enumerate().rev() {
-                if !albums
-                    .iter()
-                    .any(|album| same_sidebar_album_identity(&current_targets[index], album))
-                {
-                    tracing::debug!(
-                        target: crate::core::log_targets::BROWSING,
-                        "SIDEBAR_TRACE album_rows_remove_missing index={} identity={}",
-                        index,
-                        sidebar_album_identity_for_log(&current_targets[index])
-                    );
-                    album_list.remove(row);
-                }
-            }
-            let album_count = albums.len();
-            *self.imp().album_rows.borrow_mut() = next_rows;
-            *self.imp().album_targets.borrow_mut() = albums;
-            self.reselect_active_album_row();
-            tracing::debug!(
-                target: crate::core::log_targets::BROWSING,
-                "SIDEBAR_ALBUM_REMOVE_IN_PLACE rows={}",
-                album_count
-            );
-            self.log_sidebar_layout_state("album_rows_ordered_subset_after");
-            self.log_sidebar_layout_state_next_idle("album_rows_ordered_subset_after");
-            return;
-        }
-
-        tracing::debug!(
-            target: crate::core::log_targets::BROWSING,
-            "SIDEBAR_TRACE album_rows_rebuild_clear begin list_children={} current_rows={} incoming={} expanded={} scroll_visible_before={} scroll_height_before={} reason=identity_insert_or_reorder current=[{}] incoming=[{}]",
-            sidebar_list_child_count(&album_list),
-            current_rows.len(),
-            albums.len(),
-            self.imp().albums_expanded.get(),
-            self.imp().album_scroll.is_visible(),
-            self.imp().album_scroll.height(),
-            sidebar_album_summary(&current_targets),
-            sidebar_album_summary(&albums)
-        );
-        while let Some(child) = album_list.first_child() {
-            album_list.remove(&child);
-        }
-        self.imp().album_rows.borrow_mut().clear();
-        self.imp().album_targets.borrow_mut().clear();
-
         let album_count = albums.len();
         let expanded = self.imp().albums_expanded.get();
         self.imp().album_scroll.set_visible(expanded);
-
-        for album in albums {
-            let row = build_album_row(&album, self.imp().loader.borrow().as_ref().cloned());
-            row.set_visible(true);
-            self.attach_album_dnd(&row, album.folder_path.to_string_lossy().into_owned());
-            self.attach_album_context_menu(&row, album.clone());
-            album_list.append(&row);
-            self.imp().album_rows.borrow_mut().push(row);
-            self.imp().album_targets.borrow_mut().push(album);
+        let items = albums
+            .iter()
+            .cloned()
+            .map(glib::BoxedAnyObject::new)
+            .collect::<Vec<_>>();
+        self.imp().selecting_programmatically.set(true);
+        if let Some(model) = self.imp().album_model.borrow().as_ref() {
+            model.splice(0, model.n_items(), &items);
         }
+        *self.imp().album_targets.borrow_mut() = albums;
+        self.imp().selecting_programmatically.set(false);
 
         self.reselect_active_album_row();
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
-            "SIDEBAR_ALBUM_REBUILD rows={}",
+            "SIDEBAR_ALBUM_MODEL_REPLACED rows={} realized_rows=viewport_only",
             album_count
         );
         self.log_sidebar_layout_state("album_rows_rebuild_after");
@@ -733,7 +756,7 @@ impl MainWindow {
             self.imp().album_scroll.is_mapped(),
             self.imp().album_scroll.width(),
             self.imp().album_scroll.height(),
-            sidebar_list_child_count(&self.imp().album_list),
+            self.imp().album_model.borrow().as_ref().map_or(0, |model| model.n_items()),
             self.imp().album_list.width(),
             self.imp().album_list.height(),
             self.imp().album_targets.borrow().len(),
@@ -761,7 +784,6 @@ impl MainWindow {
             Some(path) => path,
             None => return,
         };
-        let album_list = self.imp().album_list.get();
         let idx = self
             .imp()
             .album_targets
@@ -769,11 +791,7 @@ impl MainWindow {
             .iter()
             .position(|album| album.folder_path == active);
         if let Some(i) = idx {
-            if let Some(row) = album_list.row_at_index(i as i32) {
-                self.imp().selecting_programmatically.set(true);
-                album_list.select_row(Some(&row));
-                self.imp().selecting_programmatically.set(false);
-            }
+            self.select_album_position(i as u32);
         }
         let media_type_list = self.imp().media_type_list.get();
         let idx = self

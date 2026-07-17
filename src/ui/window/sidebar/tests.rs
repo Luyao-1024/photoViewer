@@ -3,7 +3,7 @@ use super::super::*;
 use super::*;
 
 #[gtk::test]
-fn sidebar_album_snapshot_updates_stable_rows_in_place() {
+fn sidebar_album_snapshot_updates_virtual_model_without_realizing_all_rows() {
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.SidebarStableAlbumRows")
         .build();
@@ -20,13 +20,13 @@ fn sidebar_album_snapshot_updates_stable_rows_in_place() {
         media_type_albums: Vec::new(),
         live_count: Some(3),
     });
-    let album_list = window.imp().album_list.get();
-    let first_before = album_list
-        .row_at_index(0)
-        .expect("first album row should exist");
-    let second_before = album_list
-        .row_at_index(1)
-        .expect("second album row should exist");
+    let model = window
+        .imp()
+        .album_model
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("virtual album model should exist");
 
     let mut refreshed = albums;
     refreshed[0].photo_count = 1;
@@ -37,13 +37,10 @@ fn sidebar_album_snapshot_updates_stable_rows_in_place() {
         live_count: Some(2),
     });
 
-    assert!(
-        album_list.row_at_index(0).as_ref() == Some(&first_before),
-        "same album/order refresh should update the first row in place instead of replacing it"
-    );
-    assert!(
-        album_list.row_at_index(1).as_ref() == Some(&second_before),
-        "same album/order refresh should update the second row in place instead of replacing it"
+    assert_eq!(
+        model.n_items(),
+        2,
+        "the virtual model should retain both albums"
     );
     assert_eq!(
         window.imp().album_targets.borrow()[0].photo_count,
@@ -53,7 +50,7 @@ fn sidebar_album_snapshot_updates_stable_rows_in_place() {
 }
 
 #[gtk::test]
-fn sidebar_album_snapshot_removes_missing_row_without_replacing_survivors() {
+fn sidebar_album_snapshot_updates_virtual_model_after_removal() {
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.SidebarStableAlbumRemoval")
         .build();
@@ -71,13 +68,13 @@ fn sidebar_album_snapshot_removes_missing_row_without_replacing_survivors() {
         media_type_albums: Vec::new(),
         live_count: Some(6),
     });
-    let album_list = window.imp().album_list.get();
-    let first_before = album_list
-        .row_at_index(0)
-        .expect("first album row should exist");
-    let third_before = album_list
-        .row_at_index(2)
-        .expect("third album row should exist");
+    let model = window
+        .imp()
+        .album_model
+        .borrow()
+        .as_ref()
+        .cloned()
+        .expect("virtual album model should exist");
 
     window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
         albums: vec![
@@ -88,13 +85,10 @@ fn sidebar_album_snapshot_removes_missing_row_without_replacing_survivors() {
         live_count: Some(4),
     });
 
-    assert!(
-        album_list.row_at_index(0).as_ref() == Some(&first_before),
-        "removing one album should keep the first surviving row mounted"
-    );
-    assert!(
-        album_list.row_at_index(1).as_ref() == Some(&third_before),
-        "removing one album should keep the later surviving row mounted"
+    assert_eq!(
+        model.n_items(),
+        2,
+        "the virtual model should remove the deleted album"
     );
     assert_eq!(
         window.imp().album_targets.borrow().len(),
