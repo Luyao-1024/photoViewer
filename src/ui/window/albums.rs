@@ -1,5 +1,5 @@
 use super::settings::{add_excluded_scan_path, show_settings_error_dialog};
-use super::sidebar::sidebar_album_summary;
+use super::sidebar::{sidebar_album_summary, AlbumBinding};
 use super::{pop_to_photos_root, show_trash_operation_error_dialog, MainWindow};
 use crate::core::albums::Album;
 use crate::core::db::DbPool;
@@ -133,11 +133,18 @@ impl MainWindow {
     /// `Gtk.DragSource` only begins a drag after the pointer moves past the
     /// drag threshold, so a plain click still selects the row normally - only
     /// a press-and-drag reorders.
-    pub(super) fn attach_album_dnd(&self, row: &gtk::Widget, folder_path: String) {
+    pub(super) fn attach_album_dnd(&self, row: &gtk::Widget, binding: AlbumBinding) {
         let drag = gtk::DragSource::new();
         drag.set_actions(gtk::gdk::DragAction::MOVE);
-        let value = glib::Value::from(folder_path.as_str());
-        drag.set_content(Some(&gtk::gdk::ContentProvider::for_value(&value)));
+        let drag_binding = binding.clone();
+        drag.connect_prepare(move |_, _, _| {
+            let path = drag_binding
+                .borrow()
+                .as_ref()
+                .map(|album| album.folder_path.to_string_lossy().into_owned())?;
+            let value = glib::Value::from(path.as_str());
+            Some(gtk::gdk::ContentProvider::for_value(&value))
+        });
 
         let drag_row = row.downgrade();
         drag.connect_drag_begin(move |_, _| {
@@ -179,7 +186,7 @@ impl MainWindow {
 
         let weak = self.downgrade();
         let drop_row = row.downgrade();
-        let target_path = folder_path;
+        let target_binding = binding.clone();
         drop.connect_drop(move |_t, value, _x, y| {
             let Some(window) = weak.upgrade() else {
                 return false;
@@ -192,6 +199,13 @@ impl MainWindow {
             let Ok(src) = value.get::<String>() else {
                 return false;
             };
+            let Some(target_path) = target_binding
+                .borrow()
+                .as_ref()
+                .map(|album| album.folder_path.to_string_lossy().into_owned())
+            else {
+                return false;
+            };
             let half = r.height().max(1) as f64 / 2.0;
             window.reorder_album(&src, &target_path, y > half);
             true
@@ -199,7 +213,7 @@ impl MainWindow {
         row.add_controller(drop);
     }
 
-    pub(super) fn attach_album_context_menu(&self, row: &gtk::Widget, album: Album) {
+    pub(super) fn attach_album_context_menu(&self, row: &gtk::Widget, binding: AlbumBinding) {
         let weak = self.downgrade();
         let row_weak = row.downgrade();
         let gesture = gtk::GestureClick::new();
@@ -215,6 +229,9 @@ impl MainWindow {
                 return;
             };
 
+            let Some(album) = binding.borrow().clone() else {
+                return;
+            };
             let manage_album = album.clone();
             let delete_album = album.clone();
             let ignore_album = album.clone();

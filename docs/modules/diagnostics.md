@@ -94,7 +94,7 @@ Errors are independent from timing traces: use `telemetry::log_error` or `teleme
 | `viewer:show_at`, `viewer:orig_decode`, `viewer:thumb_preview`, `viewer:navigate`, `viewer:nav_db_query` | `ui/viewer_page.rs` viewer switch, async decode/preview, navigation |
 | `editor:save_as_copy`, `editor:save_overwrite` | `core/edit/save.rs` |
 | `ui:apply_upserted_batch`, `ui:apply_startup_insertions` | `ui/apply_to_media_list.rs` shared list-store batch apply |
-| `sidebar:rebuild_album_rows`, `sidebar:apply_album_rows`, `sidebar:apply_album_snapshot` | `ui/window/sidebar.rs` sidebar album rows |
+| `sidebar:rebuild_album_rows`, `sidebar:apply_album_rows`, `sidebar:apply_album_snapshot`, `sidebar:model_replace`, `sidebar:factory_bind` | `ui/window/sidebar.rs` sidebar album snapshot application, virtual-model replacement, and per-realized-row binding |
 | `album:select_row`, `album:open_idle`, `album:open` (+ `album:already_visible_check`/`pop`/`load`/`store`/`page_build`/`bind_page`/`push`), `album:backfill_schedule`, `album:backfill_fetch` | `ui/window/navigation.rs` owns sidebar album selection → idle handoff → album open/page-build phases, while `ui/window.rs` still owns the background backfill helper used by navigation |
 | `album_detail:new` (+ `empty_state`/`grid_build`/`splice`), `album_detail:refresh_virtual`, `album_detail:filter_items` | `ui/album_detail_page.rs` album-detail page build + virtual refresh |
 | `flow:stage` (chain `mutation`) plus `albums:refresh` (+ `refresh_folder_rows`/`refresh_virtual_rows`) | Batch move-to-trash uses the shared operation trace: DB mark → filesystem batch/item → DB commit → UI callback carry one `operation_id`. Album projection refreshes remain coalesced background work after the commit. |

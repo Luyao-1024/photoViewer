@@ -10,8 +10,13 @@ use gtk4 as gtk;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use gtk4::{glib, prelude::*};
 use libadwaita as adw;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+pub(super) type AlbumBinding = Rc<RefCell<Option<Album>>>;
 
 // ── Sidebar row builders ──────────────────────────────────────────────────
 // Rows share the `.glass-sidebar-row` material (hover/selected glass veil from
@@ -130,10 +135,20 @@ pub(super) fn build_album_row(
 /// Build the visual contents of one virtual album item.  This deliberately
 /// keeps the same material classes and child layout as `build_album_row`; the
 /// outer selection row is now owned by `GtkListView` instead of `GtkListBox`.
-fn build_virtual_album_item(album: &Album, loader: Option<Arc<ThumbnailLoader>>) -> gtk::Box {
-    let cover = build_sidebar_album_cover(album, loader);
+#[derive(Clone)]
+struct VirtualAlbumCell {
+    content: gtk::Box,
+    cover: SquareTile,
+    name: gtk::Label,
+    count: gtk::Label,
+    binding: AlbumBinding,
+    cover_generation: Rc<Cell<u64>>,
+}
+
+fn build_virtual_album_cell() -> VirtualAlbumCell {
+    let cover = new_sidebar_album_cover();
     let name = gtk::Label::builder()
-        .label(album.display_name())
+        .label("")
         .halign(gtk::Align::Start)
         .hexpand(true)
         .css_classes(["glass-sidebar-label"])
@@ -141,10 +156,7 @@ fn build_virtual_album_item(album: &Album, loader: Option<Arc<ThumbnailLoader>>)
         .max_width_chars(18)
         .build();
     let count = gtk::Label::builder()
-        .label(trf(
-            "album.count",
-            &[("count", &album.photo_count.to_string())],
-        ))
+        .label("")
         .halign(gtk::Align::End)
         .css_classes(["glass-sidebar-count"])
         .build();
@@ -156,7 +168,41 @@ fn build_virtual_album_item(album: &Album, loader: Option<Arc<ThumbnailLoader>>)
     content.append(&cover);
     content.append(&name);
     content.append(&count);
-    content
+    VirtualAlbumCell {
+        content,
+        cover,
+        name,
+        count,
+        binding: Rc::new(RefCell::new(None)),
+        cover_generation: Rc::new(Cell::new(0)),
+    }
+}
+
+impl VirtualAlbumCell {
+    fn bind(&self, album: Album, loader: Option<Arc<ThumbnailLoader>>) {
+        *self.binding.borrow_mut() = Some(album.clone());
+        self.name.set_label(&album.display_name());
+        self.count.set_label(&trf(
+            "album.count",
+            &[("count", &album.photo_count.to_string())],
+        ));
+        let generation = self.cover_generation.get().wrapping_add(1);
+        self.cover_generation.set(generation);
+        request_sidebar_album_cover(
+            &self.cover,
+            &album,
+            loader,
+            Some((self.cover_generation.clone(), generation)),
+        );
+    }
+
+    fn clear(&self) {
+        *self.binding.borrow_mut() = None;
+        self.cover_generation
+            .set(self.cover_generation.get().wrapping_add(1));
+        self.cover
+            .set_paintable(Some(&sidebar_cover_placeholder_texture()));
+    }
 }
 
 pub(super) fn update_album_row_in_place(
@@ -301,6 +347,12 @@ pub(super) fn build_sidebar_album_cover(
     album: &Album,
     loader: Option<Arc<ThumbnailLoader>>,
 ) -> SquareTile {
+    let tile = new_sidebar_album_cover();
+    request_sidebar_album_cover(&tile, album, loader, None);
+    tile
+}
+
+fn new_sidebar_album_cover() -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(24);
     tile.set_halign(gtk::Align::Center);
@@ -309,12 +361,21 @@ pub(super) fn build_sidebar_album_cover(
     tile.set_vexpand(false);
     tile.add_css_class("glass-sidebar-cover");
     tile.set_paintable(Some(&sidebar_cover_placeholder_texture()));
+    tile
+}
 
+fn request_sidebar_album_cover(
+    tile: &SquareTile,
+    album: &Album,
+    loader: Option<Arc<ThumbnailLoader>>,
+    generation: Option<(Rc<Cell<u64>>, u64)>,
+) {
+    tile.set_paintable(Some(&sidebar_cover_placeholder_texture()));
     let Some(loader) = loader else {
-        return tile;
+        return;
     };
     let Some(cover_uri) = album.cover_uri.as_ref().cloned() else {
-        return tile;
+        return;
     };
 
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -331,11 +392,14 @@ pub(super) fn build_sidebar_album_cover(
             return;
         };
         if let Some(tile) = tile_weak.upgrade() {
-            tile.set_paintable(Some(&loaded.texture));
+            if generation
+                .as_ref()
+                .is_none_or(|(current, expected)| current.get() == *expected)
+            {
+                tile.set_paintable(Some(&loaded.texture));
+            }
         }
     });
-
-    tile
 }
 
 pub(super) fn sidebar_cover_placeholder_texture() -> gtk::gdk::Texture {
@@ -374,8 +438,29 @@ impl MainWindow {
         let model = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
         let selection = gtk::MultiSelection::new(Some(model.clone()));
         let factory = gtk::SignalListItemFactory::new();
+        let cells = Rc::new(RefCell::new(HashMap::<usize, VirtualAlbumCell>::new()));
+        {
+            let weak = self.downgrade();
+            let cells = cells.clone();
+            factory.connect_setup(move |_, object| {
+                let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() else {
+                    return;
+                };
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                let cell = build_virtual_album_cell();
+                window.attach_album_dnd(cell.content.upcast_ref(), cell.binding.clone());
+                window.attach_album_context_menu(cell.content.upcast_ref(), cell.binding.clone());
+                list_item.set_child(Some(&cell.content));
+                cells.borrow_mut().insert(list_item.as_ptr() as usize, cell);
+            });
+        }
         let weak = self.downgrade();
+        let cells_for_bind = cells.clone();
         factory.connect_bind(move |_, object| {
+            let span = tracing::debug_span!("sidebar:factory_bind");
+            let _entered = span.enter();
             let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() else {
                 return;
             };
@@ -389,18 +474,15 @@ impl MainWindow {
             else {
                 return;
             };
-            let content =
-                build_virtual_album_item(&album, window.imp().loader.borrow().as_ref().cloned());
-            window.attach_album_dnd(
-                content.upcast_ref(),
-                album.folder_path.to_string_lossy().into_owned(),
-            );
-            window.attach_album_context_menu(content.upcast_ref(), album);
-            list_item.set_child(Some(&content));
+            if let Some(cell) = cells_for_bind.borrow().get(&(list_item.as_ptr() as usize)) {
+                cell.bind(album, window.imp().loader.borrow().as_ref().cloned());
+            }
         });
-        factory.connect_unbind(|_, object| {
+        factory.connect_unbind(move |_, object| {
             if let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() {
-                list_item.set_child(Option::<&gtk::Widget>::None);
+                if let Some(cell) = cells.borrow().get(&(list_item.as_ptr() as usize)) {
+                    cell.clear();
+                }
             }
         });
         self.imp().album_list.set_factory(Some(&factory));
@@ -494,6 +576,8 @@ impl MainWindow {
             .collect::<Vec<_>>();
         self.imp().selecting_programmatically.set(true);
         if let Some(model) = self.imp().album_model.borrow().as_ref() {
+            let span = tracing::debug_span!("sidebar:model_replace", item_count = items.len());
+            let _entered = span.enter();
             model.splice(0, model.n_items(), &items);
         }
         *self.imp().album_targets.borrow_mut() = albums;
