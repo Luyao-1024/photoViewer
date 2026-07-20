@@ -26,7 +26,7 @@ pub enum MediaQuery {
     Images,
     Videos,
     MotionPhotos,
-    Attribute(String),
+    MediaType(crate::core::media::LogicalMediaType),
     Trash,
 }
 
@@ -123,12 +123,12 @@ impl MediaRepository {
             MediaQuery::Favorites => db::count_favorite_media(&self.pool)?,
             MediaQuery::Images => db::count_media_by_kind(&self.pool, "image")?,
             MediaQuery::Videos => db::count_media_by_kind(&self.pool, "video")?,
-            MediaQuery::MotionPhotos => db::count_media_by_subkind(
+            MediaQuery::MotionPhotos => db::count_media_by_logical_type(
                 &self.pool,
-                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                crate::core::media::LogicalMediaType::MotionPhoto,
             )?,
-            MediaQuery::Attribute(attribute) => {
-                db::count_media_by_attribute(&self.pool, &attribute)?
+            MediaQuery::MediaType(media_type) => {
+                db::count_media_by_logical_type(&self.pool, media_type)?
             }
         };
         u32::try_from(count)
@@ -184,14 +184,14 @@ impl MediaRepository {
             MediaQuery::Favorites => db::list_favorite_media_page(&self.pool, start, limit),
             MediaQuery::Images => db::list_media_by_kind_page(&self.pool, "image", start, limit),
             MediaQuery::Videos => db::list_media_by_kind_page(&self.pool, "video", start, limit),
-            MediaQuery::MotionPhotos => db::list_media_by_subkind_page(
+            MediaQuery::MotionPhotos => db::list_media_by_logical_type_page(
                 &self.pool,
-                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                crate::core::media::LogicalMediaType::MotionPhoto,
                 start,
                 limit,
             ),
-            MediaQuery::Attribute(attribute) => {
-                db::list_media_by_attribute_page(&self.pool, &attribute, start, limit)
+            MediaQuery::MediaType(media_type) => {
+                db::list_media_by_logical_type_page(&self.pool, media_type, start, limit)
             }
         }
     }
@@ -265,15 +265,13 @@ impl MediaRepository {
             )?,
             MediaQuery::MotionPhotos => db::count_media_by_date_for_filter(
                 &self.pool,
-                "trashed_at IS NULL AND media_subkind = ?",
-                vec![Value::Text(
-                    crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO.into(),
-                )],
+                "trashed_at IS NULL AND (media_type_flags & 1) != 0",
+                Vec::new(),
             )?,
-            MediaQuery::Attribute(attribute) => db::count_media_by_date_for_filter(
+            MediaQuery::MediaType(media_type) => db::count_media_by_date_for_filter(
                 &self.pool,
-                "trashed_at IS NULL AND json_extract(media_attributes, ?) = 1",
-                vec![Value::Text(format!("$.{attribute}"))],
+                &format!("trashed_at IS NULL AND {}", media_type.sql_predicate()),
+                Vec::new(),
             )?,
             MediaQuery::Trash => db::count_media_by_date_for_filter(
                 &self.pool,
@@ -306,14 +304,14 @@ impl MediaRepository {
             MediaQuery::Videos => {
                 db::kind_media_neighbor(&self.pool, "video", current_id.get(), delta)?
             }
-            MediaQuery::MotionPhotos => db::subkind_media_neighbor(
+            MediaQuery::MotionPhotos => db::media_type_media_neighbor(
                 &self.pool,
-                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                crate::core::media::LogicalMediaType::MotionPhoto,
                 current_id.get(),
                 delta,
             )?,
-            MediaQuery::Attribute(attribute) => {
-                db::attribute_media_neighbor(&self.pool, attribute, current_id.get(), delta)?
+            MediaQuery::MediaType(media_type) => {
+                db::media_type_media_neighbor(&self.pool, *media_type, current_id.get(), delta)?
             }
             MediaQuery::Search { term, field } => {
                 db::search_media_neighbor(&self.pool, term, None, *field, current_id.get(), delta)?

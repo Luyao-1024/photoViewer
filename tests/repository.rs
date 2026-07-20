@@ -159,7 +159,7 @@ fn section_counts_for_attribute_are_query_scoped() {
     let repo = MediaRepository::new(pool);
     let counts = repo
         .section_counts_for_query(
-            MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into()),
+            MediaQuery::MediaType(photo_viewer::core::media::LogicalMediaType::Animated),
             GroupBy::Day,
         )
         .unwrap();
@@ -185,7 +185,7 @@ fn repository_attribute_page_returns_only_matching_live_media() {
     let repo = MediaRepository::new(pool);
     let page = repo
         .page(
-            MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into()),
+            MediaQuery::MediaType(photo_viewer::core::media::LogicalMediaType::Animated),
             0,
             10,
         )
@@ -194,6 +194,69 @@ fn repository_attribute_page_returns_only_matching_live_media() {
     assert_eq!(page.total, 1);
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].uri, "file:///tmp/animated_new.jpg");
+}
+
+#[test]
+fn repository_attribute_page_uses_materialized_type_flags_not_json_at_query_time() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-type-flags.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item_with_attrs("animated", 10, r#"{"animated":true}"#)],
+    )
+    .unwrap();
+
+    // The logical-album result is driven by the materialized column written
+    // during ingestion, rather than reparsing extensible metadata on reads.
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE media_items SET media_attributes = '{}' WHERE id = ?1",
+            [inserted[0].id],
+        )
+        .unwrap();
+
+    let page = MediaRepository::new(pool)
+        .page(
+            MediaQuery::MediaType(photo_viewer::core::media::LogicalMediaType::Animated),
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.items[0].uri, "file:///tmp/animated.jpg");
+}
+
+#[test]
+fn animated_logical_album_query_uses_its_materialized_sort_index() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-type-index.db")).unwrap();
+    photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item_with_attrs("animated", 10, r#"{"animated":true}"#)],
+    )
+    .unwrap();
+
+    let conn = pool.get().unwrap();
+    let plan = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT id FROM media_items
+             WHERE trashed_at IS NULL AND (media_type_flags & 2) != 0
+             ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
+             LIMIT 100",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join("\n");
+
+    assert!(
+        plan.contains("idx_media_type_animated_sort"),
+        "animated logical album must use its materialized sort index; plan:\n{plan}"
+    );
 }
 
 #[test]
@@ -210,7 +273,7 @@ fn repository_attribute_neighbor_stays_inside_attribute_projection() {
         ],
     )
     .unwrap();
-    let query = MediaQuery::Attribute(photo_viewer::core::media::MEDIA_ATTRIBUTE_ANIMATED.into());
+    let query = MediaQuery::MediaType(photo_viewer::core::media::LogicalMediaType::Animated);
     let repo = MediaRepository::new(pool);
 
     let neighbor = repo

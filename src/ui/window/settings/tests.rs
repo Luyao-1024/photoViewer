@@ -322,7 +322,7 @@ fn settings_page_exposes_trash_backend_controls() {
 }
 
 #[gtk::test]
-fn settings_storage_rows_defer_size_calculation() {
+fn settings_clear_cache_data_row_defers_combined_size_calculation() {
     let _ = gtk::init();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.WindowStorageUsage")
@@ -337,14 +337,9 @@ fn settings_storage_rows_defer_size_calculation() {
     let pending = tr("setting.storage_usage_calculating");
 
     assert_eq!(
-        find_action_row_subtitle(&page, &tr("setting.clear_thumbnails")).as_deref(),
+        find_action_row_subtitle(&page, &tr("setting.clear_cache_data")).as_deref(),
         Some(pending.as_str()),
-        "thumbnail cache size must not be calculated while constructing Settings"
-    );
-    assert_eq!(
-        find_action_row_subtitle(&page, &tr("setting.clear_database")).as_deref(),
-        Some(pending.as_str()),
-        "database size must not be calculated while constructing Settings"
+        "combined cache-data size must not be calculated while constructing Settings"
     );
 }
 

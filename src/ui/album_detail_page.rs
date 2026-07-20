@@ -661,9 +661,9 @@ pub(crate) fn media_query_for_album(album: &Album) -> MediaQuery {
     } else if album.is_motion_photos_album() {
         MediaQuery::MotionPhotos
     } else if album.is_animated_album() {
-        MediaQuery::Attribute(crate::core::media::MEDIA_ATTRIBUTE_ANIMATED.into())
+        MediaQuery::MediaType(crate::core::media::LogicalMediaType::Animated)
     } else if album.is_hdr_album() {
-        MediaQuery::Attribute(crate::core::media::MEDIA_ATTRIBUTE_HDR.into())
+        MediaQuery::MediaType(crate::core::media::LogicalMediaType::Hdr)
     } else {
         MediaQuery::AlbumFolder(album.folder_path.clone())
     }

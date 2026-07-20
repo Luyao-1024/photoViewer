@@ -71,56 +71,57 @@ impl Album {
 }
 
 /// 列出实体相册 + 虚拟“收藏/图片/视频”相册（放在列表首位）。
+/// 收藏相册仅在至少有一项收藏时显示。
 ///
 /// 若 `album_order` 表中存有用户拖动重排后的顺序，则按该顺序重排结果；
 /// 未记录顺序的相册追加到末尾并保留其默认相对顺序（虚拟相册在前、文件夹按
 /// 最近修改倒序）。
 pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
     let mut list = list(pool)?;
-    list.insert(
-        0,
-        virtual_album_or_compute(pool, FAVORITES_ALBUM_PATH, || favorites_album(pool))?,
-    );
-    list.insert(
-        1,
-        virtual_album_or_compute(pool, IMAGES_ALBUM_PATH, || {
-            media_kind_album(pool, "image", IMAGES_ALBUM_PATH, tr("album.images.name"))
-        })?,
-    );
-    list.insert(
-        2,
-        virtual_album_or_compute(pool, VIDEOS_ALBUM_PATH, || {
-            media_kind_album(pool, "video", VIDEOS_ALBUM_PATH, tr("album.videos.name"))
-        })?,
-    );
-    apply_saved_order(list, pool)
+    let favorites = virtual_album_or_compute(pool, FAVORITES_ALBUM_PATH, || favorites_album(pool))?;
+    let images = virtual_album_or_compute(pool, IMAGES_ALBUM_PATH, || {
+        media_kind_album(pool, "image", IMAGES_ALBUM_PATH, tr("album.images.name"))
+    })?;
+    let videos = virtual_album_or_compute(pool, VIDEOS_ALBUM_PATH, || {
+        media_kind_album(pool, "video", VIDEOS_ALBUM_PATH, tr("album.videos.name"))
+    })?;
+
+    let mut virtual_albums = Vec::with_capacity(3);
+    if favorites.photo_count > 0 {
+        virtual_albums.push(favorites);
+    }
+    virtual_albums.push(images);
+    virtual_albums.push(videos);
+    virtual_albums.append(&mut list);
+    apply_saved_order(virtual_albums, pool)
 }
 
 /// Media-type sidebar groups. This is separate from folder albums so new
-/// subkind-based categories can sit below Albums without changing folder
-/// ordering. Currently only dynamic/motion photos are exposed.
+/// type-flag-based categories can sit below Albums without changing folder
+/// ordering. The flags are materialized on `media_items` so these categories
+/// never need to parse JSON for every row.
 pub fn list_media_type_albums(pool: &DbPool) -> Result<Vec<Album>> {
     let candidates = vec![
         virtual_album_or_compute(pool, MOTION_PHOTOS_ALBUM_PATH, || {
-            media_subkind_album(
+            media_type_album(
                 pool,
-                crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+                crate::core::media::LogicalMediaType::MotionPhoto,
                 MOTION_PHOTOS_ALBUM_PATH,
                 tr("album.motion_photos.name"),
             )
         })?,
         virtual_album_or_compute(pool, ANIMATED_ALBUM_PATH, || {
-            media_attribute_album(
+            media_type_album(
                 pool,
-                crate::core::media::MEDIA_ATTRIBUTE_ANIMATED,
+                crate::core::media::LogicalMediaType::Animated,
                 ANIMATED_ALBUM_PATH,
                 tr("album.animated.name"),
             )
         })?,
         virtual_album_or_compute(pool, HDR_ALBUM_PATH, || {
-            media_attribute_album(
+            media_type_album(
                 pool,
-                crate::core::media::MEDIA_ATTRIBUTE_HDR,
+                crate::core::media::LogicalMediaType::Hdr,
                 HDR_ALBUM_PATH,
                 tr("album.hdr.name"),
             )
@@ -309,27 +310,30 @@ fn media_kind_album(
     Ok(album)
 }
 
-fn media_subkind_album(
+fn media_type_album(
     pool: &DbPool,
-    media_subkind: &str,
+    media_type: crate::core::media::LogicalMediaType,
     virtual_path: &str,
     name: String,
 ) -> Result<Album> {
     let conn = pool.get()?;
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT
             COUNT(*),
             COALESCE(
             (SELECT cover_uri FROM album_covers c
-             WHERE c.folder_path = ?2),
+             WHERE c.folder_path = ?1),
             (SELECT uri FROM media_items m2
-             WHERE m2.trashed_at IS NULL AND m2.media_subkind = ?1
+             WHERE m2.trashed_at IS NULL AND {}
              ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
          FROM media_items
-         WHERE trashed_at IS NULL AND media_subkind = ?1",
-    )?;
-    let album = stmt.query_row([media_subkind, virtual_path], |row| {
+         WHERE trashed_at IS NULL AND {}",
+        media_type.sql_predicate(),
+        media_type.sql_predicate(),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let album = stmt.query_row([virtual_path], |row| {
         let count: i64 = row.get(0)?;
         let cover_uri: Option<String> = row.get(1)?;
         let last_modified: i64 = row.get(2)?;
@@ -345,45 +349,6 @@ fn media_subkind_album(
     })?;
     Ok(album)
 }
-
-fn media_attribute_album(
-    pool: &DbPool,
-    attribute: &str,
-    virtual_path: &str,
-    name: String,
-) -> Result<Album> {
-    let conn = pool.get()?;
-    let json_path = format!("$.{attribute}");
-    let mut stmt = conn.prepare(
-        "SELECT
-            COUNT(*),
-            COALESCE(
-            (SELECT cover_uri FROM album_covers c
-             WHERE c.folder_path = ?2),
-            (SELECT uri FROM media_items m2
-             WHERE m2.trashed_at IS NULL AND json_extract(m2.media_attributes, ?1) = 1
-             ORDER BY m2.file_mtime DESC LIMIT 1)),
-            COALESCE(MAX(file_mtime), 0)
-         FROM media_items
-         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1",
-    )?;
-    let album = stmt.query_row(rusqlite::params![json_path, virtual_path], |row| {
-        let count: i64 = row.get(0)?;
-        let cover_uri: Option<String> = row.get(1)?;
-        let last_modified: i64 = row.get(2)?;
-        Ok(Album {
-            folder_path: PathBuf::from(virtual_path),
-            name,
-            cover_uri,
-            photo_count: count,
-            last_modified: chrono::DateTime::from_timestamp(last_modified, 0)
-                .unwrap_or_else(Utc::now),
-            is_virtual: true,
-        })
-    })?;
-    Ok(album)
-}
-
 /// 查询收藏媒体 ID，按收藏列表展示顺序返回。
 pub fn favorite_media_ids(pool: &DbPool) -> Result<Vec<i64>> {
     db::list_favorite_media_ids(pool)
@@ -459,21 +424,21 @@ fn refresh_virtual_album_rows(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     insert_favorites_album_row(tx)?;
     insert_media_kind_album_row(tx, "image", IMAGES_ALBUM_PATH, &tr("album.images.name"))?;
     insert_media_kind_album_row(tx, "video", VIDEOS_ALBUM_PATH, &tr("album.videos.name"))?;
-    insert_media_subkind_album_row(
+    insert_media_type_album_row(
         tx,
-        crate::core::media::MEDIA_SUBKIND_MOTION_PHOTO,
+        crate::core::media::LogicalMediaType::MotionPhoto,
         MOTION_PHOTOS_ALBUM_PATH,
         &tr("album.motion_photos.name"),
     )?;
-    insert_media_attribute_album_row(
+    insert_media_type_album_row(
         tx,
-        crate::core::media::MEDIA_ATTRIBUTE_ANIMATED,
+        crate::core::media::LogicalMediaType::Animated,
         ANIMATED_ALBUM_PATH,
         &tr("album.animated.name"),
     )?;
-    insert_media_attribute_album_row(
+    insert_media_type_album_row(
         tx,
-        crate::core::media::MEDIA_ATTRIBUTE_HDR,
+        crate::core::media::LogicalMediaType::Hdr,
         HDR_ALBUM_PATH,
         &tr("album.hdr.name"),
     )?;
@@ -496,7 +461,8 @@ fn insert_favorites_album_row(tx: &rusqlite::Transaction<'_>) -> Result<()> {
              COUNT(*),
              COALESCE(MAX(file_mtime), 0)
          FROM media_items
-         WHERE trashed_at IS NULL AND is_favorite = 1",
+         WHERE trashed_at IS NULL AND is_favorite = 1
+         HAVING COUNT(*) > 0",
         rusqlite::params![FAVORITES_ALBUM_PATH, tr("album.favorites.name")],
     )?;
     Ok(())
@@ -529,13 +495,13 @@ fn insert_media_kind_album_row(
     Ok(())
 }
 
-fn insert_media_subkind_album_row(
+fn insert_media_type_album_row(
     tx: &rusqlite::Transaction<'_>,
-    media_subkind: &str,
+    media_type: crate::core::media::LogicalMediaType,
     virtual_path: &str,
     name: &str,
 ) -> Result<()> {
-    tx.execute(
+    let sql = format!(
         "INSERT INTO albums (folder_path, name, cover_uri, photo_count, last_modified)
          SELECT
              ?1,
@@ -543,44 +509,18 @@ fn insert_media_subkind_album_row(
              COALESCE(
                  (SELECT cover_uri FROM album_covers c WHERE c.folder_path = ?1),
                  (SELECT uri FROM media_items m2
-                  WHERE m2.trashed_at IS NULL AND m2.media_subkind = ?3
+                  WHERE m2.trashed_at IS NULL AND {}
                   ORDER BY COALESCE(m2.taken_at, m2.file_mtime) DESC, m2.id DESC
                   LIMIT 1)
              ),
              COUNT(*),
              COALESCE(MAX(file_mtime), 0)
          FROM media_items
-         WHERE trashed_at IS NULL AND media_subkind = ?3",
-        rusqlite::params![virtual_path, name, media_subkind],
-    )?;
-    Ok(())
-}
-
-fn insert_media_attribute_album_row(
-    tx: &rusqlite::Transaction<'_>,
-    attribute: &str,
-    virtual_path: &str,
-    name: &str,
-) -> Result<()> {
-    let json_path = format!("$.{attribute}");
-    tx.execute(
-        "INSERT INTO albums (folder_path, name, cover_uri, photo_count, last_modified)
-         SELECT
-             ?1,
-             ?2,
-             COALESCE(
-                 (SELECT cover_uri FROM album_covers c WHERE c.folder_path = ?1),
-                 (SELECT uri FROM media_items m2
-                  WHERE m2.trashed_at IS NULL AND json_extract(m2.media_attributes, ?3) = 1
-                  ORDER BY COALESCE(m2.taken_at, m2.file_mtime) DESC, m2.id DESC
-                  LIMIT 1)
-             ),
-             COUNT(*),
-             COALESCE(MAX(file_mtime), 0)
-         FROM media_items
-         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?3) = 1",
-        rusqlite::params![virtual_path, name, json_path],
-    )?;
+         WHERE trashed_at IS NULL AND {}",
+        media_type.sql_predicate(),
+        media_type.sql_predicate(),
+    );
+    tx.execute(&sql, rusqlite::params![virtual_path, name])?;
     Ok(())
 }
 

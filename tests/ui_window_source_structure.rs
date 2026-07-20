@@ -40,7 +40,6 @@ fn window_settings_helpers_live_in_settings_module() {
         "fn restart_application",
         "fn update_storage_size_async",
         "fn show_clear_confirm_dialog",
-        "fn show_clear_success_toast",
         "fn show_clear_error_toast",
         "fn format_size",
     ] {
@@ -69,7 +68,6 @@ fn window_settings_helpers_live_in_settings_module() {
         "fn restart_application(",
         "fn update_storage_size_async",
         "fn show_clear_confirm_dialog",
-        "fn show_clear_success_toast(",
         "fn show_clear_error_toast(",
         "fn format_size(",
     ] {

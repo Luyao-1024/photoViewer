@@ -1,12 +1,12 @@
 const APP_ID: &str = "io.github.luyao_1024.photoviewer";
-const VERSION: &str = "0.9.0";
+const VERSION: &str = "0.9.9";
 
 #[test]
 fn release_metadata_uses_git_derived_app_id_and_version() {
     let cargo = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
     assert!(
         cargo.contains(&format!("version = \"{VERSION}\"")),
-        "Cargo package version must match the 0.9 release"
+        "Cargo package version must match the current release"
     );
 
     let manifest_path = format!("{APP_ID}.yml");
@@ -65,7 +65,7 @@ fn release_metadata_uses_git_derived_app_id_and_version() {
     );
     assert!(
         metainfo.contains(&format!("<release version=\"{VERSION}\"")),
-        "metainfo release list must include the 0.9 release"
+        "metainfo release list must include the current release"
     );
 }
 

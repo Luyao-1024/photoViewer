@@ -37,11 +37,12 @@ fn make_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
 
 /// 两个文件夹相册 + 三个虚拟相册（收藏 / 图片 / 视频）的图库快照。
 fn seed(pool: &db::DbPool) {
-    common::db::insert_media_item(
+    let camera_id = common::db::insert_media_item(
         pool,
         &make_item("file:///p/Camera/a.jpg", "/p/Camera/a.jpg", "/p/Camera", 2),
     )
     .unwrap();
+    common::db::set_media_favorite(pool, camera_id, true).unwrap();
     common::db::insert_media_item(
         pool,
         &make_item(

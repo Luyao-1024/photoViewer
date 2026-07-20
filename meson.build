@@ -1,5 +1,5 @@
 project('photo-viewer', 'rust',
-  version : '0.9.0',
+  version : '0.9.9',
   meson_version : '>= 0.59.0',
 )
 

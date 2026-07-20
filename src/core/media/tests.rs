@@ -54,3 +54,16 @@ fn media_attribute_helpers_ignore_missing_or_false_flags() {
     assert!(!item.is_animated());
     assert!(!item.is_hdr());
 }
+
+#[test]
+fn logical_media_type_flags_materialize_overlapping_categories() {
+    let flags = media_type_flags(
+        MEDIA_SUBKIND_MOTION_PHOTO,
+        r#"{"animated":true,"hdr":true}"#,
+    );
+
+    assert_eq!(
+        flags,
+        MEDIA_TYPE_MOTION_PHOTO | MEDIA_TYPE_ANIMATED | MEDIA_TYPE_HDR
+    );
+}

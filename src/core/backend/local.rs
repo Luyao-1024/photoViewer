@@ -549,6 +549,13 @@ impl LocalBackend {
             })
             .unwrap_or_default();
         media_attributes.animated = meta.mime_type == "image/gif";
+        // A Motion Photo Container's GainMap item is an HDR gain map. Persist
+        // it as a queryable logical-media attribute instead of leaving it as
+        // opaque motion-photo detail, so HDR albums include phone HDR photos.
+        media_attributes.hdr = media_attributes
+            .motion_photo
+            .as_ref()
+            .is_some_and(|info| info.gain_map_offset.is_some() && info.gain_map_length.is_some());
 
         Ok(Some(NewMediaItem {
             uri,
@@ -601,6 +608,10 @@ impl LocalBackend {
             })
             .unwrap_or_default();
         media_attributes.animated = meta.mime_type == "image/gif";
+        media_attributes.hdr = media_attributes
+            .motion_photo
+            .as_ref()
+            .is_some_and(|info| info.gain_map_offset.is_some() && info.gain_map_length.is_some());
         Ok(NewMediaItem {
             uri: uri.to_string(),
             path: path.to_path_buf(),

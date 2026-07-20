@@ -99,8 +99,13 @@ decode media on the GTK main thread.
 Below Albums, the sidebar has a matching collapsible "Media Types" group. It
 uses the same sub-row visual treatment and opens the same `AlbumDetailPage`
 virtual-album flow, but it is not part of album drag ordering or album deletion.
-The only current media-type row is Dynamic Photos, backed by
-`media_items.media_subkind = 'motion_photo'`.
+Its Dynamic Photos, Animated, and HDR rows are backed by the materialized
+`media_items.media_type_flags` bitset. The flags are written during ingestion
+and are deliberately queryable: logical albums must not parse
+`media_attributes` JSON over the full library. A media item may have multiple
+flags; JSON remains only the extensible metadata source from which flags are
+derived. Each exposed flag has a partial live-media sort index, so count, cover,
+page, and viewer-neighbor queries use the same indexed predicate.
 
 Selecting an album row switches the window browsing stack to its
 `AlbumDetailPage` immediately. Photos and the active album detail are peer
@@ -142,7 +147,7 @@ Album rows are **drag-to-reorder** (long-press + drag). The order is persisted i
 
 The Albums page also has virtual logical albums:
 
-- Favorites: filtered by `is_favorite`.
+- Favorites: filtered by `is_favorite`; hidden when it has no live media.
 - Photos: filtered by `media_items.media_kind = 'image'`.
 - Videos: filtered by `media_items.media_kind = 'video'`.
 

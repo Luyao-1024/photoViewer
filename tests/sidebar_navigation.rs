@@ -465,12 +465,13 @@ fn sidebar_navigation_suite() {
     );
 
     // Album entries are nested under the header. Even with an empty DB the
-    // three virtual albums (favorites / images / videos) are present. The
+    // two type virtual albums (images / videos) are present; Favorites is
+    // hidden until at least one item is favorited. The
     // ListView realizes their widgets lazily, so assert against its model.
     {
         let album_targets = window.imp().album_targets.borrow();
         assert!(
-            album_targets.len() >= 3,
+            album_targets.len() >= 2,
             "sidebar should list the virtual albums, got {}",
             album_targets.len()
         );
@@ -685,8 +686,8 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
     );
     assert_eq!(
         window.imp().album_targets.borrow().len(),
-        28,
-        "sidebar album list should render all 25 folder albums plus 3 virtual albums",
+        27,
+        "sidebar album list should render all 25 folder albums plus Images and Videos; empty Favorites stays hidden",
     );
     assert!(
         visible_flag(window.imp().album_scroll.get().upcast_ref()),

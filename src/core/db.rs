@@ -1,4 +1,4 @@
-//! SQLite 连接池与迁移管理
+//! SQLite 连接池与当前 schema 初始化。
 use crate::core::error::{AppError, Result};
 use crate::core::media::{media_kind_from_mime, MediaItem, MediaKind, NewMediaItem};
 
@@ -18,8 +18,7 @@ use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::types::{Type, Value};
 use rusqlite::{params_from_iter, OptionalExtension};
-use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -28,55 +27,11 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
 const UPSERT_RETRY_LIMIT: usize = 3;
-const REQUIRED_MEDIA_ITEM_COLUMNS: &[&str] = &[
-    "id",
-    "uri",
-    "path",
-    "folder_path",
-    "mime_type",
-    "media_kind",
-    "media_subkind",
-    "media_attributes",
-    "width",
-    "height",
-    "video_duration_secs",
-    "taken_at",
-    "file_mtime",
-    "file_size",
-    "blake3_hash",
-    "is_favorite",
-    "trashed_at",
-    "indexed_at",
-];
-
-/// 初始化数据库连接池；如不存在则创建并运行迁移。
+/// 初始化数据库连接池，并为新数据库创建当前 schema。
 ///
-/// 若打开或迁移失败（DB 文件损坏 / 迁移 SQL 因不兼容报错），
-/// 删除 `.db` / `.db-wal` / `.db-shm` 后重新创建一次。应用尚未对外
-/// 发布，允许通过删库换取自愈。默认只做「必要列」一致性校验：若缺关键列，
-/// 则触发重建。
+/// 不提供旧 schema 兼容、列补齐、数据回填或自动重建；schema 变更后由
+/// 开发者清理已有数据库和缩略图缓存。
 pub fn init_pool(path: &Path) -> Result<DbPool> {
-    match try_open_and_migrate(path) {
-        Ok(pool) => Ok(pool),
-        Err(err) => {
-            tracing::warn!(
-                "DB at {} failed to open/migrate ({}); deleting and regenerating.",
-                path.display(),
-                err
-            );
-            remove_db_files(path)?;
-            try_open_and_migrate(path).map_err(|e| {
-                AppError::Backend(format!(
-                    "failed to regenerate DB at {}: {e}",
-                    path.display()
-                ))
-            })
-        }
-    }
-}
-
-/// 打开连接池 + 跑 schema 迁移。任一步出错都会让上层走重建分支。
-fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
         c.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
@@ -89,59 +44,9 @@ fn try_open_and_migrate(path: &Path) -> Result<DbPool> {
         .max_size(8)
         .build(manager)
         .map_err(AppError::from)?;
-    run_migrations(&pool)?;
-    ensure_thumbnail_generated_column(&pool)?;
-    validate_media_schema(&pool)?;
-    Ok(pool)
-}
-
-/// 删除 `path` 对应的 SQLite 主文件 + WAL/SHM 副本。文件不存在视为成功。
-fn remove_db_files(path: &Path) -> Result<()> {
-    for suffix in ["", "-wal", "-shm"] {
-        let candidate: PathBuf = if suffix.is_empty() {
-            path.to_path_buf()
-        } else {
-            let mut name: OsString = path.as_os_str().to_owned();
-            name.push(suffix);
-            PathBuf::from(name)
-        };
-        match std::fs::remove_file(&candidate) {
-            Ok(()) => tracing::info!("removed legacy DB file: {}", candidate.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(AppError::Io(e)),
-        }
-    }
-    Ok(())
-}
-
-/// 执行 schema.sql 迁移（幂等）
-pub fn run_migrations(pool: &DbPool) -> Result<()> {
     let conn = pool.get()?;
     conn.execute_batch(SCHEMA_SQL)?;
-    Ok(())
-}
-
-fn validate_media_schema(pool: &DbPool) -> Result<()> {
-    let conn = pool.get()?;
-    let mut stmt = conn.prepare("PRAGMA table_info(media_items)")?;
-    let existing: HashSet<String> = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<HashSet<String>>>()?;
-
-    let mut missing = Vec::new();
-    for col in REQUIRED_MEDIA_ITEM_COLUMNS {
-        if !existing.contains(*col) {
-            missing.push(*col);
-        }
-    }
-    if !missing.is_empty() {
-        return Err(AppError::Backend(format!(
-            "database schema mismatch: media_items missing required columns: {}",
-            missing.join(", ")
-        )));
-    }
-
-    Ok(())
+    Ok(pool)
 }
 
 fn ts(dt: DateTime<Utc>) -> i64 {
@@ -178,9 +83,9 @@ pub(crate) fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i6
     conn.execute(
         "INSERT INTO media_items
             (uri, path, folder_path, mime_type, media_kind, media_subkind,
-             media_attributes, width, height, video_duration_secs, taken_at,
+             media_attributes, media_type_flags, width, height, video_duration_secs, taken_at,
              file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, unixepoch())",
         rusqlite::params![
             item.uri,
             item.path.to_string_lossy(),
@@ -189,6 +94,7 @@ pub(crate) fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i6
             media_kind_db_value(&item.mime_type),
             item.media_subkind,
             item.media_attributes,
+            crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes),
             item.width,
             item.height,
             item.video_duration_secs,
@@ -268,9 +174,9 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
             tx.execute(
                 "UPDATE media_items
                  SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
-                     media_subkind=?6, media_attributes=?7, width=?8, height=?9,
-                     video_duration_secs=?10, taken_at=?11, file_mtime=?12,
-                     file_size=?13, blake3_hash=?14,
+                     media_subkind=?6, media_attributes=?7, media_type_flags=?8, width=?9, height=?10,
+                     video_duration_secs=?11, taken_at=?12, file_mtime=?13,
+                     file_size=?14, blake3_hash=?15,
                      trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
@@ -281,6 +187,7 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                     media_kind_db_value(&item.mime_type),
                     item.media_subkind,
                     item.media_attributes,
+                    crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes),
                     item.width,
                     item.height,
                     item.video_duration_secs,
@@ -295,9 +202,9 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
             tx.execute(
                 "INSERT INTO media_items
                     (uri, path, folder_path, mime_type, media_kind, media_subkind,
-                     media_attributes, width, height, video_duration_secs, taken_at,
+                     media_attributes, media_type_flags, width, height, video_duration_secs, taken_at,
                      file_mtime, file_size, blake3_hash, indexed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, unixepoch())",
                 rusqlite::params![
                     item.uri,
                     item.path.to_string_lossy(),
@@ -306,6 +213,7 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                     media_kind_db_value(&item.mime_type),
                     item.media_subkind,
                     item.media_attributes,
+                    crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes),
                     item.width,
                     item.height,
                     item.video_duration_secs,
@@ -407,16 +315,6 @@ pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, Path
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(AppError::from)
-}
-
-/// 为现有 DB 补齐 `thumbnail_generated_at` 列（忽略已存在错误）。
-pub fn ensure_thumbnail_generated_column(pool: &DbPool) -> Result<()> {
-    let conn = pool.get()?;
-    let _ = conn.execute(
-        "ALTER TABLE media_items ADD COLUMN thumbnail_generated_at INTEGER",
-        [],
-    );
-    Ok(())
 }
 
 /// 非回收站媒体项总数。
@@ -539,13 +437,17 @@ pub fn count_media_by_subkind(pool: &DbPool, media_subkind: &str) -> Result<usiz
     Ok(count as usize)
 }
 
-pub fn count_media_by_attribute(pool: &DbPool, attribute: &str) -> Result<usize> {
+pub fn count_media_by_logical_type(
+    pool: &DbPool,
+    media_type: crate::core::media::LogicalMediaType,
+) -> Result<usize> {
     let conn = pool.get()?;
-    let json_path = format!("$.{attribute}");
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items
-         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1",
-        [json_path],
+        &format!(
+            "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL AND {}",
+            media_type.sql_predicate()
+        ),
+        [],
         |row| row.get(0),
     )?;
     Ok(count as usize)
@@ -877,25 +779,25 @@ pub fn list_media_by_subkind_page(
         .map_err(AppError::from)
 }
 
-pub fn list_media_by_attribute_page(
+pub fn list_media_by_logical_type_page(
     pool: &DbPool,
-    attribute: &str,
+    media_type: crate::core::media::LogicalMediaType,
     offset: u32,
     limit: u32,
 ) -> Result<Vec<MediaItem>> {
     let conn = pool.get()?;
-    let json_path = format!("$.{attribute}");
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
                 file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
-         WHERE trashed_at IS NULL AND json_extract(media_attributes, ?1) = 1
+         WHERE trashed_at IS NULL AND {}
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
-         LIMIT ?2 OFFSET ?3",
-    )?;
+         LIMIT ?1 OFFSET ?2",
+        media_type.sql_predicate()
+    ))?;
     let rows = stmt.query_map(
-        rusqlite::params![json_path, limit as i64, offset as i64],
+        rusqlite::params![limit as i64, offset as i64],
         row_to_media_item,
     )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -973,9 +875,9 @@ pub fn subkind_media_neighbor(
     )
 }
 
-pub fn attribute_media_neighbor(
+pub fn media_type_media_neighbor(
     pool: &DbPool,
-    attribute: &str,
+    media_type: crate::core::media::LogicalMediaType,
     current_id: i64,
     delta: i32,
 ) -> Result<Option<(u32, u32, MediaItem)>> {
@@ -983,8 +885,8 @@ pub fn attribute_media_neighbor(
         pool,
         current_id,
         delta,
-        "trashed_at IS NULL AND json_extract(media_attributes, ?) = 1",
-        vec![Value::Text(format!("$.{attribute}"))],
+        &format!("trashed_at IS NULL AND {}", media_type.sql_predicate()),
+        Vec::new(),
     )
 }
 
@@ -1205,12 +1107,17 @@ pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
     Ok(total)
 }
 
-/// 清空所有媒体记录。返回删除的记录数。
+/// 重置媒体库数据库内容。返回删除的媒体记录数。
 ///
-/// 用于重置数据库，不会删除原始文件。
-pub(crate) fn clear_all_media(pool: &DbPool) -> Result<usize> {
-    let conn = pool.get()?;
-    let count = conn.execute("DELETE FROM media_items", [])?;
+/// 不会删除原始文件或用户偏好，但会清空媒体、相册物化视图及相册自定义数据。
+pub(crate) fn reset_library_database(pool: &DbPool) -> Result<usize> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    let count = tx.execute("DELETE FROM media_items", [])?;
+    tx.execute("DELETE FROM albums", [])?;
+    tx.execute("DELETE FROM album_order", [])?;
+    tx.execute("DELETE FROM album_covers", [])?;
+    tx.commit()?;
     Ok(count)
 }
 

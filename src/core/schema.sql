@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     media_kind      TEXT    NOT NULL DEFAULT 'image',
     media_subkind   TEXT    NOT NULL DEFAULT 'standard',
     media_attributes TEXT   NOT NULL DEFAULT '{}',
+    media_type_flags INTEGER NOT NULL DEFAULT 0,
     width           INTEGER,
     height          INTEGER,
     video_duration_secs REAL,
@@ -63,6 +64,19 @@ CREATE INDEX IF NOT EXISTS idx_media_subkind_sort
     ON media_items(media_subkind, COALESCE(taken_at, file_mtime) DESC, id DESC)
     WHERE trashed_at IS NULL;
 
+-- Logical media-type albums use a bitset because categories can overlap.
+-- Keep one partial sort index per currently exposed flag so sidebar counts,
+-- covers and album pages never scan the whole live library.
+CREATE INDEX IF NOT EXISTS idx_media_type_motion_photo_sort
+    ON media_items(COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL AND (media_type_flags & 1) != 0;
+CREATE INDEX IF NOT EXISTS idx_media_type_animated_sort
+    ON media_items(COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL AND (media_type_flags & 2) != 0;
+CREATE INDEX IF NOT EXISTS idx_media_type_hdr_sort
+    ON media_items(COALESCE(taken_at, file_mtime) DESC, id DESC)
+    WHERE trashed_at IS NULL AND (media_type_flags & 4) != 0;
+
 -- albums 物化视图
 CREATE TABLE IF NOT EXISTS albums (
     folder_path     TEXT PRIMARY KEY,
@@ -103,12 +117,3 @@ CREATE TABLE IF NOT EXISTS settings (
     key             TEXT PRIMARY KEY,
     value           TEXT NOT NULL
 );
-
--- schema 版本表
-CREATE TABLE IF NOT EXISTS schema_version (
-    version         INTEGER PRIMARY KEY,
-    applied_at      INTEGER NOT NULL
-);
-
-INSERT OR IGNORE INTO schema_version (version, applied_at)
-VALUES (1, unixepoch());

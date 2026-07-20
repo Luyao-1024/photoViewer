@@ -34,6 +34,18 @@
   </categories>
 
   <releases>
+    <release version="0.9.9" date="2026-07-20">
+      <description>
+        <ul>
+          <li>Virtualizes the Photos grid and album sidebar, retaining nearby rows and thumbnails to make large-library scrolling and album switching smoother.</li>
+          <li>Adds configurable day-grid columns, visible-date feedback while scrolling, and fixes placeholder flicker, stale thumbnail requests, and focus preservation during updates.</li>
+          <li>Improves viewer and album navigation, including full filmstrips when opening from albums, responsive animated-image playback, and more reliable video/image handoff.</li>
+          <li>Adds Chrome/Perfetto operation tracing and in-app crash diagnostics to make startup, browsing, and album-switch performance measurable.</li>
+          <li>Adds logical media categories for motion photos, animated images, and HDR images; HDR Motion Photo Containers with gain maps are recognized during indexing.</li>
+          <li>Uses the current database schema directly; existing databases and saved thumbnail caches must be cleared when upgrading to this development release.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-06-30">
       <description>
         <p>

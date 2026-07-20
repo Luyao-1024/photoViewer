@@ -2,13 +2,13 @@
 
 ## Scope
 
-Storage covers SQLite schema/migrations, media rows, filesystem scanning, metadata extraction, live filesystem watching, thumbnails, and preferences.
+Storage covers the SQLite schema, media rows, filesystem scanning, metadata extraction, live filesystem watching, thumbnails, and preferences.
 
 ## Key Files
 
 | File | Role |
 |---|---|
-| `src/core/db.rs` | SQLite pool, migrations, pragmas |
+| `src/core/db.rs` | SQLite pool, current-schema initialization, pragmas |
 | `src/core/schema.sql` | Embedded schema |
 | `src/core/media.rs` | `MediaItem`, media kind helpers, and insert/update model |
 | `src/core/backend/local.rs` | Local filesystem scanner |
@@ -39,11 +39,13 @@ busy timeout applied through the pool init hook. SQLite still permits only one
 writer at a time even in WAL mode; the timeout lets the filesystem watcher,
 startup scan, thumbnail workers, and foreground mutations wait through short
 writer contention instead of reporting a spurious `database is locked` error.
-`schema.sql` is embedded with `include_str!`; migrations are expected to be
-idempotent.
+`schema.sql` is embedded with `include_str!` and creates the current schema for
+new databases. There is no schema migration or automatic recovery path: when
+the schema changes during development, delete the existing database and saved
+thumbnail cache before launching the updated application.
 
 UI-facing database access should go through `core::repository::MediaRepository`.
-`core::db` remains the low-level SQL/migration module, but widgets and pages
+`core::db` remains the low-level SQL module, but widgets and pages
 should not grow new direct calls to it. Repository methods return task-oriented
 snapshots and mutations (`MediaPage`, `MediaMutation`, `FavoriteSummary`) keyed
 by stable `MediaId` values, so future SQL optimizations can stay behind this
@@ -96,8 +98,6 @@ projection (`LibraryStats`) instead of calculating progress from
 `ThumbnailLoader` internals. The DB projection treats stale
 `thumbnail_generated_at < file_mtime` rows as not generated.
 
-Startup initialization now also validates that `media_items` still has the required core columns used by current queries (including `video_duration_secs`). If required columns are missing, initialization treats it as a migration failure and deletes/recreates the DB (`.db`, `.db-wal`, `.db-shm`) to auto-recover. Extra columns are tolerated.
-
 Live photos and trashed photos are separated with `trashed_at IS NULL` query/index behavior. Keep this distinction intact when changing media queries.
 
 The live media page query sorts by `COALESCE(taken_at, file_mtime) DESC, id DESC`
@@ -125,13 +125,13 @@ instead of one adjacent row.
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.
 
-`media_items.media_kind` is the persisted primary media discriminator (`image` / `video`), derived from MIME at insert/update time. `media_items.media_subkind` is the secondary classification (`standard`, `motion_photo`), and `media_items.media_attributes` is JSON for subkind-specific details plus additive media attributes. Dynamic photos remain `media_kind='image'` and set `media_subkind='motion_photo'`; their embedded video offsets/lengths live under the JSON `motion_photo` object. General attributes such as animated images and HDR media live as top-level JSON booleans (`animated`, `hdr`) so they can coexist with `motion_photo`. GIF files are supported image media and are scanned with `animated: true`; HDR is only shown when the persisted JSON flag is true. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
+`media_items.media_kind` is the persisted primary media discriminator (`image` / `video`), derived from MIME at insert/update time. `media_items.media_subkind` is the secondary classification (`standard`, `motion_photo`), and `media_items.media_attributes` is JSON for subkind-specific details plus additive media attributes. `media_items.media_type_flags` materializes the queryable logical-album categories (motion photo, animated, HDR), so category reads never scan JSON. Dynamic photos remain `media_kind='image'` and set `media_subkind='motion_photo'`; their embedded video offsets/lengths live under the JSON `motion_photo` object. General attributes such as animated images and HDR media also live as top-level JSON booleans (`animated`, `hdr`) and are converted to the corresponding bit flags at ingestion. GIF files are scanned with `animated: true`. A Motion Photo Container with a `GainMap` item is HDR and must persist `hdr: true`; the checked-in `hdr_gain_map_motion_photo.jpg` fixture guards this. Keep media extension/MIME rules centralized in `src/core/media.rs` so scanner, watcher, metadata, thumbnails, and DB writes agree.
 
 ## Preferences
 
 User preferences are stored as JSON in `settings.json` under `config_dir()`. The file is a preserved-key object: writing one preference must keep unrelated keys intact. Current keys include `liquid_glass`, `liquid_glass_transparency` (clamped `0.0..=1.0`, default `0.0`; `0.0` is opaque and `1.0` is transparent), `video_default_muted` (default `true`), and `video_volume` (clamped `0.0..=1.0`, default `1.0`). Disabling `video_default_muted` also recovers `video_volume` to `1.0` when an earlier muted stream left a stale `0.0`, so "start unmuted" does not still produce silence; existing config files with `video_default_muted=false` and `video_volume=0.0` are treated the same way on read.
 
-Scan path preferences also live in `settings.json`. `custom_scan_roots` is an array of absolute directories added after the default Pictures/Videos roots. `excluded_scan_roots` is an array of absolute directories skipped by startup scans and runtime filesystem watching. These settings affect indexing only: excluding a folder must not delete files from disk, and must not call trash/delete operations. The Settings dialog, scan path rows, restart prompts after scan/runtime changes, storage usage rows, and clear-cache/clear-database dialogs live in `src/ui/window/settings.rs`.
+Scan path preferences also live in `settings.json`. `custom_scan_roots` is an array of absolute directories added after the default Pictures/Videos roots. `excluded_scan_roots` is an array of absolute directories skipped by startup scans and runtime filesystem watching. These settings affect indexing only: excluding a folder must not delete files from disk, and must not call trash/delete operations. The Settings dialog, scan path rows, restart prompts after scan/runtime changes, storage usage rows, and the combined cache-data cleanup dialog live in `src/ui/window/settings.rs`. That one destructive action deletes thumbnail files, resets media-library database content without touching original files or preferences, then automatically restarts the application.
 
 Runtime sizing and loading strategy are stored separately in `runtime.json` under `config_dir()`. Missing or malformed files fall back to centralized defaults in `src/core/runtime_config.rs`; numeric values are clamped to at least `1`. Current runtime keys include `initial_media_page_size`, `virtual_media_page_size`, `ui_media_list_cap`, `max_rendered_grid_items`, `grid_render_absolute_cap`, `grid_render_expand_step`, `grid_reprioritize_debounce_ms`, `thumbnail_worker_count`, `thumbnail_speed_tier`, `thumbnail_queue_capacity`, `thumbnail_mem_cache_cap`, `thumbnail_disk_cache_bytes`, `thumbnail_prewarm_poll_ms`, `thumbnail_idle_wait_ms`, `notify_trash_debounce_ms`, and `notify_file_settle_ms`. `thumbnail_mem_cache_cap` defaults to 512 foreground textures; prewarm has a separate 64-entry cache and cannot evict recently browsed thumbnails. Photos always uses `VirtualMediaGrid`; `photos_grid_backend` is no longer a supported key, and a value left by an older build is ignored. The Settings page exposes the thumbnail generation speed as a horizontal radio selector with four tiers: slow = 1 worker, normal = 2 workers (the default), fast = 4 workers, fastest = CPU physical-core count. The selected tier is persisted as the `thumbnail_speed_tier` string (`slow`/`normal`/`fast`/`fastest`, unambiguous) alongside the derived `thumbnail_worker_count` (still read by the worker pool at startup); on read the tier string wins, falling back to `from_worker_count` for configs written by older versions that only stored the number. The worker pool reads `thumbnail_worker_count` when the app starts, so changing the tier takes effect after restart; after a successful change, Settings asks whether to restart immediately.
 

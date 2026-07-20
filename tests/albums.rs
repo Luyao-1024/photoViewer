@@ -346,6 +346,12 @@ fn list_with_favorites_includes_type_virtual_albums() {
         videos.photo_count, 1,
         "video album filters by type, not path"
     );
+    assert!(
+        !list
+            .iter()
+            .any(|album| album.folder_path.as_path() == Path::new(albums::FAVORITES_ALBUM_PATH)),
+        "empty Favorites album should not appear in the sidebar album projection"
+    );
     assert_eq!(
         images.cover_uri.as_deref(),
         Some("file:///Videos/photo-in-video-dir.jpg")

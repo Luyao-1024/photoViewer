@@ -58,7 +58,7 @@ pub enum DbCommand {
         folder_path: PathBuf,
         cover_uri: String,
     },
-    ClearAllMedia,
+    ResetLibraryDatabase,
     DeleteMediaRows {
         ids: Vec<MediaId>,
     },
@@ -121,7 +121,7 @@ impl DbCommand {
             | Self::UpdateEditedMedia { .. }
             | Self::SetAlbumOrder { .. }
             | Self::SetAlbumCover { .. }
-            | Self::ClearAllMedia
+            | Self::ResetLibraryDatabase
             | Self::DeleteMediaRows { .. } => DbWritePriority::UserInteractive,
             Self::MarkThumbnailsGenerated { .. } => DbWritePriority::Thumbnail,
             Self::MarkTrashed { .. }
@@ -404,7 +404,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::UpdateEditedMedia { .. } => "update_edited_media",
         DbCommand::SetAlbumOrder { .. } => "set_album_order",
         DbCommand::SetAlbumCover { .. } => "set_album_cover",
-        DbCommand::ClearAllMedia => "clear_all_media",
+        DbCommand::ResetLibraryDatabase => "reset_library_database",
         DbCommand::DeleteMediaRows { .. } => "delete_media_rows",
         DbCommand::MarkThumbnailsGenerated { .. } => "mark_thumbnails_generated",
         DbCommand::MarkTrashed { .. } => "mark_trashed",
@@ -564,7 +564,9 @@ fn execute_command(
             });
             Ok(DbCommandResult::None)
         }
-        DbCommand::ClearAllMedia => Ok(DbCommandResult::Count(db::clear_all_media(pool)?)),
+        DbCommand::ResetLibraryDatabase => {
+            Ok(DbCommandResult::Count(db::reset_library_database(pool)?))
+        }
         DbCommand::DeleteMediaRows { ids } | DbCommand::DeleteTrashedRows { ids } => {
             for id in ids {
                 db::delete_media_item(pool, id.get())?;

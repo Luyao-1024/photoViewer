@@ -21,6 +21,55 @@ pub const MEDIA_SUBKIND_MOTION_PHOTO: &str = "motion_photo";
 pub const MEDIA_ATTRIBUTE_ANIMATED: &str = "animated";
 pub const MEDIA_ATTRIBUTE_HDR: &str = "hdr";
 
+/// Queryable classifications used by the logical media-type albums.
+///
+/// These are bit flags rather than a single enum because a file may belong to
+/// more than one logical album (for example an animated HDR image).
+pub const MEDIA_TYPE_MOTION_PHOTO: i64 = 1 << 0;
+pub const MEDIA_TYPE_ANIMATED: i64 = 1 << 1;
+pub const MEDIA_TYPE_HDR: i64 = 1 << 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalMediaType {
+    MotionPhoto,
+    Animated,
+    Hdr,
+}
+
+impl LogicalMediaType {
+    pub const fn flag(self) -> i64 {
+        match self {
+            Self::MotionPhoto => MEDIA_TYPE_MOTION_PHOTO,
+            Self::Animated => MEDIA_TYPE_ANIMATED,
+            Self::Hdr => MEDIA_TYPE_HDR,
+        }
+    }
+
+    /// A static SQL predicate is intentionally used instead of a bind value:
+    /// SQLite can then match the category's partial sort index.
+    pub const fn sql_predicate(self) -> &'static str {
+        match self {
+            Self::MotionPhoto => "(media_type_flags & 1) != 0",
+            Self::Animated => "(media_type_flags & 2) != 0",
+            Self::Hdr => "(media_type_flags & 4) != 0",
+        }
+    }
+}
+
+pub fn media_type_flags(media_subkind: &str, media_attributes: &str) -> i64 {
+    let mut flags = 0;
+    if media_subkind == MEDIA_SUBKIND_MOTION_PHOTO {
+        flags |= MEDIA_TYPE_MOTION_PHOTO;
+    }
+    if media_attribute_flag(media_attributes, MEDIA_ATTRIBUTE_ANIMATED) {
+        flags |= MEDIA_TYPE_ANIMATED;
+    }
+    if media_attribute_flag(media_attributes, MEDIA_ATTRIBUTE_HDR) {
+        flags |= MEDIA_TYPE_HDR;
+    }
+    flags
+}
+
 pub const SUPPORTED_IMAGE_EXTENSIONS: &[&str] =
     &["jpg", "jpeg", "png", "webp", "heic", "heif", "gif"];
 pub const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &["mp4", "m4v", "mov", "webm", "mkv", "avi"];

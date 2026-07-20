@@ -880,6 +880,23 @@ fn liquid_mode_selector_keeps_original_glass_raised_material() {
 }
 
 #[test]
+fn mode_selector_uses_compact_dimensions() {
+    let css = build_css(true);
+
+    for marker in [
+        "padding: 6px 12px;\n  border-radius: 20px;\n  min-height: 48px;",
+        "min-width: 52px;\n  padding: 3px 8px;",
+        "font-size: 13pt;",
+        "min-width: 20px;\n  min-height: 3px;",
+    ] {
+        assert!(
+            css.contains(marker),
+            "mode selector should keep compact geometry marker {marker}"
+        );
+    }
+}
+
+#[test]
 fn glass_menu_surface_matches_raised_segmented_surface_visual_weight() {
     let liquid = build_css(true);
     for marker in [

@@ -181,6 +181,43 @@ fn upsert_from_path_persists_motion_photo_attributes() {
     assert_eq!(info.presentation_timestamp_us, Some(123_456));
 }
 
+#[test]
+fn hdr_gain_map_motion_photo_is_persisted_as_hdr_logical_type() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/media/hdr_gain_map_motion_photo.jpg");
+    assert!(fixture.is_file(), "HDR gain-map fixture must be checked in");
+
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("hdr.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+
+    let item = backend
+        .upsert_from_path(&fixture)
+        .unwrap()
+        .expect("HDR gain-map JPEG should be indexed");
+    let attrs = motion_photo::MediaAttributes::from_json(&item.media_attributes);
+    assert!(attrs.hdr, "GainMap metadata must set the HDR attribute");
+    assert!(
+        attrs.motion_photo.is_some(),
+        "fixture is also a motion photo"
+    );
+
+    let flags: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT media_type_flags FROM media_items WHERE id = ?1",
+            [item.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(
+        flags & crate::core::media::MEDIA_TYPE_HDR,
+        0,
+        "ingestion must materialize the HDR logical-album flag"
+    );
+}
+
 /// 文件监听器看到被外部还原的文件重新出现在原路径 → `upsert_from_path`。
 /// 此刻行仍是 trashed，upsert 必须清掉 `trashed_at`，否则图片既不回相册、
 /// 也赖在回收站视图里。

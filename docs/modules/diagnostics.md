@@ -171,7 +171,7 @@ The span with the largest total time is the bottleneck. For main-thread saturati
 The crash file header points at the real backtrace:
 
 ```
-photo-viewer v0.9.0 caught signal 11 (SIGSEGV)
+photo-viewer v0.9.9 caught signal 11 (SIGSEGV)
 time: 1751000000
 pid: 12345 tid: 12346
 si_code: 1 fault_addr: 0xdead

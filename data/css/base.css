@@ -249,9 +249,9 @@ gridview.virtual-media-grid-view > child:hover .thumb-favorite-badge {
    contract remain unchanged. */
 box.mode-selector,
 .glass-segmented {
-  padding: 8px 16px;
-  border-radius: 24px;
-  min-height: 58px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  min-height: 48px;
 }
 
 box.mode-selector.on-light-background,
@@ -264,15 +264,15 @@ box.mode-selector.on-light-background,
 /* 单个 label / dot 槽位 */
 box.mode-cell,
 .glass-segment {
-  min-width: 60px;
-  padding: 4px 12px;
+  min-width: 52px;
+  padding: 3px 8px;
 }
 
 /* 标签：默认半透明、title-3 字号。颜色跟随主题变量，与 glass-raised 容器
    底配套，亮/暗主题下都可见。 */
 box.mode-selector label,
 .glass-segment-label {
-  font-size: 14pt;
+  font-size: 13pt;
   font-weight: 700;
   color: @window_fg_color;
   opacity: 0.55;
@@ -290,8 +290,8 @@ box.mode-dot,
 .glass-segment-indicator {
   background: @window_fg_color;
   border-radius: 2px;
-  min-width: 24px;
-  min-height: 4px;
+  min-width: 20px;
+  min-height: 3px;
   margin-top: 2px;
 }
 
