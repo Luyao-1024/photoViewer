@@ -970,9 +970,17 @@ impl PhotosPage {
         let selector = self.imp().mode_selector.get();
         let Some(grid) = self.current_grid() else {
             selector.set_light_background(false);
+            selector.queue_draw();
             return;
         };
         selector.set_light_background(grid.background_is_light_under(&selector).unwrap_or(false));
+        // The selector uses `backdrop-filter`, so its pixels depend on the
+        // stack content behind it even when none of its own CSS classes
+        // change. GTK does not always invalidate an overlay backdrop while a
+        // sibling GtkStack crossfades, which can leave a stale vertical strip
+        // until the grid scrolls. Explicitly redraw the bounded glass widget
+        // while sampling its contrast so the backdrop follows every frame.
+        selector.queue_draw();
     }
 
     fn schedule_mode_selector_contrast_update(&self) {
@@ -988,7 +996,9 @@ impl PhotosPage {
         });
 
         let weak = self.downgrade();
-        let ticks_remaining = Rc::new(Cell::new(8u8));
+        // The mode stack crossfades for 200 ms. Sixteen 16-ms refreshes cover
+        // that whole transition plus a final settled frame.
+        let ticks_remaining = Rc::new(Cell::new(16u8));
         glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
             if let Some(this) = weak.upgrade() {
                 this.update_mode_selector_contrast();

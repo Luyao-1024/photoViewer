@@ -112,6 +112,12 @@ Each scope gets its own bare-at-rest reset plus a hover/focus material rule in *
 
 `backdrop-filter` renders correctly in the Flatpak GNOME 50 runtime. Older host GTK versions can print parser warnings and fall back to translucent fill, border, and shadow. This is expected; verify visuals with Flatpak rather than removing the property.
 
+Overlay glass pixels depend on the content behind them. During the Photos
+Year/Month/Day `GtkStack` crossfade, keep explicitly queueing redraws of the
+mode selector for the full transition even when its foreground contrast class
+does not change. Otherwise GTK/GSK can retain a stale backdrop strip until the
+underlying grid next scrolls.
+
 Do not reintroduce the abandoned CPU/GSK background capture approach or custom `snapshot` refraction path. The current implementation relies on GTK/GSK CSS rendering.
 
 Avoid full-window `filter` or `backdrop-filter` on modal scrims. The Settings
