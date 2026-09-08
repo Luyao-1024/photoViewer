@@ -29,7 +29,7 @@ fn spawn_watcher(
     root: std::path::PathBuf,
 ) -> (
     photo_viewer::core::db::DbPool,
-    tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    tokio::sync::mpsc::Receiver<DomainEvent>,
     WatcherHarness,
 ) {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -72,7 +72,7 @@ fn event_references_uri(event: &DomainEvent, uri: &str) -> bool {
 /// Drain `rx` until we see an accepted event whose uri matches `uri`, or the
 /// deadline passes. Returns the event on success.
 fn wait_for_uri_matching(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    rx: &mut tokio::sync::mpsc::Receiver<DomainEvent>,
     uri: &str,
     timeout: Duration,
     mut accept: impl FnMut(&DomainEvent) -> bool,
@@ -93,7 +93,7 @@ fn wait_for_uri_matching(
 }
 
 fn wait_for_upserted_uri(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    rx: &mut tokio::sync::mpsc::Receiver<DomainEvent>,
     uri: &str,
     timeout: Duration,
 ) -> Option<DomainEvent> {
@@ -103,7 +103,7 @@ fn wait_for_upserted_uri(
 }
 
 fn wait_for_removed_uri(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
+    rx: &mut tokio::sync::mpsc::Receiver<DomainEvent>,
     uri: &str,
     timeout: Duration,
 ) -> Option<DomainEvent> {

@@ -4,7 +4,7 @@ Photo Viewer 是一个基于 GNOME GTK4 + Libadwaita 的本地相册应用，面
 
 ## Status
 
-**0.9.0 release candidate**: browsing, thumbnails, viewer, albums, trash, editor, video playback, motion photo playback, theme preferences, and Flathub-oriented packaging metadata are implemented.
+**0.9.9 release candidate**: browsing, thumbnails, viewer, albums, trash, editor, video playback, motion photo playback, theme preferences, and Flathub-oriented packaging metadata are implemented.
 
 ## Features
 

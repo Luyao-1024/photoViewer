@@ -437,3 +437,25 @@ fn scan_path_preferences_ignore_malformed_json_values() {
 
     cleanup(&path);
 }
+
+#[test]
+fn settings_write_is_atomic_and_preserves_a_corrupt_backup() {
+    let path = tmp_path("atomic-corrupt-backup");
+    cleanup(&path);
+    std::fs::write(&path, b"{truncated").unwrap();
+
+    write_bool_at(&path, LIQUID_GLASS_KEY, false).unwrap();
+
+    assert!(!read_liquid_glass_at(&path));
+    let parent = path.parent().unwrap();
+    let prefix = format!("{}.corrupt-", path.file_name().unwrap().to_string_lossy());
+    let backup = std::fs::read_dir(parent)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .expect("corrupt settings backup");
+    assert_eq!(std::fs::read(backup.path()).unwrap(), b"{truncated");
+
+    cleanup(&path);
+    let _ = std::fs::remove_file(backup.path());
+}

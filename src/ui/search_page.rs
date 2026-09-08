@@ -34,7 +34,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/search-page.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/search-page.ui")]
     pub struct SearchPage {
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,
@@ -364,7 +364,7 @@ impl SearchPage {
         // FlowBox after each replace_results (because MediaGrid rebuilds its
         // FlowBox when the media list changes).
         let more_btn = gtk::Button::builder()
-            .label("更多...")
+            .label(tr("search.more"))
             .css_classes(["search-more-tile"])
             .build();
         let weak = self.downgrade();

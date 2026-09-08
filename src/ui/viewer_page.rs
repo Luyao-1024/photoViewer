@@ -157,7 +157,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/viewer-page.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/viewer-page.ui")]
     pub struct ViewerPage {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub current_index: Cell<u32>,

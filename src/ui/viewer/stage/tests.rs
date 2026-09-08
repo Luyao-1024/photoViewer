@@ -101,6 +101,13 @@ fn viewer_starts_frame_timer_for_animated_gif() {
 }
 
 #[test]
+fn animated_image_budget_rejects_excessive_frames_or_pixels() {
+    assert!(!animated_image_budget_exceeded(300, 64 * 1024 * 1024));
+    assert!(animated_image_budget_exceeded(301, 1));
+    assert!(animated_image_budget_exceeded(1, 64 * 1024 * 1024 + 1));
+}
+
+#[test]
 fn video_stage_reveals_only_for_current_prepared_stream() {
     assert!(
         should_reveal_prepared_video_stage(7, 7, true),

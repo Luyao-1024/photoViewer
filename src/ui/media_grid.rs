@@ -312,7 +312,7 @@ mod imp {
     use std::cell::{Cell, RefCell};
 
     #[derive(gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/media-grid.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/media-grid.ui")]
     pub struct MediaGrid {
         #[template_child]
         pub content: TemplateChild<gtk::Box>,

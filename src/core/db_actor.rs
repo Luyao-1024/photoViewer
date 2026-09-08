@@ -1,4 +1,4 @@
-use crate::core::backend::local::LocalBackend;
+use crate::core::backend::local::MissingLiveMedia;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::events::{ChangeSource, DomainEvent, DomainEventSender, MediaFields};
@@ -22,13 +22,16 @@ pub enum DbCommand {
         source: ChangeSource,
         path: PathBuf,
     },
+    DeleteLiveByPaths {
+        source: ChangeSource,
+        paths: Vec<PathBuf>,
+    },
     DeleteLiveByFolder {
         source: ChangeSource,
         folder_path: PathBuf,
     },
     PruneMissingLiveRows {
-        roots: Vec<PathBuf>,
-        excluded_roots: Vec<PathBuf>,
+        missing: Vec<MissingLiveMedia>,
     },
     SetFavorite {
         ids: Vec<MediaId>,
@@ -47,9 +50,7 @@ pub enum DbCommand {
     },
     UpdateEditedMedia {
         id: MediaId,
-        file_mtime: i64,
-        file_size: i64,
-        blake3_hash: String,
+        item: NewMediaItem,
     },
     SetAlbumOrder {
         ordered: Vec<String>,
@@ -85,7 +86,7 @@ pub enum DbCommand {
     },
     RefreshAlbumsInternal,
     ReconcileTrash {
-        pictures_root: PathBuf,
+        plan: crate::core::trash::TrashReconcilePlan,
     },
 }
 
@@ -106,6 +107,7 @@ impl DbCommand {
         match self {
             Self::UpsertMediaBatch { source, .. }
             | Self::DeleteLiveByPath { source, .. }
+            | Self::DeleteLiveByPaths { source, .. }
             | Self::DeleteLiveByFolder { source, .. } => match source {
                 ChangeSource::StartupScan => DbWritePriority::StartupScan,
                 ChangeSource::FilesystemWatcher => DbWritePriority::FilesystemWatcher,
@@ -187,9 +189,14 @@ impl PartialOrd for QueuedEnvelope {
 #[derive(Clone)]
 pub struct DbActorHandle {
     tx: mpsc::Sender<DbEnvelope>,
+    pool: DbPool,
 }
 
 impl DbActorHandle {
+    pub fn pool(&self) -> &DbPool {
+        &self.pool
+    }
+
     pub async fn execute(&self, command: DbCommand) -> Result<DbCommandResult> {
         let trace = OperationTrace::start(TraceChain::Database, db_command_name(&command));
         self.execute_with_traces(trace, None, command).await
@@ -316,6 +323,7 @@ impl DbActorHandle {
 
 pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle {
     let (tx, rx) = mpsc::channel::<DbEnvelope>();
+    let handle_pool = pool.clone();
     std::thread::Builder::new()
         .name("photo-viewer-db-actor".into())
         .spawn(move || run_db_actor(pool, events, rx))
@@ -327,7 +335,10 @@ pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle 
             );
             panic!("failed to spawn DB actor thread: {error}");
         });
-    DbActorHandle { tx }
+    DbActorHandle {
+        tx,
+        pool: handle_pool,
+    }
 }
 
 fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEnvelope>) {
@@ -395,6 +406,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
     match command {
         DbCommand::UpsertMediaBatch { .. } => "upsert_media_batch",
         DbCommand::DeleteLiveByPath { .. } => "delete_live_by_path",
+        DbCommand::DeleteLiveByPaths { .. } => "delete_live_by_paths",
         DbCommand::DeleteLiveByFolder { .. } => "delete_live_by_folder",
         DbCommand::PruneMissingLiveRows { .. } => "prune_missing_live_rows",
         DbCommand::SetFavorite { .. } => "set_favorite",
@@ -463,6 +475,26 @@ fn execute_command(
                 Ok(DbCommandResult::RemovedUris(Vec::new()))
             }
         }
+        DbCommand::DeleteLiveByPaths { source, paths } => {
+            let removed = db::delete_live_media_by_paths(pool, &paths)?;
+            if !removed.is_empty() {
+                events.send(DomainEvent::MediaRemoved {
+                    source,
+                    ids: Vec::new(),
+                    uris: removed.clone(),
+                });
+                events.send(DomainEvent::AlbumsChanged {
+                    source,
+                    affected_folders: paths
+                        .iter()
+                        .filter_map(|path| path.parent().map(PathBuf::from))
+                        .collect(),
+                    affected_virtual: Vec::new(),
+                    live_count_delta: -(removed.len() as i64),
+                });
+            }
+            Ok(DbCommandResult::RemovedUris(removed))
+        }
         DbCommand::DeleteLiveByFolder {
             source,
             folder_path,
@@ -478,12 +510,17 @@ fn execute_command(
             }
             Ok(DbCommandResult::Count(changed))
         }
-        DbCommand::PruneMissingLiveRows {
-            roots,
-            excluded_roots,
-        } => {
-            let backend = LocalBackend::new(pool.clone());
-            let removed = backend.prune_missing_live_media_under_roots(&roots, &excluded_roots)?;
+        DbCommand::PruneMissingLiveRows { missing } => {
+            let by_id: std::collections::HashMap<i64, MissingLiveMedia> = missing
+                .into_iter()
+                .map(|item| (item.id.get(), item))
+                .collect();
+            let ids: Vec<i64> = by_id.keys().copied().collect();
+            let removed_ids = db::delete_media_by_ids_returning(pool, &ids)?;
+            let removed: Vec<String> = removed_ids
+                .iter()
+                .filter_map(|id| by_id.get(id).map(|item| item.uri.clone()))
+                .collect();
             if !removed.is_empty() {
                 events.send(DomainEvent::MediaRemoved {
                     source: ChangeSource::StartupScan,
@@ -492,7 +529,10 @@ fn execute_command(
                 });
                 events.send(DomainEvent::AlbumsChanged {
                     source: ChangeSource::StartupScan,
-                    affected_folders: roots,
+                    affected_folders: removed_ids
+                        .iter()
+                        .filter_map(|id| by_id.get(id).map(|item| item.folder_path.clone()))
+                        .collect(),
                     affected_virtual: Vec::new(),
                     live_count_delta: -(removed.len() as i64),
                 });
@@ -520,11 +560,22 @@ fn execute_command(
             }
             Ok(DbCommandResult::MediaItems(changed))
         }
-        DbCommand::InsertMediaItem { item } | DbCommand::InsertEditedMedia { item } => {
+        DbCommand::InsertEditedMedia { item } => {
+            let changed = db::upsert_media_items_batch(pool, &[item])?;
+            events.send(DomainEvent::MediaUpserted {
+                source: ChangeSource::UserInteractive,
+                items: changed.clone(),
+            });
+            Ok(DbCommandResult::MediaItems(changed))
+        }
+        DbCommand::InsertMediaItem { item } => {
             let id = db::insert_media_item(pool, &item)?;
-            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
-                pool, id,
-            )?]))
+            let changed = vec![db::get_media_item(pool, id)?];
+            events.send(DomainEvent::MediaUpserted {
+                source: ChangeSource::UserInteractive,
+                items: changed.clone(),
+            });
+            Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::UpdateMediaLocation {
             id,
@@ -532,22 +583,31 @@ fn execute_command(
             folder_path,
         } => {
             db::update_media_location(pool, id.get(), &path, &folder_path)?;
-            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
-                pool,
-                id.get(),
-            )?]))
+            let changed = vec![db::get_media_item(pool, id.get())?];
+            events.send(DomainEvent::MediaUpdated {
+                source: ChangeSource::UserInteractive,
+                items: changed.clone(),
+                fields: MediaFields::LOCATION,
+            });
+            Ok(DbCommandResult::MediaItems(changed))
         }
-        DbCommand::UpdateEditedMedia {
-            id,
-            file_mtime,
-            file_size,
-            blake3_hash,
-        } => {
-            db::update_media_edit_metadata(pool, id.get(), file_mtime, file_size, &blake3_hash)?;
-            Ok(DbCommandResult::MediaItems(vec![db::get_media_item(
-                pool,
-                id.get(),
-            )?]))
+        DbCommand::UpdateEditedMedia { id, item } => {
+            db::update_media_edit_metadata(pool, id.get(), &item)?;
+            let changed = vec![db::get_media_item(pool, id.get())?];
+            events.send(DomainEvent::MediaUpdated {
+                source: ChangeSource::UserInteractive,
+                items: changed.clone(),
+                fields: MediaFields {
+                    metadata: true,
+                    thumbnail: true,
+                    attributes: true,
+                    ..MediaFields::LOCATION
+                },
+            });
+            events.send(DomainEvent::AlbumsDirty {
+                source: ChangeSource::UserInteractive,
+            });
+            Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::SetAlbumOrder { ordered } => {
             crate::core::albums::set_album_order(pool, &ordered)?;
@@ -567,7 +627,20 @@ fn execute_command(
         DbCommand::ResetLibraryDatabase => {
             Ok(DbCommandResult::Count(db::reset_library_database(pool)?))
         }
-        DbCommand::DeleteMediaRows { ids } | DbCommand::DeleteTrashedRows { ids } => {
+        DbCommand::DeleteTrashedRows { ids } => {
+            for id in ids {
+                let conn = pool.get()?;
+                conn.execute(
+                    "DELETE FROM media_items WHERE id = ? AND trashed_at IS NOT NULL",
+                    [id.get()],
+                )?;
+            }
+            events.send(DomainEvent::TrashChanged {
+                source: ChangeSource::UserInteractive,
+            });
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::DeleteMediaRows { ids } => {
             for id in ids {
                 db::delete_media_item(pool, id.get())?;
             }
@@ -593,6 +666,13 @@ fn execute_command(
                 db::unmark_trashed(pool, id.get())?;
                 changed.push(db::get_media_item(pool, id.get())?);
             }
+            events.send(DomainEvent::MediaRestored {
+                source: ChangeSource::UserInteractive,
+                items: changed.clone(),
+            });
+            events.send(DomainEvent::TrashChanged {
+                source: ChangeSource::UserInteractive,
+            });
             Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::CommitMovedToTrash { items } => {
@@ -633,8 +713,8 @@ fn execute_command(
             crate::core::albums::refresh(pool)?;
             Ok(DbCommandResult::None)
         }
-        DbCommand::ReconcileTrash { pictures_root } => {
-            crate::core::trash::reconcile_trash(pool, &pictures_root)?;
+        DbCommand::ReconcileTrash { plan } => {
+            crate::core::trash::commit_trash_reconcile(pool, plan)?;
             events.send(DomainEvent::TrashChanged {
                 source: ChangeSource::TrashReconcile,
             });

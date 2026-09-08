@@ -303,7 +303,7 @@ async fn initialize(
     DbPool,
     tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
     crate::core::db_actor::DbActorHandle,
-    tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
+    tokio::sync::mpsc::Receiver<crate::core::events::DomainEvent>,
 )> {
     let data_dir = crate::config::data_dir();
     {
@@ -415,7 +415,7 @@ async fn initialize_db_once_with_retry(
     DbPool,
     Vec<MediaItem>,
     crate::core::db_actor::DbActorHandle,
-    tokio::sync::mpsc::UnboundedReceiver<crate::core::events::DomainEvent>,
+    tokio::sync::mpsc::Receiver<crate::core::events::DomainEvent>,
 )> {
     let first_trace = trace.clone();
     let first = match gtk::gio::spawn_blocking({
@@ -426,9 +426,8 @@ async fn initialize_db_once_with_retry(
             let pool = crate::core::init_pool(&path)?;
             let (sender, receiver) = crate::core::events::DomainEventSender::new();
             let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
-            db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash {
-                pictures_root: pictures,
-            })?;
+            let plan = crate::core::trash::prepare_trash_reconcile(&pool, &pictures)?;
+            db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash { plan })?;
             let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
                 crate::core::repository::MediaQuery::LiveAll,
                 0,
@@ -464,9 +463,9 @@ async fn initialize_db_once_with_retry(
                 let pool = crate::core::init_pool(&path)?;
                 let (sender, receiver) = crate::core::events::DomainEventSender::new();
                 let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
-                db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash {
-                    pictures_root: pictures,
-                })?;
+                let plan = crate::core::trash::prepare_trash_reconcile(&pool, &pictures)?;
+                db_actor
+                    .execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash { plan })?;
                 let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
                     crate::core::repository::MediaQuery::LiveAll,
                     0,
@@ -557,16 +556,37 @@ fn start_background_startup_work(
 
         let reconcile_trace =
             OperationTrace::start(TraceChain::Filesystem, "startup_trash_reconcile");
-        if let Err(e) = db_actor
-            .execute_in_trace(
-                reconcile_trace.clone(),
-                crate::core::db_actor::DbCommand::ReconcileTrash {
-                    pictures_root: pictures.clone(),
-                },
-            )
-            .await
+        let reconcile_pool = pool.clone();
+        let reconcile_pictures = pictures.clone();
+        let plan = match gtk::gio::spawn_blocking(move || {
+            crate::core::trash::prepare_trash_reconcile(&reconcile_pool, &reconcile_pictures)
+        })
+        .await
         {
-            log_warning(&reconcile_trace, "background_trash_reconcile", e);
+            Ok(Ok(plan)) => Some(plan),
+            Ok(Err(error)) => {
+                log_warning(&reconcile_trace, "prepare_trash_reconcile", error);
+                None
+            }
+            Err(error) => {
+                log_warning(
+                    &reconcile_trace,
+                    "prepare_trash_reconcile_join",
+                    format!("{error:?}"),
+                );
+                None
+            }
+        };
+        if let Some(plan) = plan {
+            if let Err(e) = db_actor
+                .execute_in_trace(
+                    reconcile_trace.clone(),
+                    crate::core::db_actor::DbCommand::ReconcileTrash { plan },
+                )
+                .await
+            {
+                log_warning(&reconcile_trace, "background_trash_reconcile", e);
+            }
         }
 
         // 扫描 + 回收站对账完毕后即可启动后台缩略图预热。剩余 DB 分页可能在

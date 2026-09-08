@@ -40,8 +40,8 @@ pub(in crate::core::thumbnails) fn extract_video_frame_ffmpeg(
 ) -> anyhow::Result<Pixbuf> {
     let tmp = ffmpeg_thumbnail_temp_path(path, max_dim);
 
-    let out = Command::new("ffmpegthumbnailer")
-        .args([
+    let out = crate::core::process::output(
+        Command::new("ffmpegthumbnailer").args([
             "-i",
             &path.to_string_lossy(),
             "-o",
@@ -52,9 +52,10 @@ pub(in crate::core::thumbnails) fn extract_video_frame_ffmpeg(
             "10%",
             "-c",
             "png",
-        ])
-        .output()
-        .map_err(|e| anyhow::anyhow!("启动 ffmpegthumbnailer 失败: {e}"))?;
+        ]),
+        crate::core::process::MEDIA_TIMEOUT,
+    )
+    .map_err(|e| anyhow::anyhow!("启动 ffmpegthumbnailer 失败: {e}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);

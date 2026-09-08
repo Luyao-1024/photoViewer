@@ -9,7 +9,7 @@
 //!   - Restore：批量还原
 //!   - Delete Permanently：批量永久删除
 //!
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -24,71 +24,56 @@ use libadwaita::subclass::prelude::*;
 #[cfg(test)]
 use crate::core::db;
 use crate::core::db::DbPool;
-use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
+use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
-use crate::core::repository::{MediaQuery, MediaRepository};
+use crate::core::repository::{MediaBatchResult, MediaQuery, MediaRepository};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::trash;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
 
-fn restore_items(pool: &DbPool, db_actor: Option<&DbActorHandle>, ids: Vec<i64>) -> Vec<MediaItem> {
+fn restore_items(
+    pool: &DbPool,
+    db_actor: Option<&DbActorHandle>,
+    ids: Vec<i64>,
+) -> MediaBatchResult {
     let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
-    if let Some(actor) = db_actor {
-        let items = ids
-            .iter()
-            .filter_map(|id| crate::core::db::get_media_item(pool, id.get()).ok())
-            .collect::<Vec<_>>();
-        for item in &items {
-            if trash::restore_from_trash(&item.uri).is_err() {
-                return Vec::new();
-            }
-        }
-        return match actor.execute_blocking(DbCommand::RestoreTrashed { ids }) {
-            Ok(DbCommandResult::MediaItems(items)) => items,
-            _ => Vec::new(),
-        };
-    }
-    MediaRepository::new(pool.clone())
-        .restore_from_trash(&ids)
-        .map(|mutation| mutation.changed_items)
-        .unwrap_or_default()
+    MediaRepository::new(pool.clone()).restore_batch(&ids, db_actor)
 }
 
-fn delete_items_permanently(pool: &DbPool, db_actor: Option<&DbActorHandle>, ids: Vec<i64>) {
+fn delete_items_permanently(
+    pool: &DbPool,
+    db_actor: Option<&DbActorHandle>,
+    ids: Vec<i64>,
+) -> MediaBatchResult {
     let ids = ids.into_iter().map(MediaId::from).collect::<Vec<_>>();
-    if let Some(actor) = db_actor {
-        let items = ids
-            .iter()
-            .filter_map(|id| crate::core::db::get_media_item(pool, id.get()).ok())
-            .collect::<Vec<_>>();
-        for item in &items {
-            let _ = trash::delete_permanently(&item.uri);
-        }
-        let _ = actor.execute_blocking(DbCommand::DeleteTrashedRows { ids });
-    } else {
-        let _ = MediaRepository::new(pool.clone()).delete_permanently(&ids);
-    }
+    MediaRepository::new(pool.clone()).delete_batch(&ids, db_actor)
 }
 
-fn empty_trash(pool: &DbPool, db_actor: Option<&DbActorHandle>) {
-    let ids = crate::core::db::list_trashed_media(pool)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|item| item.id)
-        .collect::<Vec<_>>();
-    delete_items_permanently(pool, db_actor, ids);
+fn empty_trash(pool: &DbPool, db_actor: Option<&DbActorHandle>) -> MediaBatchResult {
+    match crate::core::db::list_trashed_media(pool) {
+        Ok(items) => delete_items_permanently(
+            pool,
+            db_actor,
+            items.into_iter().map(|item| item.id).collect(),
+        ),
+        Err(error) => MediaBatchResult {
+            failures: vec![(MediaId::from(0), error.to_string())],
+            ..Default::default()
+        },
+    }
 }
 
 mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/trash-page.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/trash-page.ui")]
     pub struct TrashPage {
+        pub busy: Cell<bool>,
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
@@ -261,6 +246,7 @@ impl TrashPage {
         // Restore：批量还原
         obj.imp().restore_btn.get().connect_clicked(
             glib::clone!(@weak obj, @weak grid => move |_| {
+                if !obj.begin_operation() { return; }
                 let pool = match obj.imp().pool.borrow().as_ref() {
                     Some(p) => p.clone(),
                     None => return,
@@ -271,18 +257,16 @@ impl TrashPage {
                 let page_weak = obj.downgrade();
 
                 glib::spawn_future_local(async move {
-                    let restored_items = gtk::gio::spawn_blocking(move || restore_items(&pool, db_actor.as_ref(), ids))
-                        .await
-                        .unwrap_or_default();
-                    if let Some(list) = media_list {
-                        for item in restored_items {
+                    let result = gtk::gio::spawn_blocking(move || restore_items(&pool, db_actor.as_ref(), ids)).await;
+                    if let (Some(list), Ok(result)) = (media_list, &result) {
+                        for item in result.mutation.changed_items.iter().cloned() {
                             insert_media_item_sorted(&list, item);
                         }
                     }
                     grid.clear_selection();
                     grid.set_multi_select_mode(true);
                     if let Some(page) = page_weak.upgrade() {
-                        page.refresh();
+                        page.finish_operation(result);
                     }
                 });
             }),
@@ -291,6 +275,7 @@ impl TrashPage {
         // Delete Permanently：批量永久删除
         obj.imp().delete_btn.get().connect_clicked(
             glib::clone!(@weak obj, @weak grid => move |_| {
+                if !obj.begin_operation() { return; }
                 let pool = match obj.imp().pool.borrow().as_ref() {
                     Some(p) => p.clone(),
                     None => return,
@@ -300,11 +285,11 @@ impl TrashPage {
                 let page_weak = obj.downgrade();
 
                 glib::spawn_future_local(async move {
-                    let _ = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, db_actor.as_ref(), ids)).await;
+                    let result = gtk::gio::spawn_blocking(move || delete_items_permanently(&pool, db_actor.as_ref(), ids)).await;
                     grid.clear_selection();
                     grid.set_multi_select_mode(true);
                     if let Some(page) = page_weak.upgrade() {
-                        page.refresh();
+                        page.finish_operation(result);
                     }
                 });
             }),
@@ -335,14 +320,16 @@ impl TrashPage {
                     None,
                     move |_, response| {
                         if response == "empty" {
+                            let Some(page) = page_weak.upgrade() else { return; };
+                            if !page.begin_operation() { return; }
                             let pool = pool.clone();
                             let db_actor = db_actor.clone();
                             let page_weak = page_weak.clone();
                             glib::spawn_future_local(async move {
-                                let _ = gtk::gio::spawn_blocking(move || empty_trash(&pool, db_actor.as_ref())).await;
+                                let result = gtk::gio::spawn_blocking(move || empty_trash(&pool, db_actor.as_ref())).await;
                                 // refresh — 全删后 DB 已空，refresh 内部会切到空状态页面。
                                 if let Some(page) = page_weak.upgrade() {
-                                    page.refresh();
+                                    page.finish_operation(result);
                                 }
                             });
                         }
@@ -355,6 +342,57 @@ impl TrashPage {
         obj.refresh();
 
         obj
+    }
+
+    fn begin_operation(&self) -> bool {
+        if self.imp().busy.replace(true) {
+            return false;
+        }
+        for button in [
+            self.imp().restore_btn.get(),
+            self.imp().delete_btn.get(),
+            self.imp().empty_btn.get(),
+        ] {
+            button.set_sensitive(false);
+        }
+        true
+    }
+
+    fn finish_operation(&self, result: std::thread::Result<MediaBatchResult>) {
+        self.imp().busy.set(false);
+        for button in [
+            self.imp().restore_btn.get(),
+            self.imp().delete_btn.get(),
+            self.imp().empty_btn.get(),
+        ] {
+            button.set_sensitive(true);
+        }
+        self.refresh();
+        let message = match result {
+            Ok(result) => {
+                if let Some(grid) = self.imp().grid.borrow().as_ref() {
+                    grid.select_ids(
+                        &result
+                            .failures
+                            .iter()
+                            .map(|(id, _)| *id)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                result.error_message()
+            }
+            Err(_) => Some(tr("trash.worker_failed")),
+        };
+        if let Some(message) = message {
+            let dialog = adw::AlertDialog::builder()
+                .heading(tr("trash.operation_failed"))
+                .body(message)
+                .build();
+            dialog.add_css_class("glass-alert-dialog");
+            dialog.add_response("ok", &tr("button.ok"));
+            dialog.set_close_response("ok");
+            dialog.present(self);
+        }
     }
 
     /// Refresh the virtual Trash query and its empty state.

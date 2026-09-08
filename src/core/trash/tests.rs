@@ -654,3 +654,51 @@ fn reconcile_does_not_prune_restored_row_whose_original_is_present() {
         "a restored row (original present) must not be pruned by reconcile"
     );
 }
+
+#[test]
+fn restore_conflict_never_overwrites_the_new_original() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pictures = tmp.path().join("pictures");
+    let original = pictures.join("same.jpg");
+    let trash_root = tmp.path().join("Trash");
+    std::fs::create_dir_all(&pictures).unwrap();
+    plant_trash_entry(&trash_root, "same.jpg", &original);
+    std::fs::write(&original, b"new owner content").unwrap();
+
+    let uri = format!("file://{}", original.display());
+    assert!(prepare_restore_in_roots(&uri, std::slice::from_ref(&trash_root)).is_err());
+    assert_eq!(std::fs::read(&original).unwrap(), b"new owner content");
+    assert!(trash_root.join("files/same.jpg").is_file());
+    assert!(trash_root.join("info/same.jpg.trashinfo").is_file());
+}
+
+#[test]
+fn uncommitted_restore_rolls_the_file_back_into_trash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pictures = tmp.path().join("pictures");
+    let original = pictures.join("rollback.jpg");
+    let trash_root = tmp.path().join("Trash");
+    std::fs::create_dir_all(&pictures).unwrap();
+    plant_trash_entry(&trash_root, "rollback.jpg", &original);
+    let uri = format!("file://{}", original.display());
+
+    drop(prepare_restore_in_roots(&uri, std::slice::from_ref(&trash_root)).unwrap());
+
+    assert!(!original.exists());
+    assert!(trash_root.join("files/rollback.jpg").is_file());
+    assert!(trash_root.join("info/rollback.jpg.trashinfo").is_file());
+}
+
+#[test]
+fn uncommitted_permanent_delete_restores_the_trash_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original = tmp.path().join("pictures/delete.jpg");
+    let trash_root = tmp.path().join("Trash");
+    plant_trash_entry(&trash_root, "delete.jpg", &original);
+    let uri = format!("file://{}", original.display());
+
+    drop(prepare_permanent_delete_in_roots(&uri, std::slice::from_ref(&trash_root)).unwrap());
+
+    assert!(trash_root.join("files/delete.jpg").is_file());
+    assert!(trash_root.join("info/delete.jpg.trashinfo").is_file());
+}

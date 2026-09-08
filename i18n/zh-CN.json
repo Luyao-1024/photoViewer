@@ -11,6 +11,8 @@
     "page.photos.title": "照片",
     "page.albums.title": "相册",
     "page.trash.title": "回收站",
+    "trash.operation_failed": "部分项目未能处理",
+    "trash.worker_failed": "操作意外中断，请刷新回收站后重试。",
     "page.viewer.title": "查看器",
     "page.editor.title": "编辑",
     "search.title": "搜索",

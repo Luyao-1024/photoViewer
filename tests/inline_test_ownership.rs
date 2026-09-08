@@ -167,8 +167,8 @@ fn window_tests_live_with_window_modules() {
         (
             "src/ui/window/sidebar/tests.rs",
             &[
-                "sidebar_album_snapshot_updates_stable_rows_in_place",
-                "sidebar_album_snapshot_removes_missing_row_without_replacing_survivors",
+                "sidebar_album_snapshot_updates_virtual_model_without_realizing_all_rows",
+                "sidebar_album_snapshot_updates_virtual_model_after_removal",
                 "sidebar_media_type_snapshot_removes_missing_row_without_replacing_survivors",
             ][..],
         ),

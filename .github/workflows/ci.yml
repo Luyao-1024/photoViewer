@@ -50,10 +50,10 @@ jobs:
       # type_complexity and too_many_arguments in src/ui/media_grid.rs are
       # acknowledged complexity, not regressions — allow them, deny the rest.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
+        run: cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
 
       - name: Build
-        run: cargo build --all-targets
+        run: cargo build --locked --all-targets
 
       - name: Test (headless)
-        run: tools/with-at-spi.sh xvfb-run -a cargo test --all
+        run: tools/with-at-spi.sh xvfb-run -a cargo test --locked --all

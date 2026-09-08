@@ -18,6 +18,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk4 as gtk;
@@ -109,14 +110,17 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/editor-panel.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/editor-panel.ui")]
     pub struct EditorPanel {
         pub media_item: RefCell<Option<MediaItem>>,
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,
         pub registry: RefCell<Option<EditRegistry>>,
         pub state: RefCell<EditState>,
-        pub source_image: RefCell<Option<image::DynamicImage>>,
+        pub source_image: RefCell<Option<Arc<image::DynamicImage>>>,
+        pub render_running: Cell<bool>,
+        pub render_pending: Cell<bool>,
+        pub saving: Cell<bool>,
         pub source_dimensions: Cell<(u32, u32)>,
         pub preview_scale: Cell<f64>,
         pub crop_mode_active: Cell<bool>,
@@ -272,6 +276,8 @@ impl EditorPanel {
     /// media item / pool / registry, and kick off the async source load.
     pub fn configure(&self, media_item: MediaItem, pool: DbPool) {
         let imp = self.imp();
+        imp.render_token.set(imp.render_token.get().wrapping_add(1));
+        imp.render_pending.set(false);
         *imp.media_item.borrow_mut() = Some(media_item.clone());
         *imp.pool.borrow_mut() = Some(pool);
         *imp.registry.borrow_mut() = Some(EditRegistry::new_with_v1());
@@ -385,30 +391,15 @@ impl EditorPanel {
         let weak = self.downgrade();
         let token = self.imp().load_token.get();
         glib::spawn_future_local(async move {
-            let loaded: std::thread::Result<Option<image::DynamicImage>> =
-                gio::spawn_blocking(move || {
-                    crate::core::orientation::load_oriented_pixbuf(&path)
-                        .ok()
-                        .and_then(dynamic_image_from_pixbuf)
-                })
-                .await;
+            let loaded = gio::spawn_blocking(move || {
+                crate::core::orientation::load_oriented_pixbuf(&path)
+                    .ok()
+                    .and_then(dynamic_image_from_pixbuf)
+                    .map(prepare_preview_source)
+            })
+            .await;
 
-            if let Ok(Some(img)) = loaded {
-                let original_dimensions = (img.width(), img.height());
-                let (downsampled, preview_scale) = if img.width() * img.height() > 8_000_000 {
-                    let scale = (8_000_000.0_f64 / (img.width() * img.height()) as f64).sqrt();
-                    (
-                        img.resize(
-                            (img.width() as f64 * scale) as u32,
-                            (img.height() as f64 * scale) as u32,
-                            image::imageops::FilterType::Triangle,
-                        ),
-                        scale,
-                    )
-                } else {
-                    (img, 1.0)
-                };
-
+            if let Ok(Some((downsampled, original_dimensions, preview_scale))) = loaded {
                 if let Some(this) = weak.upgrade() {
                     if this.imp().load_token.get() != token {
                         return;
@@ -521,6 +512,9 @@ impl EditorPanel {
 
     fn save_as_copy(&self) {
         let imp = self.imp();
+        if imp.saving.get() {
+            return;
+        }
         let item = match imp.media_item.borrow().clone() {
             Some(i) => i,
             None => {
@@ -539,6 +533,7 @@ impl EditorPanel {
             None => return,
         };
 
+        self.set_saving(true);
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let result: std::thread::Result<
@@ -552,6 +547,7 @@ impl EditorPanel {
             .await;
 
             if let Some(this) = weak.upgrade() {
+                this.set_saving(false);
                 match result {
                     Ok(Ok(_)) => {
                         this.fire_save_result(
@@ -610,6 +606,9 @@ impl EditorPanel {
 
     fn perform_save_overwrite(&self) {
         let imp = self.imp();
+        if imp.saving.get() {
+            return;
+        }
         let item = match imp.media_item.borrow().clone() {
             Some(i) => i,
             None => return,
@@ -625,6 +624,7 @@ impl EditorPanel {
             None => return,
         };
 
+        self.set_saving(true);
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let result: std::thread::Result<std::result::Result<(), crate::core::error::AppError>> =
@@ -637,6 +637,7 @@ impl EditorPanel {
                 .await;
 
             if let Some(this) = weak.upgrade() {
+                this.set_saving(false);
                 match result {
                     Ok(Ok(())) => {
                         this.fire_save_result(
@@ -668,6 +669,29 @@ impl EditorPanel {
                 }
             }
         });
+    }
+
+    fn set_saving(&self, saving: bool) {
+        self.imp().saving.set(saving);
+        for button in [
+            self.imp().save_copy_btn.get(),
+            self.imp().save_overwrite_btn.get(),
+            self.imp().cancel_btn.get(),
+            self.imp().editor_close_btn.get(),
+        ] {
+            button.set_sensitive(!saving);
+        }
+    }
+
+    pub(crate) fn cancel_preview(&self) {
+        let imp = self.imp();
+        imp.render_token.set(imp.render_token.get().wrapping_add(1));
+        imp.load_token.set(imp.load_token.get().wrapping_add(1));
+        imp.render_pending.set(false);
+        imp.source_image.borrow_mut().take();
+        if let Some(source) = imp.debounce_id.borrow_mut().take() {
+            source.remove();
+        }
     }
 
     fn apply_rotation_delta(&self, delta: i32) {
@@ -838,6 +862,7 @@ impl EditorPanel {
 
     fn schedule_preview_update(&self) {
         let imp = self.imp();
+        imp.render_token.set(imp.render_token.get().wrapping_add(1));
         if let Some(id) = imp.debounce_id.borrow_mut().take() {
             id.remove();
         }
@@ -857,6 +882,10 @@ impl EditorPanel {
 
     fn render_preview(&self) {
         let imp = self.imp();
+        if imp.render_running.get() {
+            imp.render_pending.set(true);
+            return;
+        }
         let source = match imp.source_image.borrow().clone() {
             Some(s) => s,
             None => return,
@@ -874,27 +903,36 @@ impl EditorPanel {
             t
         };
 
+        imp.render_running.set(true);
         self.fire_spinner(true);
 
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
-            let rendered: std::thread::Result<std::result::Result<image::DynamicImage, String>> =
-                gio::spawn_blocking(move || apply_all(&registry, source, &state)).await;
+            let rendered = gio::spawn_blocking(move || {
+                apply_all(&registry, (*source).clone(), &state).map(|image| image.to_rgba8())
+            })
+            .await;
 
             if let Some(this) = weak.upgrade() {
+                this.imp().render_running.set(false);
+                if this.imp().render_pending.replace(false) {
+                    this.render_preview();
+                    return;
+                }
                 if this.imp().render_token.get() != token {
+                    this.fire_spinner(false);
                     return;
                 }
                 match rendered {
                     Ok(Ok(img)) => {
-                        let rgb = img.to_rgb8();
+                        let rgb = img;
                         let (width, height) = (rgb.width() as i32, rgb.height() as i32);
-                        let rowstride = width * 3;
+                        let rowstride = width * 4;
                         let bytes = glib::Bytes::from_owned(rgb.into_raw());
                         let pixbuf = Pixbuf::from_bytes(
                             &bytes,
                             Colorspace::Rgb,
-                            false,
+                            true,
                             8,
                             width,
                             height,
@@ -913,6 +951,22 @@ impl EditorPanel {
                 this.fire_spinner(false);
             }
         });
+    }
+}
+
+fn prepare_preview_source(img: image::DynamicImage) -> (Arc<image::DynamicImage>, (u32, u32), f64) {
+    let dimensions = (img.width(), img.height());
+    let pixels = u64::from(img.width()) * u64::from(img.height());
+    if pixels > 8_000_000 {
+        let scale = (8_000_000.0 / pixels as f64).sqrt();
+        let resized = img.resize(
+            (img.width() as f64 * scale).max(1.0) as u32,
+            (img.height() as f64 * scale).max(1.0) as u32,
+            image::imageops::FilterType::Triangle,
+        );
+        (Arc::new(resized), dimensions, scale)
+    } else {
+        (Arc::new(img), dimensions, 1.0)
     }
 }
 

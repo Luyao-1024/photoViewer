@@ -96,17 +96,20 @@ pub enum DomainEvent {
 
 #[derive(Clone)]
 pub struct DomainEventSender {
-    tx: mpsc::UnboundedSender<DomainEvent>,
+    tx: mpsc::Sender<DomainEvent>,
 }
 
 impl DomainEventSender {
-    pub fn new() -> (Self, mpsc::UnboundedReceiver<DomainEvent>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn new() -> (Self, mpsc::Receiver<DomainEvent>) {
+        // Domain mutations are lossless, but the UI must also exert backpressure
+        // if it falls behind. Producers are DB/filesystem worker threads, so a
+        // bounded blocking send cannot stall the GTK main loop.
+        let (tx, rx) = mpsc::channel(2048);
         (Self { tx }, rx)
     }
 
     pub fn send(&self, event: DomainEvent) {
-        if let Err(err) = self.tx.send(event) {
+        if let Err(err) = self.tx.blocking_send(event) {
             tracing::warn!("DomainEventSender send failed: {err}");
         }
     }

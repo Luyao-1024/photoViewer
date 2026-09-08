@@ -20,6 +20,12 @@ use std::time::Duration;
 use super::ViewerPage;
 
 pub(super) const ANIMATED_IMAGE_LOOP_PAUSE_MS: u64 = 500;
+const ANIMATED_IMAGE_MAX_FRAMES: usize = 300;
+const ANIMATED_IMAGE_MAX_DECODED_PIXELS: u64 = 64 * 1024 * 1024;
+
+fn animated_image_budget_exceeded(frame_count: usize, decoded_pixels: u64) -> bool {
+    frame_count > ANIMATED_IMAGE_MAX_FRAMES || decoded_pixels > ANIMATED_IMAGE_MAX_DECODED_PIXELS
+}
 
 pub(super) const VIDEO_CONTROLS_CLICK_EXCLUSION_PX: f64 = 48.0;
 
@@ -100,14 +106,32 @@ fn load_animated_image_frames(path: &Path) -> anyhow::Result<Vec<AnimatedImageFr
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
     let decoder = image::codecs::gif::GifDecoder::new(reader)?;
-    let frames = decoder.into_frames().collect_frames()?;
-    frames
-        .into_iter()
-        .map(|frame| {
+    let mut decoded_pixels = 0_u64;
+    decoder
+        .into_frames()
+        .take(ANIMATED_IMAGE_MAX_FRAMES + 1)
+        .enumerate()
+        .map(|(index, frame)| {
+            if animated_image_budget_exceeded(index + 1, decoded_pixels) {
+                anyhow::bail!(
+                    "animated image exceeds the {} frame safety limit",
+                    ANIMATED_IMAGE_MAX_FRAMES
+                );
+            }
+            let frame = frame?;
             let delay = image_delay_to_duration(frame.delay());
             let image = frame.into_buffer();
             let width = image.width();
             let height = image.height();
+            decoded_pixels = decoded_pixels
+                .checked_add(u64::from(width) * u64::from(height))
+                .ok_or_else(|| anyhow::anyhow!("animated image size overflow"))?;
+            if animated_image_budget_exceeded(index + 1, decoded_pixels) {
+                anyhow::bail!(
+                    "animated image exceeds the {} pixel safety budget",
+                    ANIMATED_IMAGE_MAX_DECODED_PIXELS
+                );
+            }
             let rowstride = (width * 4) as usize;
             let bytes = glib::Bytes::from_owned(image.into_raw());
             let texture = gdk::MemoryTexture::new(

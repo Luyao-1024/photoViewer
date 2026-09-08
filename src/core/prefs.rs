@@ -11,6 +11,7 @@
 //! into path-injected helpers (`*_at`) so the unit tests can point at a
 //! temp file without mutating process-global env vars (which race under
 //! `cargo test`'s parallel runner).
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -140,36 +141,21 @@ fn write_liquid_glass_transparency_at(path: &Path, transparency: f64) -> Result<
 }
 
 fn write_bool_at(path: &Path, key: &str, enabled: bool) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let mut object = read_object_at(path);
     object.insert(key.to_string(), Value::Bool(enabled));
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_object_at(path, object)
 }
 
 fn write_f64_at(path: &Path, key: &str, value: f64) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let mut object = read_object_at(path);
     object.insert(key.to_string(), Value::from(value));
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_object_at(path, object)
 }
 
 fn write_string_at(path: &Path, key: &str, value: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let mut object = read_object_at(path);
     object.insert(key.to_string(), Value::String(value.to_string()));
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_object_at(path, object)
 }
 
 fn read_path_list_at(path: &Path, key: &str) -> Vec<PathBuf> {
@@ -181,18 +167,49 @@ fn read_path_list_at(path: &Path, key: &str) -> Vec<PathBuf> {
 }
 
 fn write_path_list_at(path: &Path, key: &str, paths: &[PathBuf]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let mut object = read_object_at(path);
     let values = sanitize_path_list(paths.iter().cloned())
         .into_iter()
         .map(|path| Value::String(path.to_string_lossy().into_owned()))
         .collect();
     object.insert(key.to_string(), Value::Array(values));
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_object_at(path, object)
+}
+
+/// Publish the complete settings object with a sibling rename. A crash can
+/// therefore leave either the old JSON or the new JSON, never a truncated
+/// file. If an unreadable settings file exists, retain one timestamped copy
+/// before replacing it with a valid object so recovery remains possible.
+fn write_object_at(path: &Path, object: Map<String, Value>) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "settings path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+
+    if let Ok(data) = std::fs::read(path) {
+        let valid_object = serde_json::from_slice::<Value>(&data)
+            .ok()
+            .is_some_and(|value| value.is_object());
+        if !valid_object {
+            let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+            let mut corrupt_name = path.as_os_str().to_owned();
+            corrupt_name.push(format!(".corrupt-{suffix}"));
+            let corrupt = PathBuf::from(corrupt_name);
+            std::fs::copy(path, corrupt).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let json = serde_json::to_vec_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".photo-viewer-settings-")
+        .tempfile_in(parent)
+        .map_err(|e| e.to_string())?;
+    staged.write_all(&json).map_err(|e| e.to_string())?;
+    staged.as_file().sync_all().map_err(|e| e.to_string())?;
+    staged.persist(path).map_err(|e| e.error.to_string())?;
+    std::fs::File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn sanitize_path_list<I>(paths: I) -> Vec<PathBuf>
@@ -219,9 +236,6 @@ fn read_video_default_muted_at(path: &Path) -> bool {
 }
 
 fn write_video_default_muted_at(path: &Path, enabled: bool) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let mut object = read_object_at(path);
     object.insert(VIDEO_DEFAULT_MUTED_KEY.to_string(), Value::Bool(enabled));
     let current_volume = object
@@ -235,9 +249,7 @@ fn write_video_default_muted_at(path: &Path, enabled: bool) -> Result<(), String
             Value::from(DEFAULT_VIDEO_VOLUME),
         );
     }
-    let json = serde_json::to_string_pretty(&Value::Object(object)).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_object_at(path, object)
 }
 
 fn read_video_volume_at(path: &Path) -> f64 {

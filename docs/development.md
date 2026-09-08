@@ -27,7 +27,14 @@ cargo build
 ./run-flatpak.sh
 ```
 
-`cargo build` runs `build.rs`, which compiles `data/ui/*.blp` to `.ui` and bundles resources. `meson.build` is for install-time desktop integration. Use `./run-flatpak.sh` as the canonical interactive startup entry point: it builds in the GNOME SDK but launches through the installed app sandbox, preserving the real thumbnail/cache/GIO behavior. `cargo run` remains useful for a narrow local debugger session, but it does not share the Flatpak cache or reproduce sandbox integration.
+`cargo build` runs `build.rs`, which compiles `data/ui/*.blp` to generated
+`.ui` files under `OUT_DIR` and bundles them as resources without writing into
+`data/ui/`. `meson.build` is for install-time desktop integration. Use
+`./run-flatpak.sh` as the canonical interactive startup entry point: it builds
+in the GNOME SDK but launches through the installed app sandbox, preserving the
+real thumbnail/cache/GIO behavior. `cargo run` remains useful for a narrow
+local debugger session, but it does not share the Flatpak cache or reproduce
+sandbox integration.
 
 The runner is also the single entry point for launch variants:
 

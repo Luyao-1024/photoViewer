@@ -130,7 +130,7 @@ impl ViewerPage {
         let nav_db_span = tracing::info_span!("viewer:nav_db_query", token);
         gio::spawn_blocking(move || {
             let repo = MediaRepository::new(pool);
-            let result = repo.neighbor(query, MediaId::from(current_id), delta);
+            let result = repo.neighbor_item(query, MediaId::from(current_id), delta);
             let _ = tx.send(result);
         });
         glib::spawn_future_local(async move {
@@ -146,8 +146,7 @@ impl ViewerPage {
                 return; // a newer press superseded this one
             }
             match result {
-                Ok(Some(neighbor)) => {
-                    let item = neighbor.item;
+                Ok(Some(item)) => {
                     let neighbor_id = item.id;
                     let index = this.ensure_media_item_in_window(item.clone());
                     tracing::debug!(
@@ -358,14 +357,13 @@ impl ViewerPage {
             let (tx, rx) = tokio::sync::oneshot::channel();
             gio::spawn_blocking(move || {
                 let repo = MediaRepository::new(pool);
-                let _ = tx.send(repo.neighbor(query, MediaId::from(for_id), delta));
+                let _ = tx.send(repo.neighbor_item(query, MediaId::from(for_id), delta));
             });
             glib::spawn_future_local(async move {
-                let neighbor = match rx.await {
+                let item = match rx.await {
                     Ok(Ok(Some(n))) => n,
                     _ => return,
                 };
-                let item = neighbor.item;
                 let Some(this) = weak.upgrade() else {
                     return;
                 };

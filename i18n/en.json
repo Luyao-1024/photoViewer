@@ -11,6 +11,8 @@
     "page.photos.title": "Photos",
     "page.albums.title": "Albums",
     "page.trash.title": "Trash",
+    "trash.operation_failed": "Some items could not be processed",
+    "trash.worker_failed": "The operation stopped unexpectedly. Refresh Trash and try again.",
     "page.viewer.title": "Viewer",
     "page.editor.title": "Edit",
     "search.title": "Search",

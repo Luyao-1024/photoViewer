@@ -27,10 +27,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
 const UPSERT_RETRY_LIMIT: usize = 3;
-/// 初始化数据库连接池，并为新数据库创建当前 schema。
-///
-/// 不提供旧 schema 兼容、列补齐、数据回填或自动重建；schema 变更后由
-/// 开发者清理已有数据库和缩略图缓存。
+/// Initialize or transactionally migrate the library without discarding user data.
 pub fn init_pool(path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
         c.execute_batch(&format!(
@@ -44,9 +41,56 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
         .max_size(8)
         .build(manager)
         .map_err(AppError::from)?;
-    let conn = pool.get()?;
-    conn.execute_batch(SCHEMA_SQL)?;
+    let mut conn = pool.get()?;
+    migrate_schema(&mut conn)?;
     Ok(pool)
+}
+
+const SCHEMA_VERSION: i64 = 1;
+
+fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(AppError::Backend(format!(
+            "library schema {version} requires a newer Photo Viewer (supported: {SCHEMA_VERSION})"
+        )));
+    }
+    let columns = {
+        let mut stmt = tx.prepare("PRAGMA table_info(media_items)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
+    };
+    if version == 0 && !columns.is_empty() {
+        // Historical unversioned libraries share the same identity/location
+        // columns. Only add derived fields; never rebuild media or user tables.
+        for (name, definition) in [
+            ("media_kind", "TEXT NOT NULL DEFAULT 'image'"),
+            ("media_subkind", "TEXT NOT NULL DEFAULT 'standard'"),
+            ("media_attributes", "TEXT NOT NULL DEFAULT '{}'"),
+            ("media_type_flags", "INTEGER NOT NULL DEFAULT 0"),
+            ("video_duration_secs", "REAL"),
+            ("thumbnail_generated_at", "INTEGER"),
+            ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            if !columns.contains(name) {
+                tx.execute_batch(&format!(
+                    "ALTER TABLE media_items ADD COLUMN {name} {definition}"
+                ))?;
+            }
+        }
+        tx.execute_batch(
+            "UPDATE media_items SET media_kind = CASE WHEN mime_type LIKE 'video/%' THEN 'video' ELSE 'image' END;
+             UPDATE media_items SET media_type_flags =
+                CASE WHEN media_subkind = 'motion_photo' THEN 1 ELSE 0 END |
+                CASE WHEN mime_type = 'image/gif' OR json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.animated') = 1 THEN 2 ELSE 0 END |
+                CASE WHEN json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.hdr') = 1 THEN 4 ELSE 0 END;"
+        )?;
+    }
+    tx.execute_batch(SCHEMA_SQL)?;
+    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn ts(dt: DateTime<Utc>) -> i64 {
@@ -966,59 +1010,101 @@ fn media_neighbor_with_filter_and_order(
     filter_params: Vec<Value>,
     order_by: &str,
 ) -> Result<Option<(u32, u32, MediaItem)>> {
-    if delta == 0 {
-        return Ok(None);
-    }
-
-    let conn = pool.get()?;
-    let mut current_params = filter_params.clone();
-    current_params.push(Value::Integer(current_id));
-    let current_sql = format!(
-        "SELECT row_index, total_count
-         FROM (
-           SELECT id,
-                  ROW_NUMBER() OVER (
-                    ORDER BY {order_by}
-                  ) - 1 AS row_index,
-                  COUNT(*) OVER () AS total_count
-           FROM media_items
-           WHERE {where_clause}
-         )
-         WHERE id = ?"
-    );
-    let Some((current_index, total)) = conn
-        .query_row(
-            &current_sql,
-            params_from_iter(current_params.iter()),
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()?
+    let trashed = order_by.starts_with("trashed_at");
+    let Some(item) = seek_media_neighbor(
+        pool,
+        current_id,
+        delta,
+        where_clause,
+        &filter_params,
+        trashed,
+    )?
     else {
         return Ok(None);
     };
+    // Compatibility projection for consumers that explicitly need a rank.
+    // Interactive navigation calls seek_media_neighbor and skips both counts.
+    let conn = pool.get()?;
+    let total: u32 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause}"),
+        params_from_iter(filter_params.iter()),
+        |r| r.get(0),
+    )?;
+    let sort = if trashed {
+        "trashed_at"
+    } else {
+        "COALESCE(taken_at, file_mtime)"
+    };
+    let time = if trashed {
+        item.trashed_at.unwrap_or(item.file_mtime)
+    } else {
+        item.sort_datetime()
+    }
+    .timestamp();
+    let mut params = filter_params;
+    params.extend([
+        Value::Integer(time),
+        Value::Integer(time),
+        Value::Integer(item.id),
+    ]);
+    let index = conn.query_row(&format!("SELECT COUNT(*) FROM media_items WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"), params_from_iter(params.iter()), |r| r.get(0))?;
+    Ok(Some((index, total, item)))
+}
 
-    let target_index = current_index + i64::from(delta);
-    if target_index < 0 || target_index >= total {
+/// Index seek for navigation: no full-result ranking, count, or global offset.
+pub(crate) fn seek_media_neighbor(
+    pool: &DbPool,
+    current_id: i64,
+    delta: i32,
+    where_clause: &str,
+    filter_params: &[Value],
+    trashed: bool,
+) -> Result<Option<MediaItem>> {
+    if delta == 0 {
         return Ok(None);
     }
-
-    let mut item_params = filter_params;
-    item_params.push(Value::Integer(target_index));
-    let item_sql = format!(
+    let conn = pool.get()?;
+    let sort = if trashed {
+        "trashed_at"
+    } else {
+        "COALESCE(taken_at, file_mtime)"
+    };
+    let mut current_params = vec![Value::Integer(current_id)];
+    current_params.extend_from_slice(filter_params);
+    let time: Option<i64> = conn
+        .query_row(
+            &format!("SELECT {sort} FROM media_items WHERE id = ? AND {where_clause}"),
+            params_from_iter(current_params.iter()),
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(time) = time else {
+        return Ok(None);
+    };
+    let (cmp, order) = if delta > 0 {
+        ("<", "DESC")
+    } else {
+        (">", "ASC")
+    };
+    let sql = format!(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
                 file_mtime, file_size, blake3_hash, is_favorite, trashed_at
          FROM media_items
-         WHERE {where_clause}
-         ORDER BY {order_by}
+         WHERE {where_clause} AND {sort} {cmp}= ? AND ({sort} {cmp} ? OR id {cmp} ?)
+         ORDER BY {sort} {order}, id {order}
          LIMIT 1 OFFSET ?"
     );
-    let item = conn.query_row(
-        &item_sql,
-        params_from_iter(item_params.iter()),
-        row_to_media_item,
-    )?;
-    Ok(Some((target_index as u32, total as u32, item)))
+    let mut params = filter_params.to_vec();
+    params.extend([
+        Value::Integer(time),
+        Value::Integer(time),
+        Value::Integer(current_id),
+        Value::Integer(i64::from(delta).abs() - 1),
+    ]);
+    Ok(conn
+        .query_row(&sql, params_from_iter(params.iter()), row_to_media_item)
+        .optional()?)
 }
 
 /// 删除单行
@@ -1075,6 +1161,30 @@ pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     Ok(changed)
 }
 
+/// Delete multiple live rows in one transaction and return the exact URIs
+/// that were removed. Duplicate paths are harmless; trashed rows remain
+/// protected by the same guard as [`delete_media_by_path`].
+pub fn delete_live_media_by_paths(pool: &DbPool, paths: &[PathBuf]) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    let mut removed = Vec::new();
+    for path in paths {
+        let uri = format!("file://{}", path.display());
+        let changed = tx.execute(
+            "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
+            rusqlite::params![path.to_string_lossy(), uri],
+        )?;
+        if changed > 0 {
+            removed.push(uri);
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
 /// 删除指定文件夹相册下的 live 媒体索引。只删除数据库行，不触碰磁盘文件。
 pub fn delete_live_media_by_folder(pool: &DbPool, folder_path: &Path) -> Result<usize> {
     let conn = pool.get()?;
@@ -1105,6 +1215,34 @@ pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
         total += conn.execute(&sql, params_from_iter(chunk.iter()))?;
     }
     Ok(total)
+}
+
+/// Delete live rows and return their exact ids. This is used by two-phase
+/// filesystem reconciliation: the scan/stat phase runs outside the DB actor,
+/// while this short transaction is serialized by the actor.
+pub fn delete_media_by_ids_returning(pool: &DbPool, ids: &[i64]) -> Result<Vec<i64>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    const CHUNK: usize = 500;
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    let mut removed = Vec::new();
+    for chunk in ids.chunks(CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM media_items WHERE id IN ({placeholders}) AND trashed_at IS NULL RETURNING id"
+        );
+        let mut statement = tx.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(chunk.iter()), |row| row.get(0))?;
+        for row in rows {
+            removed.push(row?);
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// 重置媒体库数据库内容。返回删除的媒体记录数。
@@ -1180,17 +1318,27 @@ pub(crate) fn update_media_location(
 pub(crate) fn update_media_edit_metadata(
     pool: &DbPool,
     id: i64,
-    file_mtime: i64,
-    file_size: i64,
-    blake3_hash: &str,
+    item: &NewMediaItem,
 ) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
         "UPDATE media_items
          SET file_mtime = ?2, file_size = ?3, blake3_hash = ?4,
-             thumbnail_generated_at = NULL
+             thumbnail_generated_at = NULL, width = ?5, height = ?6,
+             media_subkind = ?7, media_attributes = ?8, media_type_flags = ?9,
+             video_duration_secs = NULL
          WHERE id = ?1",
-        rusqlite::params![id, file_mtime, file_size, blake3_hash],
+        rusqlite::params![
+            id,
+            item.file_mtime.timestamp(),
+            item.file_size as i64,
+            item.blake3_hash,
+            item.width,
+            item.height,
+            item.media_subkind,
+            item.media_attributes,
+            crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes)
+        ],
     )?;
     Ok(())
 }

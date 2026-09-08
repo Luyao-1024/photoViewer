@@ -41,6 +41,20 @@ While crop mode is active, the viewer keeps showing the full edited preview with
 
 Save Copy writes a new file next to the source named `{stem}_edited_{milliseconds}.{ext}`. The timestamp is Unix epoch milliseconds, and the original extension is preserved. If the source stem already ends with `_edited_<digits>`, Save Copy replaces only that final timestamp suffix instead of appending another `edited` segment. Save Copy and Save Overwrite render edited pixels from the in-memory editing state, then save with the target path's image format so `.png` paths contain PNG bytes.
 
+Both save paths encode and validate a synced temporary sibling before
+publishing it. Save Copy uses a no-clobber atomic persist. Save Overwrite checks
+that source length/mtime did not change during rendering, atomically refreshes
+the durable `.bak`, then replaces the source; a failed DB commit restores the
+backup. Successful saves update file size/mtime/hash and rendered dimensions,
+clear stale animation/HDR/video attributes, and invalidate the thumbnail
+timestamp. A per-path save guard rejects concurrent saves of the same source.
+
+Large preview downsampling and RGBA conversion run on a blocking worker, not
+the GTK thread. Preview renders are single-flight: newer state replaces the
+pending request, stale results are discarded, and leaving the editor cancels
+the session token. Save/cancel/close controls are insensitive while a save is
+in flight.
+
 Orientation-metadata rotation is still implemented in `src/core/orientation.rs` and `src/core/edit/destructive_rotate.rs` for non-editor flows. The editor must treat rotation as a normal pending edit until Save Copy or Save Overwrite.
 
 The editor footer exposes Save Copy as the suggested action and Save Overwrite as a direct danger-styled button. Save Overwrite still shows its confirmation dialog before writing.

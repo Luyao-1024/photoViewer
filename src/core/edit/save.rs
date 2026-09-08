@@ -1,40 +1,58 @@
-//! Save Copy / Save Overwrite 实现
-//!
-//! `save_as_copy` 渲染当前 `EditState` 到一个新文件
-//! `{原名}_edited_{毫秒时间戳}.{ext}`
-//! 并在 `media_items` 中插入新行（不破坏原图）。
-//!
-//! `save_overwrite` 先把原图备份到 `{原名}.jpg.bak`，再渲染并写回原文件，
-//! 最后刷新 `media_items` 中对应行的 `file_mtime` / `file_size` /
-//! `blake3_hash` 以反映新内容。
-use std::io::Read;
+//! Render to a temporary sibling, publish atomically, then commit the library row.
+//! Overwrites keep a durable `.bak`; a failed database commit restores that backup.
+use std::collections::HashSet;
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::Utc;
 use image::ImageReader;
+use tempfile::NamedTempFile;
 
 use crate::core::db::{self, DbPool};
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::edit::{apply_all, EditRegistry, EditState};
-use crate::core::error::Result;
+use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
 use crate::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use crate::core::orientation;
 use crate::core::telemetry::{OperationTrace, TraceChain};
 
-/// 保存为副本：渲染到 `{原名}_edited_{毫秒时间戳}.{ext}`，插入新 DB 行。
-/// 返回新行对应的 `MediaItem`（含新分配的 `id`）。
-#[tracing::instrument(name = "editor:save_as_copy", skip(source, state, pool, registry), fields(source_id = source.id))]
+static SAVING: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+struct SaveGuard(PathBuf);
+
+impl SaveGuard {
+    fn acquire(path: &Path) -> Result<Self> {
+        let path = path.canonicalize()?;
+        let mut active = SAVING
+            .get_or_init(Mutex::default)
+            .lock()
+            .map_err(|_| AppError::Backend("save lock unavailable".into()))?;
+        if !active.insert(path.clone()) {
+            return Err(AppError::Backend(
+                "this image is already being saved".into(),
+            ));
+        }
+        Ok(Self(path))
+    }
+}
+
+impl Drop for SaveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut active) = SAVING.get_or_init(Mutex::default).lock() {
+            active.remove(&self.0);
+        }
+    }
+}
+
 pub fn save_as_copy(
     source: &MediaItem,
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
 ) -> Result<MediaItem> {
-    let trace = OperationTrace::start(TraceChain::Mutation, "save_as_copy");
-    let result = save_as_copy_inner(source, state, pool, registry, None, &trace);
-    log_edit_result(&trace, result)
+    save_copy(source, state, pool, registry, None)
 }
 
 pub fn save_as_copy_with_actor(
@@ -42,78 +60,64 @@ pub fn save_as_copy_with_actor(
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
-    db_actor: &DbActorHandle,
+    actor: &DbActorHandle,
 ) -> Result<MediaItem> {
-    let trace = OperationTrace::start(TraceChain::Mutation, "save_as_copy");
-    let result = save_as_copy_inner(source, state, pool, registry, Some(db_actor), &trace);
-    log_edit_result(&trace, result)
+    save_copy(source, state, pool, registry, Some(actor))
 }
 
-fn save_as_copy_inner(
+fn save_copy(
     source: &MediaItem,
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
-    db_actor: Option<&DbActorHandle>,
-    trace: &OperationTrace,
+    actor: Option<&DbActorHandle>,
 ) -> Result<MediaItem> {
-    // 1. 加载原图全分辨率
-    let img = {
-        let _stage = trace.stage("load_source");
-        load_source_image(&source.path)?
-    };
-
-    // 2. 应用所有编辑
-    let rendered = {
-        let _stage = trace.stage("render");
-        apply_all(registry, img, state).map_err(crate::core::error::AppError::Decode)?
-    };
-
-    // 3. 生成新文件名（避免覆盖同名副本）
-    let new_path = generate_edited_path(&source.path);
-
-    // 4. 按目标扩展名保存，避免 `.png` 路径写入 JPEG 字节。
-    if let Some(parent) = new_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let format =
-        image::ImageFormat::from_path(&new_path).map_err(crate::core::error::AppError::Image)?;
-    {
-        let _stage = trace.stage("write_file");
-        rendered.save_with_format(&new_path, format)?;
-    }
-
-    // 5. 插入新 DB 行
-    let new_uri = format!("file://{}", new_path.display());
-    let new_item = NewMediaItem {
-        uri: new_uri,
-        path: new_path.clone(),
-        folder_path: source.folder_path.clone(),
-        mime_type: source.mime_type.clone(),
-        media_subkind: MEDIA_SUBKIND_STANDARD.into(),
-        media_attributes: "{}".into(),
-        width: Some(rendered.width()),
-        height: Some(rendered.height()),
-        video_duration_secs: None,
-        taken_at: source.taken_at,
-        file_mtime: Utc::now(),
-        file_size: std::fs::metadata(&new_path).map(|m| m.len()).unwrap_or(0),
-        blake3_hash: stream_file_hash(&new_path)?,
-    };
-    insert_or_update_copy_row(pool, &new_item, db_actor, trace)
+    let trace = OperationTrace::start(TraceChain::Mutation, "save_as_copy");
+    let result = (|| {
+        let _guard = SaveGuard::acquire(&source.path)?;
+        let rendered = render(source, state, registry, &trace)?;
+        let target = generate_edited_path(&source.path);
+        let format = image::ImageFormat::from_path(&target)?;
+        let staged = encode_sibling(&rendered, &target, format)?;
+        // No exists-then-create race: another file must never be overwritten.
+        staged
+            .persist_noclobber(&target)
+            .map_err(|e| AppError::Io(e.error))?;
+        sync_parent(&target)?;
+        let item = edited_metadata(source, &target, &rendered)?;
+        let commit = match actor {
+            Some(actor) => actor
+                .execute_blocking_in_trace(
+                    trace.clone(),
+                    DbCommand::InsertEditedMedia { item: item.clone() },
+                )
+                .and_then(saved_item),
+            None => db::upsert_media_items_batch(pool, &[item]).and_then(|mut items| {
+                items
+                    .pop()
+                    .ok_or_else(|| AppError::Backend("saved copy row missing".into()))
+            }),
+        };
+        if commit.is_err() {
+            if let Err(error) = std::fs::remove_file(&target) {
+                tracing::warn!(
+                    "failed to remove unsuccessful edited copy {}: {error}",
+                    target.display()
+                );
+            }
+        }
+        commit
+    })();
+    log_edit_result(&trace, result)
 }
 
-/// 覆盖原图：备份到 `.{ext}.bak` → 渲染 → 写回原文件 → 更新 DB 元数据。
-#[tracing::instrument(name = "editor:save_overwrite", skip(source, state, pool, registry), fields(source_id = source.id))]
 pub fn save_overwrite(
     source: &MediaItem,
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
 ) -> Result<()> {
-    let trace = OperationTrace::start(TraceChain::Mutation, "save_overwrite");
-    let result = save_overwrite_inner(source, state, pool, registry, None, &trace);
-    log_edit_result(&trace, result)
+    overwrite(source, state, pool, registry, None)
 }
 
 pub fn save_overwrite_with_actor(
@@ -121,168 +125,194 @@ pub fn save_overwrite_with_actor(
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
-    db_actor: &DbActorHandle,
+    actor: &DbActorHandle,
 ) -> Result<()> {
-    let trace = OperationTrace::start(TraceChain::Mutation, "save_overwrite");
-    let result = save_overwrite_inner(source, state, pool, registry, Some(db_actor), &trace);
-    log_edit_result(&trace, result)
+    overwrite(source, state, pool, registry, Some(actor))
 }
 
-fn save_overwrite_inner(
+fn overwrite(
     source: &MediaItem,
     state: &EditState,
     pool: &DbPool,
     registry: &EditRegistry,
-    db_actor: Option<&DbActorHandle>,
-    trace: &OperationTrace,
+    actor: Option<&DbActorHandle>,
 ) -> Result<()> {
-    // 1. 备份原图
-    let backup = backup_path_for(&source.path);
-    {
-        let _stage = trace.stage("backup_source");
-        std::fs::copy(&source.path, &backup)?;
-    }
+    let trace = OperationTrace::start(TraceChain::Mutation, "save_overwrite");
+    let result = (|| {
+        let _guard = SaveGuard::acquire(&source.path)?;
+        let before = std::fs::metadata(&source.path)?;
+        let format = image::ImageFormat::from_path(&source.path)?;
+        let rendered = render(source, state, registry, &trace)?;
+        let staged = encode_sibling(&rendered, &source.path, format)?;
+        staged.as_file().set_permissions(before.permissions())?;
+        staged.as_file().sync_all()?;
+        let current = std::fs::metadata(&source.path)?;
+        if before.len() != current.len() || before.modified()? != current.modified()? {
+            return Err(AppError::Backend(
+                "source changed while rendering; reopen the image before saving".into(),
+            ));
+        }
+        let backup = backup_path_for(&source.path);
+        atomic_copy(&source.path, &backup)?;
+        staged
+            .persist(&source.path)
+            .map_err(|e| AppError::Io(e.error))?;
+        sync_parent(&source.path)?;
+        let commit = (|| {
+            let item = edited_metadata(source, &source.path, &rendered)?;
+            match actor {
+                Some(actor) => actor
+                    .execute_blocking_in_trace(
+                        trace.clone(),
+                        DbCommand::UpdateEditedMedia {
+                            id: MediaId::from(source.id),
+                            item,
+                        },
+                    )
+                    .map(|_| ()),
+                None => db::update_media_edit_metadata(pool, source.id, &item),
+            }
+        })();
+        if let Err(error) = commit {
+            if let Err(rollback) = atomic_copy(&backup, &source.path) {
+                return Err(AppError::Backend(format!("save commit failed: {error}; restore failed: {rollback}; original retained at {}", backup.display())));
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    log_edit_result(&trace, result)
+}
 
-    // 2. 加载原图全分辨率
-    let img = {
+fn saved_item(result: DbCommandResult) -> Result<MediaItem> {
+    match result {
+        DbCommandResult::MediaItems(mut items) => items
+            .pop()
+            .ok_or_else(|| AppError::Backend("saved media row missing".into())),
+        other => Err(AppError::Backend(format!(
+            "unexpected save response: {other:?}"
+        ))),
+    }
+}
+
+fn render(
+    source: &MediaItem,
+    state: &EditState,
+    registry: &EditRegistry,
+    trace: &OperationTrace,
+) -> Result<image::DynamicImage> {
+    let image = {
         let _stage = trace.stage("load_source");
         load_source_image(&source.path)?
     };
-    let rendered = {
-        let _stage = trace.stage("render");
-        apply_all(registry, img, state).map_err(crate::core::error::AppError::Decode)?
-    };
+    let _stage = trace.stage("render");
+    apply_all(registry, image, state).map_err(AppError::Decode)
+}
 
-    // 3. 按原路径扩展名写回
-    let format =
-        image::ImageFormat::from_path(&source.path).map_err(crate::core::error::AppError::Image)?;
+fn encode_sibling(
+    image: &image::DynamicImage,
+    target: &Path,
+    format: image::ImageFormat,
+) -> Result<NamedTempFile> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Backend("save target has no parent".into()))?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".photo-viewer-save-")
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
     {
-        let _stage = trace.stage("write_file");
-        rendered.save_with_format(&source.path, format)?;
+        let mut writer = BufWriter::new(staged.as_file_mut());
+        image.write_to(&mut writer, format)?;
+        writer.flush()?;
     }
-
-    // 4. 更新 DB 元数据
-    let new_mtime = Utc::now().timestamp();
-    let new_size = std::fs::metadata(&source.path)
-        .map(|m| m.len() as i64)
-        .unwrap_or(0);
-    let new_hash = stream_file_hash(&source.path)?;
-    if let Some(db_actor) = db_actor {
-        db_actor.execute_blocking_in_trace(
-            trace.clone(),
-            DbCommand::UpdateEditedMedia {
-                id: MediaId::from(source.id),
-                file_mtime: new_mtime,
-                file_size: new_size,
-                blake3_hash: new_hash,
-            },
-        )?;
-    } else {
-        let conn = pool.get()?;
-        conn.execute(
-            "UPDATE media_items SET file_mtime=?2, file_size=?3, blake3_hash=?4 WHERE id=?1",
-            rusqlite::params![source.id, new_mtime, new_size, new_hash],
-        )?;
+    staged.as_file().sync_all()?;
+    let decoded = ImageReader::open(staged.path())?
+        .with_guessed_format()?
+        .into_dimensions()?;
+    if decoded != (image.width(), image.height()) {
+        return Err(AppError::Decode(
+            "saved image dimensions failed validation".into(),
+        ));
     }
+    Ok(staged)
+}
 
+fn atomic_copy(source: &Path, target: &Path) -> Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Backend("backup target has no parent".into()))?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".photo-viewer-backup-")
+        .tempfile_in(parent)?;
+    let mut input = std::fs::File::open(source)?;
+    std::io::copy(&mut input, staged.as_file_mut())?;
+    staged
+        .as_file()
+        .set_permissions(input.metadata()?.permissions())?;
+    staged.as_file().sync_all()?;
+    staged.persist(target).map_err(|e| AppError::Io(e.error))?;
+    sync_parent(target)
+}
+
+fn sync_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
     Ok(())
+}
+
+fn edited_metadata(
+    source: &MediaItem,
+    path: &Path,
+    image: &image::DynamicImage,
+) -> Result<NewMediaItem> {
+    let metadata = std::fs::metadata(path)?;
+    Ok(NewMediaItem {
+        uri: format!("file://{}", path.display()),
+        path: path.to_owned(),
+        folder_path: source.folder_path.clone(),
+        mime_type: source.mime_type.clone(),
+        media_subkind: MEDIA_SUBKIND_STANDARD.into(),
+        media_attributes: "{}".into(),
+        width: Some(image.width()),
+        height: Some(image.height()),
+        video_duration_secs: None,
+        taken_at: source.taken_at,
+        file_mtime: metadata.modified()?.into(),
+        file_size: metadata.len(),
+        blake3_hash: stream_file_hash(path)?,
+    })
 }
 
 fn stream_file_hash(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = blake3::Hasher::new();
-    let mut buf = [0_u8; 64 * 1024];
+    let mut buffer = [0; 64 * 1024];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
+        hasher.update(&buffer[..n]);
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-fn insert_or_update_copy_row(
-    pool: &DbPool,
-    item: &NewMediaItem,
-    db_actor: Option<&DbActorHandle>,
-    trace: &OperationTrace,
-) -> Result<MediaItem> {
-    if let Some(db_actor) = db_actor {
-        let result = db_actor.execute_blocking_in_trace(
-            trace.clone(),
-            DbCommand::InsertEditedMedia { item: item.clone() },
-        )?;
-        return match result {
-            DbCommandResult::MediaItems(mut items) => items.pop().ok_or_else(|| {
-                crate::core::error::AppError::Backend("edited media insert returned no item".into())
-            }),
-            other => Err(crate::core::error::AppError::Backend(format!(
-                "unexpected edited media insert result: {other:?}"
-            ))),
-        };
-    }
-    let conn = pool.get()?;
-    conn.execute(
-        "INSERT INTO media_items
-            (uri, path, folder_path, mime_type, media_kind, media_subkind,
-             media_attributes, width, height, video_duration_secs, taken_at,
-             file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, unixepoch())
-         ON CONFLICT(uri) DO UPDATE SET
-             path=excluded.path,
-             folder_path=excluded.folder_path,
-             mime_type=excluded.mime_type,
-             media_kind=excluded.media_kind,
-             media_subkind=excluded.media_subkind,
-             media_attributes=excluded.media_attributes,
-             width=excluded.width,
-             height=excluded.height,
-             video_duration_secs=excluded.video_duration_secs,
-             taken_at=excluded.taken_at,
-             file_mtime=excluded.file_mtime,
-             file_size=excluded.file_size,
-             blake3_hash=excluded.blake3_hash,
-             trashed_at=NULL,
-             indexed_at=unixepoch()",
-        rusqlite::params![
-            item.uri,
-            item.path.to_string_lossy(),
-            item.folder_path.to_string_lossy(),
-            item.mime_type,
-            db::media_kind_db_value(&item.mime_type),
-            item.media_subkind,
-            item.media_attributes,
-            item.width,
-            item.height,
-            item.video_duration_secs,
-            item.taken_at.map(|t| t.timestamp()),
-            item.file_mtime.timestamp(),
-            item.file_size as i64,
-            item.blake3_hash,
-        ],
-    )?;
-    drop(conn);
-    db::get_media_item_by_uri(pool, &item.uri)?
-        .ok_or_else(|| crate::core::error::AppError::Backend("saved copy row missing".into()))
-}
-
 fn log_edit_result<T>(trace: &OperationTrace, result: Result<T>) -> Result<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            crate::core::telemetry::log_error(trace, "save", &error);
-            Err(error)
-        }
+    if let Err(error) = &result {
+        crate::core::telemetry::log_error(trace, "save", error);
     }
+    result
 }
 
 fn load_source_image(path: &Path) -> Result<image::DynamicImage> {
-    let file = std::fs::File::open(path)?;
-    let reader = ImageReader::new(std::io::BufReader::new(file)).with_guessed_format()?;
+    let reader = ImageReader::open(path)?.with_guessed_format()?;
     let img = reader.decode()?;
-    let orientation = orientation::read_orientation(path)?;
-    Ok(apply_orientation_to_image(img, orientation))
+    Ok(apply_orientation_to_image(
+        img,
+        orientation::read_orientation(path)?,
+    ))
 }
 
 fn apply_orientation_to_image(img: image::DynamicImage, orientation: u16) -> image::DynamicImage {
@@ -298,39 +328,35 @@ fn apply_orientation_to_image(img: image::DynamicImage, orientation: u16) -> ima
     }
 }
 
-/// 构造 `{原名}.{ext}.bak` 路径——在原文件扩展名后再加 `.bak`。
-fn backup_path_for(path: &std::path::Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".bak");
-    PathBuf::from(s)
+fn backup_path_for(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".bak");
+    PathBuf::from(name)
 }
 
-/// 生成新副本路径：`{stem}_edited_{毫秒时间戳}.{ext}`。
-fn generate_edited_path(orig: &std::path::Path) -> PathBuf {
+fn generate_edited_path(orig: &Path) -> PathBuf {
     let stem = orig.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
-    let base_stem = base_stem_without_edited_timestamp(stem);
-    let ext = orig.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
-    let parent = orig.parent().unwrap_or(std::path::Path::new("."));
-    let mut timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    loop {
-        let candidate = parent.join(format!("{}_edited_{}.{}", base_stem, timestamp_ms, ext));
-        if !candidate.exists() {
-            return candidate;
-        }
-        timestamp_ms += 1;
-    }
-}
-
-fn base_stem_without_edited_timestamp(stem: &str) -> &str {
-    match stem.rsplit_once("_edited_") {
+    let base = match stem.rsplit_once("_edited_") {
         Some((base, timestamp))
-            if !base.is_empty() && timestamp.chars().all(|c| c.is_ascii_digit()) =>
+            if !base.is_empty()
+                && !timestamp.is_empty()
+                && timestamp.chars().all(|c| c.is_ascii_digit()) =>
         {
             base
         }
         _ => stem,
+    };
+    let ext = orig.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
+    let parent = orig.parent().unwrap_or(Path::new("."));
+    let mut timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    loop {
+        let candidate = parent.join(format!("{base}_edited_{timestamp}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        timestamp += 1;
     }
 }

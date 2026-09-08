@@ -27,8 +27,7 @@ fn write_priorities_put_interactive_work_before_background_work() {
     };
     let refresh = DbCommand::RefreshAlbumsInternal;
     let scan = DbCommand::PruneMissingLiveRows {
-        roots: Vec::new(),
-        excluded_roots: Vec::new(),
+        missing: Vec::new(),
     };
     let watcher = DbCommand::DeleteLiveByPath {
         source: ChangeSource::FilesystemWatcher,

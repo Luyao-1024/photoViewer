@@ -2,6 +2,7 @@ mod common;
 use chrono::Utc;
 use photo_viewer::core::db;
 use photo_viewer::core::media::NewMediaItem;
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 #[test]
@@ -270,4 +271,93 @@ fn connections_wait_for_transient_write_locks() {
         timeout_ms >= 5_000,
         "database connections should wait for transient SQLite writer contention"
     );
+}
+
+#[test]
+fn unversioned_library_migrates_without_losing_user_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE media_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uri TEXT UNIQUE NOT NULL,
+                path TEXT NOT NULL,
+                folder_path TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                taken_at INTEGER,
+                file_mtime INTEGER NOT NULL,
+                file_size INTEGER NOT NULL,
+                blake3_hash TEXT NOT NULL,
+                is_favorite INTEGER NOT NULL DEFAULT 0,
+                trashed_at INTEGER,
+                indexed_at INTEGER NOT NULL
+             );
+             CREATE TABLE albums (
+                folder_path TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                cover_uri TEXT,
+                photo_count INTEGER NOT NULL DEFAULT 0,
+                last_modified INTEGER NOT NULL
+             );
+             CREATE TABLE album_order (folder_path TEXT PRIMARY KEY, sort_order INTEGER NOT NULL);
+             CREATE TABLE album_covers (folder_path TEXT PRIMARY KEY, cover_uri TEXT NOT NULL);
+             INSERT INTO media_items
+                (uri, path, folder_path, mime_type, width, height, taken_at,
+                 file_mtime, file_size, blake3_hash, is_favorite, trashed_at, indexed_at)
+             VALUES
+                ('file:///library/a.gif', '/library/a.gif', '/library', 'image/gif',
+                 10, 20, NULL, 100, 42, 'hash', 1, NULL, 101);
+             INSERT INTO album_order VALUES ('/library', 7);
+             INSERT INTO album_covers VALUES ('/library', 'file:///library/a.gif');",
+        )
+        .unwrap();
+    drop(connection);
+
+    let pool = db::init_pool(&path).unwrap();
+    let item = db::list_all_media(&pool).unwrap().pop().unwrap();
+    assert_eq!(item.uri, "file:///library/a.gif");
+    assert!(item.is_favorite);
+    assert!(item.is_animated());
+
+    let connection = pool.get().unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 1);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT sort_order FROM album_order WHERE folder_path = '/library'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT cover_uri FROM album_covers WHERE folder_path = '/library'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "file:///library/a.gif"
+    );
+}
+
+#[test]
+fn newer_schema_is_rejected_instead_of_being_modified() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("future.db");
+    let connection = Connection::open(&path).unwrap();
+    connection.pragma_update(None, "user_version", 999).unwrap();
+    drop(connection);
+
+    let error = db::init_pool(&path).unwrap_err().to_string();
+    assert!(error.contains("requires a newer Photo Viewer"));
 }

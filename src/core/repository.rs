@@ -51,6 +51,32 @@ pub struct MediaMutation {
     pub removed_uris: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+pub struct MediaBatchResult {
+    pub mutation: MediaMutation,
+    pub failures: Vec<(MediaId, String)>,
+}
+
+impl MediaBatchResult {
+    pub fn error_message(&self) -> Option<String> {
+        (!self.failures.is_empty()).then(|| {
+            self.failures
+                .iter()
+                .take(20)
+                .map(|(_, message)| message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
+
+    fn into_result(self) -> Result<MediaMutation> {
+        match self.error_message() {
+            Some(error) => Err(AppError::Backend(error)),
+            None => Ok(self.mutation),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MediaNeighbor {
     pub query: MediaQuery,
@@ -281,6 +307,52 @@ impl MediaRepository {
         })
     }
 
+    /// Adjacent item only. Viewer navigation does not need a global rank/count.
+    pub fn neighbor_item(
+        &self,
+        query: MediaQuery,
+        current_id: MediaId,
+        delta: i32,
+    ) -> Result<Option<MediaItem>> {
+        let trashed = matches!(query, MediaQuery::Trash);
+        let (filter, params) = match query {
+            MediaQuery::LiveAll => ("trashed_at IS NULL".into(), vec![]),
+            MediaQuery::Trash => ("trashed_at IS NOT NULL".into(), vec![]),
+            MediaQuery::AlbumFolder(path) => (
+                "trashed_at IS NULL AND folder_path = ?".into(),
+                vec![Value::Text(path.to_string_lossy().into_owned())],
+            ),
+            MediaQuery::Favorites => ("trashed_at IS NULL AND is_favorite = 1".into(), vec![]),
+            MediaQuery::Images => ("trashed_at IS NULL AND media_kind = 'image'".into(), vec![]),
+            MediaQuery::Videos => ("trashed_at IS NULL AND media_kind = 'video'".into(), vec![]),
+            MediaQuery::MotionPhotos => (
+                format!(
+                    "trashed_at IS NULL AND {}",
+                    crate::core::media::LogicalMediaType::MotionPhoto.sql_predicate()
+                ),
+                vec![],
+            ),
+            MediaQuery::MediaType(kind) => (
+                format!("trashed_at IS NULL AND {}", kind.sql_predicate()),
+                vec![],
+            ),
+            MediaQuery::Search { term, field } => search_count_filter(term, None, field),
+            MediaQuery::SearchKind {
+                term,
+                media_kind,
+                field,
+            } => search_count_filter(term, Some(media_kind), field),
+        };
+        db::seek_media_neighbor(
+            &self.pool,
+            current_id.get(),
+            delta,
+            &filter,
+            &params,
+            trashed,
+        )
+    }
+
     pub fn neighbor(
         &self,
         query: MediaQuery,
@@ -378,33 +450,90 @@ impl MediaRepository {
     }
 
     pub fn restore_from_trash(&self, ids: &[MediaId]) -> Result<MediaMutation> {
-        let mut mutation = MediaMutation::default();
-        for id in ids {
-            let item = db::get_media_item(&self.pool, id.get())?;
-            crate::core::trash::restore_from_trash(&item.uri)?;
-            db::unmark_trashed(&self.pool, id.get())?;
-            let mut restored = item;
-            restored.trashed_at = None;
-            mutation.changed_ids.push(*id);
-            mutation.changed_items.push(restored);
-        }
+        let result = self.restore_batch(ids, None);
         crate::core::albums::refresh(&self.pool)?;
-        Ok(mutation)
+        result.into_result()
     }
 
     pub fn delete_permanently(&self, ids: &[MediaId]) -> Result<MediaMutation> {
-        let mut mutation = MediaMutation::default();
-        for id in ids {
-            let item = db::get_media_item(&self.pool, id.get())?;
-            if let Err(err) = crate::core::trash::delete_permanently(&item.uri) {
-                tracing::warn!("failed to delete trashed file for {}: {err}", item.uri);
-            }
-            db::delete_media_item(&self.pool, id.get())?;
-            mutation.changed_ids.push(*id);
-            mutation.removed_uris.push(item.uri);
-        }
+        let result = self.delete_batch(ids, None);
         crate::core::albums::refresh(&self.pool)?;
-        Ok(mutation)
+        result.into_result()
+    }
+
+    pub fn restore_batch(
+        &self,
+        ids: &[MediaId],
+        actor: Option<&DbActorHandle>,
+    ) -> MediaBatchResult {
+        self.trash_batch(ids, actor, true)
+    }
+
+    pub fn delete_batch(&self, ids: &[MediaId], actor: Option<&DbActorHandle>) -> MediaBatchResult {
+        self.trash_batch(ids, actor, false)
+    }
+
+    fn trash_batch(
+        &self,
+        ids: &[MediaId],
+        actor: Option<&DbActorHandle>,
+        restore: bool,
+    ) -> MediaBatchResult {
+        let mut result = MediaBatchResult::default();
+        for &id in ids {
+            let outcome = (|| -> Result<MediaItem> {
+                let mut item = db::get_media_item(&self.pool, id.get())?;
+                if item.trashed_at.is_none() {
+                    return Err(AppError::Backend(format!(
+                        "{} is not in Trash",
+                        item.path.display()
+                    )));
+                }
+                let operation = (|| -> Result<()> {
+                    if restore {
+                        let prepared = crate::core::trash::prepare_restore(&item.uri)?;
+                        match actor {
+                            Some(actor) => {
+                                actor.execute_blocking(DbCommand::RestoreTrashed {
+                                    ids: vec![id],
+                                })?;
+                            }
+                            None => db::unmark_trashed(&self.pool, id.get())?,
+                        }
+                        prepared.commit();
+                        item.trashed_at = None;
+                    } else {
+                        let prepared = crate::core::trash::prepare_permanent_delete(&item.uri)?;
+                        match actor {
+                            Some(actor) => {
+                                actor.execute_blocking(DbCommand::DeleteTrashedRows {
+                                    ids: vec![id],
+                                })?;
+                            }
+                            None => db::delete_media_item(&self.pool, id.get())?,
+                        }
+                        prepared.commit();
+                    }
+                    Ok(())
+                })();
+                operation.map_err(|error| {
+                    AppError::Backend(format!("{}: {error}", item.path.display()))
+                })?;
+                Ok(item)
+            })();
+            match outcome {
+                Ok(item) => {
+                    result.mutation.changed_ids.push(id);
+                    if restore {
+                        result.mutation.changed_items.push(item);
+                    } else {
+                        result.mutation.removed_uris.push(item.uri);
+                    }
+                }
+                Err(error) => result.failures.push((id, error.to_string())),
+            }
+        }
+        result
     }
 
     pub fn empty_trash(&self) -> Result<MediaMutation> {

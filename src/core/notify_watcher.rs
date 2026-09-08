@@ -20,6 +20,7 @@ use crate::core::media::is_supported_media_path;
 use crate::core::runtime_config;
 use crate::core::telemetry::{log_error, log_warning, OperationTrace, TraceChain};
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -78,27 +79,22 @@ fn run_watcher_loop(
     let mut trash_dirty = false;
 
     while let Ok(evt) = rx.recv() {
-        dispatch_event(
+        let mut burst = vec![evt];
+        // Collect the whole notification burst before doing metadata work.
+        // Editors commonly emit several writes/renames for one path; only the
+        // final observable state should reach extraction and the DB actor.
+        while let Ok(e) = rx.recv_timeout(Duration::from_millis(
+            runtime_config::notify_trash_debounce_ms(),
+        )) {
+            burst.push(e);
+        }
+        flush_event_burst(
             &db_actor,
-            evt,
+            burst,
             &trash_roots,
             &excluded_roots,
             &mut trash_dirty,
         );
-
-        // 排空本轮事件突发；静默配置的防抖时间（或通道关闭）后，若有回收站事件则
-        // 对账 + 通知。
-        while let Ok(e) = rx.recv_timeout(Duration::from_millis(
-            runtime_config::notify_trash_debounce_ms(),
-        )) {
-            dispatch_event(
-                &db_actor,
-                e,
-                &trash_roots,
-                &excluded_roots,
-                &mut trash_dirty,
-            );
-        }
         flush_trash_reconcile(&db_actor, &pictures_root, &mut trash_dirty);
     }
     // 通道关闭（停监）：把挂起的回收站变化最后冲刷一次再退出。
@@ -106,10 +102,120 @@ fn run_watcher_loop(
     drop(watcher);
 }
 
+#[derive(Clone, Copy)]
+enum PendingPathAction {
+    Upsert,
+    Delete,
+}
+
+fn flush_event_burst(
+    db_actor: &DbActorHandle,
+    events: Vec<Result<notify::Event, notify::Error>>,
+    trash_roots: &[PathBuf],
+    excluded_roots: &[PathBuf],
+    trash_dirty: &mut bool,
+) {
+    let current_excluded_roots = crate::core::prefs::excluded_scan_roots();
+    let mut pending = HashMap::<PathBuf, PendingPathAction>::new();
+    for event in events {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                tracing::warn!("watcher 事件错误: {error}");
+                continue;
+            }
+        };
+        for path in event.paths {
+            if is_under_trash(&path, trash_roots) {
+                *trash_dirty = true;
+                continue;
+            }
+            if is_under_effective_excluded(&path, excluded_roots, current_excluded_roots.as_slice())
+                || !is_supported_media_path(&path)
+            {
+                continue;
+            }
+            let action = match &event.kind {
+                EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_)) => {
+                    PendingPathAction::Upsert
+                }
+                EventKind::Remove(_) => PendingPathAction::Delete,
+                EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                    if path.is_file() {
+                        PendingPathAction::Upsert
+                    } else {
+                        PendingPathAction::Delete
+                    }
+                }
+                _ => continue,
+            };
+            pending.insert(path, action);
+        }
+    }
+    flush_pending_paths(db_actor, pending);
+}
+
+fn flush_pending_paths(db_actor: &DbActorHandle, pending: HashMap<PathBuf, PendingPathAction>) {
+    if pending.is_empty() {
+        return;
+    }
+    let trace = OperationTrace::start(TraceChain::Filesystem, "watcher_burst");
+    let has_upserts = pending
+        .values()
+        .any(|action| matches!(action, PendingPathAction::Upsert));
+    if has_upserts {
+        std::thread::sleep(Duration::from_millis(
+            runtime_config::notify_file_settle_ms(),
+        ));
+    }
+
+    let mut items = Vec::new();
+    let mut deletes = Vec::new();
+    for (path, action) in pending {
+        match action {
+            PendingPathAction::Upsert if path.is_file() => {
+                match LocalBackend::new_item_from_path(&path) {
+                    Ok(Some(item)) => items.push(item),
+                    Ok(None) => {}
+                    Err(error) => log_warning(
+                        &trace,
+                        "metadata_extract",
+                        format!("{}: {error}", path.display()),
+                    ),
+                }
+            }
+            PendingPathAction::Upsert | PendingPathAction::Delete => deletes.push(path),
+        }
+    }
+    if !items.is_empty() {
+        if let Err(error) = db_actor.execute_blocking_in_trace(
+            trace.clone(),
+            DbCommand::UpsertMediaBatch {
+                source: ChangeSource::FilesystemWatcher,
+                items,
+            },
+        ) {
+            log_error(&trace, "db_upsert_batch", &error);
+        }
+    }
+    if !deletes.is_empty() {
+        if let Err(error) = db_actor.execute_blocking_in_trace(
+            trace.clone(),
+            DbCommand::DeleteLiveByPaths {
+                source: ChangeSource::FilesystemWatcher,
+                paths: deletes,
+            },
+        ) {
+            log_error(&trace, "db_delete_batch", &error);
+        }
+    }
+}
+
 /// 把一条事件分发到"回收站对账"或"相册增量 upsert/delete"。
 ///
 /// 路径落在任一回收站根下 → 回收站事件（只置脏位，等防抖后批量对账）；否则按相册
 /// 事件走 [`handle_event`]。
+#[cfg(test)]
 fn dispatch_event(
     db_actor: &DbActorHandle,
     evt: Result<notify::Event, notify::Error>,
@@ -165,17 +271,21 @@ fn flush_trash_reconcile(db_actor: &DbActorHandle, pictures_root: &Path, trash_d
     }
     *trash_dirty = false;
     let trace = OperationTrace::start(TraceChain::Filesystem, "reconcile_trash");
-    let result = db_actor.execute_blocking_in_trace(
-        trace.clone(),
-        DbCommand::ReconcileTrash {
-            pictures_root: pictures_root.to_path_buf(),
-        },
-    );
+    let plan = match crate::core::trash::prepare_trash_reconcile(db_actor.pool(), pictures_root) {
+        Ok(plan) => plan,
+        Err(error) => {
+            log_error(&trace, "prepare_reconcile", &error);
+            return;
+        }
+    };
+    let result =
+        db_actor.execute_blocking_in_trace(trace.clone(), DbCommand::ReconcileTrash { plan });
     if let Err(error) = result {
         log_error(&trace, "db_reconcile", &error);
     }
 }
 
+#[cfg(test)]
 fn handle_event(db_actor: &DbActorHandle, evt: Result<notify::Event, notify::Error>) {
     let evt = match evt {
         Ok(e) => e,

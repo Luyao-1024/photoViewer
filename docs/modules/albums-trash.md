@@ -167,6 +167,15 @@ shows a migration suggestion if the probe succeeds.
 
 Trash views must distinguish reversible trash state from permanent delete. Database state and filesystem state need to remain consistent across restore/delete operations.
 
+Restore never overwrites a file that has appeared at the original path. It
+moves the trash payload with no-overwrite semantics, keeps `.trashinfo` until
+the DB row is committed live, and rolls the file back into trash if that commit
+fails. Permanent delete first renames the trash payload to a hidden sibling;
+the staged payload is restored on DB failure and removed only after the row
+delete commits. Batch actions report per-item failures, keep failed items
+selected, and still apply successful items instead of silently swallowing
+partial errors.
+
 The default backend is the system trash. On startup, if the stored backend is
 system trash, the app probes it once. A failed startup probe silently switches
 to the app trash so first launch does not block on a broken portal or distro

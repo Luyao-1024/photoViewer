@@ -25,7 +25,7 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
         DomainEvent::MediaUpserted { source, items } => {
             apply_upserted_batch(list, *source, items.clone());
         }
-        DomainEvent::MediaUpdated { items, .. } => {
+        DomainEvent::MediaUpdated { items, .. } | DomainEvent::MediaRestored { items, .. } => {
             apply_upserted_batch(list, ChangeSource::UserInteractive, items.clone());
         }
         DomainEvent::MediaRemoved { uris, .. } => {
@@ -42,7 +42,6 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
             remove_uris_batch(list, &uris);
         }
         DomainEvent::TrashChanged { .. }
-        | DomainEvent::MediaRestored { .. }
         | DomainEvent::AlbumsChanged { .. }
         | DomainEvent::AlbumCoverChanged { .. }
         | DomainEvent::AlbumsDirty { .. }
@@ -207,12 +206,17 @@ fn apply_absent_item_insertions(
     items: &[MediaItem],
 ) -> bool {
     let mut existing_uris = std::collections::HashSet::with_capacity(list.n_items() as usize);
+    let mut existing_ids = std::collections::HashSet::with_capacity(list.n_items() as usize);
     for i in 0..list.n_items() {
         if let Some(item) = item_at(list, i) {
             existing_uris.insert(item.uri);
+            existing_ids.insert(item.id);
         }
     }
-    if items.iter().any(|item| existing_uris.contains(&item.uri)) {
+    if items
+        .iter()
+        .any(|item| existing_uris.contains(&item.uri) || existing_ids.contains(&item.id))
+    {
         return false;
     }
 
@@ -272,7 +276,7 @@ fn apply_targeted_upserts(
             let Some(existing) = item_at(list, index) else {
                 continue;
             };
-            if existing.uri == item.uri {
+            if existing.uri == item.uri || existing.id == item.id {
                 existing_position = Some(index);
                 preserves_sort_position = compare_media_order(&item, &existing).is_eq();
                 list.remove(index);

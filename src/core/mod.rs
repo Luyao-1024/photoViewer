@@ -20,6 +20,7 @@ pub mod motion_photo;
 pub mod notify_watcher;
 pub mod orientation;
 pub mod prefs;
+pub mod process;
 pub mod refresh;
 pub mod repository;
 pub mod runtime_config;

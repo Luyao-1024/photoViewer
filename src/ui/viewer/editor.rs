@@ -70,6 +70,7 @@ impl ViewerPage {
     /// re-enable navigation gestures.
     pub(super) fn stop_editing(&self) {
         let imp = self.imp();
+        imp.editor_panel.get().cancel_preview();
         imp.is_editing.set(false);
         self.set_overlay_navigation_visible(true);
         self.set_zoom_controls_visible(imp.picture.get().is_visible());

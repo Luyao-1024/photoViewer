@@ -23,11 +23,10 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 
 `MainWindow` owns the sidebar and an `adw::NavigationView`.
 
-- The sidebar uses separate `Gtk.ListBox` regions with explicit target mirrors:
-  `sidebar_list` + `targets[index]` for Photos and the collapsible **Albums**
-  header, `album_list` + `album_targets[index]` inside a fixed-height
-  `Gtk.ScrolledWindow` for all album rows, and `trash_list` +
-  `trash_targets[index]` for the stable Trash row.
+- Photos/Trash and the small Media Types section use `Gtk.ListBox`. The
+  potentially large Albums section is a `gio::ListStore` presented by
+  `Gtk.ListView` inside a fixed-height `Gtk.ScrolledWindow`, so only visible
+  album rows are realized.
 - Photos row → pop to the root `PhotosPage`.
 - An album row → push that album's `AlbumDetailPage` **directly** (there is no
   intermediate album-grid page). The Albums header is non-selectable and only
@@ -46,7 +45,8 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 - Settings is launched from a fixed **gear button** in the sidebar footer, and now
   opens a popup `AdwDialog` instead of pushing a new navigation page.
 - Opening a photo pushes `ViewerPage`.
-- Viewer actions can open `EditorPage` or reveal side panels.
+- Viewer actions reveal the overlay `EditorPanel` or the details/filmstrip side
+  panels without replacing the current media page.
 
 Pages receive navigation and data dependencies via explicit setter methods rather than global state.
 
@@ -55,8 +55,10 @@ Pages receive navigation and data dependencies via explicit setter methods rathe
 Custom widgets follow the gtk4-rs composite template pattern:
 
 - `imp` module with `#[derive(CompositeTemplate)]`.
-- `#[template(file = "../../data/ui/<name>.ui")]`.
+- `#[template(resource = "/io/github/luyao_1024/photoviewer/ui/<name>.ui")]`.
 - `#[template_child]` fields stored in `RefCell`.
 - Public wrapper declared with `glib::wrapper!`.
 
-Edit the `.blp` source files. `build.rs` compiles them into `.ui` files and bundles UI/icon assets into a GResource during `cargo build`.
+Edit the `.blp` source files. `build.rs` compiles them under Cargo's `OUT_DIR`
+and bundles them into a GResource; generated `.ui` files never modify the
+source tree.

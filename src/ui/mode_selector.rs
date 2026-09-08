@@ -70,7 +70,7 @@ mod imp {
     use std::cell::Cell;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/mode-selector.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/mode-selector.ui")]
     pub struct ModeSelector {
         pub active_index: Cell<u32>,
         pub last_sync: Cell<LastSync>,

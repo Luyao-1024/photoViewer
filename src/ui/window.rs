@@ -235,7 +235,7 @@ mod imp {
 
     #[derive(gtk::CompositeTemplate, gtk::glib::Properties, Default)]
     #[properties(wrapper_type = super::MainWindow)]
-    #[template(file = "../../data/ui/window.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/window.ui")]
     pub struct MainWindow {
         pub pool: RefCell<Option<DbPool>>,
         pub db_actor: RefCell<Option<DbActorHandle>>,

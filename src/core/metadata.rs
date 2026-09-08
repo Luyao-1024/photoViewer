@@ -1033,18 +1033,20 @@ fn parse_exif_datetime(s: &str) -> Option<DateTime<Utc>> {
 /// 调用 `ffprobe` 提取视频元数据（JSON），返回 (摘要, 录制时间)。
 /// ffprobe 不可用或解析失败时返回 `None`，调用方退化为仅含 mime_type 的元数据。
 fn probe_video(path: &Path) -> Option<(VideoSummary, Option<DateTime<Utc>>)> {
-    let out = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
+    let out = crate::core::process::output(
+        Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+            ])
+            .arg(path),
+        crate::core::process::MEDIA_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         tracing::warn!(
             "probe_video: ffprobe 失败 {}: {}",

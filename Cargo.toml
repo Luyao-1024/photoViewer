@@ -40,12 +40,12 @@ lru = "0.12"
 gstreamer = "0.22"
 gstreamer-app = "0.22"
 gstreamer-video = "0.22"
+tempfile = "3"
 
 [build-dependencies]
 glib-build-tools = "0.19"
 cc = "1"
 
 [dev-dependencies]
-tempfile = "3"
 kamadak-exif = "0.6"
 walkdir = "2"

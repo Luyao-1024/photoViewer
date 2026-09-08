@@ -1,6 +1,7 @@
 //! 本地文件系统扫描后端
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
+use crate::core::identity::MediaId;
 use crate::core::media::{
     is_supported_media_path, media_kind_from_mime, mime_from_extension, MediaItem, MediaKind,
     NewMediaItem, MEDIA_SUBKIND_MOTION_PHOTO, MEDIA_SUBKIND_STANDARD,
@@ -67,6 +68,21 @@ fn file_index_time(meta: &std::fs::Metadata) -> Option<std::time::SystemTime> {
 
 pub struct LocalBackend {
     pool: DbPool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MissingLiveMedia {
+    pub id: MediaId,
+    pub uri: String,
+    pub folder_path: PathBuf,
+}
+
+/// A root must still be a readable directory immediately before both scan and
+/// prune. Missing/remounted/offline roots are skipped so their library rows
+/// are retained until the storage becomes available again.
+pub fn scan_root_is_available(root: &Path) -> bool {
+    std::fs::metadata(root).is_ok_and(|metadata| metadata.is_dir())
+        && std::fs::read_dir(root).is_ok()
 }
 
 fn is_excluded_path(path: &Path, excluded_roots: &[PathBuf]) -> bool {
@@ -183,6 +199,34 @@ impl LocalBackend {
         roots: &[PathBuf],
         excluded_roots: &[PathBuf],
     ) -> Result<Vec<String>> {
+        let missing = self.collect_missing_live_media_under_roots(roots, excluded_roots)?;
+        let ids: Vec<i64> = missing.iter().map(|item| item.id.get()).collect();
+        let removed_ids: std::collections::HashSet<i64> =
+            db::delete_media_by_ids_returning(&self.pool, &ids)?
+                .into_iter()
+                .collect();
+        Ok(missing
+            .into_iter()
+            .filter(|item| removed_ids.contains(&item.id.get()))
+            .map(|item| item.uri)
+            .collect())
+    }
+
+    /// Read DB locations and perform the potentially large filesystem stat
+    /// pass without mutating SQLite. The returned plan is safe to hand to the
+    /// DB actor for a short guarded delete transaction.
+    pub fn collect_missing_live_media_under_roots(
+        &self,
+        roots: &[PathBuf],
+        excluded_roots: &[PathBuf],
+    ) -> Result<Vec<MissingLiveMedia>> {
+        let available_roots: Vec<&PathBuf> = roots
+            .iter()
+            .filter(|root| scan_root_is_available(root))
+            .collect();
+        if available_roots.is_empty() {
+            return Ok(Vec::new());
+        }
         // 启动对账：清理「DB 仍为 live、但磁盘上已消失」的索引行。按存储列
         // `folder_path` 分桶后做两层批量，避免逐行 stat + 逐行事务：
         //   - 整目录消失 → 一条 `delete_live_media_by_folder` 删光该目录全部 live 行
@@ -192,7 +236,7 @@ impl LocalBackend {
         let rows = db::list_live_media_locations(&self.pool)?;
         let mut by_dir: HashMap<PathBuf, Vec<(i64, String, PathBuf)>> = HashMap::new();
         for (id, uri, path, folder) in rows {
-            if !roots.iter().any(|root| path.starts_with(root)) {
+            if !available_roots.iter().any(|root| path.starts_with(root)) {
                 continue;
             }
             if is_excluded_path(&path, excluded_roots) {
@@ -201,34 +245,25 @@ impl LocalBackend {
             by_dir.entry(folder).or_default().push((id, uri, path));
         }
 
-        let mut removed = Vec::new();
+        let mut missing = Vec::new();
         for (dir, entries) in by_dir {
             if !dir.exists() {
-                // 整目录消失：folder_path 精确匹配本桶，一条 DELETE 删光全部 live 行。
-                db::delete_live_media_by_folder(&self.pool, &dir)?;
-                removed.extend(entries.into_iter().map(|(_, uri, _)| uri));
+                missing.extend(entries.into_iter().map(|(id, uri, _)| MissingLiveMedia {
+                    id: MediaId::from(id),
+                    uri,
+                    folder_path: dir.clone(),
+                }));
                 continue;
             }
-            // 目录仍在：仅对真正缺失的文件按 id 分块批量删。
-            let missing: Vec<i64> = entries
-                .iter()
-                .filter(|(_, _, path)| !path.exists())
-                .map(|(id, _, _)| *id)
-                .collect();
-            if missing.is_empty() {
-                continue;
-            }
-            let deleted = db::delete_media_by_ids(&self.pool, &missing)?;
-            // `delete_media_by_ids` 带 `trashed_at IS NULL` 守卫；并发 trash 的极小窗口下
-            // 实际删除数可能少于 missing，按 deleted 截断避免向 UI 多报已删 uri。
-            let mut missing_entries = entries.into_iter().filter(|(_, _, path)| !path.exists());
-            for _ in 0..deleted {
-                if let Some((_, uri, _)) = missing_entries.next() {
-                    removed.push(uri);
-                }
-            }
+            missing.extend(entries.into_iter().filter_map(|(id, uri, path)| {
+                (!path.exists()).then(|| MissingLiveMedia {
+                    id: MediaId::from(id),
+                    uri,
+                    folder_path: dir.clone(),
+                })
+            }));
         }
-        Ok(removed)
+        Ok(missing)
     }
 
     #[tracing::instrument(
@@ -399,7 +434,14 @@ impl LocalBackend {
         let mut pending: Vec<NewMediaItem> = Vec::new();
         let mut last_flush = Instant::now();
         loop {
-            let timeout = UPSERT_FLUSH_INTERVAL.saturating_sub(last_flush.elapsed());
+            // No batch has a deadline until its first item arrives. In
+            // particular, an unchanged scan must not poll with a zero timeout.
+            let timeout = if pending.is_empty() {
+                last_flush = Instant::now();
+                UPSERT_FLUSH_INTERVAL
+            } else {
+                UPSERT_FLUSH_INTERVAL.saturating_sub(last_flush.elapsed())
+            };
             match item_rx.recv_timeout(timeout) {
                 Ok(WorkOutcome::Item(item)) => pending.push(*item),
                 Ok(WorkOutcome::NoneMime) => none_mime += 1,

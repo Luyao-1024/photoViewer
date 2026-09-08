@@ -36,9 +36,9 @@ covered by CI have run for the exact commit being handed off:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
-cargo build --all-targets
-tools/with-at-spi.sh xvfb-run -a cargo test --all
+cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
+cargo build --locked --all-targets
+tools/with-at-spi.sh xvfb-run -a cargo test --locked --all
 ```
 
 If GitHub Actions has already run these checks successfully for the exact
@@ -73,6 +73,28 @@ should declare `#[cfg(test)] mod tests;`, with test bodies in child test files.
   `src/ui/media_grid/loading/tests.rs`.
 - Cross-module source-structure assertions stay under `tests/`, such as
   `tests/inline_test_ownership.rs`.
+
+Prefer behavior, query-plan, widget-state, and compile-time boundary tests over
+asserting incidental source strings. Source-structure tests are appropriate
+only for ownership rules that Rust's visibility/type system cannot express;
+do not use them to pin function names, formatting, or implementation order.
+
+<!-- TODO(test): Add fault-injection integration coverage for edit save: a
+database-commit failure after publishing an overwrite must restore the `.bak`,
+and a competing save must be rejected without modifying either output. -->
+
+<!-- TODO(test): Add filesystem fault-injection coverage for trash restore and
+permanent delete, including cross-device moves and DB commit failure rollback. -->
+
+<!-- TODO(test): Add a deterministic watcher stress test for a burst of
+create/modify/rename/delete events, asserting final-path coalescing and bounded
+DB command submission. -->
+
+<!-- TODO(test): Add subprocess helper coverage using descendant processes to
+verify timeout/output-limit cleanup kills the whole process group. -->
+
+<!-- TODO(test): Add GTK interaction coverage for editor preview token
+cancellation and save-control disabling while a background render is pending. -->
 
 ## Liquid Glass Warnings
 

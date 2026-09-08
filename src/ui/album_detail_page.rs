@@ -29,7 +29,7 @@ mod imp {
     use super::*;
 
     #[derive(Default, gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/album-detail-page.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/album-detail-page.ui")]
     pub struct AlbumDetailPage {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub master_media_list: RefCell<Option<gtk::gio::ListStore>>,

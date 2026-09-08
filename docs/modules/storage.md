@@ -40,9 +40,11 @@ writer at a time even in WAL mode; the timeout lets the filesystem watcher,
 startup scan, thumbnail workers, and foreground mutations wait through short
 writer contention instead of reporting a spurious `database is locked` error.
 `schema.sql` is embedded with `include_str!` and creates the current schema for
-new databases. There is no schema migration or automatic recovery path: when
-the schema changes during development, delete the existing database and saved
-thumbnail cache before launching the updated application.
+new databases. `init_pool` also runs transactional, versioned migrations using
+SQLite `PRAGMA user_version`; the version-1 migration upgrades historical
+unversioned libraries in place and preserves media, favorites, album order,
+and custom covers. A database newer than the running application is rejected
+without modification.
 
 UI-facing database access should go through `core::repository::MediaRepository`.
 `core::db` remains the low-level SQL module, but widgets and pages
@@ -62,6 +64,9 @@ vocabulary and receiver payload. `MediaChangeNotifier` remains as the
 scanner/watcher producer facade, but its channel emits domain events directly.
 UI projections such as the bounded `gio::ListStore` consume those domain
 events through explicit adapters rather than through a second event vocabulary.
+The authoritative `DomainEventSender` channel is bounded and lossless: DB and
+filesystem worker threads accept backpressure rather than allowing an
+unbounded UI event backlog.
 
 All production SQLite writes go through the single `core::db_actor::DbActor`
 connection owner. `DbActorHandle` accepts a priority queue: user-interactive
@@ -112,14 +117,16 @@ Keep the filtered sort indexes (`idx_media_folder_sort`,
 place so switching between albums does not build temporary sort tables over
 large media collections.
 
-Viewer previous/next navigation uses `MediaRepository::neighbor()` and must stay
+Viewer previous/next and prefetch use `MediaRepository::neighbor_item()` and must stay
 behind DB-level neighbour queries for the same projections: live media,
 search/search-kind results, folder albums, favorites, image/video type albums,
 motion photos, and trash. Trash uses its own `trashed_at DESC, id DESC` order.
 Avoid implementing viewer navigation by calling `page(query, 0, u32::MAX)` for
 these projections; that materializes large result sets and makes repeated
 left/right navigation scale with the whole album, search result, or trash table
-instead of one adjacent row.
+instead of one adjacent row. The interactive path performs a `(sort key, id)`
+index seek and does not compute `ROW_NUMBER`, a global count, or a full-table
+offset.
 
 ## Media Model
 
@@ -129,7 +136,7 @@ instead of one adjacent row.
 
 ## Preferences
 
-User preferences are stored as JSON in `settings.json` under `config_dir()`. The file is a preserved-key object: writing one preference must keep unrelated keys intact. Current keys include `liquid_glass`, `liquid_glass_transparency` (clamped `0.0..=1.0`, default `0.0`; `0.0` is opaque and `1.0` is transparent), `video_default_muted` (default `true`), and `video_volume` (clamped `0.0..=1.0`, default `1.0`). Disabling `video_default_muted` also recovers `video_volume` to `1.0` when an earlier muted stream left a stale `0.0`, so "start unmuted" does not still produce silence; existing config files with `video_default_muted=false` and `video_volume=0.0` are treated the same way on read.
+User preferences are stored as JSON in `settings.json` under `config_dir()`. The file is a preserved-key object: writing one preference must keep unrelated keys intact. Writes use a synced sibling temporary file plus atomic rename; malformed existing JSON is copied to a timestamped `.corrupt-*` backup before replacement. Current keys include `liquid_glass`, `liquid_glass_transparency` (clamped `0.0..=1.0`, default `0.0`; `0.0` is opaque and `1.0` is transparent), `video_default_muted` (default `true`), and `video_volume` (clamped `0.0..=1.0`, default `1.0`). Disabling `video_default_muted` also recovers `video_volume` to `1.0` when an earlier muted stream left a stale `0.0`, so "start unmuted" does not still produce silence; existing config files with `video_default_muted=false` and `video_volume=0.0` are treated the same way on read.
 
 Scan path preferences also live in `settings.json`. `custom_scan_roots` is an array of absolute directories added after the default Pictures/Videos roots. `excluded_scan_roots` is an array of absolute directories skipped by startup scans and runtime filesystem watching. These settings affect indexing only: excluding a folder must not delete files from disk, and must not call trash/delete operations. The Settings dialog, scan path rows, restart prompts after scan/runtime changes, storage usage rows, and the combined cache-data cleanup dialog live in `src/ui/window/settings.rs`. That one destructive action deletes thumbnail files, resets media-library database content without touching original files or preferences, then automatically restarts the application.
 
@@ -151,6 +158,9 @@ after the scan finishes.
 Invalid or out-of-bounds motion metadata is ignored and the file remains a standard image. Viewer playback extracts only the persisted video byte range to a temporary MP4 and falls back to still-image display on failure.
 
 **Video metadata comes from `ffprobe`.** For `video/*` items, `extract()` shells out to `ffprobe -print_format json -show_format -show_streams` (parsed with `serde_json::Value`, no `serde` derive) and fills `width`/`height`/`taken_at` (so videos sort and group by time like photos) plus a `VideoSummary` (duration, codec + profile, fps, bitrate, container, make/model). `video_duration_secs` is persisted on `media_items` for browsing badges; richer fields such as codec, fps, bitrate, container, and camera make/model are not persisted and are re-fetched at view time by the details panel, exactly like the EXIF camera summary. If `ffprobe` is missing or fails, the video branch returns only `mime_type` — non-fatal; the panel still shows name/type/size and the browsing badge falls back to an unknown duration label.
+`ffprobe` and `ffmpegthumbnailer` run through the shared bounded subprocess
+helper: each gets a 15-second timeout, a 4 MiB stdout/stderr cap, and an owned
+process group that is terminated on timeout so helper descendants cannot leak.
 
 **HEIC/HEIF needs a dedicated EXIF path.** kamadak-exif's `read_from_container` *can* parse the ISOBMFF container, but it caps the Exif item at `MAX_EXIF_SIZE = 65535` bytes. Camera phones (iPhone, many Androids) embed a high-resolution JPEG thumbnail inside the Exif item, pushing it to several hundred KB, so kamadak-exif rejects those files with "Exif data too large" and EXIF silently comes back empty. Both `metadata::read_exif` and `orientation::read_exif` therefore route `image/heic` through a shared in-tree ISOBMFF parser (`extract_heic_exif_tiff` and helpers) that locates the `Exif` item via `meta`/`iinf`/`iloc`, gathers its bytes (construction methods 0 and 1), strips the 4-byte `tiff_header_offset` prefix, and hands the raw TIFF block to `exif::Reader::read_raw` (no size cap). Do not "simplify" this back to `read_from_container` for HEIC — it reintroduces empty-EXIF for real phone photos and causes thumbnail generation failures ("Exif data too large"). The regression is guarded by `oversized_heic_exif_item_is_recovered` in `metadata.rs`.
 
@@ -165,6 +175,11 @@ The local backend scans filesystem paths and inserts/updates media rows. Startup
 - Duplicate paths.
 - Deletions and trash transitions.
 - UI change notification timing.
+
+A root must be a readable directory immediately before scanning and again
+before missing-file reconciliation. Unavailable/offline roots are skipped and
+their existing DB rows are retained; absence of a mount is not evidence that
+every file on it was deleted.
 
 Startup must not wait for the full filesystem scan before showing Photos.
 `app::initialize` loads only the first configured live DB rows
@@ -209,16 +224,10 @@ storage tasks in order, off the GTK thread:
 3. Reconcile indexed live rows against disk for the scanned roots: if a row is
    `trashed_at IS NULL`, is not under an excluded root, and its `path` no longer
    exists, delete that DB row and emit `DomainEvent::MediaRemoved`. This covers
-   files deleted outside the app while it was closed; it must run as a single
-   sequential pass in the same background startup worker and must not block
-   foreground interaction. The reconcile batches by the stored `folder_path`
-   column rather than per file: when a whole folder is gone (e.g. an album
-   deleted outside the app), one `delete_live_media_by_folder` DELETE removes
-   every live row under it; when the folder still exists but individual files
-   are missing, their ids are collected and removed via chunked
-   `delete_media_by_ids`. Both paths keep the `trashed_at IS NULL` guard and the
-   root/excluded scope filter, so a 100k-row deleted album converges in ~1 stat
-   + 1 DELETE instead of one transaction per file.
+   files deleted outside the app while it was closed. The filesystem stat pass
+   runs in the background startup worker and produces a missing-row plan; only
+   the short guarded batch delete is sent to the DB actor. The root/excluded
+   scope and `trashed_at IS NULL` guard remain authoritative.
 4. Refresh album projections/sidebar data after scan and prune have converged.
 5. Reconcile known trash roots into the DB and emit `TrashChanged` so a
    visible Trash view refreshes.
@@ -244,6 +253,11 @@ all stale rows have been pruned.
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.
 
 **Trash roots are also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the system trash roots and app trash root. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
+Normal media events use the same quiet burst: changes are coalesced by path,
+file settling happens once, metadata upserts are submitted in one batch, and
+deletions use one transaction. Trash reconciliation is also two-phase: trash
+root traversal/metadata extraction runs outside the DB actor and the actor only
+commits the prepared row changes.
 
 ## Thumbnails
 

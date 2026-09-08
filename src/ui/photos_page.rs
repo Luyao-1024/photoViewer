@@ -61,7 +61,7 @@ mod imp {
     use adw::subclass::prelude::*;
 
     #[derive(gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/photos-page.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/photos-page.ui")]
     pub struct PhotosPage {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,

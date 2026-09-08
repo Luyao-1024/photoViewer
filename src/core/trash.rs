@@ -29,7 +29,7 @@ use crate::core::backend::local::LocalBackend;
 use crate::core::db::{self, DbPool};
 use crate::core::error::{AppError, Result};
 use crate::core::identity::MediaId;
-use crate::core::media::is_supported_media_path;
+use crate::core::media::{is_supported_media_path, NewMediaItem};
 use crate::core::prefs::{self, TrashBackend};
 use gtk::gio::prelude::*;
 use gtk4 as gtk;
@@ -581,6 +581,14 @@ pub struct ReconcileStats {
     pub skipped: usize,
 }
 
+#[derive(Debug, Default)]
+pub struct TrashReconcilePlan {
+    pub(crate) new_items: Vec<NewMediaItem>,
+    pub(crate) mark_ids: Vec<MediaId>,
+    pub(crate) prune_ids: Vec<MediaId>,
+    pub(crate) skipped: usize,
+}
+
 /// 启动时把 DB 的回收站状态与系统回收站做**完全对账**（双向收敛）。
 ///
 /// App 的回收站视图 = DB 里 `trashed_at` 标记的行，**不是**系统回收站的实时镜像
@@ -602,17 +610,32 @@ pub struct ReconcileStats {
 /// trashed 行重新 upsert 成 live（[`crate::core::backend::local::LocalBackend::upsert`]
 /// 清 `trashed_at`），于是 prune 不会误删还原项。幂等：多次启动只做收敛。
 pub fn reconcile_trash(pool: &DbPool, pictures_root: &Path) -> Result<ReconcileStats> {
-    reconcile_trash_in(pool, pictures_root, &trash_roots())
+    let plan = prepare_trash_reconcile(pool, pictures_root)?;
+    commit_trash_reconcile(pool, plan)
+}
+
+pub fn prepare_trash_reconcile(pool: &DbPool, pictures_root: &Path) -> Result<TrashReconcilePlan> {
+    prepare_trash_reconcile_in(pool, pictures_root, &trash_roots())
 }
 
 /// [`reconcile_trash`] 的可测试核心：显式传入候选回收站根，避免单测依赖真实
 /// `~/.local/share/Trash` 与环境变量。
+#[cfg(test)]
 fn reconcile_trash_in(
     pool: &DbPool,
     pictures_root: &Path,
     trash_roots: &[PathBuf],
 ) -> Result<ReconcileStats> {
-    let mut stats = ReconcileStats::default();
+    let plan = prepare_trash_reconcile_in(pool, pictures_root, trash_roots)?;
+    commit_trash_reconcile(pool, plan)
+}
+
+fn prepare_trash_reconcile_in(
+    pool: &DbPool,
+    pictures_root: &Path,
+    trash_roots: &[PathBuf],
+) -> Result<TrashReconcilePlan> {
+    let mut plan = TrashReconcilePlan::default();
     let backend = LocalBackend::new(pool.clone());
 
     for root in trash_roots {
@@ -640,47 +663,44 @@ fn reconcile_trash_in(
 
             // 只回收原路径在相册目录下的条目；其余（下载/文档等）忽略。
             if !original_path.starts_with(pictures_root) {
-                stats.skipped += 1;
+                plan.skipped += 1;
                 continue;
             }
             // HOST 回收站包含文档、文本等非本 App 索引的文件。先按媒体扩展
             // 跳过，避免普通非媒体条目进入元数据解析并产生启动 warning。
             if !is_supported_media_path(&original_path) {
-                stats.skipped += 1;
+                plan.skipped += 1;
                 continue;
             }
             // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
             if original_path.exists() {
-                stats.skipped += 1;
+                plan.skipped += 1;
                 continue;
             }
             let trash_file = files_dir.join(actual);
             if !trash_file.is_file() {
-                stats.skipped += 1;
+                plan.skipped += 1;
                 continue;
             }
 
             let uri = format!("file://{}", original_path.display());
             match db::get_media_item_by_uri(pool, &uri)? {
                 Some(existing) if existing.trashed_at.is_some() => {
-                    stats.skipped += 1; // 已是 trashed，无需处理
+                    plan.skipped += 1; // 已是 trashed，无需处理
                 }
                 Some(existing) => {
-                    db::mark_trashed(pool, existing.id)?;
-                    stats.marked += 1;
+                    plan.mark_ids.push(MediaId::from(existing.id));
                 }
                 None => {
                     let folder = original_path.parent().unwrap_or_else(|| Path::new("/"));
                     match backend.process_file_at(&trash_file, &uri, &original_path, folder) {
                         Ok(item) => {
-                            let id = db::insert_media_item(pool, &item)?;
-                            db::mark_trashed(pool, id)?;
-                            stats.inserted += 1;
+                            plan.new_items.push(item);
                         }
                         Err(e) => {
                             // 非图片 / 无法解码：跳过，不影响其余条目。
                             tracing::warn!("回收站对账：解析 {} 失败: {}", trash_file.display(), e);
-                            stats.skipped += 1;
+                            plan.skipped += 1;
                         }
                     }
                 }
@@ -696,14 +716,34 @@ fn reconcile_trash_in(
             continue; // 已还原，交给扫描
         }
         if find_trash_entry_in(&row.path, trash_roots).is_none() {
-            if let Err(e) = db::delete_media_item(pool, row.id) {
-                tracing::warn!("回收站对账：删除过期行 {} 失败: {}", row.id, e);
-            } else {
-                stats.pruned += 1;
-            }
+            plan.prune_ids.push(MediaId::from(row.id));
         }
     }
 
+    Ok(plan)
+}
+
+pub(crate) fn commit_trash_reconcile(
+    pool: &DbPool,
+    plan: TrashReconcilePlan,
+) -> Result<ReconcileStats> {
+    let mut stats = ReconcileStats {
+        skipped: plan.skipped,
+        ..Default::default()
+    };
+    for id in plan.mark_ids {
+        db::mark_trashed(pool, id.get())?;
+        stats.marked += 1;
+    }
+    let inserted = db::upsert_media_items_batch(pool, &plan.new_items)?;
+    for item in inserted {
+        db::mark_trashed(pool, item.id)?;
+        stats.inserted += 1;
+    }
+    for id in plan.prune_ids {
+        db::delete_media_item(pool, id.get())?;
+        stats.pruned += 1;
+    }
     Ok(stats)
 }
 
@@ -728,6 +768,122 @@ pub fn restore_from_trash(uri: &str) -> Result<()> {
 }
 
 fn restore_from_trash_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()> {
+    prepare_restore_in_roots(uri, trash_roots)?.commit();
+    Ok(())
+}
+
+/// Keep trash metadata until the corresponding database commit succeeds.
+pub(crate) struct PreparedRestore {
+    original: PathBuf,
+    trashed: PathBuf,
+    info: PathBuf,
+    committed: bool,
+}
+
+impl PreparedRestore {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+        if let Err(error) = std::fs::remove_file(&self.info) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    "restored file, but failed to remove {}: {error}",
+                    self.info.display()
+                );
+            }
+        }
+    }
+}
+
+impl Drop for PreparedRestore {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Err(error) = gtk::gio::File::for_path(&self.original).move_(
+                &gtk::gio::File::for_path(&self.trashed),
+                gtk::gio::FileCopyFlags::NONE,
+                gtk::gio::Cancellable::NONE,
+                None,
+            ) {
+                tracing::error!(
+                    "restore database commit failed; file remains at {}: {error}",
+                    self.original.display()
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn prepare_restore(uri: &str) -> Result<PreparedRestore> {
+    prepare_restore_in_roots(uri, &trash_roots())
+}
+
+/// Stage a trash file under a hidden sibling name. If the following database
+/// delete fails, dropping this value restores the original trash entry. Once
+/// committed, cleanup is best-effort; an undeletable staged file remains
+/// recoverable on disk instead of leaving a DB row pointing at no file.
+pub(crate) struct PreparedPermanentDelete {
+    original: PathBuf,
+    staged: PathBuf,
+    info: PathBuf,
+    committed: bool,
+}
+
+impl PreparedPermanentDelete {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+        if let Err(error) = std::fs::remove_file(&self.staged) {
+            tracing::error!(
+                "permanent delete committed, but staged file remains at {}: {error}",
+                self.staged.display()
+            );
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(&self.info) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("failed to remove {}: {error}", self.info.display());
+            }
+        }
+    }
+}
+
+impl Drop for PreparedPermanentDelete {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Err(error) = std::fs::rename(&self.staged, &self.original) {
+                tracing::error!(
+                    "delete database commit failed; trash file remains at {}: {error}",
+                    self.staged.display()
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn prepare_permanent_delete(uri: &str) -> Result<PreparedPermanentDelete> {
+    prepare_permanent_delete_in_roots(uri, &trash_roots())
+}
+
+fn prepare_permanent_delete_in_roots(
+    uri: &str,
+    trash_roots: &[PathBuf],
+) -> Result<PreparedPermanentDelete> {
+    let rest = uri
+        .strip_prefix("file://")
+        .ok_or_else(|| AppError::Backend("staged delete requires a local file URI".into()))?;
+    let original_path = Path::new(rest);
+    let (actual_name, info) = resolve_trash_entry_in_roots(original_path, trash_roots)?;
+    let original = files_dir_for(&info).join(actual_name);
+    let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let staged = original.with_extension(format!("photo-viewer-delete-{suffix}"));
+    std::fs::rename(&original, &staged)?;
+    Ok(PreparedPermanentDelete {
+        original,
+        staged,
+        info,
+        committed: false,
+    })
+}
+
+fn prepare_restore_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<PreparedRestore> {
     let file = gtk::gio::File::for_uri(uri);
     let path = file
         .path()
@@ -737,32 +893,25 @@ fn restore_from_trash_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()>
     let trash_child = gtk::gio::File::for_path(files_dir_for(&trashinfo_path).join(&actual_name));
     let target = gtk::gio::File::for_path(&path);
 
-    // 先移动数据文件
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // No overwrite: a new file at the original path belongs to the user.
     trash_child
         .move_(
             &target,
-            gtk::gio::FileCopyFlags::OVERWRITE,
+            gtk::gio::FileCopyFlags::NONE,
             gtk::gio::Cancellable::NONE,
             None,
         )
         .map_err(AppError::Gio)?;
 
-    // 再清理对应的 .trashinfo（gio 不再负责）
-    // 仅在 trashinfo 存在且 Path 字段（decode 后）匹配时才删除（避免误删）
-    if trashinfo_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&trashinfo_path) {
-            let matches = content
-                .lines()
-                .find(|l| l.starts_with("Path="))
-                .map(|l| Path::new(&percent_decode(&l["Path=".len()..])) == path)
-                .unwrap_or(false);
-            if matches {
-                let _ = std::fs::remove_file(&trashinfo_path);
-            }
-        }
-    }
-
-    Ok(())
+    Ok(PreparedRestore {
+        original: path,
+        trashed: files_dir_for(&trashinfo_path).join(actual_name),
+        info: trashinfo_path,
+        committed: false,
+    })
 }
 
 /// 永久删除回收站中的文件

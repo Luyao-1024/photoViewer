@@ -8,6 +8,7 @@ use photo_viewer::core::albums;
 use photo_viewer::core::bootstrap;
 use photo_viewer::core::db;
 use photo_viewer::core::events::{ChangeSource, DomainEvent};
+use photo_viewer::core::media::NewMediaItem;
 use photo_viewer::core::media_change_notifier::MediaChangeNotifier;
 
 #[test]
@@ -89,4 +90,39 @@ fn scan_and_aggregate_with_actor_emits_actor_events() {
         }
         other => panic!("expected startup scan actor event, got {other:?}"),
     }
+}
+
+#[test]
+fn unavailable_scan_root_keeps_existing_library_rows() {
+    let dir = tmp_dir();
+    let unavailable = dir.path().join("offline-volume");
+    let path = unavailable.join("Camera/kept.jpg");
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    db::upsert_media_items_batch(
+        &pool,
+        &[NewMediaItem {
+            uri: format!("file://{}", path.display()),
+            path: path.clone(),
+            folder_path: path.parent().unwrap().to_path_buf(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(1),
+            height: Some(1),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: chrono::Utc::now(),
+            file_size: 1,
+            blake3_hash: "kept".into(),
+        }],
+    )
+    .unwrap();
+
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        bootstrap::scan_and_aggregate(&pool, &[unavailable])
+            .await
+            .unwrap();
+    });
+
+    assert_eq!(db::list_all_media(&pool).unwrap().len(), 1);
 }

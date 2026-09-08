@@ -249,7 +249,7 @@ mod imp {
     use super::*;
 
     #[derive(gtk::CompositeTemplate)]
-    #[template(file = "../../data/ui/virtual-media-grid.ui")]
+    #[template(resource = "/io/github/luyao_1024/photoviewer/ui/virtual-media-grid.ui")]
     pub struct VirtualMediaGrid {
         #[template_child]
         pub grid: TemplateChild<gtk::GridView>,

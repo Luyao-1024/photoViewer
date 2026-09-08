@@ -4,6 +4,7 @@ use chrono::Utc;
 use common::*;
 use photo_viewer::core::db;
 use photo_viewer::core::edit::destructive_rotate;
+use photo_viewer::core::edit::Rotation;
 use photo_viewer::core::edit::{save, EditRegistry, EditState};
 use photo_viewer::core::media::NewMediaItem;
 use photo_viewer::core::orientation::read_orientation;
@@ -296,4 +297,42 @@ fn save_overwrite_recovers_png_path_that_contains_jpeg_bytes() {
         overwritten_bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "Save Overwrite should rewrite mismatched .png paths as valid PNG"
     );
+}
+
+#[test]
+fn overwrite_atomically_updates_dimensions_and_invalidates_thumbnail() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let item = make_test_item(dir.path());
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
+    common::db::mark_thumbnails_generated(&pool, &[id]).unwrap();
+    let media_item = db::get_media_item(&pool, id).unwrap();
+    let state = EditState {
+        rotation: Rotation::R90,
+        ..Default::default()
+    };
+
+    save::save_overwrite(&media_item, &state, &pool, &EditRegistry::new_with_v1()).unwrap();
+
+    let updated = db::get_media_item(&pool, id).unwrap();
+    assert_eq!((updated.width, updated.height), (Some(48), Some(64)));
+    let thumbnail_invalidated: bool = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT thumbnail_generated_at IS NULL FROM media_items WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(thumbnail_invalidated);
+    assert!(dir
+        .path()
+        .read_dir()
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .all(|entry| !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".photo-viewer-save-")));
 }

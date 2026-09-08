@@ -5,12 +5,7 @@ use crate::core::media::NewMediaItem;
 use chrono::Utc;
 use notify::{event::RemoveKind, Event};
 
-fn actor_for(
-    pool: db::DbPool,
-) -> (
-    DbActorHandle,
-    tokio::sync::mpsc::UnboundedReceiver<DomainEvent>,
-) {
+fn actor_for(pool: db::DbPool) -> (DbActorHandle, tokio::sync::mpsc::Receiver<DomainEvent>) {
     let (sender, rx) = crate::core::events::DomainEventSender::new();
     (crate::core::db_actor::start_db_actor(pool, sender), rx)
 }
@@ -103,6 +98,65 @@ fn remove_event_accepts_video_media_extension() {
         Ok(DomainEvent::MediaRemoved { uris, .. }) => assert_eq!(uris, vec![uri]),
         other => panic!("expected Removed for video, got {other:?}"),
     }
+}
+
+#[test]
+fn event_burst_coalesces_paths_into_one_database_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let paths = [dir.path().join("a.jpg"), dir.path().join("b.jpg")];
+    for path in &paths {
+        db::insert_media_item(
+            &pool,
+            &NewMediaItem {
+                uri: format!("file://{}", path.display()),
+                path: path.clone(),
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: Utc::now(),
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap();
+    }
+    let (actor, mut receiver) = actor_for(pool.clone());
+    let mut trash_dirty = false;
+    flush_event_burst(
+        &actor,
+        paths
+            .iter()
+            .cloned()
+            .map(|path| {
+                Ok(Event {
+                    kind: EventKind::Remove(RemoveKind::File),
+                    paths: vec![path],
+                    attrs: Default::default(),
+                })
+            })
+            .collect(),
+        &[],
+        &[],
+        &mut trash_dirty,
+    );
+
+    assert!(db::list_all_media(&pool).unwrap().is_empty());
+    let DomainEvent::MediaRemoved { mut uris, .. } = receiver.try_recv().unwrap() else {
+        panic!("expected one batched remove event");
+    };
+    uris.sort();
+    let mut expected: Vec<String> = paths
+        .iter()
+        .map(|path| format!("file://{}", path.display()))
+        .collect();
+    expected.sort();
+    assert_eq!(uris, expected);
 }
 
 /// Regression: 删除到回收站后 gio 把文件移出受监听目录，watcher 会收到
