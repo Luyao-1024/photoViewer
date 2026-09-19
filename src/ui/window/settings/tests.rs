@@ -325,6 +325,73 @@ fn webdav_connection_form_is_disabled_and_collapsed_until_enabled() {
 }
 
 #[gtk::test]
+fn webdav_job_uploads_only_checked_albums_and_keeps_cloud_download_copy() {
+    let _ = gtk::init();
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.WindowWebDavAlbumScope")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    let camera = local_root.join("Camera");
+    std::fs::create_dir_all(&camera).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let camera_string = camera.to_string_lossy().into_owned();
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO albums (folder_path, name, photo_count, last_modified)
+             VALUES (?1, 'Camera', 1, unixepoch())",
+            [&camera_string],
+        )
+        .unwrap();
+    let store = crate::core::sync::SyncStore::new(pool.clone());
+    let job = store
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test".into(),
+            username: "alice".into(),
+            credential_ref: "ui-album-scope".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+            upload_albums: vec!["Camera".into()],
+        })
+        .unwrap();
+    store.set_job_paused(job.id, true).unwrap();
+    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+
+    let window = MainWindow::new(&app);
+    *window.imp().pool.borrow_mut() = Some(pool.clone());
+    window.set_db_actor(actor);
+    let host = window.clone().upcast::<gtk::Widget>();
+    let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
+    let row = find_expander_row(&page, &tr("setting.sync.upload_albums"))
+        .expect("configured WebDAV job should expose album upload choices");
+    assert!(row.is_sensitive(), "paused jobs should allow scope editing");
+    assert!(
+        row.subtitle().contains('1'),
+        "selection subtitle should report one checked album"
+    );
+
+    let mut checks = Vec::new();
+    collect_check_buttons(&row.clone().upcast::<gtk::Widget>(), &mut checks);
+    assert_eq!(checks.len(), 1);
+    assert!(checks[0].is_active());
+    checks[0].set_active(false);
+    assert!(
+        crate::core::sync::SyncStore::new(pool)
+            .upload_albums(job.id)
+            .unwrap()
+            .is_empty(),
+        "unchecking the album should persist an empty upload selection"
+    );
+}
+
+#[gtk::test]
 fn settings_page_exposes_trash_backend_controls() {
     let _ = gtk::init();
     let app = adw::Application::builder()

@@ -10,7 +10,7 @@ pub mod webdav;
 
 pub use model::{
     Baseline, ConflictKind, EntrySnapshot, Fingerprint, Observation, PlanAction, Revision,
-    RevisionStrength, SyncDirection,
+    RevisionStrength, SyncDirection, UploadScope,
 };
 pub use provider::{
     ProviderCapabilities, ProviderError, ProviderResult, RemoteEntry, SyncProvider, WriteCondition,

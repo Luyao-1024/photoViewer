@@ -90,7 +90,8 @@ flowchart TB
 | 实体 | 最小持久信息 |
 |---|---|
 | sync_connections | provider 类型、端点、凭据引用、能力和探测结果 |
-| sync_jobs | 双方根目录、范围、策略、配置代次、暂停状态 |
+| sync_jobs | 双方根目录、上传范围模式、策略、配置代次、暂停状态 |
+| sync_job_upload_albums | 明确允许上行的实体相册；未选范围保持全量下行 |
 | sync_entries | 双方观察、共同基线、独立对象 ID、可空 MediaId、缺失/删除状态 |
 | sync_tasks | OperationId、EntryId、操作类型、预期版本、配置/条目代次、产物引用、状态、重试时间 |
 | sync_conflicts | 基线、冲突双方版本、原因、用户选择及选择时的版本 |

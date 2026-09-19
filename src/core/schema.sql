@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     local_root        TEXT NOT NULL,
     remote_root       TEXT NOT NULL,
     direction         TEXT NOT NULL DEFAULT 'bidirectional',
+    upload_scope      TEXT NOT NULL DEFAULT 'selected_albums',
     propagate_deletes INTEGER NOT NULL DEFAULT 0,
     paused            INTEGER NOT NULL DEFAULT 0,
     config_generation INTEGER NOT NULL DEFAULT 1,
@@ -145,6 +146,12 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     last_completed_at INTEGER,
     last_error        TEXT,
     UNIQUE(connection_id, local_root, remote_root)
+);
+
+CREATE TABLE IF NOT EXISTS sync_job_upload_albums (
+    job_id          INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    relative_album  TEXT NOT NULL,
+    PRIMARY KEY(job_id, relative_album)
 );
 
 CREATE TABLE IF NOT EXISTS sync_entries (

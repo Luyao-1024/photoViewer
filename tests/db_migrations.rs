@@ -27,6 +27,7 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"settings".to_string()));
     assert!(tables.contains(&"sync_connections".to_string()));
     assert!(tables.contains(&"sync_jobs".to_string()));
+    assert!(tables.contains(&"sync_job_upload_albums".to_string()));
     assert!(tables.contains(&"sync_entries".to_string()));
     assert!(tables.contains(&"sync_tasks".to_string()));
     assert!(tables.contains(&"sync_conflicts".to_string()));
@@ -332,7 +333,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert_eq!(
         connection
             .query_row(
@@ -352,6 +353,66 @@ fn unversioned_library_migrates_without_losing_user_data() {
             )
             .unwrap(),
         "file:///library/a.gif"
+    );
+}
+
+#[test]
+fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v3.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sync_connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider_kind TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                username TEXT NOT NULL,
+                credential_ref TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE sync_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id INTEGER NOT NULL REFERENCES sync_connections(id) ON DELETE CASCADE,
+                local_root TEXT NOT NULL,
+                remote_root TEXT NOT NULL,
+                direction TEXT NOT NULL DEFAULT 'bidirectional',
+                propagate_deletes INTEGER NOT NULL DEFAULT 0,
+                paused INTEGER NOT NULL DEFAULT 0,
+                config_generation INTEGER NOT NULL DEFAULT 1,
+                last_started_at INTEGER,
+                last_completed_at INTEGER,
+                last_error TEXT,
+                UNIQUE(connection_id, local_root, remote_root)
+             );
+             INSERT INTO sync_connections
+                (provider_kind, endpoint, username, credential_ref)
+             VALUES ('webdav', 'https://dav.example.test', 'alice', 'legacy');
+             INSERT INTO sync_jobs
+                (connection_id, local_root, remote_root, direction)
+             VALUES (1, '/tmp/photos', 'Photos', 'bidirectional');
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+    }
+
+    let pool = db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT upload_scope FROM sync_jobs WHERE id = 1",
+            [],
+            |row| { row.get::<_, String>(0) }
+        )
+        .unwrap(),
+        "all"
+    );
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        4
     );
 }
 

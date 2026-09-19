@@ -9,7 +9,9 @@ use crate::core::backend::local::LocalBackend;
 use crate::core::error::{AppError, Result};
 
 use super::local::{self, LocalEntry};
-use super::model::{Baseline, EntrySnapshot, Observation, PlanAction, Revision, RevisionStrength};
+use super::model::{
+    Baseline, EntrySnapshot, Observation, PlanAction, Revision, RevisionStrength, UploadScope,
+};
 use super::planner;
 use super::provider::{RemoteEntry, SyncProvider, WriteCondition};
 use super::store::{StoredEntry, StoredTask, SyncConflict, SyncJob, SyncStore};
@@ -234,6 +236,22 @@ impl SyncService {
                     "synchronization conflict changed; review the current versions again".into(),
                 )
             })?;
+        let upload_albums = self
+            .store
+            .upload_albums(job.id)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if !upload_allowed(
+            job.upload_scope,
+            &upload_albums,
+            &current_conflict.relative_path,
+        ) && resolution != ConflictResolution::UseRemote
+        {
+            return Err(AppError::Backend(
+                "this album is not selected for upload; use the cloud version or select the album first"
+                    .into(),
+            ));
+        }
         let key = remote_key(&job.remote_root, &current_conflict.relative_path)?;
         let local_path = local::destination(&job.local_root, &current_conflict.relative_path)?;
         let local_fingerprint = optional_local_fingerprint(&local_path)?;
@@ -305,8 +323,16 @@ impl SyncService {
             .map_err(provider_error)?;
         self.recover_unfinished_tasks(job, provider.as_ref())
             .await?;
-        let local_entries = local::scan(&job.local_root)?;
         let remote_entries = discover_remote(provider.as_ref(), &job.remote_root).await?;
+        let upload_albums = self
+            .store
+            .upload_albums(job.id)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let local_entries = local::scan_matching(&job.local_root, |relative_path| {
+            remote_entries.contains_key(relative_path)
+                || upload_allowed(job.upload_scope, &upload_albums, relative_path)
+        })?;
         let stored_entries = self
             .store
             .entries(job.id)?
@@ -331,6 +357,7 @@ impl SyncService {
                 local,
                 remote,
                 stored,
+                upload_allowed(job.upload_scope, &upload_albums, &relative_path),
                 &mut summary,
             )
             .await?;
@@ -970,6 +997,7 @@ impl SyncService {
         local_entry: Option<&LocalEntry>,
         remote_entry: Option<&RemoteEntry>,
         stored: Option<&StoredEntry>,
+        upload_allowed: bool,
         summary: &mut RunSummary,
     ) -> Result<()> {
         let local_observation =
@@ -1008,7 +1036,11 @@ impl SyncService {
             direction: job.direction,
             propagate_deletes: job.propagate_deletes,
         };
-        let mut action = planner::plan(&snapshot);
+        let mut action = if upload_allowed {
+            planner::plan(&snapshot)
+        } else {
+            planner::plan_remote_authoritative(&snapshot)
+        };
 
         let entry_id = self.store.upsert_observation(
             job.id,
@@ -1044,7 +1076,11 @@ impl SyncService {
                 return Ok(());
             }
             remove_file_if_exists(&verified)?;
-            action = PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch);
+            action = if upload_allowed {
+                PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch)
+            } else {
+                PlanAction::DownloadReplace
+            };
         }
 
         match action {
@@ -1462,6 +1498,20 @@ fn relative_remote_key(root: &str, key: &str) -> Result<String> {
         .and_then(|relative| relative.strip_prefix('/'))
         .map(str::to_string)
         .ok_or_else(|| AppError::Backend(format!("remote object escaped configured root: {key}")))
+}
+
+fn upload_allowed(
+    scope: UploadScope,
+    selected_albums: &BTreeSet<String>,
+    relative_path: &str,
+) -> bool {
+    if scope == UploadScope::All {
+        return true;
+    }
+    let relative_album = relative_path
+        .rsplit_once('/')
+        .map_or("", |(album, _)| album);
+    selected_albums.contains(relative_album)
 }
 
 fn next_operation_id(job_id: i64) -> String {

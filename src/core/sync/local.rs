@@ -20,6 +20,13 @@ pub struct LocalEntry {
 }
 
 pub fn scan(root: &Path) -> Result<BTreeMap<String, LocalEntry>> {
+    scan_matching(root, |_| true)
+}
+
+pub fn scan_matching(
+    root: &Path,
+    include: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, LocalEntry>> {
     if !root.is_absolute() || !root.is_dir() {
         return Err(AppError::Backend(format!(
             "synchronization root is not an available absolute directory: {}",
@@ -48,6 +55,9 @@ pub fn scan(root: &Path) -> Result<BTreeMap<String, LocalEntry>> {
             .strip_prefix(root)
             .map_err(|_| AppError::Backend("file escaped synchronization root".into()))?;
         let relative_path = normalized_relative_path(relative)?;
+        if !include(&relative_path) {
+            continue;
+        }
         let metadata_before = std::fs::metadata(path)?;
         let fingerprint = fingerprint(path)?;
         let metadata_after = std::fs::metadata(path)?;

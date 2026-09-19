@@ -90,3 +90,28 @@ fn weak_etag_cannot_authorize_replacement() {
         PlanAction::Conflict(ConflictKind::InsufficientEvidence)
     );
 }
+
+#[test]
+fn unselected_album_never_uploads_local_only_content() {
+    let entry = snapshot(present("local", "local"), Observation::Absent, None);
+    assert_eq!(plan_remote_authoritative(&entry), PlanAction::Noop);
+}
+
+#[test]
+fn unselected_album_downloads_remote_content_over_a_local_difference() {
+    let entry = snapshot(
+        present("local", "local"),
+        present("remote", "\"remote\""),
+        Some(baseline("old")),
+    );
+    assert_eq!(
+        plan_remote_authoritative(&entry),
+        PlanAction::DownloadReplace
+    );
+}
+
+#[test]
+fn unselected_album_downloads_remote_only_content() {
+    let entry = snapshot(Observation::Absent, present("remote", "\"remote\""), None);
+    assert_eq!(plan_remote_authoritative(&entry), PlanAction::DownloadNew);
+}

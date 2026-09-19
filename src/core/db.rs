@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -89,6 +89,19 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
         )?;
     }
     tx.execute_batch(SCHEMA_SQL)?;
+    if version < 4 {
+        let sync_job_columns = {
+            let mut stmt = tx.prepare("PRAGMA table_info(sync_jobs)")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+            rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
+        };
+        if !sync_job_columns.contains("upload_scope") {
+            tx.execute_batch(
+                "ALTER TABLE sync_jobs ADD COLUMN upload_scope TEXT NOT NULL DEFAULT 'selected_albums';
+                 UPDATE sync_jobs SET upload_scope = 'all';",
+            )?;
+        }
+    }
     if version < 2 {
         if version == 1 && !columns.contains("file_mtime_ns") {
             tx.execute_batch(

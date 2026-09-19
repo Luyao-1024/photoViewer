@@ -13,6 +13,32 @@ pub fn plan(entry: &EntrySnapshot) -> PlanAction {
     }
 }
 
+/// Plan a path whose local album is not selected for upload.
+///
+/// The remote side is authoritative when it exists: cloud files are created
+/// or refreshed locally, while local-only files are left untouched and never
+/// uploaded. Remote absence never deletes local content.
+pub fn plan_remote_authoritative(entry: &EntrySnapshot) -> PlanAction {
+    if matches!(entry.local, Observation::Unknown) || matches!(entry.remote, Observation::Unknown) {
+        return PlanAction::WaitForCompleteObservation;
+    }
+
+    match (&entry.local, &entry.remote) {
+        (_, Observation::Absent) => PlanAction::Noop,
+        (Observation::Absent, Observation::Present { .. }) => PlanAction::DownloadNew,
+        (Observation::Present { .. }, Observation::Present { .. }) => {
+            match (entry.local.fingerprint(), entry.remote.fingerprint()) {
+                (Some(local), Some(remote)) if local == remote => PlanAction::Noop,
+                (Some(_), Some(_)) => PlanAction::DownloadReplace,
+                _ => PlanAction::VerifyContent,
+            }
+        }
+        (Observation::Unknown, _) | (_, Observation::Unknown) => {
+            PlanAction::WaitForCompleteObservation
+        }
+    }
+}
+
 fn plan_without_baseline(entry: &EntrySnapshot) -> PlanAction {
     match (&entry.local, &entry.remote) {
         (Observation::Absent, Observation::Absent) => PlanAction::Noop,

@@ -8,6 +8,30 @@ pub enum SyncDirection {
     DownloadOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadScope {
+    All,
+    SelectedAlbums,
+}
+
+impl UploadScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::SelectedAlbums => "selected_albums",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "all" => Some(Self::All),
+            "selected_albums" => Some(Self::SelectedAlbums),
+            _ => None,
+        }
+    }
+}
+
 impl SyncDirection {
     pub fn as_str(self) -> &'static str {
         match self {

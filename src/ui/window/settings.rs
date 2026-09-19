@@ -623,7 +623,7 @@ impl MainWindow {
     }
 
     pub(super) fn build_sync_settings_group(&self, parent: &gtk::Widget) -> adw::PreferencesGroup {
-        use crate::core::sync::{NewSyncJob, SyncDirection, SyncStore};
+        use crate::core::sync::{NewSyncJob, SyncDirection, SyncStore, UploadScope};
 
         let group = adw::PreferencesGroup::new();
         group.set_title(&tr("setting.section.sync"));
@@ -728,6 +728,8 @@ impl MainWindow {
                 local_root: PathBuf::from(local_text),
                 remote_root: remote_text,
                 direction: SyncDirection::Bidirectional,
+                upload_scope: UploadScope::SelectedAlbums,
+                upload_albums: Vec::new(),
             };
             button.set_sensitive(false);
             button.set_label(&tr("setting.sync.running"));
@@ -831,11 +833,91 @@ impl MainWindow {
                     row.add_suffix(&sync_now);
                     group.add(&row);
 
+                    let upload_albums_row = adw::ExpanderRow::builder()
+                        .title(tr("setting.sync.upload_albums"))
+                        .subtitle(if job.upload_scope == UploadScope::All {
+                            tr("setting.sync.upload_albums_all")
+                        } else {
+                            let count = SyncStore::with_actor(pool.clone(), actor.clone())
+                                .upload_albums(job.id)
+                                .map_or(0, |albums| albums.len());
+                            trf(
+                                "setting.sync.upload_albums_selected",
+                                &[("count", &count.to_string())],
+                            )
+                        })
+                        .expanded(false)
+                        .build();
+                    upload_albums_row.add_css_class("settings-action-row");
+                    upload_albums_row.set_sensitive(job.paused);
+
+                    let selected_albums = SyncStore::with_actor(pool.clone(), actor.clone())
+                        .upload_albums(job.id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let album_controls =
+                        std::rc::Rc::new(std::cell::RefCell::new(
+                            Vec::<(String, gtk::CheckButton)>::new(),
+                        ));
+                    let album_options = sync_upload_album_options(&pool, &job.local_root);
+                    if album_options.is_empty() {
+                        let empty = adw::ActionRow::new();
+                        empty.add_css_class("settings-action-row");
+                        empty.set_title(&tr("setting.sync.upload_albums_empty"));
+                        empty.set_activatable(false);
+                        upload_albums_row.add_row(&empty);
+                    } else {
+                        for (relative_album, title, subtitle) in album_options {
+                            let album_row = adw::ActionRow::new();
+                            album_row.add_css_class("settings-action-row");
+                            album_row.set_title(&title);
+                            album_row.set_subtitle(&subtitle);
+                            album_row.set_activatable(false);
+                            let check = gtk::CheckButton::builder()
+                                .valign(gtk::Align::Center)
+                                .active(
+                                    job.upload_scope == UploadScope::All
+                                        || selected_albums.contains(&relative_album),
+                                )
+                                .build();
+                            album_row.add_suffix(&check);
+                            upload_albums_row.add_row(&album_row);
+                            album_controls.borrow_mut().push((relative_album, check));
+                        }
+                        for (_, check) in album_controls.borrow().iter() {
+                            let controls = album_controls.clone();
+                            let store = SyncStore::with_actor(pool.clone(), actor.clone());
+                            let upload_albums_row = upload_albums_row.clone();
+                            let job_id = job.id;
+                            check.connect_toggled(move |_| {
+                                let selected = controls
+                                    .borrow()
+                                    .iter()
+                                    .filter(|(_, check)| check.is_active())
+                                    .map(|(relative, _)| relative.clone())
+                                    .collect::<Vec<_>>();
+                                match store.set_upload_albums(job_id, &selected) {
+                                    Ok(()) => upload_albums_row.set_subtitle(&trf(
+                                        "setting.sync.upload_albums_selected",
+                                        &[("count", &selected.len().to_string())],
+                                    )),
+                                    Err(error) => upload_albums_row.set_subtitle(&trf(
+                                        "setting.sync.upload_albums_failed",
+                                        &[("error", &error.to_string())],
+                                    )),
+                                }
+                            });
+                        }
+                    }
+                    group.add(&upload_albums_row);
+
                     let store = SyncStore::with_actor(pool.clone(), actor.clone());
                     let scheduler =
                         crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
                     let row_for_pause = row.clone();
                     let sync_for_pause = sync_now.clone();
+                    let upload_albums_for_pause = upload_albums_row.clone();
                     let job_id = job.id;
                     let initially_paused = job.paused;
                     let paused = std::rc::Rc::new(std::cell::Cell::new(initially_paused));
@@ -854,6 +936,7 @@ impl MainWindow {
                                     tr("setting.sync.pause")
                                 });
                                 sync_for_pause.set_sensitive(!next);
+                                upload_albums_for_pause.set_sensitive(next);
                                 row_for_pause.set_subtitle(&if next {
                                     tr("setting.sync.status.paused")
                                 } else {
@@ -1062,6 +1145,26 @@ fn sync_credential_reference(
         hasher.update(&[0]);
     }
     format!("webdav-{}", hasher.finalize().to_hex())
+}
+
+fn sync_upload_album_options(
+    pool: &DbPool,
+    local_root: &std::path::Path,
+) -> Vec<(String, String, String)> {
+    crate::core::albums::list(pool)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|album| {
+            let relative = album.folder_path.strip_prefix(local_root).ok()?;
+            let relative = relative.to_str()?.replace(std::path::MAIN_SEPARATOR, "/");
+            let subtitle = if relative.is_empty() {
+                tr("setting.sync.upload_album_root")
+            } else {
+                relative.clone()
+            };
+            Some((relative, album.display_name(), subtitle))
+        })
+        .collect()
 }
 
 pub(super) fn add_close_on_backdrop_click(dialog: &adw::Dialog) {

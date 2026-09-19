@@ -8,6 +8,8 @@ fn new_job(root: PathBuf) -> NewSyncJob {
         local_root: root,
         remote_root: "PhotoViewer".into(),
         direction: SyncDirection::Bidirectional,
+        upload_scope: UploadScope::All,
+        upload_albums: Vec::new(),
     }
 }
 
@@ -62,4 +64,46 @@ fn rejects_insecure_non_local_endpoint() {
     let mut job = new_job(local);
     job.endpoint = "http://dav.example.test/".into();
     assert!(store.create_job(&job).is_err());
+}
+
+#[test]
+fn stores_selected_upload_albums_and_advances_configuration_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool);
+    let mut requested = new_job(local);
+    requested.upload_scope = UploadScope::SelectedAlbums;
+    requested.upload_albums = vec!["Trips/2026".into(), "Camera".into(), "Camera".into()];
+
+    let job = store.create_job(&requested).unwrap();
+    assert_eq!(job.upload_scope, UploadScope::SelectedAlbums);
+    assert_eq!(
+        store.upload_albums(job.id).unwrap(),
+        vec!["Camera".to_string(), "Trips/2026".to_string()]
+    );
+
+    store
+        .set_upload_albums(job.id, &["Screenshots".into()])
+        .unwrap();
+    let updated = store.get_job(job.id).unwrap().unwrap();
+    assert_eq!(updated.upload_scope, UploadScope::SelectedAlbums);
+    assert_eq!(updated.config_generation, job.config_generation + 1);
+    assert_eq!(
+        store.upload_albums(job.id).unwrap(),
+        vec!["Screenshots".to_string()]
+    );
+}
+
+#[test]
+fn rejects_upload_album_parent_traversal() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool);
+    let mut requested = new_job(local);
+    requested.upload_albums = vec!["../outside".into()];
+    assert!(store.create_job(&requested).is_err());
 }

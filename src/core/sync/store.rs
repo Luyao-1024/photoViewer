@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
@@ -6,7 +7,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 
-use super::model::{Fingerprint, Revision, RevisionStrength, SyncDirection};
+use super::model::{Fingerprint, Revision, RevisionStrength, SyncDirection, UploadScope};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSyncJob {
@@ -16,6 +17,8 @@ pub struct NewSyncJob {
     pub local_root: PathBuf,
     pub remote_root: String,
     pub direction: SyncDirection,
+    pub upload_scope: UploadScope,
+    pub upload_albums: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +31,7 @@ pub struct SyncJob {
     pub local_root: PathBuf,
     pub remote_root: String,
     pub direction: SyncDirection,
+    pub upload_scope: UploadScope,
     pub propagate_deletes: bool,
     pub paused: bool,
     pub config_generation: i64,
@@ -89,6 +93,10 @@ pub enum SyncWrite {
     SetJobPaused {
         id: i64,
         paused: bool,
+    },
+    SetUploadAlbums {
+        id: i64,
+        relative_albums: Vec<String>,
     },
     MarkJobStarted {
         id: i64,
@@ -172,6 +180,7 @@ impl SyncStore {
         let mut job = job.clone();
         job.local_root = std::fs::canonicalize(&job.local_root)?;
         job.remote_root = job.remote_root.trim_matches('/').to_string();
+        job.upload_albums = normalize_relative_albums(&job.upload_albums)?;
         let job_id = match self.write(SyncWrite::CreateJob(job))? {
             SyncWriteResult::Id(id) => id,
             SyncWriteResult::None => {
@@ -190,7 +199,7 @@ impl SyncStore {
         let mut stmt = conn.prepare(
             "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
                     j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.last_error
+                    j.paused, j.config_generation, j.upload_scope, j.last_error
              FROM sync_jobs j
              JOIN sync_connections c ON c.id = j.connection_id
              WHERE c.enabled = 1
@@ -206,7 +215,7 @@ impl SyncStore {
         conn.query_row(
             "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
                     j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.last_error
+                    j.paused, j.config_generation, j.upload_scope, j.last_error
              FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id
              WHERE j.id = ?1",
             [id],
@@ -218,6 +227,26 @@ impl SyncStore {
 
     pub fn set_job_paused(&self, id: i64, paused: bool) -> Result<()> {
         self.write(SyncWrite::SetJobPaused { id, paused })?;
+        Ok(())
+    }
+
+    pub fn upload_albums(&self, job_id: i64) -> Result<Vec<String>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT relative_album FROM sync_job_upload_albums
+             WHERE job_id = ?1 ORDER BY relative_album",
+        )?;
+        let rows = stmt.query_map([job_id], |row| row.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    pub fn set_upload_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {
+        let relative_albums = normalize_relative_albums(relative_albums)?;
+        self.write(SyncWrite::SetUploadAlbums {
+            id,
+            relative_albums,
+        })?;
         Ok(())
     }
 
@@ -546,16 +575,24 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             }
             tx.execute(
                 "INSERT INTO sync_jobs
-                 (connection_id, local_root, remote_root, direction)
-                 VALUES (?1, ?2, ?3, ?4)",
+                 (connection_id, local_root, remote_root, direction, upload_scope)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     connection_id,
                     job.local_root.to_string_lossy(),
                     job.remote_root,
-                    job.direction.as_str()
+                    job.direction.as_str(),
+                    job.upload_scope.as_str(),
                 ],
             )?;
             let id = tx.last_insert_rowid();
+            for relative_album in &job.upload_albums {
+                tx.execute(
+                    "INSERT INTO sync_job_upload_albums (job_id, relative_album)
+                     VALUES (?1, ?2)",
+                    params![id, relative_album],
+                )?;
+            }
             tx.commit()?;
             Ok(SyncWriteResult::Id(id))
         }
@@ -565,6 +602,34 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                 "UPDATE sync_jobs SET paused = ?1 WHERE id = ?2",
                 params![paused, id],
             )?;
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::SetUploadAlbums {
+            id,
+            relative_albums,
+        } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let updated = tx.execute(
+                "UPDATE sync_jobs SET upload_scope = 'selected_albums',
+                        config_generation = config_generation + 1
+                 WHERE id = ?1",
+                [id],
+            )?;
+            if updated == 0 {
+                return Err(AppError::Backend(format!(
+                    "synchronization job {id} does not exist"
+                )));
+            }
+            tx.execute("DELETE FROM sync_job_upload_albums WHERE job_id = ?1", [id])?;
+            for relative_album in relative_albums {
+                tx.execute(
+                    "INSERT INTO sync_job_upload_albums (job_id, relative_album)
+                     VALUES (?1, ?2)",
+                    params![id, relative_album],
+                )?;
+            }
+            tx.commit()?;
             Ok(SyncWriteResult::None)
         }
         SyncWrite::MarkJobStarted { id } => {
@@ -820,6 +885,7 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
             "synchronization remote root is invalid".into(),
         ));
     }
+    normalize_relative_albums(&job.upload_albums)?;
     let endpoint = url::Url::parse(&job.endpoint)
         .map_err(|error| AppError::Backend(format!("invalid WebDAV endpoint: {error}")))?;
     if endpoint.scheme() != "https" && endpoint.host_str() != Some("localhost") {
@@ -828,6 +894,24 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn normalize_relative_albums(albums: &[String]) -> Result<Vec<String>> {
+    let mut normalized = BTreeSet::new();
+    for album in albums {
+        let album = album.trim_matches('/');
+        if !album.is_empty()
+            && album
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Err(AppError::Backend(
+                "synchronization upload album is invalid".into(),
+            ));
+        }
+        normalized.insert(album.to_string());
+    }
+    Ok(normalized.into_iter().collect())
 }
 
 fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
@@ -855,6 +939,14 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncJob> {
             format!("invalid sync direction: {direction}").into(),
         )
     })?;
+    let upload_scope: String = row.get(11)?;
+    let upload_scope = UploadScope::parse(&upload_scope).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            11,
+            rusqlite::types::Type::Text,
+            format!("invalid upload scope: {upload_scope}").into(),
+        )
+    })?;
     Ok(SyncJob {
         id: row.get(0)?,
         connection_id: row.get(1)?,
@@ -864,10 +956,11 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncJob> {
         local_root: PathBuf::from(row.get::<_, String>(5)?),
         remote_root: row.get(6)?,
         direction,
+        upload_scope,
         propagate_deletes: row.get::<_, i64>(8)? != 0,
         paused: row.get::<_, i64>(9)? != 0,
         config_generation: row.get(10)?,
-        last_error: row.get(11)?,
+        last_error: row.get(12)?,
     })
 }
 

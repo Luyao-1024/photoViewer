@@ -58,21 +58,33 @@ impl SyncProvider for FakeProvider {
 
     async fn list_children(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>> {
         let prefix = format!("{}/", collection.trim_matches('/'));
-        Ok(self
-            .objects
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .filter(|(key, _)| !key[prefix.len()..].contains('/'))
-            .map(|(key, bytes)| RemoteEntry {
-                key: key.clone(),
-                is_collection: false,
-                size: bytes.len() as u64,
-                modified_unix: None,
-                revision: Some(Self::revision(bytes)),
-            })
-            .collect())
+        let objects = self.objects.lock().unwrap();
+        let mut entries = BTreeMap::new();
+        for (key, bytes) in objects.iter().filter(|(key, _)| key.starts_with(&prefix)) {
+            let remainder = &key[prefix.len()..];
+            if let Some((child, _)) = remainder.split_once('/') {
+                let key = format!("{}{}", prefix, child);
+                entries.entry(key.clone()).or_insert(RemoteEntry {
+                    key,
+                    is_collection: true,
+                    size: 0,
+                    modified_unix: None,
+                    revision: None,
+                });
+            } else {
+                entries.insert(
+                    key.clone(),
+                    RemoteEntry {
+                        key: key.clone(),
+                        is_collection: false,
+                        size: bytes.len() as u64,
+                        modified_unix: None,
+                        revision: Some(Self::revision(bytes)),
+                    },
+                );
+            }
+        }
+        Ok(entries.into_values().collect())
     }
 
     async fn stat(&self, key: &str) -> ProviderResult<Option<RemoteEntry>> {
@@ -195,6 +207,8 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
         })
         .unwrap();
     let provider = Arc::new(FakeProvider::default());
@@ -323,6 +337,89 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
 }
 
 #[tokio::test]
+async fn selected_albums_upload_while_all_remote_albums_download() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    let selected = local_root.join("Selected");
+    let unselected = local_root.join("Unselected");
+    std::fs::create_dir_all(&selected).unwrap();
+    std::fs::create_dir_all(&unselected).unwrap();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif");
+    std::fs::copy(&fixture, selected.join("upload.gif")).unwrap();
+    std::fs::copy(&fixture, unselected.join("local-only.gif")).unwrap();
+
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let service = SyncService {
+        store: SyncStore::new(pool.clone()),
+        pool,
+        actor: None,
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "selective-credential".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+            upload_albums: vec!["Selected".into()],
+        })
+        .unwrap();
+    let provider = Arc::new(FakeProvider::default());
+    let mut cloud_bytes = std::fs::read(&fixture).unwrap();
+    cloud_bytes.extend_from_slice(b"cloud");
+    provider.insert("PhotoViewer/Cloud/download.gif", cloud_bytes.clone());
+
+    let first = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.uploaded, 1);
+    assert_eq!(first.downloaded, 1);
+    assert_eq!(
+        std::fs::read(local_root.join("Cloud/download.gif")).unwrap(),
+        cloud_bytes
+    );
+    {
+        let objects = provider.objects.lock().unwrap();
+        assert!(objects.contains_key("PhotoViewer/Selected/upload.gif"));
+        assert!(!objects.contains_key("PhotoViewer/Unselected/local-only.gif"));
+    }
+    assert!(
+        service
+            .store()
+            .entries(job.id)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.relative_path != "Unselected/local-only.gif"),
+        "an unchecked local-only album should not be hashed into sync state"
+    );
+
+    let mut local_edit = cloud_bytes.clone();
+    local_edit.extend_from_slice(b"local edit that must not upload");
+    std::fs::write(local_root.join("Cloud/download.gif"), local_edit).unwrap();
+    let mut remote_edit = cloud_bytes;
+    remote_edit.extend_from_slice(b"remote edit");
+    provider.insert("PhotoViewer/Cloud/download.gif", remote_edit.clone());
+
+    let second = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(second.uploaded, 0);
+    assert_eq!(second.downloaded, 1);
+    assert_eq!(second.conflicts, 0);
+    assert_eq!(
+        std::fs::read(local_root.join("Cloud/download.gif")).unwrap(),
+        remote_edit
+    );
+}
+
+#[tokio::test]
 async fn recovers_upload_that_reached_remote_before_result_commit() {
     let temp = tempfile::tempdir().unwrap();
     let local_root = temp.path().join("photos");
@@ -346,6 +443,8 @@ async fn recovers_upload_that_reached_remote_before_result_commit() {
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
         })
         .unwrap();
     let provider = Arc::new(FakeProvider::default());

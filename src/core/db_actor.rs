@@ -138,7 +138,8 @@ impl DbCommand {
             Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
             Self::Sync(crate::core::sync::store::SyncWrite::CreateJob(_))
-            | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. }) => {
+            | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. })
+            | Self::Sync(crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }) => {
                 DbWritePriority::UserInteractive
             }
             Self::Sync(_) => DbWritePriority::StartupScan,
