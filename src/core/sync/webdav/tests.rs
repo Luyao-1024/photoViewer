@@ -20,6 +20,26 @@ fn parses_namespaced_multistatus_and_decodes_paths() {
 }
 
 #[test]
+fn keeps_collection_when_a_later_propstat_is_not_found() {
+    let xml = br#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
+      <D:response><D:href>/dav/root/%E6%9C%AC%E5%9C%B0/</D:href>
+      <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype>
+      <D:getlastmodified>Sat, 19 Sep 2026 06:34:11 GMT</D:getlastmodified></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+      <D:propstat><D:prop><D:getcontentlength></D:getcontentlength>
+      <D:getetag></D:getetag></D:prop>
+      <D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>
+    </D:multistatus>"#;
+    let base = Url::parse("https://example.com/dav/root/").unwrap();
+    let entries = parse_multistatus(xml, &base).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key, "本地");
+    assert!(entries[0].is_collection);
+    assert_eq!(entries[0].size, 0);
+    assert!(entries[0].revision.is_none());
+}
+
+#[test]
 fn rejects_cross_origin_and_root_escape_hrefs() {
     let base = Url::parse("https://example.com/dav/root/").unwrap();
     assert!(href_to_key(&base, "https://evil.example/a.jpg").is_err());
@@ -106,6 +126,7 @@ async fn sends_create_precondition_and_verifies_uploaded_object() {
       <d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status>
       </d:propstat></d:response></d:multistatus>"#;
     let (endpoint, requests) = mock_server(vec![
+        response("405 Method Not Allowed", "", b""),
         response("201 Created", "ETag: \"new\"\r\n", b""),
         response(
             "207 Multi-Status",
@@ -122,6 +143,8 @@ async fn sends_create_precondition_and_verifies_uploaded_object() {
         .await
         .unwrap();
     assert_eq!(uploaded.revision.unwrap().value, "\"new\"");
+    let lock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(lock.starts_with("lock /a%20b.jpg http/1.1"));
     let put = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
     assert!(put.starts_with("put /a%20b.jpg http/1.1"));
     assert!(put.contains("if-none-match: *"));
@@ -129,6 +152,66 @@ async fn sends_create_precondition_and_verifies_uploaded_object() {
     let stat = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
     assert!(stat.starts_with("propfind /a%20b.jpg/ http/1.1"));
     assert!(stat.contains("depth: 0"));
+}
+
+#[tokio::test]
+async fn lock_null_resource_makes_create_only_atomic_without_if_none_match() {
+    let multistatus = br#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">
+      <d:response><d:href>/new.jpg</d:href><d:propstat><d:prop>
+      <d:getcontentlength>3</d:getcontentlength><d:getetag>&quot;new&quot;</d:getetag>
+      <d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status>
+      </d:propstat></d:response></d:multistatus>"#;
+    let (endpoint, requests) = mock_server(vec![
+        response("201 Created", "Lock-Token: <token-1>\r\n", b""),
+        response("201 Created", "ETag: \"new\"\r\n", b""),
+        response(
+            "207 Multi-Status",
+            "Content-Type: application/xml\r\n",
+            multistatus,
+        ),
+        response("204 No Content", "", b""),
+    ]);
+    let provider = WebDavProvider::new(&endpoint, "alice".into(), "secret".into()).unwrap();
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp.path(), b"abc").unwrap();
+
+    provider
+        .upload("new.jpg", temp.path(), WriteCondition::CreateOnly)
+        .await
+        .unwrap();
+
+    let lock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(lock.starts_with("lock /new.jpg http/1.1"));
+    let put = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(put.contains("if: (<token-1>)"));
+    assert!(!put.contains("if-none-match:"));
+    let stat = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(stat.starts_with("propfind /new.jpg/ http/1.1"));
+    let unlock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(unlock.starts_with("unlock /new.jpg http/1.1"));
+    assert!(unlock.contains("lock-token: <token-1>"));
+}
+
+#[tokio::test]
+async fn existing_locked_resource_rejects_create_only_before_put() {
+    let (endpoint, requests) = mock_server(vec![
+        response("200 OK", "Lock-Token: <token-2>\r\n", b""),
+        response("204 No Content", "", b""),
+    ]);
+    let provider = WebDavProvider::new(&endpoint, "alice".into(), "secret".into()).unwrap();
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp.path(), b"abc").unwrap();
+
+    let error = provider
+        .upload("existing.jpg", temp.path(), WriteCondition::CreateOnly)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, ProviderError::PreconditionFailed(_)));
+    let lock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(lock.starts_with("lock /existing.jpg http/1.1"));
+    let unlock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(unlock.starts_with("unlock /existing.jpg http/1.1"));
+    assert!(requests.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -151,7 +234,10 @@ async fn classifies_common_webdav_failures() {
         }
     }
 
-    let (endpoint, requests) = mock_server(vec![response("412 Precondition Failed", "", b"")]);
+    let (endpoint, requests) = mock_server(vec![
+        response("405 Method Not Allowed", "", b""),
+        response("412 Precondition Failed", "", b""),
+    ]);
     let provider = WebDavProvider::new(&endpoint, "alice".into(), "secret".into()).unwrap();
     let temp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(temp.path(), b"abc").unwrap();
@@ -164,6 +250,8 @@ async fn classifies_common_webdav_failures() {
         .await
         .unwrap_err();
     assert!(matches!(error, ProviderError::PreconditionFailed(_)));
+    let lock = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
+    assert!(lock.starts_with("lock /a.jpg http/1.1"));
     let put = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
     assert!(put.contains("if-match: \"old\""));
 }

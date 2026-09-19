@@ -19,7 +19,16 @@ use super::provider::{
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/>
 <d:getlastmodified/><d:getetag/></d:prop></d:propfind>"#;
+const LOCK_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
+<d:lockinfo xmlns:d="DAV:"><d:lockscope><d:exclusive/></d:lockscope>
+<d:locktype><d:write/></d:locktype><d:owner><d:href>PhotoViewer</d:href>
+</d:owner></d:lockinfo>"#;
 const MAX_DAV_XML_BYTES: usize = 32 * 1024 * 1024;
+
+struct LockLease {
+    token: String,
+    created: bool,
+}
 
 #[derive(Clone)]
 pub struct WebDavProvider {
@@ -124,6 +133,86 @@ impl WebDavProvider {
             body.extend_from_slice(&chunk);
         }
         parse_multistatus(&body, &self.base)
+    }
+
+    async fn lock(&self, key: &str) -> ProviderResult<Option<LockLease>> {
+        let method = Method::from_bytes(b"LOCK")
+            .map_err(|error| ProviderError::Protocol(error.to_string()))?;
+        let response = self
+            .request(method, self.object_url(key, false)?)
+            .header("Depth", "0")
+            .header("Timeout", "Second-300")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(LOCK_BODY)
+            .send()
+            .await
+            .map_err(map_transport)?;
+        if matches!(
+            response.status(),
+            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+        ) {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(map_status(response.status(), key));
+        }
+        let created = response.status() == StatusCode::CREATED;
+        let token = response
+            .headers()
+            .get("Lock-Token")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| ProviderError::Protocol("LOCK response has no lock token".into()))?;
+        Ok(Some(LockLease { token, created }))
+    }
+
+    async fn unlock(&self, key: &str, lease: &LockLease) -> ProviderResult<()> {
+        let method = Method::from_bytes(b"UNLOCK")
+            .map_err(|error| ProviderError::Protocol(error.to_string()))?;
+        let response = self
+            .request(method, self.object_url(key, false)?)
+            .header("Lock-Token", &lease.token)
+            .send()
+            .await
+            .map_err(map_transport)?;
+        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+            Ok(())
+        } else {
+            Err(map_status(response.status(), key))
+        }
+    }
+
+    async fn remove_lock_null(&self, key: &str, lease: &LockLease) -> ProviderResult<()> {
+        let response = self
+            .request(Method::DELETE, self.object_url(key, false)?)
+            .header("If", format!("({})", lease.token))
+            .send()
+            .await
+            .map_err(map_transport)?;
+        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
+            Ok(())
+        } else {
+            Err(map_status(response.status(), key))
+        }
+    }
+
+    async fn unlock_after<T>(
+        &self,
+        key: &str,
+        lease: Option<&LockLease>,
+        result: ProviderResult<T>,
+    ) -> ProviderResult<T> {
+        let unlock = if let Some(lease) = lease {
+            self.unlock(key, lease).await
+        } else {
+            Ok(())
+        };
+        match (result, unlock) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
     }
 }
 
@@ -264,41 +353,101 @@ impl SyncProvider for WebDavProvider {
         }
         let file = tokio::fs::File::open(source).await?;
         let size = file.metadata().await?.len();
+        if matches!(
+            &condition,
+            WriteCondition::ReplaceIf(revision) if revision.strength != RevisionStrength::Strong
+        ) {
+            return Err(ProviderError::Unsupported(
+                "weak ETag cannot authorize automatic replacement".into(),
+            ));
+        }
+        let lease = self.lock(key).await?;
+        if let Some(lease) = lease.as_ref() {
+            match &condition {
+                WriteCondition::CreateOnly if !lease.created => {
+                    return self
+                        .unlock_after(
+                            key,
+                            Some(lease),
+                            Err(ProviderError::PreconditionFailed(key.into())),
+                        )
+                        .await;
+                }
+                WriteCondition::ReplaceIf(_) if lease.created => {
+                    let cleanup = self.remove_lock_null(key, lease).await;
+                    let result = match cleanup {
+                        Ok(()) => Err(ProviderError::PreconditionFailed(key.into())),
+                        Err(error) => Err(error),
+                    };
+                    return self.unlock_after(key, Some(lease), result).await;
+                }
+                WriteCondition::ReplaceIf(expected) => {
+                    let current = match self.stat(key).await {
+                        Ok(current) => current,
+                        Err(error) => {
+                            return self.unlock_after(key, Some(lease), Err(error)).await;
+                        }
+                    };
+                    if current.and_then(|entry| entry.revision).as_ref() != Some(expected) {
+                        return self
+                            .unlock_after(
+                                key,
+                                Some(lease),
+                                Err(ProviderError::PreconditionFailed(key.into())),
+                            )
+                            .await;
+                    }
+                }
+                WriteCondition::CreateOnly => {}
+            }
+        }
         let body = reqwest::Body::wrap_stream(ReaderStream::new(file));
         let mut request = self
             .request(Method::PUT, self.object_url(key, false)?)
             .header(CONTENT_LENGTH, size)
             .body(body);
-        request = match &condition {
-            WriteCondition::CreateOnly => request.header(IF_NONE_MATCH, "*"),
-            WriteCondition::ReplaceIf(revision)
+        if let Some(lease) = lease.as_ref() {
+            request = request.header("If", format!("({})", lease.token));
+        }
+        request = match (&condition, lease.as_ref()) {
+            (WriteCondition::CreateOnly, None) => request.header(IF_NONE_MATCH, "*"),
+            (WriteCondition::CreateOnly, Some(_)) => request,
+            (WriteCondition::ReplaceIf(revision), _)
                 if revision.strength == RevisionStrength::Strong =>
             {
                 request.header(IF_MATCH, &revision.value)
             }
-            WriteCondition::ReplaceIf(_) => {
+            (WriteCondition::ReplaceIf(_), _) => {
                 return Err(ProviderError::Unsupported(
                     "weak ETag cannot authorize automatic replacement".into(),
                 ))
             }
         };
-        let response = request.send().await.map_err(map_transport)?;
+        let response = match request.send().await.map_err(map_transport) {
+            Ok(response) => response,
+            Err(error) => return self.unlock_after(key, lease.as_ref(), Err(error)).await,
+        };
         if !response.status().is_success() {
-            return Err(map_status(response.status(), key));
+            let result = Err(map_status(response.status(), key));
+            return self.unlock_after(key, lease.as_ref(), result).await;
         }
         let revision = header_revision(response.headers());
-        if let Some(mut actual) = self.stat(key).await? {
-            if actual.size == 0 && size != 0 {
-                actual.size = size;
+        let result = match self.stat(key).await {
+            Ok(Some(mut actual)) => {
+                if actual.size == 0 && size != 0 {
+                    actual.size = size;
+                }
+                if actual.revision.is_none() {
+                    actual.revision = revision;
+                }
+                Ok(actual)
             }
-            if actual.revision.is_none() {
-                actual.revision = revision;
-            }
-            return Ok(actual);
-        }
-        Err(ProviderError::Protocol(
-            "uploaded object could not be verified".into(),
-        ))
+            Ok(None) => Err(ProviderError::Protocol(
+                "uploaded object could not be verified".into(),
+            )),
+            Err(error) => Err(error),
+        };
+        self.unlock_after(key, lease.as_ref(), result).await
     }
 
     async fn delete(&self, key: &str, expected: &Revision) -> ProviderResult<()> {
@@ -307,23 +456,61 @@ impl SyncProvider for WebDavProvider {
                 "weak ETag cannot authorize automatic deletion".into(),
             ));
         }
-        let response = self
-            .request(Method::DELETE, self.object_url(key, false)?)
-            .header(IF_MATCH, &expected.value)
-            .send()
-            .await
-            .map_err(map_transport)?;
-        if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
-            Ok(())
-        } else {
-            Err(map_status(response.status(), key))
+        let lease = self.lock(key).await?;
+        if let Some(lease) = lease.as_ref() {
+            if lease.created {
+                let cleanup = self.remove_lock_null(key, lease).await;
+                return self.unlock_after(key, Some(lease), cleanup).await;
+            }
+            let current = match self.stat(key).await {
+                Ok(current) => current,
+                Err(error) => {
+                    return self.unlock_after(key, Some(lease), Err(error)).await;
+                }
+            };
+            if current.and_then(|entry| entry.revision).as_ref() != Some(expected) {
+                return self
+                    .unlock_after(
+                        key,
+                        Some(lease),
+                        Err(ProviderError::PreconditionFailed(key.into())),
+                    )
+                    .await;
+            }
         }
+        let mut request = self
+            .request(Method::DELETE, self.object_url(key, false)?)
+            .header(IF_MATCH, &expected.value);
+        if let Some(lease) = lease.as_ref() {
+            request = request.header("If", format!("({})", lease.token));
+        }
+        let result = match request.send().await.map_err(map_transport) {
+            Ok(response)
+                if response.status().is_success() || response.status() == StatusCode::NOT_FOUND =>
+            {
+                Ok(())
+            }
+            Ok(response) => Err(map_status(response.status(), key)),
+            Err(error) => Err(error),
+        };
+        self.unlock_after(key, lease.as_ref(), result).await
     }
 }
 
 #[derive(Default)]
 struct ParsedResponse {
     href: Option<String>,
+    status: Option<String>,
+    etag: Option<String>,
+    length: Option<u64>,
+    modified: Option<String>,
+    collection: bool,
+    had_propstat: bool,
+    successful_propstat: bool,
+}
+
+#[derive(Default)]
+struct ParsedPropstat {
     status: Option<String>,
     etag: Option<String>,
     length: Option<u64>,
@@ -336,6 +523,7 @@ fn parse_multistatus(body: &[u8], base: &Url) -> ProviderResult<Vec<RemoteEntry>
     reader.config_mut().trim_text(true);
     let mut entries = Vec::new();
     let mut response: Option<ParsedResponse> = None;
+    let mut propstat: Option<ParsedPropstat> = None;
     let mut field = Vec::<u8>::new();
 
     loop {
@@ -345,8 +533,16 @@ fn parse_multistatus(body: &[u8], base: &Url) -> ProviderResult<Vec<RemoteEntry>
                 if name.as_slice() == b"response" {
                     response = Some(ParsedResponse::default());
                 }
-                if name.as_slice() == b"collection" {
+                if name.as_slice() == b"propstat" {
+                    propstat = Some(ParsedPropstat::default());
                     if let Some(response) = response.as_mut() {
+                        response.had_propstat = true;
+                    }
+                }
+                if name.as_slice() == b"collection" {
+                    if let Some(propstat) = propstat.as_mut() {
+                        propstat.collection = true;
+                    } else if let Some(response) = response.as_mut() {
                         response.collection = true;
                     }
                 }
@@ -354,7 +550,9 @@ fn parse_multistatus(body: &[u8], base: &Url) -> ProviderResult<Vec<RemoteEntry>
             }
             Ok(Event::Empty(empty)) => {
                 if empty.local_name().as_ref() == b"collection" {
-                    if let Some(response) = response.as_mut() {
+                    if let Some(propstat) = propstat.as_mut() {
+                        propstat.collection = true;
+                    } else if let Some(response) = response.as_mut() {
                         response.collection = true;
                     }
                 }
@@ -369,19 +567,61 @@ fn parse_multistatus(body: &[u8], base: &Url) -> ProviderResult<Vec<RemoteEntry>
                     .into_owned();
                 match field.as_slice() {
                     b"href" => response.href = Some(value),
-                    b"status" => response.status = Some(value),
-                    b"getetag" => response.etag = Some(value),
-                    b"getcontentlength" => response.length = value.parse().ok(),
-                    b"getlastmodified" => response.modified = Some(value),
+                    b"status" => {
+                        if let Some(propstat) = propstat.as_mut() {
+                            propstat.status = Some(value);
+                        } else {
+                            response.status = Some(value);
+                        }
+                    }
+                    b"getetag" => {
+                        if let Some(propstat) = propstat.as_mut() {
+                            propstat.etag = Some(value);
+                        } else {
+                            response.etag = Some(value);
+                        }
+                    }
+                    b"getcontentlength" => {
+                        let length = value.parse().ok();
+                        if let Some(propstat) = propstat.as_mut() {
+                            propstat.length = length;
+                        } else {
+                            response.length = length;
+                        }
+                    }
+                    b"getlastmodified" => {
+                        if let Some(propstat) = propstat.as_mut() {
+                            propstat.modified = Some(value);
+                        } else {
+                            response.modified = Some(value);
+                        }
+                    }
                     _ => {}
                 }
             }
-            Ok(Event::End(end)) if end.local_name().as_ref() == b"response" => {
-                if let Some(response) = response.take() {
-                    if response
+            Ok(Event::End(end)) if end.local_name().as_ref() == b"propstat" => {
+                if let (Some(propstat), Some(response)) = (propstat.take(), response.as_mut()) {
+                    if propstat
                         .status
                         .as_deref()
-                        .is_some_and(|status| !status.contains(" 200 "))
+                        .is_some_and(|status| status.contains(" 200 "))
+                    {
+                        response.etag = propstat.etag;
+                        response.length = propstat.length;
+                        response.modified = propstat.modified;
+                        response.collection = propstat.collection;
+                        response.successful_propstat = true;
+                    }
+                }
+                field.clear();
+            }
+            Ok(Event::End(end)) if end.local_name().as_ref() == b"response" => {
+                if let Some(response) = response.take() {
+                    if response.had_propstat && !response.successful_propstat
+                        || response
+                            .status
+                            .as_deref()
+                            .is_some_and(|status| !status.contains(" 200 "))
                     {
                         continue;
                     }
