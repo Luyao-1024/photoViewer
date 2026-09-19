@@ -115,6 +115,12 @@ Design intent:
   as practical without internal scrolling; the preview is not broken up by
   per-year headers. Overflow is exposed through a small "More" button that
   opens a type-specific results page.
+- A second circular disclosure button beside Search expands the library
+  overview. The overview is collapsed by default and reveals one bounded
+  `.glass-base` card above the grid: a prominent full-library photo/video count
+  and a quieter icon-led WebDAV status line. Counts come from the database, not
+  the current virtual-grid window. Collapsing the card returns its height to the
+  media grid.
 - The batch-action toolbar is split across the header: select-all (text label,
   toggling 全选 / 取消全选) stays on the left (`[start]`); the icon-only batch
   actions live on the right (`[end]`) — add-to-album (`list-add-symbolic`, the

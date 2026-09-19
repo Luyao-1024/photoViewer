@@ -68,6 +68,16 @@ fn photos_header_uses_glass_toolbar_classes() {
         imp.search_btn.get().has_css_class("round-search-button"),
         "search_btn should use the dedicated circular search-button class"
     );
+    assert!(
+        imp.overview_toggle
+            .get()
+            .has_css_class("glass-toolbar-button"),
+        "overview_toggle should use the shared glass toolbar material"
+    );
+    assert!(
+        !imp.overview_revealer.get().reveals_child(),
+        "the library overview should be collapsed by default"
+    );
 
     // favorite_btn is a smart toggle: it reuses the viewer's red-heart hook
     // (viewer-favorite-btn + favorite-active) so an all-favorited selection

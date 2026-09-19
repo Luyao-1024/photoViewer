@@ -38,6 +38,22 @@ pub struct SyncJob {
     pub last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncOverviewStatus {
+    NotConfigured,
+    Paused,
+    Running,
+    Failed,
+    Ready,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncOverview {
+    pub status: SyncOverviewStatus,
+    pub job_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredEntry {
     pub id: i64,
@@ -239,6 +255,73 @@ impl SyncStore {
         let rows = stmt.query_map([job_id], |row| row.get(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
+    }
+
+    /// Return the persisted, provider-neutral synchronization state used by
+    /// compact status surfaces such as the Photos overview.
+    pub fn overview(&self) -> Result<SyncOverview> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT j.paused, j.last_started_at, j.last_completed_at, j.last_error
+             FROM sync_jobs j
+             JOIN sync_connections c ON c.id = j.connection_id
+             WHERE c.enabled = 1
+             ORDER BY j.id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? != 0,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let jobs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let job_count = jobs.len();
+        if jobs.is_empty() {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::NotConfigured,
+                job_count,
+            });
+        }
+        if jobs.iter().all(|(paused, _, _, _)| *paused) {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Paused,
+                job_count,
+            });
+        }
+
+        let active = jobs.iter().filter(|(paused, _, _, _)| !paused);
+        if active
+            .clone()
+            .any(|(_, _, _, error)| error.as_deref().is_some_and(|error| !error.is_empty()))
+        {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Failed,
+                job_count,
+            });
+        }
+        if active.clone().any(|(_, started, completed, _)| {
+            started.is_some_and(|started| completed.is_none_or(|completed| started > completed))
+        }) {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Running,
+                job_count,
+            });
+        }
+        if active
+            .clone()
+            .any(|(_, _, completed, _)| completed.is_some())
+        {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Completed,
+                job_count,
+            });
+        }
+        Ok(SyncOverview {
+            status: SyncOverviewStatus::Ready,
+            job_count,
+        })
     }
 
     pub fn set_upload_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {

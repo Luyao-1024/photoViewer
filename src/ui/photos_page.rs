@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -24,11 +25,12 @@ use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
 use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand};
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
+use crate::core::sync::{SyncOverview, SyncOverviewStatus, SyncStore};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -40,6 +42,34 @@ use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use crate::ui::window::refresh_albums_sidebar;
 
 const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
+
+#[derive(Debug, Clone, Copy)]
+struct PhotosOverviewSnapshot {
+    photos: u32,
+    videos: u32,
+    sync: SyncOverview,
+}
+
+fn sync_overview_text(status: SyncOverviewStatus) -> String {
+    match status {
+        SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
+        SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
+        SyncOverviewStatus::Running => tr("photos.overview.sync.running"),
+        SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
+        SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
+        SyncOverviewStatus::Completed => tr("photos.overview.sync.completed"),
+    }
+}
+
+fn sync_overview_icon(status: SyncOverviewStatus) -> &'static str {
+    match status {
+        SyncOverviewStatus::Paused => "media-playback-pause-symbolic",
+        SyncOverviewStatus::Running => "emblem-synchronizing-symbolic",
+        SyncOverviewStatus::Failed => "dialog-warning-symbolic",
+        SyncOverviewStatus::Completed => "emblem-ok-symbolic",
+        SyncOverviewStatus::NotConfigured | SyncOverviewStatus::Ready => "folder-remote-symbolic",
+    }
+}
 
 fn group_mode_name(mode: GroupBy) -> &'static str {
     match mode {
@@ -87,6 +117,18 @@ mod imp {
         /// viewer. Without this, rapid repeated clicks can stack viewer pages
         /// or race with viewer-level back handling during the transition.
         pub viewer_open_pending: Cell<bool>,
+        pub overview_refresh_in_flight: Cell<bool>,
+        pub overview_poll_source: RefCell<Option<glib::SourceId>>,
+        #[template_child]
+        pub overview_toggle: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
+        pub overview_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub overview_count_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub overview_sync_icon: TemplateChild<gtk::Image>,
+        #[template_child]
+        pub overview_sync_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub scroll_date_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
@@ -146,6 +188,13 @@ mod imp {
                 contrast_update_pending: Cell::new(false),
                 scroll_date_update_pending: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
+                overview_refresh_in_flight: Cell::new(false),
+                overview_poll_source: RefCell::new(None),
+                overview_toggle: TemplateChild::default(),
+                overview_revealer: TemplateChild::default(),
+                overview_count_label: TemplateChild::default(),
+                overview_sync_icon: TemplateChild::default(),
+                overview_sync_label: TemplateChild::default(),
                 scroll_date_revealer: TemplateChild::default(),
                 scroll_date_label: TemplateChild::default(),
                 header_bar: TemplateChild::default(),
@@ -188,6 +237,14 @@ mod imp {
 
     impl ObjectImpl for PhotosPage {
         fn dispose(&self) {
+            if let Some(source) = self.overview_poll_source.borrow_mut().take() {
+                if glib::MainContext::default()
+                    .find_source_by_id(&source)
+                    .is_some()
+                {
+                    source.remove();
+                }
+            }
             if let Some(popover) = self.favorite_popover.borrow_mut().take() {
                 popover.unparent();
             }
@@ -250,6 +307,18 @@ impl PhotosPage {
             .search_btn
             .get()
             .set_tooltip_text(Some(&tr("photos.search.tooltip")));
+        obj.imp()
+            .overview_toggle
+            .get()
+            .set_tooltip_text(Some(&tr("photos.overview.show")));
+        obj.imp()
+            .overview_count_label
+            .get()
+            .set_label(&tr("photos.overview.loading"));
+        obj.imp()
+            .overview_sync_label
+            .get()
+            .set_label(&tr("photos.overview.loading"));
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
@@ -527,6 +596,16 @@ impl PhotosPage {
             }
         });
 
+        let weak = obj.downgrade();
+        obj.imp()
+            .overview_toggle
+            .get()
+            .connect_toggled(move |toggle| {
+                if let Some(this) = weak.upgrade() {
+                    this.set_overview_expanded(toggle.is_active());
+                }
+            });
+
         // Exit multi-select: clears selection across every grid and hides the
         // batch toolbar. Same effect as the right-click "Exit Multi-select".
         let weak = obj.downgrade();
@@ -701,6 +780,9 @@ impl PhotosPage {
     /// access to the database. Mirrors `set_nav_target`.
     pub fn set_db_pool(&self, pool: DbPool) {
         *self.imp().pool.borrow_mut() = Some(pool);
+        if self.imp().overview_revealer.get().reveals_child() {
+            self.refresh_overview_async();
+        }
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
@@ -709,6 +791,129 @@ impl PhotosPage {
 
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
+    }
+
+    fn set_overview_expanded(&self, expanded: bool) {
+        self.imp()
+            .overview_revealer
+            .get()
+            .set_reveal_child(expanded);
+        self.imp().overview_toggle.get().set_icon_name(if expanded {
+            "pan-up-symbolic"
+        } else {
+            "pan-down-symbolic"
+        });
+        self.imp()
+            .overview_toggle
+            .get()
+            .set_tooltip_text(Some(&tr(if expanded {
+                "photos.overview.hide"
+            } else {
+                "photos.overview.show"
+            })));
+        if expanded {
+            self.start_overview_updates();
+        } else {
+            self.stop_overview_updates();
+        }
+    }
+
+    fn start_overview_updates(&self) {
+        self.refresh_overview_async();
+        if self.imp().overview_poll_source.borrow().is_some() {
+            return;
+        }
+        let weak = self.downgrade();
+        let source = glib::timeout_add_local(Duration::from_secs(2), move || {
+            let Some(this) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !this.imp().overview_toggle.get().is_active() {
+                return glib::ControlFlow::Break;
+            }
+            this.refresh_overview_async();
+            glib::ControlFlow::Continue
+        });
+        *self.imp().overview_poll_source.borrow_mut() = Some(source);
+    }
+
+    fn stop_overview_updates(&self) {
+        if let Some(source) = self.imp().overview_poll_source.borrow_mut().take() {
+            if glib::MainContext::default()
+                .find_source_by_id(&source)
+                .is_some()
+            {
+                source.remove();
+            }
+        }
+    }
+
+    fn refresh_overview_async(&self) {
+        if self.imp().overview_refresh_in_flight.replace(true) {
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            self.imp().overview_refresh_in_flight.set(false);
+            return;
+        };
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                let repository = crate::core::repository::MediaRepository::new(pool.clone());
+                Ok::<_, crate::core::error::AppError>(PhotosOverviewSnapshot {
+                    photos: repository.count(MediaQuery::Images)?,
+                    videos: repository.count(MediaQuery::Videos)?,
+                    sync: SyncStore::new(pool).overview()?,
+                })
+            })
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().overview_refresh_in_flight.set(false);
+            match result {
+                Ok(Ok(snapshot)) => this.apply_overview_snapshot(snapshot),
+                Ok(Err(error)) => {
+                    tracing::warn!("failed to load Photos overview: {error}");
+                    this.apply_overview_error();
+                }
+                Err(error) => {
+                    tracing::warn!("failed to join Photos overview worker: {error:?}");
+                    this.apply_overview_error();
+                }
+            }
+        });
+    }
+
+    fn apply_overview_snapshot(&self, snapshot: PhotosOverviewSnapshot) {
+        self.imp().overview_count_label.get().set_label(&trf(
+            "photos.overview.counts",
+            &[
+                ("photos", &snapshot.photos.to_string()),
+                ("videos", &snapshot.videos.to_string()),
+            ],
+        ));
+        self.imp()
+            .overview_sync_label
+            .get()
+            .set_label(&sync_overview_text(snapshot.sync.status));
+        self.imp()
+            .overview_sync_icon
+            .get()
+            .set_icon_name(Some(sync_overview_icon(snapshot.sync.status)));
+    }
+
+    fn apply_overview_error(&self) {
+        let unavailable = tr("photos.overview.unavailable");
+        self.imp()
+            .overview_count_label
+            .get()
+            .set_label(&unavailable);
+        self.imp().overview_sync_label.get().set_label(&unavailable);
+        self.imp()
+            .overview_sync_icon
+            .get()
+            .set_icon_name(Some("dialog-warning-symbolic"));
     }
 
     pub(crate) fn open_search_page(&self) {

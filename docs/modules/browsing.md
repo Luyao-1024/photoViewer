@@ -125,6 +125,13 @@ entry lets the user restrict matching to file names only, dates only, or both
 (the default). The selected field is stored as `SearchField` (`All`, `Name`,
 `Date`) and passed through `MediaQuery` to the DB layer.
 
+Next to Search, a collapsed overview disclosure reveals a compact glass card
+above the grid. It shows authoritative full-library photo and video counts from
+`MediaRepository`, never the bounded GTK seed length, plus the persisted
+provider-neutral synchronization state. While expanded, the card refreshes on
+a short timer so startup scans and WebDAV lifecycle changes become visible;
+collapsing it removes the timer and restores the grid's full height.
+
 When the **Date** field is selected, the search entry provides automatic date
 formatting: typing digits auto-inserts "/" separators (e.g., typing "20251001"
 becomes "2025/10/01"). Date search supports multiple granularities:

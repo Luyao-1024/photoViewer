@@ -42,6 +42,13 @@ template $PhotosPage : Adw.NavigationPage {
       }
 
       [start]
+      Gtk.ToggleButton overview_toggle {
+        icon-name: "pan-down-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
+
+      [start]
       Gtk.Revealer select_all_revealer {
         transition-type: slide_right;
         reveal-child: false;
@@ -100,6 +107,47 @@ template $PhotosPage : Adw.NavigationPage {
           tooltip-text: "";
           // Hidden until user has selected one or more photos.
           css-classes: ["glass-toolbar-button"];
+        }
+      }
+    }
+
+    Gtk.Revealer overview_revealer {
+      transition-type: slide_down;
+      transition-duration: 220;
+      reveal-child: false;
+
+      Gtk.Box overview_card {
+        orientation: vertical;
+        spacing: 12;
+        margin-start: 12;
+        margin-end: 12;
+        margin-bottom: 12;
+        css-classes: ["photos-overview", "glass-base"];
+
+        Gtk.Label overview_count_label {
+          label: "";
+          halign: start;
+          xalign: 0;
+          css-classes: ["photos-overview-count"];
+        }
+
+        Gtk.Box overview_sync_row {
+          orientation: horizontal;
+          spacing: 10;
+          halign: start;
+          css-classes: ["photos-overview-sync-row"];
+
+          Gtk.Image overview_sync_icon {
+            icon-name: "folder-remote-symbolic";
+            pixel-size: 20;
+          }
+
+          Gtk.Label overview_sync_label {
+            label: "";
+            halign: start;
+            xalign: 0;
+            wrap: true;
+          }
         }
       }
     }

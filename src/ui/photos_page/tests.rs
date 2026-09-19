@@ -56,6 +56,78 @@ fn sample_new_item(name: &str, ts: i64) -> crate::core::media::NewMediaItem {
 }
 
 #[gtk::test]
+fn photos_overview_expands_with_full_counts_and_sync_status() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let local = tmp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("overview.db")).unwrap();
+    let mut video = sample_new_item("clip", 8_000);
+    video.mime_type = "video/mp4".into();
+    video.video_duration_secs = Some(12.0);
+    crate::core::db::upsert_media_items_batch(
+        &pool,
+        &[
+            sample_new_item("photo-one", 10_000),
+            sample_new_item("photo-two", 9_000),
+            video,
+        ],
+    )
+    .unwrap();
+    let store = crate::core::sync::SyncStore::new(pool.clone());
+    let job = store
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/root/".into(),
+            username: "alice".into(),
+            credential_ref: "overview-credential".into(),
+            local_root: local,
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    store.set_job_paused(job.id, true).unwrap();
+
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+    page.set_db_pool(pool);
+
+    assert!(
+        !page.imp().overview_revealer.get().reveals_child(),
+        "the Photos overview should stay collapsed until requested"
+    );
+    page.imp().overview_toggle.get().set_active(true);
+    assert!(page.imp().overview_revealer.get().reveals_child());
+
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline
+        && page.imp().overview_count_label.get().label() == tr("photos.overview.loading").as_str()
+    {
+        context.iteration(true);
+    }
+
+    assert_eq!(
+        page.imp().overview_count_label.get().label(),
+        trf(
+            "photos.overview.counts",
+            &[("photos", "2"), ("videos", "1")]
+        )
+    );
+    assert_eq!(
+        page.imp().overview_sync_label.get().label(),
+        sync_overview_text(crate::core::sync::SyncOverviewStatus::Paused)
+    );
+
+    page.imp().overview_toggle.get().set_active(false);
+    assert!(!page.imp().overview_revealer.get().reveals_child());
+}
+
+#[gtk::test]
 fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();

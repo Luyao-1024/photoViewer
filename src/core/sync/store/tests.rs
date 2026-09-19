@@ -107,3 +107,51 @@ fn rejects_upload_album_parent_traversal() {
     requested.upload_albums = vec!["../outside".into()];
     assert!(store.create_job(&requested).is_err());
 }
+
+#[test]
+fn overview_reports_persisted_job_lifecycle() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+
+    assert_eq!(
+        store.overview().unwrap(),
+        SyncOverview {
+            status: SyncOverviewStatus::NotConfigured,
+            job_count: 0,
+        }
+    );
+
+    let job = store.create_job(&new_job(local)).unwrap();
+    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Ready);
+
+    store.mark_job_started(job.id).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE sync_jobs SET last_started_at = 20, last_completed_at = 10 WHERE id = ?1",
+            [job.id],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        store.overview().unwrap().status,
+        SyncOverviewStatus::Running
+    );
+
+    store
+        .mark_job_failed(job.id, "network unavailable")
+        .unwrap();
+    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Failed);
+
+    store.mark_job_completed(job.id).unwrap();
+    assert_eq!(
+        store.overview().unwrap().status,
+        SyncOverviewStatus::Completed
+    );
+
+    store.set_job_paused(job.id, true).unwrap();
+    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Paused);
+}

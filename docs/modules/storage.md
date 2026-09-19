@@ -289,6 +289,11 @@ error triggers a full scan followed by permission-safe missing-row reconciliatio
 
 Settings gate the new WebDAV connection form behind an `AdwExpanderRow` that is disabled and collapsed each time the dialog opens. Enabling it expands the server fields; disabling it folds them again. Existing job rows stay outside that form, so this presentation switch never pauses an already configured task. Each job has a separate collapsed album checklist. It is editable only while the job is paused; checking a physical folder album enables uploads for files directly in that album, while every remote album remains in download scope. Creating a job requires non-overlapping local and remote roots. Passwords are stored through the platform keyring and only a credential reference is stored in SQLite. Unpaused jobs run immediately at application startup and then every 55–65 seconds; manual runs share the same per-job single-flight guard. Pausing stops future cycles. Resuming or creating a task registers it with the idempotent scheduler.
 
+`SyncStore::overview()` is the provider-neutral read projection for compact UI
+status surfaces. It derives not-configured, paused, running, failed, ready, or
+completed from enabled jobs and their persisted lifecycle timestamps/errors;
+the Photos overview polls this projection only while its disclosure is open.
+
 Open conflicts expose three guarded choices. “Use local” requires a strong current remote ETag. “Use cloud” downloads to staging, checks the recorded remote version and local fingerprint again, then publishes with a recoverable backup. “Keep both” creates a stable `*.cloud-conflict-<id>.<ext>` copy on both sides before conditionally converging the original path. If either recorded version has changed, the selection is rejected and a fresh reconciliation is required.
 
 `sync_tasks` is the crash evidence log. Startup reconciliation proves completed uploads by downloading and hashing the current remote object, and proves completed downloads from the published local fingerprint plus remote version before committing. Ambiguous or interrupted conflict resolutions become blocked and retain their artifact reference for review; cleanup must never delete a referenced artifact by age alone.
