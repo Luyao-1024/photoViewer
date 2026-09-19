@@ -31,7 +31,7 @@ jobs:
             gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
             ffmpeg ffmpegthumbnailer \
             python3-pip python3-pyatspi xvfb \
-            at-spi2-core dbus-daemon
+            at-spi2-core dbus-daemon libdbus-1-dev
 
       - name: Install blueprint-compiler (pip)
         run: pip install blueprint-compiler

@@ -15,7 +15,7 @@ Ubuntu:
 ```bash
 sudo apt install libgtk-4-dev libadwaita-1-dev libgdk-pixbuf-2.0-dev \
                  libheif-dev libsqlite3-dev at-spi2-core dbus-daemon \
-                 python3-pyatspi
+                 libdbus-1-dev python3-pyatspi
 ```
 
 `blueprint-compiler` must be available on `PATH`.
