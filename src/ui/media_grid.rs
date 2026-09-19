@@ -765,6 +765,17 @@ impl MediaGrid {
     /// Used by the search page to insert a "show more" tile at the end of the
     /// grid. The widget is wrapped in a `FlowBoxChild` automatically.
     pub fn append_extra_child(&self, widget: &gtk::Widget) {
+        // Search can rebuild twice in one layout cycle: once for query results
+        // and once when the measured preview capacity changes. Detach the
+        // existing wrapper before reattaching the same button; otherwise GTK
+        // rejects putting an already-parented widget into a new FlowBoxChild.
+        if let Some(old_child) = widget.parent().and_downcast::<gtk::FlowBoxChild>() {
+            if let Some(old_flow) = old_child.parent().and_downcast::<gtk::FlowBox>() {
+                old_flow.remove(&old_child);
+            }
+            old_child.set_child(None::<&gtk::Widget>);
+        }
+
         let content = self.imp().content.get();
         // Find the last FlowBox child of the content box.
         let mut last_flow: Option<gtk::FlowBox> = None;

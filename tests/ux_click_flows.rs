@@ -1,17 +1,19 @@
-//! UX-level click flow coverage.
+//! Full-shell UX journey and interaction-contract coverage.
 //!
-//! These tests exercise the same GTK signal paths a user hits: clicking the
-//! Photos mode selector cells and activating a rendered thumbnail tile. They
-//! intentionally avoid calling `PhotosPage` internals such as `open_viewer`.
+//! The journey scenarios start at `MainWindow` and cross page boundaries using
+//! the controls and production keyboard router a user reaches. Smaller
+//! interaction contracts remain in this binary because GTK must be initialized
+//! once and exercised serially, but they are secondary to the journeys.
 mod common;
 
 use chrono::{TimeZone, Utc};
+use common::write_plain_jpeg;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
-use libadwaita::prelude::NavigationPageExt;
+use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
 use photo_viewer::core::thumbnails::ThumbnailLoader;
@@ -46,11 +48,17 @@ struct AppShell {
 static FULL_SHELL_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums() {
+fn ux_full_shell_user_journeys_and_interaction_contracts() {
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for UX click flows");
     let _runtime_guard = runtime.enter();
 
+    journey_search_view_edit_and_save_copy();
+    journey_select_copy_to_album_then_open_it();
+    journey_trash_restore_and_permanently_delete();
+
+    // Focused interaction contracts that protect important edge cases inside
+    // those journeys (rapid activation, chrome states, and sidebar modes).
     mode_selector_click_switches_photos_view();
     thumbnail_activation_opens_one_viewer();
     keyboard_shortcuts_drive_full_shell_navigation();
@@ -61,8 +69,206 @@ fn ux_click_flow_suite_including_album_sidebar_multi_select_deletes_real_albums(
     album_sidebar_multi_select_deletes_real_albums();
     album_picker_clicks_album_row_and_copy_move();
     album_sidebar_open_then_tile_opens_viewer();
-    trash_page_clicks_selection_cancel_restore_and_delete();
     full_app_shell_renders_photos_and_opens_trash_via_sidebar();
+}
+
+/// A user searches from the Photos root, opens the result, inspects details,
+/// favorites it, edits brightness, and saves a copy. This crosses the real
+/// Photos -> Search -> Viewer -> embedded Editor path and verifies the durable
+/// result rather than stopping at a widget-state assertion.
+fn journey_search_view_edit_and_save_copy() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let initial_count = db::list_all_media(&shell.pool).unwrap().len();
+
+    click_button(&shell.photos.imp().search_btn.get());
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<SearchPage>().is_some()
+        }),
+        "clicking Search from Photos should open the Search page"
+    );
+    let search = nav
+        .visible_page()
+        .and_downcast::<SearchPage>()
+        .expect("Search page should be visible");
+    search.imp().search_entry.get().set_text("one");
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            first_flowbox_child(search.upcast_ref()).is_some()
+        }),
+        "the user's query should render a matching result"
+    );
+    let result = first_flowbox_child(search.upcast_ref()).expect("search result tile");
+    let results = result
+        .parent()
+        .and_then(|widget| widget.downcast::<gtk::FlowBox>().ok())
+        .expect("search result should belong to the results FlowBox");
+    results.emit_by_name::<()>("child-activated", &[&result]);
+
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<ViewerPage>().is_some()
+        }),
+        "activating the search result should open Viewer"
+    );
+    let viewer = nav
+        .visible_page()
+        .and_downcast::<ViewerPage>()
+        .expect("Viewer should be visible");
+    assert!(
+        wait_until(Duration::from_secs(2), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "the editable JPEG should finish loading and enable Edit"
+    );
+
+    click_button(&viewer.imp().details_btn.get());
+    assert!(viewer.imp().details_split_view.get().shows_sidebar());
+    click_button(&viewer.imp().details_close_btn.get());
+    click_button(&viewer.imp().favorite_btn.get());
+    let media_id = viewer.imp().current_media_id.get();
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            db::is_media_favorite(&shell.pool, media_id).unwrap_or(false)
+        }),
+        "favoriting from Viewer should persist before editing"
+    );
+
+    click_button(&viewer.imp().edit_btn.get());
+    let editor = viewer.imp().editor_panel.get();
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            viewer.imp().editor_split_view.get().shows_sidebar()
+                && editor.imp().source_image.borrow().is_some()
+        }),
+        "Edit should reveal the embedded panel and load the source image"
+    );
+    editor.imp().brightness_scale.get().set_value(18.0);
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            !editor.imp().render_running.get() && !editor.imp().render_pending.get()
+        }),
+        "the edited preview should settle before Save Copy"
+    );
+    click_button(&editor.imp().save_copy_btn.get());
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            db::list_all_media(&shell.pool)
+                .map(|items| {
+                    items.len() == initial_count + 1
+                        && items.iter().any(|item| {
+                            item.path
+                                .file_stem()
+                                .is_some_and(|stem| stem.to_string_lossy().contains("one_edited_"))
+                        })
+                })
+                .unwrap_or(false)
+        }),
+        "Save Copy should publish an edited file and add it to the library"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            !viewer.imp().editor_split_view.get().shows_sidebar()
+        }),
+        "a successful save should return the user to Viewer"
+    );
+}
+
+/// A user selects the current collection with the production shortcut, opens
+/// the album picker, copies the photos, returns to browsing, opens the album
+/// from the sidebar, and opens a copied item in Viewer.
+fn journey_select_copy_to_album_then_open_it() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let original_count = db::list_all_media(&shell.pool).unwrap().len();
+
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::a,
+        gtk::gdk::ModifierType::CONTROL_MASK,
+    ));
+    assert!(visible_photos_grid(&shell.photos).is_all_displayed_selected());
+    click_button(&shell.photos.imp().add_to_album_btn.get());
+
+    let wrapper = nav.visible_page().expect("album picker wrapper");
+    let inner = find_descendant::<adw::NavigationView>(wrapper.upcast_ref())
+        .expect("AlbumPicker should contain its navigation view");
+    let list = find_descendant::<gtk::ListBox>(wrapper.upcast_ref())
+        .expect("AlbumPicker should contain an album list");
+    assert!(wait_until(Duration::from_secs(2), || list
+        .row_at_index(0)
+        .is_some()));
+    list.row_at_index(0)
+        .expect("fixture album row")
+        .emit_by_name::<()>("activate", &[]);
+    assert_eq!(inner.navigation_stack().n_items(), 2);
+
+    let copy = find_button_with_css(wrapper.upcast_ref(), "glass-toolbar-suggested")
+        .expect("Copy action should be visible");
+    click_button(&copy);
+    assert!(
+        wait_until(Duration::from_secs(4), || {
+            db::list_all_media(&shell.pool)
+                .map(|items| items.len() > original_count)
+                .unwrap_or(false)
+                && inner.navigation_stack().n_items() == 1
+        }),
+        "copying from the picker should persist the copies and return to its album list"
+    );
+
+    assert!(nav.pop(), "Back should close the album picker");
+    shell.window.populate_album_rows();
+    let album_position = shell
+        .window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .position(|album| !album.is_virtual)
+        .expect("a real album should remain in the sidebar");
+    shell
+        .window
+        .imp()
+        .album_selection
+        .borrow()
+        .as_ref()
+        .expect("sidebar album selection model")
+        .select_item(album_position as u32, true);
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            shell
+                .window
+                .browsing_stack()
+                .visible_child_name()
+                .as_deref()
+                == Some("album")
+        }),
+        "choosing the album in the sidebar should open its detail page"
+    );
+    let detail = shell
+        .window
+        .browsing_stack()
+        .visible_child()
+        .and_downcast::<AlbumDetailPage>()
+        .expect("album detail page");
+    let grid = find_descendant::<VirtualMediaGrid>(detail.upcast_ref())
+        .expect("album detail should contain its grid");
+    assert!(wait_until(Duration::from_secs(2), || grid
+        .first_ready_media_slot()
+        .is_some()));
+    activate_virtual_grid_slot(
+        &grid,
+        grid.first_ready_media_slot().expect("ready album item"),
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            nav.visible_page().and_downcast::<ViewerPage>().is_some()
+        }),
+        "opening a copied album item should reach Viewer"
+    );
 }
 
 fn search_result_activation_opens_one_viewer_while_pending() {
@@ -782,31 +988,29 @@ fn full_app_shell_renders_photos_and_opens_trash_via_sidebar() {
     let _ = trash;
 }
 
-fn trash_page_clicks_selection_cancel_restore_and_delete() {
+fn journey_trash_restore_and_permanently_delete() {
     let shell = build_full_app_shell();
+    let original_uris: Vec<_> = shell.items.iter().map(|item| item.uri.clone()).collect();
 
-    // The fixture tempdir lives on tmpfs, where gio's `move_to_trash` errors
-    // with "not supported on internal mount". Create the two trash-test files
-    // on a real mount under `$HOME` so restore/delete perform real operations
-    // and the grid genuinely reloads. Mirrors `real_scratch()` in
-    // `src/ui/trash_page/tests.rs`.
-    let real_scratch = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"));
-    let trash_dir = real_scratch.join(format!("pv-ux-trash-{}", std::process::id()));
-    std::fs::create_dir_all(&trash_dir).unwrap();
-
-    let mut trash_items = Vec::new();
-    for name in ["trash-a.jpg", "trash-b.jpg"] {
-        let path = trash_dir.join(name);
-        std::fs::write(&path, b"ux-trash-test").unwrap();
-        let item = sample_item(0, path);
-        let id = common::db::insert_media_item(&shell.pool, &NewMediaItem::from(&item)).unwrap();
-        let item = db::get_media_item(&shell.pool, id).unwrap();
-        photo_viewer::core::trash::move_to_trash(&item.uri).unwrap();
-        common::db::mark_trashed(&shell.pool, id).unwrap();
-        trash_items.push(item);
-    }
+    // Start at Photos and use the same selection and trash actions a user does.
+    assert!(emit_window_key(
+        &shell.window,
+        gtk::gdk::Key::a,
+        gtk::gdk::ModifierType::CONTROL_MASK,
+    ));
+    click_button(&shell.photos.imp().delete_to_trash_btn.get());
+    let confirm = wait_for_descendant::<adw::AlertDialog>(shell.window.upcast_ref())
+        .expect("Move to Trash should present a confirmation dialog");
+    confirm.emit_by_name::<()>("response", &[&"trash"]);
+    confirm.close();
+    assert!(
+        wait_until(Duration::from_secs(4), || {
+            db::list_trashed_media(&shell.pool)
+                .map(|items| items.len() == 2)
+                .unwrap_or(false)
+        }),
+        "trashing selected Photos items should move both into Trash"
+    );
 
     let nav = shell.window.nav_view();
     let trash = open_trash_via_sidebar(&shell.window);
@@ -862,7 +1066,12 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
     );
     let remaining_id = db::list_trashed_media(&shell.pool).unwrap()[0].id;
     grid.select_ids(&[MediaId::from(remaining_id)]);
-    assert!(trash.imp().action_bar.get().is_revealed());
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            trash.imp().action_bar.get().is_revealed()
+        }),
+        "selecting the remaining Trash item should reveal its actions"
+    );
     click_button(&trash.imp().delete_btn.get());
     assert!(
         wait_until(Duration::from_secs(2), || {
@@ -877,18 +1086,24 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
         "TrashPage must stay visible after deleting the last item"
     );
 
-    // Clean up the host trash so the test leaves nothing behind. Which slot
-    // `first_ready_media_slot()` picked is ordering-dependent, so clean both
-    // URIs: the restored item (whichever it was) moved back into `trash_dir`
-    // (removed below), and the other was already delete-permanently'd — both
-    // delete_permanently calls are idempotent no-ops.
-    let _ = std::fs::remove_dir_all(&trash_dir);
-    let _ = photo_viewer::core::trash::delete_permanently(&trash_items[0].uri);
-    let _ = photo_viewer::core::trash::delete_permanently(&trash_items[1].uri);
+    // Idempotent cleanup protects the host trash if an ordering-dependent item
+    // was restored while the other one was permanently deleted.
+    for uri in original_uris {
+        let _ = photo_viewer::core::trash::delete_permanently(&uri);
+    }
 }
 
 fn build_full_app_shell() -> AppShell {
-    let tmp = tempfile::tempdir().unwrap();
+    // GIO refuses to trash files on some tmpfs mounts. Put the complete test
+    // library on a normal filesystem so the Photos -> Trash journey exercises
+    // the production GIO path instead of pre-seeding database state.
+    let fixture_root = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/tmp"));
+    let tmp = tempfile::Builder::new()
+        .prefix("photo-viewer-ux-")
+        .tempdir_in(fixture_root)
+        .expect("create full-shell fixture on a trash-capable filesystem");
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("shell.db")).unwrap();
     let loader = Arc::new(ThumbnailLoader::new(
         pool.clone(),
@@ -985,8 +1200,7 @@ fn seed_media(pool: &db::DbPool, root: &std::path::Path) -> Vec<MediaItem> {
     std::fs::create_dir_all(&media_dir).unwrap();
     let mut items = Vec::new();
     for name in ["one.jpg", "two.jpg"] {
-        let path = media_dir.join(name);
-        std::fs::write(&path, b"ux-flow-test-image").unwrap();
+        let path = write_plain_jpeg(&media_dir, name);
         let item = sample_item(0, path);
         let id = common::db::insert_media_item(pool, &NewMediaItem::from(&item)).unwrap();
         items.push(db::get_media_item(pool, id).unwrap());
@@ -1140,6 +1354,21 @@ where
     }
 
     None
+}
+
+fn wait_for_descendant<T>(root: &gtk::Widget) -> Option<T>
+where
+    T: glib::object::IsA<gtk::Widget> + glib::object::ObjectType,
+{
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        while glib::MainContext::default().iteration(false) {}
+        if let Some(found) = find_descendant::<T>(root) {
+            return Some(found);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    find_descendant::<T>(root)
 }
 
 fn nth_child(parent: &impl IsA<gtk::Widget>, index: usize) -> Option<gtk::Widget> {

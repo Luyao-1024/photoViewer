@@ -11,7 +11,43 @@ cargo clippy --all-targets
 
 Use focused integration tests during development, then broaden when touching shared UI/CSS, storage, navigation, or edit behavior.
 
-Run `tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows` before pushing/uploading a branch with UI interaction changes. Local edits and commits do not require this gate, but upstream handoff does. These flows run against the full `MainWindow`+sidebar shell via `build_full_app_shell()`, not a standalone `PhotosPage`, so page-to-page navigation and sidebar/state interactions are covered. The suite sends keyboard input through the production capture-phase router as well as exercising click/activation signals; it must not call page-level action handlers directly.
+## UX Test Strategy
+
+UX coverage is organized by user goal. The primary deterministic gate is
+`tests/ux_click_flows.rs`; it initializes GTK once and runs serially because
+multiple GTK application shells are not safe to drive concurrently in one test
+process. Its leading scenarios are complete journeys through the real
+`MainWindow`, sidebar, navigation stack, pages, persistence layer, and
+filesystem effects:
+
+1. Search for a photo, open Viewer, inspect details, favorite it, edit it, and
+   save a copy.
+2. Select the Photos collection, copy it through the album picker, reopen the
+   album from the sidebar, and open an item in Viewer.
+3. Move selected Photos items to Trash through the confirmation dialog, then
+   cancel selection, restore one item, and permanently delete the other.
+
+The rest of that binary contains interaction contracts for important variants
+such as rapid double activation, mode switching, keyboard routing, settings,
+rename/zoom/rotate controls, and album multi-select. Keep a contract only when
+putting the assertion into a journey would make the journey branch unnaturally
+or hide the behavior being diagnosed. New UX regressions should first extend
+the nearest journey; add an isolated widget test only for a reusable widget
+contract or a state that cannot be reached deterministically through GTK.
+
+Run this gate before handing off any UI interaction change:
+
+```bash
+tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows
+```
+
+The full-shell fixtures use valid media files and a normal filesystem under the
+current user's home directory. This lets the journeys exercise image decode,
+editor save, and GIO trash/restore behavior rather than pre-seeding their final
+database states. Every fixture is isolated and cleaned up after the scenario.
+The suite sends keyboard input through the production capture-phase router and
+uses GTK click/activation/response signals; it must not call page-level action
+handlers directly.
 
 `tools/with-at-spi.sh` starts an isolated session D-Bus when needed, then
 checks that both `org.a11y.Bus` and `org.a11y.atspi.Registry` are available
@@ -48,17 +84,27 @@ remote CI result already covers the change. Run extra local commands only when
 they cover something CI does not, such as a narrower reproduction, an
 environment-specific Flatpak visual check, or a manual debugging path.
 
-## Test Layout
+## Test Layers
 
+- `tests/ux_click_flows.rs`: full-shell user journeys first, then narrowly
+  scoped interaction contracts. This is the deterministic UX release gate.
+- `tools/visual-check-x11.sh`: Flatpak/runtime smoke checks and screenshots for
+  behaviors the in-process GTK harness cannot reproduce faithfully.
 - `tests/common/mod.rs`: shared test fixtures and helpers.
 - `tests/fixtures/media/`: checked-in real media fixtures used by default
   tests, including phone HEIC/video coverage that must not be hidden behind
   `#[ignore]`.
-- `tests/e2e_*`: user-flow level coverage.
-- `tests/ux_*`: GTK signal-level UX flows that simulate user clicks, activations, and keyboard-router input. They are driven through `build_full_app_shell()`, so each flow exercises the real `MainWindow` plus sidebar rather than an isolated page.
+- `tests/e2e_*` and `tests/e3e_*`: legacy-named data-pipeline integration tests.
+  They validate scan/group, thumbnail, edit persistence, album, and trash
+  boundaries, but do not drive the GTK UI and are not UX end-to-end evidence.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
 - `tests/*_flow.rs`: module-level behavior such as trash and destructive rotate.
 - `src/**/tests.rs` and `src/**/tests/*.rs`: unit tests close to implementation.
+
+Use the narrowest layer that can prove the risk, while keeping the user journey
+as the owner of cross-page behavior. A save implementation edge case belongs in
+the edit pipeline tests; the promise that a user can reach Save Copy from
+Search and return to Viewer belongs in the UX journey.
 
 ## Test Ownership
 
