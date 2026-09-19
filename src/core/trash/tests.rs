@@ -1,4 +1,20 @@
 use super::*;
+
+#[cfg(unix)]
+#[test]
+fn mount_trash_candidates_follow_freedesktop_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("album/photo.jpg");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    let candidates = mount_trash_roots(&nested);
+    let uid = unsafe { libc::geteuid() };
+    assert!(candidates
+        .iter()
+        .any(|path| path.ends_with(format!(".Trash/{uid}"))));
+    assert!(candidates
+        .iter()
+        .any(|path| path.ends_with(format!(".Trash-{uid}"))));
+}
 use std::ffi::OsString;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -222,6 +238,41 @@ fn app_trash_root_entry_can_resolve_restore_and_delete() {
 }
 
 #[test]
+fn isolated_collision_restore_uses_matching_trashinfo_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Trash");
+    let a = tmp.path().join("a/dup#?.jpg");
+    let b = tmp.path().join("b/dup#?.jpg");
+    plant_trash_entry(&root, "dup.jpg", &a);
+    plant_trash_entry(&root, "dup.2.jpg", &b);
+    std::fs::write(root.join("files/dup.jpg"), b"A").unwrap();
+    std::fs::write(root.join("files/dup.2.jpg"), b"B").unwrap();
+
+    let uri = crate::core::file_uri::from_path(&a);
+    restore_from_trash_in_roots(&uri, std::slice::from_ref(&root)).unwrap();
+
+    assert_eq!(std::fs::read(&a).unwrap(), b"A");
+    assert_eq!(std::fs::read(root.join("files/dup.2.jpg")).unwrap(), b"B");
+    assert!(root.join("info/dup.2.jpg.trashinfo").exists());
+}
+
+#[test]
+fn destructive_operations_reject_unverified_same_basename() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Trash");
+    let wanted = tmp.path().join("wanted/same.jpg");
+    let other = tmp.path().join("other/same.jpg");
+    plant_trash_entry(&root, "same.jpg", &other);
+    let payload = root.join("files/same.jpg");
+    std::fs::write(&payload, b"other").unwrap();
+    let uri = crate::core::file_uri::from_path(&wanted);
+
+    assert!(prepare_permanent_delete_in_roots(&uri, std::slice::from_ref(&root)).is_err());
+    assert!(prepare_restore_in_roots(&uri, std::slice::from_ref(&root)).is_err());
+    assert_eq!(std::fs::read(payload).unwrap(), b"other");
+}
+
+#[test]
 fn migrate_trashed_entries_moves_metadata_between_roots() {
     let tmp = tempfile::tempdir().unwrap();
     let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
@@ -433,6 +484,29 @@ fn reconcile_inserts_orphan_whose_original_was_under_pictures() {
     );
     assert_eq!(trashed[0].uri, format!("file://{}", original.display()));
     assert!(trashed[0].path.ends_with("orphan.jpg"));
+}
+
+#[test]
+fn reconcile_indexes_entries_from_every_configured_media_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let pictures = tmp.path().join("Pictures");
+    let videos = tmp.path().join("ExternalVideos");
+    let trash_root = tmp.path().join("Trash");
+    std::fs::create_dir_all(&pictures).unwrap();
+    std::fs::create_dir_all(&videos).unwrap();
+    let original_picture = pictures.join("one.jpg");
+    let original_video = videos.join("two.jpg");
+    plant_trash_entry(&trash_root, "one.jpg", &original_picture);
+    plant_trash_entry(&trash_root, "two.jpg", &original_video);
+    let pool = crate::core::db::init_pool(&tmp.path().join("media.db")).unwrap();
+
+    let plan = prepare_trash_reconcile_for_roots_in(
+        &pool,
+        &[pictures, videos],
+        std::slice::from_ref(&trash_root),
+    )
+    .unwrap();
+    assert_eq!(plan.new_items.len(), 2);
 }
 
 #[test]

@@ -72,6 +72,25 @@ pub fn load_oriented_pixbuf(path: &Path) -> Result<Pixbuf> {
     Ok(apply_orientation_to_pixbuf(&pb, orientation))
 }
 
+/// Copy EXIF metadata from a source image into newly rendered JPEG/PNG bytes.
+/// Pixels have already been oriented, so the copied orientation is reset to 1.
+pub fn copy_metadata_to_rendered(source: &Path, rendered: &Path) -> Result<()> {
+    let Some(existing) = read_exif(source)? else {
+        return Ok(());
+    };
+    let rendered_bytes = std::fs::read(rendered)?;
+    let tiff = encode_exif(Some(&existing), 1)?;
+    let output = if is_jpeg(&rendered_bytes) {
+        write_jpeg_exif_segment(&rendered_bytes, &tiff)?
+    } else if is_png(&rendered_bytes) {
+        write_png_exif_chunk(&rendered_bytes, &tiff)?
+    } else {
+        return Ok(());
+    };
+    std::fs::write(rendered, output)?;
+    Ok(())
+}
+
 fn degrees_from_orientation(orientation: u16) -> i32 {
     match orientation {
         3 => 180,

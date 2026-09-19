@@ -1,4 +1,3 @@
-use gtk4::gio;
 use gtk4::prelude::ApplicationExtManual;
 
 fn main() -> anyhow::Result<()> {
@@ -19,16 +18,7 @@ fn main() -> anyhow::Result<()> {
     // Register GResource (must be before any GTK operations)
     {
         let _stage = startup_trace.stage("register_resources");
-        gio::resources_register_include!("photo_viewer_resources.gresource").unwrap_or_else(
-            |error| {
-                photo_viewer::core::telemetry::log_error(
-                    &startup_trace,
-                    "register_resources",
-                    &error,
-                );
-                panic!("Failed to register resources: {error}");
-            },
-        );
+        photo_viewer::ensure_resources_registered();
     }
 
     // Ensure XDG directories exist

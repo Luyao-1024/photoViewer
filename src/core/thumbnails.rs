@@ -33,7 +33,7 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Instant, SystemTime};
 use tokio::sync::oneshot;
@@ -267,6 +267,8 @@ pub struct ThumbnailLoader {
     state: Arc<Mutex<LoaderState>>,
     background_pull: Arc<BackgroundPullState>,
     stats_dirty_callback: SharedStatsDirtyCallback,
+    disk_cache_bytes: u64,
+    cold_generations: Arc<AtomicUsize>,
 }
 
 impl ThumbnailLoader {
@@ -326,6 +328,8 @@ impl ThumbnailLoader {
                 worker_count: Mutex::new(1),
             }),
             stats_dirty_callback: Arc::new(Mutex::new(None)),
+            disk_cache_bytes,
+            cold_generations: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -437,6 +441,8 @@ impl ThumbnailLoader {
             let bg = self.background_pull.clone();
             let db_actor = self.db_actor.lock().ok().and_then(|slot| slot.clone());
             let stats_dirty_callback = self.stats_dirty_callback.clone();
+            let cold_generations = self.cold_generations.clone();
+            let disk_cache_bytes = self.disk_cache_bytes;
             tokio::task::spawn_blocking(move || {
                 worker_loop(
                     queue,
@@ -446,6 +452,8 @@ impl ThumbnailLoader {
                     bg,
                     db_actor,
                     stats_dirty_callback,
+                    disk_cache_bytes,
+                    cold_generations,
                 );
             });
         }

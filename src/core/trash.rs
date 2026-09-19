@@ -37,6 +37,12 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+fn push_unique(roots: &mut Vec<PathBuf>, candidate: PathBuf) {
+    if !roots.contains(&candidate) {
+        roots.push(candidate);
+    }
+}
+
 /// 待探测的回收站根目录，按优先级返回。
 ///
 /// 见模块文档：Flatpak 下实际落点是 HOST `~/.local/share/Trash`，但同时保留
@@ -53,6 +59,62 @@ pub fn trash_roots() -> Vec<PathBuf> {
 /// System trash roots used by gio/gvfs and the freedesktop trash layout.
 pub fn system_trash_roots() -> Vec<PathBuf> {
     trash_roots_from(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+/// System trash roots plus per-mount freedesktop trash directories for all
+/// configured media locations. External disks normally use either
+/// `<mount>/.Trash/<uid>` or `<mount>/.Trash-<uid>`.
+pub fn trash_roots_for_media_roots(media_roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = trash_roots();
+    for media_root in media_roots {
+        for candidate in mount_trash_roots(media_root) {
+            if candidate.is_dir() {
+                push_unique(&mut roots, candidate);
+            }
+        }
+    }
+    roots
+}
+
+fn trash_roots_for_original_path(original: &Path) -> Vec<PathBuf> {
+    trash_roots_for_media_roots(&[original.to_path_buf()])
+}
+
+#[cfg(unix)]
+fn mount_trash_roots(path: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut existing = path;
+    while !existing.exists() {
+        let Some(parent) = existing.parent() else {
+            return Vec::new();
+        };
+        existing = parent;
+    }
+    let Ok(metadata) = std::fs::metadata(existing) else {
+        return Vec::new();
+    };
+    let device = metadata.dev();
+    let mut mount = existing.to_path_buf();
+    while let Some(parent) = mount.parent() {
+        let Ok(parent_metadata) = std::fs::metadata(parent) else {
+            break;
+        };
+        if parent_metadata.dev() != device {
+            break;
+        }
+        mount = parent.to_path_buf();
+    }
+    let uid = unsafe { libc::geteuid() };
+    vec![
+        mount.join(".Trash").join(uid.to_string()),
+        mount.join(format!(".Trash-{uid}")),
+    ]
+}
+
+#[cfg(not(unix))]
+fn mount_trash_roots(_path: &Path) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// App-owned fallback trash root.
@@ -90,7 +152,16 @@ fn trash_roots_from(xdg_data_home: Option<OsString>, home: Option<OsString>) -> 
 ///
 /// `Path=` 字段是 URL percent-encoded，比较前必须 [`percent_decode`]。
 /// [`find_trash_entry`] 的可测试核心：显式传入候选回收站根。
-fn find_trash_entry_in(original_path: &Path, trash_roots: &[PathBuf]) -> Option<(String, PathBuf)> {
+#[derive(Debug, Clone)]
+struct TrashEntry {
+    original: PathBuf,
+    actual_name: String,
+    info_path: PathBuf,
+    file_path: PathBuf,
+}
+
+fn scan_trash_entries(trash_roots: &[PathBuf]) -> Vec<TrashEntry> {
+    let mut found = Vec::new();
     for root in trash_roots {
         let info_dir = root.join("info");
         let files_dir = root.join("files");
@@ -112,21 +183,31 @@ fn find_trash_entry_in(original_path: &Path, trash_roots: &[PathBuf]) -> Option<
                 continue;
             };
             let recorded = percent_decode(&path_line["Path=".len()..]);
-            if Path::new(&recorded) != original_path {
-                continue;
-            }
+            let original = PathBuf::from(recorded);
             // 防御性校验：files 里确实存在该条目。
-            if files_dir.join(actual).exists() {
-                return Some((actual.to_string(), info_path));
+            let file_path = files_dir.join(actual);
+            if file_path.exists() {
+                found.push(TrashEntry {
+                    original,
+                    actual_name: actual.to_string(),
+                    info_path,
+                    file_path,
+                });
             }
         }
     }
-    None
+    found
 }
 
-/// [`find_trash_entry`] 的带兜底包装，供缩略图/还原/永久删除使用：找不到真实条目
-/// 时，用原始 basename + 第一个候选根构造一个（可能不存在的）路径，调用方拿到后
-/// 会优雅失败并报错。
+fn find_trash_entry_in(original_path: &Path, trash_roots: &[PathBuf]) -> Option<(String, PathBuf)> {
+    scan_trash_entries(trash_roots)
+        .into_iter()
+        .find(|entry| entry.original == original_path)
+        .map(|entry| (entry.actual_name, entry.info_path))
+}
+
+/// Resolve only a verified entry. Restore and permanent delete must never
+/// guess by basename because another trashed file can have the same name.
 fn resolve_trash_entry_in_roots(
     original_path: &Path,
     trash_roots: &[PathBuf],
@@ -134,18 +215,10 @@ fn resolve_trash_entry_in_roots(
     if let Some(found) = find_trash_entry_in(original_path, trash_roots) {
         return Ok(found);
     }
-    let root = trash_roots
-        .first()
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from("/tmp/Trash"));
-    let basename = original_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| AppError::Backend("orig path has no filename".into()))?;
-    Ok((
-        basename.to_string(),
-        root.join("info").join(format!("{basename}.trashinfo")),
-    ))
+    Err(AppError::Backend(format!(
+        "no verified trash entry for {}",
+        original_path.display()
+    )))
 }
 
 /// 解码 gio 写入 `.trashinfo` `Path=` 字段的 `%XX` percent-encoding
@@ -200,18 +273,15 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// decoding, however, needs the actual file now stored under the trash root's
 /// `files/` directory (HOST `~/.local/share/Trash/files/` under Flatpak).
 pub fn trashed_file_uri(uri: &str) -> Result<String> {
-    trashed_file_uri_in_roots(uri, &trash_roots())
+    let path = crate::core::file_uri::to_path(uri)?;
+    trashed_file_uri_in_roots(uri, &trash_roots_for_original_path(&path))
 }
 
 fn trashed_file_uri_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<String> {
-    let file = gtk::gio::File::for_uri(uri);
-    let path = file
-        .path()
-        .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
+    let path = crate::core::file_uri::to_path(uri)?;
     let (actual_name, info_path) = resolve_trash_entry_in_roots(&path, trash_roots)?;
-    Ok(format!(
-        "file://{}",
-        files_dir_for(&info_path).join(actual_name).display()
+    Ok(crate::core::file_uri::from_path(
+        &files_dir_for(&info_path).join(actual_name),
     ))
 }
 
@@ -423,7 +493,7 @@ fn probe_system_trash_in(root: &Path) -> Result<()> {
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
     ));
     std::fs::write(&probe, b"photo-viewer trash probe")?;
-    let uri = format!("file://{}", probe.display());
+    let uri = crate::core::file_uri::from_path(&probe);
     match move_to_system_trash(&uri) {
         Ok(()) => {
             if let Err(err) = delete_permanently_in_roots(&uri, &system_trash_roots()) {
@@ -615,7 +685,18 @@ pub fn reconcile_trash(pool: &DbPool, pictures_root: &Path) -> Result<ReconcileS
 }
 
 pub fn prepare_trash_reconcile(pool: &DbPool, pictures_root: &Path) -> Result<TrashReconcilePlan> {
-    prepare_trash_reconcile_in(pool, pictures_root, &trash_roots())
+    prepare_trash_reconcile_for_roots(pool, &[pictures_root.to_path_buf()])
+}
+
+pub fn prepare_trash_reconcile_for_roots(
+    pool: &DbPool,
+    media_roots: &[PathBuf],
+) -> Result<TrashReconcilePlan> {
+    prepare_trash_reconcile_for_roots_in(
+        pool,
+        media_roots,
+        &trash_roots_for_media_roots(media_roots),
+    )
 }
 
 /// [`reconcile_trash`] 的可测试核心：显式传入候选回收站根，避免单测依赖真实
@@ -626,82 +707,65 @@ fn reconcile_trash_in(
     pictures_root: &Path,
     trash_roots: &[PathBuf],
 ) -> Result<ReconcileStats> {
-    let plan = prepare_trash_reconcile_in(pool, pictures_root, trash_roots)?;
+    let plan =
+        prepare_trash_reconcile_for_roots_in(pool, &[pictures_root.to_path_buf()], trash_roots)?;
     commit_trash_reconcile(pool, plan)
 }
 
-fn prepare_trash_reconcile_in(
+fn prepare_trash_reconcile_for_roots_in(
     pool: &DbPool,
-    pictures_root: &Path,
+    media_roots: &[PathBuf],
     trash_roots: &[PathBuf],
 ) -> Result<TrashReconcilePlan> {
     let mut plan = TrashReconcilePlan::default();
     let backend = LocalBackend::new(pool.clone());
 
-    for root in trash_roots {
-        let info_dir = root.join("info");
-        let files_dir = root.join("files");
-        let Ok(entries) = std::fs::read_dir(&info_dir) else {
+    let entries = scan_trash_entries(trash_roots);
+    let present_originals = entries
+        .iter()
+        .map(|entry| entry.original.clone())
+        .collect::<HashSet<_>>();
+    for entry in entries {
+        let original_path = entry.original;
+        // 只回收原路径在相册目录下的条目；其余（下载/文档等）忽略。
+        if !media_roots
+            .iter()
+            .any(|root| original_path.starts_with(root))
+        {
+            plan.skipped += 1;
             continue;
-        };
-        for entry in entries.flatten() {
-            let info_path = entry.path();
-            let Some(fname) = info_path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let Some(actual) = fname.strip_suffix(".trashinfo") else {
-                continue;
-            };
-            let Ok(content) = std::fs::read_to_string(&info_path) else {
-                continue;
-            };
-            let Some(path_line) = content.lines().find(|l| l.starts_with("Path=")) else {
-                continue;
-            };
-            let original = percent_decode(&path_line["Path=".len()..]);
-            let original_path = PathBuf::from(&original);
+        }
+        // HOST 回收站包含文档、文本等非本 App 索引的文件。先按媒体扩展
+        // 跳过，避免普通非媒体条目进入元数据解析并产生启动 warning。
+        if !is_supported_media_path(&original_path) {
+            plan.skipped += 1;
+            continue;
+        }
+        // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
+        if original_path.exists() {
+            plan.skipped += 1;
+            continue;
+        }
+        let trash_file = entry.file_path;
 
-            // 只回收原路径在相册目录下的条目；其余（下载/文档等）忽略。
-            if !original_path.starts_with(pictures_root) {
-                plan.skipped += 1;
-                continue;
+        let uri = crate::core::file_uri::from_path(&original_path);
+        match db::get_media_item_by_uri(pool, &uri)? {
+            Some(existing) if existing.trashed_at.is_some() => {
+                plan.skipped += 1; // 已是 trashed，无需处理
             }
-            // HOST 回收站包含文档、文本等非本 App 索引的文件。先按媒体扩展
-            // 跳过，避免普通非媒体条目进入元数据解析并产生启动 warning。
-            if !is_supported_media_path(&original_path) {
-                plan.skipped += 1;
-                continue;
+            Some(existing) => {
+                plan.mark_ids.push(MediaId::from(existing.id));
             }
-            // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
-            if original_path.exists() {
-                plan.skipped += 1;
-                continue;
-            }
-            let trash_file = files_dir.join(actual);
-            if !trash_file.is_file() {
-                plan.skipped += 1;
-                continue;
-            }
-
-            let uri = format!("file://{}", original_path.display());
-            match db::get_media_item_by_uri(pool, &uri)? {
-                Some(existing) if existing.trashed_at.is_some() => {
-                    plan.skipped += 1; // 已是 trashed，无需处理
-                }
-                Some(existing) => {
-                    plan.mark_ids.push(MediaId::from(existing.id));
-                }
-                None => {
-                    let folder = original_path.parent().unwrap_or_else(|| Path::new("/"));
-                    match backend.process_file_at(&trash_file, &uri, &original_path, folder) {
-                        Ok(item) => {
-                            plan.new_items.push(item);
-                        }
-                        Err(e) => {
-                            // 非图片 / 无法解码：跳过，不影响其余条目。
-                            tracing::warn!("回收站对账：解析 {} 失败: {}", trash_file.display(), e);
-                            plan.skipped += 1;
-                        }
+            None => {
+                let folder = original_path.parent().unwrap_or_else(|| Path::new("/"));
+                match backend.process_file_at(&trash_file, &uri, &original_path, folder) {
+                    Ok(item) => {
+                        plan.new_items.push(item);
+                    }
+                    Err(e) => {
+                        // 非图片 / 无法解码：跳过，不影响其余条目。
+                        tracing::warn!("回收站对账：解析 {} 失败: {}", trash_file.display(), e);
+                        plan.skipped += 1;
                     }
                 }
             }
@@ -715,7 +779,7 @@ fn prepare_trash_reconcile_in(
         if row.path.exists() {
             continue; // 已还原，交给扫描
         }
-        if find_trash_entry_in(&row.path, trash_roots).is_none() {
+        if !present_originals.contains(&row.path) {
             plan.prune_ids.push(MediaId::from(row.id));
         }
     }
@@ -764,7 +828,8 @@ fn files_dir_for(info_path: &Path) -> PathBuf {
 ///
 /// `uri` 必须是 `move_to_trash` 时传入的原文件 uri（`file://...`）。
 pub fn restore_from_trash(uri: &str) -> Result<()> {
-    restore_from_trash_in_roots(uri, &trash_roots())
+    let path = crate::core::file_uri::to_path(uri)?;
+    restore_from_trash_in_roots(uri, &trash_roots_for_original_path(&path))
 }
 
 fn restore_from_trash_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()> {
@@ -813,7 +878,8 @@ impl Drop for PreparedRestore {
 }
 
 pub(crate) fn prepare_restore(uri: &str) -> Result<PreparedRestore> {
-    prepare_restore_in_roots(uri, &trash_roots())
+    let path = crate::core::file_uri::to_path(uri)?;
+    prepare_restore_in_roots(uri, &trash_roots_for_original_path(&path))
 }
 
 /// Stage a trash file under a hidden sibling name. If the following database
@@ -859,18 +925,16 @@ impl Drop for PreparedPermanentDelete {
 }
 
 pub(crate) fn prepare_permanent_delete(uri: &str) -> Result<PreparedPermanentDelete> {
-    prepare_permanent_delete_in_roots(uri, &trash_roots())
+    let path = crate::core::file_uri::to_path(uri)?;
+    prepare_permanent_delete_in_roots(uri, &trash_roots_for_original_path(&path))
 }
 
 fn prepare_permanent_delete_in_roots(
     uri: &str,
     trash_roots: &[PathBuf],
 ) -> Result<PreparedPermanentDelete> {
-    let rest = uri
-        .strip_prefix("file://")
-        .ok_or_else(|| AppError::Backend("staged delete requires a local file URI".into()))?;
-    let original_path = Path::new(rest);
-    let (actual_name, info) = resolve_trash_entry_in_roots(original_path, trash_roots)?;
+    let original_path = crate::core::file_uri::to_path(uri)?;
+    let (actual_name, info) = resolve_trash_entry_in_roots(&original_path, trash_roots)?;
     let original = files_dir_for(&info).join(actual_name);
     let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
     let staged = original.with_extension(format!("photo-viewer-delete-{suffix}"));
@@ -884,10 +948,7 @@ fn prepare_permanent_delete_in_roots(
 }
 
 fn prepare_restore_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<PreparedRestore> {
-    let file = gtk::gio::File::for_uri(uri);
-    let path = file
-        .path()
-        .ok_or_else(|| AppError::Backend(format!("uri {} has no local path", uri)))?;
+    let path = crate::core::file_uri::to_path(uri)?;
 
     let (actual_name, trashinfo_path) = resolve_trash_entry_in_roots(&path, trash_roots)?;
     let trash_child = gtk::gio::File::for_path(files_dir_for(&trashinfo_path).join(&actual_name));
@@ -922,14 +983,19 @@ fn prepare_restore_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<Prepar
 /// * `trash:///...` —— 直接删除 trash 项；如 basename 含 `.trashinfo` 信息，
 ///   也一并清理对应元数据文件。
 pub fn delete_permanently(uri: &str) -> Result<()> {
-    delete_permanently_in_roots(uri, &trash_roots())
+    if uri.starts_with("file:") {
+        let path = crate::core::file_uri::to_path(uri)?;
+        delete_permanently_in_roots(uri, &trash_roots_for_original_path(&path))
+    } else {
+        delete_permanently_in_roots(uri, &trash_roots())
+    }
 }
 
 fn delete_permanently_in_roots(uri: &str, trash_roots: &[PathBuf]) -> Result<()> {
-    if let Some(rest) = uri.strip_prefix("file://") {
+    if uri.starts_with("file:") {
         // 提取 basename，再解析实际回收站文件名
-        let path = Path::new(rest);
-        let (actual_name, trashinfo_path) = resolve_trash_entry_in_roots(path, trash_roots)?;
+        let path = crate::core::file_uri::to_path(uri)?;
+        let (actual_name, trashinfo_path) = resolve_trash_entry_in_roots(&path, trash_roots)?;
         let trash_child =
             gtk::gio::File::for_path(files_dir_for(&trashinfo_path).join(&actual_name));
         trash_child

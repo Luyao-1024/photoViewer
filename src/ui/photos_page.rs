@@ -177,6 +177,7 @@ mod imp {
         type ParentType = adw::NavigationPage;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 
@@ -840,6 +841,17 @@ impl PhotosPage {
     }
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        if matches!(
+            action,
+            KeyboardAction::ActivateFocused | KeyboardAction::ToggleSelection
+        ) {
+            if let Some(grid) = self.current_grid() {
+                let result = grid.handle_keyboard_action(action);
+                if result.is_handled() {
+                    return result;
+                }
+            }
+        }
         match action {
             KeyboardAction::SelectAll => {
                 self.select_all_in_current_mode();

@@ -38,7 +38,7 @@ fn spawn_watcher(
     let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
     let h = {
         let _guard = rt.enter();
-        notify_watcher::start_watching(db_actor, vec![root.clone()], vec![], vec![], root)
+        notify_watcher::start_watching(db_actor, vec![root.clone()], vec![], vec![], vec![root])
     };
     // Give the watcher a moment to call `watcher.watch(...)`.
     std::thread::sleep(Duration::from_millis(300));

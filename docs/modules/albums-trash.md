@@ -52,6 +52,10 @@ diverge. When the refreshed Photos projection is only adding media, preserve
 the existing `ListStore` items and emit a pure insertion rather than replacing
 the whole model; otherwise hidden Photos grids destroy and recreate every
 thumbnail tile when the user returns to the page.
+Copy uses no-clobber creation and removes the new file if DB insertion fails.
+Move uses a no-clobber same-filesystem link (or copy/delete on `EXDEV`) and
+restores the original path when the DB location update fails. Production
+mutations use the DB actor; direct DB variants remain for focused core tests.
 `albums::refresh` must rebuild the materialized folder-album table inside one
 SQLite transaction. Sidebar snapshots can run on another pooled connection; if
 the refresh exposes the post-`DELETE`/pre-`INSERT` state, the sidebar briefly
@@ -125,6 +129,8 @@ remaining album query by virtual ranges. Do not backfill the full album into
 the GTK `ListStore`; viewer navigation can resolve off-window neighbours through
 repository queries. A favorite/trash change refreshes the visible virtual-album
 window and sidebar counts without materializing the complete virtual album.
+Repository refreshes run on a blocking worker and carry a generation token so
+slow, stale results cannot update a page after a newer refresh.
 
 Right-clicking an album row opens the custom overlay `GlassContextMenu`, not a
 `GtkPopover`, so the menu shares the same page-overlay glass rendering path as
@@ -188,9 +194,9 @@ with `files/` and `info/` children. It is private to the app and is used only as
 a fallback, but restore and permanent-delete use the same DB projection and
 `.trashinfo` path resolution as the system backend.
 
-**System trash files live in the HOST `~/.local/share/Trash`, not the sandbox `XDG_DATA_HOME/Trash`.** Under Flatpak the gvfs trash backend runs on the host, so `gio::File::trash()` moves files to `~/.local/share/Trash/files/` even though the sandbox sees a per-app `XDG_DATA_HOME`. `src/core/trash.rs` therefore searches host, per-app, and app-owned trash roots, scans every `.trashinfo` (gio collision suffixes can start at `.0`), and percent-decodes the `Path=` field (non-ASCII like `图片` is stored as `%E5%9B%BE%E7%89%87`). Thumbnail decoding, restore, and permanent-delete all depend on this resolution being correct.
+**System trash files live in the HOST `~/.local/share/Trash`, not the sandbox `XDG_DATA_HOME/Trash`.** Under Flatpak the gvfs trash backend runs on the host, so `gio::File::trash()` moves files to `~/.local/share/Trash/files/` even though the sandbox sees a per-app `XDG_DATA_HOME`. External mounts may instead use `<mount>/.Trash/<uid>` or `<mount>/.Trash-<uid>`. `src/core/trash.rs` therefore searches host, per-app, app-owned, and existing per-mount trash roots, scans every `.trashinfo` once per reconciliation (gio collision suffixes can start at `.0`), and percent-decodes the `Path=` field (non-ASCII like `图片` is stored as `%E5%9B%BE%E7%89%87`). Thumbnail decoding, restore, and permanent-delete all depend on this resolution being correct.
 
-**The Trash view is fully reconciled with the configured trash roots at startup (`trash::reconcile_trash`), and kept live thereafter.** Bidirectional: it adds trashed rows for trash entries whose original path was under the pictures dir (inserting from the `Trash/files` copy under the original uri, or marking an existing live row), and prunes DB trashed rows whose file is no longer in any known trash root (externally emptied). Restored files (original present) are left to the scan. The watcher also watches the trash dirs: external restore/empty/delete is debounced → re-reconciled → `TrashChanged` → the visible Trash view refreshes without a page switch. See [`storage.md`](storage.md).
+**The Trash view is fully reconciled with the configured trash roots at startup (`trash::reconcile_trash`), and kept live thereafter.** Bidirectional: it adds trashed rows for trash entries whose original path was under any configured media root (inserting from the `Trash/files` copy under the original uri, or marking an existing live row), and prunes DB trashed rows whose file is no longer in any known trash root (externally emptied). Restored files (original present) are left to the scan. The watcher also watches the trash dirs: external restore/empty/delete is debounced → re-reconciled → `TrashChanged` → the visible Trash view refreshes without a page switch. See [`storage.md`](storage.md).
 System trash roots contain documents and other non-media files too; entries whose original path is not a supported image/video extension are normal skips and must not be sent through metadata decoding or logged as reconciliation warnings.
 
 Trash uses a query-backed Day `VirtualMediaGrid`. It exposes a logical slot for

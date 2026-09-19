@@ -19,15 +19,58 @@ pub(in crate::core::thumbnails) fn extract_video_frame(
 ) -> anyhow::Result<Pixbuf> {
     match extract_video_frame_ffmpeg(path, max_dim) {
         Ok(pb) => Ok(pb),
-        Err(e) => {
-            debug!(
-                "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer {}: {}",
+        Err(thumbnailer_error) => match extract_video_frame_ffmpeg_cli(path, max_dim) {
+            Ok(pb) => Ok(pb),
+            Err(ffmpeg_error) => {
+                debug!(
+                    "VIDEO_THUMB external decoders failed, falling back to GStreamer {}: ffmpegthumbnailer={}; ffmpeg={}",
                 path.display(),
-                e
+                    thumbnailer_error,
+                    ffmpeg_error,
             );
-            extract_video_frame_gst(path, max_dim)
-        }
+                extract_video_frame_gst(path, max_dim).map_err(|gstreamer_error| {
+                    anyhow::anyhow!(
+                        "all video decoders failed: ffmpegthumbnailer={thumbnailer_error}; ffmpeg={ffmpeg_error}; GStreamer={gstreamer_error}"
+                    )
+                })
+            }
+        },
     }
+}
+
+/// Secondary external fallback for development hosts that provide `ffmpeg`
+/// but not the optional `ffmpegthumbnailer` frontend.
+fn extract_video_frame_ffmpeg_cli(path: &Path, max_dim: u32) -> anyhow::Result<Pixbuf> {
+    let tmp = ffmpeg_thumbnail_temp_path(path, max_dim).with_extension("ffmpeg.png");
+    let scale = format!("scale=w={max_dim}:h={max_dim}:force_original_aspect_ratio=decrease");
+    let out = crate::core::process::output(
+        Command::new("ffmpeg").args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            "1",
+            "-i",
+            &path.to_string_lossy(),
+            "-an",
+            "-frames:v",
+            "1",
+            "-vf",
+            &scale,
+            &tmp.to_string_lossy(),
+        ]),
+        crate::core::process::MEDIA_TIMEOUT,
+    )
+    .map_err(|error| anyhow::anyhow!("failed to start ffmpeg: {error}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!("ffmpeg exited {:?}: {}", out.status.code(), stderr.trim());
+    }
+    let pixbuf = load_pixbuf_sync(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    pixbuf
 }
 
 /// 用外部 `ffmpegthumbnailer` 生成封面帧。它内部走 libav，会正确扩展 limited
@@ -102,10 +145,11 @@ fn extract_video_frame_gst(path: &Path, _max_dim: u32) -> anyhow::Result<Pixbuf>
 
     // 用 uridecodebin 构建管线：自动处理 decodebin 动态 pad 链接。
     // videoflip video-direction=auto 从所有来源（容器 tkhd、编码 SEI、tags）自动检测并应用旋转。
-    // videoconvert 负责 YUV->RGB；显式 colorimetry=sRGB 强制输出 full-range sRGB，
-    // 避免 limited-range(TV) 视频黑/白点被压在 16/235 导致缩略图发灰低饱和。
+    // videoconvert 负责 YUV->RGB，并依据输入 caps 的 range/colorimetry 转换到
+    // RGB。不要把 `colorimetry=sRGB` 强塞进 raw caps：部分解码器无法与该 caps
+    // 协商，会在缺少 ffmpegthumbnailer 时触发 Internal data stream error。
     let desc = format!(
-        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB,colorimetry=sRGB ! appsink name=sink",
+        "uridecodebin uri={} ! videoflip video-direction=auto ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink",
         uri
     );
     let pipeline =

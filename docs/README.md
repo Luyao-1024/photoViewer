@@ -17,6 +17,7 @@ This is the human entry point for project documentation. Agents should start fro
 | [`architecture.md`](architecture.md) | Layer boundaries, runtime integration, navigation model, GTK widget pattern |
 | [`development.md`](development.md) | Dependencies, build/run, Flatpak, visual checks, documentation workflow |
 | [`testing.md`](testing.md) | Test commands, CI-equivalent policy, test layout, known GTK/GStreamer warnings |
+| [`improvement-backlog.md`](improvement-backlog.md) | 2026-09-19 project review: prioritized improvement backlog, evidence, and verification results |
 
 ## Functional Modules
 

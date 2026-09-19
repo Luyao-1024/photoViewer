@@ -109,6 +109,7 @@ mod imp {
         type ParentType = gtk::Box;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 

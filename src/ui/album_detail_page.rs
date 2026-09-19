@@ -19,6 +19,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::empty_states;
+use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
@@ -42,6 +43,9 @@ mod imp {
         /// Debounces media activation while NavigationView is pushing the
         /// viewer, matching PhotosPage's grid behavior.
         pub viewer_open_pending: Cell<bool>,
+        /// Rejects stale background refreshes when several domain events land
+        /// while the repository query is still running.
+        pub refresh_generation: Cell<u64>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -59,6 +63,7 @@ mod imp {
         type ParentType = adw::NavigationPage;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 
@@ -216,6 +221,15 @@ impl AlbumDetailPage {
 
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        self.imp()
+            .grid
+            .borrow()
+            .as_ref()
+            .map(|grid| grid.handle_keyboard_action(action))
+            .unwrap_or(KeyboardResult::Ignored)
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
@@ -499,34 +513,58 @@ impl AlbumDetailPage {
             return;
         };
 
-        // Re-evaluate the per-album query against the current DB state and
-        // splice it into the live store so the grid + open viewer track new
-        // membership without pushing a new page.
-        let repo = MediaRepository::new(pool);
         let query = media_query_for_album(&album);
-        let total = repo
-            .count(query.clone())
-            .map(i64::from)
-            .unwrap_or(album.photo_count);
-        let limit = album_refresh_load_limit(total);
-        let items = repo.items(query, 0, limit).unwrap_or_default();
-        {
-            let splice_span = tracing::info_span!("album_detail:splice");
-            let _splice = splice_span.enter();
-            if !apply_pure_insertions(&media_list, &items) {
-                let additions: Vec<glib::BoxedAnyObject> =
-                    items.into_iter().map(glib::BoxedAnyObject::new).collect();
-                media_list.splice(0, media_list.n_items(), &additions);
+        let generation = self.imp().refresh_generation.get().saturating_add(1);
+        self.imp().refresh_generation.set(generation);
+        let weak = self.downgrade();
+
+        // Repository count/page queries can block on SQLite or a busy disk.
+        // Keep them off the GTK main thread and apply only the newest result.
+        glib::spawn_future_local(async move {
+            let fallback_total = album.photo_count;
+            let result = gtk::gio::spawn_blocking(move || {
+                let repo = MediaRepository::new(pool);
+                let total = repo
+                    .count(query.clone())
+                    .map(i64::from)
+                    .unwrap_or(fallback_total);
+                let limit = album_refresh_load_limit(total);
+                repo.items(query, 0, limit)
+            })
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().refresh_generation.get() != generation {
+                return;
             }
-        }
-        tracing::debug!(
-            target: crate::core::log_targets::ALBUMS,
-            album_name = %album.display_name(),
-            album_path = %album.folder_path.display(),
-            is_virtual = album.is_virtual,
-            item_count = media_list.n_items(),
-            "album_detail_page: refreshed_media_list"
-        );
+            let Ok(Ok(items)) = result else {
+                tracing::warn!(
+                    target: crate::core::log_targets::ALBUMS,
+                    album_name = %album.display_name(),
+                    album_path = %album.folder_path.display(),
+                    "album_detail_page: repository refresh failed"
+                );
+                return;
+            };
+            {
+                let splice_span = tracing::info_span!("album_detail:splice");
+                let _splice = splice_span.enter();
+                if !apply_pure_insertions(&media_list, &items) {
+                    let additions: Vec<glib::BoxedAnyObject> =
+                        items.into_iter().map(glib::BoxedAnyObject::new).collect();
+                    media_list.splice(0, media_list.n_items(), &additions);
+                }
+            }
+            tracing::debug!(
+                target: crate::core::log_targets::ALBUMS,
+                album_name = %album.display_name(),
+                album_path = %album.folder_path.display(),
+                is_virtual = album.is_virtual,
+                item_count = media_list.n_items(),
+                "album_detail_page: refreshed_media_list"
+            );
+        });
     }
 }
 

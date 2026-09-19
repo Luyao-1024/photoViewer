@@ -6,7 +6,7 @@
 mod common;
 use chrono::Utc;
 use common::*;
-use photo_viewer::core::album_ops::{add_to_album, AlbumOpMode};
+use photo_viewer::core::album_ops::{add_to_album, add_to_album_with_actor, AlbumOpMode};
 use photo_viewer::core::albums;
 use photo_viewer::core::db;
 use photo_viewer::core::media::{MediaItem, NewMediaItem};
@@ -171,6 +171,62 @@ fn move_refreshes_album_counts_so_old_folder_decrements_new_increments() {
         .unwrap_or(0);
     assert_eq!(cam_after, 0, "源相册计数应减 1");
     assert_eq!(scr_after, 1, "目标相册计数应加 1");
+}
+
+#[test]
+fn copy_database_failure_removes_the_new_file() {
+    let (_dir, pool, _source_folder, id, dest_folder, original_path) = setup();
+    pool.get()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_album_copy
+             BEFORE INSERT ON media_items
+             BEGIN SELECT RAISE(ABORT, 'injected copy failure'); END;",
+        )
+        .unwrap();
+
+    assert!(add_to_album(&pool, &[id], &dest_folder, AlbumOpMode::Copy).is_err());
+    assert!(original_path.exists());
+    assert_eq!(std::fs::read_dir(&dest_folder).unwrap().count(), 0);
+}
+
+#[test]
+fn actor_copy_database_failure_removes_the_new_file() {
+    let (_dir, pool, _source_folder, id, dest_folder, original_path) = setup();
+    pool.get()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_actor_album_copy
+             BEFORE INSERT ON media_items
+             BEGIN SELECT RAISE(ABORT, 'injected actor copy failure'); END;",
+        )
+        .unwrap();
+    let (events, _receiver) = photo_viewer::core::DomainEventSender::new();
+    let actor = photo_viewer::core::start_db_actor(pool.clone(), events);
+
+    assert!(
+        add_to_album_with_actor(&pool, &actor, &[id], &dest_folder, AlbumOpMode::Copy).is_err()
+    );
+    assert!(original_path.exists());
+    assert_eq!(std::fs::read_dir(&dest_folder).unwrap().count(), 0);
+}
+
+#[test]
+fn move_database_failure_restores_the_original_path() {
+    let (_dir, pool, _source_folder, id, dest_folder, original_path) = setup();
+    pool.get()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_album_move
+             BEFORE UPDATE OF path ON media_items
+             BEGIN SELECT RAISE(ABORT, 'injected move failure'); END;",
+        )
+        .unwrap();
+
+    assert!(add_to_album(&pool, &[id], &dest_folder, AlbumOpMode::Move).is_err());
+    assert!(original_path.exists());
+    assert_eq!(std::fs::read_dir(&dest_folder).unwrap().count(), 0);
+    assert_eq!(db::get_media_item(&pool, id).unwrap().path, original_path);
 }
 
 // 把 MediaItem 引入以防未使用警告

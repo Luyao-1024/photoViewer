@@ -96,7 +96,7 @@ fn watcher_picks_up_new_file() {
             vec![root.clone()],
             vec![],
             vec![],
-            root.clone(),
+            vec![root.clone()],
         )
     };
 

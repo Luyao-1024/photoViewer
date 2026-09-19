@@ -28,8 +28,9 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
   `Gtk.ListView` inside a fixed-height `Gtk.ScrolledWindow`, so only visible
   album rows are realized.
 - Photos row → pop to the root `PhotosPage`.
-- An album row → push that album's `AlbumDetailPage` **directly** (there is no
-  intermediate album-grid page). The Albums header is non-selectable and only
+- An album row → switch the browsing `Gtk.Stack` from Photos to that album's
+  `AlbumDetailPage`. Viewer, Search, and Trash remain pushed pages in the outer
+  `Adw.NavigationView`. The Albums header is non-selectable and only
   collapses/expands its children.
 - Album rows are **drag-to-reorder** (long-press + drag): each carries a
   `DragSource` whose payload is its `folder_path`, and a `DropTarget` that

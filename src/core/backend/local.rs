@@ -63,7 +63,7 @@ fn stream_file_hash(path: &Path) -> Result<String> {
 /// `process_file` 存入 DB 的 `file_mtime` 与 `scan_and_upsert_dir` 的跳过
 /// 判断**必须**用同一套逻辑，否则会出现「存的与比的口径不一致」导致永不命中。
 fn file_index_time(meta: &std::fs::Metadata) -> Option<std::time::SystemTime> {
-    meta.created().or_else(|_| meta.modified()).ok()
+    meta.modified().ok()
 }
 
 pub struct LocalBackend {
@@ -247,7 +247,7 @@ impl LocalBackend {
 
         let mut missing = Vec::new();
         for (dir, entries) in by_dir {
-            if !dir.exists() {
+            if matches!(dir.try_exists(), Ok(false)) {
                 missing.extend(entries.into_iter().map(|(id, uri, _)| MissingLiveMedia {
                     id: MediaId::from(id),
                     uri,
@@ -255,8 +255,16 @@ impl LocalBackend {
                 }));
                 continue;
             }
+            if std::fs::read_dir(&dir).is_err() {
+                tracing::warn!(
+                    target: crate::core::log_targets::STORAGE,
+                    "startup prune skipped unreadable folder {}",
+                    dir.display()
+                );
+                continue;
+            }
             missing.extend(entries.into_iter().filter_map(|(id, uri, path)| {
-                (!path.exists()).then(|| MissingLiveMedia {
+                matches!(path.try_exists(), Ok(false)).then(|| MissingLiveMedia {
                     id: MediaId::from(id),
                     uri,
                     folder_path: dir.clone(),
@@ -326,6 +334,7 @@ impl LocalBackend {
         let _ = SCAN_MOTION_MS.swap(0, Ordering::Relaxed);
         let _ = SCAN_UPSORT_MS.swap(0, Ordering::Relaxed);
         let mut errors = 0u64; // 元数据/upsert 失败，或解析 panic
+        let mut commit_errors = Vec::new();
         let mut none_mime = 0u64; // process_file 返回 None（不支持 MIME）
         let mut indexed = 0usize; // 实际写入 DB 的新增/更新行
 
@@ -379,11 +388,11 @@ impl LocalBackend {
                 // 廉价的改动检测：uri + mtime(秒) + size 全部一致即视为未改动。查主线程
                 // 预载的快照，纯内存比较——扫描线程完全不碰数据库，也不与消费者的写事
                 // 务争 WAL。
-                let uri = format!("file://{}", path.display());
+                let uri = crate::core::file_uri::from_path(path);
                 if let Some(mtime) = file_index_time(&file_meta).and_then(|t| {
                     t.duration_since(std::time::UNIX_EPOCH)
                         .ok()
-                        .map(|d| d.as_secs() as i64)
+                        .and_then(|d| i64::try_from(d.as_nanos()).ok())
                 }) {
                     if unchanged_index.get(uri.as_str()) == Some(&(mtime, file_meta.len() as i64)) {
                         unchanged += 1;
@@ -463,6 +472,7 @@ impl LocalBackend {
                     }
                     Err(e) => {
                         tracing::warn!("批量 upsert 失败（{} 项）: {}", batch_len, e);
+                        commit_errors.push(e.to_string());
                         errors += batch_len as u64;
                     }
                 }
@@ -484,6 +494,7 @@ impl LocalBackend {
                 }
                 Err(e) => {
                     tracing::warn!("批量 upsert 失败（{} 项）: {}", batch_len, e);
+                    commit_errors.push(e.to_string());
                     errors += batch_len as u64;
                 }
             }
@@ -519,7 +530,14 @@ impl LocalBackend {
             none_mime,
             indexed
         );
-        Ok(indexed)
+        if commit_errors.is_empty() {
+            Ok(indexed)
+        } else {
+            Err(AppError::Backend(format!(
+                "scan database commit failed: {}",
+                commit_errors.join("; ")
+            )))
+        }
     }
 
     /// `file_meta` 由调用方提供（扫描热路径已为未改动短路 stat 过一次），避免在这里
@@ -557,7 +575,7 @@ impl LocalBackend {
         let file_time = file_index_time(file_meta).unwrap_or_else(std::time::SystemTime::now);
         let file_time_utc: chrono::DateTime<Utc> = file_time.into();
 
-        let uri = format!("file://{}", path.display());
+        let uri = crate::core::file_uri::from_path(path);
         let folder = path
             .parent()
             .map(|p| p.to_path_buf())
@@ -731,7 +749,7 @@ impl LocalBackend {
                  SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
                      media_subkind=?6, media_attributes=?7, width=?8, height=?9,
                      video_duration_secs=?10, taken_at=?11, file_mtime=?12,
-                     file_size=?13, blake3_hash=?14,
+                     file_mtime_ns=?13, file_size=?14, blake3_hash=?15,
                      trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
@@ -747,6 +765,9 @@ impl LocalBackend {
                     item.video_duration_secs,
                     item.taken_at.map(|t| t.timestamp()),
                     item.file_mtime.timestamp(),
+                    item.file_mtime.timestamp_nanos_opt().unwrap_or_else(|| {
+                        item.file_mtime.timestamp().saturating_mul(1_000_000_000)
+                    }),
                     item.file_size as i64,
                     item.blake3_hash,
                 ],

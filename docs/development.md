@@ -53,6 +53,21 @@ Before pushing or handing off changes, follow the CI policy in
 commit, or rely on a successful GitHub Actions result for that same commit
 instead of rerunning the same full local checks.
 
+### Large-library benchmark
+
+The opt-in benchmark creates a disposable SQLite library and records initial
+page, deep OFFSET page, name search, and unchanged-scan snapshot timings. It is
+ignored by normal CI so benchmark size and machine noise cannot make correctness
+checks flaky.
+
+```bash
+PHOTOVIEWER_BENCH_ITEMS=100000 \
+  cargo test --release --test library_benchmark -- --ignored --nocapture
+```
+
+Use the same item count, release profile, filesystem, and machine when comparing
+results. Supported sizes are clamped to 1,000 through 1,000,000 rows.
+
 ## Flatpak Visual Checks
 
 Liquid Glass depends on GTK runtime support for `backdrop-filter`. The host GTK may be older than the target runtime, so visual checks for blur/refraction-style surfaces should run through the Flatpak GNOME 50 runtime.

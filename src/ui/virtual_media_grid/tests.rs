@@ -418,6 +418,9 @@ fn realized_day_cells_fill_grid_columns_and_match_dynamic_scroll_metrics() {
     }
 
     let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), true);
+    // Geometry is the contract under test; do not inherit the developer's
+    // persisted Photos column preference from runtime.json.
+    grid.set_grid_columns(4);
     let window = gtk::Window::builder()
         .default_width(900)
         .default_height(900)
@@ -590,6 +593,7 @@ fn viewport_width_does_not_shrink_day_tiles_when_column_count_is_unchanged() {
     let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
     let list = gio::ListStore::new::<glib::BoxedAnyObject>();
     let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), false);
+    grid.set_grid_columns(4);
 
     grid.update_columns_for_width(900);
     let compact = grid.viewport_metrics();

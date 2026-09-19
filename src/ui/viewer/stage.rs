@@ -39,8 +39,7 @@ pub(super) struct AnimatedImageFrame {
 /// the gdk-pixbuf loader. Anything without the `file://` prefix is treated
 /// as a raw path (defensive — the scanner only emits `file://` URIs).
 pub(super) fn strip_file_uri(uri: &str) -> PathBuf {
-    let stripped = uri.strip_prefix("file://").unwrap_or(uri);
-    PathBuf::from(stripped)
+    crate::core::file_uri::path_or_file_uri(uri).unwrap_or_else(|_| PathBuf::from(uri))
 }
 
 pub(super) fn viewer_preview_thumbnail_size() -> ThumbnailSize {
@@ -193,6 +192,13 @@ pub(super) fn file_starts_with_gif_header(path: &Path) -> bool {
 }
 
 impl ViewerPage {
+    fn update_edit_button_sensitivity(&self) {
+        self.imp().edit_btn.get().set_sensitive(
+            self.current_media_item()
+                .is_some_and(|item| item.is_editable_image()),
+        );
+    }
+
     pub(super) fn setup_motion_play_button(&self) {
         let weak = self.downgrade();
         self.imp().motion_play_btn.get().connect_clicked(move |_| {
@@ -216,7 +222,7 @@ impl ViewerPage {
         self.set_video_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
-        self.imp().edit_btn.get().set_sensitive(true);
+        self.update_edit_button_sensitivity();
         self.set_zoom_controls_visible(!self.imp().is_editing.get());
         if let Some(item) = self.current_media_item() {
             self.set_motion_play_button_for_item(&item);
@@ -361,7 +367,7 @@ impl ViewerPage {
                 .get()
                 .set_paintable(Some(&frames[0].texture));
             this.set_spinner_visible(false);
-            this.imp().edit_btn.get().set_sensitive(true);
+            this.update_edit_button_sensitivity();
             this.schedule_animated_image_frame(frames, 0, token);
         });
         true
@@ -411,7 +417,7 @@ impl ViewerPage {
         self.set_video_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
-        self.imp().edit_btn.get().set_sensitive(true);
+        self.update_edit_button_sensitivity();
         self.set_zoom_controls_visible(!self.imp().is_editing.get());
     }
 
@@ -690,7 +696,7 @@ impl ViewerPage {
             this.imp().original_painted_token.set(token);
             this.imp().picture.get().set_paintable(Some(&texture));
             this.set_spinner_visible(false);
-            this.imp().edit_btn.get().set_sensitive(true);
+            this.update_edit_button_sensitivity();
             tracing::debug!(
                 target: crate::core::log_targets::VIEWER,
                 "VIEWER_TRACE original_painted token={} item_name={} texture={}x{}",

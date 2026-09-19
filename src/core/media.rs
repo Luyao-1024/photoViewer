@@ -150,12 +150,26 @@ impl MediaItem {
         self.media_kind() == Some(MediaKind::Video)
     }
 
+    /// Formats whose current edit pipeline can decode and encode without
+    /// silently flattening animation, motion-photo, or HDR semantics.
+    pub fn is_editable_image(&self) -> bool {
+        self.is_image()
+            && self.media_subkind == MEDIA_SUBKIND_STANDARD
+            && !self.is_animated()
+            && !self.is_hdr()
+            && matches!(
+                self.mime_type.as_str(),
+                "image/jpeg" | "image/png" | "image/webp"
+            )
+    }
+
     pub fn is_motion_photo(&self) -> bool {
         self.media_subkind == MEDIA_SUBKIND_MOTION_PHOTO
     }
 
     pub fn is_animated(&self) -> bool {
-        media_attribute_flag(&self.media_attributes, MEDIA_ATTRIBUTE_ANIMATED)
+        self.mime_type == "image/gif"
+            || media_attribute_flag(&self.media_attributes, MEDIA_ATTRIBUTE_ANIMATED)
     }
 
     pub fn is_hdr(&self) -> bool {

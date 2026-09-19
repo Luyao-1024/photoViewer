@@ -32,6 +32,7 @@ use crate::core::repository::{MediaBatchResult, MediaQuery, MediaRepository};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::core::trash;
 use crate::ui::empty_states;
+use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
 
@@ -105,6 +106,7 @@ mod imp {
         type ParentType = adw::NavigationPage;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 
@@ -356,6 +358,15 @@ impl TrashPage {
             button.set_sensitive(false);
         }
         true
+    }
+
+    pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        self.imp()
+            .grid
+            .borrow()
+            .as_ref()
+            .map(|grid| grid.handle_keyboard_action(action))
+            .unwrap_or(KeyboardResult::Ignored)
     }
 
     fn finish_operation(&self, result: std::thread::Result<MediaBatchResult>) {

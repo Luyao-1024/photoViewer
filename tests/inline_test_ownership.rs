@@ -194,7 +194,7 @@ fn window_tests_live_with_window_modules() {
                 "restart_spec_uses_current_executable_and_preserves_args",
                 "settings_page_exposes_liquid_glass_transparency_slider",
                 "settings_page_exposes_scan_path_management",
-                "settings_storage_rows_defer_size_calculation",
+                "settings_clear_cache_data_row_defers_combined_size_calculation",
             ][..],
         ),
     ] {

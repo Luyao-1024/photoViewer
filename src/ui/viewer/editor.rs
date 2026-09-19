@@ -31,7 +31,7 @@ impl ViewerPage {
                 Some(i) => i,
                 None => return,
             };
-            if item.is_video() {
+            if !item.is_editable_image() {
                 return;
             }
 

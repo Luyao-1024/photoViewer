@@ -231,6 +231,54 @@ fn save_as_copy_bakes_source_orientation_into_saved_pixels() {
 }
 
 #[test]
+fn save_as_copy_preserves_capture_exif_and_normalizes_orientation() {
+    let dir = tempdir().unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(2020, 2, 3)
+        .unwrap()
+        .and_hms_opt(4, 5, 6)
+        .unwrap();
+    let source = write_jpeg_with_exif(dir.path(), "metadata.jpg", expected);
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let item = NewMediaItem {
+        uri: photo_viewer::core::file_uri::from_path(&source),
+        path: source.clone(),
+        folder_path: dir.path().to_path_buf(),
+        mime_type: "image/jpeg".into(),
+        media_subkind: "standard".into(),
+        media_attributes: "{}".into(),
+        width: Some(64),
+        height: Some(48),
+        video_duration_secs: None,
+        taken_at: Some(expected.and_utc()),
+        file_mtime: Utc::now(),
+        file_size: std::fs::metadata(&source).unwrap().len(),
+        blake3_hash: String::new(),
+    };
+    let id = common::db::insert_media_item(&pool, &item).unwrap();
+    let media_item = db::get_media_item(&pool, id).unwrap();
+
+    let copy = save::save_as_copy(
+        &media_item,
+        &EditState::default(),
+        &pool,
+        &EditRegistry::new_with_v1(),
+    )
+    .unwrap();
+    let file = std::fs::File::open(&copy.path).unwrap();
+    let mut reader = std::io::BufReader::new(file);
+    let exif = exif::Reader::new()
+        .read_from_container(&mut reader)
+        .expect("saved copy should retain EXIF");
+    let capture = exif
+        .get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+        .expect("DateTimeOriginal should be preserved")
+        .display_value()
+        .to_string();
+    assert!(capture.contains("2020-02-03 04:05:06"));
+    assert_eq!(read_orientation(&copy.path).unwrap(), 1);
+}
+
+#[test]
 fn save_as_copy_creates_distinct_timestamped_files() {
     let dir = tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();

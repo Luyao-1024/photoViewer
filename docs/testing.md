@@ -102,9 +102,20 @@ Some host GTK versions print parser warnings for `backdrop-filter`. This is expe
 
 The accessibility CSS block is intentionally empty unless implemented through GTK-supported settings or runtime classes. Do not reintroduce unsupported `@media` feature queries or `@keyframes`.
 
-## GstPlay Teardown Criticals
+## GstPlay Teardown In Tests
 
-Unit tests that drop a `GtkMediaFile` (e.g. `video_audio_preferences_are_applied_to_media_stream`, `stop_video_playback_retires_stream_until_next_idle`) print `GLib-GObject-CRITICAL: g_object_unref: assertion 'G_IS_OBJECT (object)' failed`. This is GstPlay's async internal cleanup running against the test's non-existent/fake media and is pre-existing; do not chase it. The production crash it resembles (SEGV in the `GstPlay` thread) is fixed by `stop_video_playback` retiring the stream for one idle cycle before releasing the last reference — see [`modules/viewer.md`](modules/viewer.md).
+Do not let a deliberately invalid `GtkMediaFile` be finalized while its native
+GstPlay worker can still be discovering the source. That race can emit
+GObject criticals or abort the shared `--lib` test process after every Rust
+assertion has passed. Ownership-only tests should use a source-less stream.
+Tests that must exercise `show_at` with fake video files keep one narrowly
+scoped test reference alive until process exit; they must still detach and
+pause the stream through `stop_video_playback` first. Do not copy this
+test-only retention into production code.
+
+Production teardown retains a detached stream for one main-loop idle cycle so
+GstPlay can finish its terminal signal before the last normal reference is
+released. See [`modules/viewer.md`](modules/viewer.md).
 
 ## GTK Allocation Warnings
 

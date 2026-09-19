@@ -346,6 +346,7 @@ mod imp {
         type ParentType = adw::ApplicationWindow;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 
@@ -493,10 +494,22 @@ impl MainWindow {
                     return result;
                 }
             }
+            if let Ok(trash) = page.clone().downcast::<TrashPage>() {
+                let result = trash.handle_keyboard_action(action);
+                if result.is_handled() {
+                    return result;
+                }
+            }
             if self.browsing_root_is_visible() {
                 if let Some(child) = self.visible_browsing_page() {
-                    if let Ok(photos) = child.downcast::<PhotosPage>() {
+                    if let Ok(photos) = child.clone().downcast::<PhotosPage>() {
                         let result = photos.handle_keyboard_action(action);
+                        if result.is_handled() {
+                            return result;
+                        }
+                    }
+                    if let Ok(album) = child.downcast::<AlbumDetailPage>() {
+                        let result = album.handle_keyboard_action(action);
                         if result.is_handled() {
                             return result;
                         }

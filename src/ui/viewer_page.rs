@@ -362,6 +362,7 @@ mod imp {
         type ParentType = adw::NavigationPage;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             EditorPanel::ensure_type();
             klass.bind_template();
         }

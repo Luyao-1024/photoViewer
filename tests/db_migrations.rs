@@ -327,7 +327,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     assert_eq!(
         connection
             .query_row(
@@ -360,4 +360,52 @@ fn newer_schema_is_rejected_instead_of_being_modified() {
 
     let error = db::init_pool(&path).unwrap_err().to_string();
     assert!(error.contains("requires a newer Photo Viewer"));
+}
+
+#[test]
+fn version_one_migration_normalizes_legacy_raw_file_uris() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.db");
+    let media_path = dir.path().join("照片 #100%?.jpg");
+    let pool = db::init_pool(&path).unwrap();
+    let id = common::db::insert_media_item(
+        &pool,
+        &NewMediaItem {
+            uri: photo_viewer::core::file_uri::from_path(&media_path),
+            path: media_path.clone(),
+            folder_path: dir.path().to_path_buf(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: None,
+            height: None,
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 1,
+            blake3_hash: String::new(),
+        },
+    )
+    .unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE media_items SET uri = ?1 WHERE id = ?2",
+            rusqlite::params![format!("file://{}", media_path.display()), id],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+    }
+    drop(pool);
+
+    let migrated = db::init_pool(&path).unwrap();
+    let item = db::get_media_item(&migrated, id).unwrap();
+    assert_eq!(
+        item.uri,
+        photo_viewer::core::file_uri::from_path(&media_path)
+    );
+    assert_eq!(
+        photo_viewer::core::file_uri::to_path(&item.uri).unwrap(),
+        media_path
+    );
 }

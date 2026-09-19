@@ -11,7 +11,7 @@ use crate::core::telemetry::{OperationTrace, TraceChain};
 use gtk4::gdk::Texture;
 use std::cmp::Reverse;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering as AtomicOrdering;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -24,6 +24,8 @@ pub(in crate::core::thumbnails) fn worker_loop(
     bg: Arc<BackgroundPullState>,
     db_actor: Option<DbActorHandle>,
     stats_dirty_callback: SharedStatsDirtyCallback,
+    disk_cache_bytes: u64,
+    cold_generations: Arc<AtomicUsize>,
 ) {
     while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
         // This INFO-level wrapper is dormant unless the `thumbnail` chain (or
@@ -57,6 +59,27 @@ pub(in crate::core::thumbnails) fn worker_loop(
                 // 那次生成中写出），故命中无需重标；只有冷生成才需要更新
                 // thumbnail_generated_at。
                 let was_cache_hit = matches!(origin, DecodeOrigin::DiskCache);
+                if !was_cache_hit
+                    && cold_generations.fetch_add(1, AtomicOrdering::Relaxed) % 128 == 127
+                {
+                    match crate::core::cache::enforce_size_limit_report(
+                        &cache_dir.join("thumbnails"),
+                        disk_cache_bytes,
+                    ) {
+                        Ok(report) if report.failed_files > 0 => warn!(
+                            target: crate::core::log_targets::THUMBNAILS,
+                            failed_files = report.failed_files,
+                            remaining_bytes = report.remaining_bytes,
+                            "runtime thumbnail cache maintenance was incomplete"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => warn!(
+                            target: crate::core::log_targets::THUMBNAILS,
+                            %error,
+                            "runtime thumbnail cache maintenance failed"
+                        ),
+                    }
+                }
                 process_span.record("cache_hit", was_cache_hit);
                 let generated_media_id = (req.media_id != 0).then_some(req.media_id);
                 let is_light = pixbuf_is_light(&pb);

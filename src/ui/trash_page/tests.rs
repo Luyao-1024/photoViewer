@@ -263,7 +263,9 @@ fn delete_btn_refreshes_virtual_grid_after_partial_delete() {
             file_size: 1,
             blake3_hash: h.to_string(),
         };
+        let uri = item.uri.clone();
         let id = db::insert_media_item(&pool, &item).unwrap();
+        trash::move_to_trash(&uri).unwrap();
         db::mark_trashed(&pool, id).unwrap();
         id
     };

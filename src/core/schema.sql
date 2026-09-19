@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS media_items (
     video_duration_secs REAL,
     taken_at        INTEGER,
     file_mtime      INTEGER NOT NULL,
+    file_mtime_ns   INTEGER NOT NULL DEFAULT 0,
     file_size       INTEGER NOT NULL,
     blake3_hash     TEXT    NOT NULL,
     is_favorite     INTEGER NOT NULL DEFAULT 0,

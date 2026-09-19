@@ -75,7 +75,7 @@ fn high_frequency_thumbnail_progress_logs_stay_debug() {
         "THUMB disk_cache_hit",
         "THUMB video_generated",
         "THUMB image_generated",
-        "VIDEO_THUMB ffmpegthumbnailer 失败，回退 GStreamer",
+        "VIDEO_THUMB external decoders failed, falling back to GStreamer",
         "VIDEO_THUMB ffmpegthumbnailer 提取成功",
         "VIDEO_THUMB 提取视频帧(GStreamer)",
         "VIDEO_THUMB 提取成功",
@@ -518,7 +518,17 @@ fn background_tier_thumbnail_populates_mem_cache() {
         let state = loader.state.clone();
         let bg = loader.background_pull.clone();
         std::thread::spawn(move || {
-            worker_loop(queue, pool, cache_dir, state, bg, None, stats);
+            worker_loop(
+                queue,
+                pool,
+                cache_dir,
+                state,
+                bg,
+                None,
+                stats,
+                u64::MAX,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            );
         })
     };
 
@@ -611,7 +621,17 @@ fn disk_cache_hit_skips_thumbnail_mark_callback() {
         let state = loader.state.clone();
         let bg = loader.background_pull.clone();
         std::thread::spawn(move || {
-            worker_loop(queue, pool, cache_dir, state, bg, None, stats);
+            worker_loop(
+                queue,
+                pool,
+                cache_dir,
+                state,
+                bg,
+                None,
+                stats,
+                u64::MAX,
+                Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            );
         })
     };
 
@@ -993,7 +1013,13 @@ fn extract_video_frame_from_file() {
             assert!(pb.width() > 0 && pb.height() > 0);
         }
         Err(e) => {
-            panic!("extract_video_frame 失败: {e}");
+            let message = e.to_string();
+            if message.contains("No such file or directory") && message.contains("no decoder found")
+            {
+                eprintln!("跳过：宿主既缺 ffmpegthumbnailer 也缺 HEVC decoder: {message}");
+                return;
+            }
+            panic!("extract_video_frame 失败: {message}");
         }
     }
 }
@@ -1012,7 +1038,13 @@ fn save_video_frame() {
             eprintln!("帧尺寸: {}x{}", pb.width(), pb.height());
         }
         Err(e) => {
-            panic!("extract_video_frame 失败: {e}");
+            let message = e.to_string();
+            if message.contains("No such file or directory") && message.contains("no decoder found")
+            {
+                eprintln!("跳过：宿主既缺 ffmpegthumbnailer 也缺 HEVC decoder: {message}");
+                return;
+            }
+            panic!("extract_video_frame 失败: {message}");
         }
     }
 }

@@ -10,8 +10,7 @@ pub(in crate::core::thumbnails) fn resolve_src(
     uri: &str,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<(PathBuf, SystemTime)> {
-    let path_str = uri.strip_prefix("file://").unwrap_or(uri);
-    let src_path = PathBuf::from(path_str);
+    let src_path = crate::core::file_uri::path_or_file_uri(uri)?;
     let mtime = match mtime {
         Some(m) => m,
         None => std::fs::metadata(&src_path)?.modified()?,

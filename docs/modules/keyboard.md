@@ -36,13 +36,13 @@ TextInput > Modal > Editor > Viewer > Browsing > Global
 
 Viewer shortcuts are routed from the window, so Left/Right/Escape/Space work
 even when focus is on header buttons, the filmstrip, or other viewer children.
-Photos browsing also handles selection-oriented shortcuts from the window:
+Photos and album browsing also handle selection-oriented shortcuts from the window:
 `Ctrl+A` toggles the current visible grid's select-all state, `Delete` moves the
 selected photos through the existing trash path, and `Escape` clears active
-selection before any navigation-back fallback runs. Browsing arrow movement,
-Enter activation, and Space focused-item toggling remain owned by future
-grid-level focus work; those actions may resolve from bindings but stay ignored
-until the grid exposes a focus cursor.
+selection before any navigation-back fallback runs. Arrow movement remains GTK
+GridView-native so it crosses virtualized rows and scrolls new ranges into view.
+Enter activates the focused ready tile; Space enters multi-select and toggles
+that focused tile without replacing the model.
 
 ## Default Keymap
 

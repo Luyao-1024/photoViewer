@@ -2,6 +2,20 @@ use super::*;
 use chrono::{TimeZone, Utc};
 use std::path::PathBuf;
 
+fn pump_until(timeout: std::time::Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    let context = glib::MainContext::default();
+    while std::time::Instant::now() < deadline {
+        while context.iteration(false) {}
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    while context.iteration(false) {}
+    done()
+}
+
 fn sample_item(id: i64) -> crate::core::media::MediaItem {
     let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
     crate::core::media::MediaItem {
@@ -149,6 +163,11 @@ fn visible_real_album_refresh_loads_new_database_items() {
     crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
     page.refresh_media_list_from_repository();
 
+    assert!(
+        pump_until(std::time::Duration::from_secs(2), || album_store.n_items()
+            == 2),
+        "background repository refresh should complete within the test timeout"
+    );
     assert_eq!(
         album_store.n_items(),
         2,
@@ -194,6 +213,12 @@ fn visible_real_album_refresh_emits_single_addition_change() {
     crate::core::db::insert_media_item(&pool, &new_item(2, "image/jpeg")).unwrap();
     page.refresh_media_list_from_repository();
 
+    assert!(
+        pump_until(std::time::Duration::from_secs(2), || !changes
+            .borrow()
+            .is_empty()),
+        "background repository refresh should emit a change within the test timeout"
+    );
     assert_eq!(
             *changes.borrow(),
             vec![(0, 0, 1)],

@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -72,6 +72,7 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
             ("video_duration_secs", "REAL"),
             ("thumbnail_generated_at", "INTEGER"),
             ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
+            ("file_mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             if !columns.contains(name) {
                 tx.execute_batch(&format!(
@@ -88,6 +89,27 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
         )?;
     }
     tx.execute_batch(SCHEMA_SQL)?;
+    if version < 2 {
+        if version == 1 && !columns.contains("file_mtime_ns") {
+            tx.execute_batch(
+                "ALTER TABLE media_items ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+        let paths = {
+            let mut stmt = tx.prepare("SELECT id, path FROM media_items")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, path) in paths {
+            let uri = crate::core::file_uri::from_path(Path::new(&path));
+            tx.execute(
+                "UPDATE media_items SET uri = ?1 WHERE id = ?2",
+                rusqlite::params![uri, id],
+            )?;
+        }
+    }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())
@@ -95,6 +117,11 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
 
 fn ts(dt: DateTime<Utc>) -> i64 {
     dt.timestamp()
+}
+
+fn ts_ns(dt: DateTime<Utc>) -> i64 {
+    dt.timestamp_nanos_opt()
+        .unwrap_or_else(|| dt.timestamp().saturating_mul(1_000_000_000))
 }
 
 fn from_ts(ts: i64) -> Option<DateTime<Utc>> {
@@ -128,8 +155,8 @@ pub(crate) fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i6
         "INSERT INTO media_items
             (uri, path, folder_path, mime_type, media_kind, media_subkind,
              media_attributes, media_type_flags, width, height, video_duration_secs, taken_at,
-             file_mtime, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, unixepoch())",
+             file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, unixepoch())",
         rusqlite::params![
             item.uri,
             item.path.to_string_lossy(),
@@ -144,6 +171,7 @@ pub(crate) fn insert_media_item(pool: &DbPool, item: &NewMediaItem) -> Result<i6
             item.video_duration_secs,
             item.taken_at.map(ts),
             ts(item.file_mtime),
+            ts_ns(item.file_mtime),
             item.file_size as i64,
             item.blake3_hash,
         ],
@@ -220,7 +248,7 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                  SET path=?2, folder_path=?3, mime_type=?4, media_kind=?5,
                      media_subkind=?6, media_attributes=?7, media_type_flags=?8, width=?9, height=?10,
                      video_duration_secs=?11, taken_at=?12, file_mtime=?13,
-                     file_size=?14, blake3_hash=?15,
+                     file_mtime_ns=?14, file_size=?15, blake3_hash=?16,
                      trashed_at=NULL, indexed_at=unixepoch()
                  WHERE id=?1",
                 rusqlite::params![
@@ -237,6 +265,7 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                     item.video_duration_secs,
                     item.taken_at.map(ts),
                     ts(item.file_mtime),
+                    ts_ns(item.file_mtime),
                     item.file_size as i64,
                     item.blake3_hash,
                 ],
@@ -247,8 +276,8 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                 "INSERT INTO media_items
                     (uri, path, folder_path, mime_type, media_kind, media_subkind,
                      media_attributes, media_type_flags, width, height, video_duration_secs, taken_at,
-                     file_mtime, file_size, blake3_hash, indexed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, unixepoch())",
+                     file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, unixepoch())",
                 rusqlite::params![
                     item.uri,
                     item.path.to_string_lossy(),
@@ -263,6 +292,7 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
                     item.video_duration_secs,
                     item.taken_at.map(ts),
                     ts(item.file_mtime),
+                    ts_ns(item.file_mtime),
                     item.file_size as i64,
                     item.blake3_hash,
                 ],
@@ -404,11 +434,11 @@ pub fn count_live_media_search(
     let field_clause = match field {
         SearchField::All => {
             "(lower(path) LIKE lower(?1) ESCAPE '\\' \
-             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\')"
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ?1 ESCAPE '\\')"
         }
         SearchField::Name => "lower(path) LIKE lower(?1) ESCAPE '\\'",
         SearchField::Date => {
-            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'"
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ?1 ESCAPE '\\'"
         }
     };
     let count: i64 = if let Some(media_kind) = media_kind {
@@ -515,9 +545,9 @@ pub fn count_media_by_date_for_filter(
     let conn = pool.get()?;
     let sql = format!(
         "SELECT
-                CAST(strftime('%Y', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
-                CAST(strftime('%m', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
-                CAST(strftime('%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) AS INTEGER),
+                CAST(strftime('%Y', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) AS INTEGER),
+                CAST(strftime('%m', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) AS INTEGER),
+                CAST(strftime('%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) AS INTEGER),
                 COUNT(*)
          FROM media_items
          WHERE {where_clause}
@@ -690,11 +720,11 @@ pub fn list_media_search_page(
     let field_clause = match field {
         SearchField::All => {
             "(lower(path) LIKE lower(?1) ESCAPE '\\' \
-             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\')"
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ?1 ESCAPE '\\')"
         }
         SearchField::Name => "lower(path) LIKE lower(?1) ESCAPE '\\'",
         SearchField::Date => {
-            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ?1 ESCAPE '\\'"
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ?1 ESCAPE '\\'"
         }
     };
     let columns = "id, uri, path, folder_path, mime_type, media_subkind,
@@ -946,7 +976,7 @@ pub fn search_media_neighbor(
     let (field_clause, mut params) = match field {
         SearchField::All => (
             "(lower(path) LIKE lower(?) ESCAPE '\\' \
-             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ? ESCAPE '\\')",
+             OR strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ? ESCAPE '\\')",
             vec![Value::Text(pattern.clone()), Value::Text(pattern)],
         ),
         SearchField::Name => (
@@ -954,7 +984,7 @@ pub fn search_media_neighbor(
             vec![Value::Text(pattern)],
         ),
         SearchField::Date => (
-            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch')) LIKE ? ESCAPE '\\'",
+            "strftime('%Y-%m-%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) LIKE ? ESCAPE '\\'",
             vec![Value::Text(pattern)],
         ),
     };
@@ -1128,8 +1158,9 @@ pub(crate) fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
 /// 不会重新出现在相册里。
 pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>> {
     let conn = pool.get()?;
-    let mut stmt = conn
-        .prepare("SELECT uri, file_mtime, file_size FROM media_items WHERE trashed_at IS NULL")?;
+    let mut stmt = conn.prepare(
+        "SELECT uri, file_mtime_ns, file_size FROM media_items WHERE trashed_at IS NULL",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -1153,7 +1184,7 @@ pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>
 /// 该函数目前只被 `notify_watcher` 经由 `backend.delete_path` 调用。
 pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
     let conn = pool.get()?;
-    let uri = format!("file://{}", path.display());
+    let uri = crate::core::file_uri::from_path(path);
     let changed = conn.execute(
         "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
         rusqlite::params![path.to_string_lossy(), uri],
@@ -1172,7 +1203,7 @@ pub fn delete_live_media_by_paths(pool: &DbPool, paths: &[PathBuf]) -> Result<Ve
     let tx = conn.transaction()?;
     let mut removed = Vec::new();
     for path in paths {
-        let uri = format!("file://{}", path.display());
+        let uri = crate::core::file_uri::from_path(path);
         let changed = tx.execute(
             "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
             rusqlite::params![path.to_string_lossy(), uri],
@@ -1283,8 +1314,7 @@ pub(crate) fn unmark_trashed(pool: &DbPool, id: i64) -> Result<()> {
 ///
 /// `id` 与 `blake3_hash` 保持不变（仍是同一张照片）;只把磁盘位置同步到
 /// `media_items` 行,以便随后的 `list_all_media` / `albums::refresh` 看见
-/// 新位置。`file_mtime` 保存文件侧排序时间（created 优先, modified
-/// fallback）,失败时回退当前时间,避免出现 NULL。
+/// 新位置。`file_mtime` 保存文件修改时间，失败时回退当前时间。
 pub(crate) fn update_media_location(
     pool: &DbPool,
     id: i64,
@@ -1292,23 +1322,22 @@ pub(crate) fn update_media_location(
     new_folder: &Path,
 ) -> Result<()> {
     let conn = pool.get()?;
-    let uri = format!("file://{}", new_path.display());
-    let file_time = std::fs::metadata(new_path)
-        .and_then(|m| m.created().or_else(|_| m.modified()))
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let uri = crate::core::file_uri::from_path(new_path);
+    let file_time: chrono::DateTime<Utc> = std::fs::metadata(new_path)
+        .and_then(|m| m.modified())
+        .map(Into::into)
+        .unwrap_or_else(|_| chrono::Utc::now());
     conn.execute(
         "UPDATE media_items
-         SET path = ?2, folder_path = ?3, uri = ?4, file_mtime = ?5
+         SET path = ?2, folder_path = ?3, uri = ?4, file_mtime = ?5, file_mtime_ns = ?6
          WHERE id = ?1",
         rusqlite::params![
             id,
             new_path.to_string_lossy(),
             new_folder.to_string_lossy(),
             uri,
-            file_time
+            ts(file_time),
+            ts_ns(file_time)
         ],
     )?;
     Ok(())

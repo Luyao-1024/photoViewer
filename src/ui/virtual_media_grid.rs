@@ -353,6 +353,7 @@ mod imp {
         type ParentType = gtk::Box;
 
         fn class_init(klass: &mut Self::Class) {
+            crate::ensure_resources_registered();
             klass.bind_template();
         }
 
@@ -756,12 +757,74 @@ impl VirtualMediaGrid {
         self.model().layout().slot_for_media_offset(0)
     }
 
-    /// First currently resident interactive media slot. Callers that need to
-    /// synthesize activation should wait for this rather than a placeholder.
+    /// First currently realized interactive media slot. Callers that need to
+    /// synthesize activation must wait for a current factory binding rather
+    /// than merely finding a ready item in the off-screen range cache.
     pub fn first_ready_media_slot(&self) -> Option<u32> {
         let model = self.model();
-        (0..model.layout().slot_count())
-            .find(|slot| matches!(model.slot_state(*slot), Some(GridSlotState::Ready { .. })))
+        let generation = self.imp().layout_generation.get();
+        self.imp()
+            .factory_cells
+            .borrow()
+            .iter()
+            .filter_map(|cell| cell.binding.borrow().as_ref().cloned())
+            .filter(|binding| binding.layout_generation == generation)
+            .map(|binding| binding.slot)
+            .filter(|slot| matches!(model.slot_state(*slot), Some(GridSlotState::Ready { .. })))
+            .min()
+    }
+
+    fn focused_ready_media_slot(&self) -> Option<u32> {
+        let focus = self.root().and_then(|root| root.focus())?;
+        let generation = self.imp().layout_generation.get();
+        let model = self.model();
+        self.imp().factory_cells.borrow().iter().find_map(|cell| {
+            let wrapper = cell.tile.parent();
+            let owns_focus = focus == cell.tile.clone().upcast::<gtk::Widget>()
+                || cell.tile.is_ancestor(&focus)
+                || wrapper
+                    .as_ref()
+                    .is_some_and(|wrapper| focus == *wrapper || wrapper.is_ancestor(&focus));
+            if !owns_focus {
+                return None;
+            }
+            let binding = cell.binding.borrow().as_ref().cloned()?;
+            (binding.layout_generation == generation
+                && matches!(
+                    model.slot_state(binding.slot),
+                    Some(GridSlotState::Ready { .. })
+                ))
+            .then_some(binding.slot)
+        })
+    }
+
+    /// Handle the actions that GtkGridView cannot provide with `NoSelection`.
+    /// Arrow movement remains native so GTK can move focus across virtualized
+    /// rows and scroll the next range into view.
+    pub(crate) fn handle_keyboard_action(
+        &self,
+        action: crate::ui::keyboard::KeyboardAction,
+    ) -> crate::ui::keyboard::KeyboardResult {
+        use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
+
+        let Some(slot) = self.focused_ready_media_slot() else {
+            return KeyboardResult::Ignored;
+        };
+        match action {
+            KeyboardAction::ActivateFocused => {
+                self.activate_slot(slot);
+                KeyboardResult::Handled
+            }
+            KeyboardAction::ToggleSelection => {
+                let Some(GridSlotState::Ready { item, .. }) = self.model().slot_state(slot) else {
+                    return KeyboardResult::Ignored;
+                };
+                self.imp().is_multi_select_mode.set(true);
+                self.toggle_selection(MediaId::from(item.id));
+                KeyboardResult::Handled
+            }
+            _ => KeyboardResult::Ignored,
+        }
     }
 
     /// Called by the bounded shared-list projection after filesystem/domain
@@ -1629,8 +1692,9 @@ impl VirtualMediaGrid {
                 {
                     return None;
                 }
-                let path_str = uri.strip_prefix("file://").unwrap_or(&uri).to_string();
-                Some((uri, mtime, std::path::PathBuf::from(path_str)))
+                let path = crate::core::file_uri::path_or_file_uri(&uri)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(&uri));
+                Some((uri, mtime, path))
             })
             .collect();
         if targets.is_empty() {

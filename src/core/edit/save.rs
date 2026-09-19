@@ -78,7 +78,7 @@ fn save_copy(
         let rendered = render(source, state, registry, &trace)?;
         let target = generate_edited_path(&source.path);
         let format = image::ImageFormat::from_path(&target)?;
-        let staged = encode_sibling(&rendered, &target, format)?;
+        let staged = encode_sibling(&rendered, &target, format, Some(&source.path))?;
         // No exists-then-create race: another file must never be overwritten.
         staged
             .persist_noclobber(&target)
@@ -143,7 +143,7 @@ fn overwrite(
         let before = std::fs::metadata(&source.path)?;
         let format = image::ImageFormat::from_path(&source.path)?;
         let rendered = render(source, state, registry, &trace)?;
-        let staged = encode_sibling(&rendered, &source.path, format)?;
+        let staged = encode_sibling(&rendered, &source.path, format, Some(&source.path))?;
         staged.as_file().set_permissions(before.permissions())?;
         staged.as_file().sync_all()?;
         let current = std::fs::metadata(&source.path)?;
@@ -213,6 +213,7 @@ fn encode_sibling(
     image: &image::DynamicImage,
     target: &Path,
     format: image::ImageFormat,
+    metadata_source: Option<&Path>,
 ) -> Result<NamedTempFile> {
     let parent = target
         .parent()
@@ -227,6 +228,10 @@ fn encode_sibling(
         writer.flush()?;
     }
     staged.as_file().sync_all()?;
+    if let Some(source) = metadata_source {
+        orientation::copy_metadata_to_rendered(source, staged.path())?;
+        staged.as_file().sync_all()?;
+    }
     let decoded = ImageReader::open(staged.path())?
         .with_guessed_format()?
         .into_dimensions()?;
@@ -269,7 +274,7 @@ fn edited_metadata(
 ) -> Result<NewMediaItem> {
     let metadata = std::fs::metadata(path)?;
     Ok(NewMediaItem {
-        uri: format!("file://{}", path.display()),
+        uri: crate::core::file_uri::from_path(path),
         path: path.to_owned(),
         folder_path: source.folder_path.clone(),
         mime_type: source.mime_type.clone(),

@@ -22,15 +22,16 @@ use crate::core::telemetry::{log_error, log_warning, OperationTrace, TraceChain}
 use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 /// 启动后台文件监听，返回一个 `JoinHandle`。
 ///
 /// `watch_paths` 是要安装 inotify 的目录（相册目录 + 存在的回收站根）；
 /// `trash_roots` 用于把事件分类成"回收站事件"（路径落在某个回收站根下）；
-/// `pictures_root` 是对账时判断"原路径是否属于本图库"的根。
+/// `media_roots` 是对账时判断"原路径是否属于本图库"的根集合。
 ///
 /// 监听在独立的阻塞线程中运行（`spawn_blocking`），不会阻塞 tokio / GTK 主循环。
 pub fn start_watching(
@@ -38,7 +39,7 @@ pub fn start_watching(
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
-    pictures_root: PathBuf,
+    media_roots: Vec<PathBuf>,
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || {
         run_watcher_loop(
@@ -46,7 +47,7 @@ pub fn start_watching(
             watch_paths,
             trash_roots,
             excluded_roots,
-            pictures_root,
+            media_roots,
         )
     })
 }
@@ -56,16 +57,30 @@ fn run_watcher_loop(
     watch_paths: Vec<PathBuf>,
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
-    pictures_root: PathBuf,
+    media_roots: Vec<PathBuf>,
 ) {
-    let (tx, rx) = mpsc::channel();
-    let mut watcher: RecommendedWatcher = match notify::recommended_watcher(tx) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("watcher 创建失败: {}", e);
-            return;
-        }
-    };
+    const EVENT_QUEUE_CAPACITY: usize = 4096;
+    const MAX_BURST_EVENTS: usize = 512;
+    const MAX_BURST_AGE: Duration = Duration::from_millis(750);
+
+    let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let overflowed_for_handler = overflowed.clone();
+    let mut watcher: RecommendedWatcher =
+        match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if event.is_err() {
+                overflowed_for_handler.store(true, Ordering::Release);
+            }
+            if let Err(mpsc::TrySendError::Full(_)) = tx.try_send(event) {
+                overflowed_for_handler.store(true, Ordering::Release);
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!("watcher 创建失败: {}", e);
+                return;
+            }
+        };
 
     for path in &watch_paths {
         if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
@@ -80,12 +95,16 @@ fn run_watcher_loop(
 
     while let Ok(evt) = rx.recv() {
         let mut burst = vec![evt];
+        let burst_started = Instant::now();
         // Collect the whole notification burst before doing metadata work.
         // Editors commonly emit several writes/renames for one path; only the
         // final observable state should reach extraction and the DB actor.
-        while let Ok(e) = rx.recv_timeout(Duration::from_millis(
-            runtime_config::notify_trash_debounce_ms(),
-        )) {
+        while burst.len() < MAX_BURST_EVENTS && burst_started.elapsed() < MAX_BURST_AGE {
+            let Ok(e) = rx.recv_timeout(Duration::from_millis(
+                runtime_config::notify_trash_debounce_ms(),
+            )) else {
+                break;
+            };
             burst.push(e);
         }
         flush_event_burst(
@@ -95,11 +114,61 @@ fn run_watcher_loop(
             &excluded_roots,
             &mut trash_dirty,
         );
-        flush_trash_reconcile(&db_actor, &pictures_root, &mut trash_dirty);
+        flush_trash_reconcile(&db_actor, &media_roots, &mut trash_dirty);
+        if overflowed.swap(false, Ordering::AcqRel) {
+            recover_from_event_overflow(&db_actor, &media_roots, &excluded_roots);
+        }
     }
     // 通道关闭（停监）：把挂起的回收站变化最后冲刷一次再退出。
-    flush_trash_reconcile(&db_actor, &pictures_root, &mut trash_dirty);
+    flush_trash_reconcile(&db_actor, &media_roots, &mut trash_dirty);
     drop(watcher);
+}
+
+fn recover_from_event_overflow(
+    db_actor: &DbActorHandle,
+    media_roots: &[PathBuf],
+    excluded_roots: &[PathBuf],
+) {
+    let trace = OperationTrace::start(TraceChain::Filesystem, "watcher_overflow_rescan");
+    let backend = LocalBackend::new(db_actor.pool().clone());
+    for root in media_roots {
+        if !crate::core::backend::local::scan_root_is_available(root) {
+            continue;
+        }
+        let actor = db_actor.clone();
+        let trace_for_commit = trace.clone();
+        if let Err(error) = backend.scan_and_submit_dir_notify_with_exclusions(
+            root,
+            excluded_roots,
+            move |items| match actor.execute_blocking_in_trace(
+                trace_for_commit.clone(),
+                DbCommand::UpsertMediaBatch {
+                    source: ChangeSource::FilesystemWatcher,
+                    items,
+                },
+            )? {
+                crate::core::db_actor::DbCommandResult::MediaItems(items) => Ok(items),
+                other => Err(crate::core::error::AppError::Backend(format!(
+                    "unexpected overflow rescan response: {other:?}"
+                ))),
+            },
+            |_| {},
+        ) {
+            log_error(&trace, "overflow_rescan", error);
+        }
+    }
+    match backend.collect_missing_live_media_under_roots(media_roots, excluded_roots) {
+        Ok(missing) if !missing.is_empty() => {
+            if let Err(error) = db_actor.execute_blocking_in_trace(
+                trace.clone(),
+                DbCommand::PruneMissingLiveRows { missing },
+            ) {
+                log_error(&trace, "overflow_prune", error);
+            }
+        }
+        Ok(_) => {}
+        Err(error) => log_error(&trace, "overflow_collect_missing", error),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -265,19 +334,24 @@ fn is_under_effective_excluded(
 /// 若有挂起的回收站事件：跑一次对账（add + prune 收敛 DB），并广播 TrashChanged
 /// 让可见的回收站页面刷新。始终广播——还原等操作的 DB 变更可能由相册监听器完成，
 /// 对账本身未必改库，但回收站视图仍需重读。
-fn flush_trash_reconcile(db_actor: &DbActorHandle, pictures_root: &Path, trash_dirty: &mut bool) {
+fn flush_trash_reconcile(
+    db_actor: &DbActorHandle,
+    media_roots: &[PathBuf],
+    trash_dirty: &mut bool,
+) {
     if !*trash_dirty {
         return;
     }
     *trash_dirty = false;
     let trace = OperationTrace::start(TraceChain::Filesystem, "reconcile_trash");
-    let plan = match crate::core::trash::prepare_trash_reconcile(db_actor.pool(), pictures_root) {
-        Ok(plan) => plan,
-        Err(error) => {
-            log_error(&trace, "prepare_reconcile", &error);
-            return;
-        }
-    };
+    let plan =
+        match crate::core::trash::prepare_trash_reconcile_for_roots(db_actor.pool(), media_roots) {
+            Ok(plan) => plan,
+            Err(error) => {
+                log_error(&trace, "prepare_reconcile", &error);
+                return;
+            }
+        };
     let result =
         db_actor.execute_blocking_in_trace(trace.clone(), DbCommand::ReconcileTrash { plan });
     if let Err(error) = result {

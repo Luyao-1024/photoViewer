@@ -860,8 +860,9 @@ fn trash_page_clicks_selection_cancel_restore_and_delete() {
             .is_some()),
         "Trash should load the remaining media slot"
     );
-    let remaining_slot = grid.first_ready_media_slot().expect("ready media slot");
-    activate_virtual_grid_slot(&grid, remaining_slot);
+    let remaining_id = db::list_trashed_media(&shell.pool).unwrap()[0].id;
+    grid.select_ids(&[MediaId::from(remaining_id)]);
+    assert!(trash.imp().action_bar.get().is_revealed());
     click_button(&trash.imp().delete_btn.get());
     assert!(
         wait_until(Duration::from_secs(2), || {

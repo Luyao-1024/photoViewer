@@ -27,7 +27,7 @@ fn watcher_emits_upserted_after_successful_upsert() {
             vec![dir.path().to_path_buf()],
             vec![],
             vec![],
-            dir.path().to_path_buf(),
+            vec![dir.path().to_path_buf()],
         )
     };
 

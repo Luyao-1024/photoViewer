@@ -533,6 +533,48 @@ fn repository_date_search_supports_year_month_day_granularity() {
 }
 
 #[test]
+fn date_search_and_grouping_use_the_same_local_calendar_day() {
+    use chrono::{Datelike, TimeZone};
+
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-local-date.db")).unwrap();
+    // 2020-01-01 23:30 UTC crosses into Jan 2 in positive-offset zones.
+    let timestamp = 1_577_922_600_i64;
+    photo_viewer::core::db::upsert_media_items_batch(&pool, &[item("boundary", timestamp)])
+        .unwrap();
+    let local = chrono::Local.timestamp_opt(timestamp, 0).single().unwrap();
+    let expected = format!(
+        "{:04}-{:02}-{:02}",
+        local.year(),
+        local.month(),
+        local.day()
+    );
+    let repo = MediaRepository::new(pool);
+
+    let page = repo
+        .page(
+            MediaQuery::Search {
+                term: expected,
+                field: SearchField::Date,
+            },
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(page.total, 1);
+
+    let groups = repo
+        .section_counts_for_query(MediaQuery::LiveAll, GroupBy::Day)
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    let key = groups.keys().next().unwrap();
+    assert_eq!(
+        (key.year, key.month, key.day),
+        (Some(local.year()), Some(local.month()), Some(local.day()))
+    );
+}
+
+#[test]
 fn repository_favorite_summary_batches_ids() {
     let dir = common::tmp_dir();
     let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs.db")).unwrap();

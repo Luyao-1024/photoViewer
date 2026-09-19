@@ -35,6 +35,31 @@ fn scan_finds_jpeg_png() {
 }
 
 #[test]
+fn scan_and_delete_round_trip_reserved_and_unicode_file_names() {
+    let dir = tmp_dir();
+    let selected = write_plain_jpeg(dir.path(), "图片%20#?.jpg");
+    let confusing = write_plain_jpeg(dir.path(), "图片 20.jpg");
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    backend.scan_and_upsert_dir(dir.path()).unwrap();
+
+    let items = db::list_all_media(&pool).unwrap();
+    let selected_item = items.iter().find(|item| item.path == selected).unwrap();
+    assert_eq!(
+        photo_viewer::core::file_uri::to_path(&selected_item.uri).unwrap(),
+        selected
+    );
+    assert!(selected_item.uri.contains("%25"));
+    assert!(selected_item.uri.contains("%23"));
+    assert!(selected_item.uri.contains("%3F"));
+
+    assert_eq!(db::delete_media_by_path(&pool, &selected).unwrap(), 1);
+    let remaining = db::list_all_media(&pool).unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].path, confusing);
+}
+
+#[test]
 fn scan_finds_images_and_videos_in_same_directory() {
     let dir = tmp_dir();
     let root = dir.path();
@@ -190,4 +215,105 @@ fn scan_and_upsert_skips_unchanged_files() {
     let n3 = backend.scan_and_upsert_dir(root).unwrap();
     assert_eq!(n3, 1, "仅新增的那张应被索引");
     assert_eq!(db::list_all_media(&pool).unwrap().len(), 3);
+}
+
+#[test]
+fn same_size_fast_rewrite_is_detected_with_nanosecond_mtime() {
+    let dir = tmp_dir();
+    let path = write_plain_jpeg(dir.path(), "fast.jpg");
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let backend = LocalBackend::new(pool.clone());
+    assert_eq!(backend.scan_and_upsert_dir(dir.path()).unwrap(), 1);
+
+    let before = std::fs::metadata(&path).unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    std::fs::write(&path, bytes).unwrap();
+    let after = std::fs::metadata(&path).unwrap();
+    assert_eq!(before.len(), after.len());
+    assert_ne!(
+        before.modified().unwrap(),
+        after.modified().unwrap(),
+        "test filesystem must expose the fast mtime change"
+    );
+
+    assert_eq!(
+        backend.scan_and_upsert_dir(dir.path()).unwrap(),
+        1,
+        "same-size changes inside one second must not hit the unchanged shortcut"
+    );
+}
+
+#[test]
+fn scan_propagates_database_batch_failure() {
+    let dir = tmp_dir();
+    write_plain_jpeg(dir.path(), "rejected.jpg");
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    pool.get()
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_scan_insert
+             BEFORE INSERT ON media_items
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected scan failure');
+             END;",
+        )
+        .unwrap();
+
+    let error = LocalBackend::new(pool)
+        .scan_and_upsert_dir(dir.path())
+        .expect_err("a failed batch commit must fail the scan");
+    assert!(error.to_string().contains("scan database commit failed"));
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_folder_is_not_planned_as_missing_media() {
+    use chrono::Utc;
+    use photo_viewer::core::media::NewMediaItem;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmp_dir();
+    let album = dir.path().join("private");
+    std::fs::create_dir(&album).unwrap();
+    let media_path = album.join("keep.jpg");
+    std::fs::write(&media_path, b"x").unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    common::db::insert_media_item(
+        &pool,
+        &NewMediaItem {
+            uri: photo_viewer::core::file_uri::from_path(&media_path),
+            path: media_path,
+            folder_path: album.clone(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: None,
+            height: None,
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: Utc::now(),
+            file_size: 1,
+            blake3_hash: String::new(),
+        },
+    )
+    .unwrap();
+
+    let mut permissions = std::fs::metadata(&album).unwrap().permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(&album, permissions).unwrap();
+    let unreadable = std::fs::read_dir(&album).is_err();
+    let missing = LocalBackend::new(pool)
+        .collect_missing_live_media_under_roots(&[dir.path().to_path_buf()], &[])
+        .unwrap();
+    let mut restore = std::fs::metadata(&album).unwrap().permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&album, restore).unwrap();
+
+    if unreadable {
+        assert!(
+            missing.is_empty(),
+            "permission errors must preserve indexed rows instead of planning deletion"
+        );
+    }
 }

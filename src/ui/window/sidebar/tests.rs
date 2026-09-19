@@ -184,26 +184,21 @@ fn sidebar_trace_logs_stay_debug() {
 fn sidebar_album_row_summary_logs_stay_debug() {
     let production_source = production_source("src/ui/window/sidebar.rs");
 
-    for message in [
-        "SIDEBAR_ALBUM_UPDATE_IN_PLACE",
-        "SIDEBAR_ALBUM_REMOVE_IN_PLACE",
-        "SIDEBAR_ALBUM_MODEL_APPLIED",
-    ] {
-        let message_index = production_source
-            .find(message)
-            .unwrap_or_else(|| panic!("missing log message {message}"));
-        let before = &production_source[..message_index];
-        let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
-            .iter()
-            .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
-            .max_by_key(|(index, _)| *index)
-            .map(|(_, candidate)| candidate)
-            .expect("log message should be inside a tracing macro");
-        assert_eq!(
-            actual_macro, "tracing::debug!(",
-            "{message} is high-volume sidebar row diagnostics and should stay out of default INFO logs"
-        );
-    }
+    let message = "SIDEBAR_ALBUM_MODEL_APPLIED";
+    let message_index = production_source
+        .find(message)
+        .unwrap_or_else(|| panic!("missing log message {message}"));
+    let before = &production_source[..message_index];
+    let actual_macro = ["tracing::debug!(", "tracing::info!(", "tracing::warn!("]
+        .iter()
+        .filter_map(|candidate| before.rfind(candidate).map(|index| (index, *candidate)))
+        .max_by_key(|(index, _)| *index)
+        .map(|(_, candidate)| candidate)
+        .expect("log message should be inside a tracing macro");
+    assert_eq!(
+        actual_macro, "tracing::debug!(",
+        "{message} is high-volume sidebar row diagnostics and should stay out of default INFO logs"
+    );
 }
 
 #[test]

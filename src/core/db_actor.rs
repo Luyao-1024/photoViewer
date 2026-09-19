@@ -456,7 +456,7 @@ fn execute_command(
             Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::DeleteLiveByPath { source, path } => {
-            let uri = format!("file://{}", path.display());
+            let uri = crate::core::file_uri::from_path(&path);
             let changed = db::delete_media_by_path(pool, &path)?;
             if changed > 0 {
                 events.send(DomainEvent::MediaRemoved {

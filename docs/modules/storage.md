@@ -40,11 +40,17 @@ writer at a time even in WAL mode; the timeout lets the filesystem watcher,
 startup scan, thumbnail workers, and foreground mutations wait through short
 writer contention instead of reporting a spurious `database is locked` error.
 `schema.sql` is embedded with `include_str!` and creates the current schema for
-new databases. `init_pool` also runs transactional, versioned migrations using
+new databases. Schema version 2 stores `file_mtime_ns` for change detection and
+normalizes legacy raw file URIs through GIO. `init_pool` also runs transactional, versioned migrations using
 SQLite `PRAGMA user_version`; the version-1 migration upgrades historical
 unversioned libraries in place and preserves media, favorites, album order,
 and custom covers. A database newer than the running application is rejected
 without modification.
+
+Filesystem paths and stored URIs must cross through `core::file_uri`; do not
+build or strip `file://` strings by hand. This preserves the identity of `%`,
+`#`, `?`, spaces, and non-ASCII names across scan, edits, albums, thumbnails,
+viewer loading, and trash operations.
 
 UI-facing database access should go through `core::repository::MediaRepository`.
 `core::db` remains the low-level SQL module, but widgets and pages
@@ -250,7 +256,7 @@ all stale rows have been pruned.
 - **Skip non-media:** trash entries whose original path has no supported image/video extension are ignored before metadata extraction. Host trash roots may contain `.txt`, documents, and other files unrelated to the app, and those should not emit default warning logs.
 - **Prune:** for each DB trashed row, if the original path is gone AND no known trash root has a matching entry, delete the row — it was emptied/permanently-deleted externally. Rows whose original file is present (restored) are never pruned here; the scan already turned them live.
 
-It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view.
+It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view. Reconciliation covers every configured media root, scans each trash root once, and includes existing freedesktop per-mount roots (`.Trash/<uid>` and `.Trash-<uid>`).
 
 **Trash roots are also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the system trash roots and app trash root. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 Normal media events use the same quiet burst: changes are coalesced by path,
@@ -258,12 +264,18 @@ file settling happens once, metadata upserts are submitted in one batch, and
 deletions use one transaction. Trash reconciliation is also two-phase: trash
 root traversal/metadata extraction runs outside the DB actor and the actor only
 commits the prepared row changes.
+The notify callback uses a bounded 4,096-event channel. A burst flushes at 512
+events or 750 ms even if imports never become quiet. Queue overflow or a notify
+error triggers a full scan followed by permission-safe missing-row reconciliation.
 
 ## Thumbnails
 
 `ThumbnailLoader` owns a priority queue feeding blocking workers. Worker count, queue capacity, memory LRU size, disk cache size, and background prewarm wait intervals come from `runtime.json`.
 
 Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and a small in-memory LRU avoids unnecessary decoding near the current viewport. Keep the memory LRU conservative because Large textures are several MB each; disk cache, not RAM, is the durable thumbnail cache. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.
+Disk capacity is enforced asynchronously at startup and after each 128 cold
+generations. Cleanup counts only successful unlinks as reclaimed bytes; failed
+removals stay in the reported remaining-size total.
 Thumbnail cache files must be published atomically: write to a temporary sibling
 path, then rename into the final `.jpg`/`.webp` path only after encoding
 completes. Readers treat empty or undecodable cache files as corrupt, remove
@@ -290,5 +302,5 @@ after both the file extension and file signature identify the source as JPEG.
 Files such as GIF content with a stale `.jpg` suffix must fall through directly
 to gdk-pixbuf instead of logging recoverable turbojpeg fallback warnings.
 
-**Video thumbnails use `ffmpegthumbnailer` with a GStreamer fallback.** Most phone/camera video is limited-range (TV) YUV (16–235); the original `videoconvert → RGB` pipeline passed that through unexpanded, producing washed-out, low-saturation thumbnails (verified: black floor stuck at Y≈18, white ceiling at ≈227 instead of 0/255). `extract_video_frame` now prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), decoding its PNG output and returning the unmodified video frame as a `Pixbuf`. If `ffmpegthumbnailer` is missing or fails, it falls back to `extract_video_frame_gst` — the previous `uridecodebin → videoflip(auto) → videoconvert → appsink` pipeline, but with the output caps pinned to `colorimetry=sRGB` so the fallback also expands to full-range RGB. Only if both fail does it create the synthetic unavailable placeholder in memory; failed placeholders are not written to the thumbnail cache. `videoflip video-direction=auto` (GStreamer path) and ffmpegthumbnailer both auto-apply rotation from all sources (MP4 tkhd matrix, codec SEI, tags). Successfully extracted frames are cached as JPEG.
+**Video thumbnails use `ffmpegthumbnailer` with layered fallbacks.** Most phone/camera video is limited-range (TV) YUV (16–235). `extract_video_frame` prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), then tries the `ffmpeg` CLI available on many development hosts, and finally uses `extract_video_frame_gst` with `uridecodebin → videoflip(auto) → videoconvert → RGB appsink`. `videoconvert` derives range/colorimetry from the decoded input caps. Do not force `colorimetry=sRGB` on the raw RGB caps: common decoders cannot negotiate it and report `Internal data stream error`. Only if all decoders fail does it create the synthetic unavailable placeholder in memory; failed placeholders are not written to the thumbnail cache. External decoders and `videoflip video-direction=auto` apply container rotation. Successfully extracted frames are cached as JPEG.
 The per-video ffmpegthumbnailer fallback, GStreamer extraction, cache-hit, and generated-thumbnail progress messages are debug diagnostics only; default logs should retain warnings for unrecoverable decode/cache problems, not every recovered thumbnail path.

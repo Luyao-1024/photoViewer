@@ -224,18 +224,16 @@ fn add_one(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("photo");
-    let dst = resolve_unique_path(target_folder, stem, ext)?;
-
     match mode {
         AlbumOpMode::Copy => {
-            std::fs::copy(&item.path, &dst)?;
+            let dst = copy_to_unique(&item.path, target_folder, stem, ext)?;
             let mut new_item = item.clone();
             new_item.path = dst.clone();
             new_item.folder_path = target_folder.to_path_buf();
-            new_item.uri = format!("file://{}", dst.display());
+            new_item.uri = crate::core::file_uri::from_path(&dst);
             // blake3_hash 已不变,file_mtime 取新文件侧排序时间
             let mtime = std::fs::metadata(&dst)
-                .and_then(|m| m.created().or_else(|_| m.modified()))
+                .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .and_then(|d| {
@@ -246,17 +244,26 @@ fn add_one(
             // 通过 NewMediaItem 走统一 insert 路径（自动生成新 id），
             // 然后把新行 id 写回返回的 new_item,这样调用方能拿到正确 id。
             let new_new = NewMediaItem::from(&new_item);
-            let new_id = db::insert_media_item(pool, &new_new)?;
+            let new_id = match db::insert_media_item(pool, &new_new) {
+                Ok(id) => id,
+                Err(error) => {
+                    rollback_copy(&dst, &error);
+                    return Err(error);
+                }
+            };
             new_item.id = new_id;
             Ok(new_item)
         }
         AlbumOpMode::Move => {
-            std::fs::rename(&item.path, &dst)?;
-            db::update_media_location(pool, item.id, &dst, target_folder)?;
+            let dst = move_to_unique(&item.path, target_folder, stem, ext)?;
+            if let Err(error) = db::update_media_location(pool, item.id, &dst, target_folder) {
+                rollback_move(&dst, &item.path, &error);
+                return Err(error);
+            }
             let mut moved = item;
             moved.path = dst;
             moved.folder_path = target_folder.to_path_buf();
-            moved.uri = format!("file://{}", moved.path.display());
+            moved.uri = crate::core::file_uri::from_path(&moved.path);
             Ok(moved)
         }
     }
@@ -278,16 +285,15 @@ fn add_one_with_actor(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("photo");
-    let dst = resolve_unique_path(target_folder, stem, ext)?;
     match mode {
         AlbumOpMode::Copy => {
-            std::fs::copy(&item.path, &dst)?;
+            let dst = copy_to_unique(&item.path, target_folder, stem, ext)?;
             let mut new_item = item.clone();
             new_item.path = dst.clone();
             new_item.folder_path = target_folder.to_path_buf();
-            new_item.uri = format!("file://{}", dst.display());
+            new_item.uri = crate::core::file_uri::from_path(&dst);
             new_item.file_mtime = std::fs::metadata(&dst)
-                .and_then(|m| m.created().or_else(|_| m.modified()))
+                .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .and_then(|d| {
@@ -296,33 +302,55 @@ fn add_one_with_actor(
                 .unwrap_or_else(chrono::Utc::now);
             let result = db_actor.execute_blocking(DbCommand::InsertMediaItem {
                 item: NewMediaItem::from(&new_item),
-            })?;
+            });
             match result {
-                DbCommandResult::MediaItems(mut items) => items.pop().ok_or_else(|| {
-                    AppError::Backend("album copy insert returned no media item".into())
-                }),
-                other => Err(AppError::Backend(format!(
-                    "unexpected album copy result: {other:?}"
-                ))),
+                Ok(DbCommandResult::MediaItems(mut items)) => match items.pop() {
+                    Some(item) => Ok(item),
+                    None => {
+                        let error =
+                            AppError::Backend("album copy insert returned no media item".into());
+                        rollback_copy(&dst, &error);
+                        Err(error)
+                    }
+                },
+                Ok(other) => {
+                    let error =
+                        AppError::Backend(format!("unexpected album copy result: {other:?}"));
+                    rollback_copy(&dst, &error);
+                    Err(error)
+                }
+                Err(error) => {
+                    rollback_copy(&dst, &error);
+                    Err(error)
+                }
             }
         }
         AlbumOpMode::Move => {
-            std::fs::rename(&item.path, &dst)?;
+            let dst = move_to_unique(&item.path, target_folder, stem, ext)?;
             let result = db_actor.execute_blocking(DbCommand::UpdateMediaLocation {
                 id: MediaId::from(item.id),
                 path: dst.clone(),
                 folder_path: target_folder.to_path_buf(),
             });
             match result {
-                Ok(DbCommandResult::MediaItems(mut items)) => items.pop().ok_or_else(|| {
-                    AppError::Backend("album move update returned no media item".into())
-                }),
-                Ok(other) => Err(AppError::Backend(format!(
-                    "unexpected album move result: {other:?}"
-                ))),
-                Err(err) => {
-                    let _ = std::fs::rename(&dst, &item.path);
-                    Err(err)
+                Ok(DbCommandResult::MediaItems(mut items)) if !items.is_empty() => {
+                    Ok(items.pop().expect("non-empty actor result"))
+                }
+                Ok(DbCommandResult::MediaItems(_)) => {
+                    let error =
+                        AppError::Backend("album move update returned no media item".into());
+                    rollback_move(&dst, &item.path, &error);
+                    Err(error)
+                }
+                Ok(other) => {
+                    let error =
+                        AppError::Backend(format!("unexpected album move result: {other:?}"));
+                    rollback_move(&dst, &item.path, &error);
+                    Err(error)
+                }
+                Err(error) => {
+                    rollback_move(&dst, &item.path, &error);
+                    Err(error)
                 }
             }
         }
@@ -330,19 +358,102 @@ fn add_one_with_actor(
 }
 
 /// 目标文件夹中找一个不存在的文件名：先尝试 `<stem>.<ext>`，再 `<stem>_1.<ext>`……
-fn resolve_unique_path(folder: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
-    let primary = folder.join(format!("{stem}.{ext}"));
-    if !primary.exists() {
-        return Ok(primary);
+fn candidate_paths<'a>(
+    folder: &'a Path,
+    stem: &'a str,
+    ext: &'a str,
+) -> impl Iterator<Item = PathBuf> + 'a {
+    (0..=9999).map(move |n| {
+        if n == 0 {
+            folder.join(format!("{stem}.{ext}"))
+        } else {
+            folder.join(format!("{stem}_{n}.{ext}"))
+        }
+    })
+}
+
+fn copy_to_unique(source: &Path, folder: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
+    for candidate in candidate_paths(folder, stem, ext) {
+        let mut output = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(AppError::Io(error)),
+        };
+        let result = (|| -> std::io::Result<()> {
+            let mut input = std::fs::File::open(source)?;
+            std::io::copy(&mut input, &mut output)?;
+            output.set_permissions(input.metadata()?.permissions())?;
+            output.sync_all()
+        })();
+        if let Err(error) = result {
+            drop(output);
+            let _ = std::fs::remove_file(&candidate);
+            return Err(AppError::Io(error));
+        }
+        return Ok(candidate);
     }
-    for n in 1..=9999 {
-        let candidate = folder.join(format!("{stem}_{n}.{ext}"));
-        if !candidate.exists() {
-            return Ok(candidate);
+    Err(no_available_name(folder, stem, ext))
+}
+
+fn move_to_unique(source: &Path, folder: &Path, stem: &str, ext: &str) -> Result<PathBuf> {
+    for candidate in candidate_paths(folder, stem, ext) {
+        match std::fs::hard_link(source, &candidate) {
+            Ok(()) => {
+                if let Err(error) = std::fs::remove_file(source) {
+                    let _ = std::fs::remove_file(&candidate);
+                    return Err(AppError::Io(error));
+                }
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+                let copied = copy_to_unique(source, folder, stem, ext)?;
+                if let Err(remove_error) = std::fs::remove_file(source) {
+                    let _ = std::fs::remove_file(&copied);
+                    return Err(AppError::Io(remove_error));
+                }
+                return Ok(copied);
+            }
+            Err(error) => return Err(AppError::Io(error)),
         }
     }
-    Err(AppError::Backend(format!(
+    Err(no_available_name(folder, stem, ext))
+}
+
+fn rollback_copy(path: &Path, cause: &AppError) {
+    if let Err(error) = std::fs::remove_file(path) {
+        tracing::error!(
+            "failed to remove copied file {} after database error {cause}: {error}",
+            path.display()
+        );
+    }
+}
+
+fn rollback_move(current: &Path, original: &Path, cause: &AppError) {
+    if original.exists() {
+        tracing::error!(
+            "cannot roll back move after database error {cause}: original path {} is occupied; file remains at {}",
+            original.display(),
+            current.display()
+        );
+        return;
+    }
+    if let Err(error) = std::fs::rename(current, original) {
+        tracing::error!(
+            "failed to roll back move {} -> {} after database error {cause}: {error}",
+            current.display(),
+            original.display()
+        );
+    }
+}
+
+fn no_available_name(folder: &Path, stem: &str, ext: &str) -> AppError {
+    AppError::Backend(format!(
         "no available filename for {stem}.{ext} in {}",
         folder.display()
-    )))
+    ))
 }

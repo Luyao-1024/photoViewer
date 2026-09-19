@@ -24,3 +24,32 @@ fn enforce_limit_deletes_oldest_until_under() {
     assert!(!f2.exists());
     assert!(f3.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn cleanup_report_does_not_count_failed_deletions_as_reclaimed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempdir().unwrap();
+    let thumbs = dir.path().join("thumbnails");
+    std::fs::create_dir_all(&thumbs).unwrap();
+    let file = thumbs.join("locked.jpg");
+    std::fs::write(&file, vec![0_u8; 128]).unwrap();
+
+    // Directory write permission controls unlink on Unix. This assertion is
+    // skipped for privileged runners, where root may still unlink the file.
+    let mut permissions = std::fs::metadata(&thumbs).unwrap().permissions();
+    permissions.set_mode(0o500);
+    std::fs::set_permissions(&thumbs, permissions).unwrap();
+    let report = cache::enforce_size_limit_report(&thumbs, 0).unwrap();
+    let mut restore = std::fs::metadata(&thumbs).unwrap().permissions();
+    restore.set_mode(0o700);
+    std::fs::set_permissions(&thumbs, restore).unwrap();
+
+    if file.exists() {
+        assert_eq!(report.deleted_files, 0);
+        assert_eq!(report.deleted_bytes, 0);
+        assert_eq!(report.failed_files, 1);
+        assert_eq!(report.remaining_bytes, 128);
+    }
+}

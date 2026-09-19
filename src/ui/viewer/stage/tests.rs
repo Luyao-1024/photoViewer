@@ -6,6 +6,13 @@ use std::path::PathBuf;
 
 use std::time::Duration;
 
+/// Fake video sources can leave GstPlay teardown work running after a GTK
+/// test returns. Keep one test-only reference alive until process exit so the
+/// native worker never races finalization of an invalid source.
+fn keep_fake_media_stream_alive(stream: gtk::MediaStream) {
+    std::mem::forget(stream);
+}
+
 #[test]
 fn video_stage_click_toggles_above_builtin_controls() {
     assert!(should_toggle_video_from_stage_click(240.0, 600.0));
@@ -126,15 +133,18 @@ fn video_stage_reveals_only_for_current_prepared_stream() {
 #[gtk::test]
 fn video_audio_preferences_are_applied_to_media_stream() {
     let _ = gtk::init();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sample.mp4");
-    std::fs::write(&path, b"fake mp4").unwrap();
-    let stream = gtk::MediaFile::for_filename(&path);
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/real_phone_video.mp4");
+    let stream = gtk::MediaFile::for_filename(path);
 
     apply_video_audio_preferences_to_stream(&stream, true, 0.42);
 
     assert!(stream.is_muted(), "video should respect default muted pref");
     assert_eq!(stream.volume(), 0.42);
+    // The host GstPlay backend can still be finishing source discovery when
+    // the Rust assertion returns. Preserve this test-only reference so native
+    // finalization cannot race that worker during the shared GTK test process.
+    std::mem::forget(stream);
 }
 
 #[gtk::test]
@@ -144,7 +154,9 @@ fn stop_video_playback_retires_stream_until_next_idle() {
     media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
     let viewer = ViewerPage::new(media_list, 0);
 
-    let stream = gtk::MediaFile::for_filename("/tmp/photo-viewer-test.mp4");
+    // A source-less stream exercises the ownership transition without
+    // starting GstPlay on a deliberately invalid file.
+    let stream = gtk::MediaFile::new();
     viewer.imp().video.get().set_media_stream(Some(&stream));
     assert!(
         viewer.imp().video.get().media_stream().is_some(),
@@ -222,6 +234,15 @@ fn show_at_keeps_video_stream_when_startup_scan_re_anchors_same_item() {
         viewer.imp().retired_video_stream.borrow().is_none(),
         "same-id re-show must not tear down and rebuild the live GstPlay stream"
     );
+
+    let stream = viewer
+        .imp()
+        .video
+        .get()
+        .media_stream()
+        .expect("the test stream should remain attached until cleanup");
+    viewer.stop_video_playback();
+    keep_fake_media_stream_alive(stream);
 }
 
 #[gtk::test]
@@ -279,4 +300,8 @@ fn show_at_rebuilds_video_stream_after_optimistic_navigation_to_different_video(
         viewer.imp().retired_video_stream.borrow().is_some(),
         "old video stream should be retired when navigating to a different video"
     );
+
+    viewer.stop_video_playback();
+    keep_fake_media_stream_alive(first_stream);
+    keep_fake_media_stream_alive(second_stream);
 }

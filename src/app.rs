@@ -324,11 +324,11 @@ async fn initialize(
     }
     let db_path = data_dir.join("photos.db");
     let initial_media_page_size = runtime_config::initial_media_page_size();
-    let pictures = crate::config::pictures_dir();
+    let media_roots = crate::config::media_roots();
     let (pool, items, db_actor, db_event_rx) = initialize_db_once_with_retry(
         db_path.clone(),
         initial_media_page_size,
-        pictures.clone(),
+        media_roots.clone(),
         trace.clone(),
     )
     .await?;
@@ -344,8 +344,6 @@ async fn initialize(
         loader.spawn_workers(runtime_config::thumbnail_worker_count());
         loader
     };
-
-    let media_roots = crate::config::media_roots();
 
     // 启动文件监听（M5-T5+）：监听媒体根的后续变更并增量 upsert。
     // 通过 `MediaChangeNotifier` 把"哪个 MediaItem 变了"推给 GTK 主线程
@@ -365,7 +363,7 @@ async fn initialize(
             watch_paths,
             trash_roots,
             excluded_scan_roots,
-            pictures.clone(),
+            media_roots.clone(),
         )
     };
 
@@ -387,7 +385,6 @@ async fn initialize(
     start_background_startup_work(
         pool.clone(),
         media_roots,
-        pictures,
         db_actor.clone(),
         list.clone(),
         initial_media_page_size,
@@ -409,7 +406,7 @@ async fn initialize(
 async fn initialize_db_once_with_retry(
     path: PathBuf,
     page_size: u32,
-    pictures: PathBuf,
+    media_roots: Vec<PathBuf>,
     trace: OperationTrace,
 ) -> anyhow::Result<(
     DbPool,
@@ -420,13 +417,13 @@ async fn initialize_db_once_with_retry(
     let first_trace = trace.clone();
     let first = match gtk::gio::spawn_blocking({
         let path = path.clone();
-        let pictures = pictures.clone();
+        let media_roots = media_roots.clone();
         move || -> CoreResult<_> {
             let _stage = first_trace.stage("database_bootstrap");
             let pool = crate::core::init_pool(&path)?;
             let (sender, receiver) = crate::core::events::DomainEventSender::new();
             let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
-            let plan = crate::core::trash::prepare_trash_reconcile(&pool, &pictures)?;
+            let plan = crate::core::trash::prepare_trash_reconcile_for_roots(&pool, &media_roots)?;
             db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash { plan })?;
             let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
                 crate::core::repository::MediaQuery::LiveAll,
@@ -457,13 +454,14 @@ async fn initialize_db_once_with_retry(
         let second_trace = trace.clone();
         let second = match gtk::gio::spawn_blocking({
             let path = path.clone();
-            let pictures = pictures.clone();
+            let media_roots = media_roots.clone();
             move || -> CoreResult<_> {
                 let _stage = second_trace.stage("database_bootstrap_retry");
                 let pool = crate::core::init_pool(&path)?;
                 let (sender, receiver) = crate::core::events::DomainEventSender::new();
                 let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
-                let plan = crate::core::trash::prepare_trash_reconcile(&pool, &pictures)?;
+                let plan =
+                    crate::core::trash::prepare_trash_reconcile_for_roots(&pool, &media_roots)?;
                 db_actor
                     .execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash { plan })?;
                 let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
@@ -535,7 +533,6 @@ fn append_media_items(list: &gtk::gio::ListStore, items: Vec<MediaItem>) {
 fn start_background_startup_work(
     pool: DbPool,
     media_roots: Vec<std::path::PathBuf>,
-    pictures: std::path::PathBuf,
     db_actor: crate::core::db_actor::DbActorHandle,
     _list: gtk::gio::ListStore,
     _remaining_offset: u32,
@@ -557,9 +554,9 @@ fn start_background_startup_work(
         let reconcile_trace =
             OperationTrace::start(TraceChain::Filesystem, "startup_trash_reconcile");
         let reconcile_pool = pool.clone();
-        let reconcile_pictures = pictures.clone();
+        let reconcile_roots = media_roots.clone();
         let plan = match gtk::gio::spawn_blocking(move || {
-            crate::core::trash::prepare_trash_reconcile(&reconcile_pool, &reconcile_pictures)
+            crate::core::trash::prepare_trash_reconcile_for_roots(&reconcile_pool, &reconcile_roots)
         })
         .await
         {

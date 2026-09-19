@@ -67,3 +67,25 @@ fn logical_media_type_flags_materialize_overlapping_categories() {
         MEDIA_TYPE_MOTION_PHOTO | MEDIA_TYPE_ANIMATED | MEDIA_TYPE_HDR
     );
 }
+
+#[test]
+fn editable_capability_rejects_lossy_or_unsupported_semantics() {
+    let standard = sample_item();
+    assert!(standard.is_editable_image());
+
+    let mut heic = sample_item();
+    heic.mime_type = "image/heic".into();
+    assert!(!heic.is_editable_image());
+
+    let mut animated = sample_item();
+    animated.mime_type = "image/gif".into();
+    assert!(!animated.is_editable_image());
+
+    let mut motion = sample_item();
+    motion.media_subkind = MEDIA_SUBKIND_MOTION_PHOTO.into();
+    assert!(!motion.is_editable_image());
+
+    let mut hdr = sample_item();
+    hdr.media_attributes = r#"{"hdr":true}"#.into();
+    assert!(!hdr.is_editable_image());
+}

@@ -432,54 +432,71 @@ impl MainWindow {
         let db_actor_for_clear = self.imp().db_actor.borrow().clone();
         let loader_for_clear = self.imp().loader.borrow().clone();
         let media_list_for_clear = self.imp().media_list.borrow().clone();
-        btn_clear_data.connect_clicked(move |_| {
+        btn_clear_data.connect_clicked(move |button| {
             let db_actor_clone = db_actor_for_clear.clone();
             let loader_clone = loader_for_clear.clone();
             let media_list_clone = media_list_for_clear.clone();
+            let button = button.clone();
             show_clear_confirm_dialog(
                 &parent_for_clear,
                 &tr("setting.clear_cache_data_confirm_title"),
                 &tr("setting.clear_cache_data_confirm_body"),
                 move || {
                     let thumb_dir = config::cache_dir().join("thumbnails");
-                    if let Err(err) = crate::core::cache::enforce_size_limit(&thumb_dir, 0) {
-                        show_clear_error_toast(&trf(
-                            "setting.clear_failed",
-                            &[("error", &err.to_string())],
-                        ));
-                        return;
-                    }
-
                     let Some(db_actor) = db_actor_clone.as_ref() else {
                         show_clear_error_toast(&tr("setting.clear_database_unavailable"));
                         return;
                     };
-                    match db_actor
-                        .execute_blocking(crate::core::db_actor::DbCommand::ResetLibraryDatabase)
-                    {
-                        Ok(crate::core::db_actor::DbCommandResult::Count(_)) => {
-                            if let Some(ref loader) = loader_clone {
-                                loader.clear_mem_cache();
+                    let db_actor = db_actor.clone();
+                    let loader = loader_clone.clone();
+                    let media_list = media_list_clone.clone();
+                    let button = button.clone();
+                    button.set_sensitive(false);
+                    glib::spawn_future_local(async move {
+                        let result = gtk::gio::spawn_blocking(move || {
+                            let cleanup =
+                                crate::core::cache::enforce_size_limit_report(&thumb_dir, 0)?;
+                            if cleanup.failed_files > 0 {
+                                return Err(crate::core::error::AppError::Backend(format!(
+                                    "failed to remove {} cache files",
+                                    cleanup.failed_files
+                                )));
                             }
-                            if let Some(ref media_list) = media_list_clone {
-                                media_list.remove_all();
+                            db_actor.execute_blocking(
+                                crate::core::db_actor::DbCommand::ResetLibraryDatabase,
+                            )
+                        })
+                        .await;
+                        button.set_sensitive(true);
+                        match result {
+                            Ok(Ok(crate::core::db_actor::DbCommandResult::Count(_))) => {
+                                if let Some(ref loader) = loader {
+                                    loader.clear_mem_cache();
+                                }
+                                if let Some(ref media_list) = media_list {
+                                    media_list.remove_all();
+                                }
+                                if let Err(err) = restart_application() {
+                                    show_clear_error_toast(&trf(
+                                        "setting.clear_failed",
+                                        &[("error", &err)],
+                                    ));
+                                }
                             }
-                            if let Err(err) = restart_application() {
-                                show_clear_error_toast(&trf(
-                                    "setting.clear_failed",
-                                    &[("error", &err)],
-                                ));
-                            }
+                            Ok(Ok(other)) => show_clear_error_toast(&trf(
+                                "setting.clear_failed",
+                                &[("error", &format!("unexpected result: {other:?}"))],
+                            )),
+                            Ok(Err(err)) => show_clear_error_toast(&trf(
+                                "setting.clear_failed",
+                                &[("error", &err.to_string())],
+                            )),
+                            Err(err) => show_clear_error_toast(&trf(
+                                "setting.clear_failed",
+                                &[("error", &format!("worker failed: {err:?}"))],
+                            )),
                         }
-                        Ok(other) => show_clear_error_toast(&trf(
-                            "setting.clear_failed",
-                            &[("error", &format!("unexpected result: {other:?}"))],
-                        )),
-                        Err(err) => show_clear_error_toast(&trf(
-                            "setting.clear_failed",
-                            &[("error", &err.to_string())],
-                        )),
-                    }
+                    });
                 },
             );
         });

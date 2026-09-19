@@ -49,6 +49,11 @@ backup. Successful saves update file size/mtime/hash and rendered dimensions,
 clear stale animation/HDR/video attributes, and invalidate the thumbnail
 timestamp. A per-path save guard rejects concurrent saves of the same source.
 
+JPEG and PNG saves copy source EXIF into the rendered file and reset Orientation
+to 1 because orientation has already been baked into pixels. Editing is exposed
+only for standard, non-animated, non-HDR JPEG/PNG/WebP items; HEIC, GIF, motion
+photos, and HDR remain viewable but cannot enter the current lossy edit pipeline.
+
 Large preview downsampling and RGBA conversion run on a blocking worker, not
 the GTK thread. Preview renders are single-flight: newer state replaces the
 pending request, stale results are discarded, and leaving the editor cancels

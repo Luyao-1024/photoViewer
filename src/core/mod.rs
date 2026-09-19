@@ -10,6 +10,7 @@ pub mod diagnostics;
 pub mod edit;
 pub mod error;
 pub mod events;
+pub mod file_uri;
 pub mod i18n;
 pub mod identity;
 pub mod log_targets;
