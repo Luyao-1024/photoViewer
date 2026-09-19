@@ -629,38 +629,51 @@ impl MainWindow {
         group.set_description(Some(&tr("setting.section.sync_description")));
         group.add_css_class("settings-preferences-group");
 
+        let connection = adw::ExpanderRow::builder()
+            .title(tr("setting.sync.enable"))
+            .subtitle(tr("setting.sync.enable_description"))
+            .show_enable_switch(true)
+            .enable_expansion(false)
+            .expanded(false)
+            .build();
+        connection.add_css_class("settings-action-row");
+        connection.connect_enable_expansion_notify(|row| {
+            row.set_expanded(row.enables_expansion());
+        });
+        group.add(&connection);
+
         let endpoint = adw::EntryRow::builder()
             .title(tr("setting.sync.endpoint"))
             .build();
         endpoint.add_css_class("settings-action-row");
         endpoint.set_text("https://");
-        group.add(&endpoint);
+        connection.add_row(&endpoint);
 
         let username = adw::EntryRow::builder()
             .title(tr("setting.sync.username"))
             .build();
         username.add_css_class("settings-action-row");
-        group.add(&username);
+        connection.add_row(&username);
 
         let password = adw::PasswordEntryRow::builder()
             .title(tr("setting.sync.password"))
             .build();
         password.add_css_class("settings-action-row");
-        group.add(&password);
+        connection.add_row(&password);
 
         let local_root = adw::EntryRow::builder()
             .title(tr("setting.sync.local_root"))
             .build();
         local_root.add_css_class("settings-action-row");
         local_root.set_text(&config::pictures_dir().to_string_lossy());
-        group.add(&local_root);
+        connection.add_row(&local_root);
 
         let remote_root = adw::EntryRow::builder()
             .title(tr("setting.sync.remote_root"))
             .build();
         remote_root.add_css_class("settings-action-row");
         remote_root.set_text("PhotoViewer");
-        group.add(&remote_root);
+        connection.add_row(&remote_root);
 
         let connect_row = adw::ActionRow::new();
         connect_row.add_css_class("settings-action-row");
@@ -672,7 +685,7 @@ impl MainWindow {
         connect_button.add_css_class("suggested-action");
         connect_button.set_valign(gtk::Align::Center);
         connect_row.add_suffix(&connect_button);
-        group.add(&connect_row);
+        connection.add_row(&connect_row);
 
         let pool = self.imp().pool.borrow().clone();
         let actor = self.imp().db_actor.borrow().clone();

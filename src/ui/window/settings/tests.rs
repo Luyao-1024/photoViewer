@@ -282,6 +282,48 @@ fn settings_page_exposes_scan_path_management() {
     );
 }
 
+fn find_expander_row(widget: &gtk::Widget, title: &str) -> Option<adw::ExpanderRow> {
+    if let Some(row) = widget.downcast_ref::<adw::ExpanderRow>() {
+        if row.title() == title {
+            return Some(row.clone());
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        if let Some(row) = find_expander_row(&current, title) {
+            return Some(row);
+        }
+    }
+    None
+}
+
+#[gtk::test]
+fn webdav_connection_form_is_disabled_and_collapsed_until_enabled() {
+    let _ = gtk::init();
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.WindowWebDavSettings")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>)
+        .expect("test application should register");
+
+    let window = MainWindow::new(&app);
+    let host = window.clone().upcast::<gtk::Widget>();
+    let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
+    let row = find_expander_row(&page, &tr("setting.sync.enable"))
+        .expect("settings should expose a WebDAV enable expander");
+
+    assert!(row.shows_enable_switch());
+    assert!(!row.enables_expansion());
+    assert!(!row.is_expanded());
+
+    row.set_enable_expansion(true);
+    assert!(row.is_expanded(), "enabling WebDAV should reveal its form");
+
+    row.set_enable_expansion(false);
+    assert!(!row.is_expanded(), "disabling WebDAV should fold its form");
+}
+
 #[gtk::test]
 fn settings_page_exposes_trash_backend_controls() {
     let _ = gtk::init();

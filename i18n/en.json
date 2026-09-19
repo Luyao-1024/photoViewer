@@ -301,6 +301,8 @@
     "setting.clear_failed": "Cleanup failed: {error}",
     "setting.section.sync": "WebDAV Bidirectional Sync",
     "setting.section.sync_description": "Synchronize a local folder with a WebDAV folder in both directions. Delete propagation is disabled; simultaneous edits become conflicts.",
+    "setting.sync.enable": "Configure WebDAV Sync",
+    "setting.sync.enable_description": "Turn on to enter a server and create a new synchronization task.",
     "setting.sync.endpoint": "WebDAV URL (HTTPS)",
     "setting.sync.username": "Username",
     "setting.sync.password": "Password",

@@ -301,6 +301,8 @@
     "setting.clear_failed": "清理失败：{error}",
     "setting.section.sync": "WebDAV 双向同步",
     "setting.section.sync_description": "将本地目录与 WebDAV 目录双向同步。删除传播默认关闭；双方同时修改会保留为冲突。",
+    "setting.sync.enable": "配置 WebDAV 同步",
+    "setting.sync.enable_description": "开启后填写服务器信息并创建新的同步任务。",
     "setting.sync.endpoint": "WebDAV 地址（HTTPS）",
     "setting.sync.username": "用户名",
     "setting.sync.password": "密码",
