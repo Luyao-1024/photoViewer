@@ -338,6 +338,9 @@ Design intent:
 - The Liquid Glass setting changes the visual material live. It should affect
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
+- The smooth-scrolling switch flips the wheel glide live everywhere (grids,
+  sidebar lists, the settings dialog itself) without a restart, while
+  touchpad scrolling never changes.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
 - The WebDAV Sync group gates the new-connection form behind a disabled,

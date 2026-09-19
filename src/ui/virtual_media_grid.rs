@@ -21,6 +21,7 @@ use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::media_grid::{thumbnail_request_mtime, FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::mode_selector::ModeSelector;
+use crate::ui::smooth_scroll::SmoothScroller;
 use chrono::Datelike;
 use gtk4 as gtk;
 use gtk4::gio;
@@ -275,6 +276,10 @@ mod imp {
         /// at its upper edge. Photos uses this to reveal its pull-down
         /// overview only after the user scrolls beyond the first grid row.
         pub on_scroll_intent: OnceCell<Rc<dyn Fn(f64)>>,
+        /// Smooth momentum glide driving the scroller's vertical adjustment
+        /// for discrete wheel notches. Created once with the capture scroll
+        /// controller in `connect_grid_signals`.
+        pub smooth_scroller: OnceCell<SmoothScroller>,
         pub(super) factory_cells: RefCell<Vec<FactoryCell>>,
         pub metadata_counts: RefCell<Option<HashMap<SectionKey, u32>>>,
         /// Day-granularity index used by the Photos date-range overlay. It is
@@ -328,6 +333,7 @@ mod imp {
                 on_selection_changed: OnceCell::new(),
                 on_view_changed: OnceCell::new(),
                 on_scroll_intent: OnceCell::new(),
+                smooth_scroller: OnceCell::new(),
                 factory_cells: RefCell::new(Vec::new()),
                 metadata_counts: RefCell::new(None),
                 visible_date_layout: RefCell::new(None),
@@ -1149,19 +1155,23 @@ impl VirtualMediaGrid {
                 }
             });
 
-        // Capture the user's direction before GtkScrolledWindow changes its
-        // adjustment. At the upper edge a negative delta has no adjustment
-        // change, but Photos still needs that extra pull to reveal its
-        // overview. Propagate so native scrolling remains untouched.
+        // Classify scroll input before GtkScrolledWindow handles it. Discrete
+        // wheel notches are consumed (Stop) and animated by SmoothScroller's
+        // momentum glide; touchpad surface deltas propagate (Proceed) so
+        // native kinetic handling is untouched. The intent notify runs for
+        // BOTH kinds before the propagation decision: a wheel-up at the top
+        // edge is consumed yet must still reveal the overview.
         let scroll_controller =
             gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = self.downgrade();
-        scroll_controller.connect_scroll(move |_, _, delta_y| {
+        let smooth = SmoothScroller::new(&self.imp().scroller.get());
+        let _ = self.imp().smooth_scroller.set(smooth.clone());
+        scroll_controller.connect_scroll(move |controller, _, delta_y| {
             if let Some(grid) = weak.upgrade() {
                 grid.notify_scroll_intent(delta_y);
             }
-            glib::Propagation::Proceed
+            smooth.handle_scroll(controller, delta_y)
         });
         self.imp().scroller.get().add_controller(scroll_controller);
 

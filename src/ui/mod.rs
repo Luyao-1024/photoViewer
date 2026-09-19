@@ -15,6 +15,7 @@ pub mod models;
 pub mod photos_page;
 pub mod refresh_hub;
 pub mod search_page;
+pub mod smooth_scroll;
 pub mod square_tile;
 pub mod theme;
 pub mod toasts;

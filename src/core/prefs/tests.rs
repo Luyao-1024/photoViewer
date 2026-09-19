@@ -27,6 +27,37 @@ fn cleanup(path: &std::path::Path) {
 }
 
 #[test]
+fn smooth_scrolling_defaults_to_enabled_when_file_missing() {
+    let path = tmp_path("smooth-missing");
+    cleanup(&path);
+    assert!(
+        read_smooth_scrolling_at(&path),
+        "absent file should fall back to default (true)"
+    );
+    cleanup(&path);
+}
+
+#[test]
+fn smooth_scrolling_round_trip() {
+    let path = tmp_path("smooth-roundtrip");
+    cleanup(&path);
+
+    write_smooth_scrolling_at(&path, false).unwrap();
+    assert!(
+        !read_smooth_scrolling_at(&path),
+        "after writing false, read should be false"
+    );
+
+    write_smooth_scrolling_at(&path, true).unwrap();
+    assert!(
+        read_smooth_scrolling_at(&path),
+        "after writing true, read should be true"
+    );
+
+    cleanup(&path);
+}
+
+#[test]
 fn defaults_to_enabled_when_file_missing() {
     let path = tmp_path("missing");
     cleanup(&path);

@@ -5,7 +5,7 @@ use crate::core::db::DbPool;
 use crate::core::i18n::{locale, tr, trf};
 use crate::core::prefs::{self, TrashBackend};
 use crate::core::runtime_config;
-use crate::ui::{grid_css, theme};
+use crate::ui::{grid_css, smooth_scroll, theme};
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
@@ -30,6 +30,7 @@ impl MainWindow {
             .max_content_height(700)
             .child(&self.build_settings_page(host))
             .build();
+        smooth_scroll::SmoothScroller::install(&scroller);
 
         let dialog = adw::Dialog::builder()
             .title(tr("setting.page.title"))
@@ -177,6 +178,33 @@ impl MainWindow {
                     show_settings_error_dialog(
                         &parent_for_glass,
                         &trf("setting.liquid_glass_save_failed", &[("error", &err)]),
+                    );
+                }
+            }
+        });
+
+        let smooth_scroll_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .active(prefs::smooth_scrolling_enabled())
+            .build();
+
+        let smooth_scroll_row = adw::ActionRow::new();
+        smooth_scroll_row.add_css_class("settings-action-row");
+        smooth_scroll_row.set_title(&tr("setting.smooth_scrolling"));
+        smooth_scroll_row.set_subtitle(&tr("setting.smooth_scrolling_description"));
+        smooth_scroll_row.set_activatable(false);
+        smooth_scroll_row.add_suffix(&smooth_scroll_switch);
+        appearance_group.add(&smooth_scroll_row);
+
+        let parent_for_smooth_scroll = parent.clone();
+        smooth_scroll_switch.connect_notify_local(Some("active"), move |sw, _pspec| {
+            let active = sw.is_active();
+            match prefs::set_smooth_scrolling(active) {
+                Ok(()) => smooth_scroll::set_wheel_glide_enabled(active),
+                Err(err) => {
+                    show_settings_error_dialog(
+                        &parent_for_smooth_scroll,
+                        &trf("setting.smooth_scrolling_save_failed", &[("error", &err)]),
                     );
                 }
             }

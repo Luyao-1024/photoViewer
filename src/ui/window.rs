@@ -25,6 +25,7 @@ use crate::core::repository::MediaQuery;
 use crate::core::runtime_config;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::album_detail_page::AlbumDetailPage;
+use crate::ui::smooth_scroll::SmoothScroller;
 use crate::ui::TrashPage;
 use crate::ui::{keyboard, PhotosPage, SearchPage, ViewerPage};
 use albums::album_backfill_fetch_limit;
@@ -417,6 +418,10 @@ impl MainWindow {
                 }
             },
         );
+        // Sidebar lists get the same smooth momentum glide as the media
+        // grids; the settings dialog installs its own (see build_settings_dialog).
+        SmoothScroller::install(&window.imp().album_scroll.get());
+        SmoothScroller::install(&window.imp().media_type_scroll.get());
         window
     }
 

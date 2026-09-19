@@ -20,6 +20,7 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | `src/ui/virtual_media_grid/` | Pure layout index, virtual list model, range residency coordinator, factory, and focused tests |
 | `src/ui/square_tile.rs` | Shared square thumbnail widget used by grids, albums, trash, and sidebar covers |
 | `src/ui/mode_selector.rs` | Year/Month/Day segmented control behavior |
+| `src/ui/smooth_scroll.rs` | Momentum-based smooth wheel scrolling shared by the media grids, sidebar lists, and the settings dialog |
 | `src/core/section_model.rs` | Year/Month/Day grouping model |
 | `data/ui/photos-page.blp` | Photos page template |
 | `data/ui/media-grid.blp` | Bounded FlowBox grid template for search preview surfaces |
@@ -139,6 +140,24 @@ indicator whose full rotation takes two seconds; leaving `Running` stops it and
 restores the appropriate paused, completed, failed, ready, or unconfigured
 icon.
 
+Discrete mouse-wheel notches (`GDK_SCROLL_UNIT_WHEEL`) are smooth-scrolled by
+`SmoothScroller` (`src/ui/smooth_scroll.rs`): the grid's capture-phase scroll
+controller consumes them (`Propagation::Stop`) and animates the vertical
+adjustment with a momentum glide whose per-notch distance matches GTK's own
+detent step (`pow(page_size, 2/3)`), so a lone notch travels exactly as far as
+native scrolling — only the motion between notches changes. Rapid flicks stack
+velocity and decay over a longer constant, carrying beyond the raw notch sum
+(tuned to web-browser smooth scrolling, not the floatier macOS glide).
+Touchpad (surface-unit) deltas are never consumed. The scroll-intent notify
+fires before the propagation decision, so a wheel-up at the top edge still
+reveals the pull-down overview even though the event is consumed. Any
+adjustment write the animator did not make (scrollbar drag, keyboard focus
+scrolling, `restore_top_slot`) cancels the glide; per-frame `value-changed`
+virtualization notification is unchanged. The behavior is gated by the
+`smooth_scrolling` preference (Settings → Appearance), hydrated at app startup
+and flipped live by its switch; while off, every scroll surface immediately
+falls back to GTK's native wheel handling.
+
 When the **Date** field is selected, the search entry provides automatic date
 formatting: typing digits auto-inserts "/" separators (e.g., typing "20251001"
 becomes "2025/10/01"). Date search supports multiple granularities:
@@ -253,7 +272,9 @@ has no selection controls to hide and therefore leaves the right-clicked tile
 focused. The custom GridView context menu keeps focus on that exact tile while
 its non-focusable overlay is open, then returns to it before removal. It must
 not use adjustment restoration or intercept normal wheel/touchpad scrolling as
-a focus workaround.
+a focus workaround — that prohibition is specific to focus handling and is
+deliberately separate from the smooth-scrolling controller's intentional wheel
+consumption described above.
 Favorite-only mutations must not replace the authoritative virtual layout: they
 do not change the live Photos query's ordering, sections, or count. Update the
 resident model snapshots and realized Day-view heart badges in place, and

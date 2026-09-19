@@ -21,6 +21,7 @@ use crate::config::config_dir;
 const SETTINGS_FILE: &str = "settings.json";
 const THEME_KEY: &str = "theme";
 const LIQUID_GLASS_KEY: &str = "liquid_glass";
+const SMOOTH_SCROLLING_KEY: &str = "smooth_scrolling";
 const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
@@ -32,6 +33,7 @@ const TRASH_BACKEND_KEY: &str = "trash_backend";
 /// Default state of the Liquid Glass effect: **on** (opt-out). Keeps the
 /// existing visual identity; users who dislike it turn it off in Settings.
 const DEFAULT_LIQUID_GLASS: bool = true;
+const DEFAULT_SMOOTH_SCROLLING: bool = true;
 const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
@@ -110,6 +112,17 @@ fn read_liquid_glass_at(path: &Path) -> bool {
 
 fn write_liquid_glass_at(path: &Path, enabled: bool) -> Result<(), String> {
     write_bool_at(path, LIQUID_GLASS_KEY, enabled)
+}
+
+fn read_smooth_scrolling_at(path: &Path) -> bool {
+    let obj = read_object_at(path);
+    obj.get(SMOOTH_SCROLLING_KEY)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(DEFAULT_SMOOTH_SCROLLING)
+}
+
+fn write_smooth_scrolling_at(path: &Path, enabled: bool) -> Result<(), String> {
+    write_bool_at(path, SMOOTH_SCROLLING_KEY, enabled)
 }
 
 fn read_theme_preference_at(path: &Path) -> ThemePreference {
@@ -338,6 +351,19 @@ pub fn liquid_glass_enabled() -> bool {
 /// other keys already present. Returns an error string on IO/serialize failure.
 pub fn set_liquid_glass(enabled: bool) -> Result<(), String> {
     write_liquid_glass_at(&settings_path(), enabled)
+}
+
+/// Current smooth wheel-scrolling preference, resolved from `settings.json`.
+/// Defaults to enabled when the file or key is absent.
+pub fn smooth_scrolling_enabled() -> bool {
+    read_smooth_scrolling_at(&settings_path())
+}
+
+/// Persist the smooth wheel-scrolling preference to `settings.json`,
+/// preserving any other keys already present. Returns an error string on
+/// IO/serialize failure.
+pub fn set_smooth_scrolling(enabled: bool) -> Result<(), String> {
+    write_smooth_scrolling_at(&settings_path(), enabled)
 }
 
 /// App theme preference. Defaults to following the system color scheme.

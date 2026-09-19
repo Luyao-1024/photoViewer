@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::media_grid::test_support::{insert_sample_item, noop_callbacks, sample_item};
+use crate::ui::smooth_scroll::wheel_step_for_page;
 use crate::ui::square_tile::SquareTile;
 
 #[test]
@@ -688,4 +689,98 @@ fn thumbnail_batcher_eventually_drains_all_requests() {
         !grid.imp().thumb_batcher.borrow().scheduled(),
         "the schedule flag must be released once the batcher is empty"
     );
+}
+
+#[gtk::test]
+fn wheel_glide_keeps_view_changed_notified_and_restore_top_slot_preempts_it() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=40 {
+        list.append(&glib::BoxedAnyObject::new(sample_item(
+            id,
+            &format!("{id}.jpg"),
+        )));
+    }
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), false);
+    grid.seed_provisional_items();
+
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(500)
+        .child(&grid)
+        .build();
+    window.present();
+
+    let context = glib::MainContext::default();
+    let adjustment = grid.imp().scroller.get().vadjustment();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.upper() <= adjustment.page_size() && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    assert!(
+        adjustment.upper() > adjustment.page_size(),
+        "test grid must have a scrollable allocation"
+    );
+
+    let view_changes = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    {
+        let view_changes = view_changes.clone();
+        grid.connect_view_changed(move || view_changes.set(view_changes.get() + 1));
+    }
+
+    // Drive the grid's real wiring-created scroller, not a detached one.
+    let smooth = grid
+        .imp()
+        .smooth_scroller
+        .get()
+        .expect("grid wiring creates the smooth scroller")
+        .clone();
+    smooth.handle_wheel_delta(1.0);
+    let step = wheel_step_for_page(adjustment.page_size());
+
+    // Deterministic synthetic 60fps frames: the real frame clock stalls
+    // without a painting window under xvfb.
+    let scroller = grid.imp().scroller.get();
+    let mut frame_time_us: i64 = 1_000_000;
+    for _ in 0..600 {
+        if let glib::ControlFlow::Break = smooth.glide_frame(&scroller, frame_time_us) {
+            break;
+        }
+        frame_time_us += 16_667;
+    }
+    assert!(
+        (adjustment.value() - step).abs() <= 1.0,
+        "the glide should settle about one detent step away: value={} step={}",
+        adjustment.value(),
+        step
+    );
+    assert!(
+        view_changes.get() >= 2,
+        "glide frames must keep the virtualization notified (view_changed={})",
+        view_changes.get()
+    );
+
+    // A post-layout restore (as after a metadata reload) must preempt the
+    // glide instead of fighting it, and the cancelled glide must not resume.
+    smooth.handle_wheel_delta(1.0);
+    grid.restore_top_slot(0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while adjustment.value() > 0.5 && std::time::Instant::now() < deadline {
+        context.iteration(true);
+    }
+    let mut frame_time_us: i64 = 20_000_000;
+    for _ in 0..30 {
+        if let glib::ControlFlow::Break = smooth.glide_frame(&scroller, frame_time_us) {
+            break;
+        }
+        frame_time_us += 16_667;
+    }
+    assert!(
+        adjustment.value() <= 0.5,
+        "restore_top_slot must win over the glide and the glide must not resume"
+    );
+    window.close();
 }

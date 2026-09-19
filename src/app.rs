@@ -65,6 +65,13 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
         let _activate_stage = startup_trace.stage("activate");
         theme::apply(crate::core::prefs::theme_preference());
 
+        // Hydrate the smooth-scrolling kill switch before any window exists
+        // so the very first wheel event already honors the preference; the
+        // settings toggle flips it live afterwards.
+        crate::ui::smooth_scroll::set_wheel_glide_enabled(
+            crate::core::prefs::smooth_scrolling_enabled(),
+        );
+
         // Register the grid + glass CSS before the first widget is realized so
         // the user's Liquid Glass preference (prefs::liquid_glass_enabled,
         // read inside install()) is honoured from the very first frame. Later
