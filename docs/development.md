@@ -48,10 +48,10 @@ The runner is also the single entry point for launch variants:
 
 `-T` accepts `startup`, `database`, `scan`, `filesystem`, `thumbnail`, `mutation`, or `all`, and may be repeated. See `docs/modules/diagnostics.md` for the capture contract and Perfetto analysis workflow.
 
-Before pushing or handing off changes, follow the CI policy in
-[`docs/testing.md`](testing.md): verify the CI-equivalent commands for the exact
-commit, or rely on a successful GitHub Actions result for that same commit
-instead of rerunning the same full local checks.
+While changes are uncommitted, run only the new or directly modified focused
+tests. Before pushing to a remote, follow the full CI gate and commit-message
+recording policy in [`docs/testing.md`](testing.md). A local handoff that is not
+being pushed needs only an honest record of its focused verification.
 
 ### WebDAV and Flatpak
 

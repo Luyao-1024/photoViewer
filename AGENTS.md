@@ -8,7 +8,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 2. Open the matching module document under `docs/modules/` before editing code.
 3. Inspect implementation with `rg`/targeted file reads; follow existing GTK/Rust patterns.
 4. For behavior changes, add or update focused tests before implementation when practical.
-5. Run the smallest useful verification first, then broaden to `cargo test` when the change can affect shared behavior.
+5. While changes are uncommitted, run only the new or directly modified focused tests. Reserve the full CI suite for the remote-push gate.
 6. Update the relevant module docs when changing contracts, UI invariants, or development workflow.
 
 ## Module Map
@@ -38,7 +38,9 @@ This file is the entry point for coding agents working in this repository. Keep 
 - Prefer existing helpers and patterns over new abstractions.
 - Keep docs and tests close to the module being changed.
 - When you add/rename/remove a UI widget, change a template `child-id`, or alter a drag/resize affordance, update [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) to match. It is a maintained visual naming map (source of truth: `data/ui/*.blp`, `src/ui/*.rs`), not a one-time artifact.
-- **Run the full CI suite locally before committing or pushing to `main`.** This repo commits directly to `main` (no PR gate), so a red push lands on everyone — verify locally first. Run exactly what `.github/workflows/ci.yml` runs: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, and `cargo test --all`. The `#[gtk::test]` cases need a display and accessibility session — run `tools/with-at-spi.sh xvfb-run -a cargo test --all` to match CI, because timing/realization flakiness and missing AT-SPI infrastructure only show up there. Do **not** substitute a single module filter (`cargo test --lib <module>`) for the full run: cross-module breakage and timing flakes surface only in the complete suite. If `main` is already red from an unrelated failure, say so explicitly instead of letting your commit look like the cause.
+- **Do not run the full suite merely because changes are still uncommitted.** During implementation, run only tests added or directly modified by the change (plus the narrowest command needed to execute them). A local commit may be created from that focused evidence.
+- **Every commit message must contain a `Tests:` section** listing the commands actually run and their result (`PASS`, `FAIL`, or `NOT RUN` with a reason). Never report an unexecuted check as passing.
+- **Run the full CI suite only before pushing commits to a remote.** Test the final code tree that will be pushed with exactly the commands from `.github/workflows/ci.yml`: `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, `cargo build --locked --all-targets`, and `tools/with-at-spi.sh xvfb-run -a cargo test --locked --all`. Record those results in the pushed commit's `Tests:` section; amend the message after the run when necessary. A message-only amend does not require rerunning the suite because the tested code tree is unchanged. A focused test is not a substitute at the push gate. If `main` is already red from an unrelated failure, record the exact failure instead of making the commit look green.
 
 ## UI Invariants
 
@@ -61,10 +63,11 @@ cargo clippy --all-targets
 ./run-flatpak.sh
 ```
 
-Run before pushing to `main` — mirrors `.github/workflows/ci.yml`:
+Run only at the remote-push gate — mirrors `.github/workflows/ci.yml`:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
-tools/with-at-spi.sh xvfb-run -a cargo test --all   # GTK tests need a display and AT-SPI; matches CI
+cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
+cargo build --locked --all-targets
+tools/with-at-spi.sh xvfb-run -a cargo test --locked --all   # GTK tests need a display and AT-SPI; matches CI
 ```

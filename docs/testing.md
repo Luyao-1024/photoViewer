@@ -9,7 +9,9 @@ cargo fmt
 cargo clippy --all-targets
 ```
 
-Use focused integration tests during development, then broaden when touching shared UI/CSS, storage, navigation, or edit behavior.
+While changes are uncommitted, run only tests newly added or directly modified
+for the change. Do not broaden to the full suite merely because the affected
+code is shared; full-suite coverage belongs to the remote-push gate below.
 
 ## UX Test Strategy
 
@@ -35,7 +37,8 @@ or hide the behavior being diagnosed. New UX regressions should first extend
 the nearest journey; add an isolated widget test only for a reusable widget
 contract or a state that cannot be reached deterministically through GTK.
 
-Run this gate before handing off any UI interaction change:
+Run this focused gate during development when the change adds or modifies the
+UX journey:
 
 ```bash
 tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows
@@ -65,10 +68,48 @@ helper's readiness check remains the pass/fail signal.
 
 For a Flatpak-runtime check of the non-destructive keyboard entry path, run `tools/visual-check-x11.sh --keyboard-smoke`. It sends `Ctrl+F` through XTEST on X11 and saves startup and Search-page screenshots; it complements the deterministic GTK suite rather than replacing it. Run `tools/visual-check-x11.sh --a11y-smoke` to additionally use `python3-pyatspi` against the live AT-SPI tree: it requires the localized application frame, a focused Search entry, and the `全部`、`文件名`、`日期` field toggle buttons. This verifies the key Search navigation semantics available to assistive technology; it does not replace manual screen-reader usability testing.
 
-## Pre-Submission CI Policy
+## Verification Stages
 
-Before pushing or otherwise handing off a change, make sure the same categories
-covered by CI have run for the exact commit being handed off:
+### Uncommitted Development
+
+Run the narrowest command that executes every test added or directly modified
+by the current change. Examples:
+
+```bash
+cargo test --lib path::to::new_test
+cargo test --test changed_integration_test
+tools/with-at-spi.sh xvfb-run -a cargo test --lib path::to::new_gtk_test
+```
+
+Do not run `cargo test --all` at this stage unless the change is immediately
+being prepared for a remote push. Existing neighboring tests are optional
+diagnostics, not a routine requirement. A local commit may be created after the
+focused tests finish.
+
+### Commit Message Test Record
+
+Every commit message must contain a `Tests:` section. List the exact commands
+that were run and record `PASS`, `FAIL`, or `NOT RUN` with a reason. Do not claim
+success for a command that was not executed. For example:
+
+```text
+feat(viewer): preserve navigation state
+
+Tests:
+- PASS: cargo test --lib ui::viewer_page::tests::new_navigation_case
+- NOT RUN: full CI (local development commit; not yet pushed)
+```
+
+Before pushing, update the commit message so the test record includes the full
+gate result. If the code was committed before the full run, use a message-only
+amend after the gate completes. The full run remains valid after that amend
+because the commit tree did not change; any code change after the run invalidates
+the record and requires rerunning the gate.
+
+### Remote-Push Gate
+
+Only before pushing commits to a remote, run the categories covered by CI for
+the final code tree that will be pushed:
 
 ```bash
 cargo fmt --all --check
@@ -77,12 +118,10 @@ cargo build --locked --all-targets
 tools/with-at-spi.sh xvfb-run -a cargo test --locked --all
 ```
 
-If GitHub Actions has already run these checks successfully for the exact
-commit, use that CI result as the verification record instead of rerunning the
-same full local commands. Do not duplicate expensive local test runs when the
-remote CI result already covers the change. Run extra local commands only when
-they cover something CI does not, such as a narrower reproduction, an
-environment-specific Flatpak visual check, or a manual debugging path.
+The pushed commit's `Tests:` section must show the result of all four gate
+commands. If a command fails because the base branch is already red, record the
+command, failure, and evidence that it is unrelated; do not label the gate as
+passing.
 
 ## Test Layers
 
