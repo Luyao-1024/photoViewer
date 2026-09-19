@@ -9,6 +9,7 @@ pub enum ChangeSource {
     UserInteractive,
     TrashReconcile,
     ThumbnailWorker,
+    Synchronization,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

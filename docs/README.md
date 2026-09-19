@@ -18,6 +18,8 @@ This is the human entry point for project documentation. Agents should start fro
 | [`development.md`](development.md) | Dependencies, build/run, Flatpak, visual checks, documentation workflow |
 | [`testing.md`](testing.md) | Test commands, CI-equivalent policy, test layout, known GTK/GStreamer warnings |
 | [`improvement-backlog.md`](improvement-backlog.md) | 2026-09-19 project review: prioritized improvement backlog, evidence, and verification results |
+| [`webdav-sync-design.md`](webdav-sync-design.md) | Implemented local-first WebDAV synchronization, current limits, persistent tasks, and conflict handling |
+| [`designs/sync-architecture-and-flows.md`](designs/sync-architecture-and-flows.md) | Bidirectional sync target architecture, key flows, recovery state machine, constraints, and acceptance criteria |
 
 ## Functional Modules
 

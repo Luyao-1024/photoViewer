@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

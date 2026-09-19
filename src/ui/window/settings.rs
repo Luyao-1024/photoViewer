@@ -273,6 +273,7 @@ impl MainWindow {
         });
 
         content.append(&build_scan_paths_group(parent));
+        content.append(&self.build_sync_settings_group(parent));
         content.append(&self.build_trash_settings_group(parent));
 
         let grid_group = adw::PreferencesGroup::new();
@@ -619,6 +620,434 @@ impl MainWindow {
 
         group
     }
+
+    pub(super) fn build_sync_settings_group(&self, parent: &gtk::Widget) -> adw::PreferencesGroup {
+        use crate::core::sync::{NewSyncJob, SyncDirection, SyncStore};
+
+        let group = adw::PreferencesGroup::new();
+        group.set_title(&tr("setting.section.sync"));
+        group.set_description(Some(&tr("setting.section.sync_description")));
+        group.add_css_class("settings-preferences-group");
+
+        let endpoint = adw::EntryRow::builder()
+            .title(tr("setting.sync.endpoint"))
+            .build();
+        endpoint.add_css_class("settings-action-row");
+        endpoint.set_text("https://");
+        group.add(&endpoint);
+
+        let username = adw::EntryRow::builder()
+            .title(tr("setting.sync.username"))
+            .build();
+        username.add_css_class("settings-action-row");
+        group.add(&username);
+
+        let password = adw::PasswordEntryRow::builder()
+            .title(tr("setting.sync.password"))
+            .build();
+        password.add_css_class("settings-action-row");
+        group.add(&password);
+
+        let local_root = adw::EntryRow::builder()
+            .title(tr("setting.sync.local_root"))
+            .build();
+        local_root.add_css_class("settings-action-row");
+        local_root.set_text(&config::pictures_dir().to_string_lossy());
+        group.add(&local_root);
+
+        let remote_root = adw::EntryRow::builder()
+            .title(tr("setting.sync.remote_root"))
+            .build();
+        remote_root.add_css_class("settings-action-row");
+        remote_root.set_text("PhotoViewer");
+        group.add(&remote_root);
+
+        let connect_row = adw::ActionRow::new();
+        connect_row.add_css_class("settings-action-row");
+        connect_row.set_title(&tr("setting.sync.connect"));
+        connect_row.set_subtitle(&tr("setting.sync.status.ready"));
+        connect_row.set_activatable(false);
+        let connect_button = gtk::Button::with_label(&tr("setting.sync.connect"));
+        connect_button.add_css_class("glass-toolbar-button");
+        connect_button.add_css_class("suggested-action");
+        connect_button.set_valign(gtk::Align::Center);
+        connect_row.add_suffix(&connect_button);
+        group.add(&connect_row);
+
+        let pool = self.imp().pool.borrow().clone();
+        let actor = self.imp().db_actor.borrow().clone();
+        let parent_for_connect = parent.clone();
+        let window_for_connect = self.downgrade();
+        connect_button.connect_clicked(move |button| {
+            let (Some(pool), Some(actor)) = (pool.clone(), actor.clone()) else {
+                show_settings_error_dialog(
+                    &parent_for_connect,
+                    &tr("setting.clear_database_unavailable"),
+                );
+                return;
+            };
+            let endpoint_text = endpoint.text().trim().to_string();
+            let username_text = username.text().trim().to_string();
+            let password_text = password.text().to_string();
+            let local_text = local_root.text().trim().to_string();
+            let remote_text = remote_root.text().trim_matches('/').trim().to_string();
+            if endpoint_text.is_empty()
+                || username_text.is_empty()
+                || password_text.is_empty()
+                || local_text.is_empty()
+                || remote_text.is_empty()
+                || !PathBuf::from(&local_text).is_absolute()
+            {
+                show_settings_error_dialog(&parent_for_connect, &tr("setting.sync.invalid"));
+                return;
+            }
+            let credential_ref = sync_credential_reference(
+                &endpoint_text,
+                &username_text,
+                &local_text,
+                &remote_text,
+            );
+            let new_job = NewSyncJob {
+                endpoint: endpoint_text,
+                username: username_text,
+                credential_ref: credential_ref.clone(),
+                local_root: PathBuf::from(local_text),
+                remote_root: remote_text,
+                direction: SyncDirection::Bidirectional,
+            };
+            button.set_sensitive(false);
+            button.set_label(&tr("setting.sync.running"));
+            let button = button.clone();
+            let parent = parent_for_connect.clone();
+            let window = window_for_connect.clone();
+            let task = tokio::spawn(async move {
+                let probe = crate::core::sync::webdav::WebDavProvider::new(
+                    &new_job.endpoint,
+                    new_job.username.clone(),
+                    password_text.clone(),
+                )
+                .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?;
+                crate::core::sync::SyncProvider::probe(&probe)
+                    .await
+                    .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?;
+                let reference = credential_ref.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::platform::credentials::store(&reference, &password_text)
+                })
+                .await
+                .map_err(|error| {
+                    crate::core::error::AppError::Backend(format!(
+                        "credential task failed: {error}"
+                    ))
+                })??;
+                let service = crate::core::sync::SyncService::with_actor(pool, actor);
+                let job = service.store().create_job(&new_job)?;
+                let summary = service.run_saved_job(job.id).await?;
+                service.start_periodic_saved_job(job.id);
+                Ok::<_, crate::core::error::AppError>(summary)
+            });
+            glib::spawn_future_local(async move {
+                let result = task.await;
+                button.set_sensitive(true);
+                button.set_label(&tr("setting.sync.connect"));
+                match result {
+                    Ok(Ok(summary)) => {
+                        if let Some(window) = window.upgrade() {
+                            window.refresh_shared_media_list_from_repository();
+                            window.refresh_sidebar_snapshot_async();
+                        }
+                        show_settings_info_dialog(
+                            &parent,
+                            &trf(
+                                "setting.sync.saved",
+                                &[
+                                    ("uploaded", &summary.uploaded.to_string()),
+                                    ("downloaded", &summary.downloaded.to_string()),
+                                    ("conflicts", &summary.conflicts.to_string()),
+                                ],
+                            ),
+                        );
+                    }
+                    Ok(Err(error)) => show_settings_error_dialog(
+                        &parent,
+                        &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                    ),
+                    Err(error) => show_settings_error_dialog(
+                        &parent,
+                        &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                    ),
+                }
+            });
+        });
+
+        if let (Some(pool), Some(actor)) = (
+            self.imp().pool.borrow().clone(),
+            self.imp().db_actor.borrow().clone(),
+        ) {
+            if let Ok(jobs) = SyncStore::with_actor(pool.clone(), actor.clone()).list_jobs() {
+                for job in jobs {
+                    let row = adw::ActionRow::new();
+                    row.add_css_class("settings-action-row");
+                    row.set_title(&format!(
+                        "{} ↔ {}",
+                        job.local_root.display(),
+                        job.remote_root
+                    ));
+                    row.set_subtitle(&if job.paused {
+                        tr("setting.sync.status.paused")
+                    } else if let Some(error) = &job.last_error {
+                        trf("setting.sync.failed", &[("error", error)])
+                    } else {
+                        tr("setting.sync.status.ready")
+                    });
+                    row.set_activatable(false);
+
+                    let pause = gtk::Button::with_label(&if job.paused {
+                        tr("setting.sync.resume")
+                    } else {
+                        tr("setting.sync.pause")
+                    });
+                    pause.add_css_class("glass-toolbar-button");
+                    pause.set_valign(gtk::Align::Center);
+                    let sync_now = gtk::Button::with_label(&tr("setting.sync.now"));
+                    sync_now.add_css_class("glass-toolbar-button");
+                    sync_now.set_valign(gtk::Align::Center);
+                    sync_now.set_sensitive(!job.paused);
+                    row.add_suffix(&pause);
+                    row.add_suffix(&sync_now);
+                    group.add(&row);
+
+                    let store = SyncStore::with_actor(pool.clone(), actor.clone());
+                    let scheduler =
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
+                    let row_for_pause = row.clone();
+                    let sync_for_pause = sync_now.clone();
+                    let job_id = job.id;
+                    let initially_paused = job.paused;
+                    let paused = std::rc::Rc::new(std::cell::Cell::new(initially_paused));
+                    let paused_for_click = paused.clone();
+                    pause.connect_clicked(move |button| {
+                        let next = !paused_for_click.get();
+                        match store.set_job_paused(job_id, next) {
+                            Ok(()) => {
+                                paused_for_click.set(next);
+                                if !next {
+                                    scheduler.start_periodic_saved_job(job_id);
+                                }
+                                button.set_label(&if next {
+                                    tr("setting.sync.resume")
+                                } else {
+                                    tr("setting.sync.pause")
+                                });
+                                sync_for_pause.set_sensitive(!next);
+                                row_for_pause.set_subtitle(&if next {
+                                    tr("setting.sync.status.paused")
+                                } else {
+                                    tr("setting.sync.status.ready")
+                                });
+                            }
+                            Err(error) => row_for_pause.set_subtitle(&trf(
+                                "setting.sync.failed",
+                                &[("error", &error.to_string())],
+                            )),
+                        }
+                    });
+
+                    let parent_for_sync = parent.clone();
+                    let window = self.downgrade();
+                    let service =
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
+                    sync_now.connect_clicked(move |button| {
+                        button.set_sensitive(false);
+                        button.set_label(&tr("setting.sync.running"));
+                        let button = button.clone();
+                        let parent = parent_for_sync.clone();
+                        let window = window.clone();
+                        let service = service.clone();
+                        let task = tokio::spawn(async move { service.run_saved_job(job_id).await });
+                        glib::spawn_future_local(async move {
+                            let result = task.await;
+                            button.set_sensitive(true);
+                            button.set_label(&tr("setting.sync.now"));
+                            match result {
+                                Ok(Ok(summary)) => {
+                                    if let Some(window) = window.upgrade() {
+                                        window.refresh_shared_media_list_from_repository();
+                                        window.refresh_sidebar_snapshot_async();
+                                    }
+                                    show_settings_info_dialog(
+                                        &parent,
+                                        &trf(
+                                            "setting.sync.completed",
+                                            &[
+                                                ("uploaded", &summary.uploaded.to_string()),
+                                                ("downloaded", &summary.downloaded.to_string()),
+                                                ("conflicts", &summary.conflicts.to_string()),
+                                            ],
+                                        ),
+                                    );
+                                }
+                                Ok(Err(error)) => show_settings_error_dialog(
+                                    &parent,
+                                    &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                                ),
+                                Err(error) => show_settings_error_dialog(
+                                    &parent,
+                                    &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                                ),
+                            }
+                        });
+                    });
+
+                    if let Ok(conflicts) =
+                        SyncStore::with_actor(pool.clone(), actor.clone()).open_conflicts(job_id)
+                    {
+                        for conflict in conflicts {
+                            let conflict_row = adw::ActionRow::new();
+                            conflict_row.add_css_class("settings-action-row");
+                            conflict_row.set_title(&trf(
+                                "setting.sync.conflict",
+                                &[("path", &conflict.relative_path)],
+                            ));
+                            conflict_row.set_subtitle(&trf(
+                                "setting.sync.conflict_description",
+                                &[("kind", &conflict.kind)],
+                            ));
+                            conflict_row.set_activatable(false);
+
+                            let use_local = gtk::Button::with_label(&tr("setting.sync.use_local"));
+                            let use_remote =
+                                gtk::Button::with_label(&tr("setting.sync.use_remote"));
+                            let keep_both = gtk::Button::with_label(&tr("setting.sync.keep_both"));
+                            for button in [&use_local, &use_remote, &keep_both] {
+                                button.add_css_class("glass-toolbar-button");
+                                button.set_valign(gtk::Align::Center);
+                                conflict_row.add_suffix(button);
+                            }
+                            group.add(&conflict_row);
+
+                            let buttons =
+                                vec![use_local.clone(), use_remote.clone(), keep_both.clone()];
+                            let conflict_service = crate::core::sync::SyncService::with_actor(
+                                pool.clone(),
+                                actor.clone(),
+                            );
+                            connect_sync_conflict_button(
+                                &use_local,
+                                buttons.clone(),
+                                &conflict_row,
+                                parent,
+                                self,
+                                conflict_service.clone(),
+                                conflict.id,
+                                crate::core::sync::ConflictResolution::UseLocal,
+                            );
+                            connect_sync_conflict_button(
+                                &use_remote,
+                                buttons.clone(),
+                                &conflict_row,
+                                parent,
+                                self,
+                                conflict_service.clone(),
+                                conflict.id,
+                                crate::core::sync::ConflictResolution::UseRemote,
+                            );
+                            connect_sync_conflict_button(
+                                &keep_both,
+                                buttons,
+                                &conflict_row,
+                                parent,
+                                self,
+                                conflict_service,
+                                conflict.id,
+                                crate::core::sync::ConflictResolution::KeepBoth,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        group
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn connect_sync_conflict_button(
+    button: &gtk::Button,
+    all_buttons: Vec<gtk::Button>,
+    row: &adw::ActionRow,
+    parent: &gtk::Widget,
+    window: &MainWindow,
+    service: crate::core::sync::SyncService,
+    conflict_id: i64,
+    resolution: crate::core::sync::ConflictResolution,
+) {
+    let row = row.clone();
+    let parent = parent.clone();
+    let window = window.downgrade();
+    button.connect_clicked(move |_| {
+        for button in &all_buttons {
+            button.set_sensitive(false);
+        }
+        row.set_subtitle(&tr("setting.sync.resolving"));
+        let task = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service
+                    .resolve_saved_conflict(conflict_id, resolution)
+                    .await
+            }
+        });
+        let all_buttons = all_buttons.clone();
+        let row = row.clone();
+        let parent = parent.clone();
+        let window = window.clone();
+        glib::spawn_future_local(async move {
+            match task.await {
+                Ok(Ok(())) => {
+                    row.set_subtitle(&tr("setting.sync.conflict_resolved"));
+                    if let Some(window) = window.upgrade() {
+                        window.refresh_shared_media_list_from_repository();
+                        window.refresh_sidebar_snapshot_async();
+                    }
+                    show_settings_info_dialog(&parent, &tr("setting.sync.conflict_resolved"));
+                }
+                Ok(Err(error)) => {
+                    for button in &all_buttons {
+                        button.set_sensitive(true);
+                    }
+                    row.set_subtitle(&trf(
+                        "setting.sync.conflict_resolution_failed",
+                        &[("error", &error.to_string())],
+                    ));
+                }
+                Err(error) => {
+                    for button in &all_buttons {
+                        button.set_sensitive(true);
+                    }
+                    row.set_subtitle(&trf(
+                        "setting.sync.conflict_resolution_failed",
+                        &[("error", &error.to_string())],
+                    ));
+                }
+            }
+        });
+    });
+}
+
+fn sync_credential_reference(
+    endpoint: &str,
+    username: &str,
+    local_root: &str,
+    remote_root: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [endpoint, username, local_root, remote_root] {
+        hasher.update(value.as_bytes());
+        hasher.update(&[0]);
+    }
+    format!("webdav-{}", hasher.finalize().to_hex())
 }
 
 pub(super) fn add_close_on_backdrop_click(dialog: &adw::Dialog) {

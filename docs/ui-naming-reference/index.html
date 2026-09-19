@@ -267,7 +267,7 @@
           <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div></div></div></main>
         </div>
       </div>
-      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时和存储偏好；内容在有界滚动区域内。">
+      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时、WebDAV 同步和存储偏好；内容在有界滚动区域内。">
         <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare">×</button></div>
         <div class="settings-body">
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
@@ -275,6 +275,9 @@
           <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；影响背景 alpha、边框/阴影 floor、blur/saturate/brightness 强度。"><span>透明度</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="webdav-connection-form" data-name="WebDAV 连接表单" data-impl="settings.rs build_sync_settings_group → Adw.EntryRow / PasswordEntryRow" data-props="填写 HTTPS 地址、用户名、系统密钥环密码、本地绝对目录和远端目录；连接后创建双向任务，删除传播默认关闭。"><span>WebDAV 双向同步</span><button class="button suggested">连接并开始同步</button></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="sync-job-row" data-name="同步任务行" data-impl="Adw.ActionRow → pause / sync_now buttons" data-props="显示本地与远端映射、暂停或错误状态；支持暂停、继续和 single-flight 立即同步。"><span>图片 ↔ PhotoViewer</span><span><button class="button">暂停</button> <button class="button">立即同步</button></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="sync-conflict-row" data-name="同步冲突行" data-impl="Adw.ActionRow → use_local / use_remote / keep_both buttons" data-props="解决前重新核对本地指纹与远端版本；任何一侧变化都会拒绝旧选择。"><span>同步冲突：IMG_0123.jpg</span><span><button class="button">使用本地</button> <button class="button">使用云端</button> <button class="button">保留双方</button></span></div>
         </div>
       </div>
     </div>

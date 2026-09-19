@@ -28,8 +28,12 @@ fn release_metadata_uses_git_derived_app_id_and_version() {
         "Flatpak manifest should include generated cargo sources for offline builds"
     );
     assert!(
-        !manifest.contains("--share=network"),
-        "release Flatpak manifest must not require build-time network access"
+        manifest.contains("--share=network"),
+        "WebDAV requires runtime network access in Flatpak finish-args"
+    );
+    assert!(
+        manifest.contains("--talk-name=org.freedesktop.secrets"),
+        "persistent WebDAV credentials require the desktop Secret Service"
     );
     assert!(
         manifest.contains("CARGO_NET_OFFLINE: \"true\""),

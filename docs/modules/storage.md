@@ -2,7 +2,7 @@
 
 ## Scope
 
-Storage covers the SQLite schema, media rows, filesystem scanning, metadata extraction, live filesystem watching, thumbnails, and preferences.
+Storage covers the SQLite schema, media rows, filesystem scanning, metadata extraction, live filesystem watching, provider-neutral synchronization, thumbnails, and preferences.
 
 ## Key Files
 
@@ -25,6 +25,8 @@ Storage covers the SQLite schema, media rows, filesystem scanning, metadata extr
 | `src/core/cache.rs` | Cache utilities |
 | `src/core/prefs.rs` | User preferences |
 | `src/core/runtime_config.rs` | Runtime sizing, loading, and worker strategy config |
+| `src/core/sync/` | Provider-neutral sync model, planner, persistent state, recovery, local publication, and WebDAV adapter |
+| `src/platform/credentials.rs` | Secret Service-backed synchronization credentials |
 
 Storage/core unit tests live in child test modules instead of inline source
 blocks. Production source files declare `#[cfg(test)] mod tests;`, with test
@@ -40,8 +42,13 @@ writer at a time even in WAL mode; the timeout lets the filesystem watcher,
 startup scan, thumbnail workers, and foreground mutations wait through short
 writer contention instead of reporting a spurious `database is locked` error.
 `schema.sql` is embedded with `include_str!` and creates the current schema for
-new databases. Schema version 2 stores `file_mtime_ns` for change detection and
-normalizes legacy raw file URIs through GIO. `init_pool` also runs transactional, versioned migrations using
+new databases. Schema version 3 adds provider-neutral synchronization
+connections, jobs, entries, operation
+logs, and conflicts. Synchronization entries use `ON DELETE SET NULL` for their
+optional media association, so rebuilding the media index preserves mappings,
+baselines, operations, and conflicts. Schema version 2 introduced
+`file_mtime_ns` for change detection and normalized legacy raw file URIs through
+GIO. `init_pool` also runs transactional, versioned migrations using
 SQLite `PRAGMA user_version`; the version-1 migration upgrades historical
 unversioned libraries in place and preserves media, favorites, album order,
 and custom covers. A database newer than the running application is rejected
@@ -267,6 +274,20 @@ commits the prepared row changes.
 The notify callback uses a bounded 4,096-event channel. A burst flushes at 512
 events or 750 ms even if imports never become quiet. Queue overflow or a notify
 error triggers a full scan followed by permission-safe missing-row reconciliation.
+
+## Bidirectional Synchronization
+
+`SyncProvider` isolates transport capabilities and errors from planning and local publication. `WebDavProvider` is the first adapter and uses HTTPS, Basic authentication, `PROPFIND Depth: 1`, `MKCOL`, streaming GET/PUT, `If-None-Match: *`, and strong-ETag `If-Match`. DAV hrefs are decoded only after origin/root validation, directory XML responses are capped at 32 MiB, redirects are disabled, and weak ETags never authorize automatic replacement.
+
+`planner.rs` is the pure three-way decision layer: local observation, remote observation, and last proven common baseline. It never chooses a winner by timestamp. Both-side changes create a persistent conflict; deletion propagation is disabled and single-side disappearance is not repaired or propagated automatically. The service scans both roots, persists every observation through `DbActor`, snapshots uploads, stages downloads outside the library, publishes without blind overwrite, and commits a new baseline only after content or a transfer result is proven.
+
+Settings create bidirectional jobs with non-overlapping local and remote roots. Passwords are stored through the platform keyring and only a credential reference is stored in SQLite. Unpaused jobs run immediately at application startup and then every 55–65 seconds; manual runs share the same per-job single-flight guard. Pausing stops future cycles. Resuming or creating a task registers it with the idempotent scheduler.
+
+Open conflicts expose three guarded choices. “Use local” requires a strong current remote ETag. “Use cloud” downloads to staging, checks the recorded remote version and local fingerprint again, then publishes with a recoverable backup. “Keep both” creates a stable `*.cloud-conflict-<id>.<ext>` copy on both sides before conditionally converging the original path. If either recorded version has changed, the selection is rejected and a fresh reconciliation is required.
+
+`sync_tasks` is the crash evidence log. Startup reconciliation proves completed uploads by downloading and hashing the current remote object, and proves completed downloads from the published local fingerprint plus remote version before committing. Ambiguous or interrupted conflict resolutions become blocked and retain their artifact reference for review; cleanup must never delete a referenced artifact by age alone.
+
+Current limits are intentional: no deletion propagation, no private-CA UI, no range resume or sync-token enumeration, and no claim of compatibility with a real service until that endpoint is tested. Full local and remote scans run on every cycle, including local BLAKE3 hashing, so large libraries still need metadata/watcher-based dirty-item optimization. See [`../webdav-sync-design.md`](../webdav-sync-design.md) for current delivery status and [`../designs/sync-architecture-and-flows.md`](../designs/sync-architecture-and-flows.md) for the target constraints.
 
 ## Thumbnails
 

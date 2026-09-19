@@ -15,7 +15,7 @@ path = "src/main.rs"
 gtk4 = { version = "0.8", features = ["v4_8"] }
 libadwaita = { version = "0.6", features = ["v1_5"] }
 gdk-pixbuf = "0.19"
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "macros", "sync", "time"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
@@ -41,6 +41,14 @@ gstreamer = "0.22"
 gstreamer-app = "0.22"
 gstreamer-video = "0.22"
 tempfile = "3"
+futures-util = "0.3"
+futures-executor = "0.3"
+keyring = { version = "3.6", default-features = false, features = ["linux-native-sync-persistent"] }
+percent-encoding = "2"
+quick-xml = "0.38"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+url = "2"
 
 [build-dependencies]
 glib-build-tools = "0.19"

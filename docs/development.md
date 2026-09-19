@@ -53,6 +53,14 @@ Before pushing or handing off changes, follow the CI policy in
 commit, or rely on a successful GitHub Actions result for that same commit
 instead of rerunning the same full local checks.
 
+### WebDAV and Flatpak
+
+WebDAV requires the manifest's `--share=network` permission. Persistent passwords use the desktop Secret Service through `org.freedesktop.secrets`; host `cargo run` and the installed Flatpak can therefore exercise different keyring/session-bus environments. Reinstall the Flatpak after changing either permission, and test connection creation from inside the sandbox before claiming service compatibility.
+
+The manifest builds Cargo offline from `cargo-sources.json`. After changing Rust dependencies or `Cargo.lock`, regenerate that file with the official `flatpak-cargo-generator.py` and verify a locked Flatpak build. Do not commit a manifest that references new crates while leaving the offline source list stale.
+
+Real-service test credentials and WebDAV URLs must not be committed. Configure them through the Settings page or an isolated local test environment. A production-like acceptance pass should cover initial upload/download, changes from both sides, conditional conflict handling, restart recovery, Unicode paths, and the system keyring from the installed Flatpak.
+
 ### Large-library benchmark
 
 The opt-in benchmark creates a disposable SQLite library and records initial

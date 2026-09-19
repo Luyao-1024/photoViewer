@@ -25,6 +25,11 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"albums".to_string()));
     assert!(tables.contains(&"edits".to_string()));
     assert!(tables.contains(&"settings".to_string()));
+    assert!(tables.contains(&"sync_connections".to_string()));
+    assert!(tables.contains(&"sync_jobs".to_string()));
+    assert!(tables.contains(&"sync_entries".to_string()));
+    assert!(tables.contains(&"sync_tasks".to_string()));
+    assert!(tables.contains(&"sync_conflicts".to_string()));
 }
 
 #[test]
@@ -327,7 +332,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert_eq!(
         connection
             .query_row(

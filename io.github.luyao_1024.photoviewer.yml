@@ -8,6 +8,7 @@ command: photo-viewer
 
 finish-args:
   - --share=ipc
+  - --share=network
   - --socket=wayland
   - --socket=fallback-x11
   - --socket=pulseaudio
@@ -18,6 +19,7 @@ finish-args:
   # GTK's accessibility backend asks this session-bus service for the
   # per-user AT-SPI bus address. Without it Flatpak hides the service.
   - --talk-name=org.a11y.Bus
+  - --talk-name=org.freedesktop.secrets
 
 cleanup:
   - /include

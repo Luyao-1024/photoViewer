@@ -99,9 +99,10 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
                     // build album detail / trash pages on demand, then wire
                     // row-selected to switch browsing children or push outer
                     // navigation pages as appropriate.
-                    window.set_resources(pool, loader, media_list.clone());
+                    window.set_resources(pool.clone(), loader, media_list.clone());
                     window.set_db_actor(db_actor.clone());
                     window.connect_sidebar(&nav);
+                    start_saved_sync_jobs(pool.clone(), db_actor.clone());
                     // Heavy sidebar projections (album rows, per-album counts,
                     // and the true live-media total) are loaded after the
                     // Photos page is usable so startup is not gated by COUNT /
@@ -175,6 +176,20 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
     });
 
     app
+}
+
+fn start_saved_sync_jobs(pool: DbPool, db_actor: crate::core::db_actor::DbActorHandle) {
+    let service = crate::core::sync::SyncService::with_actor(pool.clone(), db_actor);
+    let jobs = match crate::core::sync::SyncStore::new(pool).list_jobs() {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            tracing::warn!("failed to load synchronization jobs: {error}");
+            return;
+        }
+    };
+    for job in jobs.into_iter().filter(|job| !job.paused) {
+        service.start_periodic_saved_job(job.id);
+    }
 }
 
 fn domain_event_label(event: &DomainEvent) -> String {

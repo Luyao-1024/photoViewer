@@ -26,6 +26,7 @@ pub mod refresh;
 pub mod repository;
 pub mod runtime_config;
 pub mod section_model;
+pub mod sync;
 pub mod telemetry;
 pub mod thumbnail_prewarm;
 pub mod thumbnails;

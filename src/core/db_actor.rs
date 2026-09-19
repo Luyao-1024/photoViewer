@@ -88,6 +88,7 @@ pub enum DbCommand {
     ReconcileTrash {
         plan: crate::core::trash::TrashReconcilePlan,
     },
+    Sync(crate::core::sync::store::SyncWrite),
 }
 
 /// Runtime DB write urgency. Higher values run first once the actor reaches
@@ -114,6 +115,7 @@ impl DbCommand {
                 ChangeSource::UserInteractive => DbWritePriority::UserInteractive,
                 ChangeSource::TrashReconcile => DbWritePriority::Trash,
                 ChangeSource::ThumbnailWorker => DbWritePriority::Thumbnail,
+                ChangeSource::Synchronization => DbWritePriority::FilesystemWatcher,
             },
             Self::PruneMissingLiveRows { .. } => DbWritePriority::StartupScan,
             Self::SetFavorite { .. }
@@ -135,6 +137,11 @@ impl DbCommand {
             Self::RefreshAlbums { .. } => DbWritePriority::DerivedRefresh,
             Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
+            Self::Sync(crate::core::sync::store::SyncWrite::CreateJob(_))
+            | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. }) => {
+                DbWritePriority::UserInteractive
+            }
+            Self::Sync(_) => DbWritePriority::StartupScan,
         }
     }
 }
@@ -145,6 +152,7 @@ pub enum DbCommandResult {
     Count(usize),
     MediaItems(Vec<MediaItem>),
     RemovedUris(Vec<String>),
+    Sync(crate::core::sync::store::SyncWriteResult),
 }
 
 struct DbEnvelope {
@@ -278,7 +286,11 @@ impl DbActorHandle {
             }
             return Err(error);
         }
-        match rx.blocking_recv() {
+        // This synchronous entry point is also used from worker tasks that run
+        // inside the process Tokio runtime. `tokio::oneshot::blocking_recv`
+        // panics in that context, while the runtime-independent executor can
+        // safely wait for this short database reply.
+        match futures_executor::block_on(rx) {
             Ok(result) => result,
             Err(err) => {
                 let error = AppError::Backend(format!("db actor dropped response: {err}"));
@@ -427,6 +439,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::RefreshAlbums { .. } => "refresh_albums",
         DbCommand::RefreshAlbumsInternal => "refresh_albums_internal",
         DbCommand::ReconcileTrash { .. } => "reconcile_trash",
+        DbCommand::Sync(_) => "sync_state_write",
     }
 }
 
@@ -720,6 +733,9 @@ fn execute_command(
             });
             Ok(DbCommandResult::None)
         }
+        DbCommand::Sync(command) => Ok(DbCommandResult::Sync(
+            crate::core::sync::store::execute_write(pool, command)?,
+        )),
     }
 }
 
