@@ -97,6 +97,10 @@ touch the rounded carousel edges while navigation or scroll animation is in
 progress. Keep the CSS `.viewer-thumb-strip` horizontal padding and the Rust
 `THUMB_EDGE_INSET` geometry constant in sync.
 
+Filmstrip edge washes and container shadow live in the Liquid/Plain material
+files, so the material switch and transparency slider affect them too. The
+shared base stylesheet owns geometry and active-thumbnail emphasis only.
+
 The filmstrip `ScrolledWindow` must keep `propagate-natural-width: false` and use horizontal policy `external`, not `never`. `external` hides the scrollbar while preserving a real horizontal adjustment; `never` lets the loaded thumbnail row's minimum width propagate upward and can make the viewer window grow as more thumbnails are loaded.
 
 The carousel keeps only a bounded live GTK widget window around the current region. Reaching `THUMB_WINDOW_MAX` must not stop loading later or earlier thumbnails; extending at the cap slides the `[start, end)` window in the requested direction and trims the opposite edge. This keeps large libraries feeling continuous without letting the filmstrip accumulate unbounded buttons.

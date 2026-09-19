@@ -254,11 +254,14 @@ box.mode-selector,
   min-height: 48px;
 }
 
-box.mode-selector.on-light-background,
-.glass-segmented.on-light-background {
-  /* No material override — the .glass-raised rule already provides a
-     light/dark balanced fill. Kept as a hook in case we later want a
-     different border on bright photo backgrounds. */
+/* The selector floats on photos, so its foreground follows its own tint. */
+box.mode-selector {
+  color: white;
+  transition: background-color 350ms ease-in-out, color 350ms ease-in-out;
+}
+
+box.mode-selector.on-light-background {
+  color: #17191e;
 }
 
 /* 单个 label / dot 槽位 */
@@ -274,8 +277,8 @@ box.mode-selector label,
 .glass-segment-label {
   font-size: 13pt;
   font-weight: 700;
-  color: @window_fg_color;
-  opacity: 0.55;
+  color: inherit;
+  opacity: 0.78;
   transition: opacity 120ms ease;
 }
 
@@ -285,10 +288,26 @@ box.mode-selector label.active,
   opacity: 1.0;
 }
 
+/* Give painted descendants explicit endpoints: animating inherited colors
+   through intermediate boxes can lag/restart their transitions in GTK. */
+box.mode-selector label,
+box.mode-selector .mode-dot {
+  color: white;
+}
+
+box.mode-selector.on-light-background label,
+box.mode-selector.on-light-background .mode-dot {
+  color: #17191e;
+}
+
+box.mode-selector label {
+  transition: opacity 120ms ease, color 350ms ease-in-out;
+}
+
 /* 激活指示点 */
 box.mode-dot,
 .glass-segment-indicator {
-  background: @window_fg_color;
+  background: currentColor;
   border-radius: 2px;
   min-width: 20px;
   min-height: 3px;
@@ -301,7 +320,32 @@ box.mode-dot,
    label — same decelerate curve as the viewer filmstrip. `transform` is
    paint-only, so it never disturbs the dot_row layout. */
 box.mode-dot {
-  transition: transform 300ms cubic-bezier(0.2, 0.0, 0.2, 1);
+  transition: transform 300ms cubic-bezier(0.2, 0.0, 0.2, 1),
+    color 350ms ease-in-out, background-color 350ms ease-in-out;
+}
+
+/* Native toggle semantics, with the same single-surface segmented language.
+   Reserve the underline in every state so selection never changes geometry. */
+.glass-segmented button.glass-segment {
+  background: transparent;
+  background-image: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 8px;
+  box-shadow: none;
+  color: alpha(@window_fg_color, 0.72);
+  font-weight: 600;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.glass-segmented button.glass-segment:hover {
+  color: @window_fg_color;
+}
+
+.glass-segmented button.glass-segment:checked {
+  background: transparent;
+  border-bottom-color: @window_fg_color;
+  color: @window_fg_color;
 }
 
 /* glass-toolbar-button — individual buttons in glass header bars.
@@ -385,9 +429,9 @@ box.mode-dot {
 
 .glass-toolbar-button.glass-toolbar-danger,
 .glass-toolbar-danger {
-  background: alpha(#ff5449, 0.16);
-  border-color: alpha(#ffb4ab, 0.34);
-  color: #ffb4ab;
+  background: alpha(@error_bg_color, 0.16);
+  border-color: alpha(@error_color, 0.34);
+  color: @error_color;
 }
 
 /* glass-toolbar-suggested — primary action accent (blue) for Save Copy,
@@ -395,7 +439,7 @@ box.mode-dot {
    .glass-toolbar-button. Mirrors .glass-menu-item-suggested so the same
    action language is shared between toolbar and menu surfaces.
    用于工具栏主操作按钮(蓝色),与菜单项的 suggested 风格保持一致。 */
-.glass-toolbar-suggested { color: #a8d2ff; }
+.glass-toolbar-suggested { color: @accent_color; }
 
 /* glass-menu — popovers; GTK popovers are two-layer, style the inner
    `> contents` so the visible background matches the rounded edge. The
@@ -430,9 +474,9 @@ box.mode-dot {
   color: alpha(currentColor, 0.45);
 }
 
-.glass-menu-item-suggested { color: #a8d2ff; }
+.glass-menu-item-suggested { color: @accent_color; }
 
-.glass-menu-item-danger { color: #ffb4ab; }
+.glass-menu-item-danger { color: @error_color; }
 
 .glass-context-menu-layer {
   background: transparent;
@@ -469,9 +513,9 @@ box.mode-dot {
   outline: none;
 }
 
-.glass-context-menu-item-suggested { color: #a8d2ff; }
+.glass-context-menu-item-suggested { color: @accent_color; }
 
-.glass-context-menu-item-danger { color: #ffb4ab; }
+.glass-context-menu-item-danger { color: @error_color; }
 
 /* glass-sidebar — list/layout only. The sidebar surface itself is the parent
    .glass-sidebar-surface.glass-base, so list and footer stay on one material. */
@@ -813,7 +857,11 @@ video.viewer-media-surface controls scale slider {
   border-radius: 10px;
   opacity: 0;
   background: transparent;
-  border: 1px solid transparent;
+  /* A transparent GtkFrame border leaves the picture visible at the edges.
+     This paint-only veil must cover the same full allocation as the image. */
+  border: none;
+  padding: 0;
+  margin: 0;
   transition: opacity 120ms ease;
 }
 
@@ -930,14 +978,6 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   min-height: 78px;
 }
 
-.viewer-thumb-carousel.glass-raised {
-  box-shadow:
-    inset 34px 0 24px -30px alpha(@window_bg_color, 0.72),
-    inset -34px 0 24px -30px alpha(@window_bg_color, 0.72),
-    inset 0 1px alpha(@window_fg_color, 0.22),
-    0 12px 34px alpha(black, 0.30);
-}
-
 .viewer-thumb-strip {
   padding: 0 24px;
   transition: transform 220ms cubic-bezier(0.2, 0.0, 0.2, 1);
@@ -1035,7 +1075,13 @@ button.viewer-thumb-item.viewer-thumb-current picture {
 .viewer-floating-panel scrolledwindow,
 .viewer-floating-panel viewport,
 .viewer-floating-panel list,
-.viewer-floating-panel .boxed-list {
+.viewer-floating-panel .boxed-list,
+.viewer-details-panel preferencespage,
+.viewer-details-panel preferencesgroup,
+.viewer-details-panel scrolledwindow,
+.viewer-details-panel viewport,
+.viewer-details-panel list,
+.viewer-details-panel .boxed-list {
   background: transparent;
   background-color: transparent;
   box-shadow: none;
@@ -1043,7 +1089,8 @@ button.viewer-thumb-item.viewer-thumb-current picture {
 
 .viewer-floating-panel list row,
 .viewer-floating-panel .boxed-list > row,
-.viewer-floating-panel .boxed-list row {
+.viewer-floating-panel .boxed-list row,
+.viewer-details-panel .boxed-list row {
   background: transparent;
   background-color: transparent;
 }
@@ -1083,7 +1130,7 @@ row.settings-action-row {
   background-color: transparent;
 }
 
-.settings-dialog-content label {
+.settings-dialog-content {
   color: @window_fg_color;
 }
 
@@ -1099,4 +1146,5 @@ row.settings-action-row {
   color: white;
   font-size: 20px;
   font-weight: 700;
+  text-shadow: 0 1px 2px alpha(black, 0.85), 0 0 4px alpha(black, 0.55);
 }

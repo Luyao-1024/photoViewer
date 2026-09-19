@@ -173,6 +173,11 @@ shows a migration suggestion if the probe succeeds.
 
 Trash views must distinguish reversible trash state from permanent delete. Database state and filesystem state need to remain consistent across restore/delete operations.
 
+Trash toolbar and selection actions use the shared glass button classes.
+Restore uses the suggested role; Empty Trash and permanent deletion use the
+danger role, with theme-aware text colors and visible keyboard focus. Album
+picker headers also use the shared glass-header material.
+
 Restore never overwrites a file that has appeared at the original path. It
 moves the trash payload with no-overwrite semantics, keeps `.trashinfo` until
 the DB row is committed live, and rolls the file back into trash if that commit

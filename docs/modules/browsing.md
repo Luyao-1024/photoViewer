@@ -291,7 +291,8 @@ date, while a multi-day viewport shows both dates as a range. Both bounds are
 resolved from the virtual layout's authoritative per-day counts, NOT by reading
 realized tiles — so the label stays correct in unloaded ranges. It is hidden
 only until metadata loads or when the library is empty. The label is large,
-bold, and white, with no visible background, border, or shadow. In Liquid Glass
+bold, and white, with a small text shadow for bright photos but no visible
+panel background, border, or panel shadow. In Liquid Glass
 mode, its unpadded text bounds apply the backdrop blur; plain mode leaves it
 transparent. It is `can-target: false` (click-through) and Photos-page only
 (album detail pages are a follow-up).
@@ -313,6 +314,17 @@ The Year/Month/Day control is both navigation and the canonical Liquid Glass seg
 - No per-segment active background block.
 
 Reusable segmented classes are documented in [`ui-liquid-glass.md`](ui-liquid-glass.md).
+
+The selector pairs its foreground with a light/dark tint based on photo
+brightness. A new candidate must remain stable for 120 ms; unknown/unloaded
+backgrounds retain the last tint. The parent capsule retains a readability
+floor even at maximum transparency. Accepted contrast changes animate the
+capsule, text, and underline together over 350 ms, including smooth reversal
+while an earlier transition is running. Thumbnail hover/selection veils fill
+the entire picture allocation without a border or inset, so white images do
+not show uncovered edge strips; state changes do not resize tiles.
+Search field toggles use the same single
+capsule language with a checked underline and no per-segment background.
 
 Mode switching is instrumented for Chrome/Perfetto traces from selector input
 through stack notification, active-grid sync, virtual-grid activation, layout,

@@ -238,6 +238,7 @@
     "setting.theme_save_failed": "保存主题失败：{error}",
     "setting.liquid_glass": "液态玻璃特效",
     "setting.liquid_glass_transparency": "透明度",
+    "setting.liquid_glass_transparency_hint": "菜单与文字面板保留底色，确保清晰可读",
     "setting.liquid_glass_transparency_save_failed": "保存透明度失败：{error}",
     "setting.liquid_glass_save_failed": "保存外观设置失败：{error}",
     "setting.section.video": "视频播放",

@@ -28,18 +28,22 @@ template $SearchPage : Adw.NavigationPage {
         orientation: horizontal;
         halign: center;
         spacing: 2;
-        css-classes: ["linked"];
+        homogeneous: true;
+        css-classes: ["glass-raised", "glass-segmented"];
 
         Gtk.ToggleButton field_all {
+          css-classes: ["glass-segment"];
           label: "全部";
           active: true;
         }
 
         Gtk.ToggleButton field_name {
+          css-classes: ["glass-segment"];
           label: "文件名";
         }
 
         Gtk.ToggleButton field_date {
+          css-classes: ["glass-segment"];
           label: "日期";
         }
       }

@@ -74,6 +74,7 @@ mod imp {
     pub struct ModeSelector {
         pub active_index: Cell<u32>,
         pub last_sync: Cell<LastSync>,
+        pub contrast_update: std::cell::RefCell<Option<(bool, glib::SourceId)>>,
         /// Bound ViewStack + the `SignalHandlerId` of its
         /// `notify::visible-child` subscription. Keeping the id
         /// alongside the stack lets `set_stack` disconnect the old
@@ -119,6 +120,12 @@ mod imp {
     }
 
     impl ObjectImpl for ModeSelector {
+        fn dispose(&self) {
+            if let Some((_, source)) = self.contrast_update.borrow_mut().take() {
+                source.remove();
+            }
+        }
+
         fn constructed(&self) {
             self.parent_constructed();
 
@@ -308,11 +315,44 @@ impl ModeSelector {
     /// text and the active indicator should render black; `false` renders
     /// them white.
     pub fn set_light_background(&self, is_light: bool) {
+        if let Some((_, source)) = self.imp().contrast_update.borrow_mut().take() {
+            source.remove();
+        }
         if is_light {
             self.add_css_class("on-light-background");
         } else {
             self.remove_css_class("on-light-background");
         }
+    }
+
+    /// Require a stable candidate briefly before changing photo-backed tint.
+    /// Repeated samples of the same candidate must not postpone the update.
+    pub fn queue_light_background(&self, is_light: bool) {
+        if self.has_css_class("on-light-background") == is_light {
+            self.set_light_background(is_light);
+            return;
+        }
+        if self
+            .imp()
+            .contrast_update
+            .borrow()
+            .as_ref()
+            .is_some_and(|(candidate, _)| *candidate == is_light)
+        {
+            return;
+        }
+        if let Some((_, source)) = self.imp().contrast_update.borrow_mut().take() {
+            source.remove();
+        }
+        let weak = self.downgrade();
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+                if let Some(selector) = weak.upgrade() {
+                    selector.imp().contrast_update.borrow_mut().take();
+                    selector.set_light_background(is_light);
+                }
+            });
+        *self.imp().contrast_update.borrow_mut() = Some((is_light, source));
     }
 
     /// Set the active mode. Out-of-range values are silently ignored

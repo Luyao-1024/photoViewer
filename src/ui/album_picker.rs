@@ -141,6 +141,7 @@ fn build_album_list_page(list_box: &gtk::ListBox) -> gtk::Box {
         .build();
     let header = adw::HeaderBar::builder()
         .show_end_title_buttons(false)
+        .css_classes(["glass-header"])
         .build();
     outer.append(&header);
     let _ = list_box; // silence unused if not appended
@@ -165,6 +166,7 @@ pub fn push_action_page(
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::builder()
         .show_end_title_buttons(false)
+        .css_classes(["glass-header"])
         .build();
 
     let content = gtk::Box::builder()

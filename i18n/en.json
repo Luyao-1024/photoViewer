@@ -238,6 +238,7 @@
     "setting.theme_save_failed": "Failed to save theme: {error}",
     "setting.liquid_glass": "Liquid Glass effect",
     "setting.liquid_glass_transparency": "Transparency",
+    "setting.liquid_glass_transparency_hint": "Menus and text panels retain a tint for readability",
     "setting.liquid_glass_transparency_save_failed": "Failed to save transparency: {error}",
     "setting.liquid_glass_save_failed": "Failed to save the appearance setting: {error}",
     "setting.section.video": "Video Playback",

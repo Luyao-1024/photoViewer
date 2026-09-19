@@ -146,7 +146,10 @@ cancellation and save-control disabling while a background render is pending. --
 
 Some host GTK versions print parser warnings for `backdrop-filter`. This is expected when the host runtime does not support that CSS property. The target visual runtime is Flatpak GNOME 50; do not remove `backdrop-filter` just to silence host parser warnings.
 
-The accessibility CSS block is intentionally empty unless implemented through GTK-supported settings or runtime classes. Do not reintroduce unsupported `@media` feature queries or `@keyframes`.
+The accessibility CSS block uses GTK-supported `:focus-visible` rules. Do not
+reintroduce unsupported `@media` feature queries or `@keyframes`. The material
+color-resolution test covers both themes and transparency endpoints; see
+[`modules/ui-liquid-glass.md`](modules/ui-liquid-glass.md) for optional screenshots.
 
 ## GstPlay Teardown In Tests
 

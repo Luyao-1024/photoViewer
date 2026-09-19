@@ -18,6 +18,10 @@ fn labels(sel: &ModeSelector) -> [gtk::Label; 3] {
 fn default_active_index_is_zero() {
     let sel = ModeSelector::new();
     assert_eq!(sel.active_index(), 0);
+    assert!(
+        sel.is_focusable(),
+        "keyboard users must be able to reach the selector"
+    );
 }
 
 #[gtk::test]
@@ -88,6 +92,36 @@ fn set_light_background_toggles_contrast_class() {
     assert!(sel.has_css_class("on-light-background"));
     sel.set_light_background(false);
     assert!(!sel.has_css_class("on-light-background"));
+}
+
+#[gtk::test]
+fn contrast_changes_wait_for_a_stable_background() {
+    let selector = ModeSelector::new();
+    glib::MainContext::default().block_on(async {
+        selector.queue_light_background(true);
+        assert!(!selector.has_css_class("on-light-background"));
+        selector.queue_light_background(false);
+        glib::timeout_future(std::time::Duration::from_millis(160)).await;
+        assert!(
+            !selector.has_css_class("on-light-background"),
+            "a transient bright tile must not flip contrast"
+        );
+        selector.queue_light_background(true);
+        glib::timeout_future(std::time::Duration::from_millis(80)).await;
+        selector.queue_light_background(true);
+        glib::timeout_future(std::time::Duration::from_millis(80)).await;
+        assert!(
+            selector.has_css_class("on-light-background"),
+            "repeated samples must not starve a stable change"
+        );
+        selector.queue_light_background(false);
+        selector.set_light_background(true);
+        glib::timeout_future(std::time::Duration::from_millis(160)).await;
+        assert!(
+            selector.has_css_class("on-light-background"),
+            "explicit contrast must cancel a pending update"
+        );
+    });
 }
 
 #[gtk::test]

@@ -64,6 +64,11 @@ Orientation-metadata rotation is still implemented in `src/core/orientation.rs` 
 
 The editor footer exposes Save Copy as the suggested action and Save Overwrite as a direct danger-styled button. Save Overwrite still shows its confirmation dialog before writing.
 
+The editor owns one reading glass surface. Nested preference pages and boxed
+lists remain transparent; action colors follow Adwaita's theme-aware accent
+and error foregrounds. Panel tint retains a minimum fill at high transparency,
+and keyboard focus outlines remain visible independently of material strength.
+
 ## Adding An Operation
 
 1. Implement `EditOperation`.

@@ -1,1 +1,19 @@
-/* Reserved accessibility fallbacks. Keep this file comment-only until GTK-supported runtime classes are added. */
+/* GTK-supported focus styling, applied after both material modes. Keep this
+   independent of transparency so keyboard navigation remains discoverable. */
+.glass-toolbar-button:focus-visible,
+.glass-header windowcontrols button:focus-visible,
+.glass-menu-item:focus-visible,
+.glass-context-menu-item:focus-visible,
+.glass-sidebar-row:focus-visible,
+.glass-sidebar-album-list > row:focus-visible .glass-sidebar-row,
+.glass-segmented button.glass-segment:focus-visible,
+button.viewer-thumb-item:focus-visible,
+box.mode-selector:focus-visible {
+  outline: 2px solid @accent_color;
+  outline-offset: -2px;
+}
+
+.glass-menu-item:focus-visible,
+.glass-context-menu-item:focus-visible {
+  background: alpha(@window_fg_color, 0.10);
+}

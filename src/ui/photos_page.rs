@@ -985,7 +985,11 @@ impl PhotosPage {
             selector.queue_draw();
             return;
         };
-        selector.set_light_background(grid.background_is_light_under(&selector).unwrap_or(false));
+        // Unloaded cells/gutters have no reliable sample. Keep the last tint
+        // instead of oscillating to dark while thumbnails stream in.
+        if let Some(is_light) = grid.background_is_light_under(&selector) {
+            selector.queue_light_background(is_light);
+        }
         // The selector uses `backdrop-filter`, so its pixels depend on the
         // stack content behind it even when none of its own CSS classes
         // change. GTK does not always invalidate an overlay backdrop while a

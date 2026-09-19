@@ -1,5 +1,47 @@
 use super::*;
 
+mod render;
+
+#[test]
+fn reading_surfaces_remain_legible_at_every_transparency() {
+    for liquid in [true, false] {
+        let mut previous = 1.0;
+        for step in 0..=100 {
+            let alpha = reading_surface_alpha(liquid, step as f64 / 100.0);
+            assert!(alpha >= 0.72 && alpha <= previous);
+            previous = alpha;
+        }
+        assert_eq!(
+            reading_surface_alpha(liquid, f64::NAN),
+            reading_surface_alpha(liquid, 0.0)
+        );
+        assert_eq!(
+            reading_surface_alpha(liquid, -1.0),
+            reading_surface_alpha(liquid, 0.0)
+        );
+        assert_eq!(
+            reading_surface_alpha(liquid, 2.0),
+            reading_surface_alpha(liquid, 1.0)
+        );
+    }
+}
+
+#[test]
+fn blur_fades_smoothly_but_retains_more_detail_suppression_than_fill() {
+    let filter = "backdrop-filter: blur(28px) saturate(1.22) brightness(1.06);";
+    let mut previous = 28.0;
+    for step in 0..=100 {
+        let strength = 1.0 - step as f64 / 100.0;
+        let scaled = scale_backdrop_filter(filter, strength);
+        let blur = parse_filter_number(&scaled, "blur(", "px)").unwrap();
+        assert!(blur <= previous && blur >= 28.0 * strength - 0.001);
+        previous = blur;
+    }
+    assert_eq!(previous, 0.0);
+    let high_transparency = scale_backdrop_filter(filter, 0.1);
+    assert!(parse_filter_number(&high_transparency, "blur(", "px)").unwrap() > 8.0);
+}
+
 fn css_block(css: &str, selector: &str) -> Option<String> {
     let pattern = format!("{selector} {{");
     let start = css.find(&pattern)?;
@@ -635,11 +677,11 @@ fn liquid_mode_keeps_drama_and_shared_parts() {
     }
     // liquid drama
     assert!(
-        css.contains("0 18px 48px"),
+        css.contains("0 10px 28px"),
         "liquid mode must keep the heavy raised drop shadow"
     );
     assert!(
-        css.contains("inset 0 1px alpha(@window_fg_color,0.58)"),
+        css.contains("inset 0 1px alpha(white, 0.38)"),
         "liquid mode must keep the bright raised top highlight"
     );
     // shared BASE
@@ -680,11 +722,13 @@ fn plain_mode_is_translucent_no_blur() {
     );
     // drops liquid drama
     assert!(
-        !css.contains("inset 0 1px alpha(@window_fg_color,0.58)"),
+        !css.contains("inset 0 1px alpha(white, 0.38)"),
         "plain mode must drop the raised top highlight"
     );
     assert!(
-        !css.contains("0 18px 48px"),
+        !css_block(&css, ".glass-raised")
+            .unwrap()
+            .contains("0 10px 28px"),
         "plain mode must drop the heavy raised drop shadow"
     );
     // shared BASE still present
@@ -718,9 +762,9 @@ fn liquid_mode_gives_buttons_unified_liquid_material() {
     }
 
     for liquid_signature in [
-        "inset 0 1px alpha(@window_fg_color,0.44)",
-        "inset 0 1px alpha(@window_fg_color,0.36)",
-        "0 12px 32px alpha(black, 0.24)",
+        "inset 0 1px alpha(white, 0.22)",
+        "inset 0 1px alpha(white, 0.22)",
+        "0 3px 10px alpha(black, 0.14)",
     ] {
         assert!(
             css.contains(liquid_signature),
@@ -738,7 +782,7 @@ fn glass_transparency_scales_material_background_without_touching_base_css() {
             "toolbar button background alpha should be halved at 50% transparency"
         );
     assert!(
-        css.contains("0 12px 32px alpha(black, 0.12)"),
+        css.contains("0 3px 10px alpha(black, 0.1)"),
         "button shadow alpha should scale above its visibility floor"
     );
     assert!(
@@ -773,7 +817,7 @@ fn glass_transparency_hundred_keeps_interactive_edges_visible() {
         "100% transparency should keep a minimum button border"
     );
     assert!(
-        transparent.contains("0 12px 32px alpha(black, 0.1)"),
+        transparent.contains("0 3px 10px alpha(black, 0.1)"),
         "100% transparency should keep a minimum button shadow"
     );
     assert!(
@@ -804,7 +848,7 @@ fn settings_dialog_preferences_lists_use_scoped_translucent_material() {
             "settings rows should have a scoped row material hook"
         );
         assert!(
-            css.contains(".settings-dialog-content label {\n  color: @window_fg_color;"),
+            css.contains(".settings-dialog-content {\n  color: @window_fg_color;"),
             "settings dialog labels should follow the active light/dark theme"
         );
         assert!(
@@ -846,7 +890,7 @@ fn glass_transparency_fades_backdrop_filter_before_hundred() {
     let css = build_css_with_transparency(true, 0.9);
 
     assert!(
-        css.contains("backdrop-filter: blur(2.8px) saturate(1.022) brightness(1.006);"),
+        css.contains("backdrop-filter: blur(8.854px) saturate(1.022) brightness(1.006);"),
         "90% transparency should fade the mode selector filter instead of keeping full blur"
     );
     assert!(
@@ -865,8 +909,8 @@ fn liquid_mode_selector_keeps_original_glass_raised_material() {
         "box.mode-dot,\n.glass-segment-indicator {",
         ".glass-raised {",
         "backdrop-filter: blur(28px) saturate(1.22) brightness(1.06)",
-        "0 18px 48px alpha(black, 0.26)",
-        "inset 0 1px alpha(@window_fg_color,0.58)",
+        "0 10px 28px alpha(black, 0.20)",
+        "inset 0 1px alpha(white, 0.38)",
     ] {
         assert!(
             css.contains(marker),
@@ -900,10 +944,10 @@ fn mode_selector_uses_compact_dimensions() {
 fn glass_menu_surface_matches_raised_segmented_surface_visual_weight() {
     let liquid = build_css(true);
     for marker in [
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.72);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: @glass_reading_bg;",
             "background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.16);",
-            "0 18px 48px alpha(black, 0.26)",
-            "inset 0 1px alpha(@window_fg_color,0.58)",
+            "0 10px 28px alpha(black, 0.20)",
+            "inset 0 1px alpha(white, 0.38)",
         ] {
             assert!(
                 liquid.contains(marker),
@@ -913,8 +957,8 @@ fn glass_menu_surface_matches_raised_segmented_surface_visual_weight() {
 
     let plain = build_css(false);
     for marker in [
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.78);",
-            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: alpha(@window_bg_color, 0.78);\n  background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.10);",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: @glass_reading_bg;",
+            ".glass-menu > contents {\n  padding: 6px;\n  border-radius: 16px;\n  background: @glass_reading_bg;\n  background-clip: padding-box;\n  border: 1px solid alpha(@window_fg_color, 0.10);",
             "box-shadow: 0 4px 12px alpha(black, 0.22);",
         ] {
             assert!(
@@ -1013,9 +1057,9 @@ fn plain_mode_keeps_buttons_plain_not_liquid() {
     }
 
     for liquid_signature in [
-        "inset 0 1px alpha(@window_fg_color,0.44)",
-        "inset 0 1px alpha(@window_fg_color,0.36)",
-        "0 12px 32px alpha(black, 0.24)",
+        "inset 0 1px alpha(white, 0.22)",
+        "inset 0 1px alpha(white, 0.22)",
+        "0 3px 10px alpha(black, 0.14)",
     ] {
         assert!(
             !css.contains(liquid_signature),
@@ -1038,7 +1082,7 @@ fn window_close_button_is_red_only_on_interaction() {
                 .expect("close window button base rule should close")];
 
         assert!(
-            !base_rule.contains("#ff5449") && !base_rule.contains("#c01c28"),
+            !base_rule.contains("@error_bg_color") && !base_rule.contains("#c01c28"),
             "close window button should not be red until hover/active ({liquid} mode)"
         );
         assert!(
@@ -1051,12 +1095,12 @@ fn window_close_button_is_red_only_on_interaction() {
         );
         if liquid {
             assert!(
-                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(#ff5449, 0.24);"),
+                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(@error_bg_color, 0.24);"),
                     "liquid close hover should match the danger toolbar treatment"
                 );
         } else {
             assert!(
-                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(#ff5449, 0.18);"),
+                    css.contains(".glass-header windowcontrols button.close:hover image {\n  background: alpha(@error_bg_color, 0.18);"),
                     "plain close hover should match the danger toolbar treatment"
                 );
         }

@@ -62,9 +62,8 @@ translucent panels and controls with restrained borders.
 轻阴影,与液态玻璃差异明显。 */
 const PLAIN_GLASS_MATERIAL_CSS: &str = include_str!("../../data/css/plain.css");
 
-/* GTK's CssProvider in the supported runtime rejects web-style @media
-feature queries. Keep this hook empty until accessibility adaptation is
-implemented through GTK settings or explicit runtime class toggles. */
+/* GTK-native focus rules live after the material so transparency cannot hide
+keyboard focus. Do not add web-style @media feature queries here. */
 const A11Y_CSS: &str = include_str!("../../data/css/a11y.css");
 
 /// Assemble the full CSS string for the given glass mode. `true` → Liquid
@@ -74,21 +73,41 @@ fn build_css(liquid_glass: bool) -> String {
 }
 
 fn build_css_with_transparency(liquid_glass: bool, transparency: f64) -> String {
+    let transparency = normalized_transparency(transparency);
     let material = if liquid_glass {
         LIQUID_GLASS_MATERIAL_CSS
     } else {
         PLAIN_GLASS_MATERIAL_CSS
     };
     let material = scale_material_alpha(material, transparency);
-    format!("{BASE_CSS}\n{material}\n{A11Y_CSS}")
+    // Reading surfaces use a bounded fill independently of decorative chrome.
+    // Named GTK colors keep the floor intact when material alpha is scaled,
+    // and still resolve the current Adwaita palette live on theme changes.
+    let reading_alpha = format_alpha(reading_surface_alpha(liquid_glass, transparency));
+    let content_alpha = format_alpha(0.66 + 0.12 * (1.0 - transparency));
+    format!(
+        "@define-color glass_reading_bg alpha(@window_bg_color, {reading_alpha});\n\
+         @define-color glass_content_dark_bg alpha(#17191e, {content_alpha});\n\
+         @define-color glass_content_light_bg alpha(#ffffff, {content_alpha});\n\
+         {BASE_CSS}\n{material}\n{A11Y_CSS}"
+    )
 }
 
-fn scale_material_alpha(material: &str, transparency: f64) -> String {
-    let transparency = if transparency.is_finite() {
+fn normalized_transparency(transparency: f64) -> f64 {
+    if transparency.is_finite() {
         transparency.clamp(0.0, 1.0)
     } else {
         0.0
-    };
+    }
+}
+
+fn reading_surface_alpha(liquid_glass: bool, transparency: f64) -> f64 {
+    let floor = if liquid_glass { 0.72 } else { 0.82 };
+    floor + 0.06 * (1.0 - normalized_transparency(transparency))
+}
+
+fn scale_material_alpha(material: &str, transparency: f64) -> String {
+    let transparency = normalized_transparency(transparency);
     if transparency <= f64::EPSILON {
         return material.to_string();
     }
@@ -171,7 +190,9 @@ fn scale_backdrop_filter(line: &str, material_alpha: f64) -> String {
     let saturate = parse_filter_number(line, "saturate(", ")").unwrap_or(1.0);
     let brightness = parse_filter_number(line, "brightness(", ")").unwrap_or(1.0);
 
-    let scaled_blur = blur * material_alpha;
+    // Keep background detail subdued as the tint clears, with a continuous
+    // fade to zero at the endpoint instead of a last-step blur discontinuity.
+    let scaled_blur = blur * material_alpha.sqrt();
     let scaled_saturate = 1.0 + (saturate - 1.0) * material_alpha;
     let scaled_brightness = 1.0 + (brightness - 1.0) * material_alpha;
     let indent_len = line.len() - line.trim_start().len();

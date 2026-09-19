@@ -77,7 +77,7 @@
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-10" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图尺寸稳定，hover 不引发布局抖动。"></div>
           </div>
 
-          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.glass-segmented" data-props="规范 Liquid Glass 分段控件：一个玻璃胶囊，active 只有文本对比和底部短指示条。">
+          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.mode-selector" data-props="一个玻璃胶囊，active 只有文本对比和底部短指示条；可通过 Tab 聚焦，左右方向键切换；根据背景稳定切换明暗底色。">
             <span class="segment active">年</span>
             <span class="segment">月</span>
             <span class="segment">日</span>
@@ -214,7 +214,7 @@
       <div class="headerbar hotspot" tabindex="0" data-ui="search-header" data-name="搜索页顶栏" data-impl="Adw.HeaderBar header_bar" data-props="常规 NavigationPage 顶栏。"><span class="header-title">搜索</span></div>
       <div class="search-area">
         <div class="search-box hotspot" tabindex="0" data-ui="search-entry" data-name="搜索输入框" data-impl="Gtk.SearchEntry search_entry" data-props="支持文件名和拍摄日期；日期字段会自动格式化数字输入。">输入关键字或日期...</div>
-        <div class="field-bar hotspot" tabindex="0" data-ui="search-field-bar" data-name="搜索字段切换" data-impl="Gtk.Box search_field_bar → ToggleButton field_all/name/date" data-props="全部、文件名、日期；选中值传入 MediaQuery。">
+        <div class="field-bar hotspot" tabindex="0" data-ui="search-field-bar" data-name="搜索字段切换" data-impl="Gtk.Box search_field_bar .glass-raised.glass-segmented → ToggleButton field_all/name/date .glass-segment" data-props="全部、文件名、日期；单个玻璃胶囊，选中项用文字与下划线表示；选中值传入 MediaQuery。">
           <span class="field active">全部</span><span class="field">文件名</span><span class="field">日期</span>
         </div>
         <div class="result-section hotspot" tabindex="0" data-ui="image-results" data-name="图片结果区" data-impl="Gtk.Box image_results_box + Year-mode MediaGrid preview" data-props="预览网格无内部滚动；溢出时显示 More tile。">
@@ -272,7 +272,7 @@
         <div class="settings-body">
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch"></span></div>
-          <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；影响背景 alpha、边框/阴影 floor、blur/saturate/brightness 强度。"><span>透明度</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；装饰底色逐渐透明，模糊平滑减弱；菜单与文字面板保留阅读底色，焦点轮廓不受透明度影响。"><span>透明度</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="webdav-config-toggle" data-name="WebDAV 配置开关" data-impl="settings.rs build_sync_settings_group → Adw.ExpanderRow" data-props="每次打开设置时默认关闭并折叠；开启后自动展开新连接表单，关闭后重新收起；不控制已有任务的暂停状态。"><span>配置 WebDAV 同步</span><span class="switch"></span></div>

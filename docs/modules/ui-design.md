@@ -358,6 +358,14 @@ Design intent:
 - Shape and sizing rules belong in base CSS. Material-specific blur, saturation,
   highlights, and shadows belong in the Liquid or Plain material blocks.
 - New glass surfaces must have matching Liquid and Plain definitions.
+- Small toolbar buttons use shallow shadows; floating controls and menus use
+  medium shadows; modal dialogs use the deepest shadows. Specular highlights
+  stay white in both themes, while semantic action text follows Adwaita colors.
+- Reading panels retain a minimum tint at high transparency. Keyboard focus
+  uses an independent accent outline in both material modes.
+- Search field toggles share the single glass capsule and underline language
+  of Year/Month/Day, retaining native toggle grouping. Trash actions and album
+  picker headers reuse the shared glass classes.
 - Avoid opaque child backgrounds inside floating glass panels.
 - When a visual area contains multiple child widgets that should read as one
   surface, put the material class on the shared parent and reset child

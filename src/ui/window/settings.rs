@@ -196,6 +196,7 @@ impl MainWindow {
         let transparency_row = adw::ActionRow::new();
         transparency_row.add_css_class("settings-action-row");
         transparency_row.set_title(&tr("setting.liquid_glass_transparency"));
+        transparency_row.set_subtitle(&tr("setting.liquid_glass_transparency_hint"));
         transparency_row.set_activatable(false);
         transparency_row.add_suffix(&transparency_scale);
         appearance_group.add(&transparency_row);
@@ -540,7 +541,7 @@ impl MainWindow {
         let suggestion_button = gtk::Button::with_label(&tr("setting.trash.migrate_to_system"));
         suggestion_button.set_valign(gtk::Align::Center);
         suggestion_button.add_css_class("glass-toolbar-button");
-        suggestion_button.add_css_class("suggested-action");
+        suggestion_button.add_css_class("glass-toolbar-suggested");
         suggestion_row.add_suffix(&suggestion_button);
         group.add(&suggestion_row);
 
@@ -682,7 +683,7 @@ impl MainWindow {
         connect_row.set_activatable(false);
         let connect_button = gtk::Button::with_label(&tr("setting.sync.connect"));
         connect_button.add_css_class("glass-toolbar-button");
-        connect_button.add_css_class("suggested-action");
+        connect_button.add_css_class("glass-toolbar-suggested");
         connect_button.set_valign(gtk::Align::Center);
         connect_row.add_suffix(&connect_button);
         connection.add_row(&connect_row);

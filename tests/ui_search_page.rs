@@ -31,6 +31,17 @@ fn search_page_has_dedicated_search_surface_and_split_result_areas() {
     let page = SearchPage::new(pool, loader);
     let imp = page.imp();
 
+    // Keep native toggle grouping/semantics while sharing the glass capsule.
+    let fields = [&imp.field_all, &imp.field_name, &imp.field_date];
+    for field in fields {
+        assert!(field.has_css_class("glass-segment"));
+        assert!(field.parent().unwrap().has_css_class("glass-segmented"));
+    }
+    imp.field_name.set_active(true);
+    assert!(!imp.field_all.is_active());
+    assert!(imp.field_name.is_active());
+    imp.field_all.set_active(true);
+
     assert!(
         css_classes_vec(&imp.header_bar.get())
             .iter()
