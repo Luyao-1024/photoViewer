@@ -1,6 +1,7 @@
 use super::*;
 use chrono::{TimeZone, Utc};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 fn sample_item(id: i64, name: &str) -> MediaItem {
     let dt = Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap();
@@ -40,6 +41,43 @@ fn thumbnail_request_mtime_uses_indexed_file_mtime_without_stat() {
         std::time::SystemTime::from(indexed_mtime),
         "thumbnail requests should reuse the indexed mtime instead of stat-ing on the UI thread"
     );
+}
+
+#[gtk::test]
+fn reattaching_an_extra_child_detaches_its_previous_flowbox_wrapper() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("test.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+    let grid = MediaGrid::new(
+        media_list,
+        GroupBy::Year,
+        loader,
+        test_support::noop_callbacks(),
+        false,
+    );
+    let extra = gtk::Button::with_label("More");
+
+    grid.append_extra_child(extra.upcast_ref());
+    let first_wrapper = extra
+        .parent()
+        .and_downcast::<gtk::FlowBoxChild>()
+        .expect("the first append should wrap the extra widget");
+
+    grid.append_extra_child(extra.upcast_ref());
+    let second_wrapper = extra
+        .parent()
+        .and_downcast::<gtk::FlowBoxChild>()
+        .expect("reattaching should create a new FlowBox wrapper");
+
+    assert_ne!(first_wrapper, second_wrapper);
+    assert!(
+        first_wrapper.parent().is_none() && first_wrapper.child().is_none(),
+        "the old wrapper must be removed and release the reused widget"
+    );
+    assert!(second_wrapper.parent().is_some());
 }
 
 #[test]
