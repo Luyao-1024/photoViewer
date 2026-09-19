@@ -42,6 +42,7 @@ use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use crate::ui::window::refresh_albums_sidebar;
 
 const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
+const OVERVIEW_SYNC_ROTATION_PERIOD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy)]
 struct PhotosOverviewSnapshot {
@@ -119,14 +120,21 @@ mod imp {
         pub viewer_open_pending: Cell<bool>,
         pub overview_refresh_in_flight: Cell<bool>,
         pub overview_poll_source: RefCell<Option<glib::SourceId>>,
-        #[template_child]
-        pub overview_toggle: TemplateChild<gtk::ToggleButton>,
+        pub overview_sync_running: Cell<bool>,
+        pub overview_sync_tick_active: Cell<bool>,
+        pub overview_sync_started_at: Cell<Option<std::time::Instant>>,
         #[template_child]
         pub overview_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
+        pub overview_panel: TemplateChild<gtk::Box>,
+        #[template_child]
         pub overview_count_label: TemplateChild<gtk::Label>,
         #[template_child]
+        pub overview_sync_icon_host: TemplateChild<gtk::Overlay>,
+        #[template_child]
         pub overview_sync_icon: TemplateChild<gtk::Image>,
+        #[template_child]
+        pub overview_sync_spinner: TemplateChild<gtk::DrawingArea>,
         #[template_child]
         pub overview_sync_label: TemplateChild<gtk::Label>,
         #[template_child]
@@ -190,10 +198,15 @@ mod imp {
                 viewer_open_pending: Cell::new(false),
                 overview_refresh_in_flight: Cell::new(false),
                 overview_poll_source: RefCell::new(None),
-                overview_toggle: TemplateChild::default(),
+                overview_sync_running: Cell::new(false),
+                overview_sync_tick_active: Cell::new(false),
+                overview_sync_started_at: Cell::new(None),
                 overview_revealer: TemplateChild::default(),
+                overview_panel: TemplateChild::default(),
                 overview_count_label: TemplateChild::default(),
+                overview_sync_icon_host: TemplateChild::default(),
                 overview_sync_icon: TemplateChild::default(),
+                overview_sync_spinner: TemplateChild::default(),
                 overview_sync_label: TemplateChild::default(),
                 scroll_date_revealer: TemplateChild::default(),
                 scroll_date_label: TemplateChild::default(),
@@ -308,10 +321,6 @@ impl PhotosPage {
             .get()
             .set_tooltip_text(Some(&tr("photos.search.tooltip")));
         obj.imp()
-            .overview_toggle
-            .get()
-            .set_tooltip_text(Some(&tr("photos.overview.show")));
-        obj.imp()
             .overview_count_label
             .get()
             .set_label(&tr("photos.overview.loading"));
@@ -319,6 +328,7 @@ impl PhotosPage {
             .overview_sync_label
             .get()
             .set_label(&tr("photos.overview.loading"));
+        obj.setup_overview_sync_spinner();
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
@@ -439,11 +449,19 @@ impl PhotosPage {
             });
         }
         for grid in [&year_grid, &month_grid, &day_grid] {
+            let mode = grid.mode();
             let weak = obj.downgrade();
             grid.connect_view_changed(move || {
                 if let Some(this) = weak.upgrade() {
                     this.schedule_mode_selector_contrast_update();
                     this.schedule_scroll_date_update();
+                    this.hide_overview_after_leaving_top();
+                }
+            });
+            let weak = obj.downgrade();
+            grid.connect_scroll_intent(move |delta_y| {
+                if let Some(this) = weak.upgrade() {
+                    this.handle_overview_scroll_intent(mode, delta_y);
                 }
             });
         }
@@ -513,6 +531,7 @@ impl PhotosPage {
                 );
                 let _trace = span.enter();
                 if let Some(this) = this {
+                    this.imp().overview_revealer.set_reveal_child(false);
                     this.sync_active_grid_rebuilds();
                     this.schedule_scroll_date_update();
                     let contrast_span = tracing::info_span!(
@@ -595,16 +614,6 @@ impl PhotosPage {
                 this.open_search_page();
             }
         });
-
-        let weak = obj.downgrade();
-        obj.imp()
-            .overview_toggle
-            .get()
-            .connect_toggled(move |toggle| {
-                if let Some(this) = weak.upgrade() {
-                    this.set_overview_expanded(toggle.is_active());
-                }
-            });
 
         // Exit multi-select: clears selection across every grid and hides the
         // batch toolbar. Same effect as the right-click "Exit Multi-select".
@@ -780,9 +789,7 @@ impl PhotosPage {
     /// access to the database. Mirrors `set_nav_target`.
     pub fn set_db_pool(&self, pool: DbPool) {
         *self.imp().pool.borrow_mut() = Some(pool);
-        if self.imp().overview_revealer.get().reveals_child() {
-            self.refresh_overview_async();
-        }
+        self.start_overview_updates();
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
@@ -791,31 +798,6 @@ impl PhotosPage {
 
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {
         self.imp().media_list.borrow()
-    }
-
-    fn set_overview_expanded(&self, expanded: bool) {
-        self.imp()
-            .overview_revealer
-            .get()
-            .set_reveal_child(expanded);
-        self.imp().overview_toggle.get().set_icon_name(if expanded {
-            "pan-up-symbolic"
-        } else {
-            "pan-down-symbolic"
-        });
-        self.imp()
-            .overview_toggle
-            .get()
-            .set_tooltip_text(Some(&tr(if expanded {
-                "photos.overview.hide"
-            } else {
-                "photos.overview.show"
-            })));
-        if expanded {
-            self.start_overview_updates();
-        } else {
-            self.stop_overview_updates();
-        }
     }
 
     fn start_overview_updates(&self) {
@@ -828,24 +810,10 @@ impl PhotosPage {
             let Some(this) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !this.imp().overview_toggle.get().is_active() {
-                return glib::ControlFlow::Break;
-            }
             this.refresh_overview_async();
             glib::ControlFlow::Continue
         });
         *self.imp().overview_poll_source.borrow_mut() = Some(source);
-    }
-
-    fn stop_overview_updates(&self) {
-        if let Some(source) = self.imp().overview_poll_source.borrow_mut().take() {
-            if glib::MainContext::default()
-                .find_source_by_id(&source)
-                .is_some()
-            {
-                source.remove();
-            }
-        }
     }
 
     fn refresh_overview_async(&self) {
@@ -897,10 +865,92 @@ impl PhotosPage {
             .overview_sync_label
             .get()
             .set_label(&sync_overview_text(snapshot.sync.status));
-        self.imp()
-            .overview_sync_icon
+        self.apply_overview_sync_icon(snapshot.sync.status);
+    }
+
+    fn apply_overview_sync_icon(&self, status: SyncOverviewStatus) {
+        let imp = self.imp();
+        let spinner = imp.overview_sync_spinner.get();
+        let icon = imp.overview_sync_icon.get();
+        let running = status == SyncOverviewStatus::Running;
+
+        spinner.set_visible(running);
+        icon.set_visible(!running);
+        self.set_overview_sync_running(running);
+        if !running {
+            icon.set_icon_name(Some(sync_overview_icon(status)));
+        }
+    }
+
+    fn setup_overview_sync_spinner(&self) {
+        self.imp().overview_sync_spinner.get().set_draw_func(
+            glib::clone!(@weak self as this => move |area, cr, width, height| {
+                if !this.imp().overview_sync_running.get() {
+                    return;
+                }
+                let started = this
+                    .imp()
+                    .overview_sync_started_at
+                    .get()
+                    .unwrap_or_else(std::time::Instant::now);
+                let phase = (started.elapsed().as_secs_f64()
+                    / OVERVIEW_SYNC_ROTATION_PERIOD.as_secs_f64())
+                    .fract();
+                let angle = phase * std::f64::consts::TAU;
+                let radius = ((width.min(height) as f64 - 4.0) / 2.0).max(1.0);
+                let color = area.style_context().color();
+
+                cr.set_source_rgba(
+                    color.red() as f64,
+                    color.green() as f64,
+                    color.blue() as f64,
+                    color.alpha() as f64,
+                );
+                cr.set_line_width(2.0);
+                cr.set_line_cap(gtk::cairo::LineCap::Round);
+                cr.arc(
+                    width as f64 / 2.0,
+                    height as f64 / 2.0,
+                    radius,
+                    angle,
+                    angle + std::f64::consts::TAU * 0.72,
+                );
+                let _ = cr.stroke();
+            }),
+        );
+    }
+
+    fn set_overview_sync_running(&self, running: bool) {
+        let imp = self.imp();
+        let was_running = imp.overview_sync_running.replace(running);
+        if !running {
+            imp.overview_sync_started_at.set(None);
+            imp.overview_sync_spinner.get().queue_draw();
+            return;
+        }
+        if !was_running {
+            imp.overview_sync_started_at
+                .set(Some(std::time::Instant::now()));
+        }
+        if imp.overview_sync_tick_active.replace(true) {
+            return;
+        }
+
+        let weak = self.downgrade();
+        let _ = imp
+            .overview_sync_spinner
             .get()
-            .set_icon_name(Some(sync_overview_icon(snapshot.sync.status)));
+            .add_tick_callback(move |area, _| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if !this.imp().overview_sync_running.get() {
+                    this.imp().overview_sync_tick_active.set(false);
+                    return glib::ControlFlow::Break;
+                }
+                area.queue_draw();
+                glib::ControlFlow::Continue
+            });
     }
 
     fn apply_overview_error(&self) {
@@ -910,10 +960,13 @@ impl PhotosPage {
             .get()
             .set_label(&unavailable);
         self.imp().overview_sync_label.get().set_label(&unavailable);
-        self.imp()
-            .overview_sync_icon
+        let imp = self.imp();
+        self.set_overview_sync_running(false);
+        imp.overview_sync_spinner.get().set_visible(false);
+        imp.overview_sync_icon
             .get()
             .set_icon_name(Some("dialog-warning-symbolic"));
+        imp.overview_sync_icon.get().set_visible(true);
     }
 
     pub(crate) fn open_search_page(&self) {
@@ -1104,6 +1157,34 @@ impl PhotosPage {
             .iter()
             .find(|grid| group_mode_name(grid.mode()) == visible_name)
             .cloned()
+    }
+
+    fn handle_overview_scroll_intent(&self, mode: GroupBy, delta_y: f64) {
+        if !delta_y.is_finite() || delta_y == 0.0 {
+            return;
+        }
+        let Some(grid) = self.current_grid() else {
+            self.imp().overview_revealer.set_reveal_child(false);
+            return;
+        };
+        if grid.mode() != mode {
+            return;
+        }
+
+        if delta_y < 0.0 && grid.is_scrolled_to_top() {
+            self.imp().overview_revealer.set_reveal_child(true);
+        } else if delta_y > 0.0 {
+            self.imp().overview_revealer.set_reveal_child(false);
+        }
+    }
+
+    fn hide_overview_after_leaving_top(&self) {
+        let should_hide = self
+            .current_grid()
+            .is_none_or(|grid| !grid.is_scrolled_to_top());
+        if should_hide {
+            self.imp().overview_revealer.set_reveal_child(false);
+        }
     }
 
     fn sync_active_grid_rebuilds(&self) {

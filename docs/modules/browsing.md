@@ -125,12 +125,19 @@ entry lets the user restrict matching to file names only, dates only, or both
 (the default). The selected field is stored as `SearchField` (`All`, `Name`,
 `Date`) and passed through `MediaQuery` to the DB layer.
 
-Next to Search, a collapsed overview disclosure reveals a compact glass card
-above the grid. It shows authoritative full-library photo and video counts from
-`MediaRepository`, never the bounded GTK seed length, plus the persisted
-provider-neutral synchronization state. While expanded, the card refreshes on
-a short timer so startup scans and WebDAV lifecycle changes become visible;
-collapsing it removes the timer and restores the grid's full height.
+Below the fixed upper-left date range, a compact pull-down overview shows
+authoritative full-library photo and video counts from `MediaRepository`, never
+the bounded GTK seed length, plus the persisted provider-neutral
+synchronization state. It is hidden on initial Photos load even though the grid
+starts at its first row. Once already at that row, an additional upward scroll
+(or touch pull-down) reveals it; scrolling down into media hides it again. It
+uses no disclosure button. The centered, backgroundless count uses compact
+13pt semibold type and the icon-led sync line uses quieter 11pt type. Data keeps
+refreshing on a short timer so the surface is current when revealed. The
+`Running` state replaces the static status glyph with a rotating 18 px activity
+indicator whose full rotation takes two seconds; leaving `Running` stops it and
+restores the appropriate paused, completed, failed, ready, or unconfigured
+icon.
 
 When the **Date** field is selected, the search entry provides automatic date
 formatting: typing digits auto-inserts "/" separators (e.g., typing "20251001"
@@ -287,8 +294,9 @@ than `GtkPopover`, so they render through the same page-overlay path as the
 Year/Month/Day selector. Keep button-triggered popovers separate from this
 right-click menu path.
 
-The Photos grid's visible date-range label is anchored 12 px from the grid's
-upper-left. It is refreshed as soon as authoritative metadata lands (without
+The Photos grid's visible date-range label is anchored 12 px from the Photos
+page's upper-left, above the pull-down overview and grid. It is refreshed as
+soon as authoritative metadata lands (without
 waiting for a scroll), when the active Year/Month/Day grid changes, and on
 viewport resize or scroll. It remains visible and does not fade after scrolling
 stops. The range covers the top and bottom visible media slots and is displayed

@@ -652,6 +652,23 @@ fn library_stats_text_is_larger_than_auxiliary_tile_text() {
     );
 }
 
+#[test]
+fn photos_overview_uses_compact_typography() {
+    let css = build_css(true);
+    assert!(
+        css.contains(
+            ".photos-overview-count {\n  color: @window_fg_color;\n  font-size: 13pt;\n  font-weight: 600;"
+        ),
+        "the pull-down Photos count should stay compact and below heading scale"
+    );
+    assert!(
+        css.contains(
+            ".photos-overview-sync-row {\n  color: alpha(@window_fg_color, 0.68);\n  font-size: 11pt;"
+        ),
+        "sync status should remain visually quieter than the media count"
+    );
+}
+
 /// Liquid Glass mode keeps the dramatic GTK-supported material signatures:
 /// bright raised top highlights and the heavy floating shadow. Also
 /// confirms the shared BASE rules are present.

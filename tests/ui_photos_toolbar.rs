@@ -69,14 +69,12 @@ fn photos_header_uses_glass_toolbar_classes() {
         "search_btn should use the dedicated circular search-button class"
     );
     assert!(
-        imp.overview_toggle
-            .get()
-            .has_css_class("glass-toolbar-button"),
-        "overview_toggle should use the shared glass toolbar material"
+        !imp.overview_revealer.get().reveals_child(),
+        "the library overview should stay hidden until the user pulls beyond the grid top"
     );
     assert!(
-        !imp.overview_revealer.get().reveals_child(),
-        "the library overview should be collapsed by default"
+        !imp.overview_panel.get().has_css_class("glass-base"),
+        "the pull-down library overview should be a lightweight text surface, not a glass card"
     );
 
     // favorite_btn is a smart toggle: it reuses the viewer's red-heart hook

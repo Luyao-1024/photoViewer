@@ -271,6 +271,10 @@ mod imp {
         pub is_multi_select_mode: Cell<bool>,
         pub on_selection_changed: OnceCell<Rc<dyn Fn()>>,
         pub on_view_changed: OnceCell<Rc<dyn Fn()>>,
+        /// Reports vertical scroll intent even when the adjustment is already
+        /// at its upper edge. Photos uses this to reveal its pull-down
+        /// overview only after the user scrolls beyond the first grid row.
+        pub on_scroll_intent: OnceCell<Rc<dyn Fn(f64)>>,
         pub(super) factory_cells: RefCell<Vec<FactoryCell>>,
         pub metadata_counts: RefCell<Option<HashMap<SectionKey, u32>>>,
         /// Day-granularity index used by the Photos date-range overlay. It is
@@ -323,6 +327,7 @@ mod imp {
                 is_multi_select_mode: Cell::new(false),
                 on_selection_changed: OnceCell::new(),
                 on_view_changed: OnceCell::new(),
+                on_scroll_intent: OnceCell::new(),
                 factory_cells: RefCell::new(Vec::new()),
                 metadata_counts: RefCell::new(None),
                 visible_date_layout: RefCell::new(None),
@@ -599,6 +604,18 @@ impl VirtualMediaGrid {
             self.imp().on_view_changed.set(Rc::new(f)).is_ok(),
             "VirtualMediaGrid::connect_view_changed called more than once"
         );
+    }
+
+    pub fn connect_scroll_intent<F: Fn(f64) + 'static>(&self, f: F) {
+        assert!(
+            self.imp().on_scroll_intent.set(Rc::new(f)).is_ok(),
+            "VirtualMediaGrid::connect_scroll_intent called more than once"
+        );
+    }
+
+    pub fn is_scrolled_to_top(&self) -> bool {
+        let adjustment = self.imp().scroller.get().vadjustment();
+        adjustment.value() <= adjustment.lower() + 0.5
     }
 
     pub fn scroll_fraction(&self) -> f64 {
@@ -1132,6 +1149,36 @@ impl VirtualMediaGrid {
                 }
             });
 
+        // Capture the user's direction before GtkScrolledWindow changes its
+        // adjustment. At the upper edge a negative delta has no adjustment
+        // change, but Photos still needs that extra pull to reveal its
+        // overview. Propagate so native scrolling remains untouched.
+        let scroll_controller =
+            gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = self.downgrade();
+        scroll_controller.connect_scroll(move |_, _, delta_y| {
+            if let Some(grid) = weak.upgrade() {
+                grid.notify_scroll_intent(delta_y);
+            }
+            glib::Propagation::Proceed
+        });
+        self.imp().scroller.get().add_controller(scroll_controller);
+
+        // Touch/kinetic overscroll may not produce a wheel delta. Treat a top
+        // edge overshoot as the same reveal intent.
+        let weak = self.downgrade();
+        self.imp()
+            .scroller
+            .get()
+            .connect_edge_overshot(move |_, position| {
+                if position == gtk::PositionType::Top {
+                    if let Some(grid) = weak.upgrade() {
+                        grid.notify_scroll_intent(-1.0);
+                    }
+                }
+            });
+
         // `value-changed` does not fire when the viewport height changes but
         // its scroll position stays at zero. The visible date coverage still
         // changes in that case, including immediately after first allocation.
@@ -1501,6 +1548,12 @@ impl VirtualMediaGrid {
     fn notify_view_changed(&self) {
         if let Some(callback) = self.imp().on_view_changed.get() {
             callback();
+        }
+    }
+
+    fn notify_scroll_intent(&self, delta_y: f64) {
+        if let Some(callback) = self.imp().on_scroll_intent.get() {
+            callback(delta_y);
         }
     }
 

@@ -42,13 +42,6 @@ template $PhotosPage : Adw.NavigationPage {
       }
 
       [start]
-      Gtk.ToggleButton overview_toggle {
-        icon-name: "pan-down-symbolic";
-        tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "round-search-button"];
-      }
-
-      [start]
       Gtk.Revealer select_all_revealer {
         transition-type: slide_right;
         reveal-child: false;
@@ -111,41 +104,67 @@ template $PhotosPage : Adw.NavigationPage {
       }
     }
 
+    Gtk.Revealer scroll_date_revealer {
+      transition-type: crossfade;
+      transition-duration: 200;
+      reveal-child: false;
+      margin-start: 12;
+      margin-top: 12;
+      margin-bottom: 8;
+      halign: start;
+      can-target: false;
+
+      Gtk.Label scroll_date_label {
+        css-classes: ["scroll-date-label"];
+      }
+    }
+
     Gtk.Revealer overview_revealer {
       transition-type: slide_down;
       transition-duration: 220;
       reveal-child: false;
 
-      Gtk.Box overview_card {
+      Gtk.Box overview_panel {
         orientation: vertical;
-        spacing: 12;
-        margin-start: 12;
-        margin-end: 12;
-        margin-bottom: 12;
-        css-classes: ["photos-overview", "glass-base"];
+        spacing: 8;
+        margin-bottom: 14;
+        hexpand: true;
+        css-classes: ["photos-overview"];
 
         Gtk.Label overview_count_label {
           label: "";
-          halign: start;
-          xalign: 0;
+          halign: center;
+          xalign: 0.5;
           css-classes: ["photos-overview-count"];
         }
 
         Gtk.Box overview_sync_row {
           orientation: horizontal;
-          spacing: 10;
-          halign: start;
+          spacing: 8;
+          halign: center;
           css-classes: ["photos-overview-sync-row"];
 
-          Gtk.Image overview_sync_icon {
-            icon-name: "folder-remote-symbolic";
-            pixel-size: 20;
+          Gtk.Overlay overview_sync_icon_host {
+            width-request: 18;
+            height-request: 18;
+
+            child: Gtk.Image overview_sync_icon {
+              icon-name: "folder-remote-symbolic";
+              pixel-size: 18;
+            };
+
+            [overlay]
+            Gtk.DrawingArea overview_sync_spinner {
+              visible: false;
+              width-request: 18;
+              height-request: 18;
+            }
           }
 
           Gtk.Label overview_sync_label {
             label: "";
-            halign: start;
-            xalign: 0;
+            halign: center;
+            xalign: 0.5;
             wrap: true;
           }
         }
@@ -173,23 +192,6 @@ template $PhotosPage : Adw.NavigationPage {
         margin-bottom: 24;
       }
 
-      [overlay]
-      Gtk.Revealer scroll_date_revealer {
-        transition-type: crossfade;
-        transition-duration: 200;
-        reveal-child: false;
-        // Date context remains in one predictable place while the grid scrolls.
-        halign: start;
-        valign: start;
-        margin-start: 12;
-        margin-top: 12;
-        // Click-through: never steal pointer events from tiles.
-        can-target: false;
-
-        Gtk.Label scroll_date_label {
-          css-classes: ["scroll-date-label"];
-        }
-      }
     }
   };
 }

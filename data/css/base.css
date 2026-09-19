@@ -920,18 +920,12 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   font-weight: 500;
 }
 
-/* Collapsible Photos overview: full-library counts plus persisted sync state.
-   Material comes from .glass-base so Liquid Glass and plain modes stay in
-   lockstep; this selector owns only layout and typography. */
-.photos-overview {
-  padding: 18px 20px;
-  border-radius: 18px;
-}
-
+/* Always-visible Photos overview: a quiet, centered information surface like
+   the mobile reference, without a separate card competing with the grid. */
 .photos-overview-count {
   color: @window_fg_color;
-  font-size: 17pt;
-  font-weight: 700;
+  font-size: 13pt;
+  font-weight: 600;
 }
 
 .photos-overview-sync-row {

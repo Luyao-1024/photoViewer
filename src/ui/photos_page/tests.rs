@@ -56,7 +56,7 @@ fn sample_new_item(name: &str, ts: i64) -> crate::core::media::NewMediaItem {
 }
 
 #[gtk::test]
-fn photos_overview_expands_with_full_counts_and_sync_status() {
+fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("photos");
@@ -93,15 +93,20 @@ fn photos_overview_expands_with_full_counts_and_sync_status() {
         pool.clone(),
         tmp.path().join("thumbs"),
     ));
-    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "visible.png")));
+    let page = PhotosPage::new(media_list, loader);
     page.set_db_pool(pool);
 
     assert!(
         !page.imp().overview_revealer.get().reveals_child(),
-        "the Photos overview should stay collapsed until requested"
+        "loading Photos at the first image should not reveal the library overview"
     );
-    page.imp().overview_toggle.get().set_active(true);
-    assert!(page.imp().overview_revealer.get().reveals_child());
+    page.handle_overview_scroll_intent(GroupBy::Day, -1.0);
+    assert!(
+        page.imp().overview_revealer.get().reveals_child(),
+        "an additional upward scroll at the top should reveal the overview"
+    );
 
     let context = glib::MainContext::default();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -123,8 +128,49 @@ fn photos_overview_expands_with_full_counts_and_sync_status() {
         sync_overview_text(crate::core::sync::SyncOverviewStatus::Paused)
     );
 
-    page.imp().overview_toggle.get().set_active(false);
-    assert!(!page.imp().overview_revealer.get().reveals_child());
+    page.handle_overview_scroll_intent(GroupBy::Day, 1.0);
+    assert!(
+        !page.imp().overview_revealer.get().reveals_child(),
+        "scrolling down into the media grid should hide the overview"
+    );
+}
+
+#[gtk::test]
+fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-spinner.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    page.apply_overview_snapshot(PhotosOverviewSnapshot {
+        photos: 2,
+        videos: 1,
+        sync: SyncOverview {
+            status: SyncOverviewStatus::Running,
+            job_count: 1,
+        },
+    });
+
+    let imp = page.imp();
+    assert!(
+        imp.overview_sync_running.get(),
+        "the Running sync status should animate the slow spinner"
+    );
+    assert!(
+        imp.overview_sync_spinner.get().is_visible() && !imp.overview_sync_icon.get().is_visible(),
+        "the visible spinner should replace the static icon while synchronization is running"
+    );
+
+    page.apply_overview_sync_icon(SyncOverviewStatus::Completed);
+    assert!(
+        !imp.overview_sync_running.get(),
+        "the spinner should stop once synchronization is no longer running"
+    );
+    assert!(
+        !imp.overview_sync_spinner.get().is_visible() && imp.overview_sync_icon.get().is_visible(),
+        "completed synchronization should restore the static status icon"
+    );
 }
 
 #[gtk::test]

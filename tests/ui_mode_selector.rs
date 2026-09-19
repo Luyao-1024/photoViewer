@@ -190,12 +190,12 @@ fn mode_selector_integration_suite() {
     let overlay = stack_parent
         .downcast::<gtk::Overlay>()
         .expect("parent already asserted to be GtkOverlay");
-    // Walk overlay children and confirm view_stack, mode_selector, and the
-    // scroll-date pill revealer are all reachable as siblings under it.
+    // Walk overlay children and confirm only view_stack and mode_selector are
+    // siblings. The scroll-date label belongs above the pull-down overview at
+    // page level so it remains the first, upper-left information row.
     let stack_widget = stack.upcast::<gtk::Widget>();
     let sel_widget = sel4.clone().upcast::<gtk::Widget>();
     let scroll_date_revealer = page.imp().scroll_date_revealer.get();
-    let revealer_widget = scroll_date_revealer.clone().upcast::<gtk::Widget>();
     let overlay_children: Vec<gtk::Widget> = {
         let mut kids = Vec::new();
         let mut next = overlay.first_child();
@@ -214,8 +214,10 @@ fn mode_selector_integration_suite() {
         "overlay should contain mode_selector as a sibling of view_stack"
     );
     assert!(
-        overlay_children.contains(&revealer_widget),
-        "overlay should contain scroll_date_revealer as a sibling of view_stack"
+        scroll_date_revealer
+            .parent()
+            .is_some_and(|parent| parent.is::<gtk::Box>()),
+        "scroll_date_revealer should live in the Photos page column above the overview"
     );
     assert!(
         !scroll_date_revealer.can_target(),
@@ -227,24 +229,19 @@ fn mode_selector_integration_suite() {
         "scroll date should stay anchored at the Photos grid's left edge instead of following the scrollbar"
     );
     assert_eq!(
-        scroll_date_revealer.valign(),
-        gtk::Align::Start,
-        "scroll date should stay anchored at the Photos grid's top edge instead of following the scrollbar"
-    );
-    assert_eq!(
         scroll_date_revealer.margin_start(),
         12,
-        "scroll date should sit close to the Photos grid's left edge"
+        "scroll date should sit close to the Photos page's left edge"
     );
     assert_eq!(
         scroll_date_revealer.margin_top(),
         12,
-        "scroll date should sit close to the Photos grid's top edge"
+        "scroll date should sit close to the Photos page's top edge"
     );
     assert_eq!(
         overlay_children.len(),
-        3,
-        "overlay should have exactly 3 children (view_stack + mode_selector + scroll_date_revealer)"
+        2,
+        "overlay should have exactly 2 children (view_stack + mode_selector)"
     );
 
     // 3. ModeSelector does not claim grid space — no vexpand / hexpand.

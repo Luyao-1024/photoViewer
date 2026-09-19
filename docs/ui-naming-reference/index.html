@@ -50,7 +50,6 @@
       <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=photos" data-props="根浏览页；与当前相册详情共享 crossfade 浏览栈；header + Gtk.Stack 三套 Photos-only VirtualMediaGrid + 悬浮 ModeSelector。Photos 始终使用 GtkGridView，没有 FlowBox 回退开关。" data-source="data/ui/window.blp · data/ui/photos-page.blp · src/ui/photos_page.rs">
         <div class="headerbar hotspot" tabindex="0" data-ui="photos-header" data-name="照片页顶栏" data-impl="Adw.HeaderBar header_bar .glass-header" data-props="搜索常驻；多选后 reveal 全选、退出、多选批量动作。">
           <button class="button round hotspot" tabindex="0" data-ui="search-button" data-name="搜索按钮" data-impl="Gtk.Button search_btn .round-search-button" data-props="push SearchPage；图标 system-search-symbolic。">⌕</button>
-          <button class="button round hotspot" tabindex="0" data-ui="photos-overview-toggle" data-name="图库概览下拉按钮" data-impl="Gtk.ToggleButton overview_toggle .glass-toolbar-button" data-props="默认收起；点击展开/收起首页图库概览，箭头在 pan-down / pan-up 之间切换。">⌄</button>
           <button class="button hotspot" tabindex="0" data-ui="select-all-button" data-name="全选按钮" data-impl="Gtk.Revealer select_all_revealer → Gtk.Button select_all_btn" data-props="只在多选模式显示；文本在 全选 / 取消全选 间切换。">全选</button>
           <span class="header-title">照片</span>
           <button class="button hotspot" tabindex="0" data-ui="add-to-album-button" data-name="加入相册" data-impl="Gtk.Button add_to_album_btn" data-props="多选批量动作；always-on glass。">＋</button>
@@ -58,7 +57,7 @@
           <button class="button danger hotspot" tabindex="0" data-ui="delete-to-trash-button" data-name="移到回收站" data-impl="Gtk.Button delete_to_trash_btn .glass-toolbar-danger" data-props="多选批量动作；移动到 trash backend。">⌫</button>
         </div>
 
-        <div class="pref-row hotspot" tabindex="0" data-ui="photos-overview-card" data-name="图库概览卡片" data-impl="Gtk.Revealer overview_revealer → Gtk.Box overview_card .photos-overview.glass-base" data-props="仅在下拉展开时占据网格上方空间；显示全库照片/视频真实计数与 provider-neutral WebDAV 状态，展开期间每 2 秒刷新。"><span>1,032 张照片 · 216 个视频</span><span>同步已暂停</span></div>
+        <div class="pref-row hotspot" tabindex="0" data-ui="photos-overview" data-name="下拉图库概览" data-impl="Gtk.Revealer overview_revealer → Gtk.Box overview_panel .photos-overview；Gtk.Overlay overview_sync_icon_host → Gtk.Image overview_sync_icon + Gtk.DrawingArea overview_sync_spinner" data-props="首页初始隐藏；网格已在第一行时继续向上滚动或触摸下拉才显示，向下浏览时收起；无按钮、无卡片背景。居中显示 13pt 全库照片/视频真实计数与 11pt provider-neutral WebDAV 状态，每 2 秒刷新；Running 状态显示两秒一圈的慢速旋转指示器，其余状态停止动画并切回静态图标。"><span>1,032 张照片 · 216 个视频</span><span>同步已暂停</span></div>
 
         <div class="grid-page hotspot" tabindex="0" data-ui="media-grid-surface" data-name="媒体网格区域" data-impl="$VirtualMediaGrid → Gtk.ScrolledWindow scroller → Gtk.GridView grid" data-props="GtkGridView 直接作为 scroller child，使用可复用 SquareTile、加载 slot 和非交互 filler slot；不插入 GtkViewport 或 GtkFlowBox；右侧滚动条属于 scroller。" data-source="data/ui/virtual-media-grid.blp · src/ui/virtual_media_grid.rs">
           <p class="stats-line hotspot" tabindex="0" data-ui="virtual-grid-section-boundary" data-name="虚拟日期边界" data-impl="VirtualGridLayoutIndex filler slots" data-props="没有实体日期标题；确定性 filler slot 让日期段从新行开始，悬浮日期气泡提供当前日期上下文。">2026 · 七月</p>
@@ -87,7 +86,7 @@
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
-        <div class="scroll-date-label hotspot" tabindex="0" data-ui="scroll-date-label" data-name="可见日期范围提示" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .scroll-date-label" data-props="固定在照片网格左上角、距边缘 12px 的白色粗体日期范围；权威元数据到达后立即显示并持续显示，不会在停止滚动后淡出。由 VirtualGridLayoutIndex 的可见媒体偏移映射到权威的逐日索引，不读已实现 tile，拖过未加载范围也正确；不受年/月/日视图分组影响。视口只含一天时仅显示该日期，跨多天时显示起止范围。无可见背景、边框或阴影；Liquid Glass 仅在紧贴文字的范围内模糊背景，plain 模式保持透明。库元数据未加载或空库时隐藏；can-target:false 点击穿透；仅 Photos 页。">2026年7月10日 – 2026年7月12日</div>
+        <div class="scroll-date-label hotspot" tabindex="0" data-ui="scroll-date-label" data-name="可见日期范围提示" data-impl="Gtk.Revealer scroll_date_revealer → Gtk.Label scroll_date_label .scroll-date-label" data-props="固定在照片页顶端左上角、位于下拉图库概览之前并距左边缘 12px；权威元数据到达后立即显示并持续显示，不会在停止滚动后淡出。由 VirtualGridLayoutIndex 的可见媒体偏移映射到权威的逐日索引，不读已实现 tile，拖过未加载范围也正确；不受年/月/日视图分组影响。视口只含一天时仅显示该日期，跨多天时显示起止范围。无可见背景、边框或阴影；Liquid Glass 仅在紧贴文字的范围内模糊背景，plain 模式保持透明。库元数据未加载或空库时隐藏；can-target:false；仅 Photos 页。">2026年7月10日 – 2026年7月12日</div>
       </main>
     </div>
   </section>

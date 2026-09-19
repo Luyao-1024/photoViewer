@@ -142,9 +142,8 @@ The shared `.glass-toolbar-button` material is **always-on** by default — phot
 
 - `.viewer-chrome .glass-toolbar-button` + `.viewer-overlay-nav-btn` — the viewer header actions and the bottom-right prev/next arrows, floating over a full-bleed photo.
 - `.sidebar-settings-button` — the sidebar footer settings button (`preferences-system-symbolic`), floating over the sidebar surface.
-- `.round-search-button` — the compact circular header actions floating over
-  content: the search buttons in the Photos and album-detail headers, and the
-  Photos overview disclosure toggle beside Search.
+- `.round-search-button` — the compact circular search actions floating over
+  content in the Photos and album-detail headers.
 
 Each scope gets its own bare-at-rest reset plus a hover/focus material rule in **both** `LIQUID_GLASS_MATERIAL_CSS` and `PLAIN_GLASS_MATERIAL_CSS`. Add new hover-only buttons by introducing a unique class and mirroring these two rules; do not loosen the shared `.glass-toolbar-button` rule, which other headers depend on being always-on.
 
