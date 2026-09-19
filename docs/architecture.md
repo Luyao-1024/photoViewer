@@ -6,9 +6,9 @@ Photo Viewer is a GNOME desktop photo manager built with Rust, GTK4, and Libadwa
 
 | Layer | Path | Responsibility |
 |---|---|---|
-| Core | `src/core/` | Database, filesystem scanning, media model, metadata, thumbnails, albums, trash, preferences, edit pipeline |
+| Core | `src/core/` | Database, filesystem scanning, media model, metadata, thumbnails, albums, trash, preferences, edit pipeline, provider-neutral synchronization (`sync/`) |
 | UI | `src/ui/` | GTK widgets, pages, templates, CSS providers, navigation wiring |
-| Platform | `src/platform/` | XDG and desktop integration |
+| Platform | `src/platform/` | XDG and desktop integration, including Secret Service synchronization credentials |
 | Templates | `data/ui/` | Blueprint source templates for GTK composite widgets |
 
 `src/core/` should stay free of UI widget ownership. The edit module is the main exception-like boundary because it returns `image::DynamicImage` values and uses `glib::ParamValue` for operation parameters.
@@ -18,6 +18,11 @@ Photo Viewer is a GNOME desktop photo manager built with Rust, GTK4, and Libadwa
 `src/app.rs::build_app` creates a multi-thread Tokio runtime and enters it for the process lifetime. GTK still owns the main loop, but thumbnail workers and scanner work use Tokio blocking tasks. Do not remove this runtime integration without replacing every async/blocking call path that depends on it.
 
 GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().spawn_local`, then injects shared state such as `DbPool` and `Arc<ThumbnailLoader>` into the main window and pages.
+
+The WebDAV sync engine (`src/core/sync/`) runs on the same Tokio runtime as an
+in-process service: network I/O stays off the GTK thread, and every sync state
+commit goes through the single `DbActor` connection owner. See
+[`modules/storage.md`](modules/storage.md) "Bidirectional Synchronization".
 
 ## Navigation
 

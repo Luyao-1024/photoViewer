@@ -25,7 +25,7 @@ This is the human entry point for project documentation. Agents should start fro
 
 | Module | Scope |
 |---|---|
-| [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails |
+| [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails, provider-neutral WebDAV sync |
 | [`modules/browsing.md`](modules/browsing.md) | Photos page, Year/Month/Day grouping, thumbnail grids, mode selector |
 | [`modules/viewer.md`](modules/viewer.md) | Viewer page, image/video playback, overlay controls, thumbnail strip, details/editor panels |
 | [`modules/albums-trash.md`](modules/albums-trash.md) | Albums, album detail, sidebar album management, trash restore/delete flows |

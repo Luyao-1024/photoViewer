@@ -29,7 +29,9 @@ Key implementation locations:
 | Viewer | `data/ui/viewer-page.blp`, `src/ui/viewer_page.rs` |
 | Editor panel | `data/ui/editor-panel.blp`, `src/ui/editor_panel.rs` |
 | Album detail | `data/ui/album-detail-page.blp`, `src/ui/album_detail_page.rs` |
+| Search | `data/ui/search-page.blp`, `src/ui/search_page.rs` |
 | Trash | `data/ui/trash-page.blp`, `src/ui/trash_page.rs` |
+| Settings dialog | `src/ui/window/settings.rs` |
 | Keyboard routing | `src/ui/keyboard/`, [`keyboard.md`](keyboard.md) |
 | Shared material | `src/ui/grid_css.rs`, `docs/modules/ui-liquid-glass.md` |
 
@@ -118,7 +120,7 @@ Design intent:
 - A second circular disclosure button beside Search expands the library
   overview. The overview is collapsed by default and reveals one bounded
   `.glass-base` card above the grid: a prominent full-library photo/video count
-  and a quieter icon-led WebDAV status line. Counts come from the database, not
+  and a quieter icon-led sync status line. Counts come from the database, not
   the current virtual-grid window. Collapsing the card returns its height to the
   media grid.
 - The batch-action toolbar is split across the header: select-all (text label,
@@ -315,24 +317,43 @@ hide which backend is active when system trash and app trash can both exist.
 
 ## Settings
 
-Settings is reached from the sidebar footer gear button and currently owns user-facing visual
-preferences such as the Liquid Glass toggle. It opens as a popup dialog; while
-the dialog is visible, the gallery content behind it is lightly dimmed so the
-modal layer reads clearly above the library without forcing a full-window blur
-during the dialog animation.
+Settings is reached from the sidebar footer gear button and opens as a popup
+dialog. It owns the quiet preference groups (language, appearance, video
+playback, Day grid columns, thumbnail speed), bounded management groups for
+scan folders, trash backend, and WebDAV synchronization, and the combined
+cache/data cleanup action. While the dialog is visible, the gallery content
+behind it is lightly dimmed so the modal layer reads clearly above the library
+without forcing a full-window blur during the dialog animation.
 
 Design intent:
 
 - Settings should be quiet and preference-oriented, using standard Libadwaita
-  rows and switches.
+  rows and switches. Operational groups (scan folders, trash migration,
+  cache/data cleanup, sync management) stay as bounded management surfaces
+  inside the same dialog rather than becoming a separate administrative page.
 - The Liquid Glass setting changes the visual material live. It should affect
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
-- Settings should not become a general-purpose page for operational actions
-  such as scan, restore, or album management unless the information architecture
-  is revisited.
+- The WebDAV Sync group gates the new-connection form behind a disabled,
+  collapsed `AdwExpanderRow`. Enabling it expands the server fields, disabling
+  it folds them again, and the switch is reset to disabled each time the
+  dialog opens. Existing job rows live outside that form, so the presentation
+  switch never pauses an already configured task.
+- Each sync job row shows its local ↔ remote mapping with its paused/error
+  state and Pause/Resume plus Sync Now actions. Its collapsed album checklist
+  is editable only while the job is paused; checking a physical folder album
+  enables uploads for that album while every remote album stays in download
+  scope.
+- Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
+  Both. Executing a choice re-checks both recorded versions; if either side
+  changed, the stale selection is rejected and a fresh reconciliation is
+  required. See [`storage.md`](storage.md) "Bidirectional Synchronization"
+  for the behavior contracts behind this group.
+- Buttons inside the Settings dialog use always-on glass
+  (`.glass-toolbar-button`), consistent with the toolbar-button rule for
+  dedicated sub-window surfaces.
 - Thumbnail generation speed belongs in Settings as a quiet storage/runtime
   preference. It should stay a simple tiered control for slow, normal
   (default), fast, and fastest background generation rather than exposing raw
