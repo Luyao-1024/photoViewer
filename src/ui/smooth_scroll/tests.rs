@@ -272,6 +272,74 @@ fn eased_burst_accumulates_exact_notch_sum() {
 }
 
 #[gtk::test]
+fn up_and_down_notches_are_mirror_symmetric() {
+    let (window, scroller) = build_scrollable_window(4000);
+    let page_size = wait_for_scrollable_allocation(&scroller);
+    let step = wheel_step_for_page(page_size);
+    let adjustment = scroller.vadjustment();
+
+    // Start deep enough that neither adjustment bound can interfere.
+    let origin = 1500.0;
+    adjustment.set_value(origin);
+
+    let smooth = SmoothScroller::new(&scroller);
+
+    // Record the per-frame values of a single downward notch.
+    smooth.handle_wheel_delta(1.0);
+    let mut down_curve = Vec::new();
+    let mut frame_time_us: i64 = 1_000_000;
+    for _ in 0..600 {
+        if let glib::ControlFlow::Break = smooth.glide_frame(&scroller, frame_time_us) {
+            break;
+        }
+        down_curve.push(adjustment.value());
+        frame_time_us += FRAME_STEP_US;
+    }
+    assert!(
+        down_curve.len() > 2,
+        "a notch must animate over several frames"
+    );
+    assert!(
+        (adjustment.value() - (origin + step)).abs() <= 0.5,
+        "a down notch must land one step below the origin: value={}",
+        adjustment.value()
+    );
+
+    // A single upward notch from the landing position must mirror the down
+    // curve frame for frame: value(t) = 2*origin + step - down_curve(t).
+    adjustment.set_value(origin + step);
+    smooth.handle_wheel_delta(-1.0);
+    let mut frame_time_us: i64 = 1_000_000;
+    let mut frames = 0;
+    for _ in 0..600 {
+        if let glib::ControlFlow::Break = smooth.glide_frame(&scroller, frame_time_us) {
+            break;
+        }
+        let mirrored = 2.0 * origin + step - down_curve[frames];
+        assert!(
+            (adjustment.value() - mirrored).abs() < 1e-6,
+            "up frame {} must mirror the down curve: value={} mirrored={}",
+            frames,
+            adjustment.value(),
+            mirrored
+        );
+        frames += 1;
+        frame_time_us += FRAME_STEP_US;
+    }
+    assert_eq!(
+        frames,
+        down_curve.len(),
+        "both directions must need the same number of frames"
+    );
+    assert!(
+        (adjustment.value() - origin).abs() <= 0.5,
+        "an up notch must land one step above its start: value={}",
+        adjustment.value()
+    );
+    window.close();
+}
+
+#[gtk::test]
 fn momentum_burst_carries_beyond_notch_sum() {
     // Taller content than the other fixtures: a 5-notch momentum burst can
     // carry thousands of pixels and must not hit the adjustment edge.
