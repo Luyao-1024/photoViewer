@@ -113,23 +113,27 @@ fn accumulated_target_clamps_to_adjustment_bounds() {
 }
 
 #[test]
-fn approach_value_moves_toward_target_and_lands_on_it() {
-    assert_eq!(approach_value(120.0, 320.0, 0.0, 110.0), 120.0);
-    assert!((approach_value(120.0, 320.0, 1.0e9, 110.0) - 320.0).abs() < 1e-6);
-    // dt = tau * ln(2) covers half the remaining distance.
-    let half = approach_value(120.0, 320.0, 110.0 * 2f64.ln(), 110.0);
-    assert!((half - 220.0).abs() < 1e-9);
+fn eased_scroll_value_matches_vscode_ease_out_cubic() {
+    assert_eq!(eased_scroll_value(120.0, 320.0, 0.0), 120.0);
+    // Lands exactly on the target at completion.
+    assert_eq!(eased_scroll_value(120.0, 320.0, 1.0), 320.0);
+    // Progress is clamped, so overshooting time still snaps to the target.
+    assert_eq!(eased_scroll_value(120.0, 320.0, 2.0), 320.0);
+    assert_eq!(eased_scroll_value(120.0, 320.0, -1.0), 120.0);
+    // Ease-out cubic at the midpoint covers 1 - (1 - 0.5)^3 = 0.875.
+    let mid = eased_scroll_value(120.0, 320.0, 0.5);
+    assert!((mid - 295.0).abs() < 1e-9);
 
     let mut previous = 120.0;
-    for step in 1..=6 {
-        let next = approach_value(120.0, 320.0, f64::from(step) * 20.0, 110.0);
-        assert!(next > previous, "approach must be monotone");
+    for step in 1..=5 {
+        let next = eased_scroll_value(120.0, 320.0, f64::from(step) * 0.2);
+        assert!(next > previous, "the ease must be monotone");
         previous = next;
     }
 
     // Works when the target lies below the current value.
-    let downward = approach_value(320.0, 120.0, 40.0, 110.0);
-    assert!(downward < 320.0 && downward > 120.0);
+    let downward = eased_scroll_value(320.0, 120.0, 0.5);
+    assert!((downward - 145.0).abs() < 1e-9);
 }
 
 #[test]
@@ -230,21 +234,30 @@ fn momentum_notch_glides_one_detent_step_and_rests() {
 }
 
 #[gtk::test]
-fn chaser_burst_accumulates_exact_notch_sum() {
+fn eased_burst_accumulates_exact_notch_sum() {
     let (window, scroller) = build_scrollable_window(2000);
     let page_size = wait_for_scrollable_allocation(&scroller);
     let step = wheel_step_for_page(page_size);
 
     let smooth = SmoothScroller::new(&scroller);
-    smooth.set_glide_tau_ms(60.0);
     smooth.handle_wheel_delta(1.0);
+    // The head start makes the very first frame move: at 10ms of a 125ms
+    // window the ease already covers ~22% of the distance.
+    assert!(matches!(
+        smooth.glide_frame(&scroller, 1_000_000),
+        glib::ControlFlow::Continue
+    ));
+    assert!(
+        scroller.vadjustment().value() > 1.0,
+        "the first frame must show movement, not a dead frame"
+    );
     smooth.handle_wheel_delta(1.0);
 
     let expected = 2.0 * step;
     let rested = run_glide_to_rest(&smooth, &scroller, 600);
     assert!(
         (rested - expected).abs() <= 0.5,
-        "chaser bursts land exactly on the notch sum: rested={} expected={}",
+        "eased bursts land exactly on the notch sum: rested={} expected={}",
         rested,
         expected
     );

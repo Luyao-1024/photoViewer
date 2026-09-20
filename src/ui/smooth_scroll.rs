@@ -1,23 +1,26 @@
-//! macOS-style smooth wheel scrolling for `GtkScrolledWindow` surfaces.
+//! VS Code-style smooth wheel scrolling for `GtkScrolledWindow` surfaces.
 //!
 //! GTK4 scrolls one wheel notch by teleporting the vertical adjustment: the
 //! `kinetic-scrolling` property only applies to touch input, and discrete
 //! wheel events (`GDK_SCROLL_UNIT_WHEEL`) get no easing at all. Discrete
 //! notches are therefore consumed on a capture-phase scroll controller and
-//! animated frame by frame instead: scrolling starts immediately, and
-//! decelerates to rest after the last notch. Touchpad (surface-unit) deltas
-//! are never consumed — GTK already gives them native smooth handling.
+//! animated instead. Touchpad (surface-unit) deltas are never consumed — GTK
+//! already gives them native smooth handling.
 //!
 //! Two interchangeable glide models:
 //!
-//! * *Chaser* (`set_glide_tau_ms`): frame-rate-independent exponential
-//!   approach toward an accumulated target. N notches always land exactly N
-//!   detent steps away — faithful to native distances, but rapid flicks carry
-//!   no farther than their notch sum.
-//! * *Momentum* (`set_momentum_glide`): notches inject velocity and the decay
-//!   time constant grows with speed, so fast flicks fly far beyond their
-//!   notch sum — the macOS momentum behavior. Single notches still travel
-//!   exactly one detent step.
+//! * *Eased* (default): a faithful port of VS Code's editor smooth
+//!   scrolling. Each notch extends an accumulated target, and the viewport
+//!   eases from its current position to that target over a fixed
+//!   [`WHEEL_GLIDE_DURATION_MS`] window with an ease-out cubic curve,
+//!   re-anchored at the live position whenever a new notch arrives mid-flight
+//!   (VS Code's `Scrollable.combine`). It lands exactly on the target, keeps
+//!   the total distance at exactly N detent steps for N notches, and adds no
+//!   momentum — every notch is fully delivered within the fixed window, which
+//!   is what makes VS Code feel connected and lossless.
+//! * *Momentum* (`set_momentum_glide`): macOS-style velocity stacking, where
+//!   fast flicks carry far beyond their notch sum. Kept as a tuning
+//!   alternative; it is not the shipped feel.
 //!
 //! The per-notch distance always matches GTK's own detent step (`pow(
 //! page_size, 2/3)` in gtkscrolledwindow.c), so enabling this changes only
@@ -53,10 +56,15 @@ fn wheel_glide_enabled() -> bool {
 /// replaces.
 const WHEEL_PAGE_STEP_EXPONENT: f64 = 2.0 / 3.0;
 
-/// Default exponential-approach time constant (ms). Higher values give a
-/// longer, floatier glide; 110ms puts a single notch at ~95% of its distance
-/// after ~330ms.
-const WHEEL_GLIDE_TAU_MS: f64 = 110.0;
+/// Eased glide: fixed animation window (ms), matching VS Code's editor
+/// smooth scrolling duration. Every notch is fully delivered within this
+/// window — no floaty tail, no lost distance.
+const WHEEL_GLIDE_DURATION_MS: f64 = 125.0;
+
+/// Eased glide: the animation pretends it began this many ms earlier, so the
+/// first frame already shows movement (VS Code's responsiveness trick in
+/// `SmoothScrollingOperation.start`).
+const WHEEL_GLIDE_HEAD_START_MS: f64 = 10.0;
 
 /// Remaining distance (px) at which the glide snaps to rest.
 const WHEEL_GLIDE_SETTLE_PX: f64 = 0.5;
@@ -66,12 +74,8 @@ const WHEEL_GLIDE_SETTLE_PX: f64 = 0.5;
 const SELF_WRITE_EPSILON_PX: f64 = 0.5;
 
 /// Cap for one animation frame's dt (ms) so an unmapped pause or a jank spike
-/// cannot teleport the viewport straight to the target.
+/// cannot teleport the viewport straight to the target (momentum mode).
 const MAX_GLIDE_FRAME_DT_MS: f64 = 100.0;
-
-/// Smallest accepted glide time constant (ms) in [`SmoothScroller::set_glide_tau_ms`],
-/// keeping the glide perceptible instead of degenerating into a teleport.
-const MIN_GLIDE_TAU_MS: f64 = 10.0;
 
 /// Momentum glide: decay time constant (ms) at low speed, where a single
 /// notch must still travel exactly one detent step and stop about as fast as
@@ -116,15 +120,15 @@ pub(crate) fn accumulated_wheel_target(
     (base_target + notch_delta * step_px).clamp(lower, max_value)
 }
 
-/// One frame-rate-independent exponential-approach step toward `target`.
-/// `dt = tau * ln(2)` covers half the remaining distance; a non-positive tau
-/// jumps straight to the target.
-pub(crate) fn approach_value(current: f64, target: f64, dt_ms: f64, tau_ms: f64) -> f64 {
-    if tau_ms <= 0.0 {
-        return target;
-    }
-    let alpha = 1.0 - (-dt_ms / tau_ms).exp();
-    current + (target - current) * alpha
+/// One eased-glide frame: VS Code's ease-out cubic (`1 - (1 - t)^3`) between
+/// `start` and `target` at normalized `progress`. The same curve as the
+/// filmstrip's `compute_thumb_animated_scroll_value`; kept local because the
+/// filmstrip helper is `pub(super)`-scoped and pinned by a source-structure
+/// test.
+pub(crate) fn eased_scroll_value(start: f64, target: f64, progress: f64) -> f64 {
+    let t = progress.clamp(0.0, 1.0);
+    let eased = 1.0 - (1.0 - t).powi(3);
+    start + (target - start) * eased
 }
 
 /// Single-notch velocity impulse (px/s) for a viewport of `page_size` pixels.
@@ -152,23 +156,29 @@ pub(crate) fn momentum_tau_ms(speed_px_s: f64, impulse_px_s: f64, slow_decay_ms:
 /// Which glide model drives the tick loop.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum GlideMode {
-    /// Distance-conserving exponential chase toward an accumulated target.
-    /// N notches always land exactly N detent steps away — but rapid flicks
-    /// therefore carry no farther than their notch sum.
-    Chaser,
-    /// macOS-style momentum: notches inject velocity, and the decay time
-    /// constant grows with speed, so fast flicks fly far beyond their notch
-    /// sum while single notches still travel exactly one step. This is the
-    /// shipped default; its slow decay is tuned to web-browser smooth
-    /// scrolling rather than the floatier macOS feel.
+    /// VS Code-style eased retargeting: a fixed-duration ease-out cubic from
+    /// the current position to an accumulated target, re-anchored on every
+    /// mid-flight notch, landing exactly on the target. N notches always
+    /// deliver exactly N detent steps, fully, within the fixed window. This
+    /// is the shipped default.
     #[default]
+    Eased,
+    /// macOS-style momentum: notches inject velocity and the decay time
+    /// constant grows with speed, so fast flicks fly far beyond their notch
+    /// sum. Available as a tuning alternative via `set_momentum_glide`.
     Momentum,
 }
 
 struct GlideState {
-    /// Accumulated, bounds-clamped destination of the current wheel burst
-    /// (chaser mode).
+    /// Accumulated, bounds-clamped destination of the current wheel burst.
     target: f64,
+    /// Viewport value when the current eased animation was anchored
+    /// (eased mode).
+    eased_start: f64,
+    /// Frame clock (us) when the eased animation was anchored; 0 = the next
+    /// tick must re-anchor from the live position (fresh burst or mid-flight
+    /// retarget).
+    animation_start_us: i64,
     /// Current glide velocity (px/s, signed) in momentum mode.
     velocity: f64,
     /// Velocity impulse (px/s) of the most recent notch, normalizing the
@@ -181,7 +191,8 @@ struct GlideState {
     /// drag, keyboard focus scrolling, layout restores, touchpad passthrough)
     /// are detectable in `value-changed` and cancel the glide.
     last_written: f64,
-    /// Frame time (us) of the previous animation frame; 0 = first frame.
+    /// Frame time (us) of the previous animation frame; 0 = first frame
+    /// (momentum mode).
     last_frame_time_us: i64,
 }
 
@@ -191,7 +202,6 @@ struct Inner {
     scroller: glib::WeakRef<gtk::ScrolledWindow>,
     state: RefCell<GlideState>,
     mode: Cell<GlideMode>,
-    glide_tau_ms: Cell<f64>,
     momentum_slow_tau_ms: Cell<f64>,
 }
 
@@ -219,6 +229,8 @@ impl SmoothScroller {
             scroller: scroller.downgrade(),
             state: RefCell::new(GlideState {
                 target: start_value,
+                eased_start: start_value,
+                animation_start_us: 0,
                 velocity: 0.0,
                 notch_impulse: 0.0,
                 animating: false,
@@ -226,7 +238,6 @@ impl SmoothScroller {
                 last_frame_time_us: 0,
             }),
             mode: Cell::new(GlideMode::default()),
-            glide_tau_ms: Cell::new(WHEEL_GLIDE_TAU_MS),
             momentum_slow_tau_ms: Cell::new(MOMENTUM_SLOW_TAU_MS),
         });
 
@@ -291,20 +302,11 @@ impl SmoothScroller {
         }
     }
 
-    /// Tune the chaser glide's exponential time constant (ms). Higher values
-    /// make the deceleration tail longer and floatier. Switches to (or stays
-    /// in) chaser mode; an in-flight glide is cancelled so the new parameters
-    /// apply to the next notch.
-    pub fn set_glide_tau_ms(&self, tau_ms: f64) {
-        self.reset_glide();
-        self.inner.mode.set(GlideMode::Chaser);
-        self.inner.glide_tau_ms.set(tau_ms.max(MIN_GLIDE_TAU_MS));
-    }
-
     /// Switch to the macOS-style momentum glide. `slow_decay_ms` is the decay
     /// time constant once flick speed builds up: higher values make fast
-    /// flicks carry farther. Single notches always travel exactly one detent
-    /// step, as in chaser mode. An in-flight glide is cancelled.
+    /// flicks carry farther. The shipped default is the VS Code-style eased
+    /// glide instead, which always delivers exactly the notch sum; an
+    /// in-flight glide is cancelled.
     pub fn set_momentum_glide(&self, slow_decay_ms: f64) {
         self.reset_glide();
         self.inner
@@ -336,7 +338,7 @@ impl SmoothScroller {
         let max_value = adjustment.upper() - adjustment.page_size();
         let mut state = self.inner.state.borrow_mut();
         match self.inner.mode.get() {
-            GlideMode::Chaser => {
+            GlideMode::Eased => {
                 let base = if state.animating {
                     state.target
                 } else {
@@ -352,7 +354,11 @@ impl SmoothScroller {
                     state.target
                 );
                 if state.animating {
-                    // The running tick loop picks up the new target next frame.
+                    // Mid-flight retarget: VS Code's `Scrollable.combine`
+                    // restarts the ease from the live position with a fresh
+                    // duration; the running tick re-anchors on its next
+                    // frame.
+                    state.animation_start_us = 0;
                     return;
                 }
                 if (state.target - adjustment.value()).abs() <= WHEEL_GLIDE_SETTLE_PX {
@@ -383,6 +389,7 @@ impl SmoothScroller {
         if !state.animating {
             state.animating = true;
             state.last_frame_time_us = 0;
+            state.animation_start_us = 0;
             drop(state);
             self.spawn_glide_tick();
         }
@@ -434,9 +441,22 @@ impl SmoothScroller {
         let current = adjustment.value();
 
         match self.inner.mode.get() {
-            GlideMode::Chaser => {
+            GlideMode::Eased => {
                 state.target = state.target.clamp(lower, max_value);
-                if (state.target - current).abs() <= WHEEL_GLIDE_SETTLE_PX {
+                if state.animation_start_us == 0 {
+                    // Anchor a fresh ease from the live position, pretending
+                    // it began one head-start earlier so the very first frame
+                    // already shows movement (VS Code's trick).
+                    state.animation_start_us =
+                        frame_time_us - (WHEEL_GLIDE_HEAD_START_MS * 1000.0) as i64;
+                    state.eased_start = current;
+                }
+                let progress = ((frame_time_us - state.animation_start_us).max(0) as f64
+                    / (WHEEL_GLIDE_DURATION_MS * 1000.0))
+                    .clamp(0.0, 1.0);
+                if progress >= 1.0 || (state.target - current).abs() <= WHEEL_GLIDE_SETTLE_PX {
+                    // Land exactly on the target, as VS Code does on
+                    // completion.
                     state.last_written = state.target;
                     let target = state.target;
                     state.animating = false;
@@ -450,8 +470,7 @@ impl SmoothScroller {
                     return glib::ControlFlow::Break;
                 }
 
-                let next =
-                    approach_value(current, state.target, dt_ms, self.inner.glide_tau_ms.get());
+                let next = eased_scroll_value(state.eased_start, state.target, progress);
                 state.last_written = next;
                 drop(state);
                 adjustment.set_value(next);

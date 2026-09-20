@@ -143,11 +143,15 @@ icon.
 Discrete mouse-wheel notches (`GDK_SCROLL_UNIT_WHEEL`) are smooth-scrolled by
 `SmoothScroller` (`src/ui/smooth_scroll.rs`): the grid's capture-phase scroll
 controller consumes them (`Propagation::Stop`) and animates the vertical
-adjustment with a momentum glide whose per-notch distance matches GTK's own
-detent step (`pow(page_size, 2/3)`), so a lone notch travels exactly as far as
-native scrolling — only the motion between notches changes. Rapid flicks stack
-velocity and decay over a longer constant, carrying beyond the raw notch sum
-(tuned to web-browser smooth scrolling, not the floatier macOS glide).
+adjustment with a VS Code-style eased glide. Each notch extends an
+accumulated target, and the viewport eases from its current position to that
+target over a fixed 125ms ease-out cubic window, re-anchored on every
+mid-flight notch and landing exactly on the target — so N notches always
+deliver exactly N detent steps, fully, within the fixed window, with no
+momentum and no lost distance. The per-notch step matches GTK's own detent
+distance (`pow(page_size, 2/3)`), so a lone notch travels exactly as far as
+native scrolling — only the motion between notches changes. (A macOS-style
+momentum model remains available in the module via `set_momentum_glide`.)
 Touchpad (surface-unit) deltas are never consumed. The scroll-intent notify
 fires before the propagation decision, so a wheel-up at the top edge still
 reveals the pull-down overview even though the event is consumed. Any
