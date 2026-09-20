@@ -22,9 +22,10 @@
 //!   fast flicks carry far beyond their notch sum. Kept as a tuning
 //!   alternative; it is not the shipped feel.
 //!
-//! The per-notch distance always matches GTK's own detent step (`pow(
-//! page_size, 2/3)` in gtkscrolledwindow.c), so enabling this changes only
-//! the motion between notches, not how far a lone notch travels.
+//! The per-notch distance follows GTK's own detent step (`pow(page_size,
+//! 2/3)` in gtkscrolledwindow.c) with a 125px floor — VS Code's effective
+//! per-notch distance on Linux — so a lone notch never travels less than the
+//! floor.
 
 use gtk4 as gtk;
 use gtk4::gdk;
@@ -50,11 +51,15 @@ fn wheel_glide_enabled() -> bool {
     WHEEL_GLIDE_ENABLED.load(Ordering::SeqCst)
 }
 
-/// Exponent GTK uses for its per-notch wheel step
-/// (`get_wheel_detent_scroll_step` in gtkscrolledwindow.c). Matching it keeps
-/// the smoothed per-notch distance identical to the native teleport it
-/// replaces.
+/// Exponent GTK uses for its native per-notch wheel step
+/// (`get_wheel_detent_scroll_step` in gtkscrolledwindow.c).
 const WHEEL_PAGE_STEP_EXPONENT: f64 = 2.0 / 3.0;
+
+/// Minimum per-notch wheel travel (px). GTK's viewport-scaled detent step
+/// feels undersized next to VS Code (~125px effective per notch on Linux),
+/// so the step never drops below this floor; viewports whose scaled step
+/// already exceeds it keep the native distance.
+const WHEEL_MIN_NOTCH_SCROLL_PX: f64 = 125.0;
 
 /// Eased glide: fixed animation window (ms), matching VS Code's editor
 /// smooth scrolling duration. Every notch is fully delivered within this
@@ -100,10 +105,14 @@ const MOMENTUM_SLOW_GAIN_END: f64 = 3.0;
 /// Momentum glide: stop integrating once the speed falls below this (px/s).
 const MOMENTUM_MIN_VELOCITY_PX_S: f64 = 15.0;
 
-/// Per-notch wheel travel for a viewport of `page_size` pixels. Mirrors GTK's
-/// own detent step so smoothing does not change the distance.
+/// Per-notch wheel travel for a viewport of `page_size` pixels. Follows
+/// GTK's own detent step (`pow(page_size, 2/3)`), floored at
+/// [`WHEEL_MIN_NOTCH_SCROLL_PX`] so a notch never feels undersized at
+/// typical window sizes.
 pub(crate) fn wheel_step_for_page(page_size: f64) -> f64 {
-    page_size.powf(WHEEL_PAGE_STEP_EXPONENT)
+    page_size
+        .powf(WHEEL_PAGE_STEP_EXPONENT)
+        .max(WHEEL_MIN_NOTCH_SCROLL_PX)
 }
 
 /// One burst notch, accumulated onto `base_target` and clamped to the

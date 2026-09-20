@@ -66,12 +66,18 @@ fn run_glide_to_rest(
 }
 
 #[test]
-fn wheel_step_matches_gtk_detent_formula() {
-    assert_eq!(wheel_step_for_page(0.0), 0.0);
-    // Exact cubes keep the expected powers exact: 10^3 -> 10^2, 20^3 -> 20^2.
-    assert!((wheel_step_for_page(1000.0) - 100.0).abs() < 1e-9);
+fn wheel_step_follows_gtk_detent_formula_with_vscode_floor() {
+    // Small viewports clamp to the 125px floor.
+    assert_eq!(wheel_step_for_page(0.0), WHEEL_MIN_NOTCH_SCROLL_PX);
+    assert_eq!(wheel_step_for_page(400.0), WHEEL_MIN_NOTCH_SCROLL_PX);
+    assert_eq!(wheel_step_for_page(1000.0), WHEEL_MIN_NOTCH_SCROLL_PX);
+    // Large viewports keep GTK's scaled step once it exceeds the floor.
+    // Exact cubes keep the expected powers exact: 20^3 -> 20^2.
     assert!((wheel_step_for_page(8000.0) - 400.0).abs() < 1e-9);
-    assert!(wheel_step_for_page(500.0) < wheel_step_for_page(501.0));
+    // The crossover sits at page = 125^1.5 ≈ 1397.5.
+    assert!(wheel_step_for_page(1500.0) > WHEEL_MIN_NOTCH_SCROLL_PX);
+    // Monotone above the floor (below it every page clamps to the same 125).
+    assert!(wheel_step_for_page(8000.0) < wheel_step_for_page(8800.0));
 }
 
 #[test]
@@ -138,7 +144,8 @@ fn eased_scroll_value_matches_vscode_ease_out_cubic() {
 
 #[test]
 fn momentum_impulse_travels_one_detent_step() {
-    for page_size in [400.0, 700.0, 1200.0] {
+    // 8000 crosses the 125px floor so the scaled branch is covered too.
+    for page_size in [400.0, 700.0, 1200.0, 8000.0] {
         let distance = momentum_impulse_for_page(page_size) * (MOMENTUM_FAST_TAU_MS / 1000.0);
         assert!(
             (distance - wheel_step_for_page(page_size)).abs() < 1e-9,
@@ -266,7 +273,9 @@ fn eased_burst_accumulates_exact_notch_sum() {
 
 #[gtk::test]
 fn momentum_burst_carries_beyond_notch_sum() {
-    let (window, scroller) = build_scrollable_window(2000);
+    // Taller content than the other fixtures: a 5-notch momentum burst can
+    // carry thousands of pixels and must not hit the adjustment edge.
+    let (window, scroller) = build_scrollable_window(6000);
     let page_size = wait_for_scrollable_allocation(&scroller);
     let step = wheel_step_for_page(page_size);
 
