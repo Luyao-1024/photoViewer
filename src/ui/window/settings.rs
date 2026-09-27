@@ -645,14 +645,50 @@ impl MainWindow {
         sync_toggle_row.add_suffix(&sync_switch);
         group.add(&sync_toggle_row);
 
+        let pool = self.imp().pool.borrow().clone();
+        let actor = self.imp().db_actor.borrow().clone();
+        let saved_jobs = match (pool.as_ref(), actor.as_ref()) {
+            (Some(pool), Some(actor)) => SyncStore::with_actor(pool.clone(), actor.clone())
+                .list_jobs()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let creating_task = std::rc::Rc::new(std::cell::Cell::new(saved_jobs.is_empty()));
+
         let connection = adw::ExpanderRow::builder()
-            .title(tr("setting.sync.new_task"))
-            .subtitle(tr("setting.sync.new_task_description"))
-            .expanded(false)
+            .title(if saved_jobs.is_empty() {
+                tr("setting.sync.new_task")
+            } else {
+                tr("setting.sync.configured_task")
+            })
+            .subtitle(if saved_jobs.is_empty() {
+                tr("setting.sync.new_task_description")
+            } else {
+                tr("setting.sync.configured_task_description")
+            })
+            .expanded(!saved_jobs.is_empty())
             .build();
         connection.add_css_class("settings-action-row");
-        connection.set_sensitive(sync_enabled.get());
         group.add(&connection);
+
+        let task_picker = if saved_jobs.is_empty() {
+            None
+        } else {
+            let mut options = saved_jobs
+                .iter()
+                .map(|job| format!("{} ↔ {}", job.local_root.display(), job.remote_root))
+                .collect::<Vec<_>>();
+            options.push(tr("setting.sync.add_new_task"));
+            let option_refs = options.iter().map(String::as_str).collect::<Vec<_>>();
+            let picker = gtk::DropDown::from_strings(&option_refs);
+            let picker_row = adw::ActionRow::new();
+            picker_row.add_css_class("settings-action-row");
+            picker_row.set_title(&tr("setting.sync.select_task"));
+            picker_row.set_activatable(false);
+            picker_row.add_suffix(&picker);
+            connection.add_row(&picker_row);
+            Some(picker)
+        };
 
         let endpoint = adw::EntryRow::builder()
             .title(tr("setting.sync.endpoint"))
@@ -684,8 +720,25 @@ impl MainWindow {
             .title(tr("setting.sync.remote_root"))
             .build();
         remote_root.add_css_class("settings-action-row");
-        remote_root.set_text("PhotoViewer");
         connection.add_row(&remote_root);
+
+        if let Some(job) = saved_jobs.first() {
+            endpoint.set_text(&job.endpoint);
+            username.set_text(&job.username);
+            password.set_text("********");
+            local_root.set_text(&job.local_root.display().to_string());
+            remote_root.set_text(&job.remote_root);
+        } else {
+            endpoint.set_text("https://");
+            local_root.set_text(&config::pictures_dir().to_string_lossy());
+            remote_root.set_text("PhotoViewer");
+        }
+        let show_saved_job = !saved_jobs.is_empty();
+        endpoint.set_editable(!show_saved_job && sync_enabled.get());
+        username.set_editable(!show_saved_job && sync_enabled.get());
+        password.set_editable(!show_saved_job && sync_enabled.get());
+        local_root.set_editable(!show_saved_job && sync_enabled.get());
+        remote_root.set_editable(!show_saved_job && sync_enabled.get());
 
         let connect_row = adw::ActionRow::new();
         connect_row.add_css_class("settings-action-row");
@@ -696,16 +749,69 @@ impl MainWindow {
         connect_button.add_css_class("glass-toolbar-button");
         connect_button.add_css_class("glass-toolbar-suggested");
         connect_button.set_valign(gtk::Align::Center);
-        connect_button.set_sensitive(sync_enabled.get());
+        connect_button.set_sensitive(sync_enabled.get() && creating_task.get());
         connect_row.add_suffix(&connect_button);
         connection.add_row(&connect_row);
+        connect_row.set_visible(creating_task.get());
 
-        let pool = self.imp().pool.borrow().clone();
-        let actor = self.imp().db_actor.borrow().clone();
+        if let Some(picker) = task_picker {
+            let saved_jobs_for_picker = saved_jobs.clone();
+            let creating_task_for_picker = creating_task.clone();
+            let sync_enabled_for_picker = sync_enabled.clone();
+            let connection_for_picker = connection.clone();
+            let connect_row_for_picker = connect_row.clone();
+            let connect_button_for_picker = connect_button.clone();
+            let endpoint_for_picker = endpoint.clone();
+            let username_for_picker = username.clone();
+            let password_for_picker = password.clone();
+            let local_root_for_picker = local_root.clone();
+            let remote_root_for_picker = remote_root.clone();
+            picker.connect_selected_notify(move |picker| {
+                let selected = picker.selected() as usize;
+                let selected_job = saved_jobs_for_picker.get(selected);
+                let adding_task = selected_job.is_none();
+                creating_task_for_picker.set(adding_task);
+
+                if let Some(job) = selected_job {
+                    endpoint_for_picker.set_text(&job.endpoint);
+                    username_for_picker.set_text(&job.username);
+                    password_for_picker.set_text("********");
+                    local_root_for_picker.set_text(&job.local_root.display().to_string());
+                    remote_root_for_picker.set_text(&job.remote_root);
+                    connection_for_picker.set_title(&tr("setting.sync.configured_task"));
+                    connection_for_picker
+                        .set_subtitle(&tr("setting.sync.configured_task_description"));
+                } else {
+                    endpoint_for_picker.set_text("https://");
+                    username_for_picker.set_text("");
+                    password_for_picker.set_text("");
+                    local_root_for_picker.set_text(&config::pictures_dir().to_string_lossy());
+                    remote_root_for_picker.set_text("PhotoViewer");
+                    connection_for_picker.set_title(&tr("setting.sync.new_task"));
+                    connection_for_picker.set_subtitle(&tr("setting.sync.new_task_description"));
+                }
+
+                let editable = adding_task && sync_enabled_for_picker.get();
+                endpoint_for_picker.set_editable(editable);
+                username_for_picker.set_editable(editable);
+                password_for_picker.set_editable(editable);
+                local_root_for_picker.set_editable(editable);
+                remote_root_for_picker.set_editable(editable);
+                connect_row_for_picker.set_visible(adding_task);
+                connect_button_for_picker.set_sensitive(editable);
+            });
+        }
+
         let parent_for_connect = parent.clone();
         let window_for_connect = self.downgrade();
+        let creating_task_for_connect = creating_task.clone();
+        let endpoint_for_connect = endpoint.clone();
+        let username_for_connect = username.clone();
+        let password_for_connect = password.clone();
+        let local_root_for_connect = local_root.clone();
+        let remote_root_for_connect = remote_root.clone();
         connect_button.connect_clicked(move |button| {
-            if !prefs::webdav_sync_enabled() {
+            if !creating_task_for_connect.get() || !prefs::webdav_sync_enabled() {
                 return;
             }
             let (Some(pool), Some(actor)) = (pool.clone(), actor.clone()) else {
@@ -715,11 +821,15 @@ impl MainWindow {
                 );
                 return;
             };
-            let endpoint_text = endpoint.text().trim().to_string();
-            let username_text = username.text().trim().to_string();
-            let password_text = password.text().to_string();
-            let local_text = local_root.text().trim().to_string();
-            let remote_text = remote_root.text().trim_matches('/').trim().to_string();
+            let endpoint_text = endpoint_for_connect.text().trim().to_string();
+            let username_text = username_for_connect.text().trim().to_string();
+            let password_text = password_for_connect.text().to_string();
+            let local_text = local_root_for_connect.text().trim().to_string();
+            let remote_text = remote_root_for_connect
+                .text()
+                .trim_matches('/')
+                .trim()
+                .to_string();
             if endpoint_text.is_empty()
                 || username_text.is_empty()
                 || password_text.is_empty()
@@ -751,6 +861,7 @@ impl MainWindow {
             let button = button.clone();
             let parent = parent_for_connect.clone();
             let window = window_for_connect.clone();
+            let creating_task_for_result = creating_task_for_connect.clone();
             let task = tokio::spawn(async move {
                 if !prefs::webdav_sync_enabled() {
                     return Err(crate::core::error::AppError::Backend(
@@ -789,7 +900,8 @@ impl MainWindow {
             });
             glib::spawn_future_local(async move {
                 let result = task.await;
-                button.set_sensitive(prefs::webdav_sync_enabled());
+                button
+                    .set_sensitive(prefs::webdav_sync_enabled() && creating_task_for_result.get());
                 button.set_label(&tr("setting.sync.connect"));
                 match result {
                     Ok(Ok(summary)) => {
@@ -1127,8 +1239,14 @@ impl MainWindow {
             }
         }
 
-        let connection_for_toggle = connection.clone();
         let connect_button_for_toggle = connect_button.clone();
+        let connect_row_for_toggle = connect_row.clone();
+        let endpoint_for_toggle = endpoint.clone();
+        let username_for_toggle = username.clone();
+        let password_for_toggle = password.clone();
+        let local_root_for_toggle = local_root.clone();
+        let remote_root_for_toggle = remote_root.clone();
+        let creating_task_for_toggle = creating_task.clone();
         let sync_enabled_for_toggle = sync_enabled.clone();
         let job_controls_for_toggle = job_controls.clone();
         let conflict_controls_for_toggle = conflict_controls.clone();
@@ -1155,8 +1273,14 @@ impl MainWindow {
             }
             sync_enabled_for_toggle.set(enabled);
             crate::core::sync::SyncService::notify_global_enabled(enabled);
-            connection_for_toggle.set_sensitive(enabled);
-            connect_button_for_toggle.set_sensitive(enabled);
+            let editable = enabled && creating_task_for_toggle.get();
+            endpoint_for_toggle.set_editable(editable);
+            username_for_toggle.set_editable(editable);
+            password_for_toggle.set_editable(editable);
+            local_root_for_toggle.set_editable(editable);
+            remote_root_for_toggle.set_editable(editable);
+            connect_row_for_toggle.set_visible(creating_task_for_toggle.get());
+            connect_button_for_toggle.set_sensitive(editable);
             for (row, pause, sync_now, paused, state_description) in
                 job_controls_for_toggle.borrow().iter()
             {

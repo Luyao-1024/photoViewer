@@ -350,13 +350,13 @@ fn webdav_connection_form_is_a_collapsible_task_creation_row() {
         crate::core::prefs::webdav_sync_enabled()
     );
     let row = find_expander_row(&page, &tr("setting.sync.new_task"))
-        .expect("settings should expose a WebDAV task creation expander");
+        .or_else(|| find_expander_row(&page, &tr("setting.sync.configured_task")))
+        .expect("settings should expose the WebDAV task fields");
 
     assert!(!row.shows_enable_switch());
-    assert!(!row.is_expanded());
-    assert_eq!(
+    assert!(
         row.is_sensitive(),
-        crate::core::prefs::webdav_sync_enabled()
+        "saved settings should remain inspectable"
     );
 
     row.set_expanded(true);

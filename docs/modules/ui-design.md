@@ -346,10 +346,12 @@ Design intent:
   starts sync only after complete server configuration is validated. Each
   existing job's Pause/Resume action remains a per-job control.
 - Each sync job row shows its local ↔ remote mapping with its paused/error
-  state and Pause/Resume plus Sync Now actions. Its collapsed album checklist
-  is editable only while the job is paused; checking a physical folder album
-  enables uploads for that album while every remote album stays in download
-  scope.
+  state and Pause/Resume plus Sync Now actions. The task selector reuses the
+  connection form fields to show saved server URL, username, local root, and
+  remote root; the password is represented by a fixed mask and is never read
+  back from the keyring for display. Its collapsed album checklist is editable
+  only while the job is paused; checking a physical folder album enables uploads
+  for that album while every remote album stays in download scope.
 - Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
   Both. Executing a choice re-checks both recorded versions; if either side
   changed, the stale selection is rejected and a fresh reconciliation is
