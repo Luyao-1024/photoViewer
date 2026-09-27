@@ -25,6 +25,7 @@ const LIQUID_GLASS_TRANSPARENCY_KEY: &str = "liquid_glass_transparency";
 const VIDEO_DEFAULT_MUTED_KEY: &str = "video_default_muted";
 const VIDEO_VOLUME_KEY: &str = "video_volume";
 const AUTO_PLAY_MOTION_PHOTO_KEY: &str = "auto_play_motion_photo";
+const WEBDAV_SYNC_ENABLED_KEY: &str = "webdav_sync_enabled";
 const CUSTOM_SCAN_ROOTS_KEY: &str = "custom_scan_roots";
 const EXCLUDED_SCAN_ROOTS_KEY: &str = "excluded_scan_roots";
 const TRASH_BACKEND_KEY: &str = "trash_backend";
@@ -36,6 +37,7 @@ const DEFAULT_LIQUID_GLASS_TRANSPARENCY: f64 = 0.0;
 const DEFAULT_VIDEO_MUTED: bool = true;
 const DEFAULT_VIDEO_VOLUME: f64 = 1.0;
 const DEFAULT_AUTO_PLAY_MOTION_PHOTO: bool = false;
+const DEFAULT_WEBDAV_SYNC_ENABLED: bool = false;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThemePreference {
@@ -276,6 +278,17 @@ fn read_auto_play_motion_photo_at(path: &Path) -> bool {
         .unwrap_or(DEFAULT_AUTO_PLAY_MOTION_PHOTO)
 }
 
+fn read_webdav_sync_enabled_at(path: &Path) -> bool {
+    let obj = read_object_at(path);
+    obj.get(WEBDAV_SYNC_ENABLED_KEY)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(DEFAULT_WEBDAV_SYNC_ENABLED)
+}
+
+fn write_webdav_sync_enabled_at(path: &Path, enabled: bool) -> Result<(), String> {
+    write_bool_at(path, WEBDAV_SYNC_ENABLED_KEY, enabled)
+}
+
 fn write_auto_play_motion_photo_at(path: &Path, enabled: bool) -> Result<(), String> {
     write_bool_at(path, AUTO_PLAY_MOTION_PHOTO_KEY, enabled)
 }
@@ -383,6 +396,17 @@ pub fn set_video_volume(volume: f64) -> Result<(), String> {
 /// Whether motion photos should auto-play their embedded video in the viewer.
 pub fn auto_play_motion_photo() -> bool {
     read_auto_play_motion_photo_at(&settings_path())
+}
+
+/// Whether WebDAV jobs may run. Defaults to off so synchronization requires
+/// an explicit opt-in.
+pub fn webdav_sync_enabled() -> bool {
+    read_webdav_sync_enabled_at(&settings_path())
+}
+
+/// Persist the global WebDAV synchronization switch.
+pub fn set_webdav_sync_enabled(enabled: bool) -> Result<(), String> {
+    write_webdav_sync_enabled_at(&settings_path(), enabled)
 }
 
 /// Persist the motion-photo auto-play preference.

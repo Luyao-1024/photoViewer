@@ -58,6 +58,20 @@ fn round_trip_true_and_false() {
 }
 
 #[test]
+fn webdav_sync_defaults_off_and_round_trips() {
+    let path = tmp_path("webdav-sync");
+    cleanup(&path);
+
+    assert!(!read_webdav_sync_enabled_at(&path));
+    write_webdav_sync_enabled_at(&path, true).unwrap();
+    assert!(read_webdav_sync_enabled_at(&path));
+    write_webdav_sync_enabled_at(&path, false).unwrap();
+    assert!(!read_webdav_sync_enabled_at(&path));
+
+    cleanup(&path);
+}
+
+#[test]
 fn defaults_when_key_absent_but_file_present() {
     let path = tmp_path("keymissing");
     cleanup(&path);

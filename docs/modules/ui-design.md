@@ -340,11 +340,11 @@ Design intent:
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
-- The WebDAV Sync group gates the new-connection form behind a disabled,
-  collapsed `AdwExpanderRow`. Enabling it expands the server fields, disabling
-  it folds them again, and the switch is reset to disabled each time the
-  dialog opens. Existing job rows live outside that form, so the presentation
-  switch never pauses an already configured task.
+- The WebDAV Sync group starts with a persisted, off-by-default master switch.
+  It gates startup, manual, and conflict-resolution sync for every task. The
+  “Add WebDAV Sync Task” form stays unavailable until that switch is on and
+  starts sync only after complete server configuration is validated. Each
+  existing job's Pause/Resume action remains a per-job control.
 - Each sync job row shows its local ↔ remote mapping with its paused/error
   state and Pause/Resume plus Sync Now actions. Its collapsed album checklist
   is editable only while the job is paused; checking a physical folder album
@@ -368,6 +368,9 @@ Design intent:
 - Settings content is wrapped in a bounded vertical scroller inside the dialog.
   Keep the dialog's requested height below common 800px windows so
   `AdwFloatingSheet` does not over-request during open/close animations.
+- Scrolling over the Liquid Glass transparency and Day grid column sliders
+  scrolls the Settings dialog; wheel input must not change either preference.
+  The sliders remain adjustable by dragging or keyboard input.
 - Settings that cannot apply live should show the shared restart-required
   confirmation after a successful save. Choosing yes relaunches the current
   executable and quits the current process; choosing no leaves the setting saved

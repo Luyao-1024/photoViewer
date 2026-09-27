@@ -117,7 +117,7 @@ fn overview_reports_persisted_job_lifecycle() {
     let store = SyncStore::new(pool.clone());
 
     assert_eq!(
-        store.overview().unwrap(),
+        store.overview_with_sync_enabled(true).unwrap(),
         SyncOverview {
             status: SyncOverviewStatus::NotConfigured,
             job_count: 0,
@@ -125,9 +125,20 @@ fn overview_reports_persisted_job_lifecycle() {
             conflict_images: 0,
         }
     );
+    assert_eq!(
+        store.overview_with_sync_enabled(false).unwrap().status,
+        SyncOverviewStatus::Disabled
+    );
 
     let job = store.create_job(&new_job(local)).unwrap();
-    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Ready);
+    assert_eq!(
+        store.overview_with_sync_enabled(false).unwrap().status,
+        SyncOverviewStatus::Disabled
+    );
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Ready
+    );
 
     store.mark_job_started(job.id).unwrap();
     {
@@ -139,23 +150,29 @@ fn overview_reports_persisted_job_lifecycle() {
         .unwrap();
     }
     assert_eq!(
-        store.overview().unwrap().status,
+        store.overview_with_sync_enabled(true).unwrap().status,
         SyncOverviewStatus::Running
     );
 
     store
         .mark_job_failed(job.id, "network unavailable")
         .unwrap();
-    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Failed);
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Failed
+    );
 
     store.mark_job_completed(job.id).unwrap();
     assert_eq!(
-        store.overview().unwrap().status,
+        store.overview_with_sync_enabled(true).unwrap().status,
         SyncOverviewStatus::Completed
     );
 
     store.set_job_paused(job.id, true).unwrap();
-    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Paused);
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Paused
+    );
 }
 
 #[test]
@@ -219,7 +236,7 @@ fn overview_counts_synced_media_and_open_image_conflicts() {
             Some("strong"),
         )
         .unwrap();
-    let overview = store.overview().unwrap();
+    let overview = store.overview_with_sync_enabled(true).unwrap();
     assert_eq!(overview.synced_items, 2);
     assert_eq!(overview.conflict_images, 1);
 }
@@ -267,5 +284,8 @@ fn overview_does_not_report_completion_with_blocked_uploads() {
         .set_task_state("pending-upload", "blocked", Some("locked"))
         .unwrap();
     store.mark_job_completed(job.id).unwrap();
-    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Failed);
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Failed
+    );
 }

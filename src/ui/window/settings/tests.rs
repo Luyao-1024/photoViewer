@@ -298,8 +298,38 @@ fn find_expander_row(widget: &gtk::Widget, title: &str) -> Option<adw::ExpanderR
     None
 }
 
+fn find_switch(widget: &gtk::Widget) -> Option<gtk::Switch> {
+    if let Some(switch) = widget.downcast_ref::<gtk::Switch>() {
+        return Some(switch.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        if let Some(switch) = find_switch(&current) {
+            return Some(switch);
+        }
+    }
+    None
+}
+
+fn find_action_row(widget: &gtk::Widget, title: &str) -> Option<adw::ActionRow> {
+    if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+        if row.title() == title {
+            return Some(row.clone());
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        if let Some(row) = find_action_row(&current, title) {
+            return Some(row);
+        }
+    }
+    None
+}
+
 #[gtk::test]
-fn webdav_connection_form_is_disabled_and_collapsed_until_enabled() {
+fn webdav_connection_form_is_a_collapsible_task_creation_row() {
     let _ = gtk::init();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.WindowWebDavSettings")
@@ -310,18 +340,36 @@ fn webdav_connection_form_is_disabled_and_collapsed_until_enabled() {
     let window = MainWindow::new(&app);
     let host = window.clone().upcast::<gtk::Widget>();
     let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
-    let row = find_expander_row(&page, &tr("setting.sync.enable"))
-        .expect("settings should expose a WebDAV enable expander");
+    let global_row = find_action_row(&page, &tr("setting.sync.global_enable"))
+        .expect("settings should expose a WebDAV master switch row");
+    let global_row_widget = global_row.upcast::<gtk::Widget>();
+    let global_switch =
+        find_switch(&global_row_widget).expect("WebDAV master switch row should contain a switch");
+    assert_eq!(
+        global_switch.is_active(),
+        crate::core::prefs::webdav_sync_enabled()
+    );
+    let row = find_expander_row(&page, &tr("setting.sync.new_task"))
+        .expect("settings should expose a WebDAV task creation expander");
 
-    assert!(row.shows_enable_switch());
-    assert!(!row.enables_expansion());
+    assert!(!row.shows_enable_switch());
     assert!(!row.is_expanded());
+    assert_eq!(
+        row.is_sensitive(),
+        crate::core::prefs::webdav_sync_enabled()
+    );
 
-    row.set_enable_expansion(true);
-    assert!(row.is_expanded(), "enabling WebDAV should reveal its form");
+    row.set_expanded(true);
+    assert!(
+        row.is_expanded(),
+        "expanding the row should reveal its form"
+    );
 
-    row.set_enable_expansion(false);
-    assert!(!row.is_expanded(), "disabling WebDAV should fold its form");
+    row.set_expanded(false);
+    assert!(
+        !row.is_expanded(),
+        "collapsing the row should hide its form"
+    );
 }
 
 #[gtk::test]

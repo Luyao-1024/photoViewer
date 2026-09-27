@@ -53,6 +53,7 @@ struct PhotosOverviewSnapshot {
 
 fn sync_overview_text(overview: SyncOverview) -> String {
     match overview.status {
+        SyncOverviewStatus::Disabled => String::new(),
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
         SyncOverviewStatus::Running => tr("photos.overview.sync.running"),
@@ -74,6 +75,7 @@ fn sync_overview_text(overview: SyncOverview) -> String {
 
 fn sync_overview_icon(status: SyncOverviewStatus) -> &'static str {
     match status {
+        SyncOverviewStatus::Disabled => "",
         SyncOverviewStatus::Paused => "media-playback-pause-symbolic",
         SyncOverviewStatus::Running => "emblem-synchronizing-symbolic",
         SyncOverviewStatus::Failed => "dialog-warning-symbolic",
@@ -139,6 +141,8 @@ mod imp {
         pub overview_panel: TemplateChild<gtk::Box>,
         #[template_child]
         pub overview_count_label: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub overview_sync_row: TemplateChild<gtk::Box>,
         #[template_child]
         pub overview_sync_icon_host: TemplateChild<gtk::Overlay>,
         #[template_child]
@@ -214,6 +218,7 @@ mod imp {
                 overview_revealer: TemplateChild::default(),
                 overview_panel: TemplateChild::default(),
                 overview_count_label: TemplateChild::default(),
+                overview_sync_row: TemplateChild::default(),
                 overview_sync_icon_host: TemplateChild::default(),
                 overview_sync_icon: TemplateChild::default(),
                 overview_sync_spinner: TemplateChild::default(),
@@ -334,10 +339,14 @@ impl PhotosPage {
             .overview_count_label
             .get()
             .set_label(&tr("photos.overview.loading"));
-        obj.imp()
-            .overview_sync_label
-            .get()
-            .set_label(&tr("photos.overview.loading"));
+        let sync_enabled = crate::core::prefs::webdav_sync_enabled();
+        obj.imp().overview_sync_row.get().set_visible(sync_enabled);
+        if sync_enabled {
+            obj.imp()
+                .overview_sync_label
+                .get()
+                .set_label(&tr("photos.overview.loading"));
+        }
         obj.setup_overview_sync_spinner();
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
@@ -875,6 +884,12 @@ impl PhotosPage {
             .overview_sync_label
             .get()
             .set_label(&sync_overview_text(snapshot.sync));
+        let sync_visible = snapshot.sync.status != SyncOverviewStatus::Disabled;
+        self.imp().overview_sync_row.get().set_visible(sync_visible);
+        if !sync_visible {
+            self.set_overview_sync_running(false);
+            return;
+        }
         self.apply_overview_sync_icon(snapshot.sync.status);
     }
 
@@ -970,6 +985,7 @@ impl PhotosPage {
             .get()
             .set_label(&unavailable);
         self.imp().overview_sync_label.get().set_label(&unavailable);
+        self.imp().overview_sync_row.get().set_visible(true);
         let imp = self.imp();
         self.set_overview_sync_running(false);
         imp.overview_sync_spinner.get().set_visible(false);

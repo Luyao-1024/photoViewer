@@ -22,6 +22,12 @@ static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
 static SCHEDULED_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+static SYNC_ENABLED_WATCH: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+
+fn sync_enabled_watch() -> &'static tokio::sync::watch::Sender<bool> {
+    SYNC_ENABLED_WATCH
+        .get_or_init(|| tokio::sync::watch::channel(crate::core::prefs::webdav_sync_enabled()).0)
+}
 
 struct ActiveJobGuard(i64);
 
@@ -104,6 +110,10 @@ pub struct SyncService {
 }
 
 impl SyncService {
+    pub fn notify_global_enabled(enabled: bool) {
+        sync_enabled_watch().send_replace(enabled);
+    }
+
     pub fn new(pool: crate::core::db::DbPool) -> Self {
         Self {
             store: SyncStore::new(pool.clone()),
@@ -130,6 +140,9 @@ impl SyncService {
     }
 
     pub fn start_periodic_saved_job(&self, job_id: i64) {
+        if !crate::core::prefs::webdav_sync_enabled() {
+            return;
+        }
         let scheduled = SCHEDULED_JOBS.get_or_init(|| Mutex::new(HashSet::new()));
         let Ok(mut scheduled) = scheduled.lock() else {
             tracing::warn!(job_id, "synchronization scheduler lock is poisoned");
@@ -143,7 +156,11 @@ impl SyncService {
         let service = self.clone();
         tokio::spawn(async move {
             let _scheduled = ScheduledJobGuard(job_id);
+            let mut enabled_updates = sync_enabled_watch().subscribe();
             loop {
+                if !crate::core::prefs::webdav_sync_enabled() {
+                    break;
+                }
                 match service.store.get_job(job_id) {
                     Ok(Some(job)) if !job.paused => {}
                     Ok(Some(_)) | Ok(None) => break,
@@ -155,12 +172,20 @@ impl SyncService {
                     tracing::warn!(job_id, "automatic synchronization failed: {error}");
                 }
                 let interval = 55 + job_id.unsigned_abs() % 11;
-                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
+                    changed = enabled_updates.changed() => {
+                        if changed.is_err() || !*enabled_updates.borrow() {
+                            break;
+                        }
+                    }
+                }
             }
         });
     }
 
     pub async fn run_job(&self, job_id: i64, credentials: SyncCredentials) -> Result<RunSummary> {
+        ensure_webdav_sync_enabled()?;
         let _active = ActiveJobGuard::acquire(job_id)?;
         let job = self
             .store
@@ -174,7 +199,7 @@ impl SyncService {
             WebDavProvider::new(&job.endpoint, job.username.clone(), credentials.password)
                 .map_err(provider_error)?,
         );
-        let result = self.run_with_provider(&job, provider).await;
+        let result = self.run_with_provider_inner(&job, provider, true).await;
         match &result {
             Ok(_) => self.store.mark_job_completed(job_id)?,
             Err(error) => self.store.mark_job_failed(job_id, &error.to_string())?,
@@ -183,6 +208,7 @@ impl SyncService {
     }
 
     pub async fn run_saved_job(&self, job_id: i64) -> Result<RunSummary> {
+        ensure_webdav_sync_enabled()?;
         let job = self
             .store
             .get_job(job_id)?
@@ -200,6 +226,7 @@ impl SyncService {
         conflict_id: i64,
         resolution: ConflictResolution,
     ) -> Result<()> {
+        ensure_webdav_sync_enabled()?;
         let conflict = self.store.get_open_conflict(conflict_id)?.ok_or_else(|| {
             AppError::Backend("synchronization conflict is no longer open".into())
         })?;
@@ -220,7 +247,7 @@ impl SyncService {
             .await
     }
 
-    pub async fn resolve_with_provider(
+    async fn resolve_with_provider(
         &self,
         job: &SyncJob,
         conflict: SyncConflict,
@@ -313,18 +340,37 @@ impl SyncService {
         }
     }
 
-    pub async fn run_with_provider(
+    #[cfg(test)]
+    async fn run_with_provider(
         &self,
         job: &SyncJob,
         provider: Arc<dyn SyncProvider>,
     ) -> Result<RunSummary> {
+        self.run_with_provider_inner(job, provider, false).await
+    }
+
+    async fn run_with_provider_inner(
+        &self,
+        job: &SyncJob,
+        provider: Arc<dyn SyncProvider>,
+        monitor_global_switch: bool,
+    ) -> Result<RunSummary> {
         provider.probe().await.map_err(provider_error)?;
+        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(RunSummary::default());
+        }
         provider
             .ensure_collection(job.remote_root.trim_matches('/'))
             .await
             .map_err(provider_error)?;
+        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(RunSummary::default());
+        }
         self.recover_unfinished_tasks(job, provider.as_ref())
             .await?;
+        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(RunSummary::default());
+        }
         let protected_uploads = self
             .store
             .unfinished_tasks(job.id)?
@@ -333,6 +379,9 @@ impl SyncService {
             .map(|task| task.relative_path)
             .collect::<BTreeSet<_>>();
         let remote_entries = discover_remote(provider.as_ref(), &job.remote_root).await?;
+        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(RunSummary::default());
+        }
         let upload_albums = self
             .store
             .upload_albums(job.id)?
@@ -356,6 +405,9 @@ impl SyncService {
 
         let mut summary = RunSummary::default();
         for relative_path in paths {
+            if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+                break;
+            }
             if protected_uploads.contains(&relative_path) {
                 continue;
             }
@@ -1475,6 +1527,16 @@ impl SyncService {
         std::io::copy(&mut source, &mut destination)?;
         destination.sync_all()?;
         Ok(target)
+    }
+}
+
+fn ensure_webdav_sync_enabled() -> Result<()> {
+    if crate::core::prefs::webdav_sync_enabled() {
+        Ok(())
+    } else {
+        Err(AppError::Backend(
+            "WebDAV synchronization is disabled in Settings".into(),
+        ))
     }
 }
 

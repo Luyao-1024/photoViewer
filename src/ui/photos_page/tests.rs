@@ -123,15 +123,21 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
             &[("photos", "2"), ("videos", "1")]
         )
     );
-    assert_eq!(
-        page.imp().overview_sync_label.get().label(),
-        sync_overview_text(SyncOverview {
-            status: SyncOverviewStatus::Paused,
-            job_count: 1,
-            synced_items: 0,
-            conflict_images: 0,
-        })
-    );
+    if crate::core::prefs::webdav_sync_enabled() {
+        assert_eq!(
+            page.imp().overview_sync_label.get().label(),
+            sync_overview_text(SyncOverview {
+                status: SyncOverviewStatus::Paused,
+                job_count: 1,
+                synced_items: 0,
+                conflict_images: 0,
+            })
+        );
+        assert!(page.imp().overview_sync_row.get().is_visible());
+    } else {
+        assert!(page.imp().overview_sync_label.get().label().is_empty());
+        assert!(!page.imp().overview_sync_row.get().is_visible());
+    }
 
     page.handle_overview_scroll_intent(GroupBy::Day, 1.0);
     assert!(
@@ -178,6 +184,30 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
         !imp.overview_sync_spinner.get().is_visible() && imp.overview_sync_icon.get().is_visible(),
         "completed synchronization should restore the static status icon"
     );
+}
+
+#[gtk::test]
+fn globally_disabled_sync_has_no_home_overview_hint() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-disabled.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    page.apply_overview_snapshot(PhotosOverviewSnapshot {
+        photos: 2,
+        videos: 1,
+        sync: SyncOverview {
+            status: SyncOverviewStatus::Disabled,
+            job_count: 1,
+            synced_items: 8,
+            conflict_images: 1,
+        },
+    });
+
+    assert!(!page.imp().overview_sync_row.get().is_visible());
+    assert!(page.imp().overview_sync_label.get().label().is_empty());
+    assert!(!page.imp().overview_sync_running.get());
 }
 
 #[test]

@@ -40,6 +40,7 @@ pub struct SyncJob {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncOverviewStatus {
+    Disabled,
     NotConfigured,
     Paused,
     Running,
@@ -262,6 +263,10 @@ impl SyncStore {
     /// Return the persisted, provider-neutral synchronization state used by
     /// compact status surfaces such as the Photos overview.
     pub fn overview(&self) -> Result<SyncOverview> {
+        self.overview_with_sync_enabled(crate::core::prefs::webdav_sync_enabled())
+    }
+
+    fn overview_with_sync_enabled(&self, sync_enabled: bool) -> Result<SyncOverview> {
         let conn = self.pool.get()?;
         let synced_items = conn.query_row(
             "SELECT COUNT(DISTINCT j.local_root || '/' || e.relative_path)
@@ -304,6 +309,14 @@ impl SyncStore {
         })?;
         let jobs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let job_count = jobs.len();
+        if !sync_enabled {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Disabled,
+                job_count,
+                synced_items,
+                conflict_images,
+            });
+        }
         if jobs.is_empty() {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::NotConfigured,

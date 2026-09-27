@@ -184,6 +184,7 @@ impl MainWindow {
 
         let transparency_scale =
             gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+        forward_scale_scroll_to_settings(&transparency_scale);
         transparency_scale.set_hexpand(true);
         transparency_scale.set_size_request(300, -1);
         transparency_scale.set_digits(0);
@@ -290,6 +291,7 @@ impl MainWindow {
             runtime_config::MAX_PHOTOS_GRID_COLUMNS as f64,
             1.0,
         );
+        forward_scale_scroll_to_settings(&columns_scale);
         columns_scale.set_hexpand(true);
         columns_scale.set_size_request(300, -1);
         columns_scale.set_digits(0);
@@ -630,17 +632,26 @@ impl MainWindow {
         group.set_description(Some(&tr("setting.section.sync_description")));
         group.add_css_class("settings-preferences-group");
 
+        let sync_enabled = std::rc::Rc::new(std::cell::Cell::new(prefs::webdav_sync_enabled()));
+        let sync_switch = gtk::Switch::builder()
+            .active(sync_enabled.get())
+            .valign(gtk::Align::Center)
+            .build();
+        let sync_toggle_row = adw::ActionRow::new();
+        sync_toggle_row.add_css_class("settings-action-row");
+        sync_toggle_row.set_title(&tr("setting.sync.global_enable"));
+        sync_toggle_row.set_subtitle(&tr("setting.sync.global_enable_description"));
+        sync_toggle_row.set_activatable_widget(Some(&sync_switch));
+        sync_toggle_row.add_suffix(&sync_switch);
+        group.add(&sync_toggle_row);
+
         let connection = adw::ExpanderRow::builder()
-            .title(tr("setting.sync.enable"))
-            .subtitle(tr("setting.sync.enable_description"))
-            .show_enable_switch(true)
-            .enable_expansion(false)
+            .title(tr("setting.sync.new_task"))
+            .subtitle(tr("setting.sync.new_task_description"))
             .expanded(false)
             .build();
         connection.add_css_class("settings-action-row");
-        connection.connect_enable_expansion_notify(|row| {
-            row.set_expanded(row.enables_expansion());
-        });
+        connection.set_sensitive(sync_enabled.get());
         group.add(&connection);
 
         let endpoint = adw::EntryRow::builder()
@@ -685,6 +696,7 @@ impl MainWindow {
         connect_button.add_css_class("glass-toolbar-button");
         connect_button.add_css_class("glass-toolbar-suggested");
         connect_button.set_valign(gtk::Align::Center);
+        connect_button.set_sensitive(sync_enabled.get());
         connect_row.add_suffix(&connect_button);
         connection.add_row(&connect_row);
 
@@ -693,6 +705,9 @@ impl MainWindow {
         let parent_for_connect = parent.clone();
         let window_for_connect = self.downgrade();
         connect_button.connect_clicked(move |button| {
+            if !prefs::webdav_sync_enabled() {
+                return;
+            }
             let (Some(pool), Some(actor)) = (pool.clone(), actor.clone()) else {
                 show_settings_error_dialog(
                     &parent_for_connect,
@@ -737,6 +752,11 @@ impl MainWindow {
             let parent = parent_for_connect.clone();
             let window = window_for_connect.clone();
             let task = tokio::spawn(async move {
+                if !prefs::webdav_sync_enabled() {
+                    return Err(crate::core::error::AppError::Backend(
+                        "WebDAV synchronization is disabled in Settings".into(),
+                    ));
+                }
                 let probe = crate::core::sync::webdav::WebDavProvider::new(
                     &new_job.endpoint,
                     new_job.username.clone(),
@@ -746,6 +766,11 @@ impl MainWindow {
                 crate::core::sync::SyncProvider::probe(&probe)
                     .await
                     .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?;
+                if !prefs::webdav_sync_enabled() {
+                    return Err(crate::core::error::AppError::Backend(
+                        "WebDAV synchronization is disabled in Settings".into(),
+                    ));
+                }
                 let reference = credential_ref.clone();
                 tokio::task::spawn_blocking(move || {
                     crate::platform::credentials::store(&reference, &password_text)
@@ -764,7 +789,7 @@ impl MainWindow {
             });
             glib::spawn_future_local(async move {
                 let result = task.await;
-                button.set_sensitive(true);
+                button.set_sensitive(prefs::webdav_sync_enabled());
                 button.set_label(&tr("setting.sync.connect"));
                 match result {
                     Ok(Ok(summary)) => {
@@ -796,6 +821,8 @@ impl MainWindow {
             });
         });
 
+        let job_controls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let conflict_controls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         if let (Some(pool), Some(actor)) = (
             self.imp().pool.borrow().clone(),
             self.imp().db_actor.borrow().clone(),
@@ -809,12 +836,17 @@ impl MainWindow {
                         job.local_root.display(),
                         job.remote_root
                     ));
-                    row.set_subtitle(&if job.paused {
+                    let state_description = if job.paused {
                         tr("setting.sync.status.paused")
                     } else if let Some(error) = &job.last_error {
                         trf("setting.sync.failed", &[("error", error)])
                     } else {
                         tr("setting.sync.status.ready")
+                    };
+                    row.set_subtitle(&if sync_enabled.get() {
+                        state_description.clone()
+                    } else {
+                        tr("setting.sync.status.globally_disabled")
                     });
                     row.set_activatable(false);
 
@@ -825,10 +857,11 @@ impl MainWindow {
                     });
                     pause.add_css_class("glass-toolbar-button");
                     pause.set_valign(gtk::Align::Center);
+                    pause.set_sensitive(!job.paused || sync_enabled.get());
                     let sync_now = gtk::Button::with_label(&tr("setting.sync.now"));
                     sync_now.add_css_class("glass-toolbar-button");
                     sync_now.set_valign(gtk::Align::Center);
-                    sync_now.set_sensitive(!job.paused);
+                    sync_now.set_sensitive(sync_enabled.get() && !job.paused);
                     row.add_suffix(&pause);
                     row.add_suffix(&sync_now);
                     group.add(&row);
@@ -921,26 +954,43 @@ impl MainWindow {
                     let job_id = job.id;
                     let initially_paused = job.paused;
                     let paused = std::rc::Rc::new(std::cell::Cell::new(initially_paused));
+                    let state_description =
+                        std::rc::Rc::new(std::cell::RefCell::new(state_description));
+                    job_controls.borrow_mut().push((
+                        row.clone(),
+                        pause.clone(),
+                        sync_now.clone(),
+                        paused.clone(),
+                        state_description.clone(),
+                    ));
                     let paused_for_click = paused.clone();
+                    let sync_enabled_for_pause = sync_enabled.clone();
+                    let state_description_for_pause = state_description.clone();
                     pause.connect_clicked(move |button| {
                         let next = !paused_for_click.get();
                         match store.set_job_paused(job_id, next) {
                             Ok(()) => {
                                 paused_for_click.set(next);
-                                if !next {
+                                if !next && sync_enabled_for_pause.get() {
                                     scheduler.start_periodic_saved_job(job_id);
                                 }
+                                *state_description_for_pause.borrow_mut() = if next {
+                                    tr("setting.sync.status.paused")
+                                } else {
+                                    tr("setting.sync.status.ready")
+                                };
                                 button.set_label(&if next {
                                     tr("setting.sync.resume")
                                 } else {
                                     tr("setting.sync.pause")
                                 });
-                                sync_for_pause.set_sensitive(!next);
+                                button.set_sensitive(!next || sync_enabled_for_pause.get());
+                                sync_for_pause.set_sensitive(!next && sync_enabled_for_pause.get());
                                 upload_albums_for_pause.set_sensitive(next);
-                                row_for_pause.set_subtitle(&if next {
-                                    tr("setting.sync.status.paused")
+                                row_for_pause.set_subtitle(&if sync_enabled_for_pause.get() {
+                                    state_description_for_pause.borrow().clone()
                                 } else {
-                                    tr("setting.sync.status.ready")
+                                    tr("setting.sync.status.globally_disabled")
                                 });
                             }
                             Err(error) => row_for_pause.set_subtitle(&trf(
@@ -952,19 +1002,25 @@ impl MainWindow {
 
                     let parent_for_sync = parent.clone();
                     let window = self.downgrade();
+                    let paused_for_sync = paused.clone();
                     let service =
                         crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
                     sync_now.connect_clicked(move |button| {
+                        if !prefs::webdav_sync_enabled() {
+                            button.set_sensitive(false);
+                            return;
+                        }
                         button.set_sensitive(false);
                         button.set_label(&tr("setting.sync.running"));
                         let button = button.clone();
                         let parent = parent_for_sync.clone();
                         let window = window.clone();
                         let service = service.clone();
+                        let paused = paused_for_sync.clone();
                         let task = tokio::spawn(async move { service.run_saved_job(job_id).await });
                         glib::spawn_future_local(async move {
                             let result = task.await;
-                            button.set_sensitive(true);
+                            button.set_sensitive(prefs::webdav_sync_enabled() && !paused.get());
                             button.set_label(&tr("setting.sync.now"));
                             match result {
                                 Ok(Ok(summary)) => {
@@ -1019,8 +1075,14 @@ impl MainWindow {
                             for button in [&use_local, &use_remote, &keep_both] {
                                 button.add_css_class("glass-toolbar-button");
                                 button.set_valign(gtk::Align::Center);
+                                button.set_sensitive(sync_enabled.get());
                                 conflict_row.add_suffix(button);
                             }
+                            conflict_controls.borrow_mut().extend([
+                                use_local.clone(),
+                                use_remote.clone(),
+                                keep_both.clone(),
+                            ]);
                             group.add(&conflict_row);
 
                             let buttons =
@@ -1064,6 +1126,66 @@ impl MainWindow {
                 }
             }
         }
+
+        let connection_for_toggle = connection.clone();
+        let connect_button_for_toggle = connect_button.clone();
+        let sync_enabled_for_toggle = sync_enabled.clone();
+        let job_controls_for_toggle = job_controls.clone();
+        let conflict_controls_for_toggle = conflict_controls.clone();
+        let pool_for_toggle = self.imp().pool.borrow().clone();
+        let actor_for_toggle = self.imp().db_actor.borrow().clone();
+        let parent_for_toggle = parent.clone();
+        let reverting_switch = std::rc::Rc::new(std::cell::Cell::new(false));
+        let reverting_switch_for_toggle = reverting_switch.clone();
+        sync_switch.connect_active_notify(move |switch| {
+            if reverting_switch_for_toggle.get() {
+                return;
+            }
+            let enabled = switch.is_active();
+            if let Err(error) = prefs::set_webdav_sync_enabled(enabled) {
+                reverting_switch_for_toggle.set(true);
+                switch.set_active(sync_enabled_for_toggle.get());
+                reverting_switch_for_toggle.set(false);
+                tracing::warn!("failed to persist WebDAV sync setting: {error}");
+                show_settings_error_dialog(
+                    &parent_for_toggle,
+                    &trf("setting.sync.setting_save_failed", &[("error", &error)]),
+                );
+                return;
+            }
+            sync_enabled_for_toggle.set(enabled);
+            crate::core::sync::SyncService::notify_global_enabled(enabled);
+            connection_for_toggle.set_sensitive(enabled);
+            connect_button_for_toggle.set_sensitive(enabled);
+            for (row, pause, sync_now, paused, state_description) in
+                job_controls_for_toggle.borrow().iter()
+            {
+                pause.set_sensitive(!paused.get() || enabled);
+                sync_now.set_sensitive(enabled && !paused.get());
+                row.set_subtitle(&if enabled {
+                    state_description.borrow().clone()
+                } else {
+                    tr("setting.sync.status.globally_disabled")
+                });
+            }
+            for button in conflict_controls_for_toggle.borrow().iter() {
+                button.set_sensitive(enabled);
+            }
+            if enabled {
+                if let (Some(pool), Some(actor)) =
+                    (pool_for_toggle.clone(), actor_for_toggle.clone())
+                {
+                    let service =
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
+                    if let Ok(jobs) = SyncStore::with_actor(pool.clone(), actor.clone()).list_jobs()
+                    {
+                        for job in jobs.into_iter().filter(|job| !job.paused) {
+                            service.start_periodic_saved_job(job.id);
+                        }
+                    }
+                }
+            }
+        });
 
         group
     }
@@ -1112,7 +1234,7 @@ fn connect_sync_conflict_button(
                 }
                 Ok(Err(error)) => {
                     for button in &all_buttons {
-                        button.set_sensitive(true);
+                        button.set_sensitive(prefs::webdav_sync_enabled());
                     }
                     row.set_subtitle(&trf(
                         "setting.sync.conflict_resolution_failed",
@@ -1121,7 +1243,7 @@ fn connect_sync_conflict_button(
                 }
                 Err(error) => {
                     for button in &all_buttons {
-                        button.set_sensitive(true);
+                        button.set_sensitive(prefs::webdav_sync_enabled());
                     }
                     row.set_subtitle(&trf(
                         "setting.sync.conflict_resolution_failed",
@@ -1426,6 +1548,25 @@ pub(super) fn persist_locale(locale: &str) -> Result<(), String> {
 enum ScanPathListKind {
     Custom,
     Excluded,
+}
+
+fn forward_scale_scroll_to_settings(scale: &gtk::Scale) {
+    let controller = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    controller.connect_scroll(|controller, _, delta_y| {
+        let mut ancestor = controller.widget().parent();
+        while let Some(widget) = ancestor {
+            if let Some(scroller) = widget.downcast_ref::<gtk::ScrolledWindow>() {
+                let adjustment = scroller.vadjustment();
+                let next = adjustment.value() + delta_y * adjustment.step_increment();
+                adjustment.set_value(next);
+                break;
+            }
+            ancestor = widget.parent();
+        }
+        glib::Propagation::Stop
+    });
+    scale.add_controller(controller);
 }
 
 fn build_scan_paths_group(parent: &gtk::Widget) -> adw::PreferencesGroup {

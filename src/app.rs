@@ -179,6 +179,9 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
 }
 
 fn start_saved_sync_jobs(pool: DbPool, db_actor: crate::core::db_actor::DbActorHandle) {
+    if !crate::core::prefs::webdav_sync_enabled() {
+        return;
+    }
     let service = crate::core::sync::SyncService::with_actor(pool.clone(), db_actor);
     let jobs = match crate::core::sync::SyncStore::new(pool).list_jobs() {
         Ok(jobs) => jobs,
