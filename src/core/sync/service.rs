@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use super::store::{StoredEntry, StoredTask, SyncConflict, SyncJob, SyncStore};
 use super::webdav::WebDavProvider;
 
 static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
 static SCHEDULED_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
 
@@ -323,6 +325,13 @@ impl SyncService {
             .map_err(provider_error)?;
         self.recover_unfinished_tasks(job, provider.as_ref())
             .await?;
+        let protected_uploads = self
+            .store
+            .unfinished_tasks(job.id)?
+            .into_iter()
+            .filter(|task| task.action.starts_with("upload_"))
+            .map(|task| task.relative_path)
+            .collect::<BTreeSet<_>>();
         let remote_entries = discover_remote(provider.as_ref(), &job.remote_root).await?;
         let upload_albums = self
             .store
@@ -347,6 +356,9 @@ impl SyncService {
 
         let mut summary = RunSummary::default();
         for relative_path in paths {
+            if protected_uploads.contains(&relative_path) {
+                continue;
+            }
             let local = local_entries.get(&relative_path);
             let remote = remote_entries.get(&relative_path);
             let stored = stored_entries.get(&relative_path);
@@ -535,7 +547,9 @@ impl SyncService {
         if let Some(backup) = backup {
             remove_file_if_exists(&backup)?;
         }
-        self.store.set_task_state(&operation_id, "succeeded", None)
+        self.store
+            .set_task_state(&operation_id, "succeeded", None)?;
+        remove_file_if_exists(&staged)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -626,6 +640,7 @@ impl SyncService {
         self.upsert_downloaded_media(&copy_local)?;
         self.store
             .set_task_state(&copy_operation, "succeeded", None)?;
+        remove_file_if_exists(&remote_artifact)?;
 
         if optional_local_fingerprint(local_path)?.as_ref() != Some(&local_fingerprint) {
             return Err(conflict_changed());
@@ -785,7 +800,7 @@ impl SyncService {
         provider: &dyn SyncProvider,
     ) -> Result<()> {
         for task in self.store.unfinished_tasks(job.id)? {
-            if task.config_generation != job.config_generation {
+            if task.config_generation != job.config_generation && task.action != "upload_new" {
                 self.store.set_task_state(
                     &task.operation_id,
                     "blocked",
@@ -828,21 +843,46 @@ impl SyncService {
             }
         };
         let key = remote_key(&job.remote_root, &task.relative_path)?;
+        let mut partial_fingerprint = None;
+        let mut partial_revision = None;
         if let Some(remote) = provider.stat(&key).await.map_err(provider_error)? {
             let downloaded = self
                 .download_to_staging(job, provider, &task.relative_path, remote.revision.as_ref())
                 .await?;
             let remote_fingerprint = local::fingerprint(&downloaded)?;
-            remove_file_if_exists(&downloaded)?;
             if remote_fingerprint == artifact {
+                remove_file_if_exists(&downloaded)?;
+                if !self.restore_recovered_local(job, task, &artifact, None)? {
+                    return Ok(());
+                }
                 self.finish_recovered_transfer(job, task, &artifact, remote.revision.as_ref())?;
+                self.resolve_recovered_conflicts(job, task, &artifact, remote.revision.as_ref())?;
                 remove_file_if_exists(&task.artifact_path)?;
                 return Ok(());
             }
+            if task.action == "upload_new"
+                && is_strict_file_prefix(&downloaded, &task.artifact_path)?
+                && remote
+                    .revision
+                    .as_ref()
+                    .is_some_and(|revision| revision.strength == RevisionStrength::Strong)
+            {
+                partial_fingerprint = Some(remote_fingerprint);
+                partial_revision = remote.revision;
+            } else if task.action == "upload_new" {
+                self.store.set_task_state(
+                    &task.operation_id,
+                    "blocked",
+                    Some("remote content is not a verified upload prefix with a strong ETag"),
+                )?;
+                remove_file_if_exists(&downloaded)?;
+                return Ok(());
+            }
+            remove_file_if_exists(&downloaded)?;
         }
 
         let condition = if task.action == "upload_new" {
-            WriteCondition::CreateOnly
+            partial_revision.map_or(WriteCondition::CreateOnly, WriteCondition::ReplaceIf)
         } else {
             let expected = task.expected_revision.as_ref().ok_or_else(|| {
                 AppError::Backend("replacement recovery has no expected remote revision".into())
@@ -859,7 +899,34 @@ impl SyncService {
         };
         match provider.upload(&key, &task.artifact_path, condition).await {
             Ok(uploaded) => {
+                let verified = self
+                    .download_to_staging(
+                        job,
+                        provider,
+                        &task.relative_path,
+                        uploaded.revision.as_ref(),
+                    )
+                    .await?;
+                let matches = local::fingerprint(&verified)? == artifact;
+                remove_file_if_exists(&verified)?;
+                if !matches {
+                    self.store.set_task_state(
+                        &task.operation_id,
+                        "blocked",
+                        Some("remote content differs after recovery upload"),
+                    )?;
+                    return Ok(());
+                }
+                if !self.restore_recovered_local(
+                    job,
+                    task,
+                    &artifact,
+                    partial_fingerprint.as_ref(),
+                )? {
+                    return Ok(());
+                }
                 self.finish_recovered_transfer(job, task, &artifact, uploaded.revision.as_ref())?;
+                self.resolve_recovered_conflicts(job, task, &artifact, uploaded.revision.as_ref())?;
                 remove_file_if_exists(&task.artifact_path)?;
             }
             Err(error) => {
@@ -867,6 +934,65 @@ impl SyncService {
                     &task.operation_id,
                     "blocked",
                     Some(&format!("upload recovery requires reconciliation: {error}")),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_recovered_local(
+        &self,
+        job: &SyncJob,
+        task: &StoredTask,
+        artifact: &super::model::Fingerprint,
+        partial: Option<&super::model::Fingerprint>,
+    ) -> Result<bool> {
+        let target = local::destination(&job.local_root, &task.relative_path)?;
+        match optional_local_fingerprint(&target)? {
+            Some(current) if current == *artifact => {}
+            Some(current)
+                if partial == Some(&current)
+                    || is_strict_file_prefix(&target, &task.artifact_path)? =>
+            {
+                let backup = local::atomic_publish_replace(
+                    &task.artifact_path,
+                    &target,
+                    &task.operation_id,
+                )?;
+                remove_file_if_exists(&backup)?;
+                self.upsert_downloaded_media(&target)?;
+            }
+            None => {
+                local::atomic_publish_new(&task.artifact_path, &target)?;
+                self.upsert_downloaded_media(&target)?;
+            }
+            Some(_) => {
+                self.store.set_task_state(
+                    &task.operation_id,
+                    "blocked",
+                    Some("local content differs from the upload snapshot and remote prefix"),
+                )?;
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn resolve_recovered_conflicts(
+        &self,
+        job: &SyncJob,
+        task: &StoredTask,
+        artifact: &super::model::Fingerprint,
+        revision: Option<&Revision>,
+    ) -> Result<()> {
+        for conflict in self.store.open_conflicts(job.id)? {
+            if conflict.entry_id == task.entry_id {
+                self.store.resolve_conflict(
+                    conflict.id,
+                    task.entry_id,
+                    "recovered_upload",
+                    artifact,
+                    revision.map(|value| value.value.as_str()),
                 )?;
             }
         }
@@ -1286,6 +1412,7 @@ impl SyncService {
                 }
                 self.store
                     .set_task_state(&operation_id, "succeeded", None)?;
+                remove_file_if_exists(&staged)?;
                 summary.downloaded += 1;
             }
             PlanAction::Conflict(kind) => {
@@ -1367,6 +1494,27 @@ fn optional_local_fingerprint(path: &Path) -> Result<Option<super::model::Finger
     }
 }
 
+fn is_strict_file_prefix(candidate: &Path, complete: &Path) -> Result<bool> {
+    let mut prefix = std::fs::File::open(candidate)?;
+    let mut source = std::fs::File::open(complete)?;
+    let prefix_size = prefix.metadata()?.len();
+    if prefix_size >= source.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut left = [0u8; 64 * 1024];
+    let mut right = [0u8; 64 * 1024];
+    loop {
+        let read = prefix.read(&mut left)?;
+        if read == 0 {
+            return Ok(true);
+        }
+        source.read_exact(&mut right[..read])?;
+        if left[..read] != right[..read] {
+            return Ok(false);
+        }
+    }
+}
+
 fn operation_id_from_artifact(path: &Path) -> Result<String> {
     path.file_stem()
         .and_then(|stem| stem.to_str())
@@ -1400,7 +1548,7 @@ fn publish_new_or_verify(
 ) -> Result<()> {
     if target.exists() {
         if optional_local_fingerprint(target)?.as_ref() == Some(fingerprint) {
-            return remove_file_if_exists(staged);
+            return Ok(());
         }
         return Err(AppError::Backend(format!(
             "the conflict copy path is already occupied by different content: {}",
@@ -1516,7 +1664,8 @@ fn upload_allowed(
 
 fn next_operation_id(job_id: i64) -> String {
     let sequence = OPERATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{job_id}-{}-{sequence}", std::process::id())
+    let session = OPERATION_SESSION.get_or_init(uuid::Uuid::new_v4);
+    format!("{job_id}-{session}-{sequence}")
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<()> {

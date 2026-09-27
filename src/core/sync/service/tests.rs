@@ -8,6 +8,20 @@ use crate::core::sync::provider::{
 };
 
 #[test]
+fn operation_id_has_restart_unique_session() {
+    let first = next_operation_id(7);
+    let second = next_operation_id(7);
+    let (first_session, first_sequence) =
+        first.strip_prefix("7-").unwrap().rsplit_once('-').unwrap();
+    let (second_session, second_sequence) =
+        second.strip_prefix("7-").unwrap().rsplit_once('-').unwrap();
+
+    assert!(uuid::Uuid::parse_str(first_session).is_ok());
+    assert_eq!(first_session, second_session);
+    assert_ne!(first_sequence, second_sequence);
+}
+
+#[test]
 fn remote_key_is_root_scoped() {
     assert_eq!(
         remote_key("Photos/Camera", "2026/a.jpg").unwrap(),
@@ -509,4 +523,188 @@ async fn recovers_upload_that_reached_remote_before_result_commit() {
         )
         .unwrap();
     assert_eq!(state, "succeeded");
+}
+
+#[tokio::test]
+async fn repairs_truncated_upload_after_album_selection_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir_all(local_root.join("OldAlbum")).unwrap();
+    let full = b"complete image bytes from the original upload";
+    let partial = &full[..17];
+    let local_path = local_root.join("OldAlbum/photo.jpg");
+    std::fs::write(&local_path, &full[..10]).unwrap();
+    let artifact = temp.path().join("original.upload");
+    std::fs::write(&artifact, full).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let service = SyncService {
+        store: SyncStore::new(pool.clone()),
+        pool,
+        actor: None,
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "recovery-test".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+            upload_albums: vec!["OldAlbum".into()],
+        })
+        .unwrap();
+    let fingerprint = local::fingerprint(&artifact).unwrap();
+    let entry_id = service
+        .store()
+        .upsert_observation(
+            job.id,
+            "OldAlbum/photo.jpg",
+            Some(&fingerprint),
+            None,
+            None,
+            None,
+            false,
+            "pending",
+        )
+        .unwrap();
+    service
+        .store()
+        .prepare_task(
+            "partial-upload",
+            job.id,
+            entry_id,
+            "upload_new",
+            None,
+            &artifact,
+            &fingerprint.blake3,
+            job.config_generation,
+            1,
+        )
+        .unwrap();
+    service
+        .store()
+        .set_task_state("partial-upload", "blocked", Some("locked"))
+        .unwrap();
+    service
+        .store()
+        .set_upload_albums(job.id, &["OtherAlbum".into()])
+        .unwrap();
+    let job = service.store().get_job(job.id).unwrap().unwrap();
+    let provider = Arc::new(FakeProvider::default());
+    provider.insert("PhotoViewer/OldAlbum/photo.jpg", partial.to_vec());
+
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(&local_path).unwrap(), full);
+    assert_eq!(
+        provider.objects.lock().unwrap()["PhotoViewer/OldAlbum/photo.jpg"],
+        full
+    );
+    let conn = service.pool.get().unwrap();
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM sync_tasks WHERE operation_id = 'partial-upload'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "succeeded");
+}
+
+#[tokio::test]
+async fn unrelated_remote_content_does_not_replace_local_or_upload_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir_all(local_root.join("OldAlbum")).unwrap();
+    let local_path = local_root.join("OldAlbum/photo.jpg");
+    std::fs::write(&local_path, b"local original").unwrap();
+    let artifact = temp.path().join("original.upload");
+    std::fs::write(&artifact, b"complete original upload").unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let service = SyncService {
+        store: SyncStore::new(pool.clone()),
+        pool,
+        actor: None,
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "recovery-nonprefix".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+            upload_albums: vec!["OtherAlbum".into()],
+        })
+        .unwrap();
+    let fingerprint = local::fingerprint(&artifact).unwrap();
+    let entry_id = service
+        .store()
+        .upsert_observation(
+            job.id,
+            "OldAlbum/photo.jpg",
+            Some(&fingerprint),
+            None,
+            None,
+            None,
+            false,
+            "pending",
+        )
+        .unwrap();
+    service
+        .store()
+        .prepare_task(
+            "nonprefix-upload",
+            job.id,
+            entry_id,
+            "upload_new",
+            None,
+            &artifact,
+            &fingerprint.blake3,
+            job.config_generation,
+            1,
+        )
+        .unwrap();
+    service
+        .store()
+        .set_task_state("nonprefix-upload", "blocked", Some("network error"))
+        .unwrap();
+    let provider = Arc::new(FakeProvider::default());
+    provider.insert(
+        "PhotoViewer/OldAlbum/photo.jpg",
+        b"different cloud content".to_vec(),
+    );
+
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(std::fs::read(&local_path).unwrap(), b"local original");
+    assert_eq!(
+        std::fs::read(&artifact).unwrap(),
+        b"complete original upload"
+    );
+    assert_eq!(
+        provider.objects.lock().unwrap()["PhotoViewer/OldAlbum/photo.jpg"],
+        b"different cloud content"
+    );
+    let conn = service.pool.get().unwrap();
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM sync_tasks WHERE operation_id = 'nonprefix-upload'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "blocked");
 }

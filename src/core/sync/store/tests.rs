@@ -121,6 +121,8 @@ fn overview_reports_persisted_job_lifecycle() {
         SyncOverview {
             status: SyncOverviewStatus::NotConfigured,
             job_count: 0,
+            synced_items: 0,
+            conflict_images: 0,
         }
     );
 
@@ -154,4 +156,116 @@ fn overview_reports_persisted_job_lifecycle() {
 
     store.set_job_paused(job.id, true).unwrap();
     assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Paused);
+}
+
+#[test]
+fn overview_counts_synced_media_and_open_image_conflicts() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool);
+    let job = store.create_job(&new_job(local)).unwrap();
+    let fingerprint = Fingerprint {
+        size: 4,
+        blake3: "test".into(),
+    };
+    for path in ["A/photo.JPG", "A/movie.mp4"] {
+        let entry = store
+            .upsert_observation(
+                job.id,
+                path,
+                Some(&fingerprint),
+                None,
+                Some(&fingerprint),
+                Some("strong"),
+                false,
+                "pending",
+            )
+            .unwrap();
+        store
+            .commit_baseline(entry, &fingerprint, Some("strong"))
+            .unwrap();
+    }
+    let photo = store
+        .entries(job.id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.relative_path == "A/photo.JPG")
+        .unwrap();
+    store
+        .record_conflict(
+            job.id,
+            photo.id,
+            "both_changed",
+            Some(&fingerprint),
+            Some(&fingerprint),
+            Some("strong"),
+        )
+        .unwrap();
+    let movie = store
+        .entries(job.id)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.relative_path == "A/movie.mp4")
+        .unwrap();
+    store
+        .record_conflict(
+            job.id,
+            movie.id,
+            "both_changed",
+            Some(&fingerprint),
+            Some(&fingerprint),
+            Some("strong"),
+        )
+        .unwrap();
+    let overview = store.overview().unwrap();
+    assert_eq!(overview.synced_items, 2);
+    assert_eq!(overview.conflict_images, 1);
+}
+
+#[test]
+fn overview_does_not_report_completion_with_blocked_uploads() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool);
+    let job = store.create_job(&new_job(local)).unwrap();
+    let fingerprint = Fingerprint {
+        size: 4,
+        blake3: "test".into(),
+    };
+    let entry = store
+        .upsert_observation(
+            job.id,
+            "A/photo.jpg",
+            Some(&fingerprint),
+            None,
+            None,
+            None,
+            false,
+            "pending",
+        )
+        .unwrap();
+    let artifact = temp.path().join("photo.upload");
+    std::fs::write(&artifact, b"test").unwrap();
+    store
+        .prepare_task(
+            "pending-upload",
+            job.id,
+            entry,
+            "upload_new",
+            None,
+            &artifact,
+            &fingerprint.blake3,
+            job.config_generation,
+            1,
+        )
+        .unwrap();
+    store
+        .set_task_state("pending-upload", "blocked", Some("locked"))
+        .unwrap();
+    store.mark_job_completed(job.id).unwrap();
+    assert_eq!(store.overview().unwrap().status, SyncOverviewStatus::Failed);
 }

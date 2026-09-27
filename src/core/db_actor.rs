@@ -158,13 +158,31 @@ pub enum DbCommandResult {
 
 struct DbEnvelope {
     command: DbCommand,
-    reply: oneshot::Sender<Result<DbCommandResult>>,
+    reply: DbReply,
     enqueued_at: Instant,
     /// The caller's operation (for example a user mutation or scan).
     trace: OperationTrace,
     /// A database-only projection of a non-database caller trace. This keeps
     /// `-T database` useful even when the caller selected another chain.
     database_trace: Option<OperationTrace>,
+}
+
+enum DbReply {
+    Async(oneshot::Sender<Result<DbCommandResult>>),
+    Blocking(mpsc::SyncSender<Result<DbCommandResult>>),
+}
+
+impl DbReply {
+    fn send(self, result: Result<DbCommandResult>) {
+        match self {
+            Self::Async(reply) => {
+                let _ = reply.send(result);
+            }
+            Self::Blocking(reply) => {
+                let _ = reply.send(result);
+            }
+        }
+    }
 }
 
 struct QueuedEnvelope {
@@ -234,8 +252,12 @@ impl DbActorHandle {
         command: DbCommand,
     ) -> Result<DbCommandResult> {
         let (reply, rx) = oneshot::channel();
-        if let Err(err) = self.send_envelope(command, reply, trace.clone(), database_trace.clone())
-        {
+        if let Err(err) = self.send_envelope(
+            command,
+            DbReply::Async(reply),
+            trace.clone(),
+            database_trace.clone(),
+        ) {
             let error = AppError::Backend(format!("db actor stopped: {err}"));
             log_error(&trace, "enqueue", &error);
             if let Some(database_trace) = &database_trace {
@@ -277,9 +299,13 @@ impl DbActorHandle {
         database_trace: Option<OperationTrace>,
         command: DbCommand,
     ) -> Result<DbCommandResult> {
-        let (reply, rx) = oneshot::channel();
-        if let Err(err) = self.send_envelope(command, reply, trace.clone(), database_trace.clone())
-        {
+        let (reply, rx) = mpsc::sync_channel(1);
+        if let Err(err) = self.send_envelope(
+            command,
+            DbReply::Blocking(reply),
+            trace.clone(),
+            database_trace.clone(),
+        ) {
             let error = AppError::Backend(format!("db actor stopped: {err}"));
             log_error(&trace, "enqueue", &error);
             if let Some(database_trace) = &database_trace {
@@ -287,11 +313,7 @@ impl DbActorHandle {
             }
             return Err(error);
         }
-        // This synchronous entry point is also used from worker tasks that run
-        // inside the process Tokio runtime. `tokio::oneshot::blocking_recv`
-        // panics in that context, while the runtime-independent executor can
-        // safely wait for this short database reply.
-        match futures_executor::block_on(rx) {
+        match rx.recv() {
             Ok(result) => result,
             Err(err) => {
                 let error = AppError::Backend(format!("db actor dropped response: {err}"));
@@ -307,7 +329,7 @@ impl DbActorHandle {
     pub fn enqueue(&self, command: DbCommand) -> Result<()> {
         let (reply, _rx) = oneshot::channel();
         let trace = OperationTrace::start(TraceChain::Database, db_command_name(&command));
-        if let Err(err) = self.send_envelope(command, reply, trace.clone(), None) {
+        if let Err(err) = self.send_envelope(command, DbReply::Async(reply), trace.clone(), None) {
             let error = AppError::Backend(format!("db actor stopped: {err}"));
             log_error(&trace, "enqueue", &error);
             return Err(error);
@@ -318,7 +340,7 @@ impl DbActorHandle {
     fn send_envelope(
         &self,
         command: DbCommand,
-        reply: oneshot::Sender<Result<DbCommandResult>>,
+        reply: DbReply,
         trace: OperationTrace,
         database_trace: Option<OperationTrace>,
     ) -> std::result::Result<(), Box<mpsc::SendError<DbEnvelope>>> {
@@ -396,7 +418,7 @@ fn run_db_actor(pool: DbPool, events: DomainEventSender, rx: mpsc::Receiver<DbEn
                 log_error(database_trace, "db_actor_execute", error);
             }
         }
-        let _ = envelope.reply.send(result);
+        envelope.reply.send(result);
     }
 }
 

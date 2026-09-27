@@ -108,16 +108,20 @@ pub fn destination(root: &Path, relative_path: &str) -> Result<PathBuf> {
 }
 
 pub fn atomic_publish_new(staged: &Path, target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::Backend("synchronization target has no parent".into()))?;
+    std::fs::create_dir_all(parent)?;
     if target.exists() {
         return Err(AppError::Backend(format!(
             "refusing to overwrite local file: {}",
             target.display()
         )));
     }
-    std::fs::rename(staged, target)?;
+    let sibling = copy_staged_to_sibling(staged, parent)?;
+    sibling
+        .persist_noclobber(target)
+        .map_err(|error| AppError::Io(error.error))?;
     Ok(())
 }
 
@@ -143,18 +147,36 @@ pub fn atomic_publish_replace(staged: &Path, target: &Path, operation_id: &str) 
             backup.display()
         )));
     }
+    let sibling = copy_staged_to_sibling(staged, parent)?;
     std::fs::rename(target, &backup)?;
-    if let Err(error) = std::fs::rename(staged, target) {
-        let rollback = std::fs::rename(&backup, target);
+    if let Err(error) = sibling.persist_noclobber(target) {
+        let rollback = std::fs::hard_link(&backup, target);
         return match rollback {
-            Ok(()) => Err(error.into()),
+            Ok(()) => {
+                std::fs::remove_file(&backup)?;
+                Err(error.error.into())
+            }
             Err(rollback) => Err(AppError::Backend(format!(
-                "publish failed: {error}; rollback failed: {rollback}; backup remains at {}",
+                "publish failed: {}; rollback failed: {rollback}; backup remains at {}",
+                error.error,
                 backup.display()
             ))),
         };
     }
     Ok(backup)
+}
+
+fn copy_staged_to_sibling(staged: &Path, parent: &Path) -> Result<tempfile::NamedTempFile> {
+    let mut source = File::open(staged)?;
+    let mut sibling = tempfile::Builder::new()
+        .prefix(".photoviewer-sync-")
+        .tempfile_in(parent)?;
+    std::io::copy(&mut source, sibling.as_file_mut())?;
+    sibling
+        .as_file()
+        .set_permissions(source.metadata()?.permissions())?;
+    sibling.as_file().sync_all()?;
+    Ok(sibling)
 }
 
 fn normalized_relative_path(path: &Path) -> Result<String> {

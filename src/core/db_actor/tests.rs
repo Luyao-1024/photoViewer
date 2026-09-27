@@ -44,6 +44,27 @@ fn write_priorities_put_interactive_work_before_background_work() {
     assert!(user.priority() > watcher.priority());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocking_sync_writes_reply_to_runtime_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
+    let (events, _rx) = DomainEventSender::new();
+    let actor = start_db_actor(pool.clone(), events);
+    let store = crate::core::sync::store::SyncStore::with_actor(pool, actor);
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+        tokio::spawn(async move {
+            for _ in 0..100 {
+                store.mark_job_started(999).unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    })
+    .await
+    .expect("blocking database replies must wake the runtime worker");
+}
+
 #[tokio::test]
 async fn set_favorite_updates_db_and_emits_precise_event() {
     let dir = tempfile::tempdir().unwrap();

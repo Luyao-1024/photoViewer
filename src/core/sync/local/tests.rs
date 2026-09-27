@@ -24,3 +24,37 @@ fn destination_rejects_parent_traversal() {
         root.join("album/a.jpg")
     );
 }
+
+#[test]
+fn publishing_new_file_keeps_recovery_artifact_until_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let staged = temp.path().join("staging/download");
+    let target = temp.path().join("photos/album/photo.jpg");
+    std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+    std::fs::write(&staged, b"cloud photo").unwrap();
+
+    atomic_publish_new(&staged, &target).unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"cloud photo");
+    assert_eq!(std::fs::read(&staged).unwrap(), b"cloud photo");
+    assert!(std::fs::read_dir(target.parent().unwrap())
+        .unwrap()
+        .all(|entry| entry.unwrap().path() == target));
+}
+
+#[test]
+fn replacing_file_keeps_backup_and_recovery_artifact() {
+    let temp = tempfile::tempdir().unwrap();
+    let staged = temp.path().join("staging/download");
+    let target = temp.path().join("photos/album/photo.jpg");
+    std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&staged, b"new version").unwrap();
+    std::fs::write(&target, b"old version").unwrap();
+
+    let backup = atomic_publish_replace(&staged, &target, "operation-1").unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"new version");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"old version");
+    assert_eq!(std::fs::read(&staged).unwrap(), b"new version");
+}

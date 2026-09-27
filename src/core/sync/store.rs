@@ -52,6 +52,8 @@ pub enum SyncOverviewStatus {
 pub struct SyncOverview {
     pub status: SyncOverviewStatus,
     pub job_count: usize,
+    pub synced_items: usize,
+    pub conflict_images: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +263,30 @@ impl SyncStore {
     /// compact status surfaces such as the Photos overview.
     pub fn overview(&self) -> Result<SyncOverview> {
         let conn = self.pool.get()?;
+        let synced_items = conn.query_row(
+            "SELECT COUNT(DISTINCT j.local_root || '/' || e.relative_path)
+             FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
+             JOIN sync_connections c ON c.id = j.connection_id
+             WHERE c.enabled = 1 AND e.baseline_fingerprint IS NOT NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
+        let conflict_images = conn.query_row(
+            "SELECT COUNT(DISTINCT j.local_root || '/' || e.relative_path)
+             FROM sync_conflicts f JOIN sync_entries e ON e.id = f.entry_id
+             JOIN sync_jobs j ON j.id = f.job_id
+             JOIN sync_connections c ON c.id = j.connection_id
+             WHERE c.enabled = 1 AND f.state = 'open' AND
+                   (lower(e.relative_path) GLOB '*.jpg' OR
+                    lower(e.relative_path) GLOB '*.jpeg' OR
+                    lower(e.relative_path) GLOB '*.png' OR
+                    lower(e.relative_path) GLOB '*.webp' OR
+                    lower(e.relative_path) GLOB '*.heic' OR
+                    lower(e.relative_path) GLOB '*.heif' OR
+                    lower(e.relative_path) GLOB '*.gif')",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? as usize;
         let mut stmt = conn.prepare(
             "SELECT j.paused, j.last_started_at, j.last_completed_at, j.last_error
              FROM sync_jobs j
@@ -282,12 +308,16 @@ impl SyncStore {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::NotConfigured,
                 job_count,
+                synced_items,
+                conflict_images,
             });
         }
         if jobs.iter().all(|(paused, _, _, _)| *paused) {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Paused,
                 job_count,
+                synced_items,
+                conflict_images,
             });
         }
 
@@ -299,6 +329,8 @@ impl SyncStore {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Failed,
                 job_count,
+                synced_items,
+                conflict_images,
             });
         }
         if active.clone().any(|(_, started, completed, _)| {
@@ -307,6 +339,25 @@ impl SyncStore {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Running,
                 job_count,
+                synced_items,
+                conflict_images,
+            });
+        }
+        let blocked_uploads: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sync_tasks t
+             JOIN sync_jobs j ON j.id = t.job_id
+             JOIN sync_connections c ON c.id = j.connection_id
+             WHERE c.enabled = 1 AND j.paused = 0 AND t.state = 'blocked'
+                   AND t.action LIKE 'upload_%'",
+            [],
+            |row| row.get(0),
+        )?;
+        if blocked_uploads > 0 {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Failed,
+                job_count,
+                synced_items,
+                conflict_images,
             });
         }
         if active
@@ -316,11 +367,15 @@ impl SyncStore {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Completed,
                 job_count,
+                synced_items,
+                conflict_images,
             });
         }
         Ok(SyncOverview {
             status: SyncOverviewStatus::Ready,
             job_count,
+            synced_items,
+            conflict_images,
         })
     }
 
@@ -440,7 +495,8 @@ impl SyncStore {
                     t.entry_generation
              FROM sync_tasks t
              JOIN sync_entries e ON e.id = t.entry_id
-             WHERE t.job_id = ?1 AND t.state IN ('prepared', 'reconciling')
+             WHERE t.job_id = ?1 AND (t.state IN ('prepared', 'reconciling')
+                  OR (t.state = 'blocked' AND t.action LIKE 'upload_%'))
              ORDER BY t.id",
         )?;
         let rows = stmt.query_map([job_id], |row| {

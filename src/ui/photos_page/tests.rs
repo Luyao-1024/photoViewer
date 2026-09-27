@@ -125,7 +125,12 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     );
     assert_eq!(
         page.imp().overview_sync_label.get().label(),
-        sync_overview_text(crate::core::sync::SyncOverviewStatus::Paused)
+        sync_overview_text(SyncOverview {
+            status: SyncOverviewStatus::Paused,
+            job_count: 1,
+            synced_items: 0,
+            conflict_images: 0,
+        })
     );
 
     page.handle_overview_scroll_intent(GroupBy::Day, 1.0);
@@ -149,6 +154,8 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
         sync: SyncOverview {
             status: SyncOverviewStatus::Running,
             job_count: 1,
+            synced_items: 0,
+            conflict_images: 0,
         },
     });
 
@@ -171,6 +178,25 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
         !imp.overview_sync_spinner.get().is_visible() && imp.overview_sync_icon.get().is_visible(),
         "completed synchronization should restore the static status icon"
     );
+}
+
+#[test]
+fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
+    let overview = SyncOverview {
+        status: SyncOverviewStatus::Completed,
+        job_count: 1,
+        synced_items: 103,
+        conflict_images: 0,
+    };
+    assert!(sync_overview_text(overview).contains("103"));
+    let with_conflicts = SyncOverview {
+        conflict_images: 2,
+        ..overview
+    };
+    let text = sync_overview_text(with_conflicts);
+    assert!(text.contains("103"));
+    assert!(text.contains('2'));
+    assert_ne!(sync_overview_text(overview), text);
 }
 
 #[gtk::test]

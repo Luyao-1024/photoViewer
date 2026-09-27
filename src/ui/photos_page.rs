@@ -51,14 +51,24 @@ struct PhotosOverviewSnapshot {
     sync: SyncOverview,
 }
 
-fn sync_overview_text(status: SyncOverviewStatus) -> String {
-    match status {
+fn sync_overview_text(overview: SyncOverview) -> String {
+    match overview.status {
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
         SyncOverviewStatus::Running => tr("photos.overview.sync.running"),
         SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
-        SyncOverviewStatus::Completed => tr("photos.overview.sync.completed"),
+        SyncOverviewStatus::Completed if overview.conflict_images > 0 => trf(
+            "photos.overview.sync.completed_conflicts",
+            &[
+                ("count", &overview.synced_items.to_string()),
+                ("conflicts", &overview.conflict_images.to_string()),
+            ],
+        ),
+        SyncOverviewStatus::Completed => trf(
+            "photos.overview.sync.completed",
+            &[("count", &overview.synced_items.to_string())],
+        ),
     }
 }
 
@@ -864,7 +874,7 @@ impl PhotosPage {
         self.imp()
             .overview_sync_label
             .get()
-            .set_label(&sync_overview_text(snapshot.sync.status));
+            .set_label(&sync_overview_text(snapshot.sync));
         self.apply_overview_sync_icon(snapshot.sync.status);
     }
 

@@ -93,6 +93,10 @@ mutations run first, followed by trash operations, filesystem watcher changes,
 startup scan work, derived album refreshes, and thumbnail bookkeeping. Commands
 with the same priority are FIFO. A running SQL transaction is not interrupted;
 priority is applied at the next queue selection.
+Asynchronous callers receive a Tokio oneshot reply. Synchronous callers,
+including sync work running on a Tokio worker thread, receive a standard
+blocking channel reply so the actor completion cannot depend on an async
+executor wakeup.
 
 Every actor envelope also carries the reusable `OperationTrace` context. A
 plain `execute` / `execute_blocking` creates a `database` chain automatically;
@@ -293,10 +297,27 @@ Settings gate the new WebDAV connection form behind an `AdwExpanderRow` that is 
 status surfaces. It derives not-configured, paused, running, failed, ready, or
 completed from enabled jobs and their persisted lifecycle timestamps/errors;
 the Photos overview polls this projection only while its disclosure is open.
+The completed label counts distinct image and video paths with a proven common
+baseline across enabled jobs, and separately counts distinct unresolved image
+conflict paths. A conflict does not erase an earlier proven baseline.
+Blocked upload recovery keeps the overview in failed status even when the
+last periodic scan finished, so a protected, unresolved upload is not labeled
+complete.
 
 Open conflicts expose three guarded choices. “Use local” requires a strong current remote ETag. “Use cloud” downloads to staging, checks the recorded remote version and local fingerprint again, then publishes with a recoverable backup. “Keep both” creates a stable `*.cloud-conflict-<id>.<ext>` copy on both sides before conditionally converging the original path. If either recorded version has changed, the selection is rejected and a fresh reconciliation is required.
 
 `sync_tasks` is the crash evidence log. Startup reconciliation proves completed uploads by downloading and hashing the current remote object, and proves completed downloads from the published local fingerprint plus remote version before committing. Ambiguous or interrupted conflict resolutions become blocked and retain their artifact reference for review; cleanup must never delete a referenced artifact by age alone.
+Blocked upload tasks remain eligible for reconciliation. For an interrupted new
+upload, recovery replaces a remote object only when its downloaded bytes are a
+strict prefix of the preserved upload snapshot and the server supplies a strong
+ETag. The replacement is conditional and downloaded again for hash verification.
+If the local file is itself a strict prefix of the snapshot, recovery restores
+it even when its truncation point differs from the current remote prefix.
+Unresolved upload paths are excluded from normal download planning,
+including when the album was subsequently unchecked; the snapshot is retained
+until both copies are proven complete.
+Task operation IDs include a random per-process session UUID and a sequence number. Flatpak can reuse the same PID across launches, so PID plus a reset sequence is not unique across restarts. Existing task IDs and their staging artifacts remain valid for recovery after upgrading.
+Downloaded files are copied to a hidden sibling temporary file before atomic publication in the local album. Flatpak's data directory and the home-library mount may reject a direct cross-mount rename even when both paths appear under the same host filesystem. The original download artifact stays available for crash recovery until the task is marked successful.
 
 Current limits are intentional: no deletion propagation, no private-CA UI, and no range resume or sync-token enumeration. The Aliyun-hosted rclone WebDAV acceptance endpoint has been exercised with DAV locking, but that result does not imply compatibility with every WebDAV implementation. Remote enumeration and BLAKE3 hashing for checked/remote-present paths still run on every cycle, so large selected albums still need metadata/watcher-based dirty-item optimization. See [`../webdav-sync-design.md`](../webdav-sync-design.md) for current delivery status and [`../designs/sync-architecture-and-flows.md`](../designs/sync-architecture-and-flows.md) for the target constraints.
 

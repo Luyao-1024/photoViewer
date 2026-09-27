@@ -1988,7 +1988,6 @@ dependencies = [
  "blake3",
  "cc",
  "chrono",
- "futures-executor",
  "futures-util",
  "gdk-pixbuf",
  "glib",
@@ -2021,6 +2020,7 @@ dependencies = [
  "tracing-chrome",
  "tracing-subscriber",
  "url",
+ "uuid",
  "walkdir",
 ]
 

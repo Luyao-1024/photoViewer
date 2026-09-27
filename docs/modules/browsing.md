@@ -34,6 +34,11 @@ test files such as `src/ui/media_grid/tests.rs`,
 
 ## Behavior
 
+The Photos overview shows the persisted count of synchronized image and video
+items after a completed WebDAV cycle. When unresolved image conflicts exist,
+it also shows their count. These are library-wide sync totals, not the number
+transferred in the most recent cycle.
+
 The window keeps Photos and the currently active `AlbumDetailPage` as peer
 children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a
 200ms duration, so entering an album, switching albums, and returning to Photos
