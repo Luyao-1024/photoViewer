@@ -120,8 +120,10 @@ Design intent:
 - The date range remains the first upper-left row below the header. The library
   overview starts hidden even when the grid is at its first image; an additional
   upward scroll at that edge (or a touch pull-down) reveals it below the date,
-  while scrolling down into media hides it. There is no disclosure button. The
-  overview is a centered, backgroundless two-line surface: a compact
+  while scrolling down into media hides it. A pull-down at the top also runs
+  saved WebDAV tasks once; there are no task-level Sync Now buttons or background
+  sync timers. There is no disclosure button. The overview is a centered,
+  backgroundless two-line surface: a compact
   full-library photo/video count and a quieter icon-led sync status line. Counts
   come from the database, not the current virtual-grid window. While sync is
   actively running, the status line uses a deliberately slow activity spinner
@@ -340,18 +342,29 @@ Design intent:
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
-- The WebDAV Sync group starts with a persisted, off-by-default master switch.
-  It gates startup, manual, and conflict-resolution sync for every task. The
-  “Add WebDAV Sync Task” form stays unavailable until that switch is on and
-  starts sync only after complete server configuration is validated. Each
-  existing job's Pause/Resume action remains a per-job control.
+- WebDAV settings use one collapsed top-level expander row with the master
+  switch in its suffix. The collapsed row is the only visible WebDAV control;
+  opening it reveals the task selector, connection form, task status, folder
+  picker, upload scopes, and conflicts. The switch is persisted and off by
+  default, and gates home-pull sync and conflict resolution for every task.
+  The “Add WebDAV Sync Task” form stays unavailable until that switch is on and
+  saves the task after complete server configuration is validated. Saved jobs
+  run once when the user pulls down at the top of Photos; they do not start on
+  application launch or run on a timer.
+- Browsing a task's cloud folder, changing it, or deleting the task is available
+  while it is syncing. These actions pause that task, let its current file
+  operation finish, then apply the requested edit; the task stays paused until
+  the next Photos pull. The cloud-folder row combines browsing and relationship
+  deletion. Expanding upload-album settings also pauses the task. The Photos
+  pull resumes paused jobs and runs each saved task once.
 - Each sync job row shows its local ↔ remote mapping with its paused/error
-  state and Pause/Resume plus Sync Now actions. The task selector reuses the
+  state. The task selector reuses the
   connection form fields to show saved server URL, username, local root, and
-  remote root; the password is represented by a fixed mask and is never read
-  back from the keyring for display. Its collapsed album checklist is editable
-  only while the job is paused; checking a physical folder album enables uploads
-  for that album while every remote album stays in download scope.
+  remote root; saved passwords remain in the system keyring and are never read
+  back or exposed through a reveal control. Expanding the album checklist
+  automatically pauses the job until the selection is saved; checking a
+  physical folder album enables uploads for that album while every remote album
+  stays in download scope.
 - Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
   Both. Executing a choice re-checks both recorded versions; if either side
   changed, the stale selection is rejected and a fresh reconciliation is

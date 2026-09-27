@@ -139,6 +139,8 @@ impl DbCommand {
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
             Self::Sync(crate::core::sync::store::SyncWrite::CreateJob(_))
             | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. })
+            | Self::Sync(crate::core::sync::store::SyncWrite::SetRemoteRoot { .. })
+            | Self::Sync(crate::core::sync::store::SyncWrite::DeleteJob { .. })
             | Self::Sync(crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }) => {
                 DbWritePriority::UserInteractive
             }

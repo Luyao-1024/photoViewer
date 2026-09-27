@@ -243,10 +243,11 @@ fn load_mem_cached_locked(state: &mut LoaderState, cache_key: &str) -> Option<Lo
 /// 后台预热拉取状态：worker 在队列为空时据此从 DB 拉取下一个需生成的项。
 pub(in crate::core::thumbnails) struct BackgroundPullState {
     enabled: AtomicBool,
+    puller_busy: AtomicBool,
     offset: Mutex<u32>,
     /// 预热缩略图尺寸（跟随当前视图模式，默认 Small）。
     size: Mutex<ThumbnailSize>,
-    /// worker 数量：预热拉取一次取这么多条，一次性喂饱所有 worker。
+    /// 后台预热单次拉取的批量大小；保持为 1，避免全库预热占满前台 worker 池。
     worker_count: Mutex<usize>,
 }
 
@@ -256,8 +257,8 @@ pub(in crate::core::thumbnails) struct BackgroundPullState {
 /// 完成 CPU/IO 密集的解码/编码后通过 oneshot 归还 `LoadedThumb`。request 端
 /// 做在途去重，保证同一 (uri, size) 只生成一次、且永不丢请求；可见 tile 可经
 /// `prioritize_keys` 提前。
-/// 队列空时 worker 自动从 DB 拉取下一张未缓存的缩略图生成（拉模型），
-/// 不会一次性灌入队列。
+/// 队列空时单个后台 worker 从 DB 拉取未缓存的缩略图生成（拉模型），
+/// 前台请求仍可由整个 worker 池并行处理。
 pub struct ThumbnailLoader {
     pool: DbPool,
     db_actor: Arc<Mutex<Option<DbActorHandle>>>,
@@ -326,6 +327,7 @@ impl ThumbnailLoader {
                 offset: Mutex::new(0),
                 size: Mutex::new(ThumbnailSize::Small),
                 worker_count: Mutex::new(1),
+                puller_busy: AtomicBool::new(false),
             }),
             stats_dirty_callback: Arc::new(Mutex::new(None)),
             disk_cache_bytes,
@@ -430,8 +432,8 @@ impl ThumbnailLoader {
         if n == 0 {
             return;
         }
-        if let Ok(mut wc) = self.background_pull.worker_count.lock() {
-            *wc = n;
+        if let Ok(mut batch_size) = self.background_pull.worker_count.lock() {
+            *batch_size = 1;
         }
         for _ in 0..n {
             let pool = self.pool.clone();

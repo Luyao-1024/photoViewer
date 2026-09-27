@@ -20,9 +20,12 @@ pub fn load(reference: &str) -> Result<String> {
 }
 
 pub fn delete(reference: &str) -> Result<()> {
-    entry(reference)?
-        .delete_credential()
-        .map_err(|error| AppError::Backend(format!("cannot delete WebDAV credential: {error}")))
+    match entry(reference)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(AppError::Backend(format!(
+            "cannot delete WebDAV credential: {error}"
+        ))),
+    }
 }
 
 fn entry(reference: &str) -> Result<keyring::Entry> {

@@ -27,7 +27,11 @@ pub(in crate::core::thumbnails) fn worker_loop(
     disk_cache_bytes: u64,
     cold_generations: Arc<AtomicUsize>,
 ) {
-    while let Some(req) = next_request_or_pull(&queue, &pool, &bg, &state) {
+    while let Some((req, owns_background_slot)) = next_request_or_pull(&queue, &pool, &bg, &state) {
+        let _background_throttle = owns_background_slot.then(|| BackgroundPullThrottle {
+            queue: queue.clone(),
+            state: bg.clone(),
+        });
         // This INFO-level wrapper is dormant unless the `thumbnail` chain (or
         // legacy all-span Chrome trace) is selected. It remains available in
         // release builds, unlike the high-volume debug-only decode spans.
@@ -193,14 +197,28 @@ pub(in crate::core::thumbnails) fn worker_loop(
     }
 }
 
-/// 取下一个工作项：优先队列（网格请求），队列空时从 DB 批量拉取
-/// `worker_count` 条需生成的项一次性入队并唤醒所有 worker。
+struct BackgroundPullThrottle {
+    queue: SharedQueue,
+    state: Arc<BackgroundPullState>,
+}
+
+impl Drop for BackgroundPullThrottle {
+    fn drop(&mut self) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        self.state.puller_busy.store(false, AtomicOrdering::Release);
+        let (_, cvar) = &*self.queue;
+        cvar.notify_all();
+    }
+}
+
+/// 取下一个工作项：网格请求优先；队列空时只有持有后台槽位的 worker
+/// 才能从 DB 拉取下一张预热缩略图。
 pub(in crate::core::thumbnails) fn next_request_or_pull(
     queue: &SharedQueue,
     pool: &DbPool,
     bg: &Arc<BackgroundPullState>,
     state: &Arc<Mutex<LoaderState>>,
-) -> Option<PriItem> {
+) -> Option<(PriItem, bool)> {
     let (lock, cvar) = &**queue;
     loop {
         // 1) 优先从队列弹（BOOST/NORMAL，网格可见请求）
@@ -212,7 +230,7 @@ pub(in crate::core::thumbnails) fn next_request_or_pull(
             if let Some(Reverse(item)) = q.heap.pop() {
                 if q.queued.get(&item.cache_key).map(|e| e.tier) == Some(item.tier) {
                     q.queued.remove(&item.cache_key);
-                    return Some(item);
+                    return Some((item, false));
                 }
                 continue; // 过期项
             }
@@ -221,10 +239,21 @@ pub(in crate::core::thumbnails) fn next_request_or_pull(
         drop(q);
 
         // 2) 队列空，从 DB 批量拉取需生成的项
-        if bg.enabled.load(AtomicOrdering::Relaxed) {
+        if bg.enabled.load(AtomicOrdering::Relaxed)
+            && bg
+                .puller_busy
+                .compare_exchange(
+                    false,
+                    true,
+                    AtomicOrdering::Acquire,
+                    AtomicOrdering::Relaxed,
+                )
+                .is_ok()
+        {
             if let Some(item) = pull_batch_and_enqueue(pool, bg, queue, state) {
-                return Some(item);
+                return Some((item, true));
             }
+            bg.puller_busy.store(false, AtomicOrdering::Release);
         }
 
         // 3) 无可做，阻塞等待。
@@ -235,7 +264,9 @@ pub(in crate::core::thumbnails) fn next_request_or_pull(
         if !q.heap.is_empty() {
             continue;
         }
-        let wait_dur = if bg.enabled.load(AtomicOrdering::Relaxed) {
+        let wait_dur = if bg.enabled.load(AtomicOrdering::Relaxed)
+            && !bg.puller_busy.load(AtomicOrdering::Acquire)
+        {
             std::time::Duration::from_millis(
                 crate::core::runtime_config::thumbnail_prewarm_poll_ms(),
             )
@@ -247,8 +278,7 @@ pub(in crate::core::thumbnails) fn next_request_or_pull(
     }
 }
 
-/// 从 DB 批量拉取 `worker_count` 条需生成的项，全部入队并唤醒其他 worker，
-/// 返回一条给调用方自己处理（等价于调用方先从队里弹一条）。
+/// 从 DB 批量拉取需生成的项，返回第一条给调用方并把其余项入队。
 ///
 /// 已缓存（`thumbnail_generated_at >= file_mtime`）的项由 DB 查询自动过滤，
 /// 不再需要磁盘 stat。拉取到末尾返回 `None`；下次超时重试时会因为已缓存项增加

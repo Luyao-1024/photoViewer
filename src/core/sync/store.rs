@@ -113,6 +113,13 @@ pub enum SyncWrite {
         id: i64,
         paused: bool,
     },
+    SetRemoteRoot {
+        id: i64,
+        remote_root: String,
+    },
+    DeleteJob {
+        id: i64,
+    },
     SetUploadAlbums {
         id: i64,
         relative_albums: Vec<String>,
@@ -180,6 +187,7 @@ pub enum SyncWrite {
 pub enum SyncWriteResult {
     None,
     Id(i64),
+    DeletedJob(Option<String>),
 }
 
 impl SyncStore {
@@ -205,6 +213,11 @@ impl SyncStore {
             SyncWriteResult::None => {
                 return Err(AppError::Backend(
                     "create synchronization job returned no identity".into(),
+                ))
+            }
+            SyncWriteResult::DeletedJob(_) => {
+                return Err(AppError::Backend(
+                    "create synchronization job returned a delete result".into(),
                 ))
             }
         };
@@ -247,6 +260,33 @@ impl SyncStore {
     pub fn set_job_paused(&self, id: i64, paused: bool) -> Result<()> {
         self.write(SyncWrite::SetJobPaused { id, paused })?;
         Ok(())
+    }
+
+    pub fn set_remote_root(&self, id: i64, remote_root: &str) -> Result<()> {
+        let remote_root = validate_remote_root(remote_root)?;
+        self.write(SyncWrite::SetRemoteRoot { id, remote_root })?;
+        Ok(())
+    }
+
+    pub fn artifact_paths(&self, job_id: i64) -> Result<Vec<PathBuf>> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT artifact_path FROM sync_tasks
+             WHERE job_id = ?1 AND artifact_path IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([job_id], |row| row.get::<_, String>(0))?;
+        rows.map(|path| path.map(PathBuf::from))
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(AppError::from)
+    }
+
+    pub fn delete_job(&self, id: i64) -> Result<Option<String>> {
+        match self.write(SyncWrite::DeleteJob { id })? {
+            SyncWriteResult::DeletedJob(credential_ref) => Ok(credential_ref),
+            _ => Err(AppError::Backend(
+                "database returned an invalid synchronization deletion result".into(),
+            )),
+        }
     }
 
     pub fn upload_albums(&self, job_id: i64) -> Result<Vec<String>> {
@@ -558,6 +598,9 @@ impl SyncStore {
             SyncWriteResult::None => Err(AppError::Backend(
                 "upsert synchronization observation returned no identity".into(),
             )),
+            SyncWriteResult::DeletedJob(_) => Err(AppError::Backend(
+                "upsert synchronization observation returned a delete result".into(),
+            )),
         }
     }
 
@@ -755,6 +798,106 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                 params![paused, id],
             )?;
             Ok(SyncWriteResult::None)
+        }
+        SyncWrite::SetRemoteRoot { id, remote_root } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let job = tx
+                .query_row(
+                    "SELECT connection_id, remote_root, paused
+                     FROM sync_jobs WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)? != 0,
+                        ))
+                    },
+                )
+                .optional()?
+                .ok_or_else(|| AppError::Backend(format!("sync job {id} does not exist")))?;
+            if !job.2 {
+                return Err(AppError::Backend(
+                    "pause this synchronization task before changing its cloud folder".into(),
+                ));
+            }
+            if job.1 == remote_root {
+                return Ok(SyncWriteResult::None);
+            }
+
+            let mut stmt = tx.prepare(
+                "SELECT remote_root FROM sync_jobs
+                 WHERE connection_id = ?1 AND id != ?2",
+            )?;
+            let other_roots = stmt
+                .query_map(params![job.0, id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            if other_roots
+                .iter()
+                .any(|other| remote_paths_overlap(other, &remote_root))
+            {
+                return Err(AppError::Backend(
+                    "the selected cloud folder overlaps another task on this connection".into(),
+                ));
+            }
+
+            tx.execute("DELETE FROM sync_tasks WHERE job_id = ?1", [id])?;
+            tx.execute("DELETE FROM sync_entries WHERE job_id = ?1", [id])?;
+            tx.execute(
+                "UPDATE sync_jobs SET remote_root = ?1,
+                        config_generation = config_generation + 1,
+                        last_started_at = NULL, last_completed_at = NULL,
+                        last_error = NULL
+                 WHERE id = ?2",
+                params![remote_root, id],
+            )?;
+            tx.commit()?;
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::DeleteJob { id } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let (connection_id, credential_ref, paused) = tx
+                .query_row(
+                    "SELECT c.id, c.credential_ref, j.paused
+                     FROM sync_jobs j
+                     JOIN sync_connections c ON c.id = j.connection_id
+                     WHERE j.id = ?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)? != 0,
+                        ))
+                    },
+                )
+                .optional()?
+                .ok_or_else(|| AppError::Backend(format!("sync job {id} does not exist")))?;
+            if !paused {
+                return Err(AppError::Backend(
+                    "pause this synchronization task before deleting it".into(),
+                ));
+            }
+            tx.execute("DELETE FROM sync_jobs WHERE id = ?1", [id])?;
+            let remaining_jobs: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM sync_jobs WHERE connection_id = ?1",
+                [connection_id],
+                |row| row.get(0),
+            )?;
+            let orphaned_credential = if remaining_jobs == 0 {
+                tx.execute(
+                    "DELETE FROM sync_connections WHERE id = ?1",
+                    [connection_id],
+                )?;
+                Some(credential_ref)
+            } else {
+                None
+            };
+            tx.commit()?;
+            Ok(SyncWriteResult::DeletedJob(orphaned_credential))
         }
         SyncWrite::SetUploadAlbums {
             id,
@@ -1017,24 +1160,10 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
             "synchronization local root must be absolute".into(),
         ));
     }
-    if job.remote_root.contains("..") {
-        return Err(AppError::Backend(
-            "synchronization remote root cannot contain parent traversal".into(),
-        ));
-    }
+    validate_remote_root(&job.remote_root)?;
     if !job.local_root.is_dir() {
         return Err(AppError::Backend(
             "synchronization local root must be an existing directory".into(),
-        ));
-    }
-    if job.remote_root.trim_matches('/').is_empty()
-        || job
-            .remote_root
-            .split('/')
-            .any(|segment| segment == "." || segment == "..")
-    {
-        return Err(AppError::Backend(
-            "synchronization remote root is invalid".into(),
         ));
     }
     normalize_relative_albums(&job.upload_albums)?;
@@ -1046,6 +1175,20 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_remote_root(remote_root: &str) -> Result<String> {
+    let remote_root = remote_root.trim_matches('/');
+    if remote_root.is_empty()
+        || remote_root
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(AppError::Backend(
+            "synchronization remote root is invalid".into(),
+        ));
+    }
+    Ok(remote_root.into())
 }
 
 fn normalize_relative_albums(albums: &[String]) -> Result<Vec<String>> {

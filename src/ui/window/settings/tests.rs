@@ -312,24 +312,8 @@ fn find_switch(widget: &gtk::Widget) -> Option<gtk::Switch> {
     None
 }
 
-fn find_action_row(widget: &gtk::Widget, title: &str) -> Option<adw::ActionRow> {
-    if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
-        if row.title() == title {
-            return Some(row.clone());
-        }
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        child = current.next_sibling();
-        if let Some(row) = find_action_row(&current, title) {
-            return Some(row);
-        }
-    }
-    None
-}
-
 #[gtk::test]
-fn webdav_connection_form_is_a_collapsible_task_creation_row() {
+fn webdav_settings_share_one_collapsed_master_row() {
     let _ = gtk::init();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.WindowWebDavSettings")
@@ -340,18 +324,15 @@ fn webdav_connection_form_is_a_collapsible_task_creation_row() {
     let window = MainWindow::new(&app);
     let host = window.clone().upcast::<gtk::Widget>();
     let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
-    let global_row = find_action_row(&page, &tr("setting.sync.global_enable"))
-        .expect("settings should expose a WebDAV master switch row");
-    let global_row_widget = global_row.upcast::<gtk::Widget>();
+    let row = find_expander_row(&page, &tr("setting.section.sync"))
+        .expect("settings should expose one WebDAV master row");
+    let row_widget = row.clone().upcast::<gtk::Widget>();
     let global_switch =
-        find_switch(&global_row_widget).expect("WebDAV master switch row should contain a switch");
+        find_switch(&row_widget).expect("the WebDAV master row should contain its switch");
     assert_eq!(
         global_switch.is_active(),
         crate::core::prefs::webdav_sync_enabled()
     );
-    let row = find_expander_row(&page, &tr("setting.sync.new_task"))
-        .or_else(|| find_expander_row(&page, &tr("setting.sync.configured_task")))
-        .expect("settings should expose the WebDAV task fields");
 
     assert!(!row.shows_enable_switch());
     assert!(
@@ -362,7 +343,7 @@ fn webdav_connection_form_is_a_collapsible_task_creation_row() {
     row.set_expanded(true);
     assert!(
         row.is_expanded(),
-        "expanding the row should reveal its form"
+        "expanding the master row should reveal WebDAV settings"
     );
 
     row.set_expanded(false);

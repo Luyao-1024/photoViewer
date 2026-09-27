@@ -857,6 +857,24 @@ h1 {
   background: rgba(255,255,255,0.045);
 }
 
+.sync-settings-preview > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.sync-settings-preview > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sync-settings-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 0 18px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
 .pref-row span:first-child {
   flex: 1;
 }

@@ -43,6 +43,7 @@ use crate::ui::window::refresh_albums_sidebar;
 
 const PHOTOS_SELECT_ALL_LIMIT: u32 = 2_000;
 const OVERVIEW_SYNC_ROTATION_PERIOD: Duration = Duration::from_secs(2);
+const OVERVIEW_SYNC_PULL_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy)]
 struct PhotosOverviewSnapshot {
@@ -135,6 +136,8 @@ mod imp {
         pub overview_sync_running: Cell<bool>,
         pub overview_sync_tick_active: Cell<bool>,
         pub overview_sync_started_at: Cell<Option<std::time::Instant>>,
+        pub overview_sync_last_pull_at: Cell<Option<std::time::Instant>>,
+        pub overview_sync_pull_in_flight: Cell<bool>,
         #[template_child]
         pub overview_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
@@ -215,6 +218,8 @@ mod imp {
                 overview_sync_running: Cell::new(false),
                 overview_sync_tick_active: Cell::new(false),
                 overview_sync_started_at: Cell::new(None),
+                overview_sync_last_pull_at: Cell::new(None),
+                overview_sync_pull_in_flight: Cell::new(false),
                 overview_revealer: TemplateChild::default(),
                 overview_panel: TemplateChild::default(),
                 overview_count_label: TemplateChild::default(),
@@ -1199,9 +1204,48 @@ impl PhotosPage {
 
         if delta_y < 0.0 && grid.is_scrolled_to_top() {
             self.imp().overview_revealer.set_reveal_child(true);
+            let now = std::time::Instant::now();
+            let can_trigger = self
+                .imp()
+                .overview_sync_last_pull_at
+                .get()
+                .is_none_or(|last| now.duration_since(last) >= OVERVIEW_SYNC_PULL_COOLDOWN);
+            if can_trigger {
+                self.imp().overview_sync_last_pull_at.set(Some(now));
+                self.trigger_sync_from_home_pull();
+            }
         } else if delta_y > 0.0 {
             self.imp().overview_revealer.set_reveal_child(false);
         }
+    }
+
+    fn trigger_sync_from_home_pull(&self) {
+        if !crate::core::prefs::webdav_sync_enabled()
+            || self.imp().overview_sync_pull_in_flight.replace(true)
+        {
+            return;
+        }
+        let (Some(pool), Some(actor)) = (
+            self.imp().pool.borrow().clone(),
+            self.imp().db_actor.borrow().clone(),
+        ) else {
+            self.imp().overview_sync_pull_in_flight.set(false);
+            return;
+        };
+        let service = crate::core::sync::SyncService::with_actor(pool, actor);
+        let weak = self.downgrade();
+        let task = tokio::spawn(async move { service.trigger_saved_jobs_once().await });
+        glib::spawn_future_local(async move {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!("home pull synchronization failed: {error}"),
+                Err(error) => tracing::warn!("home pull synchronization task failed: {error}"),
+            }
+            if let Some(page) = weak.upgrade() {
+                page.imp().overview_sync_pull_in_flight.set(false);
+                page.refresh_overview_async();
+            }
+        });
     }
 
     fn hide_overview_after_leaving_top(&self) {

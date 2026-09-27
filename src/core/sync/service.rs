@@ -21,13 +21,6 @@ use super::webdav::WebDavProvider;
 static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
-static SCHEDULED_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
-static SYNC_ENABLED_WATCH: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
-
-fn sync_enabled_watch() -> &'static tokio::sync::watch::Sender<bool> {
-    SYNC_ENABLED_WATCH
-        .get_or_init(|| tokio::sync::watch::channel(crate::core::prefs::webdav_sync_enabled()).0)
-}
 
 struct ActiveJobGuard(i64);
 
@@ -53,19 +46,6 @@ impl Drop for ActiveJobGuard {
             .lock()
         {
             active.remove(&self.0);
-        }
-    }
-}
-
-struct ScheduledJobGuard(i64);
-
-impl Drop for ScheduledJobGuard {
-    fn drop(&mut self) {
-        if let Ok(mut scheduled) = SCHEDULED_JOBS
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-        {
-            scheduled.remove(&self.0);
         }
     }
 }
@@ -110,10 +90,6 @@ pub struct SyncService {
 }
 
 impl SyncService {
-    pub fn notify_global_enabled(enabled: bool) {
-        sync_enabled_watch().send_replace(enabled);
-    }
-
     pub fn new(pool: crate::core::db::DbPool) -> Self {
         Self {
             store: SyncStore::new(pool.clone()),
@@ -139,49 +115,137 @@ impl SyncService {
         &self.store
     }
 
-    pub fn start_periodic_saved_job(&self, job_id: i64) {
-        if !crate::core::prefs::webdav_sync_enabled() {
-            return;
+    pub async fn set_remote_root(&self, job_id: i64, remote_root: &str) -> Result<()> {
+        let job = self.pause_and_wait(job_id).await?;
+        if job.remote_root == remote_root.trim_matches('/') {
+            return Ok(());
         }
-        let scheduled = SCHEDULED_JOBS.get_or_init(|| Mutex::new(HashSet::new()));
-        let Ok(mut scheduled) = scheduled.lock() else {
-            tracing::warn!(job_id, "synchronization scheduler lock is poisoned");
-            return;
-        };
-        if !scheduled.insert(job_id) {
-            return;
-        }
-        drop(scheduled);
+        let artifacts = self.store.artifact_paths(job_id)?;
+        self.store.set_remote_root(job_id, remote_root)?;
+        self.cleanup_staging_artifacts(artifacts);
+        Ok(())
+    }
 
-        let service = self.clone();
-        tokio::spawn(async move {
-            let _scheduled = ScheduledJobGuard(job_id);
-            let mut enabled_updates = sync_enabled_watch().subscribe();
-            loop {
-                if !crate::core::prefs::webdav_sync_enabled() {
-                    break;
+    pub async fn delete_job(&self, job_id: i64) -> Result<bool> {
+        self.pause_and_wait(job_id).await?;
+        let artifacts = self.store.artifact_paths(job_id)?;
+        let Some(reference) = self.store.delete_job(job_id)? else {
+            self.cleanup_staging_artifacts(artifacts);
+            return Ok(true);
+        };
+        self.cleanup_staging_artifacts(artifacts);
+        match tokio::task::spawn_blocking(move || crate::platform::credentials::delete(&reference))
+            .await
+        {
+            Ok(Ok(())) => Ok(true),
+            Ok(Err(error)) => {
+                tracing::warn!(job_id, "sync relation was deleted but its keyring credential could not be removed: {error}");
+                Ok(false)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    job_id,
+                    "sync relation was deleted but keyring cleanup task failed: {error}"
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    pub async fn list_remote_collections(&self, job_id: i64) -> Result<Vec<String>> {
+        let job = self.pause_and_wait(job_id).await?;
+        let reference = job.credential_ref;
+        let password =
+            tokio::task::spawn_blocking(move || crate::platform::credentials::load(&reference))
+                .await
+                .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
+        let provider =
+            WebDavProvider::new(&job.endpoint, job.username, password).map_err(provider_error)?;
+        provider.probe().await.map_err(provider_error)?;
+
+        let mut pending = VecDeque::from([String::new()]);
+        let mut visited = HashSet::new();
+        let mut collections = BTreeSet::new();
+        while let Some(parent) = pending.pop_front() {
+            if !visited.insert(parent.clone()) {
+                continue;
+            }
+            for entry in provider
+                .list_children(&parent)
+                .await
+                .map_err(provider_error)?
+            {
+                if !entry.is_collection {
+                    continue;
                 }
-                match service.store.get_job(job_id) {
-                    Ok(Some(job)) if !job.paused => {}
-                    Ok(Some(_)) | Ok(None) => break,
-                    Err(error) => {
-                        tracing::warn!(job_id, "cannot reload synchronization job: {error}");
-                    }
+                let collection = entry.key.trim_matches('/').to_string();
+                if collection.is_empty()
+                    || collection
+                        .split('/')
+                        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+                {
+                    continue;
                 }
-                if let Err(error) = service.run_saved_job(job_id).await {
-                    tracing::warn!(job_id, "automatic synchronization failed: {error}");
-                }
-                let interval = 55 + job_id.unsigned_abs() % 11;
-                tokio::select! {
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
-                    changed = enabled_updates.changed() => {
-                        if changed.is_err() || !*enabled_updates.borrow() {
-                            break;
-                        }
-                    }
+                collections.insert(collection.clone());
+                pending.push_back(collection);
+                if collections.len() > 10_000 {
+                    return Err(AppError::Backend(
+                        "cloud folder listing exceeds the 10000 collection safety limit".into(),
+                    ));
                 }
             }
-        });
+        }
+        Ok(collections.into_iter().collect())
+    }
+
+    pub async fn pause_job_for_editing(&self, job_id: i64) -> Result<()> {
+        self.pause_and_wait(job_id).await.map(|_| ())
+    }
+
+    async fn pause_and_wait(&self, job_id: i64) -> Result<super::store::SyncJob> {
+        let job = self
+            .store
+            .get_job(job_id)?
+            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} does not exist")))?;
+        if !job.paused {
+            self.store.set_job_paused(job_id, true)?;
+        }
+        loop {
+            let active = ACTIVE_JOBS
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?
+                .contains(&job_id);
+            if !active {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        self.store
+            .get_job(job_id)?
+            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} no longer exists")))
+    }
+
+    fn cleanup_staging_artifacts(&self, artifacts: Vec<PathBuf>) {
+        let Ok(staging_root) = self.staging_root.canonicalize() else {
+            return;
+        };
+        for artifact in artifacts {
+            let (Some(name), Some(parent)) = (
+                artifact.file_name(),
+                artifact.parent().and_then(|path| path.canonicalize().ok()),
+            ) else {
+                continue;
+            };
+            if !parent.starts_with(&staging_root) {
+                continue;
+            }
+            if let Err(error) = std::fs::remove_file(parent.join(name)) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(path = %artifact.display(), "could not remove abandoned sync artifact: {error}");
+                }
+            }
+        }
     }
 
     pub async fn run_job(&self, job_id: i64, credentials: SyncCredentials) -> Result<RunSummary> {
@@ -219,6 +283,31 @@ impl SyncService {
                 .await
                 .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
         self.run_job(job_id, SyncCredentials { password }).await
+    }
+
+    pub async fn trigger_saved_jobs_once(&self) -> Result<()> {
+        ensure_webdav_sync_enabled()?;
+        let jobs = self.store.list_jobs()?;
+        for job in jobs {
+            let already_running = ACTIVE_JOBS
+                .get_or_init(|| Mutex::new(HashSet::new()))
+                .lock()
+                .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?
+                .contains(&job.id);
+            if already_running {
+                continue;
+            }
+            if job.paused {
+                self.store.set_job_paused(job.id, false)?;
+            }
+            if let Err(error) = self.run_saved_job(job.id).await {
+                tracing::warn!(
+                    job_id = job.id,
+                    "pull-triggered synchronization failed: {error}"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub async fn resolve_saved_conflict(
@@ -356,19 +445,19 @@ impl SyncService {
         monitor_global_switch: bool,
     ) -> Result<RunSummary> {
         provider.probe().await.map_err(provider_error)?;
-        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+        if self.sync_should_stop(job.id, monitor_global_switch)? {
             return Ok(RunSummary::default());
         }
         provider
             .ensure_collection(job.remote_root.trim_matches('/'))
             .await
             .map_err(provider_error)?;
-        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+        if self.sync_should_stop(job.id, monitor_global_switch)? {
             return Ok(RunSummary::default());
         }
-        self.recover_unfinished_tasks(job, provider.as_ref())
+        self.recover_unfinished_tasks(job, provider.as_ref(), monitor_global_switch)
             .await?;
-        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+        if self.sync_should_stop(job.id, monitor_global_switch)? {
             return Ok(RunSummary::default());
         }
         let protected_uploads = self
@@ -379,7 +468,7 @@ impl SyncService {
             .map(|task| task.relative_path)
             .collect::<BTreeSet<_>>();
         let remote_entries = discover_remote(provider.as_ref(), &job.remote_root).await?;
-        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+        if self.sync_should_stop(job.id, monitor_global_switch)? {
             return Ok(RunSummary::default());
         }
         let upload_albums = self
@@ -405,7 +494,7 @@ impl SyncService {
 
         let mut summary = RunSummary::default();
         for relative_path in paths {
-            if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            if self.sync_should_stop(job.id, monitor_global_switch)? {
                 break;
             }
             if protected_uploads.contains(&relative_path) {
@@ -427,6 +516,17 @@ impl SyncService {
             .await?;
         }
         Ok(summary)
+    }
+
+    fn sync_should_stop(&self, job_id: i64, monitor_global_switch: bool) -> Result<bool> {
+        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(true);
+        }
+        let job = self
+            .store
+            .get_job(job_id)?
+            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} no longer exists")))?;
+        Ok(job.paused)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -850,8 +950,12 @@ impl SyncService {
         &self,
         job: &SyncJob,
         provider: &dyn SyncProvider,
+        monitor_global_switch: bool,
     ) -> Result<()> {
         for task in self.store.unfinished_tasks(job.id)? {
+            if self.sync_should_stop(job.id, monitor_global_switch)? {
+                break;
+            }
             if task.config_generation != job.config_generation && task.action != "upload_new" {
                 self.store.set_task_state(
                     &task.operation_id,
