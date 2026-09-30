@@ -174,6 +174,22 @@ When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child,
 
 Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
 
+Day-view image and video tiles in an enabled sync job's selected physical
+albums show a top-left GNOME cloud icon when the completed baseline matches
+the observed local file and indexed size/mtime; otherwise they show cloud-off.
+The WebDAV child preference `day_cloud_badges_visible` hides only Day-view
+icons and defaults to on; it does not change synchronization or viewer state.
+Both are transparent outline icons placed directly on the thumbnail, with no
+filled badge background. The GNOME SVG sources and white/dark PNG variants
+live in `data/icons/`; GResource bundles the PNGs so GTK preserves the hollow
+interior and uses white outlines on thumbnails. Badge rendering makes no
+network request.
+Tiles outside selected albums have no cloud icon. One background query covers
+currently bound tiles after a range lands and when a sync-state domain event
+arrives, including while transfers are running.
+Overlapping requests coalesce into one pending refresh, and recycled tiles
+clear the badge before rebinding. Year/Month tiles do not show it.
+
 The sidebar Media Types group contains only non-empty attribute virtual albums.
 Motion photos are backed by `media_subkind='motion_photo'`; Animated and HDR are
 backed by top-level `media_attributes` JSON booleans. If no media type album has

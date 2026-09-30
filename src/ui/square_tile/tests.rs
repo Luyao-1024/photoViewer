@@ -206,6 +206,7 @@ fn square_tile_clear_for_rebind_drops_previous_media_visual_state() {
     tile.set_motion_badge_visible(true);
     tile.set_video_duration(Some("01:23"));
     tile.set_favorite_badge_visible(true);
+    tile.set_cloud_state(Some(CloudState::Synced));
     tile.add_css_class("thumb-loading");
     tile.add_css_class("thumb-placeholder");
     tile.add_css_class("media-selected");
@@ -218,7 +219,82 @@ fn square_tile_clear_for_rebind_drops_previous_media_visual_state() {
     assert!(!tile.has_css_class("thumb-loading"));
     assert!(!tile.has_css_class("thumb-placeholder"));
     assert!(!tile.has_css_class("media-selected"));
+    assert!(!tile
+        .imp()
+        .sync_badge
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .is_visible());
     assert!(tile.can_target());
+}
+
+#[gtk::test]
+fn square_tile_cloud_icons_are_bundled_and_switch_with_state() {
+    let _ = gtk::init();
+    crate::ensure_resources_registered();
+    for state in [CloudState::Synced, CloudState::Off] {
+        for dark in [true, false] {
+            let path = cloud_badge::resource(state, dark);
+            assert!(
+                gtk::gio::resources_lookup_data(path, gtk::gio::ResourceLookupFlags::NONE).is_ok()
+            );
+        }
+    }
+
+    let tile = SquareTile::new();
+    let badge = tile.imp().sync_badge.borrow().as_ref().unwrap().clone();
+    tile.set_cloud_state(Some(CloudState::Off));
+    assert!(badge.is_visible());
+    assert_eq!(
+        badge.resource().as_deref(),
+        Some(cloud_badge::resource(CloudState::Off, true))
+    );
+    tile.set_cloud_state(Some(CloudState::Synced));
+    assert_eq!(
+        badge.resource().as_deref(),
+        Some(cloud_badge::resource(CloudState::Synced, true))
+    );
+}
+
+#[gtk::test]
+fn cloud_icons_render_with_transparent_centers() {
+    let _ = gtk::init();
+    crate::ensure_resources_registered();
+    let renderer = gtk::gsk::CairoRenderer::new();
+    renderer.realize(None).unwrap();
+
+    for (state, dark, x, y) in [
+        (CloudState::Synced, true, 9, 9),
+        (CloudState::Off, true, 12, 8),
+        (CloudState::Synced, false, 9, 9),
+        (CloudState::Off, false, 12, 8),
+    ] {
+        let image = gtk::Image::from_resource(cloud_badge::resource(state, dark));
+        let paintable = image.paintable().unwrap();
+        let snapshot = gtk::Snapshot::new();
+        paintable.snapshot(&snapshot, 18.0, 18.0);
+        let node = snapshot.to_node().unwrap();
+        let texture = renderer.render_texture(&node, None);
+        let stride = texture.width() as usize * 4;
+        let mut pixels = vec![0; stride * texture.height() as usize];
+        texture.download(&mut pixels, stride);
+        let alpha = pixels[y * stride + x * 4 + 3];
+        let outline = &pixels[3 * stride + 9 * 4..3 * stride + 9 * 4 + 4];
+        assert!(
+            alpha < 32,
+            "{state:?} center should be transparent; alpha={alpha}"
+        );
+        assert!(outline[3] > 128, "{state:?} outline should remain visible");
+        assert!(
+            if dark {
+                outline[0] > 200
+            } else {
+                outline[0] < 100
+            },
+            "{state:?} outline should match the surface color"
+        );
+    }
 }
 
 #[gtk::test]

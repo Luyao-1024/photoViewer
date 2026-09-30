@@ -901,6 +901,25 @@ impl MainWindow {
         }
     }
 
+    pub(crate) fn refresh_cloud_badges(&self) {
+        if let Some(page) = self.visible_browsing_page() {
+            if let Ok(photos) = page.clone().downcast::<PhotosPage>() {
+                photos.refresh_day_sync_badges();
+            } else if let Ok(album) = page.downcast::<AlbumDetailPage>() {
+                album.refresh_sync_badges();
+            }
+        }
+        if let Some(viewer) = self
+            .imp()
+            .nav_view
+            .get()
+            .visible_page()
+            .and_downcast::<ViewerPage>()
+        {
+            viewer.refresh_current_cloud_badge();
+        }
+    }
+
     fn apply_deferred_day_grid_columns(&self) {
         if self.imp().settings_dialog.borrow().is_some() {
             return;

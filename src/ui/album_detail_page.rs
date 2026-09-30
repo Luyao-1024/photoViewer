@@ -18,6 +18,7 @@ use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
@@ -84,6 +85,12 @@ gtk::glib::wrapper! {
 }
 
 impl AlbumDetailPage {
+    pub(crate) fn refresh_sync_badges(&self) {
+        if let Some(grid) = self.imp().grid.borrow().as_ref() {
+            grid.refresh_sync_badges();
+        }
+    }
+
     /// Build an `AlbumDetailPage` populated with a pre-filtered media list.
     /// The grid uses the same virtual Day grouping as `PhotosPage`.
     #[tracing::instrument(
@@ -158,6 +165,14 @@ impl AlbumDetailPage {
                     }
                 })
             };
+            let on_add_to_album: Rc<dyn Fn(Vec<MediaId>)> = {
+                let weak = obj.downgrade();
+                Rc::new(move |ids| {
+                    if let Some(this) = weak.upgrade() {
+                        this.open_album_picker_for_ids(ids);
+                    }
+                })
+            };
             let grid = VirtualMediaGrid::new_for_query(
                 media_list,
                 media_query_for_album(
@@ -172,7 +187,7 @@ impl AlbumDetailPage {
                 MediaGridCallbacks {
                     on_activate,
                     on_background_changed,
-                    on_add_to_album: Rc::new(|_| {}),
+                    on_add_to_album,
                     on_move_to_trash,
                     on_set_favorite: Rc::new(|_, _| {}),
                     on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
@@ -221,6 +236,31 @@ impl AlbumDetailPage {
 
     pub fn set_nav_target(&self, nav: &adw::NavigationView) {
         *self.imp().nav_view.borrow_mut() = Some(nav.clone());
+    }
+
+    fn open_album_picker_for_ids(&self, ids: Vec<MediaId>) {
+        if ids.is_empty() {
+            return;
+        }
+        let Some(nav) = self.imp().nav_view.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            return;
+        };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
+        album_picker::AlbumPickerDialog::present(
+            &nav,
+            pool,
+            db_actor,
+            loader,
+            ids.into_iter().map(MediaId::get).collect(),
+        );
     }
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {

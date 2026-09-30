@@ -3,6 +3,19 @@ use chrono::Utc;
 use std::cell::Cell;
 
 #[gtk::test]
+fn synced_image_badge_is_available_in_viewer_header() {
+    init_viewer_test();
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+    let viewer = ViewerPage::new(media_list, 0);
+    let badge = viewer.imp().sync_badge.get();
+
+    assert!(badge.has_css_class("viewer-sync-badge"));
+    assert!(!badge.is_visible());
+    assert!(badge.resource().is_none());
+}
+
+#[gtk::test]
 fn video_error_background_exists_in_viewer_overlay() {
     init_viewer_test();
     let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();

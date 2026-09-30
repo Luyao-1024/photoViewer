@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, params_from_iter, OptionalExtension};
 
 use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
@@ -55,6 +55,12 @@ pub struct SyncOverview {
     pub job_count: usize,
     pub synced_items: usize,
     pub conflict_images: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudState {
+    Synced,
+    Off,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +201,50 @@ pub enum SyncWriteResult {
 }
 
 impl SyncStore {
+    /// Cloud state for media in enabled jobs' selected physical albums.
+    pub fn media_cloud_states(&self, media_ids: &[i64]) -> Result<HashMap<i64, CloudState>> {
+        if media_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = vec!["?"; media_ids.len()].join(",");
+        let sql = format!(
+            "SELECT m.id, MAX(CASE WHEN e.state = 'synced'
+                            AND e.local_fingerprint = e.baseline_fingerprint
+                            AND e.local_size = e.baseline_size
+                            AND e.baseline_size = m.file_size
+                            AND e.local_mtime_ns = m.file_mtime_ns
+                       THEN 1 ELSE 0 END)
+             FROM media_items m
+             JOIN sync_jobs j ON substr(m.path, 1, length(rtrim(j.local_root, '/')) + 1)
+                                 = rtrim(j.local_root, '/') || '/'
+             JOIN sync_connections c ON c.id = j.connection_id
+             LEFT JOIN sync_entries e ON e.job_id = j.id
+                  AND e.relative_path = substr(m.path, length(rtrim(j.local_root, '/')) + 2)
+             WHERE m.id IN ({placeholders}) AND m.media_kind IN ('image', 'video')
+               AND m.trashed_at IS NULL AND c.enabled = 1
+               AND (j.upload_scope = 'all' OR EXISTS (
+                   SELECT 1 FROM sync_job_upload_albums a
+                   WHERE a.job_id = j.id AND m.folder_path = CASE
+                       WHEN a.relative_album = '' THEN j.local_root
+                       ELSE rtrim(j.local_root, '/') || '/' || a.relative_album
+                   END
+               ))
+             GROUP BY m.id"
+        );
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(media_ids.iter()), |row| {
+            let state = if row.get::<_, i64>(1)? == 1 {
+                CloudState::Synced
+            } else {
+                CloudState::Off
+            };
+            Ok((row.get(0)?, state))
+        })?;
+        rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+            .map_err(AppError::from)
+    }
+
     pub fn new(pool: DbPool) -> Self {
         Self { pool, actor: None }
     }

@@ -67,6 +67,7 @@
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-video" data-name="视频宫格" data-impl="SquareTile / media_kind=video" data-props="底部显示持久化视频时长；普通视频不显示动态照片播放标记。"><span class="badge duration">0:42</span></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-motion" data-name="动态照片宫格" data-impl="SquareTile / media_subkind=motion_photo" data-props="仍按 image item 处理；底部播放 glyph 表示内嵌视频范围。"><span class="badge motion">▶</span></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-favorite" data-name="收藏图片宫格" data-impl="SquareTile + .thumb-favorite-badge" data-props="Day view 顶右显示白色心形；不改变瓦片尺寸。"><span class="badge favorite">♡</span></div>
+            <div class="tile hotspot" tabindex="0" data-ui="square-tile-synced" data-name="媒体同步状态宫格" data-impl="SquareTile + Gtk.Image .thumb-sync-badge" data-props="Day view 中参与同步的图片和视频：已同步显示 GNOME cloud，未同步显示 cloud-off；无圆形背景，其他相册不显示。"><img class="badge synced" src="../../data/icons/gnome-cloud-white.png" alt="已同步到云端"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图加载前使用 thumb-loading 占位；加载完成淡入。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-2" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="点击打开 ViewerPage；传递稳定 MediaId，而不是长期全局 index。"></div>
             <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-3" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="hover/selection 以全图适度深色蒙层强调，不显示边框；白色勾选标记保持清晰，且不改变瓦片尺寸。"></div>
@@ -166,6 +167,7 @@
       <div class="viewer-wrap">
         <div class="headerbar viewer hotspot" tabindex="0" data-ui="viewer-header" data-name="查看器顶栏" data-impl="Adw.HeaderBar header_bar .glass-header.viewer-toolbar.viewer-chrome" data-props="左侧 date_label 显示拍摄日期；hover-only glass；动作顺序：收藏、编辑、删除、详情。">
           <span class="header-title date-label hotspot" tabindex="0" data-ui="viewer-date-label" data-name="拍摄日期" data-impl="Gtk.Label date_label .viewer-date-label" data-props="每张图/视频都显示日期，精确到天；取排序日期 COALESCE(taken_at, file_mtime)：有拍摄日期用拍摄日期，否则回退文件 mtime(入库日期)；最近两天显示 今天/昨天；zh-CN 用 2026年7月9日，en 用 2026-07-09。">今天</span>
+          <img class="header-title hotspot" tabindex="0" data-ui="viewer-sync-badge" data-name="详情页同步状态" data-impl="Gtk.Image sync_badge .viewer-sync-badge" data-props="拍摄日期旁显示 GNOME cloud/cloud-off；参与同步的图片和视频在切换时异步刷新。" src="../../data/icons/gnome-cloud-white.png" alt="已同步到云端">
           <span class="header-title">IMG_0123.jpg</span>
           <button class="button bare hotspot" tabindex="0" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。">♡</button>
           <button class="button bare hotspot" tabindex="0" data-ui="viewer-edit" data-name="编辑入口" data-impl="Gtk.Button edit_btn" data-props="图片可用；普通 video/* 禁用。">✎</button>
@@ -280,6 +282,7 @@
           <details class="sync-settings-preview">
             <summary class="pref-row hotspot" tabindex="0" data-ui="webdav-config-toggle" data-name="WebDAV 同步折叠行" data-impl="settings.rs build_sync_settings_group → Adw.ExpanderRow + Gtk.Switch suffix" data-props="设置每次打开时默认折叠；同一行显示 WebDAV 同步标题、启用开关和任务数量摘要。展开后统一展示所有连接与任务设置；保存任务不会立即同步，首页下拉触发一次同步。"><span>WebDAV 同步 · 2 个同步任务</span><span class="count">⌄</span><span class="switch"></span></summary>
             <div class="sync-settings-children">
+              <div class="pref-row hotspot" tabindex="0" data-ui="sync-day-cloud-badges-toggle" data-name="日视图云图标开关" data-impl="WebDAV ExpanderRow child → Adw.ActionRow + Gtk.Switch" data-props="只控制日视图的 cloud/cloud-off 角标；默认开启并即时保存，详情页始终显示状态。"><span>日视图显示云图标</span><span class="switch"></span></div>
               <div class="pref-row hotspot" tabindex="0" data-ui="webdav-connection-form" data-name="WebDAV 连接表单" data-impl="collapsed WebDAV ExpanderRow child rows → Adw.EntryRow / PasswordEntry" data-props="仅在展开 WebDAV 同步行后显示；填写 HTTPS 地址、用户名、系统密钥环密码、本地绝对目录和远端目录；保存任务后不立即传输。密码框不提供显示按钮。"><span>WebDAV 服务器配置</span><button class="button suggested">保存同步任务</button></div>
               <div class="pref-row hotspot" tabindex="0" data-ui="sync-job-row" data-name="同步任务行" data-impl="collapsed WebDAV ExpanderRow child → Adw.ActionRow" data-props="仅显示本地与远端映射及同步状态；不在任务行提供暂停或立即同步动作。首页顶部下拉触发已保存任务。"><span>图片 ↔ PhotoViewer</span><span>等待首页下拉</span></div>
               <div class="pref-row hotspot" tabindex="0" data-ui="sync-remote-folder-row" data-name="云端目录与关系管理行" data-impl="Adw.ActionRow → folder subtitle + browse button + trash button" data-props="目录浏览与删除关系合并在同一行。浏览或切换自动暂停并等当前文件完成；切换后清除旧比较状态并保持暂停。删除关系会删除任务记录和暂存，不删本地或云端媒体。"><span>云端目录</span><span>相册/2025 <button class="button">浏览…</button> <button class="button">删除图标</button></span></div>
@@ -288,6 +291,24 @@
             </div>
           </details>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="screen">
+    <div class="titlebar hotspot" tabindex="0" data-ui="album-picker-state" data-name="移动到相册弹框状态" data-impl="src/ui/album_picker.rs AlbumPickerDialog" data-props="照片页、图片虚拟相册与实体相册共用同一个弹框；外层 NavigationView 不新增页面。">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <span class="titlebar-title">相册选择</span>
+    </div>
+    <div class="picker-scene">
+      <div class="picker-card hotspot" tabindex="0" data-ui="album-picker-dialog" data-name="相册选择弹框" data-impl="Adw.Dialog .glass-alert-dialog.album-picker-dialog" data-props="单层弹框，封面宫格可滚动；复制或移动成功后关闭，失败保留并显示错误。" data-source="src/ui/album_picker.rs">
+        <div class="picker-head"><strong>添加到相册</strong><span class="hotspot" tabindex="0" data-ui="album-picker-close" data-name="圆形关闭按钮" data-impl="Gtk.Button window-close-symbolic .glass-toolbar-button.round-search-button" data-props="沿用照片页搜索按钮的圆形图标样式，关闭弹框。">×</span></div>
+        <div class="picker-grid hotspot" tabindex="0" data-ui="album-picker-grid" data-name="目标相册宫格" data-impl="Gtk.FlowBox .album-picker-grid" data-props="物理相册按封面平铺，网格间距和缩略图视觉沿用照片视图。">
+          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="封面固定方形；异步请求真实封面，显示相册名和媒体计数。"><span class="picker-cover"></span><span>2026 旅行</span><small>84 项</small></div>
+          <div class="picker-item selected hotspot" tabindex="0" data-ui="album-picker-selected" data-name="已选目标相册" data-impl="SquareTile .media-selected" data-props="选中态复用照片宫格的玻璃边框及高亮。"><span class="picker-cover green"></span><span>家庭</span><small>56 项</small></div>
+          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="候选相册仍在同一弹框内选择，无二级页面。"><span class="picker-cover gold"></span><span>收藏集</span><small>18 项</small></div>
+        </div>
+        <div class="picker-actions hotspot" tabindex="0" data-ui="album-picker-actions" data-name="复制 / 移动操作" data-impl="Gtk.Box .album-picker-actions → glass-toolbar-suggested / glass-toolbar-danger" data-props="选择目标后启用；文件操作期间禁用，失败时恢复。"><button class="button suggested">复制</button><button class="button">移动</button></div>
       </div>
     </div>
   </section>

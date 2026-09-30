@@ -44,6 +44,15 @@ as `src/ui/viewer_page/tests.rs`, `src/ui/viewer/filmstrip/tests.rs`, and
 
 The viewer is pushed inside the existing `adw::NavigationView`; it must not resize the main app sidebar. Keep viewer chrome inside the page content area and avoid constraints that alter root window/sidebar sizing.
 
+The viewer header shows the same cloud/cloud-off state beside the date for
+images and videos in selected sync albums. It queries the current media ID off
+the GTK thread on each switch and on sync-state domain events, and accepts the
+result only while both the switch and latest badge-request tokens still match.
+Refreshing the same item retains its previous glyph until the new state lands,
+so transfer events do not flash a blank badge. Media outside selected albums
+have no cloud glyph. The WebDAV Day-view cloud-icon switch does not affect this
+header indicator.
+
 Overlay controls should have stable dimensions. Hidden panels should not leave child content measured in a collapsed allocation path, because that can produce warnings such as negative width or height in `gtk_widget_size_allocate`.
 
 Original image decode must apply orientation metadata before creating the display texture. Rotate from the editor changes metadata only, so the viewer must not rely on pixel dimensions from `image::open` to infer display direction.

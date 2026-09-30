@@ -1,5 +1,6 @@
 use super::*;
 use chrono::Utc;
+use libadwaita::prelude::PreferencesRowExt;
 
 use std::rc::Rc;
 
@@ -102,6 +103,52 @@ fn changing_day_grid_columns_while_settings_is_open_defers_window_resize() {
     assert!(
         window.imp().day_grid_apply_source.borrow().is_none(),
         "the Day grid must not reflow while its centered Settings dialog is visible"
+    );
+}
+
+#[gtk::test]
+fn webdav_expander_contains_day_cloud_badge_switch() {
+    fn find_cloud_row(widget: &gtk::Widget) -> Option<adw::ActionRow> {
+        if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+            if row.title() == tr("setting.sync.day_cloud_badges") {
+                return Some(row.clone());
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(row) = find_cloud_row(&current) {
+                return Some(row);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+
+    fn find_switch(widget: &gtk::Widget) -> Option<gtk::Switch> {
+        if let Some(switch) = widget.downcast_ref::<gtk::Switch>() {
+            return Some(switch.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            if let Some(switch) = find_switch(&current) {
+                return Some(switch);
+            }
+            child = current.next_sibling();
+        }
+        None
+    }
+
+    let app = adw::Application::builder()
+        .application_id("io.github.luyao_1024.photoviewer.DayCloudSetting")
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let window = MainWindow::new(&app);
+    let group = window.build_sync_settings_group(window.upcast_ref());
+    let row = find_cloud_row(group.upcast_ref()).expect("cloud switch should be a WebDAV child");
+    let switch = find_switch(row.upcast_ref()).expect("cloud row should contain a switch");
+    assert_eq!(
+        switch.is_active(),
+        crate::core::prefs::day_cloud_badges_visible()
     );
 }
 

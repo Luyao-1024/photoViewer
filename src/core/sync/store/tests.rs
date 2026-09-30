@@ -55,6 +55,108 @@ fn stores_job_and_baseline_independently_from_media_rows() {
 }
 
 #[test]
+fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let job = store.create_job(&new_job(local.clone())).unwrap();
+    let fingerprint = Fingerprint {
+        size: 5,
+        blake3: "abc".into(),
+    };
+    let entry = store
+        .upsert_observation(
+            job.id,
+            "a.jpg",
+            Some(&fingerprint),
+            Some(123),
+            Some(&fingerprint),
+            Some("etag"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(entry, &fingerprint, Some("etag"))
+        .unwrap();
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO media_items
+         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, 'image/jpeg', 'image', 1, 123, 5, '', 1)",
+        params!["file:///a.jpg", local.join("a.jpg").to_string_lossy(), local.to_string_lossy()],
+    ).unwrap();
+    let id = conn.last_insert_rowid();
+    assert_eq!(
+        store.media_cloud_states(&[id]).unwrap(),
+        HashMap::from([(id, CloudState::Synced)])
+    );
+    conn.execute(
+        "UPDATE media_items SET file_mtime_ns = 124 WHERE id = ?1",
+        [id],
+    )
+    .unwrap();
+    assert_eq!(
+        store.media_cloud_states(&[id]).unwrap()[&id],
+        CloudState::Off
+    );
+    conn.execute(
+        "UPDATE media_items SET file_mtime_ns = 123 WHERE id = ?1",
+        [id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE sync_entries SET state = 'conflict' WHERE id = ?1",
+        [entry],
+    )
+    .unwrap();
+    assert_eq!(
+        store.media_cloud_states(&[id]).unwrap()[&id],
+        CloudState::Off
+    );
+    store.set_upload_albums(job.id, &["Other".into()]).unwrap();
+    assert!(store.media_cloud_states(&[id]).unwrap().is_empty());
+    store.set_upload_albums(job.id, &["".into()]).unwrap();
+    assert_eq!(
+        store.media_cloud_states(&[id]).unwrap()[&id],
+        CloudState::Off
+    );
+
+    conn.execute(
+        "INSERT INTO media_items
+         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, 'video/mp4', 'video', 1, 123, 5, '', 1)",
+        params!["file:///v.mp4", local.join("v.mp4").to_string_lossy(), local.to_string_lossy()],
+    ).unwrap();
+    let video_id = conn.last_insert_rowid();
+    assert_eq!(
+        store.media_cloud_states(&[video_id]).unwrap()[&video_id],
+        CloudState::Off
+    );
+    let video_entry = store
+        .upsert_observation(
+            job.id,
+            "v.mp4",
+            Some(&fingerprint),
+            Some(123),
+            Some(&fingerprint),
+            Some("etag"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(video_entry, &fingerprint, Some("etag"))
+        .unwrap();
+    assert_eq!(
+        store.media_cloud_states(&[video_id]).unwrap()[&video_id],
+        CloudState::Synced
+    );
+}
+
+#[test]
 fn rejects_insecure_non_local_endpoint() {
     let temp = tempfile::tempdir().unwrap();
     let local = temp.path().join("photos");

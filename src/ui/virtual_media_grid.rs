@@ -17,6 +17,7 @@ use crate::core::media::MediaItem;
 use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
 use crate::core::section_model::{counts_from_date_groups, GroupBy, SectionKey};
+use crate::core::sync::SyncStore;
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::glass_context_menu::{self, GlassMenuItem, GlassMenuItemKind};
 use crate::ui::media_grid::{thumbnail_request_mtime, FavoriteMenuState, MediaGridCallbacks};
@@ -276,6 +277,8 @@ mod imp {
         /// overview only after the user scrolls beyond the first grid row.
         pub on_scroll_intent: OnceCell<Rc<dyn Fn(f64)>>,
         pub(super) factory_cells: RefCell<Vec<FactoryCell>>,
+        pub sync_badge_refresh_in_flight: Cell<bool>,
+        pub sync_badge_refresh_pending: Cell<bool>,
         pub metadata_counts: RefCell<Option<HashMap<SectionKey, u32>>>,
         /// Day-granularity index used by the Photos date-range overlay. It is
         /// separate from the current Year/Month/Day visual layout so the
@@ -329,6 +332,8 @@ mod imp {
                 on_view_changed: OnceCell::new(),
                 on_scroll_intent: OnceCell::new(),
                 factory_cells: RefCell::new(Vec::new()),
+                sync_badge_refresh_in_flight: Cell::new(false),
+                sync_badge_refresh_pending: Cell::new(false),
                 metadata_counts: RefCell::new(None),
                 visible_date_layout: RefCell::new(None),
                 metadata_ready: Cell::new(false),
@@ -907,6 +912,70 @@ impl VirtualMediaGrid {
             .get()
             .expect("VirtualMediaGrid loader initialized in new")
             .clone()
+    }
+
+    pub fn refresh_sync_badges(&self) {
+        if self.mode() != GroupBy::Day || !self.imp().active.get() {
+            return;
+        }
+        if !crate::core::prefs::day_cloud_badges_visible() {
+            for cell in self.imp().factory_cells.borrow().iter() {
+                cell.tile.set_cloud_state(None);
+            }
+            self.imp().sync_badge_refresh_pending.set(false);
+            return;
+        }
+        if self.imp().sync_badge_refresh_in_flight.replace(true) {
+            self.imp().sync_badge_refresh_pending.set(true);
+            return;
+        }
+        let cells: Vec<_> = self
+            .imp()
+            .factory_cells
+            .borrow()
+            .iter()
+            .filter_map(|cell| {
+                cell.binding
+                    .borrow()
+                    .clone()
+                    .map(|binding| (cell.tile.downgrade(), cell.binding.clone(), binding))
+            })
+            .collect();
+        if cells.is_empty() {
+            self.imp().sync_badge_refresh_in_flight.set(false);
+            return;
+        }
+        let ids: Vec<_> = cells
+            .iter()
+            .map(|(_, _, binding)| binding.media_id().get())
+            .collect();
+        let pool = self.loader().pool().clone();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result =
+                gio::spawn_blocking(move || SyncStore::new(pool).media_cloud_states(&ids)).await;
+            if let Ok(Ok(states)) = result {
+                let visible = crate::core::prefs::day_cloud_badges_visible();
+                for (tile, current, binding) in cells {
+                    if current.borrow().as_ref() == Some(&binding) {
+                        if let Some(tile) = tile.upgrade() {
+                            let state = if visible {
+                                states.get(&binding.media_id().get()).copied()
+                            } else {
+                                None
+                            };
+                            tile.set_cloud_state(state);
+                        }
+                    }
+                }
+            }
+            if let Some(grid) = weak.upgrade() {
+                grid.imp().sync_badge_refresh_in_flight.set(false);
+                if grid.imp().sync_badge_refresh_pending.replace(false) {
+                    grid.refresh_sync_badges();
+                }
+            }
+        });
     }
 
     pub(super) fn layout_generation(&self) -> u64 {
@@ -1657,6 +1726,7 @@ impl VirtualMediaGrid {
                         grid.preload_exif_placeholders(&items);
                         grid.model()
                             .replace_ready_range(range.start..range.end, items);
+                        grid.refresh_sync_badges();
                         let keep = grid
                             .imp()
                             .desired_window

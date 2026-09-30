@@ -930,6 +930,12 @@ impl PhotosPage {
         self.apply_overview_sync_icon(snapshot.sync.status);
     }
 
+    pub(crate) fn refresh_day_sync_badges(&self) {
+        if let Some(grid) = self.imp().grids.borrow().get(2) {
+            grid.refresh_sync_badges();
+        }
+    }
+
     fn apply_overview_sync_icon(&self, status: SyncOverviewStatus) {
         let imp = self.imp();
         let spinner = imp.overview_sync_spinner.get();
@@ -1465,11 +1471,14 @@ impl PhotosPage {
         let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
             return;
         };
+        let Some(loader) = self.imp().loader.borrow().as_ref().cloned() else {
+            return;
+        };
         if ids.is_empty() {
             return;
         }
         let raw_ids: Vec<i64> = ids.into_iter().map(MediaId::get).collect();
-        album_picker::AlbumPickerDialog::present(&nav, pool, db_actor, raw_ids);
+        album_picker::AlbumPickerDialog::present(&nav, pool, db_actor, loader, raw_ids);
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {

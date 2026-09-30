@@ -52,6 +52,14 @@ diverge. When the refreshed Photos projection is only adding media, preserve
 the existing `ListStore` items and emit a pure insertion rather than replacing
 the whole model; otherwise hidden Photos grids destroy and recreate every
 thumbnail tile when the user returns to the page.
+The Photos grid and every `AlbumDetailPage` (including virtual Images) route
+their Move to Album context action to the same picker. The picker is one
+`Adw.Dialog`, never a pushed navigation page: physical destination albums are
+shown in a scrolling cover grid using `SquareTile`, selection enables Copy and
+Move in the dialog footer, and successful operations close the dialog. A failed
+operation leaves it open with the error visible. Album detail refresh reads the
+active `browsing_stack` child because a modal dialog does not become the outer
+`NavigationView` page.
 Copy uses no-clobber creation and removes the new file if DB insertion fails.
 Move uses a no-clobber same-filesystem link (or copy/delete on `EXDEV`) and
 restores the original path when the DB location update fails. Production

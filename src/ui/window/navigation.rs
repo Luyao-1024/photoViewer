@@ -583,11 +583,11 @@ impl MainWindow {
     /// this keeps the page's own filtered `ListStore` in sync while the user
     /// stays on that album.
     pub fn refresh_visible_album_detail_page(&self) {
-        let nav = self.imp().nav_view.get();
-        let Some(page) = nav.visible_page() else {
-            return;
-        };
-        if let Some(album_detail) = page.downcast_ref::<AlbumDetailPage>() {
+        if let Some(album_detail) = self
+            .browsing_stack()
+            .visible_child()
+            .and_downcast::<AlbumDetailPage>()
+        {
             album_detail.refresh_media_list_from_repository();
         }
     }

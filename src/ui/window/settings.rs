@@ -656,6 +656,43 @@ impl MainWindow {
         connection.add_suffix(&sync_switch);
         group.add(&connection);
 
+        let cloud_badges_visible = prefs::day_cloud_badges_visible();
+        let cloud_badge_row = adw::ActionRow::builder()
+            .title(tr("setting.sync.day_cloud_badges"))
+            .activatable(false)
+            .build();
+        cloud_badge_row.add_css_class("settings-action-row");
+        let cloud_badge_switch = gtk::Switch::builder()
+            .active(cloud_badges_visible)
+            .valign(gtk::Align::Center)
+            .build();
+        cloud_badge_row.add_suffix(&cloud_badge_switch);
+        connection.add_row(&cloud_badge_row);
+        let saved_cloud_badges_visible = std::cell::Cell::new(cloud_badges_visible);
+        let reverting_cloud_badges = std::cell::Cell::new(false);
+        let window_for_cloud_badges = self.downgrade();
+        let parent_for_cloud_badges = parent.clone();
+        cloud_badge_switch.connect_active_notify(move |switch| {
+            if reverting_cloud_badges.get() {
+                return;
+            }
+            let visible = switch.is_active();
+            if let Err(error) = prefs::set_day_cloud_badges_visible(visible) {
+                reverting_cloud_badges.set(true);
+                switch.set_active(saved_cloud_badges_visible.get());
+                reverting_cloud_badges.set(false);
+                show_settings_error_dialog(
+                    &parent_for_cloud_badges,
+                    &trf("setting.sync.setting_save_failed", &[("error", &error)]),
+                );
+                return;
+            }
+            saved_cloud_badges_visible.set(visible);
+            if let Some(window) = window_for_cloud_badges.upgrade() {
+                window.refresh_cloud_badges();
+            }
+        });
+
         let task_picker = if saved_jobs.is_empty() {
             None
         } else {

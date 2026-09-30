@@ -94,6 +94,67 @@ h1 {
 
 .screen + .screen { margin-top: 34px; }
 
+.picker-scene {
+  min-height: 400px;
+  padding: 32px;
+  display: grid;
+  place-items: center;
+  background: var(--content-bg);
+}
+
+.picker-card {
+  width: min(620px, 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: #282d36;
+  box-shadow: var(--shadow);
+}
+
+.picker-head,
+.picker-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+}
+
+.picker-head span {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface-hover);
+}
+
+.picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 12px;
+  padding: 12px 18px;
+}
+
+.picker-item {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+  color: var(--text);
+}
+
+.picker-item small { color: var(--text-dim); }
+
+.picker-cover {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #597b94, #a8b9bb);
+}
+
+.picker-cover.green { background: linear-gradient(135deg, #527b76, #a6bd9d); }
+.picker-cover.gold { background: linear-gradient(135deg, #9c7755, #d1ad70); }
+.picker-item.selected .picker-cover { outline: 2px solid var(--text); outline-offset: 2px; }
+.picker-actions { justify-content: flex-end; gap: 10px; }
+
 .titlebar {
   display: flex;
   align-items: center;
@@ -477,6 +538,18 @@ h1 {
   background: transparent;
   color: white;
   text-shadow: 0 1px 4px rgba(0,0,0,0.85);
+}
+
+.badge.synced {
+  top: 6px;
+  left: 6px;
+  width: 26px;
+  height: 26px;
+  min-width: 0;
+  min-height: 0;
+  padding: 4px;
+  background: transparent;
+  object-fit: contain;
 }
 
 .badge.motion,

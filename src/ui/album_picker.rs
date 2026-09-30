@@ -1,341 +1,285 @@
-//! AlbumPickerDialog: 列出 albums,选中后弹 Copy/Move 选择,执行后关闭。
-//!
-//! 这是第一个有状态的自定义对话框(非 `AlertDialog`)。它在 `AdwNavigationView`
-//! 之上叠加,所以 `present(host_nav, pool, media_ids)` 调用方传入宿主 nav,
-//! dialog 本身以一个新 `AdwNavigationPage` 的形式 push 进去,关闭时 pop。
-//!
-//! 两级布局:
-//! - Level 1: `AdwNavigationPage` 内嵌一个 `ListBox`,每行是 `AdwActionRow`,
-//!   显示相册名 + 照片数。点击一行 → push Level 2。
-//! - Level 2: `AdwNavigationPage` 内嵌 `AdwToolbarView` + 两个 `Button`:`Copy` / `Move`。
-//!   点击 → 在 `spawn_blocking` 中跑 `core::album_ops::add_to_album` → 关闭 dialog。
+//! A single-dialog album chooser with cover tiles and in-place Copy/Move actions.
 
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::*;
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::core::album_ops::AlbumOpMode;
-use crate::core::albums;
+use crate::core::albums::{self, Album};
 use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
+use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_NORMAL};
+use crate::ui::SquareTile;
 
-/// Present the album picker on top of `host_nav`. `media_ids` are the
-/// `media_items.id`s the user wants to add (1+ entries; empty is a no-op
-/// for the caller). The dialog blocks the nav view while it's open and
-/// pops itself when the user confirms or cancels.
-pub fn present(
-    host_nav: &adw::NavigationView,
-    pool: DbPool,
-    db_actor: DbActorHandle,
-    media_ids: Vec<i64>,
-) {
-    if media_ids.is_empty() {
-        return;
-    }
-
-    // The two-level NavigationView local to this dialog. It lives on top of
-    // `host_nav` via a wrapping AdwNavigationPage so ESC / back-pop returns
-    // to the level above.
-    let inner = adw::NavigationView::new();
-    inner.set_vexpand(true);
-    inner.set_hexpand(true);
-
-    // Build the level-1 page now (with an empty list) and push it onto
-    // `inner`. We populate the list asynchronously from `albums::list` so
-    // the dialog shows up instantly even with many albums.
-    let list_box = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::Single)
-        .css_classes(["boxed-list"])
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .vexpand(true)
-        .build();
-
-    let outer = build_album_list_page(&list_box);
-    let list_page = adw::NavigationPage::builder()
-        .title(tr("album_picker.title"))
-        .child(&outer)
-        .build();
-    outer.append(&list_box);
-    inner.add(&list_page);
-
-    // Wrap the inner nav in a top-level AdwNavigationPage that we push onto
-    // `host_nav`. This way:
-    // - the dialog has its own back/forward stack (album → action)
-    // - cancelling at level 1 pops the wrapping page → back to the caller
-    // - the back button in the header takes care of navigation between levels
-    let wrapper = adw::NavigationPage::builder()
-        .title(tr("album_picker.title"))
-        .child(&inner)
-        .build();
-    host_nav.push(&wrapper);
-
-    // Populate the album list asynchronously. We hold a strong ref to
-    // `list_box` (cloned) so the future can append to it after the function
-    // returns.
-    let inner_for_listing = inner.clone();
-    let pool_for_listing = pool.clone();
-    let media_ids_for_rows = media_ids.clone();
-    let host_nav_for_rows = host_nav.clone();
-    glib::spawn_future_local(async move {
-        let albums = match albums::list(&pool_for_listing) {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!("AlbumPicker: albums::list failed: {e}");
-                return;
-            }
-        };
-        if albums.is_empty() {
-            // Replace the (still empty) list with an empty-state page.
-            let empty = adw::StatusPage::builder()
-                .title(tr("album_picker.no_albums_yet.title"))
-                .description(tr("album_picker.no_albums_yet.description"))
-                .icon_name("folder-symbolic")
-                .vexpand(true)
-                .build();
-            list_box.set_visible(false);
-            outer.append(&empty);
-            return;
-        }
-        for album in albums {
-            let row = adw::ActionRow::builder()
-                .title(album.display_name())
-                .subtitle(trf(
-                    "album.count",
-                    &[("count", &album.photo_count.to_string())],
-                ))
-                .activatable(true)
-                .build();
-            row.add_prefix(&gtk::Image::from_icon_name("folder-symbolic"));
-            let inner_clone = inner_for_listing.clone();
-            let pool_clone = pool_for_listing.clone();
-            let ids_clone = media_ids_for_rows.clone();
-            let actor_clone = db_actor.clone();
-            let folder = album.folder_path.clone();
-            let host_nav_clone = host_nav_for_rows.clone();
-            row.connect_activated(move |_| {
-                push_action_page(
-                    &inner_clone,
-                    pool_clone.clone(),
-                    actor_clone.clone(),
-                    ids_clone.clone(),
-                    folder.clone(),
-                    &host_nav_clone,
-                );
-            });
-            list_box.append(&row);
-        }
-    });
-}
-
-/// Build the level-1 page chrome: header + outer box. The list_box is
-/// appended by the caller.
-fn build_album_list_page(list_box: &gtk::ListBox) -> gtk::Box {
-    let outer = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .build();
-    let header = adw::HeaderBar::builder()
-        .show_end_title_buttons(false)
-        .css_classes(["glass-header"])
-        .build();
-    outer.append(&header);
-    let _ = list_box; // silence unused if not appended
-    outer
-}
-
-/// Push the level-2 page (Copy / Move) onto `inner`.
-///
-/// `#[doc(hidden)]` test-only entry point: integration tests need to
-/// reach this synchronously (the normal path goes through
-/// `glib::spawn_future_local` which would deadlock a sync test). Not
-/// part of the public API — use [`AlbumPickerDialog::present`] instead.
-#[doc(hidden)]
-pub fn push_action_page(
-    inner: &adw::NavigationView,
-    pool: DbPool,
-    db_actor: DbActorHandle,
-    media_ids: Vec<i64>,
-    folder: std::path::PathBuf,
-    host_nav: &adw::NavigationView,
-) {
-    let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::builder()
-        .show_end_title_buttons(false)
-        .css_classes(["glass-header"])
-        .build();
-
-    let content = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .spacing(12)
-        .margin_top(24)
-        .margin_bottom(24)
-        .margin_start(24)
-        .margin_end(24)
-        .build();
-
-    let name_label = folder
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| folder.display().to_string());
-    let title = gtk::Label::builder()
-        .label(trf("album_picker.to", &[("name", &name_label)]))
-        .css_classes(["title-2"])
-        .build();
-    let hint = gtk::Label::builder()
-        .label(tr("album_picker.hint"))
-        .wrap(true)
-        .halign(gtk::Align::Center)
-        .css_classes(["dimmed"])
-        .build();
-
-    let btn_row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .halign(gtk::Align::Center)
-        .spacing(12)
-        .margin_top(12)
-        .build();
-
-    let copy_btn = gtk::Button::with_label(&tr("album_picker.copy"));
-    copy_btn.add_css_class("glass-toolbar-button");
-    copy_btn.add_css_class("glass-toolbar-suggested");
-
-    let move_btn = gtk::Button::with_label(&tr("album_picker.move"));
-    move_btn.add_css_class("glass-toolbar-button");
-    move_btn.add_css_class("glass-toolbar-danger");
-
-    btn_row.append(&copy_btn);
-    btn_row.append(&move_btn);
-
-    content.append(&title);
-    content.append(&hint);
-    content.append(&btn_row);
-
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&content));
-
-    let page = adw::NavigationPage::builder()
-        .title(tr("album_picker.choose_action.title"))
-        .child(&toolbar)
-        .build();
-    inner.push(&page);
-
-    // Wire Copy / Move buttons to run album_ops on a blocking thread.
-    let pool_copy = pool.clone();
-    let actor_copy = db_actor.clone();
-    let media_ids_copy = media_ids.clone();
-    let folder_copy = folder.clone();
-    let inner_copy = inner.clone();
-    let host_nav_copy = host_nav.clone();
-    copy_btn.connect_clicked(move |_| {
-        run_op(
-            pool_copy.clone(),
-            actor_copy.clone(),
-            media_ids_copy.clone(),
-            folder_copy.clone(),
-            AlbumOpMode::Copy,
-            inner_copy.clone(),
-            host_nav_copy.clone(),
-        );
-    });
-
-    let pool_move = pool;
-    let actor_move = db_actor;
-    let media_ids_move = media_ids;
-    let folder_move = folder;
-    let inner_move = inner.clone();
-    let host_nav_move = host_nav.clone();
-    move_btn.connect_clicked(move |_| {
-        run_op(
-            pool_move.clone(),
-            actor_move.clone(),
-            media_ids_move.clone(),
-            folder_move.clone(),
-            AlbumOpMode::Move,
-            inner_move.clone(),
-            host_nav_move.clone(),
-        );
-    });
-}
-
-/// Run `add_to_album` on a blocking thread, then pop the dialog. On error
-/// log a warning and pop anyway (the user can re-pick).
-fn run_op(
-    pool: DbPool,
-    db_actor: DbActorHandle,
-    media_ids: Vec<i64>,
-    folder: std::path::PathBuf,
-    mode: AlbumOpMode,
-    inner: adw::NavigationView,
-    host_nav: adw::NavigationView,
-) {
-    let folder_name = folder
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| folder.display().to_string());
-    glib::spawn_future_local(async move {
-        // Spawn blocking because add_to_album does synchronous fs I/O.
-        let result = tokio::task::spawn_blocking(move || {
-            crate::core::album_ops::add_to_album_with_actor(
-                &pool, &db_actor, &media_ids, &folder, mode,
-            )
-        })
-        .await;
-
-        match result {
-            Ok(Ok(items)) => {
-                let verb = match mode {
-                    AlbumOpMode::Copy => "Copied",
-                    AlbumOpMode::Move => "Moved",
-                };
-                tracing::info!("{} {} photo(s) to {}", verb, items.len(), folder_name);
-                // 操作已成功，DB 写入和相册刷新均已由 DbActor 完成。
-                // 同步刷新共享照片列表、可见相册详情和侧栏计数。
-                super::window::refresh_after_album_operation(&host_nav);
-                // Pop the entire dialog (inner has 2 levels). Once the
-                // user is back at level 1 with no further navigation, the
-                // wrapper will be popped by the host's pop handler.
-                pop_to_root(&inner);
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("AlbumPicker: add_to_album failed: {e}");
-                pop_to_root(&inner);
-            }
-            Err(e) => {
-                tracing::warn!("AlbumPicker: spawn_blocking join failed: {e}");
-                pop_to_root(&inner);
-            }
-        }
-    });
-}
-
-/// Pop the inner NavigationView back to its root (level 1). The wrapper
-/// page stays on `host_nav`; the host's signal handler (or the user
-/// pressing back on level 1) will then pop the wrapper.
-fn pop_to_root(inner: &adw::NavigationView) {
-    // `pop` returns whether a pop happened. We loop until it returns false
-    // (i.e. we're back at the root page).
-    while inner.pop() {}
-}
-
-/// 公共类型别名,方便 photos_page / viewer_page 引用同一签名。
-pub type AlbumPickerHandle = ();
-
-/// 「在给定 nav 上展示 picker」的便捷方法。`media_ids` 至少 1 项。
 pub struct AlbumPickerDialog;
+
 impl AlbumPickerDialog {
     pub fn present(
         host_nav: &adw::NavigationView,
         pool: DbPool,
         db_actor: DbActorHandle,
+        loader: Arc<ThumbnailLoader>,
         media_ids: Vec<i64>,
     ) {
-        present(host_nav, pool, db_actor, media_ids);
+        if media_ids.is_empty() {
+            return;
+        }
+
+        let dialog = adw::Dialog::builder()
+            .title(tr("album_picker.title"))
+            .content_width(620)
+            .content_height(560)
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_css_class("album-picker-dialog");
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .build();
+        let header = adw::HeaderBar::builder()
+            .show_end_title_buttons(false)
+            .css_classes(["glass-header"])
+            .build();
+        let cancel = gtk::Button::from_icon_name("window-close-symbolic");
+        cancel.set_tooltip_text(Some(&tr("dialog.cancel")));
+        cancel.add_css_class("glass-toolbar-button");
+        cancel.add_css_class("round-search-button");
+        let weak_dialog = dialog.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(dialog) = weak_dialog.upgrade() {
+                dialog.close();
+            }
+        });
+        header.pack_end(&cancel);
+        content.append(&header);
+
+        let grid = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .column_spacing(8)
+            .row_spacing(8)
+            .min_children_per_line(2)
+            .max_children_per_line(4)
+            .homogeneous(true)
+            .valign(gtk::Align::Start)
+            .build();
+        grid.add_css_class("album-picker-grid");
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&grid)
+            .build();
+        content.append(&scroller);
+
+        let status = gtk::Label::builder()
+            .wrap(true)
+            .xalign(0.0)
+            .visible(false)
+            .css_classes(["error", "album-picker-status"])
+            .build();
+        content.append(&status);
+
+        let actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .halign(gtk::Align::End)
+            .spacing(10)
+            .css_classes(["album-picker-actions"])
+            .build();
+        let copy = gtk::Button::with_label(&tr("album_picker.copy"));
+        copy.add_css_class("glass-toolbar-button");
+        copy.add_css_class("glass-toolbar-suggested");
+        copy.set_sensitive(false);
+        let move_btn = gtk::Button::with_label(&tr("album_picker.move"));
+        move_btn.add_css_class("glass-toolbar-button");
+        move_btn.add_css_class("glass-toolbar-danger");
+        move_btn.set_sensitive(false);
+        actions.append(&copy);
+        actions.append(&move_btn);
+        content.append(&actions);
+        dialog.set_child(Some(&content));
+
+        let selected = Rc::new(RefCell::new(None::<PathBuf>));
+        for (button, mode) in [(&copy, AlbumOpMode::Copy), (&move_btn, AlbumOpMode::Move)] {
+            let selected = selected.clone();
+            let pool = pool.clone();
+            let db_actor = db_actor.clone();
+            let ids = media_ids.clone();
+            let host_nav = host_nav.downgrade();
+            let dialog = dialog.downgrade();
+            let copy = copy.downgrade();
+            let move_btn = move_btn.downgrade();
+            let status = status.downgrade();
+            button.connect_clicked(move |_| {
+                let Some(folder) = selected.borrow().clone() else {
+                    return;
+                };
+                let (Some(copy), Some(move_btn), Some(status)) =
+                    (copy.upgrade(), move_btn.upgrade(), status.upgrade())
+                else {
+                    return;
+                };
+                copy.set_sensitive(false);
+                move_btn.set_sensitive(false);
+                status.set_visible(false);
+                let pool = pool.clone();
+                let db_actor = db_actor.clone();
+                let ids = ids.clone();
+                let dialog = dialog.clone();
+                let host_nav = host_nav.clone();
+                let copy = copy.clone();
+                let move_btn = move_btn.clone();
+                let status = status.clone();
+                glib::spawn_future_local(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::core::album_ops::add_to_album_with_actor(
+                            &pool, &db_actor, &ids, &folder, mode,
+                        )
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(_)) => {
+                            if let Some(nav) = host_nav.upgrade() {
+                                crate::ui::window::refresh_after_album_operation(&nav);
+                            }
+                            if let Some(dialog) = dialog.upgrade() {
+                                dialog.close();
+                            }
+                        }
+                        result => {
+                            let message = match result {
+                                Ok(Err(err)) => err.to_string(),
+                                Err(err) => err.to_string(),
+                                Ok(Ok(_)) => unreachable!(),
+                            };
+                            tracing::warn!("AlbumPicker: add_to_album failed: {message}");
+                            status.set_label(&message);
+                            status.set_visible(true);
+                            copy.set_sensitive(true);
+                            move_btn.set_sensitive(true);
+                        }
+                    }
+                });
+            });
+        }
+
+        dialog.present(host_nav);
+        let pool_for_list = pool.clone();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || albums::list(&pool_for_list)).await;
+            match result {
+                Ok(Ok(albums)) if !albums.is_empty() => {
+                    let selected_tile = Rc::new(RefCell::new(None::<glib::WeakRef<SquareTile>>));
+                    for album in albums {
+                        let (button, tile) = album_tile(&album, &loader);
+                        let tile = tile.downgrade();
+                        let folder = album.folder_path.clone();
+                        let selected = selected.clone();
+                        let selected_tile = selected_tile.clone();
+                        let copy = copy.downgrade();
+                        let move_btn = move_btn.downgrade();
+                        button.connect_clicked(move |_| {
+                            let Some(tile) = tile.upgrade() else {
+                                return;
+                            };
+                            let (Some(copy), Some(move_btn)) = (copy.upgrade(), move_btn.upgrade())
+                            else {
+                                return;
+                            };
+                            if let Some(previous) =
+                                selected_tile.borrow_mut().replace(tile.downgrade())
+                            {
+                                if let Some(previous) = previous.upgrade() {
+                                    previous.remove_css_class("media-selected");
+                                }
+                            }
+                            tile.add_css_class("media-selected");
+                            *selected.borrow_mut() = Some(folder.clone());
+                            copy.set_sensitive(true);
+                            move_btn.set_sensitive(true);
+                        });
+                        grid.insert(&button, -1);
+                    }
+                }
+                Ok(Ok(_)) => {
+                    status.set_label(&tr("album_picker.no_albums_yet.description"));
+                    status.set_visible(true);
+                }
+                error => {
+                    tracing::warn!("AlbumPicker: album listing failed: {error:?}");
+                    status.set_label(&tr("album_picker.no_albums_yet.title"));
+                    status.set_visible(true);
+                }
+            }
+        });
     }
+}
+
+fn album_tile(album: &Album, loader: &Arc<ThumbnailLoader>) -> (gtk::Button, SquareTile) {
+    let body = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(5)
+        .build();
+    let cover = gtk::Overlay::new();
+    cover.add_css_class("album-picker-cover");
+    let tile = SquareTile::new();
+    tile.set_target(120);
+    tile.set_height_for_width(true);
+    tile.set_allow_width_shrink(true);
+    cover.set_child(Some(&tile));
+    let fallback = gtk::Image::from_icon_name("folder-pictures-symbolic");
+    fallback.set_pixel_size(36);
+    fallback.set_halign(gtk::Align::Center);
+    fallback.set_valign(gtk::Align::Center);
+    cover.add_overlay(&fallback);
+    body.append(&cover);
+    let title = gtk::Label::builder()
+        .label(album.display_name())
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(16)
+        .build();
+    body.append(&title);
+    let count = gtk::Label::builder()
+        .label(trf(
+            "album.count",
+            &[("count", &album.photo_count.to_string())],
+        ))
+        .css_classes(["dim-label"])
+        .build();
+    body.append(&count);
+    let button = gtk::Button::builder()
+        .child(&body)
+        .tooltip_text(album.folder_path.display().to_string())
+        .css_classes(["album-picker-tile"])
+        .build();
+
+    if let Some(uri) = &album.cover_uri {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        loader.request(
+            uri.clone(),
+            ThumbnailSize::Small,
+            Some(std::time::SystemTime::from(album.last_modified)),
+            tx,
+            TIER_NORMAL,
+        );
+        let tile = tile.downgrade();
+        let fallback = fallback.downgrade();
+        glib::spawn_future_local(async move {
+            if let Ok(loaded) = rx.await {
+                if let Some(tile) = tile.upgrade() {
+                    tile.set_paintable(Some(&loaded.texture));
+                }
+                if let Some(fallback) = fallback.upgrade() {
+                    fallback.set_visible(false);
+                }
+            }
+        });
+    }
+    (button, tile)
 }

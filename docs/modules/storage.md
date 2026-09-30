@@ -299,6 +299,20 @@ Saved tasks expose a cloud-folder browser populated by recursively listing WebDA
 
 Saved tasks can be deleted individually at any time. Deletion automatically pauses the task and waits for its current file operation to finish. Removing a relationship cascades its task, entries, conflicts, unfinished operations, and staging artifacts without removing local or remote media. A connection and its keyring credential are removed only when no other job references that connection; a keyring cleanup error is reported after the relationship is removed.
 
+`SyncStore::media_cloud_states()` checks a bounded set of image/video IDs
+against enabled jobs and their selected physical albums. It returns no state
+outside those albums, cloud-off when a local item lacks a current completed
+baseline, and cloud when `state='synced'`, the entry's local fingerprint and
+size match the baseline, and indexed file size and nanosecond mtime match the
+observation. The media scanner intentionally leaves `blake3_hash` empty, so
+badge reads must not rely on that column or hash files on the GTK path.
+`settings.json` stores `day_cloud_badges_visible` (default `true`); it gates
+only Day-grid badges, independently of the WebDAV master switch and viewer.
+Sync writes that change badge state emit `DomainEvent::SyncStateDirty` through
+the DB actor's normal event channel. The UI refresh hub then updates visible
+Photos/album tiles and an open viewer, including during file transfers and
+after upload-album selection changes. There is no badge-specific sync timer.
+
 `SyncStore::overview()` is the provider-neutral read projection for compact UI
 status surfaces. It derives disabled, not-configured, paused, running, failed,
 ready, or completed from the global opt-in and enabled jobs' persisted

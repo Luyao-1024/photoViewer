@@ -93,6 +93,7 @@ pub enum DomainEvent {
     },
     ThumbnailStatsDirty,
     LiveCountDirty,
+    SyncStateDirty,
 }
 
 #[derive(Clone)]

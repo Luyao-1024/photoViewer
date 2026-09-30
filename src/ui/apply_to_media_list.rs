@@ -46,7 +46,8 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
         | DomainEvent::AlbumCoverChanged { .. }
         | DomainEvent::AlbumsDirty { .. }
         | DomainEvent::ThumbnailStatsDirty
-        | DomainEvent::LiveCountDirty => {}
+        | DomainEvent::LiveCountDirty
+        | DomainEvent::SyncStateDirty => {}
     }
 }
 

@@ -758,9 +758,25 @@ fn execute_command(
             });
             Ok(DbCommandResult::None)
         }
-        DbCommand::Sync(command) => Ok(DbCommandResult::Sync(
-            crate::core::sync::store::execute_write(pool, command)?,
-        )),
+        DbCommand::Sync(command) => {
+            let cloud_state_changed = matches!(
+                &command,
+                crate::core::sync::store::SyncWrite::CreateJob(_)
+                    | crate::core::sync::store::SyncWrite::SetRemoteRoot { .. }
+                    | crate::core::sync::store::SyncWrite::DeleteJob { .. }
+                    | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
+                    | crate::core::sync::store::SyncWrite::EnableRemoteAlbums { .. }
+                    | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
+                    | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
+                    | crate::core::sync::store::SyncWrite::RecordConflict { .. }
+                    | crate::core::sync::store::SyncWrite::ResolveConflict { .. }
+            );
+            let result = crate::core::sync::store::execute_write(pool, command)?;
+            if cloud_state_changed {
+                events.send(DomainEvent::SyncStateDirty);
+            }
+            Ok(DbCommandResult::Sync(result))
+        }
     }
 }
 

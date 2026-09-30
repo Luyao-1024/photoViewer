@@ -65,6 +65,61 @@ async fn blocking_sync_writes_reply_to_runtime_worker() {
     .expect("blocking database replies must wake the runtime worker");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_state_writes_emit_refresh_events() {
+    use crate::core::sync::{Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir(&root).unwrap();
+    let pool = db::init_pool(&dir.path().join("t.db")).unwrap();
+    let (events, mut rx) = DomainEventSender::new();
+    let actor = start_db_actor(pool.clone(), events);
+    let store = SyncStore::with_actor(pool, actor);
+
+    tokio::task::spawn_blocking(move || {
+        let job = store
+            .create_job(&NewSyncJob {
+                endpoint: "https://dav.example.test/root/".into(),
+                username: "alice".into(),
+                credential_ref: "sync-refresh-test".into(),
+                local_root: root,
+                remote_root: "PhotoViewer".into(),
+                direction: SyncDirection::Bidirectional,
+                upload_scope: UploadScope::All,
+                upload_albums: Vec::new(),
+            })
+            .unwrap();
+        let fingerprint = Fingerprint {
+            size: 5,
+            blake3: "abc".into(),
+        };
+        let entry = store
+            .upsert_observation(
+                job.id,
+                "a.jpg",
+                Some(&fingerprint),
+                Some(123),
+                Some(&fingerprint),
+                Some("etag"),
+                false,
+                "pending",
+            )
+            .unwrap();
+        store
+            .commit_baseline(entry, &fingerprint, Some("etag"))
+            .unwrap();
+        store.set_upload_albums(job.id, &["Other".into()]).unwrap();
+    })
+    .await
+    .unwrap();
+
+    for _ in 0..4 {
+        assert!(matches!(rx.try_recv(), Ok(DomainEvent::SyncStateDirty)));
+    }
+    assert!(rx.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn set_favorite_updates_db_and_emits_precise_event() {
     let dir = tempfile::tempdir().unwrap();

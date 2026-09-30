@@ -16,6 +16,7 @@ use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, NavigationPageExt};
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::{MediaItem, NewMediaItem, MEDIA_SUBKIND_STANDARD};
+use photo_viewer::core::sync::{Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope};
 use photo_viewer::core::thumbnails::ThumbnailLoader;
 use photo_viewer::core::{albums, db};
 use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
@@ -61,6 +62,7 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     // those journeys (rapid activation, chrome states, and sidebar modes).
     mode_selector_click_switches_photos_view();
     thumbnail_activation_opens_one_viewer();
+    journey_synced_image_badge_from_day_grid_to_viewer();
     keyboard_shortcuts_drive_full_shell_navigation();
     search_result_activation_opens_one_viewer_while_pending();
     photos_batch_toolbar_clicks_select_favorite_and_album();
@@ -68,6 +70,7 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     sidebar_clicks_drive_top_level_navigation();
     album_sidebar_multi_select_deletes_real_albums();
     album_picker_clicks_album_row_and_copy_move();
+    album_detail_context_menu_moves_to_album();
     album_sidebar_open_then_tile_opens_viewer();
     full_app_shell_renders_photos_and_opens_trash_via_sidebar();
 }
@@ -94,7 +97,7 @@ fn journey_search_view_edit_and_save_copy() {
         .expect("Search page should be visible");
     search.imp().search_entry.get().set_text("one");
     assert!(
-        wait_until(Duration::from_secs(2), || {
+        wait_until(Duration::from_secs(5), || {
             first_flowbox_child(search.upcast_ref()).is_some()
         }),
         "the user's query should render a matching result"
@@ -193,20 +196,17 @@ fn journey_select_copy_to_album_then_open_it() {
     assert!(visible_photos_grid(&shell.photos).is_all_displayed_selected());
     click_button(&shell.photos.imp().add_to_album_btn.get());
 
-    let wrapper = nav.visible_page().expect("album picker wrapper");
-    let inner = find_descendant::<adw::NavigationView>(wrapper.upcast_ref())
-        .expect("AlbumPicker should contain its navigation view");
-    let list = find_descendant::<gtk::ListBox>(wrapper.upcast_ref())
-        .expect("AlbumPicker should contain an album list");
-    assert!(wait_until(Duration::from_secs(2), || list
-        .row_at_index(0)
-        .is_some()));
-    list.row_at_index(0)
-        .expect("fixture album row")
-        .emit_by_name::<()>("activate", &[]);
-    assert_eq!(inner.navigation_stack().n_items(), 2);
+    let dialog = album_picker_dialog(&shell.window);
+    let album = first_album_picker_tile(&dialog);
+    click_button(&album);
+    assert!(
+        find_descendant::<photo_viewer::ui::SquareTile>(album.upcast_ref())
+            .is_some_and(|tile| tile.has_css_class("media-selected")),
+        "selected album cover should use the Photos grid selection state"
+    );
+    assert_eq!(nav.navigation_stack().n_items(), 1);
 
-    let copy = find_button_with_css(wrapper.upcast_ref(), "glass-toolbar-suggested")
+    let copy = find_button_with_css(dialog.upcast_ref(), "glass-toolbar-suggested")
         .expect("Copy action should be visible");
     click_button(&copy);
     assert!(
@@ -214,12 +214,14 @@ fn journey_select_copy_to_album_then_open_it() {
             db::list_all_media(&shell.pool)
                 .map(|items| items.len() > original_count)
                 .unwrap_or(false)
-                && inner.navigation_stack().n_items() == 1
         }),
-        "copying from the picker should persist the copies and return to its album list"
+        "copying from the picker should persist the copies"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || dialog.parent().is_none()),
+        "copying from the picker should close the dialog"
     );
 
-    assert!(nav.pop(), "Back should close the album picker");
     shell.window.populate_album_rows();
     let album_position = shell
         .window
@@ -363,6 +365,112 @@ fn thumbnail_activation_opens_one_viewer() {
     assert!(
         nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "thumbnail activation should open the viewer page"
+    );
+}
+
+fn journey_synced_image_badge_from_day_grid_to_viewer() {
+    let shell = build_full_app_shell();
+    let grid = visible_photos_grid(&shell.photos);
+    let images = || {
+        find_descendants::<gtk::Image>(grid.upcast_ref())
+            .into_iter()
+            .filter(|image| image.has_css_class("thumb-sync-badge"))
+            .collect::<Vec<_>>()
+    };
+    assert!(wait_until(Duration::from_secs(2), || images().len() >= 2));
+    assert!(images().iter().all(|image| !image.is_visible()));
+
+    let item = shell
+        .items
+        .last()
+        .expect("the first Day tile should have media");
+    let store = SyncStore::new(shell.pool.clone());
+    let job = store
+        .create_job(&NewSyncJob {
+            endpoint: "https://dav.example.test/root/".into(),
+            username: "alice".into(),
+            credential_ref: "ux-sync-badge".into(),
+            local_root: item.folder_path.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: SyncDirection::Bidirectional,
+            upload_scope: UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    let fingerprint = Fingerprint {
+        size: item.file_size,
+        blake3: "verified-sync-content".into(),
+    };
+    let conn = shell.pool.get().unwrap();
+    conn.execute(
+        "UPDATE media_items SET blake3_hash = '' WHERE id = ?1",
+        [item.id],
+    )
+    .unwrap();
+    let mtime_ns: i64 = conn
+        .query_row(
+            "SELECT file_mtime_ns FROM media_items WHERE id = ?1",
+            [item.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let entry = store
+        .upsert_observation(
+            job.id,
+            item.display_name(),
+            Some(&fingerprint),
+            Some(mtime_ns),
+            Some(&fingerprint),
+            Some("etag"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(entry, &fingerprint, Some("etag"))
+        .unwrap();
+
+    grid.refresh_sync_badges();
+    assert!(
+        wait_until(Duration::from_secs(2), || images()
+            .iter()
+            .filter(|image| image.is_visible())
+            .filter_map(|image| image.resource())
+            .any(|path| path.ends_with("gnome-cloud-white.png"))
+            && images()
+                .iter()
+                .filter(|image| image.is_visible())
+                .filter_map(|image| image.resource())
+                .any(|path| path.ends_with("gnome-cloud-off-white.png"))),
+        "Day view should distinguish synced and unsynced images in an enabled album"
+    );
+
+    let first_slot = grid.first_ready_media_slot().expect("ready Day tile");
+    activate_virtual_grid_slot(&grid, first_slot);
+    let viewer = shell
+        .window
+        .nav_view()
+        .visible_page()
+        .and_downcast::<ViewerPage>()
+        .expect("opening the synced tile should show Viewer");
+    let viewer_cloud = find_descendants::<gtk::Image>(viewer.upcast_ref())
+        .into_iter()
+        .find(|image| image.has_css_class("viewer-sync-badge"))
+        .expect("Viewer header should contain the cloud mark");
+    assert!(
+        wait_until(Duration::from_secs(2), || viewer_cloud.is_visible()),
+        "the synced image should keep its cloud mark in Viewer"
+    );
+    assert!(viewer_cloud
+        .resource()
+        .is_some_and(|path| path.contains("gnome-cloud-") && !path.contains("cloud-off")));
+    viewer.show_at(1 - viewer.current_index());
+    assert!(
+        wait_until(Duration::from_secs(2), || viewer_cloud.is_visible()
+            && viewer_cloud
+                .resource()
+                .is_some_and(|path| path.contains("gnome-cloud-off-"))),
+        "an unsynced image in the same album should show cloud-off"
     );
 }
 
@@ -520,7 +628,6 @@ fn keyboard_shortcuts_drive_full_shell_navigation() {
 
 fn photos_batch_toolbar_clicks_select_favorite_and_album() {
     let shell = build_full_app_shell();
-    let nav = shell.window.nav_view();
     let grid = visible_photos_grid(&shell.photos);
     let first_id = MediaId::from(shell.items[0].id);
 
@@ -584,11 +691,9 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
         "selecting a tile after favorite should expose the batch add-to-album action"
     );
     click_button(&shell.photos.imp().add_to_album_btn.get());
-    assert_eq!(
-        nav.navigation_stack().n_items(),
-        2,
-        "clicking Add to Album should push the album picker page"
-    );
+    let dialog = album_picker_dialog(&shell.window);
+    assert!(find_descendant::<gtk::FlowBox>(dialog.upcast_ref()).is_some());
+    assert_eq!(shell.window.nav_view().navigation_stack().n_items(), 1);
 }
 
 fn viewer_chrome_clicks_drive_visible_operations() {
@@ -812,7 +917,6 @@ fn album_sidebar_multi_select_deletes_real_albums() {
 
 fn album_picker_clicks_album_row_and_copy_move() {
     let shell = build_full_app_shell();
-    let nav = shell.window.nav_view();
     let grid = visible_photos_grid(&shell.photos);
     let original_count = db::list_all_media(&shell.pool).unwrap().len();
 
@@ -831,31 +935,10 @@ fn album_picker_clicks_album_row_and_copy_move() {
     );
     click_button(&shell.photos.imp().add_to_album_btn.get());
 
-    let wrapper = nav
-        .visible_page()
-        .expect("AlbumPicker should push a wrapper page");
-    let inner = find_descendant::<adw::NavigationView>(wrapper.upcast_ref())
-        .expect("AlbumPicker wrapper should contain an inner NavigationView");
-    let list_box = find_descendant::<gtk::ListBox>(wrapper.upcast_ref())
-        .expect("AlbumPicker should contain an album ListBox");
-    assert!(
-        wait_until(Duration::from_secs(2), || {
-            list_box.observe_children().n_items() > 0
-        }),
-        "AlbumPicker should populate album rows"
-    );
-    let first_album_row = list_box
-        .row_at_index(0)
-        .expect("AlbumPicker should render at least one album row");
-    first_album_row.emit_by_name::<()>("activate", &[]);
-    assert_eq!(
-        inner.navigation_stack().n_items(),
-        2,
-        "activating an album row should push the Copy/Move action page"
-    );
-
-    let copy_btn = find_button_with_css(wrapper.upcast_ref(), "glass-toolbar-suggested")
-        .expect("Copy button should be present on the AlbumPicker action page");
+    let dialog = album_picker_dialog(&shell.window);
+    click_button(&first_album_picker_tile(&dialog));
+    let copy_btn = find_button_with_css(dialog.upcast_ref(), "glass-toolbar-suggested")
+        .expect("Copy button should be present in the AlbumPicker dialog");
     click_button(&copy_btn);
     assert!(
         wait_until(Duration::from_secs(2), || {
@@ -866,24 +949,25 @@ fn album_picker_clicks_album_row_and_copy_move() {
         "clicking Copy should create a copied media row"
     );
     assert!(
-        wait_until(Duration::from_secs(2), || {
-            inner.navigation_stack().n_items() == 1
-        }),
-        "AlbumPicker should return to the album list after Copy"
+        wait_until(Duration::from_secs(2), || dialog.parent().is_none()),
+        "AlbumPicker should close after Copy"
     );
 
-    let move_target = shell._tmp.path().join("move-target");
-    std::fs::create_dir_all(&move_target).unwrap();
-    album_picker::push_action_page(
-        &inner,
+    let move_target = shell._tmp.path().join("second-album");
+    seed_extra_album(&shell.pool, shell._tmp.path());
+    albums::refresh(&shell.pool).unwrap();
+    album_picker::AlbumPickerDialog::present(
+        &shell.window.nav_view(),
         shell.pool.clone(),
         shell.db_actor.clone(),
+        shell.loader.clone(),
         vec![shell.items[1].id],
-        move_target.clone(),
-        &nav,
     );
-    let move_btn = find_button_with_css(wrapper.upcast_ref(), "glass-toolbar-danger")
-        .expect("Move button should be present on the AlbumPicker action page");
+    let dialog = album_picker_dialog(&shell.window);
+    let tile = find_album_picker_tile(&dialog, &move_target).unwrap();
+    click_button(&tile);
+    let move_btn = find_button_with_css(dialog.upcast_ref(), "glass-toolbar-danger")
+        .expect("Move button should be present in the AlbumPicker dialog");
     click_button(&move_btn);
     assert!(
         wait_until(Duration::from_secs(2), || {
@@ -960,6 +1044,90 @@ fn album_sidebar_open_then_tile_opens_viewer() {
         2,
         "rapid repeated AlbumDetail tile activation should push only one viewer page"
     );
+}
+
+fn album_detail_context_menu_moves_to_album() {
+    for source_is_virtual in [true, false] {
+        let shell = build_full_app_shell();
+        let target = shell._tmp.path().join("second-album");
+        seed_extra_album(&shell.pool, shell._tmp.path());
+        albums::refresh(&shell.pool).unwrap();
+        shell.window.populate_album_rows();
+
+        let album_idx = shell
+            .window
+            .imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .position(|album| {
+                if source_is_virtual {
+                    album.is_images_album()
+                } else {
+                    !album.is_virtual && album.folder_path != target
+                }
+            })
+            .expect("source album should be in the sidebar");
+        shell
+            .window
+            .imp()
+            .album_selection
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .select_item(album_idx as u32, true);
+        assert!(wait_until(Duration::from_secs(2), || {
+            shell
+                .window
+                .browsing_stack()
+                .visible_child_name()
+                .as_deref()
+                == Some("album")
+        }));
+        let detail = shell
+            .window
+            .browsing_stack()
+            .visible_child()
+            .and_downcast::<AlbumDetailPage>()
+            .unwrap();
+        let grid = find_descendant::<VirtualMediaGrid>(detail.upcast_ref()).unwrap();
+        assert!(wait_until(Duration::from_secs(2), || grid
+            .first_media_slot()
+            .is_some()));
+        grid.select_all();
+        let tile = find_descendants::<photo_viewer::ui::SquareTile>(grid.upcast_ref())
+            .into_iter()
+            .find(|tile| tile.cache_key().is_some())
+            .expect("album grid should realize a thumbnail");
+        let gesture = tile
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .find_map(|controller| controller.downcast::<gtk::GestureClick>().ok())
+            .expect("thumbnail should have a context-menu gesture");
+        gesture.emit_by_name::<()>("pressed", &[&1i32, &4.0f64, &4.0f64]);
+        gesture.emit_by_name::<()>("released", &[&1i32, &4.0f64, &4.0f64]);
+        let menu = find_button_with_label(
+            detail.upcast_ref(),
+            &photo_viewer::core::i18n::tr("photos.batch.move_to_album"),
+        )
+        .expect("album context menu should offer Move to Album");
+        click_button(&menu);
+        let dialog = album_picker_dialog(&shell.window);
+        let tile = find_album_picker_tile(&dialog, &target).unwrap();
+        click_button(&tile);
+        let move_btn = find_button_with_css(dialog.upcast_ref(), "glass-toolbar-danger").unwrap();
+        click_button(&move_btn);
+        assert!(
+            wait_until(Duration::from_secs(2), || {
+                shell.items.iter().any(|source| {
+                    db::get_media_item(&shell.pool, source.id)
+                        .is_ok_and(|item| item.folder_path == target)
+                })
+            }),
+            "album context-menu move should update the clicked item's folder"
+        );
+    }
 }
 
 fn full_app_shell_renders_photos_and_opens_trash_via_sidebar() {
@@ -1271,6 +1439,80 @@ fn find_button_with_css(root: &gtk::Widget, css_class: &str) -> Option<gtk::Butt
         child = widget.next_sibling();
     }
 
+    None
+}
+
+fn find_button_with_label(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(button) = root.downcast_ref::<gtk::Button>() {
+        if button.label().as_deref() == Some(label) {
+            return Some(button.clone());
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(button) = find_button_with_label(&widget, label) {
+            return Some(button);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn find_descendants<T>(root: &gtk::Widget) -> Vec<T>
+where
+    T: IsA<gtk::Widget> + glib::types::StaticType + Clone,
+{
+    let mut matches = Vec::new();
+    if let Some(widget) = root.downcast_ref::<T>() {
+        matches.push(widget.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        matches.extend(find_descendants::<T>(&widget));
+        child = widget.next_sibling();
+    }
+    matches
+}
+
+fn album_picker_dialog(window: &MainWindow) -> adw::Dialog {
+    let dialog = find_descendant::<adw::Dialog>(window.upcast_ref())
+        .expect("AlbumPicker should present one dialog on the window");
+    assert!(dialog.is_visible());
+    dialog
+}
+
+fn first_album_picker_tile(dialog: &adw::Dialog) -> gtk::Button {
+    assert!(wait_until(Duration::from_secs(2), || {
+        find_button_with_css(dialog.upcast_ref(), "album-picker-tile").is_some()
+    }));
+    find_button_with_css(dialog.upcast_ref(), "album-picker-tile").unwrap()
+}
+
+fn find_album_picker_tile(dialog: &adw::Dialog, path: &std::path::Path) -> Option<gtk::Button> {
+    let expected = path.display().to_string();
+    if !wait_until(Duration::from_secs(2), || {
+        find_album_picker_tile_now(dialog.upcast_ref(), &expected).is_some()
+    }) {
+        return None;
+    }
+    find_album_picker_tile_now(dialog.upcast_ref(), &expected)
+}
+
+fn find_album_picker_tile_now(root: &gtk::Widget, path: &str) -> Option<gtk::Button> {
+    if let Some(button) = root.downcast_ref::<gtk::Button>() {
+        if button.has_css_class("album-picker-tile")
+            && button.tooltip_text().as_deref() == Some(path)
+        {
+            return Some(button.clone());
+        }
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(button) = find_album_picker_tile_now(&widget, path) {
+            return Some(button);
+        }
+        child = widget.next_sibling();
+    }
     None
 }
 

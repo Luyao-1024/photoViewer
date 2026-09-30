@@ -1,123 +1,82 @@
-//! AlbumPickerDialog Copy/Move buttons use the glass vocabulary introduced
-//! in Phase 1 + Task 1. They must NOT carry the old `pill` / `suggested-action`
-//! / `destructive-action` libadwaita defaults.
-//!
-//! GTK is single-threaded; all checks live in one `#[test]` function.
-//!
-//! The Copy/Move buttons live on the level-2 chooser page, which is built
-//! by the (otherwise private) `push_action_page` helper. We call it
-//! directly to avoid depending on `glib::spawn_future_local` (which needs
-//! a running main loop and would deadlock a synchronous test).
+//! Album destinations share the Photos thumbnail and glass action vocabulary.
 
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use photo_viewer::ui::{album_picker, grid_css};
-
-fn probe_classes<W: gtk::prelude::WidgetExt>(w: &W) -> Vec<String> {
-    w.css_classes().iter().map(|s| s.to_string()).collect()
-}
+use libadwaita::prelude::AdwApplicationWindowExt;
+use photo_viewer::core::{db, db_actor, events, thumbnails::ThumbnailLoader};
+use photo_viewer::ui::{album_picker::AlbumPickerDialog, grid_css};
+use std::sync::Arc;
 
 fn find_widget<F: Fn(&gtk::Widget) -> bool>(root: &gtk::Widget, pred: F) -> Option<gtk::Widget> {
-    let mut stack: Vec<gtk::Widget> = vec![root.clone()];
-    while let Some(w) = stack.pop() {
-        if pred(&w) {
-            return Some(w);
+    let mut stack = vec![root.clone()];
+    while let Some(widget) = stack.pop() {
+        if pred(&widget) {
+            return Some(widget);
         }
-        let mut next = w.first_child();
-        while let Some(c) = next {
-            stack.push(c.clone());
-            next = c.next_sibling();
+        let mut child = widget.first_child();
+        while let Some(next) = child {
+            stack.push(next.clone());
+            child = next.next_sibling();
         }
     }
     None
 }
 
 #[test]
-fn album_picker_buttons_use_glass() {
-    gtk::init().expect("GTK init failed");
+fn album_picker_is_one_cover_grid_dialog_with_glass_actions() {
+    gtk::init().unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.AlbumPickerGlass")
         .build();
     app.register(None::<&gtk::gio::Cancellable>).unwrap();
     grid_css::install();
 
-    let inner = adw::NavigationView::new();
     let tmp = tempfile::tempdir().unwrap();
-    let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
-    let (events, _receiver) = photo_viewer::core::events::DomainEventSender::new();
-    let db_actor = photo_viewer::core::start_db_actor(pool.clone(), events);
+    let pool = db::init_pool(&tmp.path().join("test.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let (events, _receiver) = events::DomainEventSender::new();
+    let actor = db_actor::start_db_actor(pool.clone(), events);
+    let nav = adw::NavigationView::new();
+    let window = adw::ApplicationWindow::builder().application(&app).build();
+    window.set_content(Some(&nav));
+    window.present();
 
-    // Call the level-2 chooser builder directly. This is normally invoked
-    // when a row in the level-1 album list is activated; we skip that flow
-    // because `present()` schedules it via `glib::spawn_future_local`.
-    album_picker::push_action_page(
-        &inner,
-        pool,
-        db_actor,
-        vec![1],
-        std::path::PathBuf::from("/tmp/test-album"),
-        &inner,
-    );
-
-    // Locate Copy and Move buttons by label (zh-CN or en).
-    let root = inner.upcast::<gtk::Widget>();
-    let copy_btn: gtk::Button = find_widget(&root, |w| {
-        w.downcast_ref::<gtk::Button>()
-            .map(|b| {
-                let lbl = b.label().unwrap_or_default().to_string();
-                lbl == "Copy" || lbl == "复制"
-            })
-            .unwrap_or(false)
+    AlbumPickerDialog::present(&nav, pool, actor, loader, vec![1]);
+    let root = window.upcast_ref::<gtk::Widget>();
+    let dialog =
+        find_widget(root, |widget| widget.is::<adw::Dialog>()).expect("picker should be a dialog");
+    assert_eq!(nav.navigation_stack().n_items(), 0);
+    assert!(find_widget(&dialog, |widget| widget.is::<gtk::FlowBox>()).is_some());
+    assert!(find_widget(&dialog, |widget| widget.is::<adw::NavigationView>()).is_none());
+    let close = find_widget(&dialog, |widget| {
+        widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+            button.has_css_class("round-search-button")
+                && button.icon_name().as_deref() == Some("window-close-symbolic")
+        })
     })
-    .expect("Copy button should exist after push_action_page")
-    .downcast::<gtk::Button>()
-    .unwrap();
-    let move_btn: gtk::Button = find_widget(&root, |w| {
-        w.downcast_ref::<gtk::Button>()
-            .map(|b| {
-                let lbl = b.label().unwrap_or_default().to_string();
-                lbl == "Move" || lbl == "移动"
+    .expect("picker close control should reuse the circular icon style");
+    assert!(close.has_css_class("glass-toolbar-button"));
+
+    for (label, role) in [
+        ("album_picker.copy", "glass-toolbar-suggested"),
+        ("album_picker.move", "glass-toolbar-danger"),
+    ] {
+        let button = find_widget(&dialog, |widget| {
+            widget.downcast_ref::<gtk::Button>().is_some_and(|button| {
+                button.label().as_deref() == Some(photo_viewer::core::i18n::tr(label).as_str())
             })
-            .unwrap_or(false)
-    })
-    .expect("Move button should exist after push_action_page")
-    .downcast::<gtk::Button>()
-    .unwrap();
-
-    let copy_classes = probe_classes(&copy_btn);
-    let mov_classes = probe_classes(&move_btn);
-
-    assert!(
-        copy_classes.iter().any(|c| c == "glass-toolbar-button"),
-        "Copy button should carry glass-toolbar-button, got {copy_classes:?}"
-    );
-    assert!(
-        copy_classes.iter().any(|c| c == "glass-toolbar-suggested"),
-        "Copy button should carry glass-toolbar-suggested, got {copy_classes:?}"
-    );
-    assert!(
-        !copy_classes.iter().any(|c| c == "pill"),
-        "Copy button must NOT carry pill, got {copy_classes:?}"
-    );
-    assert!(
-        !copy_classes.iter().any(|c| c == "suggested-action"),
-        "Copy button must NOT carry suggested-action, got {copy_classes:?}"
-    );
-    assert!(
-        mov_classes.iter().any(|c| c == "glass-toolbar-button"),
-        "Move button should carry glass-toolbar-button, got {mov_classes:?}"
-    );
-    assert!(
-        mov_classes.iter().any(|c| c == "glass-toolbar-danger"),
-        "Move button should carry glass-toolbar-danger, got {mov_classes:?}"
-    );
-    assert!(
-        !mov_classes.iter().any(|c| c == "pill"),
-        "Move button must NOT carry pill, got {mov_classes:?}"
-    );
-    assert!(
-        !mov_classes.iter().any(|c| c == "destructive-action"),
-        "Move button must NOT carry destructive-action, got {mov_classes:?}"
-    );
+        })
+        .unwrap()
+        .downcast::<gtk::Button>()
+        .unwrap();
+        assert!(button.has_css_class("glass-toolbar-button"));
+        assert!(button.has_css_class(role));
+        assert!(!button.is_sensitive());
+    }
 }

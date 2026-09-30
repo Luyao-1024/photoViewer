@@ -345,7 +345,9 @@ Design intent:
 - WebDAV settings use one collapsed top-level expander row with the master
   switch in its suffix. The collapsed row is the only visible WebDAV control;
   opening it reveals the task selector, connection form, task status, folder
-  picker, upload scopes, and conflicts. The switch is persisted and off by
+  picker, upload scopes, conflicts, and a Day-view cloud-icon switch. That
+  switch defaults to on and affects only the Day grid; the viewer always shows
+  cloud state. The master switch is persisted and off by
   default, and gates home-pull sync and conflict resolution for every task.
   The “Add WebDAV Sync Task” form stays unavailable until that switch is on and
   saves the task after complete server configuration is validated. Saved jobs
@@ -444,6 +446,14 @@ dedicated sub-window surfaces where a persistent affordance reads as part of
 the surface: the editor panel, the details panel, the settings dialog, the
 album picker, and alert dialogs. The Photos page batch-action toolbar (which
 only appears in selection mode) is also always-on so the action set stands out.
+
+The album picker is a single modal glass dialog. Its destination albums appear
+as a scrolling grid of the same square cover tiles used by media browsing,
+with album name and count below each cover. The selected cover uses the shared
+`media-selected` thumbnail state; Copy and Move stay in a fixed footer and are
+disabled until a destination is selected. Do not push an album list or a
+second action page onto the browsing navigation stack. Its close icon reuses
+the Photos search button's circular `round-search-button` treatment.
 
 Rule of thumb: **a button on the main window stage that overlays media/photo
 content is hover-only; a button inside a dialog or floating side panel is

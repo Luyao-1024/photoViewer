@@ -209,6 +209,7 @@ fn domain_event_label(event: &DomainEvent) -> String {
         DomainEvent::AlbumsDirty { source } => format!("albums_dirty({source:?})"),
         DomainEvent::ThumbnailStatsDirty => "thumbnail_stats_dirty".to_string(),
         DomainEvent::LiveCountDirty => "live_count_dirty".to_string(),
+        DomainEvent::SyncStateDirty => "sync_state_dirty".to_string(),
     }
 }
 
@@ -226,6 +227,11 @@ fn apply_domain_event_to_legacy_ui(
         media_list.n_items()
     );
     match event {
+        DomainEvent::SyncStateDirty => {
+            if let Some(window) = window.upgrade() {
+                window.refresh_cloud_badges();
+            }
+        }
         DomainEvent::TrashChanged { .. } => {
             if let Some(window) = window.upgrade() {
                 window.refresh_visible_trash_page();

@@ -1,5 +1,8 @@
 //! Square thumbnail widget shared by media grids, albums, trash, and sidebar covers.
 
+use crate::core::i18n::tr;
+use crate::core::sync::CloudState;
+use crate::ui::cloud_badge;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -25,6 +28,7 @@ mod imp {
         pub motion_badge: RefCell<Option<gtk::Label>>,
         pub duration_badge: RefCell<Option<gtk::Label>>,
         pub favorite_badge: RefCell<Option<gtk::Label>>,
+        pub sync_badge: RefCell<Option<gtk::Image>>,
         pub target: Cell<i32>,
         /// Only virtual GridView cells participate in height-for-width
         /// measurement. Fixed-size covers must not turn a parent row width
@@ -55,6 +59,7 @@ mod imp {
                 motion_badge: RefCell::new(None),
                 duration_badge: RefCell::new(None),
                 favorite_badge: RefCell::new(None),
+                sync_badge: RefCell::new(None),
                 target: Cell::new(90),
                 height_for_width: Cell::new(false),
                 allow_width_shrink: Cell::new(false),
@@ -172,6 +177,19 @@ mod imp {
             favorite_badge.set_margin_top(7);
             content.add_overlay(&favorite_badge);
             *self.favorite_badge.borrow_mut() = Some(favorite_badge);
+
+            let sync_badge = gtk::Image::builder()
+                .resource(cloud_badge::resource(CloudState::Synced, true))
+                .pixel_size(18)
+                .visible(false)
+                .halign(gtk::Align::Start)
+                .valign(gtk::Align::Start)
+                .build();
+            sync_badge.add_css_class("thumb-sync-badge");
+            sync_badge.set_margin_start(7);
+            sync_badge.set_margin_top(7);
+            content.add_overlay(&sync_badge);
+            *self.sync_badge.borrow_mut() = Some(sync_badge);
         }
 
         fn dispose(&self) {
@@ -184,6 +202,7 @@ mod imp {
             self.motion_badge.borrow_mut().take();
             self.duration_badge.borrow_mut().take();
             self.favorite_badge.borrow_mut().take();
+            self.sync_badge.borrow_mut().take();
         }
     }
 
@@ -324,6 +343,7 @@ impl SquareTile {
         self.set_motion_badge_visible(false);
         self.set_video_duration(None);
         self.set_favorite_badge_visible(false);
+        self.set_cloud_state(None);
         self.remove_css_class("thumb-loading");
         self.remove_css_class("thumb-placeholder");
         self.remove_css_class("media-selected");
@@ -397,6 +417,23 @@ impl SquareTile {
     pub fn set_favorite_badge_visible(&self, visible: bool) {
         if let Some(badge) = self.imp().favorite_badge.borrow().as_ref() {
             badge.set_visible(visible);
+        }
+    }
+
+    pub fn set_cloud_state(&self, state: Option<CloudState>) {
+        if let Some(badge) = self.imp().sync_badge.borrow().as_ref() {
+            match state {
+                Some(CloudState::Synced) => {
+                    badge.set_from_resource(Some(cloud_badge::resource(CloudState::Synced, true)));
+                    badge.set_tooltip_text(Some(&tr("sync.badge.synced")));
+                }
+                Some(CloudState::Off) => {
+                    badge.set_from_resource(Some(cloud_badge::resource(CloudState::Off, true)));
+                    badge.set_tooltip_text(Some(&tr("sync.badge.off")));
+                }
+                None => {}
+            }
+            badge.set_visible(state.is_some());
         }
     }
 }

@@ -37,7 +37,9 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::prefs;
 use crate::core::repository::{MediaQuery, MediaRepository};
+use crate::core::sync::{CloudState, SyncStore};
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::cloud_badge;
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel};
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
@@ -165,6 +167,10 @@ mod imp {
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
+        pub sync_badge_media_id: Cell<i64>,
+        pub sync_badge_request_token: Cell<u64>,
+        pub sync_badge_state: Cell<Option<CloudState>>,
+        pub sync_badge_theme_handler: RefCell<Option<glib::SignalHandlerId>>,
         /// The `current_token` whose **original** full-resolution texture has
         /// already been painted. Lets the preview-thumbnail callback avoid
         /// overwriting the original with a late-arriving Medium thumbnail.
@@ -282,6 +288,8 @@ mod imp {
         #[template_child]
         pub date_label: TemplateChild<gtk::Label>,
         #[template_child]
+        pub sync_badge: TemplateChild<gtk::Image>,
+        #[template_child]
         pub details_title: TemplateChild<gtk::Label>,
         #[template_child]
         pub details_btn: TemplateChild<gtk::Button>,
@@ -379,6 +387,12 @@ mod imp {
             obj.set_details_sidebar_child_visible(false);
             obj.set_editor_sidebar_child_visible(false);
         }
+
+        fn dispose(&self) {
+            if let Some(handler) = self.sync_badge_theme_handler.borrow_mut().take() {
+                adw::StyleManager::default().disconnect(handler);
+            }
+        }
     }
     impl WidgetImpl for ViewerPage {}
     impl NavigationPageImpl for ViewerPage {}
@@ -410,6 +424,13 @@ impl ViewerPage {
         }
         obj.imp().zoom_scale.set(MIN_VIEWER_ZOOM);
         obj.apply_i18n();
+        let weak = obj.downgrade();
+        let handler = adw::StyleManager::default().connect_dark_notify(move |_| {
+            if let Some(viewer) = weak.upgrade() {
+                viewer.update_cloud_badge_resource();
+            }
+        });
+        *obj.imp().sync_badge_theme_handler.borrow_mut() = Some(handler);
         obj.setup_zoom_controls();
         obj.setup_zoom_transform_provider();
         obj.setup_video_playback_interactions();
@@ -803,6 +824,7 @@ impl ViewerPage {
         self.set_title(item.display_name());
         self.update_date_label(&item);
         self.sync_favorite_state(item.id);
+        self.refresh_sync_badge(&item, token);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE viewer_show_at index={} list_len={} item_id={} item_name={} item_uri={} sort_time={}",
@@ -876,6 +898,62 @@ impl ViewerPage {
         }
 
         self.request_current_original_image(path, token, item.display_name().to_string());
+    }
+
+    fn refresh_sync_badge(&self, item: &MediaItem, token: u64) {
+        if self.imp().sync_badge_media_id.replace(item.id) != item.id {
+            self.set_cloud_badge_state(None);
+        }
+        let request_token = self.imp().sync_badge_request_token.get().wrapping_add(1);
+        self.imp().sync_badge_request_token.set(request_token);
+        if !item.is_image() && !item.is_video() {
+            self.set_cloud_badge_state(None);
+            return;
+        }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            self.set_cloud_badge_state(None);
+            return;
+        };
+        let id = item.id;
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result =
+                gio::spawn_blocking(move || SyncStore::new(pool).media_cloud_states(&[id])).await;
+            if let (Some(viewer), Ok(Ok(states))) = (weak.upgrade(), result) {
+                if viewer.imp().current_token.get() == token
+                    && viewer.imp().sync_badge_request_token.get() == request_token
+                {
+                    viewer.set_cloud_badge_state(states.get(&id).copied());
+                }
+            }
+        });
+    }
+
+    fn set_cloud_badge_state(&self, state: Option<CloudState>) {
+        self.imp().sync_badge_state.set(state);
+        self.update_cloud_badge_resource();
+    }
+
+    fn update_cloud_badge_resource(&self) {
+        let badge = self.imp().sync_badge.get();
+        let state = self.imp().sync_badge_state.get();
+        if let Some(state) = state {
+            badge.set_from_resource(Some(cloud_badge::resource(
+                state,
+                adw::StyleManager::default().is_dark(),
+            )));
+            badge.set_tooltip_text(Some(&tr(match state {
+                CloudState::Synced => "sync.badge.synced",
+                CloudState::Off => "sync.badge.off",
+            })));
+        }
+        badge.set_visible(state.is_some());
+    }
+
+    pub(crate) fn refresh_current_cloud_badge(&self) {
+        if let Some(item) = self.current_media_item() {
+            self.refresh_sync_badge(&item, self.imp().current_token.get());
+        }
     }
 
     fn setup_zoom_transform_provider(&self) {

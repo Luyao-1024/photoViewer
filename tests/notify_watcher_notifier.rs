@@ -65,7 +65,8 @@ fn event_references_uri(event: &DomainEvent, uri: &str) -> bool {
         | DomainEvent::AlbumCoverChanged { .. }
         | DomainEvent::AlbumsDirty { .. }
         | DomainEvent::ThumbnailStatsDirty
-        | DomainEvent::LiveCountDirty => false,
+        | DomainEvent::LiveCountDirty
+        | DomainEvent::SyncStateDirty => false,
     }
 }
 

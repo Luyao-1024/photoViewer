@@ -20,5 +20,6 @@ pub use service::{
     SyncLiveProgress, SyncService,
 };
 pub use store::{
-    NewSyncJob, StoredTask, SyncConflict, SyncJob, SyncOverview, SyncOverviewStatus, SyncStore,
+    CloudState, NewSyncJob, StoredTask, SyncConflict, SyncJob, SyncOverview, SyncOverviewStatus,
+    SyncStore,
 };

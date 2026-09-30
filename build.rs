@@ -48,8 +48,8 @@ fn main() {
 
     // 2. Compile GResource (must contain all .ui files + icons)
     glib_build_tools::compile_resources(
-        &[out_dir],                         // generated resource base dir
-        "data/resources.gresource.xml",     // resource manifest
+        &[out_dir, PathBuf::from(".")], // generated UI and checked-in icons
+        "data/resources.gresource.xml", // resource manifest
         "photo_viewer_resources.gresource", // resource name (C identifier)
     );
 
@@ -58,4 +58,8 @@ fn main() {
         "cargo:rerun-if-changed={}",
         Path::new("data/resources.gresource.xml").display()
     );
+    println!("cargo:rerun-if-changed=data/icons/gnome-cloud-white.png");
+    println!("cargo:rerun-if-changed=data/icons/gnome-cloud-off-white.png");
+    println!("cargo:rerun-if-changed=data/icons/gnome-cloud-dark.png");
+    println!("cargo:rerun-if-changed=data/icons/gnome-cloud-off-dark.png");
 }

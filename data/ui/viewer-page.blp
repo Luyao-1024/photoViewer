@@ -20,14 +20,21 @@ template $ViewerPage : Adw.NavigationPage {
         // Every item shows a date: follows the sort date (taken_at, else
         // file_mtime), so it is always populated once an item is loaded.
         [start]
-        Gtk.Label date_label {
-          label: "";
-          xalign: 0;
-          visible: false;
-          // Carries libadwaita's `title` class so the date inherits the same
-          // font size/weight as the centered file name, plus `viewer-date-label`
-          // for tabular-nums and the naming reference.
-          css-classes: ["title", "viewer-date-label"];
+        Gtk.Box {
+          spacing: 8;
+
+          Gtk.Label date_label {
+            label: "";
+            xalign: 0;
+            visible: false;
+            css-classes: ["title", "viewer-date-label"];
+          }
+
+          Gtk.Image sync_badge {
+            tooltip-text: "";
+            visible: false;
+            css-classes: ["viewer-sync-badge"];
+          }
         }
 
         // Header actions render left-to-right as favorite, edit, delete,

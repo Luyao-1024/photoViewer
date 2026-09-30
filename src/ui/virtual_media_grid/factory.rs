@@ -75,10 +75,7 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             let tile_for_context = tile.downgrade();
             let gesture = gtk::GestureClick::new();
             gesture.set_button(3);
-            gesture.connect_released(move |gesture, _, x, y| {
-                if gesture.current_button() != 3 {
-                    return;
-                }
+            gesture.connect_released(move |_, _, x, y| {
                 let Some(binding) = binding_for_context.borrow().clone() else {
                     return;
                 };
