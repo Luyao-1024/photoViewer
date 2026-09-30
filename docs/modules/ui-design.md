@@ -11,6 +11,15 @@ the visual naming map at [`docs/ui-naming-reference/index.html`](../ui-naming-re
 implementation type, and key properties). Keep that map in sync with these
 screens when the UI structure changes.
 
+The same page doubles as an interactive review prototype: a toolbar toggles the
+23 proposals recorded in
+[`docs/ux-improvement-backlog.md`](../ux-improvement-backlog.md) on and off, so a
+proposal can be compared against current behavior before any code changes. Deep
+links (`#mode=run&screen=viewer&pv=p1-12&locale=en`) reproduce a specific setup,
+and the inspector exports the verdicts as markdown. The naming map stays fully
+functional in both modes; treat the proposal layer as additive and never remove
+`data-ui` / `data-name` coverage while editing it.
+
 ## Scope
 
 The app is a GNOME desktop photo manager. Its UI should feel quiet, direct, and

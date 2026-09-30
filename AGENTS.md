@@ -27,6 +27,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Crash logs, panic hook, signal handler | [`docs/modules/diagnostics.md`](docs/modules/diagnostics.md) |
 | Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
 | Visual UI component naming map | [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) |
+| Open UX findings and drafted proposals | [`docs/ux-improvement-backlog.md`](docs/ux-improvement-backlog.md) |
 | Liquid Glass and shared UI material classes | [`docs/modules/ui-liquid-glass.md`](docs/modules/ui-liquid-glass.md) |
 | Historical milestone plans/specs | [`docs/superpowers/`](docs/superpowers/) |
 

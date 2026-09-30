@@ -6,14 +6,22 @@
 <title>PhotoViewer UI 视觉参考</title>
 <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body data-pv-mode="naming" data-pv="" data-pv-screen="photos" data-pv-scan="ready" data-pv-locale="zh" data-pv-material="liquid" data-pv-motion="auto" data-pv-transparency="0" data-pv-width="wide">
 <div class="page">
   <div class="topline">
     <h1>PhotoViewer UI 视觉参考</h1>
-    <p class="hint">直接查看界面；把鼠标放到区域、按钮、宫格或面板上，才显示名称、实现位置和关键属性。</p>
+    <p class="hint">两种用法：<strong>命名总览</strong>＝所有界面纵向平铺，鼠标悬停任意区域/按钮/宫格查看名称、实现位置与关键属性；<strong>交互原型</strong>＝单窗口运行，侧栏、宫格、查看器、搜索、弹框全部可点可跳转。提案评审层（下方开关）叠加在这两种模式之上，默认全关，关掉后与纯命名图完全一致。</p>
   </div>
 
-  <section class="screen">
+  <!-- 提案评审层挂载点。命名图能力完全由 data-* 热点 + tooltip.js 提供，
+       与本区块无关：切回「命名总览」且提案全关后，本页行为与加入评审层之前一致。
+       提案登记表在 ux-review.js，路由与交互在 prototype.js，
+       提案控件的静态标记就近放在所属 screen 内，统一带 pv / pv-<id> 类。 -->
+  <nav class="ux-bar" id="ux-bar" aria-label="UX 提案评审">
+    <noscript><span class="ux-label">本页的交互原型与提案评审层需要 JavaScript；禁用脚本时仅保留命名总览与悬停提示。</span></noscript>
+  </nav>
+
+  <section class="screen" data-screen="photos" data-label="照片页">
     <div class="titlebar hotspot" tabindex="0" data-ui="application-window" data-name="应用窗口" data-impl="Adw.ApplicationWindow $PhotoViewerWindow" data-props="顶层窗口；默认 1200x800。" data-source="data/ui/window.blp">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">PhotoViewer</span>
@@ -21,14 +29,14 @@
     <div class="workspace">
       <aside class="sidebar hotspot" tabindex="0" data-ui="sidebar-page" data-name="侧栏页 / 侧栏玻璃面" data-impl="Adw.NavigationPage sidebar_page → Gtk.Box .glass-sidebar-surface.glass-base" data-props="主 split view 侧栏，固定 240px；玻璃材质只挂在共享父容器。" data-source="data/ui/window.blp">
         <div class="nav-group hotspot" tabindex="0" data-ui="sidebar-list" data-name="主导航列表" data-impl="Gtk.ListBox sidebar_list" data-props="Photos 行与相册分组头；单选。" data-source="data/ui/window.blp">
-          <div class="row active hotspot" tabindex="0" data-ui="sidebar-photos-row" data-name="照片导航行" data-impl="sidebar_list row" data-props="当前根页面；右侧数字是 live media 计数。"><span class="icon">P</span><span>照片</span><span class="count">1,248</span></div>
+          <div class="row active hotspot" tabindex="0" data-nav="photos" data-ui="sidebar-photos-row" data-name="照片导航行" data-impl="sidebar_list row" data-props="当前根页面；右侧数字是 live media 计数。"><span class="icon">P</span><span>照片</span><span class="count" data-count="live">1,248</span></div>
           <div class="row group hotspot" tabindex="0" data-ui="album-group-row" data-name="相册分组头" data-impl="sidebar_list album header row" data-props="可折叠相册组；展开后下方 album_scroll 承载所有相册行。"><span>相册</span><span class="count">⌄</span></div>
         </div>
 
         <div class="nav-group hotspot" tabindex="0" data-ui="album-list" data-name="相册列表" data-impl="Gtk.ScrolledWindow album_scroll → Gtk.ListView album_list + Gio.ListStore" data-props="虚拟列表仅创建视口附近的相册行；行仍可拖拽重排，拖动时只显示上/下落点，drop 时提交排序。" data-source="data/ui/window.blp · src/ui/window/sidebar.rs ensure_virtual_album_list() · src/ui/window/albums.rs attach_album_dnd()">
-          <div class="row indent hotspot" tabindex="0" data-ui="album-row" data-name="相册行" data-impl="album_list virtual row" data-props="缩略封面固定尺寸，行高不因异步封面加载跳动。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
-          <div class="row indent hotspot" tabindex="0" data-ui="album-row-family" data-name="相册行" data-impl="album_list virtual row" data-props="同一列表内可排序；普通点击进入 AlbumDetailPage。"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
-          <div class="row indent hotspot" tabindex="0" data-ui="album-row-fav" data-name="虚拟相册行" data-impl="album_list virtual album row" data-props="Favorites/Photos/Videos 等虚拟相册复用相册行视觉。"><span class="album-cover gold"></span><span>收藏</span><span class="count">18</span></div>
+          <div class="row indent hotspot" tabindex="0" data-nav="album" data-album="trip" data-ui="album-row" data-name="相册行" data-impl="album_list virtual row" data-props="缩略封面固定尺寸，行高不因异步封面加载跳动。"><span class="album-cover" data-img="s01"></span><span>2026 旅行</span><span class="count">84</span></div>
+          <div class="row indent hotspot" tabindex="0" data-nav="album" data-album="family" data-ui="album-row-family" data-name="相册行" data-impl="album_list virtual row" data-props="同一列表内可排序；普通点击进入 AlbumDetailPage。"><span class="album-cover green" data-img="s04"></span><span>家庭</span><span class="count">56</span></div>
+          <div class="row indent hotspot" tabindex="0" data-nav="album" data-album="fav" data-ui="album-row-fav" data-name="虚拟相册行" data-impl="album_list virtual album row" data-props="Favorites/Photos/Videos 等虚拟相册复用相册行视觉。"><span class="album-cover gold" data-img="s14"></span><span>收藏</span><span class="count">18</span></div>
         </div>
 
         <div class="nav-group hotspot" tabindex="0" data-ui="media-type-list" data-name="媒体类型列表" data-impl="Gtk.ListBox media_type_header_list + Gtk.ListBox media_type_list" data-props="只显示非空虚拟类型：图片、视频、动态照片、Animated、HDR。">
@@ -38,52 +46,65 @@
         </div>
 
         <div class="nav-group hotspot" tabindex="0" data-ui="trash-list" data-name="回收站导航列表" data-impl="Gtk.ListBox trash_list" data-props="稳定底部导航，进入 TrashPage。">
-          <div class="row"><span class="icon">T</span><span>回收站</span><span class="count">9</span></div>
+          <div class="row" tabindex="0" data-nav="trash"><span class="icon">T</span><span>回收站</span><span class="count">9</span></div>
         </div>
 
         <div class="sidebar-footer">
-          <button class="button round bare hotspot" tabindex="0" data-ui="settings-button" data-name="设置按钮" data-impl="Gtk.Button settings_button" data-props="侧栏 footer 齿轮；hover-only glass；打开设置弹窗。" data-source="data/ui/window.blp · src/ui/window/navigation.rs click wiring · src/ui/window/settings.rs dialog implementation">⚙</button>
+          <button class="button round bare hotspot" tabindex="0" data-nav="settings" data-ui="settings-button" data-name="设置按钮" data-impl="Gtk.Button settings_button" data-props="侧栏 footer 齿轮；hover-only glass；打开设置弹窗。" data-source="data/ui/window.blp · src/ui/window/navigation.rs click wiring · src/ui/window/settings.rs dialog implementation">⚙</button>
         </div>
         <div class="hotspot-outline split-handle-hitbox" tabindex="0" data-ui="main-split-view" data-name="主分隔视图" data-impl="Adw.OverlaySplitView split_view" data-props="min-sidebar-width:240 且 max-sidebar-width:240；主侧栏不可调宽。"></div>
       </aside>
 
       <main class="content hotspot" tabindex="0" data-ui="photos-page" data-name="照片页" data-impl="$PhotosPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=photos" data-props="根浏览页；与当前相册详情共享 crossfade 浏览栈；header + Gtk.Stack 三套 Photos-only VirtualMediaGrid + 悬浮 ModeSelector。Photos 始终使用 GtkGridView，没有 FlowBox 回退开关。" data-source="data/ui/window.blp · data/ui/photos-page.blp · src/ui/photos_page.rs">
         <div class="headerbar hotspot" tabindex="0" data-ui="photos-header" data-name="照片页顶栏" data-impl="Adw.HeaderBar header_bar .glass-header" data-props="搜索常驻；多选后 reveal 全选、退出、多选批量动作。">
-          <button class="button round hotspot" tabindex="0" data-ui="search-button" data-name="搜索按钮" data-impl="Gtk.Button search_btn .round-search-button" data-props="push SearchPage；图标 system-search-symbolic。">⌕</button>
-          <button class="button hotspot" tabindex="0" data-ui="select-all-button" data-name="全选按钮" data-impl="Gtk.Revealer select_all_revealer → Gtk.Button select_all_btn" data-props="只在多选模式显示；文本在 全选 / 取消全选 间切换。">全选</button>
-          <span class="header-title">照片</span>
-          <button class="button hotspot" tabindex="0" data-ui="add-to-album-button" data-name="加入相册" data-impl="Gtk.Button add_to_album_btn" data-props="多选批量动作；always-on glass。">＋</button>
-          <button class="button hotspot" tabindex="0" data-ui="favorite-button" data-name="批量收藏" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="智能切换：全收藏则取消，全未收藏则收藏，混合时打开 glass-menu。">♡</button>
-          <button class="button danger hotspot" tabindex="0" data-ui="delete-to-trash-button" data-name="移到回收站" data-impl="Gtk.Button delete_to_trash_btn .glass-toolbar-danger" data-props="多选批量动作；移动到 trash backend。">⌫</button>
+          <button class="button round hotspot" tabindex="0" data-nav="search" data-ui="search-button" data-name="搜索按钮" data-impl="Gtk.Button search_btn .round-search-button" data-props="push SearchPage；图标 system-search-symbolic。">⌕</button>
+          <button class="button round pv pv-p0-3 hotspot" tabindex="0" data-act="enter-multi" data-ui="select-mode-button-proposal" data-name="提案 · 多选入口按钮" data-impl="提案：Gtk.Button select_mode_btn .round-search-button（check-select-symbolic）" data-props="P0-3：把多选入口从「只有右键」变成常驻可见；点击调用 VirtualMediaGrid::set_multi_select_mode(true)，与既有 exit_multi_select_btn 形成对称进出。方案见 docs/ux-improvement-backlog.md。" data-source="方案 P0-3 · data/ui/photos-page.blp [start] 组 · src/ui/virtual_media_grid.rs:680"><span class="pv-tag">P0-3</span>选择</button>
+          <span class="header-title pv pv-p1-6 pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-ui="selection-count-label-proposal" data-name="提案 · 已选择计数" data-impl="提案：Gtk.Label selection_count_label（header [start] revealer 组）" data-props="P1-6：PhotosPage::refresh_selection_ui() 已算出 union，当前从不渲染；补「已选择 N 项」，命中 2000 上限时追加已达上限说明。评审时可点选宫格看数字联动。" data-source="方案 P1-6 · src/ui/photos_page.rs:1062"><span id="selection-count">已选择 0 项</span></span>
+          <span class="header-note pv pv-p2-5 hotspot" tabindex="0" data-ui="selection-query-thread-proposal" data-name="提案 · 选择计数查询线程" data-impl="提案：photos_page.rs 的 favorite_state / 取 2000 条 / count 三次同步查库移入 spawn_blocking + generation 回投" data-props="P2-5：现状每次选择变化都在主线程同步查库（photos_page.rs:1155 favorite_state、:1337 取 2000 条、:1360 count），大库多选时顶栏会掉帧。静态页无法真实复现掉帧，这里只做落点标注；配合全选按钮可核对 P1-6 的计数联动本身没有额外主线程开销。" data-source="方案 P2-5 · src/ui/photos_page.rs:1155, 1337, 1360"><span class="pv-tag">P2-5</span>计数查询：后台线程</span>
+          <button class="button pv pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-act="select-all" data-ui="select-all-button" data-name="全选按钮" data-impl="Gtk.Revealer select_all_revealer → Gtk.Button select_all_btn" data-props="只在多选模式显示；文本在 全选 / 取消全选 间切换。已存在（photos-page.blp:44-52），位置在退出按钮之前。">全选</button>
+          <button class="button pv pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-act="exit-multi" data-ui="exit-multi-select-button" data-name="退出多选按钮" data-impl="Gtk.Revealer exit_multi_select_revealer → Gtk.Button exit_multi_select_btn" data-props="已存在（photos-page.blp:56-64，由 photos_page.rs:1068、:1094 的 any_multi 控制 reveal）；P0-3 让新入口与它形成对称进出。">退出</button>
+          <span class="header-title" id="photos-header-title">照片</span>
+          <button class="button pv pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-nav="picker" data-ui="add-to-album-button" data-name="加入相册" data-impl="Gtk.Button add_to_album_btn" data-props="多选批量动作；always-on glass。">＋</button>
+          <button class="button pv pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-act="batch-fav" data-ui="favorite-button" data-name="批量收藏" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="智能切换：全收藏则取消，全未收藏则收藏，混合时打开 glass-menu。"><span class="pv pv-p2-9 caret" title="提案 · 混合态下拉指示">▾</span>♡</button>
+          <button class="button danger pv pv-p0-3 pv-p0-3--active-only hotspot" tabindex="0" data-act="batch-trash" data-ui="delete-to-trash-button" data-name="移到回收站" data-impl="Gtk.Button delete_to_trash_btn .glass-toolbar-danger" data-props="多选批量动作；移动到 trash backend。">⌫</button>
         </div>
 
-        <div class="pref-row hotspot" tabindex="0" data-ui="photos-overview" data-name="下拉图库概览" data-impl="Gtk.Revealer overview_revealer → Gtk.Box overview_panel .photos-overview；Gtk.Overlay overview_sync_icon_host → Gtk.Image overview_sync_icon + Gtk.DrawingArea overview_sync_spinner" data-props="首页初始隐藏；网格已在第一行时继续向上滚动或触摸下拉才显示，向下浏览时收起；无按钮、无卡片背景。居中显示 13pt 全库照片/视频真实计数与 11pt provider-neutral WebDAV 状态，每 2 秒刷新；Running 状态显示两秒一圈的慢速旋转指示器，其余状态停止动画并切回静态图标。"><span>1,032 张照片 · 216 个视频</span><span>同步已暂停</span></div>
+        <div class="pref-row hotspot" tabindex="0" data-ui="photos-overview" data-name="下拉图库概览" data-impl="Gtk.Revealer overview_revealer → Gtk.Box overview_panel .photos-overview；Gtk.Overlay overview_sync_icon_host → Gtk.Image overview_sync_icon + Gtk.DrawingArea overview_sync_spinner" data-props="首页初始隐藏；网格已在第一行时继续向上滚动或触摸下拉才显示，向下浏览时收起；无按钮、无卡片背景。居中显示 13pt 全库照片/视频真实计数与 11pt provider-neutral WebDAV 状态，每 2 秒刷新；Running 状态显示两秒一圈的慢速旋转指示器，其余状态停止动画并切回静态图标。"><span class="pv pv-p2-8 caret" title="提案 · 可点 disclosure">⌄</span><span data-ovr="stats">1,032 张照片 · 216 个视频</span><span data-ovr="sync">同步已暂停</span><button class="button pv pv-p2-8" tabindex="0" data-act="sync-retry">重试同步</button></div>
 
         <div class="grid-page hotspot" tabindex="0" data-ui="media-grid-surface" data-name="媒体网格区域" data-impl="$VirtualMediaGrid → Gtk.ScrolledWindow scroller → Gtk.GridView grid" data-props="GtkGridView 直接作为 scroller child，使用可复用 SquareTile、加载 slot 和非交互 filler slot；不插入 GtkViewport 或 GtkFlowBox；右侧滚动条属于 scroller。" data-source="data/ui/virtual-media-grid.blp · src/ui/virtual_media_grid.rs">
+          <div class="status-page pv pv-p0-1 pv-p0-1--scanning hotspot" tabindex="0" data-ui="empty-loading-proposal" data-name="提案 · 扫描中占位" data-impl="提案：empty_states::loading_stats() → adw::StatusPage + 计数描述" data-props="P0-1：扫描进行中不再显示「暂无照片」。标题「正在建立索引…」，描述用 trf 填入已发现数量与缩略图进度；复用 MediaRepository::library_stats()（repository.rs:225）与 ThumbnailLoader::set_stats_dirty_callback（thumbnails.rs:348），不新增第二个 1 秒定时器。" data-source="方案 P0-1 · src/ui/empty_states.rs:67（现有 loading() 零调用者）"><span class="pv-tag">P0-1</span><span class="status-icon">◌</span><strong>正在建立索引…</strong><small id="scan-progress">已发现 1,248 项 · 缩略图 412/1,248</small><span class="status-spinner"></span></div>
+          <div class="status-page pv pv-p0-1 pv-p0-1--failed hotspot" tabindex="0" data-ui="scan-error-proposal" data-name="提案 · 扫描失败占位" data-impl="提案：empty_states::scan_error(msg) + 子按钮「重试扫描」" data-props="P0-1：把「扫描失败」与「库为空」分开。描述显示真实失败原因（路径/权限），并提供恢复动作；scan_error() 工厂已存在但当前零调用者。" data-source="方案 P0-1 · src/ui/empty_states.rs:57"><span class="pv-tag">P0-1</span><span class="status-icon warn">!</span><strong>扫描失败</strong><small>/photos/2026：权限不足，无法读取目录</small><button class="button" data-act="scan-retry">重试扫描</button></div>
+          <div class="status-page pv pv-p0-1 pv-p0-1--empty hotspot" tabindex="0" data-ui="empty-no-photos-action-proposal" data-name="提案 · 空库占位带动作" data-impl="提案：adw::StatusPage::set_child(Gtk.Button「打开设置」)" data-props="P0-1：空态文案保持不变，但补一个下一步动作；点击复用 KeyboardAction::OpenSettings 的处理函数，避免重复实现。" data-source="方案 P0-1 · src/ui/empty_states.rs:17 · src/ui/keyboard/action.rs"><span class="pv-tag">P0-1</span><span class="status-icon">▣</span><strong>暂无照片</strong><small>在设置中添加文件夹以开始浏览图库。</small><button class="button suggested" data-nav="settings">打开设置</button></div>
+          <div class="status-page legacy-empty hotspot" tabindex="0" data-ui="empty-no-photos-current" data-name="现状 · 空态（无动作）" data-impl="empty_states::no_photos() → adw::StatusPage（无 set_child）" data-props="现状对照：扫描中、扫描失败、真·空库三种事实共用这一屏，且没有任何下一步动作。开启 P0-1 后本块被三态替换。" data-source="现状 src/ui/photos_page.rs:533-559 · src/ui/empty_states.rs:17"><span class="status-icon">▣</span><strong>暂无照片</strong><small>在设置中添加文件夹以开始浏览图库。</small></div>
+
           <p class="stats-line hotspot" tabindex="0" data-ui="virtual-grid-section-boundary" data-name="虚拟日期边界" data-impl="VirtualGridLayoutIndex filler slots" data-props="没有实体日期标题；确定性 filler slot 让日期段从新行开始，悬浮日期气泡提供当前日期上下文。">2026 · 七月</p>
 
           <div class="tile-grid hotspot" tabindex="0" data-ui="virtual-media-grid" data-name="虚拟缩略图网格" data-impl="Gtk.GridView grid + GtkSignalListItemFactory" data-props="Gtk 回收可见 SquareTile；非就绪 slot 显示加载占位；多选由 VirtualMediaGrid 的 MediaId 集合驱动。">
-            <div class="tile selected hotspot" tabindex="0" data-ui="square-tile-selected" data-name="单个图片宫格" data-impl="Factory SquareTile → Gtk.Picture cover" data-props="已选中：factory 绑定时从 VirtualMediaGrid 的 MediaId 集合恢复右下角 .thumb-checkmark。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-video" data-name="视频宫格" data-impl="SquareTile / media_kind=video" data-props="底部显示持久化视频时长；普通视频不显示动态照片播放标记。"><span class="badge duration">0:42</span></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-motion" data-name="动态照片宫格" data-impl="SquareTile / media_subkind=motion_photo" data-props="仍按 image item 处理；底部播放 glyph 表示内嵌视频范围。"><span class="badge motion">▶</span></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-favorite" data-name="收藏图片宫格" data-impl="SquareTile + .thumb-favorite-badge" data-props="Day view 顶右显示白色心形；不改变瓦片尺寸。"><span class="badge favorite">♡</span></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-synced" data-name="媒体同步状态宫格" data-impl="SquareTile + Gtk.Image .thumb-sync-badge" data-props="Day view 中参与同步的图片和视频：已同步显示 GNOME cloud，未同步显示 cloud-off；无圆形背景，其他相册不显示。"><img class="badge synced" src="../../data/icons/gnome-cloud-white.png" alt="已同步到云端"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图加载前使用 thumb-loading 占位；加载完成淡入。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-2" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="点击打开 ViewerPage；传递稳定 MediaId，而不是长期全局 index。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-3" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="hover/selection 以全图适度深色蒙层强调，不显示边框；白色勾选标记保持清晰，且不改变瓦片尺寸。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-4" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="Year/Month/Day 共享媒体 store；tile size 由 VirtualGridModeSpec 固定为 90 / 180 / 270 px。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-5" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图请求由虚拟可见范围驱动，不靠 map 信号。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-6" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="图片和视频在同一集合内呈现。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-7" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="GtkGridView 回收 factory cell；异步缩略图必须校验布局代数、slot、MediaId 和缓存键。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-8" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="VirtualMediaGrid 的 MediaId 集合是选择状态来源。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-9" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="普通浏览点击打开查看器，多选模式点击切换选择。"></div>
-            <div class="tile hotspot" tabindex="0" data-ui="square-tile-photo-10" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图尺寸稳定，hover 不引发布局抖动。"></div>
+            <div class="tile selected hotspot" tabindex="0" data-media="1" data-img="s01" data-ui="square-tile-selected" data-name="单个图片宫格" data-impl="Factory SquareTile → Gtk.Picture cover" data-props="已选中：factory 绑定时从 VirtualMediaGrid 的 MediaId 集合恢复右下角 .thumb-checkmark。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="2" data-img="s02" data-ui="square-tile-video" data-name="视频宫格" data-impl="SquareTile / media_kind=video" data-props="底部显示持久化视频时长；普通视频不显示动态照片播放标记。"><span class="badge duration">0:42</span></div>
+            <div class="tile hotspot" tabindex="0" data-media="3" data-img="s03" data-ui="square-tile-motion" data-name="动态照片宫格" data-impl="SquareTile / media_subkind=motion_photo" data-props="仍按 image item 处理；底部播放 glyph 表示内嵌视频范围。"><span class="badge motion">▶</span></div>
+            <div class="tile hotspot" tabindex="0" data-media="4" data-img="s04" data-ui="square-tile-favorite" data-name="收藏图片宫格" data-impl="SquareTile + .thumb-favorite-badge" data-props="Day view 顶右显示白色心形；不改变瓦片尺寸。"><span class="badge favorite">♥</span></div>
+            <div class="tile hotspot" tabindex="0" data-media="5" data-img="s05" data-ui="square-tile-synced" data-name="媒体同步状态宫格" data-impl="SquareTile + Gtk.Image .thumb-sync-badge" data-props="Day view 中参与同步的图片和视频：已同步显示 GNOME cloud，未同步显示 cloud-off；无圆形背景，其他相册不显示。"><img class="badge synced" src="../../data/icons/gnome-cloud-white.png" alt="已同步到云端"></div>
+            <div class="tile hotspot" tabindex="0" data-media="6" data-img="s06" data-ui="square-tile-photo" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图加载前使用 thumb-loading 占位；加载完成淡入。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="7" data-img="s07" data-ui="square-tile-photo-2" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="点击打开 ViewerPage；传递稳定 MediaId，而不是长期全局 index。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="8" data-img="s08" data-ui="square-tile-photo-3" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="hover/selection 以全图适度深色蒙层强调，不显示边框；白色勾选标记保持清晰，且不改变瓦片尺寸。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="9" data-img="s09" data-ui="square-tile-photo-4" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="Year/Month/Day 共享媒体 store；tile size 由 VirtualGridModeSpec 固定为 90 / 180 / 270 px。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="10" data-img="s10" data-ui="square-tile-photo-5" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图请求由虚拟可见范围驱动，不靠 map 信号。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="11" data-img="s11" data-ui="square-tile-photo-6" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="图片和视频在同一集合内呈现。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="12" data-img="s12" data-ui="square-tile-photo-7" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="GtkGridView 回收 factory cell；异步缩略图必须校验布局代数、slot、MediaId 和缓存键。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="13" data-img="s13" data-ui="square-tile-photo-8" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="VirtualMediaGrid 的 MediaId 集合是选择状态来源。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="14" data-img="s14" data-ui="square-tile-photo-9" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="普通浏览点击打开查看器，多选模式点击切换选择。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="15" data-img="s06" data-ui="square-tile-photo-10" data-name="普通图片宫格" data-impl="SquareTile / Gtk.Picture cover" data-props="缩略图尺寸稳定，hover 不引发布局抖动。"></div>
+            <div class="tile broken pv pv-p1-10 hotspot" tabindex="0" data-media="16" data-ui="thumb-broken-proposal" data-name="提案 · 缩略图失败占位" data-impl="提案：SquareTile + .thumb-broken（去掉 thumb-loading 的 opacity:0）" data-props="P1-10：现状是失败瓦片完全空白（base.css:996 把 thumb-loading 设为 opacity:0），用户以为渲染 bug。提案用低对比 broken 图标区分「还在加载」与「已失败」，保留现有骨架路径。点这张格子可在查看器看到同一文件的全图错误态。" data-source="方案 P1-10 · data/css/base.css:996 · src/ui/square_tile.rs"><span class="pv-tag">P1-10</span><span class="broken-glyph">⊘</span><small>无法读取</small></div>
+            <div class="tile loading legacy-loading hotspot" tabindex="0" data-ui="thumb-loading-current" data-name="现状 · 加载/失败均不可见" data-impl="SquareTile.thumb-loading（base.css:996 opacity:0）" data-props="现状对照：这一格与右边 P1-10 的失败格在真实应用里长得完全一样——都是空白。开启 P1-10 后失败格出现占位图标，加载格保持骨架。" data-source="现状 data/css/base.css:996 · src/ui/media_grid/render.rs:41-48"></div>
+            <div class="tile focus-demo pv pv-p0-2 hotspot" tabindex="0" data-media="17" data-img="s03" data-ui="tile-focus-ring-proposal" data-name="提案 · 键盘焦点环" data-impl="提案：gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible { outline }" data-props="P0-2：可聚焦节点是瓦片本身（factory.rs:71 set_can_focus），不是 GridView 的 child，所以照抄 FlowBox 的 > child:focus 选择器不会命中。用 outline 而不是 box-shadow：base.css:253-266 的高特异性块只重置 border-color/box-shadow。开启后按方向键在本页走查焦点。" data-source="方案 P0-2 · data/css/a11y.css（追加，不在材质块）"><span class="pv-tag">P0-2</span></div>
+            <div class="tile hover-demo pv pv-p1-11 hotspot" tabindex="0" data-media="18" data-img="s05" data-ui="square-tile-hover-demo" data-name="提案 · 悬停态示例" data-impl="提案：.thumb-pointer-hover 降强度 + .thumb-checkmark 常驻 opacity 0.32 / 1" data-props="P1-11：这张格子常驻悬停强度。与它对比已选中的格子：现状两态是同构暗罩，只有右下角对勾的不透明度差别；提案把 hover 强度减半并让对勾常驻，选中态再加一条 accent 内环。" data-source="方案 P1-11 · data/css/base.css:231-247, 253-266"><span class="pv-tag">P1-11</span><span class="checkmark">✓</span></div>
           </div>
 
-          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.mode-selector" data-props="一个玻璃胶囊，active 只有文本对比和底部短指示条；可通过 Tab 聚焦，左右方向键切换；根据背景稳定切换明暗底色。">
-            <span class="segment active">年</span>
-            <span class="segment">月</span>
-            <span class="segment">日</span>
+          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.mode-selector" data-props="一个玻璃胶囊，active 只有文本对比和底部短指示条；可通过 Tab 聚焦，左右方向键切换；根据背景稳定切换明暗底色。" data-source="data/ui/mode-selector.blp · src/ui/mode_selector.rs">
+            <span class="segment active" data-mode="year">年</span>
+            <span class="segment" data-mode="month">月</span>
+            <span class="segment" data-mode="day">日</span>
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
@@ -92,7 +113,7 @@
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="album" data-label="相册详情">
     <div class="titlebar hotspot" tabindex="0" data-ui="album-detail-window" data-name="相册详情浏览状态" data-impl="$AlbumDetailPage : Adw.NavigationPage → Gtk.Stack browsing_stack child=album" data-props="与照片页作为 peer child 通过 crossfade 切换；外层 nav_view 只承载查看器/搜索/回收站。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Album Detail</span>
@@ -100,30 +121,34 @@
     <div class="workspace">
       <aside class="sidebar hotspot" tabindex="0" data-ui="sidebar-stable-album" data-name="稳定侧栏" data-impl="Adw.OverlaySplitView split_view sidebar" data-props="进入相册详情时侧栏不重建宽度，不挤压内容页。">
         <div class="nav-group">
-          <div class="row"><span class="icon">P</span><span>照片</span></div>
+          <div class="row hotspot" tabindex="0" data-nav="photos"><span class="icon">P</span><span>照片</span></div>
           <div class="row group"><span>相册</span><span class="count">⌄</span></div>
-          <div class="row indent active hotspot" tabindex="0" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected virtual row" data-props="点击相册行切换 browsing_stack 到 AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover"></span><span>2026 旅行</span><span class="count">84</span></div>
-          <div class="row indent"><span class="album-cover green"></span><span>家庭</span><span class="count">56</span></div>
+          <div class="row indent active hotspot" tabindex="0" data-nav="album" data-album="trip" data-ui="active-album-row" data-name="当前相册行" data-impl="album_list selected virtual row" data-props="点击相册行切换 browsing_stack 到 AlbumDetailPage；相册列表仍可拖拽排序。"><span class="album-cover" data-img="s01"></span><span>2026 旅行</span><span class="count">84</span></div>
+          <div class="row indent hotspot" tabindex="0" data-nav="album" data-album="family"><span class="album-cover green" data-img="s04"></span><span>家庭</span><span class="count">56</span></div>
         </div>
       </aside>
       <main class="content hotspot" tabindex="0" data-ui="album-detail-page" data-name="相册详情页" data-impl="$AlbumDetailPage : Adw.NavigationPage" data-props="复用 MediaGrid 视觉；构造时传入已过滤 media_list。">
         <div class="headerbar hotspot" tabindex="0" data-ui="album-detail-header" data-name="相册详情顶栏" data-impl="Adw.HeaderBar header_bar → search_btn" data-props="标题来自相册名；搜索按钮可进入相册上下文搜索；返回由侧栏照片项或键盘返回处理。">
-          <button class="button round">⌕</button>
-          <span class="header-title">2026 旅行</span>
+          <button class="button round" tabindex="0" data-nav="photos" title="返回照片页">⌂</button>
+          <button class="button round" tabindex="0" data-nav="search">⌕</button>
+          <span class="header-title" id="album-title">2026 旅行</span>
+          <button class="button pv pv-p0-3 hotspot" tabindex="0" data-act="enter-multi" data-ui="album-select-mode-button-proposal" data-name="提案 · 相册内多选入口" data-impl="提案：同一 select_mode_btn 也加到 album-detail-page.blp" data-props="P0-3 落点检查：AlbumDetailPage 的 [start] 组位置是刻意与照片页对齐的（photos-page.blp:11-15 注释），新增入口必须两页同步，否则「同样的行为在两个页面不同位置」。" data-source="方案 P0-3 · data/ui/album-detail-page.blp"><span class="pv-tag">P0-3</span>选择</button>
         </div>
         <div class="grid-page hotspot" tabindex="0" data-ui="album-media-grid" data-name="相册内媒体网格" data-impl="$MediaGrid mounted in content_box" data-props="AlbumDetail 内部 grid 仍是日期段 + FlowBox，不是单独列表视图。">
+          <div class="status-page pv pv-p2-6 pv-p2-6--loading hotspot" tabindex="0" data-ui="album-picker-loading-proposal" data-name="提案 · 相册空态" data-impl="提案：empty_states::no_album_photos()" data-props="P2-6 关联项：相册为空时用明确文案而不是复用全库空态；相册选择器现状把 DB 报错也渲染成「暂无相册」（album_picker.rs:214-218）。" data-source="方案 P2-6 · src/ui/empty_states.rs · src/ui/album_picker.rs:174-220"><span class="pv-tag">P2-6</span><span class="status-icon">▣</span><strong>此相册还没有照片</strong><small>从照片页多选后使用「加入相册」。</small><button class="button suggested" data-nav="photos">去照片页</button></div>
+          <div class="status-page legacy-album-empty hotspot" tabindex="0" data-ui="album-empty-current" data-name="现状 · 相册空态复用全库文案" data-impl="AlbumDetailPage 空列表 → empty_states::no_photos()" data-props="现状对照：相册里没有媒体时显示的是全库的「暂无照片 / 在设置中添加文件夹」，与用户动作（去照片页加入相册）不匹配。" data-source="现状 src/ui/empty_states.rs:17 · docs/modules/albums-trash.md"><span class="status-icon">▣</span><strong>暂无照片</strong><small>在设置中添加文件夹以开始浏览图库。</small></div>
           <strong class="section-title">7月9日</strong>
           <div class="tile-grid album">
-            <div class="tile hotspot" tabindex="0" data-ui="album-square-tile" data-name="相册图片宫格" data-impl="SquareTile inside AlbumDetailPage MediaGrid" data-props="与首页 tile 同一组件；激活时 viewer query 限定在当前相册。"></div>
-            <div class="tile"></div><div class="tile"></div><div class="tile"><span class="badge duration">1:08</span></div><div class="tile"></div><div class="tile"></div>
-            <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+            <div class="tile hotspot" tabindex="0" data-media="21" data-img="s07" data-ui="album-square-tile" data-name="相册图片宫格" data-impl="SquareTile inside AlbumDetailPage MediaGrid" data-props="与首页 tile 同一组件；激活时 viewer query 限定在当前相册。"></div>
+            <div class="tile hotspot" tabindex="0" data-media="22" data-img="s08"></div><div class="tile hotspot" tabindex="0" data-media="23" data-img="s09"></div><div class="tile hotspot" tabindex="0" data-media="24" data-img="s10"><span class="badge duration">1:08</span></div><div class="tile hotspot" tabindex="0" data-media="25" data-img="s11"></div><div class="tile hotspot" tabindex="0" data-media="26" data-img="s12"></div>
+            <div class="tile hotspot" tabindex="0" data-media="27" data-img="s13"></div><div class="tile hotspot" tabindex="0" data-media="28" data-img="s14"></div><div class="tile hotspot" tabindex="0" data-media="29" data-img="s01"></div><div class="tile hotspot" tabindex="0" data-media="30" data-img="s02"></div><div class="tile hotspot" tabindex="0" data-media="31" data-img="s03"></div><div class="tile hotspot" tabindex="0" data-media="32" data-img="s04"></div>
           </div>
         </div>
       </main>
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="trash" data-label="回收站">
     <div class="titlebar hotspot" tabindex="0" data-ui="trash-window" data-name="回收站导航状态" data-impl="nav_view.push($TrashPage)" data-props="回收站是可恢复操作面，永久删除路径必须明确。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Trash</span>
@@ -131,34 +156,37 @@
     <div class="workspace">
       <aside class="sidebar">
         <div class="nav-group">
-          <div class="row"><span class="icon">P</span><span>照片</span></div>
+          <div class="row hotspot" tabindex="0" data-nav="photos"><span class="icon">P</span><span>照片</span></div>
           <div class="row group"><span>相册</span></div>
         </div>
         <div class="nav-group push-bottom">
-          <div class="row active hotspot" tabindex="0" data-ui="trash-nav-row" data-name="回收站导航行" data-impl="trash_list row" data-props="进入 TrashPage；位于侧栏稳定底部。"><span class="icon">T</span><span>回收站</span><span class="count">9</span></div>
+          <div class="row active hotspot" tabindex="0" data-nav="trash" data-ui="trash-nav-row" data-name="回收站导航行" data-impl="trash_list row" data-props="进入 TrashPage；位于侧栏稳定底部。"><span class="icon">T</span><span>回收站</span><span class="count">9</span></div>
         </div>
       </aside>
       <main class="content hotspot" tabindex="0" data-ui="trash-page" data-name="回收站页" data-impl="$TrashPage : Adw.NavigationPage" data-props="header + Adw.Banner + VirtualMediaGrid + Gtk.ActionBar。">
         <div class="headerbar hotspot" tabindex="0" data-ui="trash-header" data-name="回收站顶栏" data-impl="Adw.HeaderBar header_bar" data-props="右侧清空回收站是 destructive action。">
           <span class="header-title">回收站</span>
-          <button class="button danger hotspot" tabindex="0" data-ui="empty-trash-button" data-name="清空回收站" data-impl="Gtk.Button empty_btn .destructive-action" data-props="永久删除入口，应有确认。">清空</button>
+          <span class="header-title pv pv-p1-6 hotspot" tabindex="0" data-ui="trash-selection-count-proposal" data-name="提案 · 回收站已选计数" data-impl="提案：TrashPage action bar 文本改用 trf(photos.selection.count)" data-props="P1-6：trash-page.blp 的 action bar 只有按钮文本，多选后同样看不到数量。" data-source="方案 P1-6 · src/ui/trash_page.rs:91, 226"><span id="trash-selection-count">已选择 0 项</span></span>
+          <span class="header-note pv pv-p2-7 hotspot" tabindex="0" data-ui="trash-first-load-proposal" data-name="提案 · 回收站首轮加载状态" data-impl="提案：content_stack 在首轮列表返回前停在 loading 页，不切 empty_trash（trash_page.rs:122-132）" data-props="P2-7：把「未加载」和「已加载且为空」分成两个状态。用工具条「回收站首帧闪烁（P2-7）」对照：开着本提案点它不会闪空态，关掉会闪约 0.9 秒。" data-source="方案 P2-7 · src/ui/trash_page.rs:122-132"><span class="pv-tag">P2-7</span>首轮加载：不切空态</span>
+          <button class="button danger hotspot" tabindex="0" data-act="empty-trash" data-ui="empty-trash-button" data-name="清空回收站" data-impl="Gtk.Button empty_btn .destructive-action" data-props="永久删除入口，应有确认。">清空</button>
         </div>
-        <div class="banner hotspot" tabindex="0" data-ui="trash-banner" data-name="回收站横幅" data-impl="Adw.Banner trash_banner" data-props="解释恢复窗口和永久删除行为。">回收站中的项目将在保留期后永久删除。</div>
+        <div class="banner hotspot" tabindex="0" data-ui="trash-banner" data-name="回收站横幅" data-impl="Adw.Banner trash_banner" data-props="解释恢复窗口和永久删除行为。">回收站中的项目可还原，也可手动永久删除。</div>
         <div class="grid-page hotspot" tabindex="0" data-ui="trash-content-stack" data-name="回收站虚拟缩略图网格" data-impl="Gtk.Stack content_stack → VirtualMediaGrid (MediaQuery::Trash)" data-props="多选；只保持视口附近的 trash projection，缩略图从实际回收站文件读取。">
+          <div class="status-page legacy-trash-flash hotspot" tabindex="0" data-ui="trash-empty-flash-current" data-name="现状 · 回收站首轮闪空态" data-impl="content_stack 初始 visible_child = empty_trash（trash_page.rs:122-132）" data-props="现状对照：首轮列表返回前栈里就是这块空态，所以每次进回收站都会先闪一下「回收站为空」再出图。用工具条「回收站首帧闪烁（P2-7）」复现：关掉提案会闪约 0.9 秒，开着则直接出图。" data-source="现状 src/ui/trash_page.rs:122-132"><span class="status-icon">▣</span><strong>回收站为空</strong><small>被移入回收站的照片会在这里保留 30 天。</small></div>
           <div class="tile-grid compact">
-            <div class="tile selected"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
-            <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+            <div class="tile selected hotspot" tabindex="0" data-media="41" data-img="s11"></div><div class="tile hotspot" tabindex="0" data-media="42" data-img="s06"></div><div class="tile hotspot" tabindex="0" data-media="43" data-img="s09"></div><div class="tile hotspot" tabindex="0" data-media="44" data-img="s02"></div><div class="tile hotspot" tabindex="0" data-media="45" data-img="s12"></div><div class="tile hotspot" tabindex="0" data-media="46" data-img="s07"></div><div class="tile hotspot" tabindex="0" data-media="47" data-img="s13"></div><div class="tile hotspot" tabindex="0" data-media="48" data-img="s04"></div>
+            <div class="tile hotspot" tabindex="0" data-media="49" data-img="s10"></div><div class="tile hotspot" tabindex="0" data-media="50" data-img="s03"></div><div class="tile hotspot" tabindex="0" data-media="51" data-img="s14"></div><div class="tile hotspot" tabindex="0" data-media="52" data-img="s08"></div><div class="tile hotspot" tabindex="0" data-media="53" data-img="s05"></div><div class="tile hotspot" tabindex="0" data-media="54" data-img="s01"></div><div class="tile hotspot" tabindex="0" data-media="55" data-img="s13"></div><div class="tile hotspot" tabindex="0" data-media="56" data-img="s06"></div>
           </div>
         </div>
         <div class="actionbar hotspot" tabindex="0" data-ui="trash-action-bar" data-name="回收站动作条" data-impl="Gtk.ActionBar action_bar" data-props="选中项目后显示；恢复为 suggested，永久删除为 destructive。">
-          <button class="button">取消</button>
-          <span class="end"><button class="button suggested">还原</button><button class="button danger">永久删除</button></span>
+          <button class="button" data-act="exit-multi">取消</button>
+          <span class="end"><button class="button suggested" data-act="restore">还原</button><button class="button danger" data-act="purge">永久删除</button></span>
         </div>
       </main>
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="viewer" data-label="查看器">
     <div class="titlebar hotspot" tabindex="0" data-ui="viewer-window" data-name="查看器导航状态" data-impl="nav_view.push($ViewerPage)" data-props="查看器在现有 NavigationView 内 push，不改变主侧栏宽度。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Viewer</span>
@@ -166,85 +194,96 @@
     <div class="workspace column hotspot" tabindex="0" data-ui="viewer-page" data-name="查看器页" data-impl="$ViewerPage : Adw.NavigationPage" data-props="ToastOverlay → root_box；外层 editor_split_view，内层 details_split_view。">
       <div class="viewer-wrap">
         <div class="headerbar viewer hotspot" tabindex="0" data-ui="viewer-header" data-name="查看器顶栏" data-impl="Adw.HeaderBar header_bar .glass-header.viewer-toolbar.viewer-chrome" data-props="左侧 date_label 显示拍摄日期；hover-only glass；动作顺序：收藏、编辑、删除、详情。">
-          <span class="header-title date-label hotspot" tabindex="0" data-ui="viewer-date-label" data-name="拍摄日期" data-impl="Gtk.Label date_label .viewer-date-label" data-props="每张图/视频都显示日期，精确到天；取排序日期 COALESCE(taken_at, file_mtime)：有拍摄日期用拍摄日期，否则回退文件 mtime(入库日期)；最近两天显示 今天/昨天；zh-CN 用 2026年7月9日，en 用 2026-07-09。">今天</span>
+          <button class="button bare" tabindex="0" data-nav="photos" data-ui="viewer-back" data-name="查看器返回" data-impl="nav_view.pop（Alt+← / Esc）" data-props="交互原型里用这个按钮或键盘 Esc / Alt+← 回到进入前的页面，并保留滚动位置。">‹</button>
+          <span class="header-title date-label hotspot" tabindex="0" data-ui="viewer-date-label" data-name="拍摄日期" data-impl="Gtk.Label date_label .viewer-date-label" data-props="每张图/视频都显示日期，精确到天；取排序日期 COALESCE(taken_at, file_mtime)：有拍摄日期用拍摄日期，否则回退文件 mtime(入库日期)；最近两天显示 今天/昨天；zh-CN 用 2026年7月9日，en 用 2026-07-09。" id="viewer-date">今天</span>
           <img class="header-title hotspot" tabindex="0" data-ui="viewer-sync-badge" data-name="详情页同步状态" data-impl="Gtk.Image sync_badge .viewer-sync-badge" data-props="拍摄日期旁显示 GNOME cloud/cloud-off；参与同步的图片和视频在切换时异步刷新。" src="../../data/icons/gnome-cloud-white.png" alt="已同步到云端">
-          <span class="header-title">IMG_0123.jpg</span>
-          <button class="button bare hotspot" tabindex="0" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。">♡</button>
-          <button class="button bare hotspot" tabindex="0" data-ui="viewer-edit" data-name="编辑入口" data-impl="Gtk.Button edit_btn" data-props="图片可用；普通 video/* 禁用。">✎</button>
-          <button class="button bare danger hotspot" tabindex="0" data-ui="viewer-delete" data-name="移到回收站" data-impl="Gtk.Button delete_btn .glass-toolbar-danger" data-props="单张媒体删除入口。">⌫</button>
-          <button class="button bare hotspot" tabindex="0" data-ui="viewer-details-button" data-name="详情按钮" data-impl="Gtk.Button details_btn" data-props="切换 details_split_view 的 show-sidebar。">i</button>
+          <span class="header-title pv pv-p1-7 hotspot" tabindex="0" data-ui="viewer-position-label-proposal" data-name="提案 · 查看器位置计数" data-impl="提案：Gtk.Label position_label「{current} / {total}」，header [start] 日期右侧" data-props="P1-7：总数用打开查看器那次查询的 MediaPage.total（repository.rs:37），不要读 viewer_page.rs:643 的 list_n_items()——那是窗口化 store 的长度。评审时可在本屏按 ←/→ 走位置，到两端可见上一张/下一张被禁用而非无响应。" data-source="方案 P1-7 · src/core/repository.rs:34-39 · src/ui/viewer/navigation.rs:162"><span id="viewer-position">1 / 17</span></span>
+          <span class="header-title" id="viewer-filename">IMG_0123.jpg</span>
+          <button class="button bare hotspot" tabindex="0" data-key="H" data-i18n-title="viewer.tooltip.favorite" data-act="viewer-fav" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。" data-source="data/ui/viewer-page.blp · src/ui/keyboard/binding.rs:186">♡</button>
+          <button class="button bare hotspot" tabindex="0" data-key="E" data-i18n-title="viewer.tooltip.edit" data-act="viewer-edit" data-ui="viewer-edit" data-name="编辑入口" data-impl="Gtk.Button edit_btn" data-props="图片可用；普通 video/* 禁用。">✎</button>
+          <button class="button bare danger hotspot" tabindex="0" data-key="Delete" data-i18n-title="viewer.tooltip.move_to_trash" data-act="viewer-delete" data-ui="viewer-delete" data-name="移到回收站" data-impl="Gtk.Button delete_btn .glass-toolbar-danger" data-props="单张媒体删除入口。">⌫</button>
+          <button class="button bare hotspot" tabindex="0" data-key="I" data-i18n-title="viewer.details.title" data-act="viewer-details" data-ui="viewer-details-button" data-name="详情按钮" data-impl="Gtk.Button details_btn" data-props="切换 details_split_view 的 show-sidebar。">i</button>
         </div>
 
         <div class="viewer-stage hotspot" tabindex="0" data-ui="image-stage" data-name="图片舞台" data-impl="Gtk.Overlay image_overlay .viewer-stage" data-props="承载 Gtk.Picture/Gtk.Video/裁剪叠加/导航按钮/缩放旋转组。">
-          <div class="viewer-media hotspot" tabindex="0" data-ui="viewer-media" data-name="图片或视频内容" data-impl="Gtk.Picture picture / Gtk.Video video .viewer-media-surface.viewer-image-frame" data-props="contain fit；视频 prepared 前保持缩略图 preview。"></div>
-          <div class="stage-controls top-right hotspot" tabindex="0" data-ui="viewer-zoom-controls" data-name="缩放/旋转控件组" data-impl="Gtk.Box viewer_zoom_controls" data-props="顺序：reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in；视频不显示。">
-            <button class="button bare">1:1</button><button class="button bare">−</button><button class="button bare">↺</button><button class="button bare">↻</button><button class="button bare">⛶</button><button class="button bare">＋</button>
+          <div class="viewer-media hotspot" tabindex="0" data-ui="viewer-media" data-name="图片或视频内容" data-impl="Gtk.Picture picture / Gtk.Video video .viewer-media-surface.viewer-image-frame" data-props="contain fit；视频 prepared 前保持缩略图 preview。P1-8 开启后可 Ctrl+滚轮缩放、放大后拖拽平移。">
+            <img id="viewer-photo" class="viewer-photo" src="assets/b01.jpg" alt="当前查看的图片">
+          </div>
+          <div class="media-error pv pv-p1-10 hotspot" tabindex="0" data-ui="media-error-box-proposal" data-name="提案 · 全图解码失败提示" data-impl="提案：把 video_error_box 泛化为 media_error_box（viewer-page.blp:128-163 的 [overlay] 兄弟节点）" data-props="P1-10：现状原始图解码 Err 分支只 warn + 收 spinner（stage.rs:672-682），舞台留白无文字；错误 UI 只给视频。提案补图标 + 文件名 + 原因 + 「重试」/「在文件管理器中显示」。新 class 必须在 liquid/plain 两处镜像（ui-liquid-glass.md:126）。" data-source="方案 P1-10 · src/ui/viewer/stage.rs:591-637, 672-682"><span class="pv-tag">P1-10</span><span class="err-icon">⊘</span><strong>无法显示这张图片</strong><small>IMG_0999.jpg：文件已移动或磁盘读取失败。</small><span class="err-actions"><button class="button" data-act="err-retry">重试</button><button class="button">在文件管理器中显示</button></span></div>
+          <div class="stage-hint pv pv-p1-8 hotspot" tabindex="0" data-ui="stage-input-hint-proposal" data-name="提案 · 舞台输入提示" data-impl="提案：首次进入查看器一次性 reveal 提示「Ctrl+滚轮缩放 · 放大后可拖拽」" data-props="P1-8：把新增的桌面输入能力告知用户；提示受 P1-14 的 reduce-motion 控制，且必须等 P0-2/P1-12 落地后才允许做自动收起（backlog 结构性议题的顺序要求）。" data-source="方案 P1-8 · docs/ux-improvement-backlog.md 结构性议题"><span class="pv-tag">P1-8</span>Ctrl + 滚轮缩放 · 放大后可拖拽</div>
+          <div class="stage-controls top-right hotspot" tabindex="0" data-ui="viewer-zoom-controls" data-name="缩放/旋转控件组" data-impl="Gtk.Box viewer_zoom_controls" data-props="现状顺序：reset, zoom-out, rotate-left, rotate-right, fullscreen, zoom-in（viewer-page.blp:227-271）；缩小与放大被拆在两端，组内 spacing:4，单按钮 36×32。开启 P1-12 后重排为 zoom-out → zoom-in → 倍率 | 左旋 → 右旋 | 重置 → 全屏，按钮 40×36、组内 gap 6、组间分隔线；切换开关可直接对比两种顺序，可用 Tab 逐个聚焦比较。">
+            <button class="button bare" data-key="0" data-i18n-title="viewer.tooltip.zoom_reset" data-ctrl="reset" data-order-legacy="1" data-order-proposal="8" title="还原缩放">1:1</button><button class="button bare" data-key="-" data-i18n-title="viewer.tooltip.zoom_out" data-ctrl="zoom-out" data-order-legacy="2" data-order-proposal="1" title="缩小">−</button><button class="button bare" data-key="+" data-i18n-title="viewer.tooltip.zoom_in" data-ctrl="zoom-in" data-order-legacy="6" data-order-proposal="2" title="放大">＋</button><span class="zoom-level pv pv-p1-7 pv-p1-7--zoomed hotspot" tabindex="0" data-ui="viewer-zoom-level-proposal" data-name="提案 · 缩放倍率" data-impl="提案：Gtk.Label zoom_level_label「{percent}」，非 1.0 时可见" data-props="P1-7：现状只有内部 Cell&lt;f64&gt;（viewer_page.rs:66-68 为 1.0–8.0、步长 ×1.25），界面看不到倍率。用等宽数字避免翻页抖动。开启 P1-8 后在图片上 Ctrl+滚轮即可看到它联动。" data-source="方案 P1-7 · src/ui/viewer/transform.rs:47-106" data-order-proposal="3"><span id="viewer-zoom">125%</span></span><span class="ctrl-sep pv pv-p1-12" data-order-proposal="4"></span><button class="button bare" data-key="Shift+R" data-i18n-title="viewer.tooltip.rotate_left" data-ctrl="rotate-left" data-order-legacy="3" data-order-proposal="5" title="向左旋转">↺</button><button class="button bare" data-key="R" data-i18n-title="viewer.tooltip.rotate_right" data-ctrl="rotate-right" data-order-legacy="4" data-order-proposal="6" title="向右旋转">↻</button><span class="ctrl-sep pv pv-p1-12" data-order-proposal="7"></span><button class="button bare" data-key="F" data-i18n-title="viewer.tooltip.fullscreen" data-ctrl="fullscreen" data-order-legacy="5" data-order-proposal="9" title="全屏预览">⛶</button>
           </div>
           <div class="stage-controls bottom-right hotspot" tabindex="0" data-ui="viewer-nav-buttons" data-name="上一张/下一张" data-impl="Gtk.Box viewer_nav_buttons → prev_btn / next_btn" data-props="右下角裸容器；每个按钮 hover/focus 时才画玻璃。">
-            <button class="button bare">‹</button><button class="button bare">›</button>
+            <button class="button bare" id="viewer-prev" data-key="←" data-i18n-title="viewer.tooltip.previous" data-act="viewer-prev" title="上一张">‹</button><button class="button bare" id="viewer-next" data-key="→" data-i18n-title="viewer.tooltip.next" data-act="viewer-next" title="下一张">›</button>
           </div>
           <div class="filmstrip hotspot" tabindex="0" data-ui="filmstrip" data-name="底部胶片条" data-impl="Gtk.ScrolledWindow thumb_scrolled → Gtk.Box thumb_strip" data-props="低玻璃 carousel；只保留当前附近的有限 widget 窗口；active 缩略图不能改变布局尺寸。">
-            <div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb active"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div><div class="film-thumb"></div>
+            <div class="film-thumb" data-media="1" data-img="s01"></div><div class="film-thumb" data-media="2" data-img="s02"></div><div class="film-thumb" data-media="3" data-img="s03"></div><div class="film-thumb" data-media="4" data-img="s04"></div><div class="film-thumb" data-media="5" data-img="s05"></div><div class="film-thumb" data-media="6" data-img="s06"></div><div class="film-thumb" data-media="7" data-img="s07"></div><div class="film-thumb" data-media="8" data-img="s08"></div><div class="film-thumb active" data-media="9" data-img="s09"></div><div class="film-thumb" data-media="10" data-img="s10"></div><div class="film-thumb" data-media="11" data-img="s11"></div><div class="film-thumb" data-media="12" data-img="s12"></div><div class="film-thumb" data-media="13" data-img="s13"></div><div class="film-thumb" data-media="14" data-img="s14"></div><div class="film-thumb" data-media="15" data-img="s06"></div><div class="film-thumb" data-media="16" data-img="s03"></div><div class="film-thumb" data-media="17" data-img="s05"></div>
           </div>
         </div>
 
-        <aside class="side-panel hotspot" tabindex="0" data-ui="details-panel" data-name="详情面板" data-impl="Gtk.Box details_panel .viewer-floating-panel" data-props="details_split_view collapsed:true + pin-sidebar:true；浮在图上，不挤压舞台，不可调宽。">
-          <div class="panel-head"><strong>详情</strong><button class="button round bare">×</button></div>
-          <div class="panel-row hotspot" tabindex="0" data-ui="name-row" data-name="文件名行" data-impl="Adw.ActionRow name_row + Gtk.Entry name_entry" data-props="可点击进入 inline rename；只改文件 stem，保留扩展名。">IMG_0123.jpg</div>
-          <div class="panel-row">文件夹 /photos/2026</div>
-          <div class="panel-row">类型 image/jpeg</div>
-          <div class="panel-row">尺寸 4032×3024</div>
-          <div class="panel-row">大小 4.2 MB</div>
+        <aside class="side-panel details hotspot" tabindex="0" data-ui="details-panel" data-name="详情面板" data-impl="Gtk.Box details_panel .viewer-floating-panel" data-props="details_split_view collapsed:true + pin-sidebar:true；浮在图上，不挤压舞台，不可调宽。">
+          <div class="panel-head"><strong>详情</strong><button class="button round bare" data-act="viewer-details">×</button></div>
+          <div class="panel-row hotspot" tabindex="0" data-ui="name-row" data-name="文件名行" data-impl="Adw.ActionRow name_row + Gtk.Entry name_entry" data-props="可点击进入 inline rename；只改文件 stem，保留扩展名。"><span id="detail-name">IMG_0123.jpg</span></div>
+          <div class="panel-row"><span>文件夹</span><span id="detail-folder">/photos/2026</span></div>
+          <div class="panel-row"><span>类型</span><span id="detail-type">image/jpeg</span></div>
+          <div class="panel-row"><span>尺寸</span><span id="detail-dims">4032×3024</span></div>
+          <div class="panel-row"><span>大小</span><span id="detail-size">4.2 MB</span></div>
+          <div class="panel-row"><span>拍摄日期</span><span id="detail-date">2026年7月9日</span></div>
         </aside>
 
         <aside class="side-panel editor hotspot" tabindex="0" data-ui="editor-panel" data-name="编辑面板" data-impl="Adw.OverlaySplitView editor_split_view sidebar → $EditorPanel editor_panel" data-props="右侧可调宽 340-420；编辑时隐藏查看器上一张/下一张。">
-          <div class="panel-head"><strong>编辑</strong><button class="button round bare">↺</button><button class="button round bare">×</button></div>
+          <div class="panel-head"><strong>编辑</strong><span class="dirty-label pv pv-p1-9 hotspot" tabindex="0" data-ui="editor-dirty-label-proposal" data-name="提案 · 未保存标记" data-impl="提案：Gtk.Label editor_dirty_label，由 has_pending_edits() 驱动" data-props="P1-9：现状唯一的脏信号是 reset 按钮变敏感（editor_panel.rs:723-726），标题区没有任何「有未保存修改」提示。让同一个函数同时驱动标签与 reset 敏感度，避免漏更新。" data-source="方案 P1-9 · src/ui/editor_panel.rs:423-439, 723-726"><span class="pv-tag">P1-9</span>有未保存的修改</span><button class="button round bare" data-act="editor-reset" title="重置">↺</button><button class="button round bare" data-act="editor-close" title="关闭">×</button></div>
           <div class="panel-row hotspot" tabindex="0" data-ui="rotate-controls" data-name="旋转控件" data-impl="EditorPanel rotate buttons" data-props="编辑操作写入保存路径；视频不可编辑。">旋转 90 / 180 / -90</div>
-          <div class="panel-row hotspot" tabindex="0" data-ui="adjustment-scales" data-name="调整滑块" data-impl="Gtk.Scale brightness/contrast/saturation_scale" data-props="亮度、对比度、饱和度；有未保存编辑时 reset 可用。">亮度<span class="scale"></span></div>
-          <div class="panel-row">对比度<span class="scale"></span></div>
+          <div class="panel-row hotspot" tabindex="0" data-ui="adjustment-scales" data-name="调整滑块" data-impl="Gtk.Scale brightness/contrast/saturation_scale" data-props="亮度、对比度、饱和度；有未保存编辑时 reset 可用。">亮度<span class="scale" data-adjust="brightness"><span class="scale-fill"></span></span></div>
+          <div class="panel-row"><span>对比度</span><span class="scale" data-adjust="contrast"><span class="scale-fill"></span></span></div>
+          <div class="panel-row"><span>饱和度</span><span class="scale" data-adjust="saturation"><span class="scale-fill"></span></span></div>
           <div class="panel-row hotspot" tabindex="0" data-ui="crop-overlay" data-name="裁剪叠加" data-impl="Gtk.DrawingArea crop_overlay" data-props="裁剪矩形画在图片舞台上；可拖动/缩放选区。">裁剪比例 1:1 / 4:3 / 16:9</div>
-          <div class="panel-actions"><button class="button">取消</button><button class="button suggested">存副本</button><button class="button danger">覆盖</button></div>
+          <div class="panel-actions"><button class="button pv pv-p1-9 compare-toggle hotspot" tabindex="0" data-act="editor-compare" data-ui="editor-compare-button-proposal" data-name="提案 · 按住对比" data-impl="提案：Gtk.ToggleButton compare_btn，复用现成 33ms 单飞预览（editor_panel.rs:864-890）" data-props="P1-9：切到单位变换即回到原图，松手恢复；不新增渲染路径。" data-source="方案 P1-9 · src/ui/editor_panel.rs:864-890"><span class="pv-tag">P1-9</span>对比</button><button class="button" data-act="editor-cancel">取消</button><button class="button suggested" data-act="editor-save-copy">存副本</button><button class="button danger" data-act="editor-overwrite">覆盖</button></div>
         </aside>
       </div>
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="search" data-label="搜索">
     <div class="titlebar hotspot" tabindex="0" data-ui="search-window" data-name="搜索导航状态" data-impl="nav_view.push($SearchPage)" data-props="从照片页、相册页搜索按钮进入。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Search</span>
     </div>
     <div class="workspace column hotspot" tabindex="0" data-ui="search-page" data-name="搜索页" data-impl="$SearchPage : Adw.NavigationPage" data-props="搜索框 + 字段切换 + 图片/视频结果区。">
-      <div class="headerbar hotspot" tabindex="0" data-ui="search-header" data-name="搜索页顶栏" data-impl="Adw.HeaderBar header_bar" data-props="常规 NavigationPage 顶栏。"><span class="header-title">搜索</span></div>
+      <div class="headerbar hotspot" tabindex="0" data-ui="search-header" data-name="搜索页顶栏" data-impl="Adw.HeaderBar header_bar" data-props="常规 NavigationPage 顶栏。"><button class="button bare" tabindex="0" data-nav="photos" title="返回 (Alt+←)">‹</button><span class="header-title">搜索</span></div>
       <div class="search-area">
-        <div class="search-box hotspot" tabindex="0" data-ui="search-entry" data-name="搜索输入框" data-impl="Gtk.SearchEntry search_entry" data-props="支持文件名和拍摄日期；日期字段会自动格式化数字输入。">输入关键字或日期...</div>
-        <div class="field-bar hotspot" tabindex="0" data-ui="search-field-bar" data-name="搜索字段切换" data-impl="Gtk.Box search_field_bar .glass-raised.glass-segmented → ToggleButton field_all/name/date .glass-segment" data-props="全部、文件名、日期；单个玻璃胶囊，选中项用文字与下划线表示；选中值传入 MediaQuery。">
-          <span class="field active">全部</span><span class="field">文件名</span><span class="field">日期</span>
+        <div class="search-box hotspot" tabindex="0" data-ui="search-entry" data-name="搜索输入框" data-impl="Gtk.SearchEntry search_entry" data-props="支持文件名和拍摄日期；日期字段会自动格式化数字输入。"><input id="search-input" class="search-input" type="text" placeholder="按文件名或拍摄时间搜索" aria-label="搜索媒体"></div>
+        <div class="field-bar hotspot" tabindex="0" data-ui="search-field-bar" data-name="搜索字段切换" data-impl="Gtk.Box search_field_bar .glass-raised.glass-segmented → ToggleButton field_all/name/date .glass-segment" data-props="全部、文件名、日期；单个玻璃胶囊，选中项用文字与下划线表示；选中值传入 MediaQuery。三个 label 现状硬编码中文，英文界面下仍是中文（切「语言=en」可对照）；P0-5 要求改为 tr()，并同步修改 tools/assert-at-spi.py:19 里写死的 SEARCH_FIELD_NAMES。" data-source="data/ui/search-page.blp:36, 42, 47 · src/ui/search_page.rs:145-152 · tools/assert-at-spi.py:19">
+          <span class="field active" data-field="all" data-i18n="search.field.all" data-i18n-hardcoded>全部</span><span class="field" data-field="name" data-i18n="search.field.name" data-i18n-hardcoded>文件名</span><span class="field" data-field="date" data-i18n="search.field.date" data-i18n-hardcoded>日期</span>
         </div>
+        <div class="search-spinner pv pv-p0-5 hotspot" tabindex="0" data-ui="search-spinner-proposal" data-name="提案 · 搜索中指示" data-impl="提案：结果区顶部 adw::Spinner，>300ms 才出现，不整页替换" data-props="P0-5：现状 search_page.rs:237-245 只依赖 GtkSearchEntry 内建延迟，无任何进行中反馈；generation counter 防竞态（:388-447）做得好，保留。" data-source="方案 P0-5 · src/ui/search_page.rs:237-245, 388-447"><span class="pv-tag">P0-5</span><span class="status-spinner"></span><span>正在搜索…</span></div>
+        <div class="status-page pv pv-p0-5 pv-p0-5--idle hotspot" tabindex="0" data-ui="search-idle-proposal" data-name="提案 · 查询前提示态" data-impl="提案：empty_states 复用同一 StatusPage，文案「输入文件名或拍摄日期」" data-props="P0-5：现状查询前下方完全空白。" data-source="方案 P0-5 · src/ui/search_page.rs:460-500"><span class="pv-tag">P0-5</span><span class="status-icon">⌕</span><strong>搜索图库</strong><small>输入文件名或拍摄日期（如 2026-07）。</small></div>
+        <div class="status-page pv pv-p0-5 pv-p0-5--none hotspot" tabindex="0" data-ui="search-none-proposal" data-name="提案 · 零结果提示" data-impl="提案：empty_states::no_search_results(query) + 子按钮「清除搜索」" data-props="P0-5：现状 image_results_box/video_results_box 只 set_visible(false)（search_page.rs:469-470），零结果时页面只剩搜索框和三个标签，用户不知道是「没找到」还是「坏了」。" data-source="方案 P0-5 · src/ui/search_page.rs:137-138, 469-470"><span class="pv-tag">P0-5</span><span class="status-icon">⌕</span><strong id="search-none-title">未找到与「zzz」相关的结果</strong><small>试试更短的关键字，或切换到「日期」字段。</small><button class="button" data-act="search-clear">清除搜索</button></div>
         <div class="result-section hotspot" tabindex="0" data-ui="image-results" data-name="图片结果区" data-impl="Gtk.Box image_results_box + Year-mode MediaGrid preview" data-props="预览网格无内部滚动；溢出时显示 More tile。">
-          <div class="result-title">图片结果</div>
+          <div class="result-title" data-i18n="search.images">图片</div>
           <div class="tile-grid compact">
-            <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="more-tile hotspot" tabindex="0" data-ui="search-more-images" data-name="更多图片结果" data-impl="search-more-tile button" data-props="push 类型专属结果页；viewer navigation 限定在图片搜索结果内。">更多</div>
+            <div class="tile hotspot" tabindex="0" data-media="61" data-img="s07"></div><div class="tile hotspot" tabindex="0" data-media="62" data-img="s08"></div><div class="tile hotspot" tabindex="0" data-media="63" data-img="s09"></div><div class="tile hotspot" tabindex="0" data-media="64" data-img="s10"></div><div class="tile hotspot" tabindex="0" data-media="65" data-img="s11"></div><div class="tile hotspot" tabindex="0" data-media="66" data-img="s12"></div><div class="tile hotspot" tabindex="0" data-media="67" data-img="s13"></div><div class="more-tile hotspot" tabindex="0" data-ui="search-more-images" data-name="更多图片结果" data-impl="search-more-tile button" data-props="push 类型专属结果页；viewer navigation 限定在图片搜索结果内。">更多</div>
           </div>
         </div>
         <div class="result-section hotspot" tabindex="0" data-ui="video-results" data-name="视频结果区" data-impl="Gtk.Box video_results_box + Year-mode MediaGrid preview" data-props="视频结果与图片结果分区；空区隐藏。">
-          <div class="result-title">视频结果</div>
-          <div class="tile-grid compact"><div class="tile"><span class="badge duration">0:26</span></div><div class="tile"><span class="badge duration">1:12</span></div><div class="tile"></div><div class="more-tile">更多</div></div>
+          <div class="result-title" data-i18n="search.videos">视频</div>
+          <div class="tile-grid compact"><div class="tile hotspot" tabindex="0" data-media="68" data-img="s02"><span class="badge duration">0:26</span></div><div class="tile hotspot" tabindex="0" data-media="69" data-img="s13"><span class="badge duration">1:12</span></div><div class="tile hotspot" tabindex="0" data-media="70" data-img="s12"></div><div class="more-tile">更多</div></div>
         </div>
       </div>
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="collapsed" data-label="窄窗折叠态">
     <div class="titlebar hotspot" tabindex="0" data-ui="collapsed-window" data-name="窄窗口折叠态" data-impl="Adw.OverlaySplitView split_view collapsed=true" data-props="侧栏不占布局，作为 overlay sidebar 叠加；仍不可调宽。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Collapsed Overlay Sidebar</span>
     </div>
     <div class="workspace collapsed-workspace">
       <div class="collapsed-content">
-        <div class="headerbar"><button class="button hotspot" tabindex="0" data-ui="sidebar-toggle" data-name="侧栏显隐按钮" data-impl="split_view.show-sidebar toggle" data-props="窄窗口中打开 overlay sidebar。">☰</button><span class="header-title">照片</span></div>
+        <div class="headerbar"><button class="button hotspot" tabindex="0" data-act="toggle-overlay" data-ui="sidebar-toggle" data-name="侧栏显隐按钮" data-impl="split_view.show-sidebar toggle" data-props="窄窗口中打开 overlay sidebar。">☰</button><span class="header-title">照片</span></div>
         <div class="grid-page">
-          <div class="tile-grid compact"><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div></div>
+          <div class="tile-grid compact"><div class="tile hotspot" tabindex="0" data-media="81" data-img="s01"></div><div class="tile hotspot" tabindex="0" data-media="82" data-img="s05"></div><div class="tile hotspot" tabindex="0" data-media="83" data-img="s09"></div><div class="tile hotspot" tabindex="0" data-media="84" data-img="s13"></div><div class="tile hotspot" tabindex="0" data-media="85" data-img="s03"></div><div class="tile hotspot" tabindex="0" data-media="86" data-img="s07"></div><div class="tile hotspot" tabindex="0" data-media="87" data-img="s11"></div><div class="tile hotspot" tabindex="0" data-media="88" data-img="s14"></div></div>
           <div class="mode-selector"><span class="segment active">年</span><span class="segment">月</span><span class="segment">日</span></div>
         </div>
       </div>
@@ -252,14 +291,14 @@
       <aside class="overlay-sidebar hotspot" tabindex="0" data-ui="overlay-sidebar" data-name="浮层侧栏" data-impl="sidebar_page shown by split_view.show-sidebar" data-props="同一 sidebar_page；窄窗只改变呈现方式，不新增第二套侧栏。">
         <div class="row active"><span class="icon">P</span><span>照片</span><span class="count">1,248</span></div>
         <div class="row group"><span>相册</span><span class="count">⌄</span></div>
-        <div class="row indent hotspot" tabindex="0" data-ui="collapsed-album-row" data-name="折叠态相册行" data-impl="album_list virtual row" data-props="仍支持拖拽排序；只是侧栏作为浮层显示。"><span class="album-cover"></span><span>2026 旅行</span></div>
+        <div class="row indent hotspot" tabindex="0" data-nav="album" data-ui="collapsed-album-row" data-name="折叠态相册行" data-impl="album_list virtual row" data-props="仍支持拖拽排序；只是侧栏作为浮层显示。"><span class="album-cover" data-img="s01"></span><span>2026 旅行</span></div>
         <div class="row push-bottom"><span class="icon">T</span><span>回收站</span></div>
-        <button class="button round bare">⚙</button>
+        <button class="button round bare" data-nav="settings">⚙</button>
       </aside>
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="settings" data-label="设置">
     <div class="titlebar hotspot" tabindex="0" data-ui="settings-reference" data-name="设置弹窗状态" data-impl="settings_button opens popup dialog" data-props="设置不是导航页；弹出时图库背景轻微变暗，避免全窗口昂贵 blur。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">Settings Dialog</span>
@@ -268,15 +307,17 @@
       <div class="settings-backdrop">
         <div class="workspace">
           <aside class="sidebar"><div class="row active"><span class="icon">P</span><span>照片</span></div></aside>
-          <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div></div></div></main>
+          <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile" data-img="s01"></div><div class="tile" data-img="s02"></div><div class="tile" data-img="s03"></div><div class="tile" data-img="s04"></div><div class="tile" data-img="s05"></div><div class="tile" data-img="s06"></div><div class="tile" data-img="s07"></div><div class="tile" data-img="s08"></div></div></div></main>
         </div>
       </div>
       <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时、WebDAV 同步和存储偏好；内容在有界滚动区域内。">
-        <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare">×</button></div>
+        <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare" data-act="close-settings">×</button></div>
         <div class="settings-body">
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
-          <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch"></span></div>
-          <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；装饰底色逐渐透明，模糊平滑减弱；菜单与文字面板保留阅读底色，焦点轮廓不受透明度影响。"><span>透明度</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch" data-act="toggle-material"></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；装饰底色逐渐透明，模糊平滑减弱；菜单与文字面板保留阅读底色，焦点轮廓不受透明度影响。评审时把它拉到 100 再看 P1-13 的文本对比。"><span>透明度</span><span class="pref-scale-cell"><input class="range" type="range" min="0" max="100" value="0" id="transparency-range" aria-label="玻璃透明度"></span></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="reduce-motion-row-proposal" data-name="提案 · 减少动画" data-impl="提案：读取 GtkSettings:gtk-enable-animations + grid_css 尾块 REDUCE_MOTION_CSS" data-props="P1-14：全项目无任何 gtk::Settings 读取，系统「减少动画」对本应用无效。这里用 GTK 原生通路而不是 @media（grid_css.rs:66 禁止）。" data-source="方案 P1-14 · src/ui/grid_css.rs:71-93"><span class="pv-tag">P1-14</span><span>减少动画</span><span class="switch" data-act="toggle-motion"></span></div>
+          <div class="pref-row pv pv-p0-4 hotspot" tabindex="0" data-ui="shortcuts-row-proposal" data-name="提案 · 键盘快捷键入口" data-impl="提案：Adw.ActionRow「键盘快捷键」→ gtk::ShortcutsWindow（transient + modal）" data-props="P0-4：全项目无 GtkShortcutsWindow、无 Ctrl+/。快捷键窗口也可用 F1 或 Ctrl+/ 打开；三个 section 与 binding.rs 的 global/browsing/viewer 三张表一一对应，并加集合相等断言防漂移。" data-source="方案 P0-4 · src/ui/keyboard/binding.rs:75-189"><span class="pv-tag">P0-4</span><span>键盘快捷键</span><button class="button" data-act="open-shortcuts">打开</button></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
           <details class="sync-settings-preview">
@@ -295,31 +336,88 @@
     </div>
   </section>
 
-  <section class="screen">
+  <section class="screen" data-screen="picker" data-label="相册选择">
     <div class="titlebar hotspot" tabindex="0" data-ui="album-picker-state" data-name="移动到相册弹框状态" data-impl="src/ui/album_picker.rs AlbumPickerDialog" data-props="照片页、图片虚拟相册与实体相册共用同一个弹框；外层 NavigationView 不新增页面。">
       <div class="traffic"><span></span><span></span><span></span></div>
       <span class="titlebar-title">相册选择</span>
     </div>
     <div class="picker-scene">
       <div class="picker-card hotspot" tabindex="0" data-ui="album-picker-dialog" data-name="相册选择弹框" data-impl="Adw.Dialog .glass-alert-dialog.album-picker-dialog" data-props="单层弹框，封面宫格可滚动；复制或移动成功后关闭，失败保留并显示错误。" data-source="src/ui/album_picker.rs">
-        <div class="picker-head"><strong>添加到相册</strong><span class="hotspot" tabindex="0" data-ui="album-picker-close" data-name="圆形关闭按钮" data-impl="Gtk.Button window-close-symbolic .glass-toolbar-button.round-search-button" data-props="沿用照片页搜索按钮的圆形图标样式，关闭弹框。">×</span></div>
+        <div class="picker-head"><strong>添加到相册</strong><span class="hotspot" tabindex="0" data-ui="album-picker-close" data-name="圆形关闭按钮" data-impl="Gtk.Button window-close-symbolic .glass-toolbar-button.round-search-button" data-props="沿用照片页搜索按钮的圆形图标样式，关闭弹框。" data-act="close-picker">×</span></div>
+        <div class="status-page pv pv-p2-6 pv-p2-6--error hotspot" tabindex="0" data-ui="album-picker-error-proposal" data-name="提案 · 相册选择器错误态" data-impl="提案：album_picker.rs:214-218 的 Err 分支不再渲染为空态标题" data-props="P2-6：DB 报错当前显示成「暂无相册」，用户会以为相册丢了。复用 P0-1 的 loading/error 分离结论。" data-source="方案 P2-6 · src/ui/album_picker.rs:174-220"><span class="pv-tag">P2-6</span><span class="status-icon warn">!</span><strong>无法读取相册列表</strong><small>数据库查询失败：no such column: album.cover_media_id</small><button class="button" data-act="picker-retry">重试</button></div>
+        <div class="status-page pv pv-p2-6 pv-p2-6--picker-loading hotspot" tabindex="0" data-ui="album-picker-loading-dialog-proposal" data-name="提案 · 相册选择器加载态" data-impl="提案：弹框打开后先渲染加载态，album 列表返回再替换（album_picker.rs:174-213）" data-props="P2-6：现状加载中是一片空网格，用户会以为一个相册都没有。这里沿用 P0-1 的 loading 语言，不新做一套骨架。" data-source="方案 P2-6 · src/ui/album_picker.rs:174-220"><span class="pv-tag">P2-6</span><span class="status-spinner"></span><strong>正在读取相册…</strong><small>读取相册列表与封面缩略图。</small></div>
+        <div class="status-page legacy-picker-empty hotspot" tabindex="0" data-ui="album-picker-error-as-empty-current" data-name="现状 · 报错渲染成空态" data-impl="album_picker.rs:214-218 Err 分支与空列表共用同一个标题" data-props="现状对照：数据库报错时弹框标题仍是「还没有相册」，既没有原因也没有重试，用户会以为相册丢了。开启 P2-6 后这块换成上面的错误态。" data-source="现状 src/ui/album_picker.rs:214-218 · i18n album_picker.no_albums_yet.*"><span class="status-icon">▣</span><strong>还没有相册</strong><small>在 ~/Pictures 下创建文件夹并重新扫描后可在这里看到它。</small></div>
         <div class="picker-grid hotspot" tabindex="0" data-ui="album-picker-grid" data-name="目标相册宫格" data-impl="Gtk.FlowBox .album-picker-grid" data-props="物理相册按封面平铺，网格间距和缩略图视觉沿用照片视图。">
-          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="封面固定方形；异步请求真实封面，显示相册名和媒体计数。"><span class="picker-cover"></span><span>2026 旅行</span><small>84 项</small></div>
-          <div class="picker-item selected hotspot" tabindex="0" data-ui="album-picker-selected" data-name="已选目标相册" data-impl="SquareTile .media-selected" data-props="选中态复用照片宫格的玻璃边框及高亮。"><span class="picker-cover green"></span><span>家庭</span><small>56 项</small></div>
-          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="候选相册仍在同一弹框内选择，无二级页面。"><span class="picker-cover gold"></span><span>收藏集</span><small>18 项</small></div>
+          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="封面固定方形；异步请求真实封面，显示相册名和媒体计数。"><span class="picker-cover" data-img="s01"></span><span>2026 旅行</span><small>84 项</small></div>
+          <div class="picker-item selected hotspot" tabindex="0" data-ui="album-picker-selected" data-name="已选目标相册" data-impl="SquareTile .media-selected" data-props="选中态复用照片宫格的玻璃边框及高亮。"><span class="picker-cover green" data-img="s04"></span><span>家庭</span><small>56 项</small></div>
+          <div class="picker-item hotspot" tabindex="0" data-ui="album-picker-tile-2" data-name="相册封面项" data-impl="Gtk.Button .album-picker-tile → SquareTile .glass-thumb-card" data-props="候选相册仍在同一弹框内选择，无二级页面。"><span class="picker-cover gold" data-img="s14"></span><span>收藏集</span><small>18 项</small></div>
         </div>
-        <div class="picker-actions hotspot" tabindex="0" data-ui="album-picker-actions" data-name="复制 / 移动操作" data-impl="Gtk.Box .album-picker-actions → glass-toolbar-suggested / glass-toolbar-danger" data-props="选择目标后启用；文件操作期间禁用，失败时恢复。"><button class="button suggested">复制</button><button class="button">移动</button></div>
+        <div class="picker-actions hotspot" tabindex="0" data-ui="album-picker-actions" data-name="复制 / 移动操作" data-impl="Gtk.Box .album-picker-actions → glass-toolbar-suggested / glass-toolbar-danger" data-props="选择目标后启用；文件操作期间禁用，失败时恢复。"><button class="button suggested" data-act="picker-copy">复制</button><button class="button" data-act="picker-move">移动</button></div>
       </div>
     </div>
   </section>
 
   <p class="footer">
-    维护方式：区域信息只写在对应元素的 <code>data-ui</code> / <code>data-name</code> / <code>data-impl</code> / <code>data-props</code> 属性上；改 UI 时更新局部热点即可。
+    维护方式：区域信息只写在对应元素的 <code>data-ui</code> / <code>data-name</code> / <code>data-impl</code> / <code>data-props</code> 属性上；改 UI 时更新局部热点即可。提案标记统一带 <code>pv</code> / <code>pv-&lt;id&gt;</code> 类，登记表在 <code>ux-review.js</code>，路由与交互在 <code>prototype.js</code>，两者都不改动 <code>tooltip.js</code>。样图取自本仓库 <code>tests/fixtures/media/</code> 与系统桌面壁纸，已缩放到 <code>assets/</code> 下的评审用尺寸。
   </p>
 </div>
+
+<!-- 全局子页面 / 浮层：快捷键窗口、编辑器退出确认、右键 glass 菜单、Toast。
+     它们在命名总览里默认隐藏（.pv），开启对应提案后才出现。 -->
+<div class="shortcuts-window pv pv-p0-4" id="shortcuts-window" role="dialog" aria-label="键盘快捷键">
+  <div class="sc-card hotspot" tabindex="0" data-ui="shortcuts-window-proposal" data-name="提案 · GtkShortcutsWindow" data-impl="提案：gtk::ShortcutsWindow（代码构造，src/ui/keyboard/shortcuts_window.rs 新增）" data-props="P0-4：三个 section 与 binding.rs 的 global_binding / browsing_binding / viewer_binding 一一对应；F1 与 Ctrl+/ 打开；设置里同一入口；用集合相等断言防止键位表与窗口漂移。" data-source="方案 P0-4 · src/ui/keyboard/binding.rs:75-189"><span class="pv-tag">P0-4</span>
+    <div class="sc-head"><strong>键盘快捷键</strong><button class="button round bare" data-act="close-shortcuts">×</button></div>
+    <div class="sc-body">
+      <section class="sc-section"><h4>全局</h4>
+        <div class="sc-row"><span>搜索</span><kbd>Ctrl</kbd><kbd>F</kbd></div>
+        <div class="sc-row"><span>设置</span><kbd>Ctrl</kbd><kbd>,</kbd></div>
+        <div class="sc-row"><span>返回</span><kbd>Alt</kbd><kbd>←</kbd></div>
+        <div class="sc-row"><span>取消 / 关闭</span><kbd>Esc</kbd></div>
+        <div class="sc-row pv-new"><span class="pv-tag">新增</span>显示快捷键窗口<em></em><kbd>F1</kbd><kbd>Ctrl</kbd><kbd>/</kbd></div>
+      </section>
+      <section class="sc-section"><h4>浏览</h4>
+        <div class="sc-row"><span>在网格中移动焦点</span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></div>
+        <div class="sc-row"><span>打开查看器</span><kbd>Return</kbd></div>
+        <div class="sc-row"><span>切换选中</span><kbd>Space</kbd></div>
+        <div class="sc-row"><span>全选</span><kbd>Ctrl</kbd><kbd>A</kbd></div>
+        <div class="sc-row"><span>移到回收站</span><kbd>Delete</kbd></div>
+      </section>
+      <section class="sc-section"><h4>查看器与编辑</h4>
+        <div class="sc-row"><span>上一张 / 下一张</span><kbd>←</kbd><kbd>→</kbd></div>
+        <div class="sc-row"><span>放大 / 缩小 / 重置</span><kbd>+</kbd><kbd>-</kbd><kbd>0</kbd></div>
+        <div class="sc-row pv-new"><span class="pv-tag">新增</span>滚轮缩放（放大后可拖拽平移）<em></em><kbd>Ctrl</kbd>+滚轮</div>
+        <div class="sc-row"><span>向右 / 向左旋转</span><kbd>R</kbd><kbd>Shift</kbd><kbd>R</kbd></div>
+        <div class="sc-row"><span>全屏预览</span><kbd>F</kbd></div>
+        <div class="sc-row"><span>详情面板</span><kbd>I</kbd></div>
+        <div class="sc-row"><span>编辑面板</span><kbd>E</kbd></div>
+        <div class="sc-row"><span>收藏</span><kbd>H</kbd></div>
+        <div class="sc-row"><span>播放 / 暂停</span><kbd>Space</kbd></div>
+        <div class="sc-row"><span>移到回收站</span><kbd>Delete</kbd></div>
+      </section>
+    </div>
+    <p class="sc-note">tooltip 同步带上键名（例：「放大 (+)」），由一个 <code>tr_with_key()</code> helper 集中拼接，避免散落。</p>
+  </div>
+</div>
+
+<div class="dialog-layer pv pv-p1-9" id="discard-dialog" role="alertdialog" aria-label="放弃未保存的修改">
+  <div class="dialog-card hotspot" tabindex="0" data-ui="editor-discard-dialog-proposal" data-name="提案 · 编辑器退出确认" data-impl="提案：attempt_close() → adw::AlertDialog + .glass-alert-dialog" data-props="P1-9：现状 header 关闭、footer 取消、Esc 三条路径都无条件 stop_editing 恢复原图（editor_panel.rs:423-439 → viewer/editor.rs:88-90）。提案集中为 attempt_close()，仅在 response==discard 时真退出；set_close_response(&quot;keep&quot;) 是关键——Esc 关闭对话框必须默认「留在编辑」，否则确认框会被 Esc 绕过。复用 viewer/actions.rs:21-30 的构造顺序。" data-source="方案 P1-9 · src/ui/editor_panel.rs:423-439 · src/ui/viewer/editor.rs:71-105"><span class="pv-tag">P1-9</span>
+    <strong>放弃未保存的修改？</strong>
+    <small>当前编辑参数尚未保存。关闭编辑后图片会恢复为原图。</small>
+    <div class="dialog-actions"><button class="button suggested" data-act="discard-keep">继续编辑</button><button class="button danger" data-act="discard-confirm">放弃修改</button></div>
+    <p class="dialog-note">默认响应与 Esc 关闭响应都是「继续编辑」。</p>
+  </div>
+</div>
+
+<div class="glass-menu pv pv-p0-3" id="context-menu" role="menu" aria-label="现状 · 右键 glass 菜单">
+  <div class="gm-card hotspot" tabindex="0" data-ui="glass-context-menu-current" data-name="现状 · 右键 glass 菜单" data-impl="VirtualMediaGrid::show_context_menu → GlassMenuItemKind::Suggested" data-props="现状对照：这是进入多选的**唯一**入口（virtual_media_grid.rs:1130-1141），触屏用户没有右键就完全无法批量操作；网格也没有橡皮筋框选（:494 显式关闭）与长按手势（factory.rs:76-88 只有 GestureClick(button=3)）。开启 P0-3 后 header 出现常驻「选择」入口，并为 tile 追加 GestureLongPress(set_touch_only(true))。" data-source="现状 src/ui/virtual_media_grid.rs:494, 1130-1141 · src/ui/virtual_media_grid/factory.rs:76-88"><div class="gm-item suggested" data-act="enter-multi">多选</div><div class="gm-item">打开</div><div class="gm-item">收藏</div><div class="gm-item danger">移到回收站</div></div>
+</div>
+
+<div class="toast-host" id="toast-host" aria-live="polite"></div>
 
 <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 
 <script src="tooltip.js" defer></script>
+<script src="prototype.js" defer></script>
+<script src="ux-review.js" defer></script>
 </body>
 </html>
