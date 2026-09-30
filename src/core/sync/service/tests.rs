@@ -708,3 +708,202 @@ async fn unrelated_remote_content_does_not_replace_local_or_upload_snapshot() {
         .unwrap();
     assert_eq!(state, "blocked");
 }
+
+#[test]
+fn live_progress_tracker_counts_transfers_by_phase() {
+    let mut progress = SyncLiveProgress::preparing();
+    assert_eq!(progress.phase, SyncLivePhase::Preparing);
+    assert_eq!(
+        progress,
+        SyncLiveProgress {
+            phase: SyncLivePhase::Preparing,
+            downloaded: 0,
+            download_total: 0,
+            uploaded: 0,
+            upload_total: 0,
+            transfer_active: false,
+            current_bytes: 0,
+            current_total: 0,
+        }
+    );
+
+    progress.add_totals(3, 2);
+    progress.begin_transfer(SyncLivePhase::Downloading, 4096);
+    assert!(progress.transfer_active);
+    assert_eq!(progress.current_total, 4096);
+    progress.complete_download();
+    assert!(!progress.transfer_active);
+    assert_eq!(progress.current_bytes, 0);
+    assert_eq!(progress.current_total, 0);
+    progress.begin_transfer(SyncLivePhase::Downloading, 4096);
+    progress.complete_download();
+    assert_eq!(progress.downloaded, 2);
+    assert_eq!(progress.download_total, 3);
+    assert_eq!(progress.phase, SyncLivePhase::Downloading);
+
+    progress.begin_transfer(SyncLivePhase::Uploading, 8192);
+    progress.complete_upload();
+    assert_eq!(progress.uploaded, 1);
+    assert_eq!(progress.phase, SyncLivePhase::Uploading);
+
+    // A verification that ends in a conflict also resolves its planned
+    // download slot, and a saturated counter cannot exceed the planned total.
+    progress.download_total = progress.downloaded;
+    progress.begin_transfer(SyncLivePhase::Downloading, 1);
+    progress.complete_download();
+    assert_eq!(progress.downloaded, progress.download_total);
+
+    // A later job in the same pull adds its plan to the running session
+    // instead of resetting the counters back to zero.
+    progress.add_totals(1, 4);
+    assert_eq!(progress.download_total, 3);
+    assert_eq!(progress.upload_total, 6);
+    assert_eq!(progress.downloaded, 2);
+    assert_eq!(progress.uploaded, 1);
+}
+
+#[test]
+fn transfer_progress_sink_counts_streamed_bytes() {
+    let sink = TransferProgress::default();
+    assert_eq!(sink.snapshot(), (0, 0));
+
+    sink.start(1024);
+    sink.record(300);
+    sink.record(400);
+    assert_eq!(sink.snapshot(), (700, 1024));
+
+    // Restarting for the next transfer clears the previous counters.
+    sink.start(2048);
+    assert_eq!(sink.snapshot(), (0, 2048));
+}
+
+/// The progress session is process-wide; tests that open or close one hold
+/// this lock so unrelated test threads cannot interleave begin/end pairs.
+static PROGRESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[tokio::test]
+// The test-only lock serializes process-wide progress-session state between
+// this test and the sync `#[test]` below. Nothing awaited here re-acquires
+// it (current-thread runtime, plain-`#[test]` contender), so holding the
+// guard across `.await` cannot deadlock.
+#[allow(clippy::await_holding_lock)]
+async fn run_with_provider_reports_live_transfer_progress() {
+    let _session_lock = PROGRESS_TEST_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif");
+    std::fs::copy(&fixture, local_root.join("local.gif")).unwrap();
+
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+    let service = SyncService {
+        store: SyncStore::with_actor(pool.clone(), actor.clone()),
+        pool,
+        actor: Some(actor),
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "progress-credential".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    let provider = Arc::new(FakeProvider::default());
+    let remote_bytes = std::fs::read(&fixture).unwrap();
+    provider.insert("PhotoViewer/cloud.gif", remote_bytes.clone());
+    provider.insert("PhotoViewer/another/cloud.gif", remote_bytes);
+
+    live_progress_begin_session();
+    let summary = service.run_with_provider(&job, provider).await.unwrap();
+    let progress = live_progress().expect("live progress is reported while a run is active");
+    assert_eq!(summary.uploaded, 1);
+    assert_eq!(summary.downloaded, 2);
+    // The session is process-wide and unrelated tests may run transfers
+    // concurrently, so only this run's guaranteed lower bounds are asserted.
+    assert!(progress.download_total >= 2);
+    assert!(progress.upload_total >= 1);
+    assert!(progress.downloaded >= 2);
+    assert!(progress.uploaded >= 1);
+    assert!(matches!(
+        progress.phase,
+        SyncLivePhase::Downloading | SyncLivePhase::Uploading
+    ));
+    live_progress_end_session();
+    assert_eq!(live_progress(), None);
+}
+
+#[tokio::test]
+async fn duplicate_trigger_during_active_run_is_remembered() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let service = SyncService {
+        store: SyncStore::new(pool.clone()),
+        pool,
+        actor: None,
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "duplicate-trigger-credential".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+
+    // Simulate the first trigger's run holding the job's activation slot.
+    let active = ActiveJobGuard::acquire(job.id).unwrap();
+    assert!(job_is_active(job.id));
+    assert!(!PENDING_TRIGGER.load(Ordering::Relaxed));
+
+    // The duplicate trigger skips the running job and remembers itself.
+    service
+        .run_saved_jobs_sequentially(vec![job.clone()])
+        .await
+        .unwrap();
+    assert!(
+        PENDING_TRIGGER.load(Ordering::Relaxed),
+        "a trigger arriving during an active run is remembered"
+    );
+    PENDING_TRIGGER.store(false, Ordering::Relaxed);
+    drop(active);
+    assert!(!job_is_active(job.id));
+}
+
+#[test]
+fn live_progress_session_survives_a_concurrent_trigger_close() {
+    let _session_lock = PROGRESS_TEST_LOCK.lock().unwrap();
+    live_progress_begin_session();
+
+    // While a run holds its job's activation slot, another trigger closing
+    // its own cycle must not tear down the session that run reports through.
+    let active = ActiveJobGuard::acquire(987_654).unwrap();
+    live_progress_end_session();
+    assert!(
+        live_progress().is_some(),
+        "an active run owns the progress session"
+    );
+
+    // Once the run finishes (guard dropped), closing the session clears it.
+    drop(active);
+    live_progress_end_session();
+    assert_eq!(live_progress(), None);
+}

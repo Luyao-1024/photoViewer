@@ -291,7 +291,7 @@ error triggers a full scan followed by permission-safe missing-row reconciliatio
 
 `planner.rs` is the pure three-way decision layer: local observation, remote observation, and last proven common baseline. It never chooses a winner by timestamp. Checked upload albums use this bidirectional policy, so both-side changes create a persistent conflict. Unchecked albums use an explicit remote-authoritative download policy: remote additions and updates publish locally, local-only content is neither hashed nor uploaded, and remote absence never deletes local content. Deletion propagation remains disabled. The service enumerates the whole remote root but hashes only checked local albums plus paths already present remotely, persists observations through `DbActor`, snapshots uploads, stages downloads outside the library, publishes without blind overwrite, and commits a new baseline only after content or a transfer result is proven.
 
-WebDAV has a persisted global opt-in switch, off by default. When off, home-pull sync and conflict resolution are disabled. When enabled, the new-connection form becomes available; a task is saved only after complete server configuration is validated and the connection is probed. Creating a task does not start a transfer. Pulling down at the top of Photos triggers one run of every saved job; paused jobs resume for that run. No sync jobs run automatically at application launch or on a timer. Each job has a separate collapsed album checklist. Expanding it automatically pauses the task and waits for its current file operation to finish; checking a physical folder album enables uploads for files directly in that album, while every remote album remains in download scope. Browsing/changing the cloud folder and deleting a task use the same pause-and-wait behavior. Creating a job requires non-overlapping local and remote roots. Passwords are stored through the platform keyring and only a credential reference is stored in SQLite.
+WebDAV has a persisted global opt-in switch, off by default. When off, home-pull sync and conflict resolution are disabled. When enabled, the new-connection form becomes available; a task is saved only after complete server configuration is validated and the connection is probed. Creating a task does not start a transfer. Pulling down at the top of Photos triggers one run of every saved job; paused jobs resume for that run. Each application launch triggers the same one-shot run once, in parallel with the startup scan; there is no timer-based sync. A trigger arriving while its job is already running is intercepted and remembered: the job is never run concurrently, and after the active run settles exactly one supplementary run fires to pick up anything new, so repeated pulls during a long run coalesce into a single catch-up. Each job has a separate collapsed album checklist. Expanding it automatically pauses the task and waits for its current file operation to finish; checking a physical folder album enables uploads for files directly in that album, while every remote album remains in download scope. Browsing/changing the cloud folder and deleting a task use the same pause-and-wait behavior. Creating a job requires non-overlapping local and remote roots. Passwords are stored through the platform keyring and only a credential reference is stored in SQLite.
 
 Saved tasks expose a cloud-folder browser populated by recursively listing WebDAV collections from the configured endpoint. Browsing or changing the remote root automatically pauses the task and waits for its current file operation to finish. Applying a new root clears that job's old sync entries, conflicts, operation records, and staging artifacts so observations from the previous collection cannot be reused; it remains paused until the next Photos pull. Roots that overlap another task on the same connection are rejected. The confirmation warns that cloud files may replace same-name local files in albums not selected for upload; changing roots never deletes cloud content.
 
@@ -308,6 +308,28 @@ conflict paths. A conflict does not erase an earlier proven baseline.
 Blocked upload recovery keeps the overview in failed status even when the
 last sync run finished, so a protected, unresolved upload is not labeled
 complete.
+
+While a run is active, the overview label shows live transfer progress from an
+in-memory, process-wide session in `SyncService` (never persisted). The home
+pull and each application launch open the session (`trigger_saved_jobs_once`);
+each job pre-plans every path with the same pure planner used by
+`reconcile_one` and adds planned download/upload totals; `reconcile_one`
+marks the active phase when a transfer starts and counts it only after the
+transfer is committed, with a verification that resolves as a conflict
+counting too and completed counters clamped to the planned totals.
+`sync::live_progress()` returns the snapshot (`None` outside a run); while a
+file streams, its byte counters advance through the `TransferProgress` sink
+attached to the `WebDavProvider`, but those bytes surface only in the
+STORAGE-target logs (one info line per completed transfer plus a per-job
+summary), never in the overview label. The Photos overview renders "正在同步，
+已同步 X/Y" while downloading and "正在上传 X/Y 个图片/视频" while
+uploading, falling back to the generic running label before totals are
+known. Sessions are bounded to a
+trigger: crash-recovery transfers that run before planning are not counted,
+and totals accumulate across the sequential jobs of one pull instead of
+resetting per job. A duplicate trigger intercepted during an active run never
+opens or closes the session — the closing side keeps the session alive while
+any job is still running.
 
 Open conflicts expose three guarded choices. “Use local” requires a strong current remote ETag. “Use cloud” downloads to staging, checks the recorded remote version and local fingerprint again, then publishes with a recoverable backup. “Keep both” creates a stable `*.cloud-conflict-<id>.<ext>` copy on both sides before conditionally converging the original path. If either recorded version has changed, the selection is rejected and a fresh reconciliation is required.
 

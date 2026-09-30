@@ -126,12 +126,15 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     if crate::core::prefs::webdav_sync_enabled() {
         assert_eq!(
             page.imp().overview_sync_label.get().label(),
-            sync_overview_text(SyncOverview {
-                status: SyncOverviewStatus::Paused,
-                job_count: 1,
-                synced_items: 0,
-                conflict_images: 0,
-            })
+            sync_overview_text(
+                SyncOverview {
+                    status: SyncOverviewStatus::Paused,
+                    job_count: 1,
+                    synced_items: 0,
+                    conflict_images: 0,
+                },
+                None,
+            )
         );
         assert!(page.imp().overview_sync_row.get().is_visible());
     } else {
@@ -163,6 +166,7 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
             synced_items: 0,
             conflict_images: 0,
         },
+        sync_progress: None,
     });
 
     let imp = page.imp();
@@ -203,6 +207,7 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
             synced_items: 8,
             conflict_images: 1,
         },
+        sync_progress: None,
     });
 
     assert!(!page.imp().overview_sync_row.get().is_visible());
@@ -218,15 +223,106 @@ fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
         synced_items: 103,
         conflict_images: 0,
     };
-    assert!(sync_overview_text(overview).contains("103"));
+    assert!(sync_overview_text(overview, None).contains("103"));
     let with_conflicts = SyncOverview {
         conflict_images: 2,
         ..overview
     };
-    let text = sync_overview_text(with_conflicts);
+    let text = sync_overview_text(with_conflicts, None);
     assert!(text.contains("103"));
     assert!(text.contains('2'));
-    assert_ne!(sync_overview_text(overview), text);
+    assert_ne!(sync_overview_text(overview, None), text);
+}
+
+#[test]
+fn running_sync_overview_shows_live_upload_and_download_counts() {
+    let running = SyncOverview {
+        status: SyncOverviewStatus::Running,
+        job_count: 1,
+        synced_items: 0,
+        conflict_images: 0,
+    };
+    assert_eq!(
+        sync_overview_text(running, None),
+        tr("photos.overview.sync.running"),
+        "before the run reports progress the generic running label applies"
+    );
+    assert_eq!(
+        sync_overview_text(
+            running,
+            Some(SyncLiveProgress {
+                phase: SyncLivePhase::Preparing,
+                downloaded: 0,
+                download_total: 0,
+                uploaded: 0,
+                upload_total: 0,
+                transfer_active: false,
+                current_bytes: 0,
+                current_total: 0,
+            })
+        ),
+        tr("photos.overview.sync.running")
+    );
+
+    let downloading = SyncLiveProgress {
+        phase: SyncLivePhase::Downloading,
+        downloaded: 12,
+        download_total: 340,
+        uploaded: 0,
+        upload_total: 0,
+        transfer_active: false,
+        current_bytes: 0,
+        current_total: 0,
+    };
+    assert_eq!(
+        sync_overview_text(running, Some(downloading)),
+        trf(
+            "photos.overview.sync.running_download",
+            &[("done", "12"), ("total", "340")]
+        )
+    );
+
+    let streaming_download = SyncLiveProgress {
+        transfer_active: true,
+        current_bytes: 13 * 1024 * 1024,
+        current_total: 46 * 1024 * 1024,
+        ..downloading
+    };
+    assert_eq!(
+        sync_overview_text(running, Some(streaming_download)),
+        sync_overview_text(running, Some(downloading)),
+        "byte-level transfer progress stays out of the label text"
+    );
+
+    let uploading = SyncLiveProgress {
+        phase: SyncLivePhase::Uploading,
+        downloaded: 340,
+        download_total: 340,
+        uploaded: 5,
+        upload_total: 9,
+        transfer_active: false,
+        current_bytes: 0,
+        current_total: 0,
+    };
+    assert_eq!(
+        sync_overview_text(running, Some(uploading)),
+        trf(
+            "photos.overview.sync.running_upload",
+            &[("done", "5"), ("total", "9")]
+        )
+    );
+
+    let streaming_upload = SyncLiveProgress {
+        transfer_active: true,
+        current_bytes: 700,
+        current_total: 2048,
+        ..uploading
+    };
+    assert_eq!(
+        sync_overview_text(running, Some(streaming_upload)),
+        sync_overview_text(running, Some(uploading)),
+        "byte-level transfer progress stays out of the label text"
+    );
 }
 
 #[gtk::test]

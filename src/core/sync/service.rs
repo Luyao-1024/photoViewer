@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 
@@ -14,13 +14,185 @@ use super::model::{
     Baseline, EntrySnapshot, Observation, PlanAction, Revision, RevisionStrength, UploadScope,
 };
 use super::planner;
-use super::provider::{RemoteEntry, SyncProvider, WriteCondition};
+use super::provider::{RemoteEntry, SyncProvider, TransferProgress, WriteCondition};
 use super::store::{StoredEntry, StoredTask, SyncConflict, SyncJob, SyncStore};
 use super::webdav::WebDavProvider;
 
 static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+static LIVE_PROGRESS: Mutex<Option<LiveProgressSession>> = Mutex::new(None);
+/// Set when a trigger arrives while its job is already running: the run is
+/// remembered and one supplementary run fires after the active run settles.
+static PENDING_TRIGGER: AtomicBool = AtomicBool::new(false);
+
+/// What the live progress label should describe right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncLivePhase {
+    /// Run started; remote enumeration and planning have not produced counts yet.
+    Preparing,
+    Downloading,
+    Uploading,
+}
+
+/// In-memory progress of the current home-pull run. Never persisted; a run
+/// reports it so the Photos overview can show real fractions instead of a
+/// bare "synchronizing" label. While `transfer_active` is set, the byte
+/// counters describe the file currently streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncLiveProgress {
+    pub phase: SyncLivePhase,
+    pub downloaded: usize,
+    pub download_total: usize,
+    pub uploaded: usize,
+    pub upload_total: usize,
+    pub transfer_active: bool,
+    pub current_bytes: u64,
+    pub current_total: u64,
+}
+
+/// The progress state plus the transport byte-count sink of the active run.
+struct LiveProgressSession {
+    state: SyncLiveProgress,
+    transfer: Option<Arc<TransferProgress>>,
+}
+
+impl SyncLiveProgress {
+    fn preparing() -> Self {
+        Self {
+            phase: SyncLivePhase::Preparing,
+            downloaded: 0,
+            download_total: 0,
+            uploaded: 0,
+            upload_total: 0,
+            transfer_active: false,
+            current_bytes: 0,
+            current_total: 0,
+        }
+    }
+
+    fn add_totals(&mut self, downloads: usize, uploads: usize) {
+        self.download_total += downloads;
+        self.upload_total += uploads;
+    }
+
+    fn begin_transfer(&mut self, phase: SyncLivePhase, expected_total: u64) {
+        self.phase = phase;
+        self.transfer_active = true;
+        self.current_bytes = 0;
+        self.current_total = expected_total;
+    }
+
+    fn finish_transfer(&mut self) {
+        self.transfer_active = false;
+        self.current_bytes = 0;
+        self.current_total = 0;
+    }
+
+    /// Count one resolved planned transfer. Clamped to the planned total so
+    /// unusual double transfers (verification followed by replacement) can
+    /// never display "done beyond total".
+    fn complete_download(&mut self) {
+        if self.downloaded < self.download_total {
+            self.downloaded += 1;
+        }
+        self.finish_transfer();
+    }
+
+    fn complete_upload(&mut self) {
+        if self.uploaded < self.upload_total {
+            self.uploaded += 1;
+        }
+        self.finish_transfer();
+    }
+}
+
+/// Snapshot of the live synchronization progress, `None` when no run is
+/// active. While a transfer streams, the byte counters are overlaid from the
+/// transport sink so the label advances between per-file completions.
+pub fn live_progress() -> Option<SyncLiveProgress> {
+    let guard = LIVE_PROGRESS.lock().ok()?;
+    let session = guard.as_ref()?;
+    let mut snapshot = session.state;
+    if snapshot.transfer_active {
+        if let Some(transfer) = session.transfer.as_ref() {
+            let (bytes, total) = transfer.snapshot();
+            snapshot.current_bytes = bytes;
+            snapshot.current_total = total;
+        }
+    }
+    Some(snapshot)
+}
+
+fn live_progress_begin_session() {
+    if let Ok(mut slot) = LIVE_PROGRESS.lock() {
+        *slot = Some(LiveProgressSession {
+            state: SyncLiveProgress::preparing(),
+            transfer: None,
+        });
+    }
+}
+
+/// Close the progress session only when no job is running. A duplicate
+/// trigger closing its own cycle must not blind the still-running run that
+/// owns the session.
+fn live_progress_end_session() {
+    if any_job_active() {
+        return;
+    }
+    if let Ok(mut slot) = LIVE_PROGRESS.lock() {
+        *slot = None;
+    }
+}
+
+fn any_job_active() -> bool {
+    ACTIVE_JOBS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|active| !active.is_empty())
+        .unwrap_or(true)
+}
+
+fn job_is_active(job_id: i64) -> bool {
+    ACTIVE_JOBS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|active| active.contains(&job_id))
+        .unwrap_or(false)
+}
+
+fn live_progress_add_totals(downloads: usize, uploads: usize) {
+    if let Ok(Some(session)) = LIVE_PROGRESS.lock().as_deref_mut() {
+        session.state.add_totals(downloads, uploads);
+    }
+}
+
+fn live_progress_attach_transfer(transfer: Arc<TransferProgress>) {
+    if let Ok(Some(session)) = LIVE_PROGRESS.lock().as_deref_mut() {
+        session.transfer = Some(transfer);
+    }
+}
+
+fn live_progress_begin(phase: SyncLivePhase, expected_total: u64) {
+    if let Ok(Some(session)) = LIVE_PROGRESS.lock().as_deref_mut() {
+        session.state.begin_transfer(phase, expected_total);
+        if let Some(transfer) = session.transfer.as_ref() {
+            transfer.start(expected_total);
+        }
+    }
+}
+
+fn live_progress_complete_download() {
+    if let Ok(Some(session)) = LIVE_PROGRESS.lock().as_deref_mut() {
+        session.state.complete_download();
+    }
+}
+
+fn live_progress_complete_upload() {
+    if let Ok(Some(session)) = LIVE_PROGRESS.lock().as_deref_mut() {
+        session.state.complete_upload();
+    }
+}
 
 struct ActiveJobGuard(i64);
 
@@ -259,11 +431,15 @@ impl SyncService {
             return Err(AppError::Backend("synchronization job is paused".into()));
         }
         self.store.mark_job_started(job_id)?;
+        let transfer_progress = Arc::new(TransferProgress::default());
         let provider = Arc::new(
             WebDavProvider::new(&job.endpoint, job.username.clone(), credentials.password)
-                .map_err(provider_error)?,
+                .map_err(provider_error)?
+                .with_transfer_progress(Arc::clone(&transfer_progress)),
         );
-        let result = self.run_with_provider_inner(&job, provider, true).await;
+        let result = self
+            .run_with_provider_inner(&job, provider, true, Some(transfer_progress))
+            .await;
         match &result {
             Ok(_) => self.store.mark_job_completed(job_id)?,
             Err(error) => self.store.mark_job_failed(job_id, &error.to_string())?,
@@ -288,6 +464,42 @@ impl SyncService {
     pub async fn trigger_saved_jobs_once(&self) -> Result<()> {
         ensure_webdav_sync_enabled()?;
         let jobs = self.store.list_jobs()?;
+        tracing::info!(
+            target: crate::core::log_targets::STORAGE,
+            job_count = jobs.len(),
+            "synchronization run triggered"
+        );
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        // A trigger arriving while every requested job is already running is
+        // intercepted: remember it and fire one supplementary run once the
+        // active run settles, instead of churning the progress session.
+        if jobs.iter().all(|job| job_is_active(job.id)) {
+            PENDING_TRIGGER.store(true, Ordering::Relaxed);
+            tracing::info!(
+                target: crate::core::log_targets::STORAGE,
+                "synchronization already running; run remembered for after it finishes"
+            );
+            return Ok(());
+        }
+        loop {
+            live_progress_begin_session();
+            let result = self.run_saved_jobs_sequentially(jobs.clone()).await;
+            live_progress_end_session();
+            result?;
+            if !PENDING_TRIGGER.swap(false, Ordering::Relaxed) {
+                break;
+            }
+            tracing::info!(
+                target: crate::core::log_targets::STORAGE,
+                "supplementary synchronization run after the previous one finished"
+            );
+        }
+        Ok(())
+    }
+
+    async fn run_saved_jobs_sequentially(&self, jobs: Vec<super::store::SyncJob>) -> Result<()> {
         for job in jobs {
             let already_running = ACTIVE_JOBS
                 .get_or_init(|| Mutex::new(HashSet::new()))
@@ -295,16 +507,26 @@ impl SyncService {
                 .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?
                 .contains(&job.id);
             if already_running {
+                PENDING_TRIGGER.store(true, Ordering::Relaxed);
                 continue;
             }
             if job.paused {
                 self.store.set_job_paused(job.id, false)?;
             }
-            if let Err(error) = self.run_saved_job(job.id).await {
-                tracing::warn!(
+            match self.run_saved_job(job.id).await {
+                Ok(summary) => tracing::info!(
+                    target: crate::core::log_targets::STORAGE,
                     job_id = job.id,
-                    "pull-triggered synchronization failed: {error}"
-                );
+                    uploaded = summary.uploaded,
+                    downloaded = summary.downloaded,
+                    verified = summary.verified,
+                    unchanged = summary.unchanged,
+                    conflicts = summary.conflicts,
+                    "synchronization job finished"
+                ),
+                Err(error) => {
+                    tracing::warn!(job_id = job.id, "synchronization job failed: {error}")
+                }
             }
         }
         Ok(())
@@ -435,7 +657,8 @@ impl SyncService {
         job: &SyncJob,
         provider: Arc<dyn SyncProvider>,
     ) -> Result<RunSummary> {
-        self.run_with_provider_inner(job, provider, false).await
+        self.run_with_provider_inner(job, provider, false, None)
+            .await
     }
 
     async fn run_with_provider_inner(
@@ -443,6 +666,7 @@ impl SyncService {
         job: &SyncJob,
         provider: Arc<dyn SyncProvider>,
         monitor_global_switch: bool,
+        transfer_progress: Option<Arc<TransferProgress>>,
     ) -> Result<RunSummary> {
         provider.probe().await.map_err(provider_error)?;
         if self.sync_should_stop(job.id, monitor_global_switch)? {
@@ -491,6 +715,38 @@ impl SyncService {
         paths.extend(local_entries.keys().cloned());
         paths.extend(remote_entries.keys().cloned());
         paths.extend(stored_entries.keys().cloned());
+
+        // Pre-plan every path once so the live progress label can show real
+        // fractions ("downloaded X of Y") before the first transfer finishes.
+        let mut planned_downloads = 0usize;
+        let mut planned_uploads = 0usize;
+        for relative_path in &paths {
+            if protected_uploads.contains(relative_path) {
+                continue;
+            }
+            let upload_ok = upload_allowed(job.upload_scope, &upload_albums, relative_path);
+            match plan_entry(
+                job,
+                relative_path,
+                observed_local(local_entries.get(relative_path)),
+                observed_remote(
+                    remote_entries.get(relative_path),
+                    stored_entries.get(relative_path),
+                ),
+                stored_entries.get(relative_path),
+                upload_ok,
+            ) {
+                PlanAction::UploadNew | PlanAction::UploadReplace { .. } => planned_uploads += 1,
+                PlanAction::DownloadNew
+                | PlanAction::DownloadReplace
+                | PlanAction::VerifyContent => planned_downloads += 1,
+                _ => {}
+            }
+        }
+        live_progress_add_totals(planned_downloads, planned_uploads);
+        if let Some(transfer) = transfer_progress {
+            live_progress_attach_transfer(transfer);
+        }
 
         let mut summary = RunSummary::default();
         for relative_path in paths {
@@ -1282,47 +1538,16 @@ impl SyncService {
         upload_allowed: bool,
         summary: &mut RunSummary,
     ) -> Result<()> {
-        let local_observation =
-            local_entry.map_or(Observation::Absent, |entry| Observation::Present {
-                fingerprint: Some(entry.fingerprint.clone()),
-                revision: None,
-                size: entry.fingerprint.size,
-                modified_unix: Some(entry.modified_ns / 1_000_000_000),
-            });
-        let remote_observation = remote_entry.map_or(Observation::Absent, |entry| {
-            let known_fingerprint = stored.and_then(|stored| {
-                if stored.remote_revision.as_deref()
-                    == entry
-                        .revision
-                        .as_ref()
-                        .map(|revision| revision.value.as_str())
-                {
-                    stored.remote.clone()
-                } else {
-                    None
-                }
-            });
-            Observation::Present {
-                fingerprint: known_fingerprint,
-                revision: entry.revision.clone(),
-                size: entry.size,
-                modified_unix: entry.modified_unix,
-            }
-        });
-        let baseline = stored.and_then(stored_baseline);
-        let snapshot = EntrySnapshot {
-            relative_path: relative_path.into(),
-            local: local_observation.clone(),
-            remote: remote_observation.clone(),
-            baseline,
-            direction: job.direction,
-            propagate_deletes: job.propagate_deletes,
-        };
-        let mut action = if upload_allowed {
-            planner::plan(&snapshot)
-        } else {
-            planner::plan_remote_authoritative(&snapshot)
-        };
+        let local_observation = observed_local(local_entry);
+        let remote_observation = observed_remote(remote_entry, stored);
+        let mut action = plan_entry(
+            job,
+            relative_path,
+            local_observation,
+            remote_observation.clone(),
+            stored,
+            upload_allowed,
+        );
 
         let entry_id = self.store.upsert_observation(
             job.id,
@@ -1340,6 +1565,7 @@ impl SyncService {
         if action == PlanAction::VerifyContent {
             let remote = remote_entry
                 .ok_or_else(|| AppError::Backend("verification requires a remote object".into()))?;
+            live_progress_begin(SyncLivePhase::Downloading, remote.size);
             let verified = self
                 .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
                 .await?;
@@ -1355,12 +1581,24 @@ impl SyncService {
                 )?;
                 remove_file_if_exists(&verified)?;
                 summary.verified += 1;
+                live_progress_complete_download();
+                tracing::info!(
+                    target: crate::core::log_targets::STORAGE,
+                    job_id = job.id,
+                    path = %relative_path,
+                    bytes = remote.size,
+                    "verified cloud copy matches local"
+                );
                 return Ok(());
             }
             remove_file_if_exists(&verified)?;
             action = if upload_allowed {
+                // Verification consumed this path's planned download and
+                // resolved it as a conflict; count it so the label advances.
+                live_progress_complete_download();
                 PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch)
             } else {
+                // The replacement below re-downloads and counts on publish.
                 PlanAction::DownloadReplace
             };
         }
@@ -1418,6 +1656,7 @@ impl SyncService {
                     stored.map_or(1, |entry| entry.generation.saturating_add(1)),
                 )?;
                 let key = remote_key(&job.remote_root, relative_path)?;
+                live_progress_begin(SyncLivePhase::Uploading, snapshot_fingerprint.size);
                 let uploaded = match provider.upload(&key, &snapshot_path, condition).await {
                     Ok(uploaded) => uploaded,
                     Err(error) => {
@@ -1467,11 +1706,20 @@ impl SyncService {
                     .set_task_state(&operation_id, "succeeded", None)?;
                 remove_file_if_exists(&snapshot_path)?;
                 summary.uploaded += 1;
+                live_progress_complete_upload();
+                tracing::info!(
+                    target: crate::core::log_targets::STORAGE,
+                    job_id = job.id,
+                    path = %relative_path,
+                    bytes = snapshot_fingerprint.size,
+                    "uploaded to cloud"
+                );
             }
             PlanAction::DownloadNew | PlanAction::DownloadReplace => {
                 let remote = remote_entry.ok_or_else(|| {
                     AppError::Backend("download plan has no remote source".into())
                 })?;
+                live_progress_begin(SyncLivePhase::Downloading, remote.size);
                 let staged = self
                     .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
                     .await?;
@@ -1570,6 +1818,14 @@ impl SyncService {
                     .set_task_state(&operation_id, "succeeded", None)?;
                 remove_file_if_exists(&staged)?;
                 summary.downloaded += 1;
+                live_progress_complete_download();
+                tracing::info!(
+                    target: crate::core::log_targets::STORAGE,
+                    job_id = job.id,
+                    path = %relative_path,
+                    bytes = remote.size,
+                    "downloaded from cloud"
+                );
             }
             PlanAction::Conflict(kind) => {
                 self.store.record_conflict(
@@ -1784,6 +2040,64 @@ fn stored_baseline(stored: &StoredEntry) -> Option<Baseline> {
         local_revision: None,
         remote_revision: stored.baseline_remote_revision.clone().map(Revision::etag),
     })
+}
+
+fn observed_local(local_entry: Option<&LocalEntry>) -> Observation {
+    local_entry.map_or(Observation::Absent, |entry| Observation::Present {
+        fingerprint: Some(entry.fingerprint.clone()),
+        revision: None,
+        size: entry.fingerprint.size,
+        modified_unix: Some(entry.modified_ns / 1_000_000_000),
+    })
+}
+
+fn observed_remote(
+    remote_entry: Option<&RemoteEntry>,
+    stored: Option<&StoredEntry>,
+) -> Observation {
+    remote_entry.map_or(Observation::Absent, |entry| {
+        let known_fingerprint = stored.and_then(|stored| {
+            if stored.remote_revision.as_deref()
+                == entry
+                    .revision
+                    .as_ref()
+                    .map(|revision| revision.value.as_str())
+            {
+                stored.remote.clone()
+            } else {
+                None
+            }
+        });
+        Observation::Present {
+            fingerprint: known_fingerprint,
+            revision: entry.revision.clone(),
+            size: entry.size,
+            modified_unix: entry.modified_unix,
+        }
+    })
+}
+
+fn plan_entry(
+    job: &SyncJob,
+    relative_path: &str,
+    local_observation: Observation,
+    remote_observation: Observation,
+    stored: Option<&StoredEntry>,
+    upload_allowed: bool,
+) -> PlanAction {
+    let snapshot = EntrySnapshot {
+        relative_path: relative_path.into(),
+        local: local_observation,
+        remote: remote_observation,
+        baseline: stored.and_then(stored_baseline),
+        direction: job.direction,
+        propagate_deletes: job.propagate_deletes,
+    };
+    if upload_allowed {
+        planner::plan(&snapshot)
+    } else {
+        planner::plan_remote_authoritative(&snapshot)
+    }
 }
 
 fn remote_key(root: &str, relative: &str) -> Result<String> {

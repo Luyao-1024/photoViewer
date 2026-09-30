@@ -30,7 +30,9 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
-use crate::core::sync::{SyncOverview, SyncOverviewStatus, SyncStore};
+use crate::core::sync::{
+    live_progress, SyncLivePhase, SyncLiveProgress, SyncOverview, SyncOverviewStatus, SyncStore,
+};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -50,14 +52,15 @@ struct PhotosOverviewSnapshot {
     photos: u32,
     videos: u32,
     sync: SyncOverview,
+    sync_progress: Option<SyncLiveProgress>,
 }
 
-fn sync_overview_text(overview: SyncOverview) -> String {
+fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>) -> String {
     match overview.status {
         SyncOverviewStatus::Disabled => String::new(),
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
-        SyncOverviewStatus::Running => tr("photos.overview.sync.running"),
+        SyncOverviewStatus::Running => sync_running_text(progress),
         SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
         SyncOverviewStatus::Completed if overview.conflict_images > 0 => trf(
@@ -71,6 +74,34 @@ fn sync_overview_text(overview: SyncOverview) -> String {
             "photos.overview.sync.completed",
             &[("count", &overview.synced_items.to_string())],
         ),
+    }
+}
+
+/// While a run is active, describe the current transfer activity with live
+/// file counts: downloads show "synced X of Y", uploads show "uploading X of
+/// Y photos/videos". Byte-level movement is logged per transfer instead of
+/// shown here. Before planning has produced totals (and between phases) fall
+/// back to the generic running label.
+fn sync_running_text(progress: Option<SyncLiveProgress>) -> String {
+    let Some(progress) = progress else {
+        return tr("photos.overview.sync.running");
+    };
+    match progress.phase {
+        SyncLivePhase::Uploading if progress.upload_total > 0 => trf(
+            "photos.overview.sync.running_upload",
+            &[
+                ("done", &progress.uploaded.to_string()),
+                ("total", &progress.upload_total.to_string()),
+            ],
+        ),
+        SyncLivePhase::Downloading if progress.download_total > 0 => trf(
+            "photos.overview.sync.running_download",
+            &[
+                ("done", &progress.downloaded.to_string()),
+                ("total", &progress.download_total.to_string()),
+            ],
+        ),
+        _ => tr("photos.overview.sync.running"),
     }
 }
 
@@ -856,6 +887,7 @@ impl PhotosPage {
                     photos: repository.count(MediaQuery::Images)?,
                     videos: repository.count(MediaQuery::Videos)?,
                     sync: SyncStore::new(pool).overview()?,
+                    sync_progress: live_progress(),
                 })
             })
             .await;
@@ -888,7 +920,7 @@ impl PhotosPage {
         self.imp()
             .overview_sync_label
             .get()
-            .set_label(&sync_overview_text(snapshot.sync));
+            .set_label(&sync_overview_text(snapshot.sync, snapshot.sync_progress));
         let sync_visible = snapshot.sync.status != SyncOverviewStatus::Disabled;
         self.imp().overview_sync_row.get().set_visible(sync_visible);
         if !sync_visible {

@@ -13,7 +13,8 @@ use tokio_util::io::ReaderStream;
 
 use super::model::{Revision, RevisionStrength};
 use super::provider::{
-    ProviderCapabilities, ProviderError, ProviderResult, RemoteEntry, SyncProvider, WriteCondition,
+    ProviderCapabilities, ProviderError, ProviderResult, RemoteEntry, SyncProvider,
+    TransferProgress, WriteCondition,
 };
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
@@ -36,6 +37,7 @@ pub struct WebDavProvider {
     base: Url,
     username: String,
     password: String,
+    progress: Option<std::sync::Arc<TransferProgress>>,
 }
 
 impl WebDavProvider {
@@ -68,7 +70,15 @@ impl WebDavProvider {
             base,
             username,
             password,
+            progress: None,
         })
+    }
+
+    /// Attach a byte-counting sink so large transfers report sub-file
+    /// progress. Purely observational: it never changes transfer behavior.
+    pub fn with_transfer_progress(mut self, progress: std::sync::Arc<TransferProgress>) -> Self {
+        self.progress = Some(progress);
+        self
     }
 
     fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
@@ -314,11 +324,21 @@ impl SyncProvider for WebDavProvider {
             .create_new(true)
             .open(destination)
             .await?;
+        if let Some(progress) = self.progress.as_ref() {
+            let declared = headers
+                .get(CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            progress.start(declared.unwrap_or(0));
+        }
         let mut stream = response.bytes_stream();
         let mut size = 0_u64;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(map_transport)?;
             size = size.saturating_add(chunk.len() as u64);
+            if let Some(progress) = self.progress.as_ref() {
+                progress.record(chunk.len() as u64);
+            }
             file.write_all(&chunk).await?;
         }
         file.sync_all().await?;
@@ -353,6 +373,9 @@ impl SyncProvider for WebDavProvider {
         }
         let file = tokio::fs::File::open(source).await?;
         let size = file.metadata().await?.len();
+        if let Some(progress) = self.progress.as_ref() {
+            progress.start(size);
+        }
         if matches!(
             &condition,
             WriteCondition::ReplaceIf(revision) if revision.strength != RevisionStrength::Strong
@@ -401,7 +424,18 @@ impl SyncProvider for WebDavProvider {
                 WriteCondition::CreateOnly => {}
             }
         }
-        let body = reqwest::Body::wrap_stream(ReaderStream::new(file));
+        let body = match self.progress.as_ref() {
+            Some(progress) => {
+                let progress = std::sync::Arc::clone(progress);
+                reqwest::Body::wrap_stream(ReaderStream::new(file).map(move |chunk| {
+                    if let Ok(bytes) = &chunk {
+                        progress.record(bytes.len() as u64);
+                    }
+                    chunk
+                }))
+            }
+            None => reqwest::Body::wrap_stream(ReaderStream::new(file)),
+        };
         let mut request = self
             .request(Method::PUT, self.object_url(key, false)?)
             .header(CONTENT_LENGTH, size)

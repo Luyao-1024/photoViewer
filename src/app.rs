@@ -391,6 +391,20 @@ async fn initialize(
         thumbnail_loader.clone(),
     );
 
+    // 打开应用即触发一次同步：与首页下拉相同的"一次性运行全部已保存任务"
+    // 行为（无定时器；已在运行的任务会被跳过，暂停的任务在该次运行中恢复）。
+    // 同步规划直接读文件系统与同步条目，不依赖启动扫描结果，因此与扫描并行。
+    if crate::core::prefs::webdav_sync_enabled() {
+        let sync_pool = pool.clone();
+        let sync_actor = db_actor.clone();
+        tokio::spawn(async move {
+            let service = crate::core::sync::SyncService::with_actor(sync_pool, sync_actor);
+            if let Err(error) = service.trigger_saved_jobs_once().await {
+                tracing::warn!("startup synchronization failed: {error}");
+            }
+        });
+    }
+
     // change_rx 交给 activate 处的消费者：那里能拿到 MainWindow，TrashChanged 时
     // 可以刷新可见的回收站页面（相册列表的 Upserted/Removed 也由它应用到 media_list）。
     Ok((

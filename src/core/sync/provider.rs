@@ -1,7 +1,38 @@
 use async_trait::async_trait;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::model::Revision;
+
+/// Byte counters for one in-flight transfer. A transport adapter records
+/// progress through this sink; the service attaches it to the live progress
+/// session so the UI can show sub-file movement while a large file streams.
+#[derive(Debug, Default)]
+pub struct TransferProgress {
+    bytes: AtomicU64,
+    total: AtomicU64,
+}
+
+impl TransferProgress {
+    /// Restart the counters for a new transfer with the expected size
+    /// (`0` when the size is unknown).
+    pub fn start(&self, total: u64) {
+        self.bytes.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    pub fn record(&self, additional: u64) {
+        self.bytes.fetch_add(additional, Ordering::Relaxed);
+    }
+
+    /// `(transferred, expected total)` for the current transfer.
+    pub fn snapshot(&self) -> (u64, u64) {
+        (
+            self.bytes.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProviderCapabilities {
