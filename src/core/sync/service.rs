@@ -695,6 +695,23 @@ impl SyncService {
         if self.sync_should_stop(job.id, monitor_global_switch)? {
             return Ok(RunSummary::default());
         }
+        if job.upload_scope == UploadScope::SelectedAlbums {
+            let remote_albums = remote_entries
+                .keys()
+                .map(|path| {
+                    path.rsplit_once('/')
+                        .map_or("", |(album, _)| album)
+                        .to_string()
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            self.store.enable_remote_albums(job.id, &remote_albums)?;
+        }
+        let job = self
+            .store
+            .get_job(job.id)?
+            .ok_or_else(|| AppError::Backend(format!("sync job {} no longer exists", job.id)))?;
         let upload_albums = self
             .store
             .upload_albums(job.id)?
@@ -726,7 +743,7 @@ impl SyncService {
             }
             let upload_ok = upload_allowed(job.upload_scope, &upload_albums, relative_path);
             match plan_entry(
-                job,
+                &job,
                 relative_path,
                 observed_local(local_entries.get(relative_path)),
                 observed_remote(
@@ -760,7 +777,7 @@ impl SyncService {
             let remote = remote_entries.get(&relative_path);
             let stored = stored_entries.get(&relative_path);
             self.reconcile_one(
-                job,
+                &job,
                 provider.as_ref(),
                 &relative_path,
                 local,

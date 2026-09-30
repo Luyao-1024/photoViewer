@@ -351,7 +351,7 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
 }
 
 #[tokio::test]
-async fn selected_albums_upload_while_all_remote_albums_download() {
+async fn remote_albums_enable_local_upload_while_local_only_albums_stay_unselected() {
     let temp = tempfile::tempdir().unwrap();
     let local_root = temp.path().join("photos");
     let selected = local_root.join("Selected");
@@ -395,6 +395,16 @@ async fn selected_albums_upload_while_all_remote_albums_download() {
     assert_eq!(first.uploaded, 1);
     assert_eq!(first.downloaded, 1);
     assert_eq!(
+        service.store().upload_albums(job.id).unwrap(),
+        vec!["Cloud".to_string(), "Selected".to_string()]
+    );
+    let generation_after_discovery = service
+        .store()
+        .get_job(job.id)
+        .unwrap()
+        .unwrap()
+        .config_generation;
+    assert_eq!(
         std::fs::read(local_root.join("Cloud/download.gif")).unwrap(),
         cloud_bytes
     );
@@ -413,23 +423,35 @@ async fn selected_albums_upload_while_all_remote_albums_download() {
         "an unchecked local-only album should not be hashed into sync state"
     );
 
-    let mut local_edit = cloud_bytes.clone();
-    local_edit.extend_from_slice(b"local edit that must not upload");
-    std::fs::write(local_root.join("Cloud/download.gif"), local_edit).unwrap();
-    let mut remote_edit = cloud_bytes;
-    remote_edit.extend_from_slice(b"remote edit");
-    provider.insert("PhotoViewer/Cloud/download.gif", remote_edit.clone());
+    let mut local_edit = cloud_bytes;
+    local_edit.extend_from_slice(b"local edit that should upload");
+    std::fs::write(local_root.join("Cloud/download.gif"), &local_edit).unwrap();
 
     let second = service
         .run_with_provider(&job, provider.clone())
         .await
         .unwrap();
-    assert_eq!(second.uploaded, 0);
-    assert_eq!(second.downloaded, 1);
+    assert_eq!(second.uploaded, 1);
+    assert_eq!(second.downloaded, 0);
     assert_eq!(second.conflicts, 0);
     assert_eq!(
-        std::fs::read(local_root.join("Cloud/download.gif")).unwrap(),
-        remote_edit
+        service
+            .store()
+            .get_job(job.id)
+            .unwrap()
+            .unwrap()
+            .config_generation,
+        generation_after_discovery
+    );
+    assert_eq!(
+        provider
+            .objects
+            .lock()
+            .unwrap()
+            .get("PhotoViewer/Cloud/download.gif")
+            .cloned()
+            .unwrap(),
+        local_edit
     );
 }
 

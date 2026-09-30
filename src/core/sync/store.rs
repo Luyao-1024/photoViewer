@@ -124,6 +124,10 @@ pub enum SyncWrite {
         id: i64,
         relative_albums: Vec<String>,
     },
+    EnableRemoteAlbums {
+        id: i64,
+        relative_albums: Vec<String>,
+    },
     MarkJobStarted {
         id: i64,
     },
@@ -435,6 +439,15 @@ impl SyncStore {
     pub fn set_upload_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {
         let relative_albums = normalize_relative_albums(relative_albums)?;
         self.write(SyncWrite::SetUploadAlbums {
+            id,
+            relative_albums,
+        })?;
+        Ok(())
+    }
+
+    pub fn enable_remote_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {
+        let relative_albums = normalize_relative_albums(relative_albums)?;
+        self.write(SyncWrite::EnableRemoteAlbums {
             id,
             relative_albums,
         })?;
@@ -922,6 +935,30 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                     "INSERT INTO sync_job_upload_albums (job_id, relative_album)
                      VALUES (?1, ?2)",
                     params![id, relative_album],
+                )?;
+            }
+            tx.commit()?;
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::EnableRemoteAlbums {
+            id,
+            relative_albums,
+        } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let mut added = 0;
+            for relative_album in relative_albums {
+                added += tx.execute(
+                    "INSERT OR IGNORE INTO sync_job_upload_albums (job_id, relative_album)
+                     VALUES (?1, ?2)",
+                    params![id, relative_album],
+                )?;
+            }
+            if added > 0 {
+                tx.execute(
+                    "UPDATE sync_jobs SET config_generation = config_generation + 1
+                     WHERE id = ?1",
+                    [id],
                 )?;
             }
             tx.commit()?;
