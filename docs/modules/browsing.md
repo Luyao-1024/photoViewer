@@ -202,6 +202,8 @@ Emptiness has three different causes and each needs its own child, all routed by
 
 - `scanning` while a startup/retry scan is in flight (`DomainEvent::ScanPhase { active: true }`).
   Without it the first tens of seconds of indexing read as "you have no photos".
+  Its `GtkSpinner` must be started explicitly — `GtkSpinner::new` does not
+  animate, and a stopped circle reads as a frozen page rather than progress.
 - `scan-error` when a pass finished with a failure, showing the real reason plus a
   **Retry Scan** button.
 - `empty` only when no scan is running and nothing failed, with an **Open Settings**
@@ -360,22 +362,24 @@ the id set and multi-select mode survived. The legacy FlowBox grid does clear
 selection before rebuilding (`media_grid/loading.rs`), but it has no selection UI
 in production, so that path is not user-visible.
 
-Multi-select has two entries on the virtual grids, because the context menu
-alone was unreachable on a touchscreen and invisible on a desktop:
+Multi-select is entered from the grid itself, not from the header. A persistent
+header entry button existed and was removed by owner decision (2026-10-02) —
+do not reintroduce it; the surviving entries are:
 
-- `select_mode_btn` in the Photos header (inside `select_mode_revealer`) enters
-  the mode on **all three** grids at once, so the mode survives switching
-  grouping, then moves focus onto a visible tile so Space acts immediately. It
-  selects nothing itself — the user's first click does. The album detail page
-  carries the same button and revealers for its single Day grid; see
-  [`albums-trash.md`](albums-trash.md).
+- The tile context menu's 多选 item (`photos.batch.multi_select`,
+  `GlassMenuItemKind::Suggested`): it turns the mode on and selects the
+  right-clicked tile, which fires `selection-changed` and refreshes the header
+  chrome. `Ctrl+A` / `Delete` / `Escape` answer the same browsing-scope keys as
+  the album page, and Space (toggle the focused tile) enters the mode too.
 - A `gtk::GestureLongPress` with `touch_only: true` on each virtual-grid tile
   summons the same context menu a right-click does (`factory.rs` setup), so the
   menu's actions are reachable without a right button. `touch_only` keeps it off
   the mouse path.
 
-`refresh_selection_ui` reveals the entry when multi-select is off and the exit
-button when it is on, so exactly one mode affordance is present at a time.
+Note that the header entry used to turn the mode on across **all three**
+grouping grids at once; the context-menu path acts on the grid that was
+right-clicked. `refresh_selection_ui` reveals the exit button when
+multi-select is on, so there is always a visible way out.
 The same function drives the header selection counter
 (`selection_count_revealer` → `selection_count_label`): it reveals while anything
 is selected and reads `photos.selection.count` ("已选择 N 项" / "N selected"),

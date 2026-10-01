@@ -55,10 +55,6 @@ mod imp {
         #[template_child]
         pub search_btn: TemplateChild<gtk::Button>,
         #[template_child]
-        pub select_mode_revealer: TemplateChild<gtk::Revealer>,
-        #[template_child]
-        pub select_mode_btn: TemplateChild<gtk::Button>,
-        #[template_child]
         pub select_all_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub select_all_btn: TemplateChild<gtk::Button>,
@@ -288,32 +284,6 @@ impl AlbumDetailPage {
         imp.delete_to_trash_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
-        // The multi-select entry is icon-only, so its tooltip is its label.
-        imp.select_mode_btn
-            .get()
-            .set_tooltip_text(Some(&tr("photos.batch.multi_select")));
-
-        // Left-click opens the viewer, so before this button existed the only
-        // route to batch actions was the tile context menu — undiscoverable on
-        // a desktop and unreachable on a touchscreen.
-        let weak = self.downgrade();
-        imp.select_mode_btn.get().connect_clicked(move |_| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            // Bind the handle once: `imp().grid.borrow()` is a temporary whose
-            // `Ref` would otherwise have to outlive `this` across the `if let`.
-            let grid = this.imp().grid.borrow().clone();
-            if let Some(grid) = grid.as_ref() {
-                grid.set_multi_select_mode(true);
-            }
-            this.refresh_selection_ui();
-            // The entry button is about to slide away; hand focus to the grid so
-            // Space still acts on a tile instead of leaving GTK to choose.
-            if let Some(grid) = grid.as_ref() {
-                grid.focus_visible_tile();
-            }
-        });
 
         let weak = self.downgrade();
         imp.exit_multi_select_btn.get().connect_clicked(move |_| {
@@ -327,14 +297,7 @@ impl AlbumDetailPage {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            let Some(grid) = this.imp().grid.borrow().as_ref().cloned() else {
-                return;
-            };
-            if grid.selected_ids().is_empty() {
-                this.select_all_in_album();
-            } else {
-                grid.clear_selection();
-            }
+            this.toggle_album_select_all();
             this.refresh_selection_ui();
         });
 
@@ -365,20 +328,62 @@ impl AlbumDetailPage {
     /// The grid's own `select_all()` only sees rows it has loaded — an album
     /// grid seeds one viewport and pages the rest by range — so answering
     /// select-all from it would quietly select a slice, or nothing at all when
-    /// no row is resident yet.
+    /// no row is resident yet. `None` means the album set is unknown (missing
+    /// album/pool, a failed read, an empty album) and callers must not guess.
+    fn album_select_all_ids(&self) -> Option<Vec<MediaId>> {
+        let album = self.imp().album.borrow().as_ref().cloned()?;
+        let pool = self.imp().pool.borrow().as_ref().cloned()?;
+        let repo = MediaRepository::new(pool);
+        let items = repo
+            .items(media_query_for_album(&album), 0, ALBUM_SELECT_ALL_LIMIT)
+            .ok()?;
+        let ids = items
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        (!ids.is_empty()).then_some(ids)
+    }
+
     fn select_all_in_album(&self) {
+        let Some(grid) = self.imp().grid.borrow().clone() else {
+            return;
+        };
+        let has_context = self.imp().album.borrow().is_some() && self.imp().pool.borrow().is_some();
+        match self.album_select_all_ids() {
+            Some(ids) => grid.select_ids(&ids),
+            // Without an album/pool context there is no album set to answer
+            // from, and the grid's own window is the best effort left. A
+            // failed read with context present stays a no-op so it cannot
+            // clobber the selection with a slice.
+            None if !has_context => grid.select_all(),
+            None => {}
+        }
+    }
+
+    /// The select-all button is a toggle, but its halves are not symmetric: a
+    /// partial selection must be *completed* against the same capped album set
+    /// `select_all_in_album` answers from, and only a selection that already
+    /// covers that set clears. Judging by "is anything selected" made the
+    /// button wipe a partially selected album instead of finishing it.
+    fn toggle_album_select_all(&self) {
         let Some(grid) = self.imp().grid.borrow().clone() else {
             return;
         };
         let album = self.imp().album.borrow().as_ref().cloned();
         let pool = self.imp().pool.borrow().as_ref().cloned();
         let (Some(album), Some(pool)) = (album, pool) else {
-            grid.select_all();
+            // No album context to measure a full set against; keep the
+            // grid-local toggle the button used to answer with.
+            if grid.selected_ids().is_empty() {
+                grid.select_all();
+            } else {
+                grid.clear_selection();
+            }
             return;
         };
         let repo = MediaRepository::new(pool);
         let Ok(items) = repo.items(media_query_for_album(&album), 0, ALBUM_SELECT_ALL_LIMIT) else {
-            return;
+            return; // a failed read must not clear what the user already selected
         };
         let ids = items
             .into_iter()
@@ -387,7 +392,14 @@ impl AlbumDetailPage {
         if ids.is_empty() {
             return;
         }
-        grid.select_ids(&ids);
+        let selected_set: HashSet<MediaId> = grid.selected_ids().into_iter().collect();
+        // Selection can only ever contain album rows, so "every capped id is
+        // picked" means the user already holds everything select-all grants.
+        if ids.iter().all(|id| selected_set.contains(id)) {
+            grid.clear_selection();
+        } else {
+            grid.select_ids(&ids);
+        }
     }
 
     fn selected_ids(&self) -> Vec<MediaId> {
@@ -424,9 +436,6 @@ impl AlbumDetailPage {
         // Exit is bound to multi-select *mode*, not to having a selection, so
         // the user can always leave multi-select even after deselecting all.
         imp.exit_multi_select_revealer.get().set_reveal_child(multi);
-        // Entering is a lie once selection mode is on: a tile click now toggles
-        // selection instead of opening the viewer.
-        imp.select_mode_revealer.get().set_reveal_child(!multi);
         let label = if has_any {
             "photos.batch.unselect_all"
         } else {

@@ -117,14 +117,15 @@ Design intent:
 
 - The page opens directly into media browsing. Avoid landing or instructional
   content when media exists.
-- The `Adw.HeaderBar` is glass chrome. Entering selection has one persistent
-  entry (`select_mode_btn`, beside search); the *actions* that apply to a
-  selection appear only once media is selected, keeping normal browsing visually
-  calm. Do not gate the entry on the selection it produces — that is a circular
-  dependency, and it left the right-click menu as the only way in.
-- The entry and its counterpart swap places: while multi-select is active the
-  entry collapses and `exit_multi_select_btn` slides in, so the header always
-  shows exactly one mode affordance and the user can never be stuck in the mode.
+- The `Adw.HeaderBar` is glass chrome. Entering selection happens from the
+  grid itself — the tile context menu (right-click / long-press) or Space /
+  Ctrl+A — and the *actions* that apply to a selection appear only once media
+  is selected, keeping normal browsing visually calm. There is deliberately no
+  persistent header entry button: one existed and was removed by owner
+  decision (2026-10-02), because the always-on icon was not wanted.
+- While multi-select is active `exit_multi_select_btn` slides in, so the
+  header shows a visible way out of the mode and the user can never be stuck
+  in it.
 - Selection mode should make batch actions discoverable without permanently
   occupying header space. Add-to-album, favorite, and trash actions belong in
   the header because they apply to the selected set.
@@ -144,7 +145,9 @@ Design intent:
   capsule, which would compete with the mode selector. The album detail page
   uses the same slot and the same i18n keys.
 - Search is a normal browsing action in the header. The search button is a
-  circular icon button that opens a dedicated search page. The search page uses
+  circular icon button that opens a dedicated search page; it is bare at rest
+  and only draws its circular glass capsule on hover or keyboard focus
+  (`.round-search-button`, hover-only in both materials). The search page uses
   a focused search entry and separates image and video results while preserving
   the existing media grid language for each result group. Result thumbnails use
   the compact Year grid size, and the image/video sections size to their own
@@ -285,10 +288,11 @@ Design intent:
   still a media grid.
 - Album detail should feel like a scoped version of Photos, not a separate app
   mode. That includes the header's selection chrome: the page carries the same
-  `select_mode_revealer`/`select_mode_btn` entry, `select_all_revealer`,
-  `exit_multi_select_revealer`, `add_to_album_revealer`, and
-  `delete_to_trash_revealer` trio as Photos, in the same packing order, so the
-  same gesture never lives in two different places.
+  `select_all_revealer`, `exit_multi_select_revealer`, `add_to_album_revealer`,
+  and `delete_to_trash_revealer` set as Photos, in the same packing order, so
+  the same gesture never lives in two different places. Multi-select entry is
+  the grid's context menu here as well — no persistent header button on either
+  page.
 - The album header deliberately has no batch favorite button. The page builds
   its grid with a no-op favorite callback, so a heart would be a dead control;
   add the button only together with a real callback.
@@ -561,7 +565,8 @@ with album name and count below each cover. The selected cover uses the shared
 `media-selected` thumbnail state; Copy and Move stay in a fixed footer and are
 disabled until a destination is selected. Do not push an album list or a
 second action page onto the browsing navigation stack. Its close icon reuses
-the Photos search button's circular `round-search-button` treatment.
+the Photos search button's circular `round-search-button` treatment (bare at
+rest, circular glass on hover/focus).
 
 Rule of thumb: **a button on the main window stage that overlays media/photo
 content is hover-only; a button inside a dialog or floating side panel is

@@ -255,10 +255,6 @@ mod imp {
         #[template_child]
         pub select_all_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
-        pub select_mode_revealer: TemplateChild<gtk::Revealer>,
-        #[template_child]
-        pub select_mode_btn: TemplateChild<gtk::Button>,
-        #[template_child]
         pub exit_multi_select_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub delete_to_trash_revealer: TemplateChild<gtk::Revealer>,
@@ -320,8 +316,6 @@ mod imp {
                 unfavorite_item_btn: RefCell::new(None),
                 delete_to_trash_btn: TemplateChild::default(),
                 select_all_revealer: TemplateChild::default(),
-                select_mode_revealer: TemplateChild::default(),
-                select_mode_btn: TemplateChild::default(),
                 exit_multi_select_revealer: TemplateChild::default(),
                 delete_to_trash_revealer: TemplateChild::default(),
                 favorite_revealer: TemplateChild::default(),
@@ -420,11 +414,6 @@ impl PhotosPage {
             .search_btn
             .get()
             .set_tooltip_text(Some(&tr("photos.search.tooltip")));
-        // The multi-select entry is icon-only, so its tooltip is its label.
-        obj.imp()
-            .select_mode_btn
-            .get()
-            .set_tooltip_text(Some(&tr("photos.batch.multi_select")));
         obj.imp()
             .overview_count_label
             .get()
@@ -740,26 +729,6 @@ impl PhotosPage {
         obj.imp().search_btn.get().connect_clicked(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.open_search_page();
-            }
-        });
-
-        // Persistent entry into multi-select. Left-click opens the viewer, so
-        // the only way to reach batch actions used to be the right-click menu —
-        // undiscoverable on a desktop and unreachable on a touchscreen. Enter on
-        // every grid so the mode survives switching grouping, then move focus
-        // into the grid: Space acts on the focused tile, and this button is about
-        // to slide away, which would otherwise leave GTK to pick a fallback.
-        let weak = obj.downgrade();
-        obj.imp().select_mode_btn.get().connect_clicked(move |_| {
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            for grid in this.imp().grids.borrow().iter() {
-                grid.set_multi_select_mode(true);
-            }
-            this.refresh_selection_ui();
-            if let Some(grid) = this.current_grid() {
-                grid.focus_visible_tile();
             }
         });
 
@@ -1286,13 +1255,6 @@ impl PhotosPage {
             .exit_multi_select_revealer
             .get()
             .set_reveal_child(any_multi);
-        // The entry button and the exit button are two halves of one control:
-        // once multi-select is on, clicking a tile toggles selection instead of
-        // opening the viewer, so "enter" would be a lie.
-        self.imp()
-            .select_mode_revealer
-            .get()
-            .set_reveal_child(!any_multi);
         // select_all_btn keeps a text label that toggles 全选/取消全选.
         if select_all_limit_reached {
             self.imp()

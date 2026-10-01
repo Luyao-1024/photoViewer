@@ -28,20 +28,9 @@ template $AlbumDetailPage : Adw.NavigationPage {
         css-classes: ["glass-toolbar-button", "round-search-button"];
       }
 
-      // Persistent entry into multi-select. It collapses as soon as
-      // multi-select is active, where the exit button takes its place.
-      [start]
-      Gtk.Revealer select_mode_revealer {
-        transition-type: slide_right;
-        reveal-child: true;
-
-        Gtk.Button select_mode_btn {
-          icon-name: "selection-mode-symbolic";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "round-search-button"];
-        }
-      }
-
+      // Multi-select has no persistent header entry (removed by owner
+      // decision): it is entered from the tile context menu (right-click /
+      // long-press) or with Space / Ctrl+A, and left via the exit revealer.
       [start]
       Gtk.Revealer select_all_revealer {
         transition-type: slide_right;

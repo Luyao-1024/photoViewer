@@ -157,15 +157,16 @@ Within an album detail page, right-clicking a media tile can set that item as
 the album cover. The action writes `album_covers`, refreshes the sidebar, and
 leaves media files untouched.
 
-The album detail header carries the same selection chrome as Photos: a
-persistent `select_mode_btn` (inside `select_mode_revealer`) enters multi-select
-for the page's single Day grid, and `select_all_btn`, `exit_multi_select_btn`,
-`add_to_album_btn`, and `delete_to_trash_btn` reveal from
-`AlbumDetailPage::refresh_selection_ui`, which is driven by
-`VirtualMediaGrid::connect_selection_changed`. Exit is bound to multi-select
-*mode*, not to having a selection, so the user is never stranded in the mode
-after deselecting everything, and the entry button reappears exactly when the
-exit button leaves. The header shows the same `selection_count_label` counter as
+The album detail header carries the same selection chrome as Photos:
+`select_all_btn`, `exit_multi_select_btn`, `add_to_album_btn`, and
+`delete_to_trash_btn` reveal from `AlbumDetailPage::refresh_selection_ui`,
+which is driven by `VirtualMediaGrid::connect_selection_changed`. There is no
+persistent header entry button into multi-select on either page (removed by
+owner decision, 2026-10-02): the mode is entered from the tile context menu
+(right-click / long-press) or with Space / Ctrl+A, and left via the exit
+button. Exit is bound to multi-select *mode*, not to having a selection, so
+the user is never stranded in the mode after deselecting everything. The
+header shows the same `selection_count_label` counter as
 Photos, in the same leftmost-`[end]` slot ("已选择 N 项", plus the limit suffix at
 `ALBUM_SELECT_ALL_LIMIT`), so the number that names the batch actions never lives
 in two places with two wordings. The counter deliberately does not take the
@@ -182,6 +183,13 @@ version selects a slice of a large album, or silently clears when no row is
 resident yet. Browsing-scope keys follow the same rule: `Ctrl+A` selects the
 album, `Delete` trashes the selection, and `Escape` clears the selection first
 and only falls through to the navigation stack when there is nothing to deselect.
+
+The `select_all_btn` click is a toggle whose halves are not symmetric: a
+partial selection is *completed* against that same capped album set, and only a
+selection that already covers the set clears. Judging by "is anything
+selected" would wipe a partially selected album instead of finishing it.
+`Ctrl+A` is not a toggle — it always completes. A failed repository read is a
+no-op for both: it must not clear what the user already selected.
 
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 

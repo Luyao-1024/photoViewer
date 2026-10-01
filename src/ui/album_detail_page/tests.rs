@@ -276,18 +276,18 @@ fn album_grid(page: &AlbumDetailPage) -> VirtualMediaGrid {
 }
 
 #[gtk::test]
-fn batch_actions_follow_the_album_selection_and_the_entry_button_covers_mode() {
+fn batch_actions_follow_the_album_selection_and_exit_covers_mode() {
     let (page, _tmp) = album_page_with_photos(3);
     let imp = page.imp();
     let grid = album_grid(&page);
 
-    assert!(
-        imp.select_mode_revealer.get().reveals_child(),
-        "the multi-select entry must be on screen before the user selects anything"
-    );
     assert!(!imp.select_all_revealer.get().reveals_child());
     assert!(!imp.add_to_album_revealer.get().reveals_child());
     assert!(!imp.delete_to_trash_revealer.get().reveals_child());
+    assert!(
+        !imp.exit_multi_select_revealer.get().reveals_child(),
+        "nothing is selected and multi-select is off, so no exit either"
+    );
 
     grid.select_ids(&[MediaId::from(1)]);
 
@@ -295,10 +295,6 @@ fn batch_actions_follow_the_album_selection_and_the_entry_button_covers_mode() {
     assert!(imp.add_to_album_revealer.get().reveals_child());
     assert!(imp.delete_to_trash_revealer.get().reveals_child());
     assert!(imp.exit_multi_select_revealer.get().reveals_child());
-    assert!(
-        !imp.select_mode_revealer.get().reveals_child(),
-        "showing 'enter multi-select' while the user is in it would be a lie"
-    );
     assert_eq!(
         imp.select_all_btn.get().label().unwrap().as_str(),
         crate::core::i18n::tr("photos.batch.unselect_all"),
@@ -310,25 +306,8 @@ fn batch_actions_follow_the_album_selection_and_the_entry_button_covers_mode() {
     assert!(!imp.add_to_album_revealer.get().reveals_child());
     assert!(!imp.delete_to_trash_revealer.get().reveals_child());
     assert!(
-        imp.select_mode_revealer.get().reveals_child(),
-        "deselecting everything must hand the entry button back"
-    );
-}
-
-#[gtk::test]
-fn the_entry_button_switches_the_album_grid_into_multi_select() {
-    let (page, _tmp) = album_page_with_photos(3);
-    let imp = page.imp();
-    let grid = album_grid(&page);
-    assert!(!grid.is_multi_select_mode());
-
-    imp.select_mode_btn.get().emit_clicked();
-
-    assert!(grid.is_multi_select_mode());
-    assert!(imp.exit_multi_select_revealer.get().reveals_child());
-    assert!(
-        !imp.add_to_album_revealer.get().reveals_child(),
-        "entering multi-select with nothing chosen must not fake a batch toolbar"
+        !imp.exit_multi_select_revealer.get().reveals_child(),
+        "with the mode off again the exit button must collapse"
     );
 }
 
@@ -363,21 +342,60 @@ fn the_select_all_button_toggles_between_the_whole_album_and_nothing() {
 }
 
 #[gtk::test]
+fn a_partial_selection_is_completed_by_select_all_not_cleared() {
+    // 60 photos in the album, 10 in the bounded GTK window: two hand-picked
+    // tiles are a partial selection, and the button must finish the set
+    // instead of wiping it (the old "anything selected?" toggle did).
+    let (page, _tmp) = album_page_in_window(60, 10);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+
+    grid.select_ids(&[MediaId::from(1), MediaId::from(2)]);
+    assert_eq!(
+        grid.selected_ids().len(),
+        2,
+        "precondition: partial selection"
+    );
+
+    imp.select_all_btn.get().emit_clicked();
+
+    assert_eq!(
+        grid.selected_ids().len(),
+        60,
+        "select-all on a partial selection must complete it against the whole album"
+    );
+    assert_eq!(
+        imp.select_all_btn.get().label().unwrap().as_str(),
+        crate::core::i18n::tr("photos.batch.unselect_all")
+    );
+
+    imp.select_all_btn.get().emit_clicked();
+
+    assert!(
+        grid.selected_ids().is_empty(),
+        "only a selection that already covers the album should toggle off"
+    );
+    assert!(!imp.select_all_revealer.get().reveals_child());
+}
+
+#[gtk::test]
 fn the_exit_button_leaves_multi_select_even_with_no_selection() {
     let (page, _tmp) = album_page_with_photos(3);
     let imp = page.imp();
     let grid = album_grid(&page);
 
-    imp.select_mode_btn.get().emit_clicked();
+    // Mode on with nothing selected (as after the last tile is deselected):
+    // the exit button stays because exit is bound to the mode, not to a
+    // selection.
+    grid.set_multi_select_mode(true);
+    page.refresh_selection_ui();
+    assert!(imp.exit_multi_select_revealer.get().reveals_child());
+
     imp.exit_multi_select_btn.get().emit_clicked();
 
     assert!(!grid.is_multi_select_mode());
     assert!(grid.selected_ids().is_empty());
     assert!(!imp.exit_multi_select_revealer.get().reveals_child());
-    assert!(
-        imp.select_mode_revealer.get().reveals_child(),
-        "the door back into multi-select must reopen on exit"
-    );
     assert!(
         !imp.add_to_album_revealer.get().reveals_child(),
         "clicking a tile should open the viewer again once multi-select is off"
@@ -393,7 +411,6 @@ fn the_empty_album_header_still_wires_its_chrome_without_a_grid() {
         "an empty album shows a status page, not a grid"
     );
 
-    imp.select_mode_btn.get().emit_clicked();
     imp.select_all_btn.get().emit_clicked();
     imp.exit_multi_select_btn.get().emit_clicked();
 

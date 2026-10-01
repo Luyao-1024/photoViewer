@@ -618,13 +618,13 @@ fn opening_viewer_pushes_through_browsing_root_page_wrapper() {
     );
 }
 
-/// Left-click opens the viewer, so batch actions used to be reachable only from
-/// the right-click menu — invisible on a desktop and unreachable on a
-/// touchscreen. The header must therefore carry a persistent entry that hands
-/// over to the exit button while multi-select is on, and restores itself on exit
-/// so the same gesture works twice in a row.
+/// There is no persistent header entry into multi-select (removed by owner
+/// decision): the mode is entered from the tile context menu (right-click /
+/// long-press) or with Space / Ctrl+A. Selecting a tile through those paths
+/// must hand over to the exit button while multi-select is on, and the exit
+/// button must collapse again when the mode ends so the flow can repeat.
 #[gtk::test]
-fn multi_select_entry_button_hands_over_to_exit_and_back() {
+fn multi_select_entered_without_a_header_entry_hands_over_to_exit_and_back() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();
     let pool = crate::core::db::init_pool(&tmp.path().join("select-entry.db")).unwrap();
@@ -635,46 +635,36 @@ fn multi_select_entry_button_hands_over_to_exit_and_back() {
 
     let imp = page.imp();
     assert!(
-        imp.select_mode_revealer.get().reveals_child(),
-        "the entry button is the discoverable half of the pair, so it starts visible"
-    );
-    assert!(
         !imp.exit_multi_select_revealer.get().reveals_child(),
         "the exit button must not appear before multi-select is on"
     );
 
-    imp.select_mode_btn.get().emit_clicked();
-    assert!(
-        !imp.select_mode_revealer.get().reveals_child(),
-        "the entry button hides itself once multi-select is active"
-    );
+    // The context-menu entry path: VirtualMediaGrid::show_context_menu's
+    // 多选 item turns the mode on and selects the right-clicked tile, which
+    // fires selection-changed and refreshes the header chrome.
+    let grid = imp.grids.borrow()[0].clone();
+    grid.select_ids(&[MediaId::from(1)]);
     assert!(
         imp.exit_multi_select_revealer.get().reveals_child(),
-        "entering multi-select from the header must reveal the way back out"
+        "entering multi-select from the grid must reveal the way back out"
     );
     assert!(
-        !imp.select_all_revealer.get().reveals_child(),
-        "entering multi-select with no selection must not fake a batch toolbar"
+        imp.select_all_revealer.get().reveals_child(),
+        "entering with a selection legitimately shows the batch toolbar"
     );
 
-    // Exiting returns to browsing: the entry reappears so the flow repeats.
+    // Exiting returns to browsing with no lingering header chrome.
     page.clear_selection();
     assert!(
         !imp.exit_multi_select_revealer.get().reveals_child(),
         "the exit button must collapse once multi-select is off"
     );
-    imp.select_mode_btn.get().emit_clicked();
-    assert!(
-        imp.exit_multi_select_revealer.get().reveals_child(),
-        "the entry must work again after exiting multi-select"
-    );
 }
 
-/// The `[start]` header group gained a persistent button, so the narrow-window
-/// crowding the plan flagged has to stay bounded: at 800x600 both start icons
+/// The `[start]` header group still carries the search icon at 800x600, and it
 /// must be allocated real width rather than squeezed to nothing.
 #[gtk::test]
-fn narrow_window_keeps_both_start_header_buttons_allocated() {
+fn narrow_window_keeps_the_start_header_button_allocated() {
     let _ = gtk::init();
     let tmp = tempfile::tempdir().unwrap();
     let pool = crate::core::db::init_pool(&tmp.path().join("narrow-header.db")).unwrap();
@@ -694,20 +684,16 @@ fn narrow_window_keeps_both_start_header_buttons_allocated() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let search = page.imp().search_btn.get().width();
-        let select = page.imp().select_mode_btn.get().width();
-        if (search >= 24 && select >= 24) || deadline.elapsed() > std::time::Duration::from_secs(3)
-        {
+        if search >= 24 || deadline.elapsed() > std::time::Duration::from_secs(3) {
             break;
         }
         context.iteration(true);
     }
 
     let search = page.imp().search_btn.get().width();
-    let select = page.imp().select_mode_btn.get().width();
     assert!(
-        search >= 24 && select >= 24,
-        "both start header buttons must keep a tappable allocation at 800x600, \
-         got search={search} select={select}"
+        search >= 24,
+        "the start header button must keep a tappable allocation at 800x600, got search={search}"
     );
 }
 
