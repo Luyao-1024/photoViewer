@@ -168,17 +168,69 @@ h1 {
   color: var(--text-muted);
 }
 
-.traffic {
+/* 窗口控制按钮不由本仓库绘制：Adw.ApplicationWindow 把标题栏交给 libadwaita，
+   后者按桌面 gsettings org.gnome.desktop.wm.preferences button-layout 渲染。
+   桌面默认值是 ':minimize,maximize,close'——冒号左侧为空，三枚全部在右端。
+   这里照此摆放，不要画成 macOS 的左置红绿灯。 */
+.winctl {
+  margin-left: auto;
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 2px;
+  flex: none;
 }
 
-.traffic span {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.18);
+.winctl span {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--text-muted);
 }
+
+/* 共用规则只提供 content/position，几何全部由各按钮自己声明：
+   这样不会和特异性更高的 `.winctl span::before` 互相压掉属性。 */
+.winctl span::before {
+  content: "";
+  position: absolute;
+}
+
+.winctl span:hover { background: rgba(255, 255, 255, 0.08); }
+
+/* 最小化：底部一条横线 */
+.winctl-min::before {
+  left: 5px;
+  right: 5px;
+  bottom: 5px;
+  height: 1px;
+  background: currentColor;
+}
+
+/* 最大化：空心方框 */
+.winctl-max::before {
+  left: 4px;
+  right: 4px;
+  top: 4px;
+  bottom: 4px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+/* 关闭：两条交叉斜线 */
+.winctl-close::before,
+.winctl-close::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 8px;
+  height: 1px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.winctl-close::before { transform: rotate(45deg); }
+.winctl-close::after { transform: rotate(-45deg); }
 
 .titlebar-title {
   min-width: 0;
