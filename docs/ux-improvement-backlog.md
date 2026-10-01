@@ -717,7 +717,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | **P2-3（已落盘）** | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
 | **P2-4（已落盘）** | 全项目没有任何无障碍角色/名称调用 | 原证据要更正：`set_accessible_label` 在 GTK4 里不是 API，grep 测的是不存在的符号；真实的 0 是模板 0 处 `accessible-role` + Rust 0 处 `update_property`。「26 个图标按钮都缺 tooltip」也不成立——26 枚里 22 枚本来就有，缺槽的是 4 枚（两枚裁剪比例箭头连 Rust 文案都没有） | 见「P2-4 实施结果」：4 枚补槽、2 枚补文案，名称侧给 tile 与全部状态徽标，装饰图标改 presentation；`tools/assert-at-spi.py` 那条被本机 pyatspi 探针替代（见 `docs/testing.md`） |
 | **P2-5（已落盘）** | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 见「P2-5 实施结果」：三处都不在选择节拍上了，另加数据层一条被漏掉的 N+1 |
-| P2-6 | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 复用 P0-1 的 loading/error 分离结论 |
+| **P2-6（已落盘）** | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 见「P2-6 实施结果」：四页 Gtk.Stack（loading/empty/albums/error）＋可重试的错误页；顺带纠正草案对相册详情页的一处误判 |
 | P2-7 | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 首轮加载完成前不切空态 |
 | P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；同步状态失败需显示可操作的重试提示。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
 | P2-9 | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 混合态给按钮加下拉指示，让「会弹菜单」可预判 |
@@ -906,6 +906,38 @@ worker 落地后心形才红 → 把在途刷新钉住后立刻点击，仍按�
 成混合、跨 500 分块边界、缺失 id 记为未收藏；负向验证：去掉「行数少于请求数」那一支后第三条
 变红）＋ `--test ux_click_flows`（四处全选断言改成 `wait_until`，同时抓出上面那个真 bug）＋
 opt-in 基准手工测量（不进 CI）。
+
+### P2-6 实施结果（2026-10-02 已落盘，草案对相册详情页的那半句是误判）
+
+相册选择器改成一个四页 `Gtk.Stack`（`loading` / `empty` / `albums` / `error`），弹框一打开
+停在 `loading`：
+
+1. `loading` 复用共享的 `empty_states::loading()`：标题 `empty.loading`（加载中…）＋一个**已经
+   `start()`** 的 `GtkSpinner`。草案画的「正在读取相册…」没有另起一套文案；未 start 的 spinner
+   是冻住的空圈，读起来像渲染坏了——这条是 P0-1 真跑出来的教训，这次直接按它做。
+2. `empty` 只在「查询成功且真的没有相册」时出现，标题与描述分别用
+   `album_picker.no_albums_yet.title` / `.description`。落盘前是把 description 塞进底部那行小
+   标签，而 title 被错误分支拿去当文案用，于是两件事共用一句话。
+3. `error` 用新的 `empty_states::load_failed(msg, on_retry)`：标题 `empty.load_failed.title`
+   （读取失败），描述 `empty.load_failed.description_with_reason` 带数据库原话，按钮
+   `common.retry` 重跑**同一个** listing 闭包（首次加载与重试共用一份，重试会先清空网格、清掉
+   选中并把复制/移动重新禁用，而不是留下半活的弹框）。
+4. i18n 新增 `empty.load_failed.*` 三键＋`common.retry`（两份 json 同步，parity 456/456）。
+
+risk 那条（错误信息可能含路径）按原样接受：描述显示的就是 rusqlite 的原始错误串。它同时是测试
+注入的故障（`DROP TABLE albums`），所以「原因出现在页面上」这条是断言出来的，不是推断的。
+
+**纠正草案的一处事实**：草案与命名图都把「相册详情页空态复用全库文案」列为 P2-6 关联项，但
+`AlbumDetailPage` 从很早就用 `empty_states::no_album_photos()`（空相册 / 该相册暂无照片。），
+git 历史可查。那条「现状对照」条目已从命名图删除，提案里更强的文案（此相册还没有照片 ＋ 去照片页
+按钮）没有落盘，也不需要。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ui_album_picker`（同一个
+弹框走完 loading→empty，再用坏库起第二个弹框走 loading→error，断言可见页标题、描述含真实原因、
+页面上有「重试」）＋ `--lib ui::empty_states`（3 项，新增 loading 会转、load_failed 的标题/原因/
+空原因回退/重试按钮真的回调）＋ `--lib core::i18n`（456/456）。两处踩过的坑记进测试注释：
+`Gtk.Stack` 的隐藏页仍在 widget 树里，所以断言必须读 `stack.visible_child()`，第一版随便找了一个
+`StatusPage` 结果读到的是错误页的标题；负向验证——把 error 分支改成显示 empty 页后该断言超时变红。
 
 ---
 

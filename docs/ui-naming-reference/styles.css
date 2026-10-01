@@ -1358,19 +1358,19 @@ body[data-pv-motion="off"] *::after {
 }
 @keyframes pv-spin { to { transform: rotate(360deg); } }
 
-/* P2-6 / P2-7 相册与回收站状态。
-   这些状态只在演示开关下出现：开着提案就把有内容的相册显示成空态，评审会误判。 */
-body[data-pv~="p2-6"][data-pv-demo="album-empty"] .status-page.pv-p2-6--loading { display: flex; }
-body[data-pv-demo="album-empty"]:not([data-pv~="p2-6"]) .legacy-album-empty { display: flex; }
+/* P2-6 已落盘：相册选择器把「还在读 / 真的没有相册 / 读到相册 / 读失败」当成四种事实，
+   各占 Gtk.Stack 一页，由演示按钮选看哪一页（静态页没有真查询，能核对的是页面本身）。
+   落盘前对照（报错读起来像「没有相册」）走 data-pv-demo=picker-error-as-empty。
+   相册详情页的空态一直是专用文案，album-empty 只是把它调出来看。 */
+body[data-pv-demo="picker-loading"] .picker-state--loading,
+body[data-pv-demo="picker-empty"] .picker-state--empty,
+body[data-pv-demo="picker-error"] .picker-state--error,
+body[data-pv-demo="picker-error-as-empty"] .legacy-picker-empty { display: flex; }
+body[data-pv-demo^="picker-"] .picker-grid,
+body[data-pv-demo^="picker-"] .picker-actions { display: none; }
+body[data-pv-demo="album-empty"] .album-empty-page { display: flex; }
 body[data-pv-demo="album-empty"] .tile-grid.album,
 body[data-pv-demo="album-empty"] .section-title { display: none; }
-body[data-pv~="p2-6"][data-pv-demo="picker-error"] .status-page.pv-p2-6--error { display: flex; }
-body[data-pv~="p2-6"][data-pv-demo="picker-loading"] .status-page.pv-p2-6--picker-loading { display: flex; }
-body[data-pv-demo="picker-error"]:not([data-pv~="p2-6"]) .legacy-picker-empty { display: flex; }
-body[data-pv-demo="picker-error"] .picker-grid,
-body[data-pv-demo="picker-error"] .picker-actions,
-body[data-pv-demo="picker-loading"] .picker-grid,
-body[data-pv-demo="picker-loading"] .picker-actions { display: none; }
 /* P2-7 的「提案态」是不闪，所以只有关掉提案时演示才切到现状空态 */
 body[data-pv-demo="trash-flash"]:not([data-pv~="p2-7"]) .legacy-trash-flash { display: flex; }
 body[data-pv-demo="trash-flash"]:not([data-pv~="p2-7"]) .tile-grid.compact { display: none; }

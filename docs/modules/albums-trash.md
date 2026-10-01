@@ -211,6 +211,39 @@ the system option is disabled and the app stays on the app trash. When the app
 trash is active, opening Settings starts a background system-trash probe and
 shows a migration suggestion if the probe succeeds.
 
+### Album Picker Dialog States
+
+`AlbumPickerDialog::present` owns one `Gtk.Stack` with four named pages -
+`loading`, `empty`, `albums`, `error` - and opens on `loading`. The dialog used to
+start on an empty grid and then either fill it or write a line of text under it,
+which made "still reading", "there are no albums" and "the read failed" look
+identical to the user, and made a database error claim that the library had no
+albums.
+
+- `loading` is the shared `empty_states::loading()` page: title `empty.loading`
+  plus a *started* `GtkSpinner`. A spinner that was never started renders as a
+  frozen ring and reads as a rendering bug (learned in P0-1).
+- `empty` is only reached when the query succeeded and returned nothing, and it
+  states that fact with both `album_picker.no_albums_yet.title` and `.description`
+  rather than one label stuffed into the dialog footer.
+- `albums` is the cover grid.
+- `error` is `empty_states::load_failed(reason, on_retry)`: title
+  `empty.load_failed.title`, description `empty.load_failed.description_with_reason`
+  carrying the database's own words, and a `common.retry` button that re-runs the
+  same listing closure the dialog used first - so a retry clears the grid, drops
+  the picked album and re-disables Copy/Move instead of leaving a half-live dialog.
+
+The reason string is shown as-is. It can contain paths, which the review flagged;
+the trade-off was accepted because a generic "something went wrong" is what made
+the failure indistinguishable from an empty library in the first place.
+
+Any new dialog or page whose content comes from one query should reuse
+`empty_states::loading()` and `empty_states::load_failed()` instead of inventing a
+fifth wording for the same three facts. Note that `AlbumDetailPage` has always had
+its own empty state (`empty_states::no_album_photos()`); the improvement drafted
+for it under this item ("此相册还没有照片" plus a jump-to-Photos button) was never
+needed and is not what ships.
+
 ## Trash
 
 Trash views must distinguish reversible trash state from permanent delete. Database state and filesystem state need to remain consistent across restore/delete operations.

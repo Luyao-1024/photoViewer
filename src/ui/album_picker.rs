@@ -16,6 +16,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::{tr, trf};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_NORMAL};
+use crate::ui::empty_states;
 use crate::ui::SquareTile;
 
 pub struct AlbumPickerDialog;
@@ -76,7 +77,36 @@ impl AlbumPickerDialog {
             .vexpand(true)
             .child(&grid)
             .build();
-        content.append(&scroller);
+
+        // The dialog used to open on an empty grid and then either fill it or -
+        // when the query failed - print "还没有相册" under it. Loading, empty and
+        // failed are three different facts, and only the middle one is an empty
+        // state (P2-6).
+        let picker_stack = gtk::Stack::builder()
+            .vexpand(true)
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .build();
+        let no_albums = adw::StatusPage::builder()
+            .icon_name("folder-pictures-symbolic")
+            .title(tr("album_picker.no_albums_yet.title"))
+            .description(tr("album_picker.no_albums_yet.description"))
+            .build();
+        no_albums.add_css_class("compact");
+        picker_stack.add_named(&empty_states::loading(), Some("loading"));
+        picker_stack.add_named(&no_albums, Some("empty"));
+        picker_stack.add_named(&scroller, Some("albums"));
+        let reload: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+        let error_page = empty_states::load_failed("", {
+            let reload = reload.clone();
+            Rc::new(move || {
+                if let Some(run) = reload.borrow().as_ref() {
+                    run();
+                }
+            })
+        });
+        picker_stack.add_named(&error_page, Some("error"));
+        picker_stack.set_visible_child_name("loading");
+        content.append(&picker_stack);
 
         let status = gtk::Label::builder()
             .wrap(true)
@@ -170,54 +200,85 @@ impl AlbumPickerDialog {
         }
 
         dialog.present(host_nav);
-        let pool_for_list = pool.clone();
-        glib::spawn_future_local(async move {
-            let result = gtk::gio::spawn_blocking(move || albums::list(&pool_for_list)).await;
-            match result {
-                Ok(Ok(albums)) if !albums.is_empty() => {
-                    let selected_tile = Rc::new(RefCell::new(None::<glib::WeakRef<SquareTile>>));
-                    for album in albums {
-                        let (button, tile) = album_tile(&album, &loader);
-                        let tile = tile.downgrade();
-                        let folder = album.folder_path.clone();
-                        let selected = selected.clone();
-                        let selected_tile = selected_tile.clone();
-                        let copy = copy.downgrade();
-                        let move_btn = move_btn.downgrade();
-                        button.connect_clicked(move |_| {
-                            let Some(tile) = tile.upgrade() else {
-                                return;
-                            };
-                            let (Some(copy), Some(move_btn)) = (copy.upgrade(), move_btn.upgrade())
-                            else {
-                                return;
-                            };
-                            if let Some(previous) =
-                                selected_tile.borrow_mut().replace(tile.downgrade())
-                            {
-                                if let Some(previous) = previous.upgrade() {
-                                    previous.remove_css_class("media-selected");
-                                }
+        let list_albums: Rc<dyn Fn()> = {
+            let pool = pool.clone();
+            let loader = loader.clone();
+            let grid = grid.clone();
+            let selected = selected.clone();
+            let copy = copy.clone();
+            let move_btn = move_btn.clone();
+            let stack = picker_stack.clone();
+            let error_page = error_page.clone();
+            Rc::new(move || {
+                *selected.borrow_mut() = None;
+                copy.set_sensitive(false);
+                move_btn.set_sensitive(false);
+                while let Some(child) = grid.child_at_index(0) {
+                    grid.remove(&child);
+                }
+                stack.set_visible_child_name("loading");
+                let pool = pool.clone();
+                let loader = loader.clone();
+                let grid = grid.clone();
+                let selected = selected.clone();
+                let copy = copy.downgrade();
+                let move_btn = move_btn.downgrade();
+                let stack = stack.clone();
+                let error_page = error_page.clone();
+                glib::spawn_future_local(async move {
+                    let result = gtk::gio::spawn_blocking(move || albums::list(&pool)).await;
+                    match result {
+                        Ok(Ok(albums)) if !albums.is_empty() => {
+                            let selected_tile =
+                                Rc::new(RefCell::new(None::<glib::WeakRef<SquareTile>>));
+                            for album in albums {
+                                let (button, tile) = album_tile(&album, &loader);
+                                let tile = tile.downgrade();
+                                let folder = album.folder_path.clone();
+                                let selected = selected.clone();
+                                let selected_tile = selected_tile.clone();
+                                let copy = copy.clone();
+                                let move_btn = move_btn.clone();
+                                button.connect_clicked(move |_| {
+                                    let Some(tile) = tile.upgrade() else {
+                                        return;
+                                    };
+                                    let (Some(copy), Some(move_btn)) =
+                                        (copy.upgrade(), move_btn.upgrade())
+                                    else {
+                                        return;
+                                    };
+                                    if let Some(previous) =
+                                        selected_tile.borrow_mut().replace(tile.downgrade())
+                                    {
+                                        if let Some(previous) = previous.upgrade() {
+                                            previous.remove_css_class("media-selected");
+                                        }
+                                    }
+                                    tile.add_css_class("media-selected");
+                                    *selected.borrow_mut() = Some(folder.clone());
+                                    copy.set_sensitive(true);
+                                    move_btn.set_sensitive(true);
+                                });
+                                grid.insert(&button, -1);
                             }
-                            tile.add_css_class("media-selected");
-                            *selected.borrow_mut() = Some(folder.clone());
-                            copy.set_sensitive(true);
-                            move_btn.set_sensitive(true);
-                        });
-                        grid.insert(&button, -1);
+                            stack.set_visible_child_name("albums");
+                        }
+                        Ok(Ok(_)) => stack.set_visible_child_name("empty"),
+                        error => {
+                            let reason = format!("{error:?}");
+                            tracing::warn!("AlbumPicker: album listing failed: {reason}");
+                            error_page.set_description(Some(&empty_states::load_failed_text(
+                                Some(&reason),
+                            )));
+                            stack.set_visible_child_name("error");
+                        }
                     }
-                }
-                Ok(Ok(_)) => {
-                    status.set_label(&tr("album_picker.no_albums_yet.description"));
-                    status.set_visible(true);
-                }
-                error => {
-                    tracing::warn!("AlbumPicker: album listing failed: {error:?}");
-                    status.set_label(&tr("album_picker.no_albums_yet.title"));
-                    status.set_visible(true);
-                }
-            }
-        });
+                });
+            })
+        };
+        *reload.borrow_mut() = Some(list_albums.clone());
+        list_albums();
     }
 }
 

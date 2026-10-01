@@ -100,12 +100,48 @@ pub fn scan_error(msg: &str) -> adw::StatusPage {
     p
 }
 
-/// Loading state — used during initial scan / refresh while data is
-/// being fetched from disk and indexed in the database.
+/// Description text for a list that could not be read. Split out of
+/// [`load_failed`] so a reused page only refreshes the reason.
+pub fn load_failed_text(message: Option<&str>) -> String {
+    match message.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(reason) => trf(
+            "empty.load_failed.description_with_reason",
+            &[("reason", reason)],
+        ),
+        None => tr("empty.load_failed.description"),
+    }
+}
+
+/// Error state for a read that failed - album lists, trash lists, anything whose
+/// content comes from one query. It must not fall back to an empty state: "no
+/// albums" and "could not read albums" are different facts and the second one
+/// needs the retry button to be actionable.
+pub fn load_failed(msg: &str, on_retry: Rc<dyn Fn()>) -> adw::StatusPage {
+    let page = adw::StatusPage::builder()
+        .icon_name("dialog-warning-symbolic")
+        .title(tr("empty.load_failed.title"))
+        .description(load_failed_text(Some(msg)))
+        .build();
+    page.add_css_class("compact");
+    add_action(&page, &tr("common.retry"), on_retry);
+    page
+}
+
+/// Loading state — used while a page's data is still being fetched, so an empty
+/// container never reads as an empty library. Like [`scanning`] the spinner is
+/// the page's child, which means it must be started explicitly: a `GtkSpinner`
+/// from `new()` renders as a frozen empty circle until `start()`.
 pub fn loading() -> adw::StatusPage {
-    adw::StatusPage::builder()
+    let page = adw::StatusPage::builder()
+        .icon_name("emblem-synchronizing-symbolic")
         .title(tr("empty.loading"))
-        .build()
+        .build();
+    page.add_css_class("compact");
+    let spinner = gtk::Spinner::new();
+    spinner.set_size_request(24, 24);
+    spinner.start();
+    page.set_child(Some(&spinner));
+    page
 }
 
 /// Indexing state for the startup scan. Distinct from [`loading`] because the

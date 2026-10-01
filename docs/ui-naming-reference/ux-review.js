@@ -31,10 +31,12 @@
   //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
   //   p2-4  宫格/徽标/图标的 accessible name（已落盘为常态：prototype.js applyIconLabels 恒定运行，
   //         落盘前形态走 data-pv-demo=tiles-anonymous）
-  // 另有 3 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
+  // 另有 4 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
   //   p2-5 选择计数查询线程（顶栏 .header-note 常态可见，条目本身即实现说明）
+  //   p2-6 相册选择器四态（picker-state--loading/empty/error 常态存在，由演示按钮选看哪页；
+  //        落盘前对照走 data-pv-demo=picker-error-as-empty）
   // 半落盘的条目只给未落盘那一半留标记：
   //   p1-6 的照片/相册计数是常态，.pv-p1-6 仅代表回收站计数。
   //   p1-7 的位置计数和边界反馈是常态，.pv-p1-7 仅代表倍率标签。
@@ -842,12 +844,26 @@
       problem: "相册选择器加载中是空网格；DB 报错显示成「暂无相册」。",
       evidence: ["src/ui/album_picker.rs:174-220，其中 :214-218 把错误渲染为空态标题"],
       solution: ["复用 P0-1 的 loading/error 分离结论"],
-      files: ["src/ui/album_picker.rs", "src/ui/empty_states.rs", "i18n/*.json"],
-      tests: ["cargo test ui::album_picker（错误路径渲染 scan_error 风格而非空态标题）"],
-      docs: ["docs/modules/albums-trash.md"],
+      files: [
+        "src/ui/album_picker.rs",
+        "src/ui/empty_states.rs",
+        "i18n/zh-CN.json",
+        "i18n/en.json"
+      ],
+      landed:
+        "P2-6 已落盘（2026-10-02）。相册选择器现在是一个四页 Gtk.Stack（loading / empty / albums / error），弹框一打开停在加载页：\n\n1. loading 复用共享的 empty.loading（加载中…）＋一个已经 start() 的 GtkSpinner——草案画的「正在读取相册…」没有另起一套文案；未 start 的 spinner 是冻住的空圈，这条是 P0-1 真跑出来的教训。\n2. empty 只在「查询成功且真的没有相册」时出现，标题与描述分别用 album_picker.no_albums_yet.title / .description。落盘前是把 description 塞进底部那行小标签，而标题被错误分支拿去当文案用。\n3. error 用新的 empty_states::load_failed(msg, on_retry)：标题 empty.load_failed.title（读取失败），描述 empty.load_failed.description_with_reason 带数据库原话，按钮 common.retry 重跑同一条列表查询（首次加载与重试共用一个闭包，重试会先清空网格、清掉选中并把复制/移动重新禁用）。\n\nrisk 那条（错误信息可能含路径）按原样接受：描述里显示的就是 rusqlite 的原始错误串，例如 no such table: albums。它同时是测试注入的故障（DROP TABLE albums），所以断言能直接看到原因出现在页面上。\n\n顺带纠正草案与命名图的一处事实：两者都把「相册详情页空态复用全库文案」当成 P2-6 关联项，但 AlbumDetailPage 从很早就用 empty_states::no_album_photos()（空相册 / 该相册暂无照片。），那条「现状对照」条目已删；提案里更强的文案（此相册还没有照片 ＋ 去照片页按钮）没有落盘，也不需要。",
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ui_album_picker（同一个弹框走完 loading→empty，再用 DROP TABLE albums 起第二个弹框走 loading→error：断言可见页的标题、描述含真实原因、页面上有「重试」按钮。注意 Gtk.Stack 的隐藏页仍在树里，所以断言读的是 stack.visible_child() 而不是随便找一个 StatusPage——第一版就是这样读到了错误页的标题。负向验证：把 error 分支改成显示「empty」页后该断言超时变红）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::empty_states（3 项，新增 loading 会转、load_failed 的标题/原因/空原因回退/重试按钮真的回调）",
+        "cargo test --locked --lib core::i18n -> PASS（两份 json 各 456 键，parity 保持）"
+      ],
+      docs: [
+        "docs/modules/albums-trash.md（相册选择器四态与 load_failed 契约）",
+        "docs/ui-naming-reference/index.html（picker 三页 + 落盘前对照；删掉失实的 album-empty-current）"
+      ],
       risk: "错误信息可能含路径，展示时需本地化与截断。",
       demo:
-        "点工具条「跳到演示界面」或本条的演示按钮循环三步：报错 → 加载中 → 相册为空。开启 P2-6 后依次是带原因与「重试」的错误态、弹框内加载提示、相册专属空态文案；关闭后依次是「还没有相册」空态标题、一片空网格、复用全库「暂无照片」。"
+        "常态即已落盘行为：弹框的四种事实各占一页，演示按钮按 正常 → 加载中 → 真的没有相册 → 读取失败 → 落盘前对照 → 空相册详情页 循环（静态页没有真查询，能核对的是页面本身与文案）。落盘前对照（picker-error-as-empty）就是报错与空态共用同一句话的那一屏。"
     },
     {
       id: "p2-7",
@@ -1214,7 +1230,14 @@
       PV.toast("落盘前对照：格子没有名字，角标只念出「▶」「♥」「0:42」，常驻的对勾反而被当成状态朗读——第一轮尝试就翻在这里。清除演示态回到已落盘的名称。", { kind: "info", ms: 5200 });
     });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
-    demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
+    demoBtn("相册选择器空态（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-empty"; syncBar(); });
+    demoBtn("落盘前：相册报错读起来像没有相册（P2-6）", function () {
+      needScreen("picker");
+      body.dataset.pvDemo = "picker-error-as-empty";
+      syncBar();
+      PV.toast("落盘前对照：查询失败与「真的没有相册」共用同一句话，既没有原因也没有重试。清除演示态后回到四页分开的事实。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("空相册详情页（P2-6 关联，已是常态）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
     demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });
     row4.appendChild(gDemo);
@@ -1571,23 +1594,22 @@
 
   /* P2-6 演示：报错 / 加载中 / 相册为空三种状态轮着看，每步都对照现状与提案。 */
   var p26Step = 0;
+  var P26_STATES = [
+    { state: "", screen: "picker", name: "正常（相册宫格）", note: "读到相册就显示封面网格；这是 Gtk.Stack 的 albums 页。" },
+    { state: "picker-loading", screen: "picker", name: "加载中", note: "已落盘：弹框一打开就停在 empty.loading ＋一个已经 start() 的 spinner，不再是一片空网格。" },
+    { state: "picker-empty", screen: "picker", name: "真的没有相册", note: "已落盘：只有查询成功且结果为空才说「还没有相册」，标题与描述各归各位。" },
+    { state: "picker-error", screen: "picker", name: "读取失败", note: "已落盘：empty.load_failed ＋数据库真实原因 ＋「重试」重跑同一条列表查询。" },
+    { state: "picker-error-as-empty", screen: "picker", name: "落盘前对照", note: "报错与空态共用同一句话，既没有原因也没有出口——用户会以为相册丢了。" },
+    { state: "album-empty", screen: "album", name: "空相册详情页", note: "相册详情页一直用的就是专用空态 empty.no_album_photos.*，草案说的「复用全库文案」不成立。" }
+  ];
   function demoP26() {
-    var on = PV.tokens().indexOf("p2-6") >= 0;
-    p26Step = (p26Step + 1) % 4;
-    body.dataset.pvDemo = "";
+    p26Step = (p26Step + 1) % P26_STATES.length;
+    var step = P26_STATES[p26Step];
+    body.dataset.pvDemo = step.state;
+    needScreen(step.screen);
     syncBar();
-    if (p26Step === 0) {
-      needScreen("picker");
-      PV.toast("P2-6：已回到正常弹框", { kind: "info" });
-      return;
-    }
-    var state = ["", "picker-error", "picker-loading", "album-empty"][p26Step];
-    needScreen(state === "album-empty" ? "album" : "picker");
-    body.dataset.pvDemo = state;
-    var names = { "picker-error": "报错", "picker-loading": "加载中", "album-empty": "相册为空" };
-    PV.toast("P2-6 " + p26Step + "/3 · " + names[state] + "：" +
-      (on ? "提案态（原因 / 加载提示 / 相册专属文案）" : "现状态（空态标题 / 空网格 / 全库文案）——开启 P2-6 再点一次对比"),
-      { kind: "info", ms: 4200 });
+    PV.toast("P2-6 " + (p26Step + 1) + "/" + P26_STATES.length + " · " + step.name + "：" + step.note,
+      { kind: "info", ms: 4600 });
   }
 
   function jumpToProposal(id) {
