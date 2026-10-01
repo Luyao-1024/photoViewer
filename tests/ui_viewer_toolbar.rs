@@ -392,7 +392,7 @@ fn assert_viewer_video_mode_disables_editing() {
         "video widget should stay hidden while the video stream is preparing"
     );
     assert!(
-        imp.picture.get().is_visible() || imp.video_error_box.get().is_visible(),
+        imp.picture.get().is_visible() || imp.media_error_box.get().is_visible(),
         "video mode should show the thumbnail preview while preparing, or the app error placeholder if invalid media errors immediately"
     );
     assert!(

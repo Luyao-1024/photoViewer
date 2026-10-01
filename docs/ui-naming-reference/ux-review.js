@@ -417,35 +417,37 @@
       problem:
         "原图解码失败（损坏/已移动/权限）时舞台留白、没有文字；缩略图失败在主网格里表现为完全空白的格子，用户以为是渲染 bug。",
       evidence: [
-        "viewer/stage.rs:672-682 原始图解码 Err 分支只 warn + 收起 spinner；预览也失败时 :591-637 无内容可画，舞台留空",
-        "错误 UI 只给视频：viewer-page.blp:128-163 video_error_box（样式 base.css:758-772），图片无对应物",
-        "网格侧：base.css:996 .glass-thumb-card.thumb-loading:not(.thumb-placeholder){opacity:0}（镜像 media_grid/render.rs:41-48），失败瓦片不可见",
-        "ThumbnailLoader 只暴露 set_stats_dirty_callback（core/thumbnails.rs:348），无按 media_id 的失败回调"
+        "viewer/stage.rs 原始图解码 Err 分支只 warn + 收起 spinner；预览也失败时无内容可画，舞台留空",
+        "错误 UI 只给视频：viewer-page.blp 的 video_error_box（样式 base.css），图片无对应物",
+        "网格侧经实测修正：base.css 的 opacity:0 只作用于没有 .thumb-placeholder 的普通 .thumb-loading；解码失败由 core/thumbnails/decode.rs 转成 generate_unavailable_placeholder() 并作为正常纹理交付，所以失败格子不是空白，而是自带灰框＋红斜杠的纹理",
+        "ThumbnailLoader 只暴露 set_stats_dirty_callback，无按 media_id 的失败回调"
       ],
       solution: [
-        "把 video_error_box 泛化为 media_error_box（同一 [overlay] 兄弟节点，.viewer-video-error → .viewer-media-error class 家族）：图标 image-missing-symbolic + 文件名 + 一句原因 + 「在文件管理器中显示」/「重试」；新 selector 需在两处材质镜像（ui-liquid-glass.md:126）",
+        "把 video_error_box 泛化为 media_error_box（同一 [overlay] 兄弟节点，.viewer-video-error → .viewer-media-error class 家族）：图标按媒体种类切换 image-missing / video-x-generic + 文件名 + 一句原因 + 「重试」/「在文件管理器中显示」",
         "文案与 P0-1 的 scan_error 用同一措辞风格：说明原因 + 如何修复",
-        "网格失败瓦片可见化：失败态显示 image-x-generic-symbolic 占位（去掉 opacity:0），保留 .thumb-placeholder 骨架路径（factory.rs:275-306 的骨架有效）；需要新 class .thumb-broken 区分「还在加载」与「失败」，否则 spinner 常驻会误导",
-        "状态来源优先不动 core：在 SquareTile 上直接置 .thumb-broken class，而不是先给 loader 加失败回调"
+        "先用真实像素验证缩略图失败占位是否已足够可辨，只有确实与加载态无法区分时才加 .thumb-broken——不要预设「格子为空」，也不要先给 core 加失败回调",
+        "验证结果：占位纹理的图标覆盖、明度分离与红斜杠色度都远超阈值（新增像素测量测试长期守住），故网格侧不加层，本项只落查看器错误面"
       ],
+      landed:
+        "P1-10 已落盘（2026-10-02）。查看器统一到一个 .viewer-media-error 面（media_error_box），视频流错误与「原图解码失败且舞台无可画内容」共用它；后者是有条件的——预览缩略图还在画着时不加盖错误面，否则文案与用户眼前的图像自相矛盾。show_media_error 按媒体种类选图标与措辞，图片正文点名文件，动作是「重试」（对当前 index 重跑 show_at）与「在文件管理器中显示」（gtk::show_uri_full 打开所在目录，无处理器时 toast）。样式仍在 base.css 单处，它是平面主题洗色而非玻璃材质，所以草案里「两处材质镜像」的要求不适用——这一点写进了 viewer.md。网格侧经像素测量后否决了 .thumb-broken：失败占位纹理本身可辨，SquareTile 与 loader 均未改动。",
       files: [
         "data/ui/viewer-page.blp",
         "src/ui/viewer/stage.rs",
+        "src/ui/viewer_page.rs",
         "data/css/base.css",
-        "data/css/liquid.css",
-        "data/css/plain.css",
-        "src/ui/square_tile.rs",
-        "src/ui/virtual_media_grid/factory.rs",
+        "src/core/thumbnails/tests.rs",
         "i18n/*.json"
       ],
       tests: [
-        "cargo test --test e2e_viewer（不存在/损坏文件 → 可见错误框）",
-        "cargo test ui::grid_css（新 class 在两材质块都存在，沿用 grid_css/tests.rs:1130 的镜像断言风格）"
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::stage（缺失文件 → 错误面可见、标题/正文/重试按钮/停 spinner）",
+        "cargo test --locked --lib thumbnails（占位纹理可辨性的像素测量）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css"
       ],
       docs: ["docs/modules/viewer.md", "docs/modules/storage.md", "docs/ui-naming-reference/index.html"],
-      risk: "缩略图失败与「尚未加载」在现有回调里不可区分，需要 SquareTile 侧记录一次失败标志。",
+      risk:
+        "「解码失败」与「尚未加载」在 loader 回调里仍不可区分；本项靠占位纹理自身可辨来规避，若将来要在网格里显示可点的重试入口，就必须先给 SquareTile 记一次失败标志。",
       demo:
-        "开启后照片网格里出现一个带 ⊘ 的 broken 瓦片（与仍在加载的骨架瓦片不同），点进查看器舞台显示错误框含原因与「重试 / 在文件管理器中显示」。关闭时该位置是空白格子（右侧现状对照块演示 opacity:0）。"
+        "照片网格里失败的那格显示带斜杠的占位纹理（常驻，不再受开关控制），点进查看器舞台即为错误面：图标＋文件名＋原因＋「重试 / 在文件管理器中显示」。查看器错误面同样常驻，草案阶段的「空白格子」假设已被实测否定。"
     },
     {
       id: "p1-11",

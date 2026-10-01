@@ -1271,12 +1271,14 @@ body[data-pv~="p1-15"] button.pv-p1-15 { display: inline-flex; }
 /* 与照片页/相册页的落盘行为一致：进入多选后入口自身收起，退出按钮顶上来。 */
 body[data-pv-mode="run"][data-multi="1"] button.pv-p1-15 { display: none; }
 
-/* P0-2 焦点环 / P1-11 悬停示例 / P1-10 失败瓦片 */
+/* P0-2 焦点环 / P1-11 悬停示例 */
 body[data-pv~="p0-2"] .tile.pv-p0-2 { display: block; }
 body[data-pv~="p1-11"] .tile.pv-p1-11 { display: block; }
-body[data-pv~="p1-10"] .tile.pv-p1-10 { display: flex; }
-body[data-pv~="p1-10"] .media-error.is-open { display: flex; }
-body:not([data-pv~="p1-10"]) .tile.legacy-loading { display: block; }
+/* P1-10 已落盘：失败瓦片、加载瓦片与全图错误面都是真实 chrome，不再挂提案 token。
+   落盘前的对照（以为失败格与加载格同样空白）已被像素测量否定，见 storage.md。 */
+.tile.broken { display: flex; }
+.tile.legacy-loading { display: block; }
+.media-error.is-open { display: flex; }
 
 /* P1-7：位置常态可见，倍率仍是提案。 */
 body[data-pv~="p1-7"] .zoom-level.pv-p1-7--zoomed.is-zoomed { display: inline-flex; }

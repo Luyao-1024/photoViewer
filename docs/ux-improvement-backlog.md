@@ -512,6 +512,16 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **需同步文档**：`docs/modules/viewer.md`、`docs/modules/storage.md`（缩略图失败语义）、`docs/ui-naming-reference/index.html`。
 
+**实施结果**（2026-10-02 已落盘）：`video_error_box` → `media_error_box`，class 家族 `.viewer-video-error` → `.viewer-media-error`，图标改为具名 `media_error_icon` 并按媒体种类切换，新增 `media_error_retry_btn`（对当前 index 重跑 `show_at`）与 `media_error_reveal_btn`（`gtk::show_uri_full` 打开所在目录，无处理器时 toast）。`show_media_error` 按 `item.is_video()` 选措辞，图片正文点名文件。
+
+偏差三条，都是有意为之：
+
+1. **条件是「无可画内容」而不是「解码 Err」**。原图解码失败时预览缩略图通常仍然成功并在画，此时盖上「无法显示这张图片」与用户眼前的图像自相矛盾；所以 `show_original_decode_error` 只在 `picture.paintable().is_none()` 时接管舞台。
+2. **草案的「两处材质镜像」不适用**：错误面是平面主题洗色，和原来一样只存在于 `base.css`，没有进入 liquid/plain 材质层。已把这一点写进 `viewer.md`，避免后续按 `ui-liquid-glass.md:126` 再补一遍。
+3. **网格侧不加 `.thumb-broken`**：按方案第 2 点先做验证。`failed_image_placeholder_carries_a_distinguishable_mark` 直接测量 `generate_unavailable_placeholder()` 的像素——图标覆盖比例、与背景的明度分离、红斜杠的色度都过阈值，而加载态是中性的 `alpha(@window_fg_color, 0.05)` 洗色，产不出那条斜杠。故「失败格与加载格都是空白」的原判断不成立，`square_tile.rs`、`factory.rs`、loader 回调均未改动。
+
+**测试**：`cargo test --locked --lib ui::viewer_page::stage`（缺失文件 → 错误面可见并含文件名与重试）、`cargo test --locked --lib thumbnails`（占位可辨性测量）。
+
 ---
 
 ### P1-11 悬停态与选中态视觉同构，指针用户无法区分

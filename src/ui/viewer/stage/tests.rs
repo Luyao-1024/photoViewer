@@ -187,6 +187,63 @@ fn stop_video_playback_retires_stream_until_next_idle() {
 }
 
 #[gtk::test]
+fn a_missing_original_reports_the_failure_on_the_stage() {
+    init_viewer_test();
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("gone.jpg");
+
+    let mut item = sample_media_item();
+    item.id = 31;
+    item.uri = format!("file://{}", missing.display());
+    item.path = missing;
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(item));
+    let viewer =
+        ViewerPage::new_for_query(MediaQuery::LiveAll, MediaId::from(31), media_list.clone());
+
+    viewer.show_at(0);
+
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let shown = loop {
+        while context.iteration(false) {}
+        if viewer.imp().media_error_box.get().is_visible() {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(
+        shown,
+        "an image that cannot be decoded must replace the blank stage with a message"
+    );
+    assert_eq!(
+        viewer.imp().media_error_title.get().label(),
+        crate::core::i18n::tr("viewer.image_error.title")
+    );
+    assert!(viewer
+        .imp()
+        .media_error_subtitle
+        .get()
+        .label()
+        .contains("gone.jpg"));
+    assert!(
+        viewer.imp().media_error_retry_btn.get().is_visible(),
+        "the failure has to offer a way to try again"
+    );
+    assert!(
+        viewer
+            .imp()
+            .spinner
+            .get()
+            .has_css_class("viewer-spinner-hidden"),
+        "the spinner must stop once the decode failed"
+    );
+}
+
+#[gtk::test]
 fn show_at_keeps_video_stream_when_startup_scan_re_anchors_same_item() {
     init_viewer_test();
     let dir = tempfile::tempdir().unwrap();

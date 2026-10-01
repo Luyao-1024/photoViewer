@@ -318,6 +318,56 @@ fn unavailable_video_thumbnail_is_returned_without_disk_cache() {
     );
 }
 
+/// Backlog P1-10 asked whether a failed thumbnail is distinguishable from a
+/// tile that is merely still loading. The loading tile is a neutral glass
+/// wash, so the question reduces to: does the failure texture carry a mark no
+/// neutral state can produce? This measures the shipped placeholder instead of
+/// assuming it is blank, and it is why no `.thumb-broken` layer was added.
+#[test]
+fn failed_image_placeholder_carries_a_distinguishable_mark() {
+    let thumb = generate_unavailable_placeholder(256, false);
+    let bytes = thumb.read_pixel_bytes();
+    let buf: &[u8] = bytes.as_ref();
+    let rowstride = thumb.rowstride() as usize;
+    let channels = thumb.n_channels() as usize;
+    let (width, height) = (thumb.width() as usize, thumb.height() as usize);
+
+    let mut glyph_pixels = 0usize;
+    let mut chromatic_pixels = 0usize;
+    let mut strongest = 0u8;
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * rowstride + x * channels;
+            let (r, g, b) = (buf[i], buf[i + 1], buf[i + 2]);
+            // The vignette base is (36, 41, 50), brightening towards the centre.
+            let neutral = r.abs_diff(36) < 30 && g.abs_diff(41) < 30 && b.abs_diff(50) < 30;
+            if !neutral {
+                glyph_pixels += 1;
+                strongest = strongest.max(r.abs_diff(36).max(g.abs_diff(41)).max(b.abs_diff(50)));
+            }
+            if r > g.max(b) + 60 {
+                chromatic_pixels += 1;
+            }
+        }
+    }
+
+    let total = width * height;
+    let glyph_fraction = glyph_pixels as f64 / total as f64;
+    assert!(
+        glyph_fraction > 0.03,
+        "the failure glyph covers {glyph_fraction:.3} of the tile, too little to notice"
+    );
+    assert!(
+        strongest > 120,
+        "glyph/background separation is only {strongest}, so the tile reads as flat"
+    );
+    assert!(
+        chromatic_pixels > total / 400,
+        "the red unavailable slash is missing; a neutral mark would blend into the \
+         loading skeleton, which is neutral too"
+    );
+}
+
 #[test]
 fn image_decode_failure_returns_unavailable_thumbnail_without_caching_it() {
     let dir = tempfile::tempdir().unwrap();

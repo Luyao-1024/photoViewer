@@ -139,7 +139,7 @@ template $ViewerPage : Adw.NavigationPage {
               }
 
               [overlay]
-              Gtk.Box video_error_box {
+              Gtk.Box media_error_box {
                 visible: false;
                 vexpand: true;
                 hexpand: true;
@@ -147,32 +147,47 @@ template $ViewerPage : Adw.NavigationPage {
                 spacing: 10;
                 halign: fill;
                 valign: fill;
-                css-classes: ["viewer-media-surface", "viewer-image-frame", "viewer-video-error"];
+                css-classes: ["viewer-media-surface", "viewer-image-frame", "viewer-media-error"];
 
-                Gtk.Image {
-                  icon-name: "video-x-generic-symbolic";
+                Gtk.Image media_error_icon {
+                  icon-name: "image-missing-symbolic";
                   pixel-size: 88;
                   halign: center;
                   valign: end;
                   vexpand: true;
-                  css-classes: ["viewer-video-error-icon"];
+                  css-classes: ["viewer-media-error-icon"];
                 }
 
-                Gtk.Label video_error_title {
+                Gtk.Label media_error_title {
                   halign: center;
                   valign: start;
                   wrap: true;
                   justify: center;
-                  css-classes: ["viewer-video-error-title"];
+                  css-classes: ["viewer-media-error-title"];
                 }
 
-                Gtk.Label video_error_subtitle {
+                Gtk.Label media_error_subtitle {
                   halign: center;
                   valign: start;
                   wrap: true;
                   justify: center;
+                  css-classes: ["viewer-media-error-subtitle"];
+                }
+
+                Gtk.Box media_error_actions {
+                  orientation: horizontal;
+                  spacing: 8;
+                  halign: center;
+                  valign: start;
                   margin-bottom: 96;
-                  css-classes: ["viewer-video-error-subtitle"];
+
+                  Gtk.Button media_error_retry_btn {
+                    css-classes: ["glass-toolbar-button"];
+                  }
+
+                  Gtk.Button media_error_reveal_btn {
+                    css-classes: ["glass-toolbar-button"];
+                  }
                 }
               }
 

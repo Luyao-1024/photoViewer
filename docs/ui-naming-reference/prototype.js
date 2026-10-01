@@ -367,7 +367,7 @@
       photo.style.display = broken ? "none" : "block";
     }
     var err = q(".media-error");
-    if (err) err.classList.toggle("is-open", broken && enabled("p1-10"));
+    if (err) err.classList.toggle("is-open", broken);
     var name = mediaName(tile);
     setText("#viewer-filename", name);
     setText("#detail-name", name);

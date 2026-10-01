@@ -165,19 +165,19 @@ fn viewer_video_child_picture_uses_plain_theme_background() {
 }
 
 #[test]
-fn viewer_video_error_background_has_dedicated_visual_style() {
+fn viewer_media_error_background_has_dedicated_visual_style() {
     let css = build_css(true);
-    let block = css_block(&css, ".viewer-video-error")
-        .expect("video error background should have a dedicated CSS block");
+    let block = css_block(&css, ".viewer-media-error")
+        .expect("media error background should have a dedicated CSS block");
     assert!(
         block.contains("radial-gradient") && block.contains("@accent_bg_color"),
-        "video error background should use a distinct themed visual treatment, got {block}",
+        "media error background should use a distinct themed visual treatment, got {block}",
     );
     assert!(
-        css.contains(".viewer-video-error-icon")
-            && css.contains(".viewer-video-error-title")
-            && css.contains(".viewer-video-error-subtitle"),
-        "video error icon and text should have dedicated CSS rules"
+        css.contains(".viewer-media-error-icon")
+            && css.contains(".viewer-media-error-title")
+            && css.contains(".viewer-media-error-subtitle"),
+        "media error icon and text should have dedicated CSS rules"
     );
 }
 

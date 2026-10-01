@@ -1,9 +1,11 @@
+use crate::core::i18n::{tr, trf};
 use crate::core::media::{is_gif_head, MediaItem};
 use crate::core::motion_photo::{self, MediaAttributes};
 use crate::core::orientation;
 use crate::core::prefs;
 use crate::core::thumbnails::{ThumbnailSize, TIER_BOOST};
 use crate::ui::editor_panel::CropOverlayUpdate;
+use crate::ui::toasts;
 use gtk4 as gtk;
 use gtk4::gdk;
 use gtk4::gio;
@@ -219,7 +221,7 @@ impl ViewerPage {
             return;
         }
         self.stop_video_playback();
-        self.set_video_error_visible(false);
+        self.set_media_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.update_edit_button_sensitivity();
@@ -414,7 +416,7 @@ impl ViewerPage {
 
     pub(super) fn show_image_stage(&self) {
         self.stop_video_playback();
-        self.set_video_error_visible(false);
+        self.set_media_error_visible(false);
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.update_edit_button_sensitivity();
@@ -425,7 +427,7 @@ impl ViewerPage {
         self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
-        self.set_video_error_visible(false);
+        self.set_media_error_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().video.get().set_visible(false);
@@ -461,7 +463,7 @@ impl ViewerPage {
         self.stop_animated_image_playback();
         self.stop_video_playback();
         self.reset_viewer_transform();
-        self.set_video_error_visible(false);
+        self.set_media_error_visible(false);
         self.imp().picture.get().set_visible(true);
         self.imp().video.get().set_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
@@ -527,13 +529,43 @@ impl ViewerPage {
             if restore_motion_on_error {
                 this.restore_image_after_motion_video(token);
             } else {
-                this.show_video_error_background();
+                this.show_media_error_background();
             }
         });
     }
 
-    pub(super) fn set_video_error_visible(&self, visible: bool) {
-        self.imp().video_error_box.get().set_visible(visible);
+    pub(super) fn set_media_error_visible(&self, visible: bool) {
+        self.imp().media_error_box.get().set_visible(visible);
+    }
+
+    /// Fill the one media-error surface with the wording that matches the item
+    /// that failed. Images name the file because the usual causes are a moved,
+    /// renamed or unreadable file, and the name is what the user can act on.
+    pub(super) fn show_media_error(&self, item: &MediaItem) {
+        let imp = self.imp();
+        if item.is_video() {
+            imp.media_error_icon
+                .get()
+                .set_icon_name(Some("video-x-generic-symbolic"));
+            imp.media_error_title
+                .get()
+                .set_label(&tr("viewer.video_error.title"));
+            imp.media_error_subtitle
+                .get()
+                .set_label(&tr("viewer.video_error.subtitle"));
+        } else {
+            imp.media_error_icon
+                .get()
+                .set_icon_name(Some("image-missing-symbolic"));
+            imp.media_error_title
+                .get()
+                .set_label(&tr("viewer.image_error.title"));
+            imp.media_error_subtitle.get().set_label(&trf(
+                "viewer.image_error.subtitle",
+                &[("name", item.display_name())],
+            ));
+        }
+        imp.media_error_box.get().set_visible(true);
     }
 
     /// Show/hide the viewer loading spinner with a CSS opacity fade. The spinner
@@ -552,11 +584,72 @@ impl ViewerPage {
         }
     }
 
-    pub(super) fn show_video_error_background(&self) {
+    pub(super) fn show_media_error_background(&self) {
         self.imp().video.get().set_visible(false);
         self.imp().picture.get().set_visible(false);
         self.set_spinner_visible(false);
-        self.set_video_error_visible(true);
+        match self.current_media_item() {
+            Some(item) => self.show_media_error(&item),
+            None => self.set_media_error_visible(true),
+        }
+    }
+
+    /// The original failed to decode. A warm preview thumbnail still shows the
+    /// picture, so an error overlay would contradict what is on screen; only
+    /// the nothing-to-paint case gets the media-error surface.
+    fn show_original_decode_error(&self) {
+        if self.imp().picture.get().paintable().is_some() {
+            return;
+        }
+        self.show_media_error_background();
+    }
+
+    pub(super) fn setup_media_error_buttons(&self) {
+        let weak = self.downgrade();
+        self.imp()
+            .media_error_retry_btn
+            .get()
+            .connect_clicked(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.show_at(this.imp().current_index.get());
+                }
+            });
+
+        let weak = self.downgrade();
+        self.imp()
+            .media_error_reveal_btn
+            .get()
+            .connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let Some(item) = this.current_media_item() else {
+                    return;
+                };
+                let folder = gio::File::for_path(&item.path)
+                    .parent()
+                    .map(|parent| parent.uri().to_string())
+                    .unwrap_or_else(|| item.uri.clone());
+                let reveal_weak = weak.clone();
+                let reveal_folder = folder.clone();
+                gtk::show_uri_full(
+                    None::<&gtk::Window>,
+                    &folder,
+                    gdk::CURRENT_TIME,
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        if let Err(err) = result {
+                            tracing::warn!("ViewerPage: failed to reveal {reveal_folder}: {err}");
+                            if let Some(this) = reveal_weak.upgrade() {
+                                toasts::error(
+                                    &this.imp().toast_overlay.get(),
+                                    &tr("viewer.error.reveal_failed"),
+                                );
+                            }
+                        }
+                    },
+                );
+            });
     }
 
     fn reveal_prepared_video_stage(
@@ -570,7 +663,7 @@ impl ViewerPage {
             if restore_motion_on_error {
                 self.restore_image_after_motion_video(token);
             } else {
-                self.show_video_error_background();
+                self.show_media_error_background();
             }
             return;
         }
@@ -582,7 +675,7 @@ impl ViewerPage {
             return;
         }
         self.imp().picture.get().set_visible(false);
-        self.set_video_error_visible(false);
+        self.set_media_error_visible(false);
         self.imp().video.get().set_visible(true);
         self.set_spinner_visible(false);
         self.imp().video.get().grab_focus();
@@ -676,6 +769,7 @@ impl ViewerPage {
                     if let Some(this) = viewer_weak.upgrade() {
                         if this.imp().current_token.get() == token {
                             this.set_spinner_visible(false);
+                            this.show_original_decode_error();
                         }
                     }
                     return;

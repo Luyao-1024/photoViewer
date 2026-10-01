@@ -338,11 +338,17 @@ mod imp {
         #[template_child]
         pub video: TemplateChild<gtk::Video>,
         #[template_child]
-        pub video_error_box: TemplateChild<gtk::Box>,
+        pub media_error_box: TemplateChild<gtk::Box>,
         #[template_child]
-        pub video_error_title: TemplateChild<gtk::Label>,
+        pub media_error_icon: TemplateChild<gtk::Image>,
         #[template_child]
-        pub video_error_subtitle: TemplateChild<gtk::Label>,
+        pub media_error_title: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub media_error_subtitle: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub media_error_retry_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub media_error_reveal_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub motion_play_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -459,6 +465,7 @@ impl ViewerPage {
         obj.setup_image_stage_input();
         obj.setup_zoom_transform_provider();
         obj.setup_video_playback_interactions();
+        obj.setup_media_error_buttons();
         obj.setup_edit_button();
         obj.setup_editor_callbacks();
         obj.setup_crop_overlay();
@@ -550,12 +557,12 @@ impl ViewerPage {
         imp.motion_play_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.play_motion_photo")));
-        imp.video_error_title
+        imp.media_error_retry_btn
             .get()
-            .set_label(&tr("viewer.video_error.title"));
-        imp.video_error_subtitle
+            .set_label(&tr("viewer.error.retry"));
+        imp.media_error_reveal_btn
             .get()
-            .set_label(&tr("viewer.video_error.subtitle"));
+            .set_label(&tr("viewer.error.reveal"));
     }
 
     /// Inject the `AdwNavigationView` and DB pool used to push an

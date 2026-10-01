@@ -77,11 +77,23 @@ When a video stream is created, the viewer applies the persisted video audio pre
 
 Keep `Gtk.Video` template autoplay disabled. `show_video_stage` attaches the `GtkMediaFile`, applies the saved mute/volume state, then starts playback explicitly while the thumbnail preview remains visible; this ordering prevents `Gtk.Video`'s built-in controls/autoplay setup from overriding audio preferences at stream bind time. Volume changes reported while the stream is muted are ignored for persistence so a default-muted startup does not overwrite the last audible volume with `0.0`.
 
-When a normal video stream reports an error, hide `GtkVideo` and the preview
-picture and show the app-owned `.viewer-video-error` background instead. This
-keeps unsupported codecs and damaged files from exposing GTK/GStreamer's
-default broken-frame graphic. Motion-photo playback errors are different: they
-restore the still image rather than showing the video error background.
+The viewer owns one `.viewer-media-error` surface (`media_error_box`) for media
+that cannot be shown, and it replaces the stage rather than covering it. When a
+normal video stream reports an error, hide `GtkVideo` and the preview picture
+and show that surface, which keeps unsupported codecs and damaged files from
+exposing GTK/GStreamer's default broken-frame graphic. Motion-photo playback
+errors are different: they restore the still image rather than showing the error
+surface.
+
+A failed original decode uses the same surface, but only when there is nothing
+to paint: a warm preview thumbnail already shows the picture, and overlaying
+"cannot be displayed" on a visible image would contradict the user. `show_media_error`
+picks the wording by media kind, and for images the body names the file, because
+a moved or renamed file is the case the user can actually go fix. The surface
+offers 重试 (which re-enters `show_at` for the current index) and 在文件管理器中显示
+(which opens the containing folder through `gtk::show_uri_full` and toasts when no
+handler accepts it). The error surface lives in `base.css` only — it is a flat
+themed wash, not a glass material — so it needs no liquid/plain mirror.
 
 ## Thumbnail Strip
 

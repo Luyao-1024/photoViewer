@@ -408,6 +408,14 @@ recycled Year, Month, or Day cell after a fast drag or mode switch.
 
 **Decode failures use a shared unavailable thumbnail.** If an image cannot be decoded, or if both video frame extraction paths fail, the thumbnail worker returns and caches a themed unavailable placeholder instead of dropping the request. Video extraction failures that recover through this placeholder are `debug`-level diagnostics, not default warning/info log lines. The placeholder must not look like a playable video frame: normal extracted video thumbnails get the bottom-left play badge, while unavailable thumbnails use a slashed media glyph.
 
+The placeholder is the failure signal — there is deliberately no extra
+`.thumb-broken` CSS layer on the tile. `failed_image_placeholder_carries_a_distinguishable_mark`
+measures the shipped texture (glyph coverage, glyph/background separation, and
+the presence of the chromatic slash) to keep that decision honest: the loading
+tile is a neutral wash, and the slash is the one thing a neutral state cannot
+produce. A tile that is still loading therefore cannot be mistaken for a failed
+one, and the failure never renders as an empty cell.
+
 JPEG thumbnail generation uses the libjpeg-turbo scaled-decode fast path only
 after both the file extension and file signature identify the source as JPEG.
 Files such as GIF content with a stale `.jpg` suffix must fall through directly

@@ -171,23 +171,80 @@ fn synced_image_badge_is_available_in_viewer_header() {
 }
 
 #[gtk::test]
-fn video_error_background_exists_in_viewer_overlay() {
+fn media_error_surface_exists_in_viewer_overlay() {
     init_viewer_test();
     let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
     media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
     let viewer = ViewerPage::new(media_list, 0);
 
     assert!(
-        widget_tree_has_class(&viewer.imp().image_overlay.get(), "viewer-video-error"),
-        "viewer should provide an app-owned video error background instead of exposing GtkVideo's default broken frame"
+        widget_tree_has_class(&viewer.imp().image_overlay.get(), "viewer-media-error"),
+        "viewer should provide one app-owned media error background instead of exposing GtkVideo's default broken frame"
     );
     assert!(
-        !viewer.imp().video_error_box.get().is_visible(),
-        "video error background should stay hidden until playback reports an error"
+        !viewer.imp().media_error_box.get().is_visible(),
+        "the media error surface should stay hidden until media actually fails"
     );
     assert_eq!(
-        viewer.imp().video_error_title.get().label(),
+        viewer.imp().media_error_retry_btn.get().label().as_deref(),
+        Some(tr("viewer.error.retry").as_str())
+    );
+    assert_eq!(
+        viewer.imp().media_error_reveal_btn.get().label().as_deref(),
+        Some(tr("viewer.error.reveal").as_str())
+    );
+}
+
+#[gtk::test]
+fn media_error_surface_wording_follows_the_failing_media_kind() {
+    init_viewer_test();
+    let video_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    video_list.append(&glib::BoxedAnyObject::new(sample_video_item()));
+    let video_viewer = ViewerPage::new(video_list, 0);
+
+    video_viewer.show_media_error_background();
+    assert_eq!(
+        video_viewer.imp().media_error_title.get().label(),
         tr("viewer.video_error.title")
+    );
+    assert_eq!(
+        video_viewer
+            .imp()
+            .media_error_icon
+            .get()
+            .icon_name()
+            .as_deref(),
+        Some("video-x-generic-symbolic"),
+        "a failed video should keep the media-specific icon"
+    );
+
+    let image_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    image_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+    let image_viewer = ViewerPage::new(image_list, 0);
+
+    image_viewer.show_media_error_background();
+    assert_eq!(
+        image_viewer.imp().media_error_title.get().label(),
+        tr("viewer.image_error.title"),
+        "a failed image must not be reported with the video wording"
+    );
+    assert!(
+        image_viewer
+            .imp()
+            .media_error_subtitle
+            .get()
+            .label()
+            .contains("sample.jpg"),
+        "the error has to name the file the user can go look for"
+    );
+    assert_eq!(
+        image_viewer
+            .imp()
+            .media_error_icon
+            .get()
+            .icon_name()
+            .as_deref(),
+        Some("image-missing-symbolic")
     );
 }
 
@@ -201,9 +258,9 @@ fn video_error_background_hides_default_video_error_surface() {
     viewer.imp().video.get().set_visible(true);
     viewer.imp().picture.get().set_visible(true);
     viewer.set_spinner_visible(true);
-    viewer.show_video_error_background();
+    viewer.show_media_error_background();
 
-    assert!(viewer.imp().video_error_box.get().is_visible());
+    assert!(viewer.imp().media_error_box.get().is_visible());
     assert!(
         !viewer.imp().video.get().is_visible(),
         "GtkVideo should be hidden so its default broken-frame graphic is not exposed"
@@ -220,8 +277,8 @@ fn video_error_background_hides_default_video_error_surface() {
 
     viewer.show_image_stage();
     assert!(
-        !viewer.imp().video_error_box.get().is_visible(),
-        "leaving the failed video should clear the error background"
+        !viewer.imp().media_error_box.get().is_visible(),
+        "leaving the failed media should clear the error surface"
     );
 }
 
@@ -274,6 +331,17 @@ fn sample_media_item() -> MediaItem {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+    }
+}
+
+fn sample_video_item() -> MediaItem {
+    MediaItem {
+        uri: "file:///tmp/sample.mp4".into(),
+        path: PathBuf::from("/tmp/sample.mp4"),
+        mime_type: "video/mp4".into(),
+        media_subkind: "video".into(),
+        video_duration_secs: Some(12.0),
+        ..sample_media_item()
     }
 }
 
