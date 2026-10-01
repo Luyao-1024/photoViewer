@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。P1 已开始：**P1-6 已实施**（header 选择计数器），并且实测证明其「选中集被后台重建清空」的前半前提只对无多选 UI 的旧网格成立，`VirtualMediaGrid` 由新单测守住，详见该节「证据更正」。其余 P1/P2 条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -334,26 +334,31 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 - 上限截断不可见：`photos_page.rs:1337` 的 Select All 走 `repo.items(LiveAll, 0, 2000)`，`photos_page.rs:1350` 已算出 `selected_count` 但从不渲染；`selected_reaches_select_all_limit`（`:1360`）只有内部逻辑。
 - 计数标签在 Photos/Trash 都不存在：`data/ui/trash-page.blp` 的 action bar（`src/ui/trash_page.rs:91/226`）只有按钮文本。
 
+**证据更正（2026-10-01 实施时实测）**：第一条证据的 `loading.rs:562/591` 属于**旧的 FlowBox `MediaGrid`**，而它在生产代码里只剩搜索结果分区（`search_page.rs:399` 经 `new_for_album` 构造，`enable_context_menu: false`），根本没有多选 UI，也就没有「用户选中几十张被清空」的路径。Photos/相册用的是 `VirtualMediaGrid`，其共享投影刷新路径**不会**清 `imp().selected`。为把这点固定下来，新增探针单测 `src/ui/virtual_media_grid/tests.rs:773 a_shared_projection_refresh_keeps_the_user_selection`：6 张图里选中 2 张 → 向共享 `ListStore` 追加第 7 张触发 debounce reload → 断言 `layout().media_count() == 7`（证明刷新真的落地，否则单测无意义）且选中集合与多选模式都保留。**结论：方案 1/3（捕获-重放 helper）不需要实施**，其余「显示已选数量」按原方案落盘。
+
 **方案**：
 
-1. **重建前捕获、重建后重放**。在 `loading.rs:562/591` 两处改为「捕获 → rebuild → 重放」，并注意 `select_ids(&[])` 会把 `is_multi_select_mode` 置 false（`virtual_media_grid.rs:693`）——空集合时必须显式保留多选模式：
-
-   草案：
-
-   ```text
-   let kept = this.selected_ids();
-   let was_multi = this.is_multi_select_mode();
-   this.rebuild(media_list, this.mode());
-   if kept.is_empty() { if was_multi { this.set_multi_select_mode(true) } }
-   else { this.select_ids(&kept) }
-   ```
-
+1. ~~**重建前捕获、重建后重放**~~ — 见上方更正：受影响的是无多选 UI 的旧网格，`VirtualMediaGrid` 已由单测证明保留选择，故不改。
 2. **显示已选数量 + 截断说明**。在 `photos_page.rs:1062 refresh_selection_ui()` 里（它已经算出 `union`）新增/更新一个 header 标签 `selection_count_label`，文案 `trf("photos.selection.count", &[("n", n)])`；命中 2000 上限时追加「（已达上限）」，复用 `select_all_limit_reached`（`:1337-1360` 区域）。标签放 `[start]` revealer 组，遵循同一 reveal 时机。
 3. **不要清空选择的替代设计**：如果 `rebuild()` 必然要换 model，则把「按 id 重放」写成 `VirtualMediaGrid::preserve_selection_across_rebuild` 的内部职责，而不是让调用方每处手写，避免第三个调用点将来再犯。
 
 **落点文件**：`src/ui/media_grid/loading.rs`、`src/ui/virtual_media_grid.rs`（重放 helper）、`src/ui/photos_page.rs`、`data/ui/photos-page.blp`、`i18n/*.json`。
 
-**测试**：新增「选择后触发 schedule_rebuild，选择集合保持不变」的网格单测；`cargo test ui::photos_page`（计数标签在 n=0/1/2001 三档文案正确）。
+**实施结果（2026-10-01 已落盘，方案 2）**：
+
+- `data/ui/photos-page.blp:122-139`、`data/ui/album-detail-page.blp:91-106`：`Gtk.Revealer selection_count_revealer → Gtk.Label selection_count_label`（slide_left，`reveal-child: false`）作为 `[end]` 组最后声明的项，即右组最左侧、紧贴它所要量化的批量动作。
+  **落盘偏差（原方案两处都不成立）**：
+  1. 草案说「标签放 `[start]` revealer 组」；实施先按 GNOME 习惯试了 header `title-widget`，实测否决——libadwaita 文档明确「放在 `Adw.NavigationPage` 里的 `Adw.HeaderBar` 会显示**页面标题**而不是窗口标题」，本项目 Photos 页 `set_title(page.photos.title)`、相册页 `set_title(album.display_name())`（`album_detail_page.rs:147`），所以占用 `title-widget` 会把「照片」和相册名整块吃掉，无选择时标题区变空白。数量再重要也不该拿页面身份去换。
+  2. `[start]` 组同样不理想：全选按钮已经在那里，窄窗口下两个文本控件相邻会互相挤压。最终放 `[end]` 最左，读作「已选择 N 项 ＋ ♡ ⌫」，动词紧跟数字。
+  3. 拥挤风险已实测而非推断：`src/ui/photos_page/tests.rs:754 the_selection_counter_does_not_squeeze_the_batch_actions_out` 在 800x600 下选中 3 张后断言计数器宽度 > 0 且 `add_to_album_btn`/`delete_to_trash_btn` 仍 ≥24px。标签 `ellipsize: end` + `max-width-chars: 24`，挤压时先缩自己。
+- `src/ui/photos_page.rs:1317-1331`（`refresh_selection_ui`，函数 `:1256`）、`src/ui/album_detail_page.rs:439-447`（`refresh_selection_ui`，函数 `:412`）：文案 `trf("photos.selection.count", …)`，命中上限时追加 `tr("photos.selection.limit")`；reveal 时机与 `has_any` 一致。相册页用 `selected.len() >= ALBUM_SELECT_ALL_LIMIT` 判定上限。
+- `i18n/zh-CN.json:176-177`、`i18n/en.json:176-177`：`photos.selection.count` / `photos.selection.limit`（两表键数 429/429 对齐）。
+- `data/css/base.css:472-480`：`.selection-count` 用 `@window_fg_color` + 11pt/600 + `margin-right: 4px`，两种玻璃模式下都保持扁平——它是「header 文本」，不是又一个玻璃胶囊，否则与模式选择器抢注意力。
+- Blueprint 语法坑（下次改 header 少走弯路）：`title-widget:` 这类属性赋值的内联对象块**必须**以 `};` 收尾，而块内子控件（`Gtk.Label … { }`）不能加分号，否则 `blueprint-compiler` 报 `Expected ';'` / `Unexpected tokens`。用 `blueprint-compiler compile --output /tmp/x.ui <file>.blp` 可以秒级验证，不必等整个 `cargo build`。
+- 单测：`src/ui/photos_page/tests.rs:715`、`src/ui/album_detail_page/tests.rs:456`（无选中→不显示；选中 N 张→文案与张数；清空→收起）、`src/ui/virtual_media_grid/tests.rs:773`（刷新保选择）、上面那条窄窗口分配单测。四个都 PASS。
+- 已知未覆盖：2000 上限档的文案拼接（`（已达上限）`）在单测里没有真实复现——本地样图达不到该量级，只由 `select_all_limit_reached` / `ALBUM_SELECT_ALL_LIMIT` 的既有逻辑保证；n=0/1/3 档已实测。回收站页的同类计数（`trash-page.blp` action bar）仍未落地，保留为 P1-6 的剩余尾巴。
+
+**测试**：`cargo test --lib -- ui::photos_page::tests::the_header_counter_names_the_selection_the_batch_buttons_act_on ui::album_detail_page::tests::the_album_header_counter_names_the_selection ui::virtual_media_grid::tests::a_shared_projection_refresh_keeps_the_user_selection`（均需 `tools/with-at-spi.sh xvfb-run -a`）。
 
 **需同步文档**：`docs/modules/browsing.md`（选择生命周期）、`docs/modules/ui-design.md:105-109`。
 
@@ -653,7 +658,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 |---|---|---|---|
 | B1 焦点环 | P0-2 | `a11y.css`/`base.css`/`grid_css` 测试 | 无（最小、最高价值，可独立先做） |
 | B2 扫描态 | P0-1、P2-6、P2-7、P2-8 | `events.rs`/`bootstrap.rs`/`empty_states.rs`/`photos_page.rs`/`album_picker.rs`/`trash_page.rs`/i18n | 无 |
-| B3 多选与选择 | P0-3（含相册详情页 chrome，已落盘）、P1-6、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`album-detail-page.blp`/`album_detail_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
+| B3 多选与选择 | P0-3（含相册详情页 chrome，已落盘）、P1-6（header 选择计数器，已落盘）、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`album-detail-page.blp`/`album_detail_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
 | B4 快捷键发现 | P0-4 | `src/ui/keyboard/*`/`window.rs`/`settings.rs`/i18n | 无 |
 | B5 搜索 | P0-5、P1-15 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造）；P1-15 还要先接上真实的加入相册/收藏回调 |
 | B6 查看器信息层 | P1-7、P1-12、P2-2 | `viewer-page.blp`/`viewer_page.rs`/`navigation.rs`/`transform.rs`/`base.css` | 无 |

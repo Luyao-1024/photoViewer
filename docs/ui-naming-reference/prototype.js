@@ -151,10 +151,12 @@
     // P1-6 的文案走 trf，与真实实现一致：i18n/*.json 两份都要有键。
     var label = tr("photos.selection.count").replace("{n}", n.toLocaleString(locale() === "en" ? "en-US" : "zh-CN"));
     if (capped) label += tr("photos.selection.limit");
-    var el = q("#selection-count");
-    if (el) el.textContent = label;
-    var t = q("#trash-selection-count");
-    if (t) t.textContent = label;
+    // 照片页 / 相册详情页 / 回收站三处计数共用一份文案，与真实实现一致。
+    body.dataset.hasSelection = n ? "1" : "0";
+    ["#selection-count", "#album-selection-count", "#trash-selection-count"].forEach(function (sel) {
+      var el = q(sel);
+      if (el) el.textContent = label;
+    });
   }
   function selectAllInScreen() {
     var tiles = qa(".screen.is-active .tile[data-media]");

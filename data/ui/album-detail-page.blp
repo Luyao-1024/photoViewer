@@ -87,6 +87,22 @@ template $AlbumDetailPage : Adw.NavigationPage {
           css-classes: ["glass-toolbar-button"];
         }
       }
+
+      // Same counter as PhotosPage, in the same slot: it names how many the
+      // batch buttons to its right act on. Not the title slot — this page's
+      // NavigationPage title *is* the album name, and `title-widget` would
+      // replace it. Declared last because `[end]` packs edge-first.
+      [end]
+      Gtk.Revealer selection_count_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Label selection_count_label {
+          css-classes: ["selection-count"];
+          ellipsize: end;
+          max-width-chars: 24;
+        }
+      }
     }
 
     Gtk.Overlay grid_overlay {

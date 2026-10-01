@@ -347,6 +347,19 @@ right-clicked photo is already part of it, otherwise on just that photo. The
 explicit "enter multi-select" entry is the only context-menu path that selects
 its target. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
 
+A background refresh must not drop the selection. The virtual grids take their
+rows from the shared `ListStore` projection, so a filesystem-watcher scan or a
+sync landing appends items while the user is mid-selection; the debounced
+metadata reload then replaces the layout underneath. `VirtualMediaGrid::selected`
+is keyed by `MediaId` and is deliberately *not* cleared by that path, so the
+ids a user chose stay chosen even when a tile is rebound or falls outside the
+realized window. `ui::virtual_media_grid::tests::a_shared_projection_refresh_keeps_the_user_selection`
+guards this: it appends to the shared store, waits for the reload to land
+(asserting the layout grew, or the test would prove nothing), then asserts both
+the id set and multi-select mode survived. The legacy FlowBox grid does clear
+selection before rebuilding (`media_grid/loading.rs`), but it has no selection UI
+in production, so that path is not user-visible.
+
 Multi-select has two entries on the virtual grids, because the context menu
 alone was unreachable on a touchscreen and invisible on a desktop:
 
@@ -363,6 +376,18 @@ alone was unreachable on a touchscreen and invisible on a desktop:
 
 `refresh_selection_ui` reveals the entry when multi-select is off and the exit
 button when it is on, so exactly one mode affordance is present at a time.
+The same function drives the header selection counter
+(`selection_count_revealer` → `selection_count_label`): it reveals while anything
+is selected and reads `photos.selection.count` ("已选择 N 项" / "N selected"),
+appending `photos.selection.limit` when the select-all cap is reached. It is the
+leftmost `[end]` child, so the header reads "已选择 N 项 ＋ ♡ ⌫" — the number sits
+immediately before the verbs it quantifies. It must **not** take the header's
+`title-widget`: an `Adw.HeaderBar` inside an `Adw.NavigationPage` displays the
+*page* title there ("照片", and the album's own name on the album page), and a
+counter is not worth deleting the page identity. The label is plain header text
+(`.selection-count`, `@window_fg_color`) — not another glass capsule — and both
+pages must use the same key so the number never lives in two places with two
+wordings.
 Photos page "Select All" is intentionally capped at 2,000 live media items. For
 large virtualized libraries it loads the first 2,000 ids from the database's
 canonical live ordering, not from the current GTK seed or ready range.

@@ -710,3 +710,93 @@ fn narrow_window_keeps_both_start_header_buttons_allocated() {
          got search={search} select={select}"
     );
 }
+
+#[gtk::test]
+fn the_header_counter_names_the_selection_the_batch_buttons_act_on() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("counter.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=3 {
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(
+            id,
+            &format!("{id}.png"),
+        )));
+    }
+
+    let page = PhotosPage::new(media_list, loader);
+    let imp = page.imp();
+    assert!(
+        !imp.selection_count_revealer.get().reveals_child(),
+        "without a selection the counter slot must stay out of the header"
+    );
+
+    let grid = page.current_grid().expect("the photos page owns a grid");
+    grid.select_ids(&[MediaId::from(1), MediaId::from(2)]);
+
+    assert!(imp.selection_count_revealer.get().reveals_child());
+    assert_eq!(
+        imp.selection_count_label.get().label().as_str(),
+        crate::core::i18n::trf("photos.selection.count", &[("n", "2")]),
+        "the counter must state the selection size the batch buttons will act on"
+    );
+
+    grid.clear_selection();
+
+    assert!(
+        !imp.selection_count_revealer.get().reveals_child(),
+        "the counter must leave with the selection"
+    );
+}
+
+/// The counter joins the `[end]` group only while something is selected, which
+/// is exactly when that group is fullest. At 800x600 the batch icons must still
+/// get a tappable allocation rather than being squeezed out by the number.
+#[gtk::test]
+fn the_selection_counter_does_not_squeeze_the_batch_actions_out() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("counter-narrow.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=3 {
+        media_list.append(&glib::BoxedAnyObject::new(sample_item(
+            id,
+            &format!("{id}.png"),
+        )));
+    }
+    let page = PhotosPage::new(media_list, loader);
+
+    let window = gtk::Window::builder()
+        .default_width(800)
+        .default_height(600)
+        .child(&page)
+        .build();
+    window.present();
+
+    page.current_grid()
+        .expect("the photos page owns a grid")
+        .select_ids(&[MediaId::from(1), MediaId::from(2), MediaId::from(3)]);
+    assert!(page.imp().selection_count_revealer.get().reveals_child());
+
+    let context = glib::MainContext::default();
+    for _ in 0..200 {
+        while context.pending() {
+            context.iteration(false);
+        }
+        if page.imp().add_to_album_btn.get().width() > 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let counter = page.imp().selection_count_label.get().width();
+    let add = page.imp().add_to_album_btn.get().width();
+    let trash = page.imp().delete_to_trash_btn.get().width();
+    assert!(
+        counter > 0 && add >= 24 && trash >= 24,
+        "the counter and the batch icons must coexist at 800x600, \
+         got counter={counter} add={add} trash={trash}"
+    );
+}

@@ -768,3 +768,63 @@ fn factory_tiles_carry_a_touch_only_long_press_for_the_context_menu() {
         );
     }
 }
+
+#[gtk::test]
+fn a_shared_projection_refresh_keeps_the_user_selection() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        dir.path().join("thumbs"),
+    ));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=6 {
+        let mut item = sample_item(id, &format!("{id}.jpg"));
+        item.id = insert_sample_item(&pool, &item);
+        list.append(&glib::BoxedAnyObject::new(item));
+    }
+
+    let grid = VirtualMediaGrid::new(list.clone(), GroupBy::Day, loader, noop_callbacks(), true);
+    let chosen = [MediaId::from(2), MediaId::from(4)];
+    grid.select_ids(&chosen);
+    assert_eq!(grid.selected_ids().len(), 2);
+
+    // A watcher scan landing writes into the shared projection, which schedules
+    // the debounced metadata reload and replaces the layout underneath.
+    let mut newcomer = sample_item(7, "7.jpg");
+    newcomer.id = insert_sample_item(&pool, &newcomer);
+    list.append(&glib::BoxedAnyObject::new(newcomer));
+
+    let context = glib::MainContext::default();
+    // Drain the debounced reload without ever blocking: once the new layout
+    // lands there may be no event left to wake an `iteration(true)`, and the
+    // test would hang instead of reaching its asserts.
+    for _ in 0..200 {
+        while context.pending() {
+            context.iteration(false);
+        }
+        if grid.model().layout().media_count() == 7 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    while context.pending() {
+        context.iteration(false);
+    }
+
+    let kept = grid.selected_ids();
+    assert_eq!(
+        grid.model().layout().media_count(),
+        7,
+        "the refresh must actually have landed a new layout, or this test proves nothing"
+    );
+    assert!(
+        chosen.iter().all(|id| kept.contains(id)),
+        "a background refresh dropped the selection: kept {kept:?}"
+    );
+    assert!(
+        grid.is_multi_select_mode(),
+        "the refresh must not silently leave multi-select mode"
+    );
+}

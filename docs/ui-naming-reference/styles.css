@@ -2099,11 +2099,14 @@ body[data-pv-mode="run"] .picker-scene { min-height: 0; flex: 1 1 auto; }
 body[data-pv-mode="run"] .search-area { overflow: auto; }
 body[data-pv-mode="run"] .status-page { min-height: 240px; }
 /* 多选态 chrome：run 模式按真实 reveal 时机出现 */
-body[data-pv-mode="run"]:not([data-multi="1"]) .multi-only,
-body[data-pv-mode="run"]:not([data-multi="1"]) .pv-p0-3--active-only { display: none !important; }
+body[data-pv-mode="run"]:not([data-multi="1"]) .multi-only { display: none !important; }
 /* 多选入口按钮与退出按钮是同一个控件的两半：进入多选后入口收起（photos_page.rs
    refresh_selection_ui 的 !any_multi）。命名总览里始终可见，便于查名字。 */
 body[data-pv-mode="run"][data-multi="1"] .multi-off-only { display: none !important; }
+/* 计数标签按 has_any（真的选中了东西）reveal，而不是按多选模式：进了多选但一张
+   都没选时，应用里它是收起的，这里也不能显示「已选择 0 项」。只在 run 模式生效，
+   命名总览里它仍是一个可悬停查名字的常态条目。 */
+body[data-pv-mode="run"]:not([data-has-selection="1"]) .selection-count-gated { display: none !important; }
 /* 查看器浮层面板：run 模式按 split view 状态出现 */
 body[data-pv-mode="run"] .side-panel {
   position: absolute;

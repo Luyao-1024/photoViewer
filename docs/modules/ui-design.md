@@ -128,6 +128,21 @@ Design intent:
 - Selection mode should make batch actions discoverable without permanently
   occupying header space. Add-to-album, favorite, and trash actions belong in
   the header because they apply to the selected set.
+- The selected set announces its own size. `selection_count_revealer` →
+  `selection_count_label` is the leftmost `[end]` header child and reveals with
+  the batch actions, reading "已选择 N 项" / "N selected" (plus a limit suffix
+  when select-all is capped), so the header reads "已选择 N 项 ＋ ♡ ⌫": the number
+  sits right before the verbs it quantifies. It must not move into the header's
+  `title-widget` — an `Adw.HeaderBar` inside an `Adw.NavigationPage` shows the
+  *page* title in that slot ("照片", the album's name on the album page), and a
+  selection count is not worth erasing page identity when nothing is selected.
+  It is not in `[start]` either, because select-all's text label already lives
+  there and two shrinking text controls side by side crowd a narrow window. The
+  label is flat header text (`.selection-count`, `@window_fg_color`, 11pt/600,
+  `ellipsize: end` + `max-width-chars: 24` so it squeezes itself before the
+  icons) in both Liquid Glass and plain translucent modes — never another glass
+  capsule, which would compete with the mode selector. The album detail page
+  uses the same slot and the same i18n keys.
 - Search is a normal browsing action in the header. The search button is a
   circular icon button that opens a dedicated search page. The search page uses
   a focused search entry and separates image and video results while preserving

@@ -451,3 +451,30 @@ fn delete_only_consumes_the_album_keyboard_action_when_something_is_selected() {
         .handle_keyboard_action(KeyboardAction::Delete)
         .is_handled());
 }
+
+#[gtk::test]
+fn the_album_header_counter_names_the_selection() {
+    let (page, _tmp) = album_page_with_photos(3);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+    assert!(
+        !imp.selection_count_revealer.get().reveals_child(),
+        "no selection means no counter"
+    );
+
+    grid.select_ids(&[MediaId::from(1), MediaId::from(2), MediaId::from(3)]);
+
+    assert!(imp.selection_count_revealer.get().reveals_child());
+    assert_eq!(
+        imp.selection_count_label.get().label().as_str(),
+        crate::core::i18n::trf("photos.selection.count", &[("n", "3")]),
+        "the album header uses the same counter wording as Photos"
+    );
+
+    grid.clear_selection();
+
+    assert!(
+        !imp.selection_count_revealer.get().reveals_child(),
+        "the counter must leave with the selection"
+    );
+}

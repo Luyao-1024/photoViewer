@@ -266,6 +266,10 @@ mod imp {
         pub favorite_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub add_to_album_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub selection_count_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub selection_count_label: TemplateChild<gtk::Label>,
     }
 
     impl Default for PhotosPage {
@@ -322,6 +326,8 @@ mod imp {
                 delete_to_trash_revealer: TemplateChild::default(),
                 favorite_revealer: TemplateChild::default(),
                 add_to_album_revealer: TemplateChild::default(),
+                selection_count_revealer: TemplateChild::default(),
+                selection_count_label: TemplateChild::default(),
             }
         }
     }
@@ -1307,6 +1313,22 @@ impl PhotosPage {
                 .get()
                 .set_tooltip_text(Some(&tr("photos.batch.select_all")));
         }
+
+        // Name the object the batch buttons act on. The header buttons say
+        // *what* will happen; nothing on screen said *to how many* until now.
+        let count = self.imp().selected_ids.borrow().len();
+        let mut count_text = trf("photos.selection.count", &[("n", &count.to_string())]);
+        if select_all_limit_reached {
+            count_text.push_str(&tr("photos.selection.limit"));
+        }
+        self.imp()
+            .selection_count_label
+            .get()
+            .set_label(&count_text);
+        self.imp()
+            .selection_count_revealer
+            .get()
+            .set_reveal_child(has_any);
 
         let state = if has_any {
             let ids: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();

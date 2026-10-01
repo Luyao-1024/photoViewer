@@ -173,6 +173,8 @@
     "photos.batch.move_to_album": "Move to Album",
     "photos.batch.favorite": "Favorite",
     "photos.batch.unfavorite": "Unfavorite",
+    "photos.selection.count": "{n} selected",
+    "photos.selection.limit": " (limit reached)",
     "album_picker.title": "Add to Album",
     "album_picker.no_albums_yet.title": "No Albums Yet",
     "album_picker.no_albums_yet.description": "Create a folder under ~/Pictures and re-scan to see it here.",

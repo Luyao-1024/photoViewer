@@ -469,6 +469,16 @@ box.mode-dot {
   outline: none;
 }
 
+/* The header selection counter names how many the batch buttons act on. It
+   stays flat — it is header text, not another capsule competing with the mode
+   selector for attention — and works in both Liquid Glass and plain modes. */
+.selection-count {
+  color: @window_fg_color;
+  font-size: 11pt;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
 .glass-toolbar-button.glass-toolbar-danger,
 .glass-toolbar-danger {
   background: alpha(@error_bg_color, 0.16);

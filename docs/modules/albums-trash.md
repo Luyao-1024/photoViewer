@@ -165,9 +165,14 @@ for the page's single Day grid, and `select_all_btn`, `exit_multi_select_btn`,
 `VirtualMediaGrid::connect_selection_changed`. Exit is bound to multi-select
 *mode*, not to having a selection, so the user is never stranded in the mode
 after deselecting everything, and the entry button reappears exactly when the
-exit button leaves. There is intentionally **no** batch favorite button here: the
-page builds its grid with a no-op `on_set_favorite` callback, so a heart would
-be a dead control until that callback is wired for real.
+exit button leaves. The header shows the same `selection_count_label` counter as
+Photos, in the same leftmost-`[end]` slot ("已选择 N 项", plus the limit suffix at
+`ALBUM_SELECT_ALL_LIMIT`), so the number that names the batch actions never lives
+in two places with two wordings. The counter deliberately does not take the
+header's `title-widget`: that slot renders this page's NavigationPage title,
+which *is* the album name. There is intentionally **no** batch favorite
+button here: the page builds its grid with a no-op `on_set_favorite` callback, so
+a heart would be a dead control until that callback is wired for real.
 
 Select-all on this page is answered from `MediaRepository` with
 `media_query_for_album(album)` capped at `ALBUM_SELECT_ALL_LIMIT`, not from

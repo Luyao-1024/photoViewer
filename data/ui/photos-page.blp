@@ -118,6 +118,25 @@ template $PhotosPage : Adw.NavigationPage {
           css-classes: ["glass-toolbar-button"];
         }
       }
+
+      // What the batch buttons act on, sitting immediately left of them: the
+      // buttons say *what* happens, this says *to how many*. It is NOT in the
+      // header's title slot on purpose — an Adw.HeaderBar inside an
+      // Adw.NavigationPage auto-displays the page title there, so setting
+      // `title-widget` would delete 「照片」 (and the album name on the album
+      // page) whenever nothing is selected. Declared last because `[end]` packs
+      // edge-first, which makes this the leftmost of the right group.
+      [end]
+      Gtk.Revealer selection_count_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Label selection_count_label {
+          css-classes: ["selection-count"];
+          ellipsize: end;
+          max-width-chars: 24;
+        }
+      }
     }
 
     Gtk.Revealer scroll_date_revealer {

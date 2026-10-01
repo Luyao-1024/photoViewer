@@ -75,6 +75,10 @@ mod imp {
         #[template_child]
         pub delete_to_trash_btn: TemplateChild<gtk::Button>,
         #[template_child]
+        pub selection_count_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub selection_count_label: TemplateChild<gtk::Label>,
+        #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub content_box: TemplateChild<gtk::Box>,
@@ -411,7 +415,8 @@ impl AlbumDetailPage {
         let Some(grid) = binding.as_ref() else {
             return;
         };
-        let has_any = !grid.selected_ids().is_empty();
+        let selected = grid.selected_ids();
+        let has_any = !selected.is_empty();
         let multi = grid.is_multi_select_mode();
         imp.select_all_revealer.get().set_reveal_child(has_any);
         imp.add_to_album_revealer.get().set_reveal_child(has_any);
@@ -430,6 +435,16 @@ impl AlbumDetailPage {
         let text = crate::core::i18n::tr(label);
         imp.select_all_btn.get().set_label(&text);
         imp.select_all_btn.get().set_tooltip_text(Some(&text));
+        // Same counter as PhotosPage's header: the batch buttons say what
+        // happens, this says how many it happens to.
+        let count = selected.len();
+        let mut count_text =
+            crate::core::i18n::trf("photos.selection.count", &[("n", &count.to_string())]);
+        if count >= ALBUM_SELECT_ALL_LIMIT as usize {
+            count_text.push_str(&crate::core::i18n::tr("photos.selection.limit"));
+        }
+        imp.selection_count_label.get().set_label(&count_text);
+        imp.selection_count_revealer.get().set_reveal_child(has_any);
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {

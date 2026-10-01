@@ -173,6 +173,8 @@
     "photos.batch.move_to_album": "移动到相册",
     "photos.batch.favorite": "收藏",
     "photos.batch.unfavorite": "取消收藏",
+    "photos.selection.count": "已选择 {n} 项",
+    "photos.selection.limit": "（已达上限）",
     "album_picker.title": "添加到相册",
     "album_picker.no_albums_yet.title": "还没有相册",
     "album_picker.no_albums_yet.description": "在 ~/Pictures 下创建文件夹并重新扫描后可在这里看到它。",

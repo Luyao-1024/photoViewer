@@ -33,6 +33,11 @@
   // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
+  // 半落盘的条目只给未落盘那一半留标记：
+  //   p1-6 的「已选择 N 项」计数在照片页与相册详情页已落盘，两个标签因此转为常态
+  //        data-ui 条目（photos-selection-count-label / album-selection-count-label，
+  //        用 .multi-only 按真实 reveal 时机出现）；残留的 .pv-p1-6 标记只代表仍未
+  //        落盘的回收站计数，以及「rebuild 是否保留选择」这个演示开关。
   var PROPOSALS = [
     {
       id: "p0-1",
@@ -253,7 +258,7 @@
       prio: "P1",
       batch: "B3",
       title: "重建保留选择 + 显示已选数量",
-      screens: ["photos", "trash"],
+      screens: ["photos", "album", "trash"],
       problem:
         "用户选了几十张准备加入相册，文件系统 watcher 落地一次扫描 → 选择全部丢失且无提示；多选期间永远看不到「选了多少」。",
       evidence: [
@@ -282,7 +287,9 @@
       docs: ["docs/modules/browsing.md", "docs/modules/ui-design.md:105-109"],
       risk: "重放依赖 MediaId 稳定；移出库的 id 自然消失，需确认 select_ids 对不存在 id 静默跳过。",
       demo:
-        "开启后在照片页多选几张，点工具条「触发一次 rebuild」：选择保留并提示保留数量。关闭本提案再做同样操作：选择被静默清空、「已选择 N 项」标签整个消失（现状行为）。本条「跳到演示界面」是三步循环：选 3 项 → 全选 → 模拟命中 2000 上限的「（已达上限）」变体；静态页只有 18 张样图，上限只能显式模拟。"
+        "开启后在照片页多选几张，点工具条「触发一次 rebuild」：选择保留并提示保留数量。关闭本提案再看计数：header 里没有「已选择 N 项」（P1-6 落盘前的现状）。本条「跳到演示界面」是三步循环：选 3 项 → 全选 → 模拟命中 2000 上限的「（已达上限）」变体；静态页只有 18 张样图，上限只能显式模拟。",
+      landed:
+        "计数那一半已落盘（照片页 + 相册详情页），「重建清空选择」那一半经实测不成立。落点：photos-page.blp:122-139 / album-detail-page.blp:91-106 的 selection_count_revealer→selection_count_label，photos_page.rs:1317-1331 / album_detail_page.rs:439-447 写文案与 reveal，i18n 两表新增 photos.selection.count / photos.selection.limit（parity 429/429），base.css:472-480 的 .selection-count 保持扁平 header 文本。两处偏差：(1) 草案说放 [start]，实施先试 header title-widget，被 libadwaita 的真实行为否决——放在 Adw.NavigationPage 里的 Adw.HeaderBar 会在 title 槽显示页面标题（「照片」/相册名），占用它等于无选择时删掉页面身份；(2) 最终落 [end] 最左，读作「已选择 N 项 ＋ ♡ ⌫」，并用 photos_page/tests.rs:754 在 800x600 实测计数与批量图标不互相挤出 24px。证据更正：loading.rs:562/591 的 clear_selection 属于旧 FlowBox 网格，而它在生产里只剩搜索结果分区（enable_context_menu: false，无多选 UI），所以没有可丢失的用户选择；VirtualMediaGrid 的共享投影刷新路径不清 selected，已由 virtual_media_grid/tests.rs:773 锁住（追加第 7 项后断言 layout 真的长大且 id 集合与多选模式都保留）。剩余尾巴：回收站 action bar 计数（trash-page.blp / trash_page.rs:91,226）与 2000 上限档的真实复现仍未落地。"
     },
     {
       id: "p1-7",
