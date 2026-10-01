@@ -386,6 +386,15 @@ h1 {
   white-space: nowrap;
 }
 
+/* 详情页同步角标对应真实代码里的 Gtk.Image sync_badge：按图标自然尺寸排在日期右侧。
+   不要复用 .header-title 给它定位——那是 flex: 1 1 auto，会把 18x18 的 PNG 拉成大方块。 */
+.viewer-sync-badge {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
