@@ -219,11 +219,22 @@ impl PartialOrd for QueuedEnvelope {
 pub struct DbActorHandle {
     tx: mpsc::Sender<DbEnvelope>,
     pool: DbPool,
+    /// Clone of the sender the actor thread owns. Producers that do not run a
+    /// database command (the startup scan, for example) still need to publish
+    /// domain events, and they must not reach into the actor's queue for it.
+    events: DomainEventSender,
 }
 
 impl DbActorHandle {
     pub fn pool(&self) -> &DbPool {
         &self.pool
+    }
+
+    /// Publish a domain event without going through a database command. Safe
+    /// off the main thread; see `DomainEventSender::send` for the backpressure
+    /// contract.
+    pub fn emit(&self, event: DomainEvent) {
+        self.events.send(event);
     }
 
     pub async fn execute(&self, command: DbCommand) -> Result<DbCommandResult> {
@@ -361,6 +372,7 @@ impl DbActorHandle {
 pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle {
     let (tx, rx) = mpsc::channel::<DbEnvelope>();
     let handle_pool = pool.clone();
+    let handle_events = events.clone();
     std::thread::Builder::new()
         .name("photo-viewer-db-actor".into())
         .spawn(move || run_db_actor(pool, events, rx))
@@ -375,6 +387,7 @@ pub fn start_db_actor(pool: DbPool, events: DomainEventSender) -> DbActorHandle 
     DbActorHandle {
         tx,
         pool: handle_pool,
+        events: handle_events,
     }
 }
 

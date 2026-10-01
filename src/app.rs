@@ -210,6 +210,9 @@ fn domain_event_label(event: &DomainEvent) -> String {
         DomainEvent::ThumbnailStatsDirty => "thumbnail_stats_dirty".to_string(),
         DomainEvent::LiveCountDirty => "live_count_dirty".to_string(),
         DomainEvent::SyncStateDirty => "sync_state_dirty".to_string(),
+        DomainEvent::ScanPhase { active, error } => {
+            format!("scan_phase(active={active}, failed={})", error.is_some())
+        }
     }
 }
 
@@ -227,6 +230,13 @@ fn apply_domain_event_to_legacy_ui(
         media_list.n_items()
     );
     match event {
+        DomainEvent::ScanPhase { active, error } => {
+            // The window owns the phase so a page created after the scan starts
+            // still inherits it; album refresh is left to the pass itself.
+            if let Some(window) = window.upgrade() {
+                window.note_scan_phase(*active, error.clone());
+            }
+        }
         DomainEvent::SyncStateDirty => {
             if let Some(window) = window.upgrade() {
                 window.refresh_cloud_badges();

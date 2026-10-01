@@ -63,6 +63,18 @@ fn scan_and_aggregate_with_notifier_emits_upserted_items() {
     }
 }
 
+/// Drain a bounded domain-event channel, dropping only the panic-on-none
+/// plumbing so a test can reason about the emitted order.
+fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<DomainEvent>) -> Vec<DomainEvent> {
+    let mut events = Vec::new();
+    loop {
+        match rx.try_recv() {
+            Ok(event) => events.push(event),
+            Err(_) => return events,
+        }
+    }
+}
+
 #[test]
 fn scan_and_aggregate_with_actor_emits_actor_events() {
     let dir = tmp_dir();
@@ -82,13 +94,48 @@ fn scan_and_aggregate_with_actor_emits_actor_events() {
         .unwrap();
     });
 
-    match rx.try_recv() {
-        Ok(DomainEvent::MediaUpserted { source, items }) => {
-            assert_eq!(source, ChangeSource::StartupScan);
+    // The pass brackets its upsert batch with the scan-phase events that let the
+    // Photos page tell "indexing" and "indexing failed" apart from an empty
+    // library; without them a 16 s scan reads as "you have no photos".
+    let events = drain_events(&mut rx);
+    let upsert_at = events
+        .iter()
+        .position(|event| matches!(event, DomainEvent::MediaUpserted { .. }))
+        .expect("startup scan must emit an upsert batch");
+    assert!(
+        matches!(
+            events[0],
+            DomainEvent::ScanPhase {
+                active: true,
+                error: None
+            }
+        ),
+        "the phase must open before any row arrives, got {:?}",
+        events[0]
+    );
+    let closed_at = events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event,
+                DomainEvent::ScanPhase {
+                    active: false,
+                    error: None
+                }
+            )
+        })
+        .expect("a completed scan must close the phase without an error");
+    assert!(
+        closed_at > upsert_at,
+        "the phase must close after the rows it produced"
+    );
+    match &events[upsert_at] {
+        DomainEvent::MediaUpserted { source, items } => {
+            assert_eq!(source, &ChangeSource::StartupScan);
             assert_eq!(items.len(), 1);
             assert_eq!(items[0].display_name(), "actor-visible.png");
         }
-        other => panic!("expected startup scan actor event, got {other:?}"),
+        _ => unreachable!("located by the MediaUpserted filter"),
     }
 }
 

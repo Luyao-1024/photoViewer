@@ -241,6 +241,11 @@ mod imp {
         pub db_actor: RefCell<Option<DbActorHandle>>,
         pub loader: RefCell<Option<Arc<ThumbnailLoader>>>,
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
+        /// Startup index pass lifecycle, mirrored on the window because the scan
+        /// usually starts before a PhotosPage exists. Installing a page replays
+        /// this so it never opens on "no photos" while indexing runs.
+        pub scan_active: Cell<bool>,
+        pub scan_error: RefCell<Option<String>>,
         /// Index→target mirror of the sidebar ListBox, so the `row-selected`
         /// handler can dispatch by identity rather than a hardcoded index.
         pub targets: RefCell<Vec<SidebarTarget>>,
@@ -748,6 +753,13 @@ impl MainWindow {
             stack.add_named(page, Some("photos"));
         }
         stack.set_visible_child_name("photos");
+        // A page built mid-scan has no way to know it; replay the phase we
+        // already hold before its first frame.
+        let (active, error) = {
+            let imp = self.imp();
+            (imp.scan_active.get(), imp.scan_error.borrow().clone())
+        };
+        page.set_scan_phase(active, error);
         *self.imp().active_album.borrow_mut() = None;
         self.imp().selecting_programmatically.set(true);
         self.clear_album_selection();
@@ -757,6 +769,24 @@ impl MainWindow {
             self.imp().sidebar_list.get().select_row(Some(&row));
         }
         self.imp().selecting_programmatically.set(false);
+    }
+
+    /// Record the startup index pass lifecycle and push it to the Photos page.
+    /// `error` is the failure text when a pass did not complete; an empty or
+    /// blank string is stored as `None` so "scan failed" cannot be confused with
+    /// "library is empty".
+    pub fn note_scan_phase(&self, active: bool, error: Option<String>) {
+        let imp = self.imp();
+        imp.scan_active.set(active);
+        *imp.scan_error.borrow_mut() = error.filter(|text| !text.trim().is_empty());
+        if let Some(photos) = imp
+            .browsing_stack
+            .get()
+            .child_by_name("photos")
+            .and_downcast::<PhotosPage>()
+        {
+            photos.set_scan_phase(active, imp.scan_error.borrow().clone());
+        }
     }
 
     /// Replace the active album child and crossfade to it. Keeping exactly one
@@ -857,7 +887,7 @@ impl MainWindow {
         self.update_photos_count_label_from_db();
     }
 
-    fn show_settings_dialog(&self) {
+    pub(crate) fn show_settings_dialog(&self) {
         if self.imp().settings_dialog.borrow().is_some() {
             return;
         }

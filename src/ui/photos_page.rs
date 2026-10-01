@@ -131,6 +131,28 @@ fn stack_visible_child_name(stack: &gtk::Stack) -> String {
         .unwrap_or_else(|| "(none)".to_string())
 }
 
+/// The three placeholders the Photos stack swaps in when a grid has nothing to
+/// show. They are kept together so `update_placeholder_child` stays the single
+/// place that decides *why* the grid is empty — indexing, a failed scan, or a
+/// genuinely empty library. Presenting only "暂无照片" during a 16 s scan tells
+/// the user their library is empty when it is not.
+struct Placeholders {
+    empty: adw::StatusPage,
+    scanning: adw::StatusPage,
+    scan_error: adw::StatusPage,
+}
+
+const PLACEHOLDER_EMPTY: &str = "empty";
+const PLACEHOLDER_SCANNING: &str = "scanning";
+const PLACEHOLDER_SCAN_ERROR: &str = "scan-error";
+
+fn is_placeholder_name(name: &str) -> bool {
+    matches!(
+        name,
+        PLACEHOLDER_EMPTY | PLACEHOLDER_SCANNING | PLACEHOLDER_SCAN_ERROR
+    )
+}
+
 mod imp {
     use super::*;
     use adw::subclass::prelude::*;
@@ -158,6 +180,17 @@ mod imp {
         /// Coalescing flag for `schedule_scroll_date_update` (mirrors
         /// `contrast_update_pending`).
         pub scroll_date_update_pending: Cell<bool>,
+        /// Placeholder children built once in `constructed`, so switching
+        /// between "indexing / scan failed / really empty" never reallocates
+        /// the stack.
+        pub(super) placeholders: RefCell<Option<Placeholders>>,
+        /// True while the startup index pass is running. Drives the scanning
+        /// placeholder and the live "已找到 N 个项目" count.
+        pub scan_active: Cell<bool>,
+        /// Failure text from the last scan pass, if it did not complete.
+        pub scan_error: RefCell<Option<String>>,
+        /// Guards against stacking retry scans when the button is clicked twice.
+        pub scan_retry_in_flight: Cell<bool>,
         /// Debounces photo activation while NavigationView is pushing the
         /// viewer. Without this, rapid repeated clicks can stack viewer pages
         /// or race with viewer-level back handling during the transition.
@@ -243,6 +276,10 @@ mod imp {
                 selected_ids: RefCell::new(HashSet::new()),
                 contrast_update_pending: Cell::new(false),
                 scroll_date_update_pending: Cell::new(false),
+                placeholders: RefCell::new(None),
+                scan_active: Cell::new(false),
+                scan_error: RefCell::new(None),
+                scan_retry_in_flight: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 overview_refresh_in_flight: Cell::new(false),
                 overview_poll_source: RefCell::new(None),
@@ -387,9 +424,9 @@ impl PhotosPage {
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());
 
-        // Snapshot the initial size before `media_list` is moved into a grid.
-        let is_empty = media_list.n_items() == 0;
-        let media_list_for_empty_state = media_list.clone();
+        // Keep a handle on the list before it is moved into the grids; the
+        // placeholder switch listens to it.
+        let media_list_for_placeholder = media_list.clone();
 
         let on_activate: Rc<dyn Fn(MediaId)> = {
             let weak = obj.downgrade();
@@ -528,33 +565,52 @@ impl PhotosPage {
         stack.add_titled(&month_grid, Some("month"), &tr("photo.mode.month"));
         stack.add_titled(&day_grid, Some("day"), &tr("photo.mode.day"));
 
-        // Empty-state placeholder: shown when the media list is empty.
-        // Added as a hidden stack child so we can swap to it without rebuilding.
+        // Placeholder states: kept as untitled stack children so we can swap to
+        // them without rebuilding the grids. They split the single old
+        // "empty means no photos" conclusion into three different facts —
+        // indexing, indexing failed, and genuinely nothing to show.
         let empty_page = empty_states::no_photos();
-        empty_page.set_hexpand(true);
-        empty_page.set_vexpand(true);
-        stack.add_child(&empty_page); // untitled → won't appear in the switcher bar
-
-        // Decide initial visible child based on data size.
-        if is_empty {
-            stack.set_visible_child(&empty_page);
-        } else {
-            stack.set_visible_child_name("day");
-        }
-        {
-            let stack = stack.clone();
-            let empty_page = empty_page.clone();
-            media_list_for_empty_state.connect_items_changed(move |list, _, _, _| {
-                if list.n_items() == 0 {
-                    stack.set_visible_child(&empty_page);
-                    return;
+        empty_states::add_action(&empty_page, &tr("empty.no_photos.action"), {
+            let weak = obj.downgrade();
+            Rc::new(move || {
+                if let Some(this) = weak.upgrade() {
+                    this.open_library_settings();
                 }
-                let showing_empty = stack
-                    .visible_child()
-                    .as_ref()
-                    .is_some_and(|child| child == empty_page.upcast_ref::<gtk::Widget>());
-                if showing_empty {
-                    stack.set_visible_child_name("day");
+            })
+        });
+        let scanning_page = empty_states::scanning();
+        let scan_error_page = empty_states::scan_error("");
+        empty_states::add_action(&scan_error_page, &tr("empty.scan_failed.retry"), {
+            let weak = obj.downgrade();
+            Rc::new(move || {
+                if let Some(this) = weak.upgrade() {
+                    this.restart_scan();
+                }
+            })
+        });
+        for page in [&empty_page, &scanning_page, &scan_error_page] {
+            page.set_hexpand(true);
+            page.set_vexpand(true);
+        }
+        stack.add_named(&empty_page, Some(PLACEHOLDER_EMPTY));
+        stack.add_named(&scanning_page, Some(PLACEHOLDER_SCANNING));
+        stack.add_named(&scan_error_page, Some(PLACEHOLDER_SCAN_ERROR));
+        *obj.imp().placeholders.borrow_mut() = Some(Placeholders {
+            empty: empty_page,
+            scanning: scanning_page,
+            scan_error: scan_error_page,
+        });
+        // GtkStack shows its first added child until something says otherwise,
+        // and that first child is the Year grid. `update_placeholder_child` only
+        // swaps away from a placeholder, so the default has to be stated here.
+        stack.set_visible_child_name("day");
+        obj.update_placeholder_child();
+
+        {
+            let weak = obj.downgrade();
+            media_list_for_placeholder.connect_items_changed(move |_, _, _, _| {
+                if let Some(this) = weak.upgrade() {
+                    this.update_placeholder_child();
                 }
             });
         }
@@ -849,6 +905,107 @@ impl PhotosPage {
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
         *self.imp().db_actor.borrow_mut() = Some(db_actor);
+    }
+
+    /// Report the startup index pass lifecycle. `active` is true while a scan
+    /// runs; `error` carries the failure text when a pass did not complete.
+    /// Without this the page can only see "no rows yet", which it used to read
+    /// as "the library is empty" during a scan that takes tens of seconds.
+    pub fn set_scan_phase(&self, active: bool, error: Option<String>) {
+        let imp = self.imp();
+        imp.scan_active.set(active);
+        let message = error.filter(|text| !text.trim().is_empty());
+        *imp.scan_error.borrow_mut() = message.clone();
+        if !active {
+            imp.scan_retry_in_flight.set(false);
+        }
+        if let Some(placeholders) = imp.placeholders.borrow().as_ref() {
+            placeholders
+                .scan_error
+                .set_description(Some(&empty_states::scan_error_text(message.as_deref())));
+        }
+        self.update_placeholder_child();
+    }
+
+    /// The single place that decides which placeholder, if any, the view stack
+    /// shows. A populated grid always wins — tiles arriving during a scan are
+    /// better feedback than a spinner. Only an empty list needs an explanation,
+    /// and the three reasons for emptiness must not share one sentence.
+    fn update_placeholder_child(&self) {
+        let imp = self.imp();
+        let stack = imp.view_stack.get();
+        let item_count = imp
+            .media_list
+            .borrow()
+            .as_ref()
+            .map(|list| list.n_items())
+            .unwrap_or(0);
+        if item_count > 0 {
+            let showing_placeholder = stack
+                .visible_child_name()
+                .is_some_and(|name| is_placeholder_name(&name));
+            if showing_placeholder {
+                stack.set_visible_child_name("day");
+            }
+            return;
+        }
+        let binding = imp.placeholders.borrow();
+        let Some(placeholders) = binding.as_ref() else {
+            return;
+        };
+        if imp.scan_active.get() {
+            stack.set_visible_child(&placeholders.scanning);
+            return;
+        }
+        if imp.scan_error.borrow().is_some() {
+            stack.set_visible_child(&placeholders.scan_error);
+            return;
+        }
+        stack.set_visible_child(&placeholders.empty);
+    }
+
+    /// Retry the index pass from the scan-failed placeholder. Requires the DB
+    /// handles injected after construction, so this is a no-op on a page that
+    /// never finished wiring.
+    fn restart_scan(&self) {
+        let imp = self.imp();
+        if imp.scan_retry_in_flight.replace(true) {
+            return;
+        }
+        let (Some(pool), Some(db_actor)) = (
+            imp.pool.borrow().as_ref().cloned(),
+            imp.db_actor.borrow().as_ref().cloned(),
+        ) else {
+            imp.scan_retry_in_flight.set(false);
+            return;
+        };
+        let roots = crate::config::media_roots();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result =
+                crate::core::bootstrap::scan_and_aggregate_with_actor(&pool, &roots, db_actor)
+                    .await;
+            if let Some(this) = weak.upgrade() {
+                this.imp().scan_retry_in_flight.set(false);
+                this.update_placeholder_child();
+            }
+            if let Err(error) = result {
+                tracing::warn!("manual rescan failed: {error}");
+            }
+        });
+    }
+
+    /// The empty state's way out: folders are added in Settings, so the page
+    /// that says "add folders in Settings" has to open that dialog.
+    fn open_library_settings(&self) {
+        let Some(window) = self
+            .ancestor(crate::ui::MainWindow::static_type())
+            .and_downcast::<crate::ui::MainWindow>()
+        else {
+            tracing::warn!("photos empty state has no MainWindow ancestor to open settings");
+            return;
+        };
+        window.show_settings_dialog();
     }
 
     pub fn media_list(&self) -> Ref<'_, Option<gtk::gio::ListStore>> {

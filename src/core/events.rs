@@ -91,6 +91,14 @@ pub enum DomainEvent {
     AlbumsDirty {
         source: ChangeSource,
     },
+    /// Startup index pass lifecycle. `active` is true while a scan is running;
+    /// when it flips to false, `error` carries the failure text if the scan
+    /// could not complete. Pages use this to keep "indexing" apart from
+    /// "the library really is empty".
+    ScanPhase {
+        active: bool,
+        error: Option<String>,
+    },
     ThumbnailStatsDirty,
     LiveCountDirty,
     SyncStateDirty,

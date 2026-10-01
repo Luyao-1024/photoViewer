@@ -4,7 +4,7 @@ use crate::core::backend::local::{scan_root_is_available, LocalBackend};
 use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
-use crate::core::events::ChangeSource;
+use crate::core::events::{ChangeSource, DomainEvent};
 use crate::core::media_change_notifier::MediaChangeNotifier;
 use crate::core::prefs;
 use crate::core::telemetry::{log_error, OperationTrace, TraceChain};
@@ -139,6 +139,28 @@ pub async fn scan_and_aggregate_with_actor_traced(
 
 #[tracing::instrument(name = "scan:actor_blocking", skip(pool, roots, db_actor, trace), fields(root_count = roots.len()))]
 fn scan_and_aggregate_with_actor_blocking(
+    pool: DbPool,
+    roots: Vec<PathBuf>,
+    db_actor: DbActorHandle,
+    trace: OperationTrace,
+) -> Result<()> {
+    // Publish the pass before touching the filesystem so a page that opens
+    // during the scan can tell "indexing" apart from "no photos". Emitted from
+    // this worker thread: `DomainEventSender::send` blocks when the UI falls
+    // behind, which must never happen on the GTK main context.
+    db_actor.emit(DomainEvent::ScanPhase {
+        active: true,
+        error: None,
+    });
+    let result = scan_and_aggregate_with_actor_work(pool, roots, db_actor.clone(), trace);
+    db_actor.emit(DomainEvent::ScanPhase {
+        active: false,
+        error: result.as_ref().err().map(|error| error.to_string()),
+    });
+    result
+}
+
+fn scan_and_aggregate_with_actor_work(
     pool: DbPool,
     roots: Vec<PathBuf>,
     db_actor: DbActorHandle,

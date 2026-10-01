@@ -47,7 +47,9 @@ pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
         | DomainEvent::AlbumsDirty { .. }
         | DomainEvent::ThumbnailStatsDirty
         | DomainEvent::LiveCountDirty
-        | DomainEvent::SyncStateDirty => {}
+        | DomainEvent::SyncStateDirty
+        // The list only holds media rows; the scan phase is a page-level state.
+        | DomainEvent::ScanPhase { .. } => {}
     }
 }
 

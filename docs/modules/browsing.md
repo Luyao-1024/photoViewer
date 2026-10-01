@@ -170,7 +170,24 @@ counts instead of splitting the page 50/50. Opening the viewer from a result
 section passes a kind-scoped search query so previous/next navigation remains
 inside that section's result set.
 
-When the initial DB snapshot is empty, `PhotosPage` shows the empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
+When the initial DB snapshot is empty, `PhotosPage` shows an empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
+
+Emptiness has three different causes and each needs its own child, all routed by
+`PhotosPage::update_placeholder_child` (the single decision point):
+
+- `scanning` while a startup/retry scan is in flight (`DomainEvent::ScanPhase { active: true }`).
+  Without it the first tens of seconds of indexing read as "you have no photos".
+- `scan-error` when a pass finished with a failure, showing the real reason plus a
+  **Retry Scan** button.
+- `empty` only when no scan is running and nothing failed, with an **Open Settings**
+  button that routes to `MainWindow::show_settings_dialog` so the user can pick a
+  media root.
+
+A populated grid always beats a placeholder, including mid-scan. `MainWindow` stores
+the latest phase (`note_scan_phase`) and replays it onto a page when that page is
+built, so a scan that finished before the Photos page existed must not show a
+spinner. Keep the phase out of `media_list`: the list holds media rows only
+(`apply_to_media_list.rs` treats `ScanPhase` as a no-op).
 
 Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
 

@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：本文只归档检视结论并**起草**优化方案，尚未修改任何实现。所有代码/CSS/i18n 片段均为草案，标记为「草案」，未落盘到源码。
+状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）与 P0-2（主网格焦点环）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -98,6 +98,13 @@
 
 **需同步文档**：`docs/modules/browsing.md`（空态契约）、`docs/modules/ui-design.md:151-152`（把「loading 用 status-page 风格」写成硬要求并列出三态）、`docs/modules/storage.md`（scanner 事件契约）。
 
+**实施结果**（已落盘）：按方案实现，事件名定为 `DomainEvent::ScanPhase { active, error }`，发射走 `DbActorHandle::emit`（`DomainEventSender::send` 用 `blocking_send`，不能在 GTK 主线程调用）。页面侧新增 `PLACEHOLDER_SCANNING` / `PLACEHOLDER_SCAN_ERROR` 与 `update_placeholder_child()` 单一判定入口，`MainWindow::note_scan_phase` 负责存储与页面重建后的回放。偏差三处：
+
+- loading 态没有「显示计数」，只有 spinner——计数在扫描期本身就是不稳定输入，改成文案说明「找到照片后会自动显示」。
+- 草案里的 `empty.no_photos.description_with_count`（`{count}` 变体）未实现：count 为 0 时它没有信息量。
+- 重试走 `glib::spawn_future_local` + `tokio::task::spawn_blocking`（进程已 enter 多线程 runtime），并用 `scan_retry_in_flight` 防重入。
+- 测试落点：`ui::photos_page::tests::placeholders_separate_indexing_scan_failure_and_an_empty_library`、`scan_failure_text_names_the_reason_when_there_is_one`。
+
 **风险**：新增 `DomainEvent` 变体会让所有 `match` 分支编译失败——`apply_domain_event_to_legacy_ui`（`src/app.rs:131-166` 附近）与 `refresh_hub` 订阅者需一并处理；这是好事，能强制覆盖完整。
 
 ---
@@ -145,6 +152,13 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 **需同步文档**：`docs/modules/ui-liquid-glass.md`（焦点环属 a11y 层、与透明度无关）、`docs/modules/ui-design.md`（Tile focus 契约落地）、`docs/ui-naming-reference/index.html`（新增 selector 与状态需登记）。
 
 **风险**：`SquareTile` 是自绘控件，需确认 GTK 的 `:focus-visible` 状态位能到达它（`can-focus` 已为真，通常可用）；若 GTK 未置 `focus-visible` 位，退路是复用 `attach_kbd_nav` 的 class 机制，把该 helper 从「只接受 FlowBox」泛化为接受任意容器 + 焦点节点选择器参数（`src/ui/grid_css.rs:480-525`）。
+
+**实施结果**（已落盘，方案被实测证据改写）：草案的「`outline` + `inset box-shadow` 暗描边 + `@accent_color`」组合实测无效，两条都是错的：
+
+- GTK 把 widget 的 `box-shadow: inset …` 画在内容**之下**，缩略图直接盖掉它。探针实测 `shadow-only` / `two-layer` 两组像素全白，只有 `outline` 能到达照片。因此暗描边改由 list-item wrapper 承接：`gridview.virtual-media-grid-view > child:focus / :focus-within { outline: 1px solid alpha(black, 0.85) }`，瓦片节点上是 `outline: 3px solid @accent_bg_color; outline-offset: -3px`。
+- `@accent_color` 在本机会析出成 `[255,208,129]` 的浅橙，压在亮照片上等于消失；它是 libadwaita 的「accent 上的可读文字色」，饱和色是 `@accent_bg_color`。FlowBox 网格同步改用后者，保持一套焦点语言。
+- `GtkGridView` 把焦点据在它内部的 list-item wrapper 上，并**拒绝**瓦片成为 focus widget（`tile.grab_focus()` 返回 false，`set_focus(window, tile)` 后 `window.focus()` 为 None）。所以渲染测试快照取自 wrapper（它同时包含 hairline 与 accent 环），瓦片的 `:focus` 选择器只服务 `glass_context_menu.rs` 里直接 `grab_focus()` 的退路。
+- 测试改为色彩无关断言（accent 可被用户换掉）：环带与白底的最大通道差 ≥ 60、hairline 落在近黑区、内芯 8px 不变、周边重绘像素 ≥ `2*(w+h)`。落点 `ui::grid_css::tests::render::virtual_grid_tile_focus_ring_renders`。
 
 ---
 

@@ -215,6 +215,102 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
     assert!(!page.imp().overview_sync_running.get());
 }
 
+/// The three reasons an empty Photos grid can be empty have to stay separate on
+/// screen: indexing, a failed scan, and a genuinely empty library each need a
+/// different next step. `ScanPhase` is the only signal that distinguishes them,
+/// so the stack routing is asserted directly.
+#[gtk::test]
+fn placeholders_separate_indexing_scan_failure_and_an_empty_library() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("scan-phase.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let page = PhotosPage::new(media_list.clone(), loader);
+    page.set_db_pool(pool);
+    let stack = page.imp().view_stack.get();
+
+    // The default is the grid, so an unmeasured stack never falls back to a
+    // "scanning" lie when the scan already finished before the page opened.
+    page.set_scan_phase(false, None);
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some(PLACEHOLDER_EMPTY),
+        "an empty library with no scan error must offer setup help"
+    );
+
+    page.set_scan_phase(true, None);
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some(PLACEHOLDER_SCANNING),
+        "the first scan must read as indexing, not as an empty library"
+    );
+
+    page.set_scan_phase(
+        false,
+        Some("cannot read /pictures: permission denied".into()),
+    );
+    let name = stack.visible_child_name().map(|name| name.to_string());
+    assert_eq!(
+        name.as_deref(),
+        Some(PLACEHOLDER_SCAN_ERROR),
+        "a failed scan must not stay silent as an empty library"
+    );
+    let description = {
+        let binding = page.imp().placeholders.borrow();
+        let placeholders = binding.as_ref().expect("placeholders are built in new()");
+        placeholders.scan_error.description().unwrap_or_default()
+    };
+    assert!(
+        description.contains("permission denied"),
+        "the scan failure page must surface the real reason, got: {description}"
+    );
+
+    // A blank reason is not a failure worth reporting.
+    page.set_scan_phase(false, Some("   ".into()));
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some(PLACEHOLDER_EMPTY),
+        "an empty error string must fall back to the empty-library state"
+    );
+
+    // Tiles always win over a placeholder, including mid-scan.
+    page.set_scan_phase(true, None);
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "arriving.png")));
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some("day"),
+        "the first thumbnail is better feedback than a spinner"
+    );
+}
+
+#[test]
+fn scan_failure_text_names_the_reason_when_there_is_one() {
+    let generic = empty_states::scan_error_text(None);
+    let specific = empty_states::scan_error_text(Some("disk is full"));
+    assert!(
+        !generic.contains("disk is full"),
+        "the generic text must not carry a reason: {generic}"
+    );
+    assert!(
+        specific.contains("disk is full"),
+        "the reason must reach the user, got: {specific}"
+    );
+    assert!(
+        !specific.contains('{'),
+        "the reason must be substituted, not left as a template: {specific}"
+    );
+    // Whitespace-only reasons read as a broken sentence.
+    assert_eq!(
+        empty_states::scan_error_text(Some("   ")),
+        generic,
+        "a blank reason must fall back to the generic text"
+    );
+}
+
 #[test]
 fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
     let overview = SyncOverview {

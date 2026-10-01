@@ -8,6 +8,7 @@ Storage covers the SQLite schema, media rows, filesystem scanning, metadata extr
 
 | File | Role |
 |---|---|
+| `src/core/bootstrap.rs` | Launch wiring: pool/actor start, first index pass, scan-phase reporting |
 | `src/core/db.rs` | SQLite pool, current-schema initialization, pragmas |
 | `src/core/schema.sql` | Embedded schema |
 | `src/core/media.rs` | `MediaItem`, media kind helpers, and insert/update model |
@@ -263,6 +264,10 @@ contract is eventual convergence via domain events, not blocking startup until
 all stale rows have been pruned.
 
 **Watcher must not hard-delete trashed rows.** When the app moves a photo to trash, `gio::File::trash()` relocates the file out of the watched directory, so the watcher sees the original path disappear. `db::delete_media_by_path` therefore filters with `AND trashed_at IS NULL`: a row the app has flagged via `mark_trashed` is preserved even though its original path is gone, so `list_trashed_media` keeps returning it for the Trash page. Removing that clause reintroduces "trash page shows nothing after deleting to trash."
+
+**The startup index pass reports its own lifecycle.** `bootstrap::scan_and_aggregate_with_actor_blocking` emits `DomainEvent::ScanPhase { active: true }` before the walk and `{ active: false, error }` after it, where `error` is the failure text when the pass did not complete. UI code must not infer "the library is empty" from "the list has no rows yet" — an initial scan takes tens of seconds, and this event is the only thing that separates indexing from a genuinely empty library or a failed scan. `MainWindow::note_scan_phase` stores the latest value and replays it onto `PhotosPage::set_scan_phase` when the page is (re)built.
+
+Emission goes through `DbActorHandle::emit`, which publishes without running a DB command. `DomainEventSender::send` uses `blocking_send`, so it must never be called from the GTK main context — a page that wants to publish on its own has to hop off the main thread first.
 
 **Trash flow must mark the DB row before moving the file.** Both deletion entry points go through `trash::move_to_trash_marked`, which runs `db::mark_trashed` *first* and then `gio::File::trash()`. This ordering is what makes the `AND trashed_at IS NULL` guard effective: gio's move is slow (writes `.trashinfo` + rename) and fires the watcher's Remove event before a separate `mark_trashed` would commit, so "move then mark" lets the watcher delete the still-un-trashed row — seen as "deleted several photos but Trash only shows one." If the move fails, `move_to_trash_marked` rolls back with `db::unmark_trashed`. Do not inline a move-then-mark sequence elsewhere.
 

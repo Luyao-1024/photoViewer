@@ -166,6 +166,22 @@ Design intent:
 Empty or loading states should use simple status-page style messaging and should
 not introduce a separate visual language from the rest of the app.
 
+An empty grid is three different states, not one (`src/ui/empty_states.rs`, routed
+by `PhotosPage::update_placeholder_child`):
+
+- **Indexing** — title plus a `gtk::Spinner`, no button: there is nothing wrong and
+  nothing to do but wait. Only `DomainEvent::ScanPhase { active: true }` may show it.
+- **Scan failed** — states the reason (`empty.scan_failed.description_with_reason`
+  interpolates the real error text; `empty.scan_failed.description` is the fallback
+  when there is no reason) and offers **Retry Scan**.
+- **Empty library** — offers **Open Settings**, since the user's next step is
+  pointing the app at a media folder.
+
+Never collapse these into one "no photos" sentence: each has a different next
+action. A placeholder that describes a problem must carry a button — use
+`empty_states::add_action` (pill + suggested action). A status page with no action
+leaves the user with nothing to do but restart the app.
+
 ## Media Grids And Tiles
 
 `MediaGrid` is a vertical scroll surface made from date sections. Each section
