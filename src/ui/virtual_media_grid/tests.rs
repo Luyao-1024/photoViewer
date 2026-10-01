@@ -689,3 +689,82 @@ fn thumbnail_batcher_eventually_drains_all_requests() {
         "the schedule flag must be released once the batcher is empty"
     );
 }
+
+/// A touchscreen has no right button, and the context menu is where
+/// multi-select, albums, favourite and trash live. The factory must therefore
+/// carry a long-press alongside the button-3 click — touch-only, so a mouse
+/// click never fights the click-to-open path.
+#[gtk::test]
+fn factory_tiles_carry_a_touch_only_long_press_for_the_context_menu() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        dir.path().join("thumbs"),
+    ));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    for id in 1..=3 {
+        let mut item = sample_item(id, &format!("{id}.jpg"));
+        item.id = insert_sample_item(&pool, &item);
+        list.append(&glib::BoxedAnyObject::new(item));
+    }
+
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), true);
+    let window = gtk::Window::builder()
+        .default_width(700)
+        .default_height(700)
+        .child(&grid)
+        .build();
+    window.present();
+
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let realized = grid
+            .imp()
+            .factory_cells
+            .borrow()
+            .iter()
+            .any(|cell| cell.tile.width() > 0);
+        if realized || deadline.elapsed() > std::time::Duration::from_secs(3) {
+            break;
+        }
+        context.iteration(true);
+    }
+
+    let tiles = grid
+        .imp()
+        .factory_cells
+        .borrow()
+        .iter()
+        .filter(|cell| cell.tile.width() > 0)
+        .map(|cell| cell.tile.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !tiles.is_empty(),
+        "the GridView factory must have realized at least one tile"
+    );
+    for tile in tiles {
+        let long_press = tile
+            .observe_controllers()
+            .snapshot()
+            .into_iter()
+            .find_map(|c| c.downcast::<gtk::GestureLongPress>().ok())
+            .expect("every tile needs a long-press fallback for the context menu");
+        assert!(
+            long_press.is_touch_only(),
+            "the tile long-press must stay on the touch path only"
+        );
+        assert!(
+            tile.observe_controllers()
+                .snapshot()
+                .into_iter()
+                .filter_map(|c| c.downcast::<gtk::GestureClick>().ok())
+                .any(|click| click.current_button() == 3
+                    || click.button() == 3
+                    || click.current_button() == 0),
+            "the right-click gesture must stay attached next to the touch fallback"
+        );
+    }
+}

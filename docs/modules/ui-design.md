@@ -117,8 +117,14 @@ Design intent:
 
 - The page opens directly into media browsing. Avoid landing or instructional
   content when media exists.
-- The `Adw.HeaderBar` is glass chrome. Its selection actions appear only when
-  the user has selected media, keeping normal browsing visually calm.
+- The `Adw.HeaderBar` is glass chrome. Entering selection has one persistent
+  entry (`select_mode_btn`, beside search); the *actions* that apply to a
+  selection appear only once media is selected, keeping normal browsing visually
+  calm. Do not gate the entry on the selection it produces — that is a circular
+  dependency, and it left the right-click menu as the only way in.
+- The entry and its counterpart swap places: while multi-select is active the
+  entry collapses and `exit_multi_select_btn` slides in, so the header always
+  shows exactly one mode affordance and the user can never be stuck in the mode.
 - Selection mode should make batch actions discoverable without permanently
   occupying header space. Add-to-album, favorite, and trash actions belong in
   the header because they apply to the selected set.

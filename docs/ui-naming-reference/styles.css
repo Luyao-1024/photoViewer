@@ -1221,13 +1221,16 @@ h1 {
 }
 .pv-tag.warn { background: var(--warning); }
 
-/* P0-1 空态三态 */
-body[data-pv~="p0-1"][data-pv-scan="scanning"] .pv-p0-1--scanning,
-body[data-pv~="p0-1"][data-pv-scan="failed"] .pv-p0-1--failed,
-body[data-pv~="p0-1"][data-pv-scan="empty"] .pv-p0-1--empty { display: flex; }
-body[data-pv-scan="scanning"]:not([data-pv~="p0-1"]) .legacy-empty,
-body[data-pv-scan="failed"]:not([data-pv~="p0-1"]) .legacy-empty,
-body[data-pv-scan="empty"]:not([data-pv~="p0-1"]) .legacy-empty { display: flex; }
+/* P0-1 已落盘：三态占位页是真实 chrome，由「扫描状态」环境开关直接驱动，
+   与提案开关无关。打开 P0-1 标记改为显示落盘前对照（单条「暂无照片」）。 */
+.scan-page { display: none; }
+body[data-pv-scan="scanning"] .scan-page--scanning,
+body[data-pv-scan="failed"] .scan-page--failed,
+body[data-pv-scan="empty"] .scan-page--empty { display: flex; }
+body[data-pv~="p0-1"]:not([data-pv-scan="ready"]) .scan-page { display: none; }
+body[data-pv~="p0-1"][data-pv-scan="scanning"] .legacy-empty,
+body[data-pv~="p0-1"][data-pv-scan="failed"] .legacy-empty,
+body[data-pv~="p0-1"][data-pv-scan="empty"] .legacy-empty { display: flex; }
 
 /* P0-3 多选入口 / 多选态 chrome */
 body[data-pv~="p0-3"] button.pv-p0-3 { display: inline-flex; }
@@ -1897,6 +1900,9 @@ body[data-pv-mode="run"] .ux-bar { border-radius: 0; border-left: 0; border-righ
 .ux-chip[data-verdict="accept"] .dot { background: var(--ok); }
 .ux-chip[data-verdict="hold"] .dot { background: var(--warning); }
 .ux-chip[data-verdict="reject"] .dot { background: var(--danger); }
+/* 已落盘的提案：默认就是绿色实心点，评审结论仍可覆盖它 */
+.ux-chip.landed:not([data-verdict]) .dot { background: var(--ok); }
+.ux-chip.landed:not([data-verdict]) { border-color: rgba(61, 220, 151, 0.4); }
 .ux-chip .info {
   padding: 0 3px;
   border: 0;
@@ -2060,6 +2066,9 @@ body[data-pv-mode="run"] .status-page { min-height: 240px; }
 /* 多选态 chrome：run 模式按真实 reveal 时机出现 */
 body[data-pv-mode="run"]:not([data-multi="1"]) .multi-only,
 body[data-pv-mode="run"]:not([data-multi="1"]) .pv-p0-3--active-only { display: none !important; }
+/* 多选入口按钮与退出按钮是同一个控件的两半：进入多选后入口收起（photos_page.rs
+   refresh_selection_ui 的 !any_multi）。命名总览里始终可见，便于查名字。 */
+body[data-pv-mode="run"][data-multi="1"] .multi-off-only { display: none !important; }
 /* 查看器浮层面板：run 模式按 split view 状态出现 */
 body[data-pv-mode="run"] .side-panel {
   position: absolute;

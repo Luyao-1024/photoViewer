@@ -68,7 +68,9 @@
       risk:
         "新增 DomainEvent 变体会让所有 match 分支编译失败——app.rs:131-166 与 refresh_hub 订阅者需一并处理；这是好事，能强制覆盖完整。",
       demo:
-        "工具条「扫描状态」选「扫描中 / 失败 / 空库」，在照片页直接看三态；「失败」态带重试按钮，点它会回到扫描中再落回就绪。关闭本提案后三种状态都退回同一条「暂无照片」（右侧现状对照块）。"
+        "工具条「扫描状态」选「扫描中 / 失败 / 空库」，照片页直接看三态——三态已经是真实行为，不需要开启本提案；「失败」态的重试按钮会回到扫描中再落回就绪。开启本提案改为显示落盘前的对照：三态退回同一条「暂无照片」（photos-empty-page-before）。",
+      landed:
+        "B2 已落盘。事件定为 DomainEvent::ScanPhase { active, error }，发射走 DbActorHandle::emit（DomainEventSender::send 用 blocking_send，不能在 GTK 主线程调用）；PhotosPage 新增 PLACEHOLDER_SCANNING / PLACEHOLDER_SCAN_ERROR 与 update_placeholder_child() 单一判定入口（photos_page.rs:965），MainWindow::note_scan_phase 负责存储与页面重建后的回放。偏差三处：扫描中只有 spinner + 固定文案，没有草案里的实时计数；empty.no_photos.description_with_count 未实现（count 为 0 时没有信息量）；重试走 glib::spawn_future_local + tokio::task::spawn_blocking，并用 scan_retry_in_flight 防重入。测试：ui::photos_page::tests::placeholders_separate_indexing_scan_failure_and_an_empty_library、scan_failure_text_names_the_reason_when_there_is_one。"
     },
     {
       id: "p0-2",
@@ -107,7 +109,9 @@
       risk:
         "SquareTile 是自绘控件，需确认 GTK 的 :focus-visible 状态位能到达它；若到不了，退路是把 attach_kbd_nav（grid_css.rs:480-525）从「只接受 FlowBox」泛化为接受容器+焦点节点选择器。",
       demo:
-        "开启后切到「交互原型」，在照片页按 Tab 让焦点进入网格，再用方向键走查：只有键盘驱动时出现 accent 环，鼠标移动不产生残影环。把「窗口宽度」调窄、「透明度」拉到 100 各看一次，环都应保持。"
+        "开启后照片页出现一枚常驻焦点环示例瓦片（tile-focus-ring），并在交互原型里让 :focus-visible 走查生效：按 Tab 让焦点进入网格，再用方向键走查。把「窗口宽度」调窄、「透明度」拉到 100 各看一次，环都应保持。关闭本提案＝回到落盘前的不可见焦点。",
+      landed:
+        "B1 已落盘，方案被实测证据改写。GTK 把 widget 的 inset box-shadow 画在内容之下，缩略图直接盖掉它，所以暗描边由 list-item wrapper 承接：gridview.virtual-media-grid-view > child:focus / :focus-within { outline: 1px solid alpha(black,0.85) }，瓦片节点是 outline: 3px solid @accent_bg_color; outline-offset: -3px。@accent_color 在本机析出为浅橙（它是 accent 底色上的「可读文字色」），饱和色 @accent_bg_color 才压得住照片；FlowBox 网格同步换成它，保持一套焦点语言。GtkGridView 把焦点留在内部 wrapper 上并拒绝瓦片成为 focus widget，所以渲染测试快照取自 wrapper。规则放在 data/css/a11y.css 末尾（材质无关层，两种模式共用，不进 liquid/plain 镜像块）。测试：ui::grid_css::tests::grid_tile_focus_ring_is_assembled 与 tests::render::virtual_grid_tile_focus_ring_renders（断言与具体 accent 色无关：环带与白底通道差 ≥ 60、hairline 近黑、内芯 8px 不变、周边重绘 ≥ 2*(w+h)）。"
     },
     {
       id: "p0-3",
@@ -152,7 +156,9 @@
       risk:
         "header [start] 已挤了 search + 两个 revealer，窄窗口可能换行或裁切；必要时放 [end] 最左位（注意 [end] 是 edge-first 反向声明，photos-page.blp:11-15）。",
       demo:
-        "开启后照片页 header 出现「选择」按钮；点它进入多选，按钮换成退出/全选/批量动作。关本提案但开 P1-10 之外无对照：在网格上右键可看到现状的唯一入口（glass 菜单）。把「窗口宽度」切到窄，检查 header 是否溢出。"
+        "照片页的常驻入口（select-mode-button）与触屏长按已是真实行为：命名总览里始终可查，交互原型里点它即进入多选，进入后入口收起、退出/全选/批量动作 reveal。开启本提案改为显示相册详情页那一半仍未落盘的入口（album-select-mode-button-proposal）。把「窗口宽度」切到窄，检查 header 是否溢出。",
+      landed:
+        "B3 已落盘（照片页 + 虚拟网格），相册页未做。header [start] 新增 select_mode_revealer → select_mode_btn（photos-page.blp:49-58），图标实际用 selection-mode-symbolic——草案写的 check-select-symbolic 在本机 Adwaita 图标主题里不存在；tooltip 复用 photos.batch.multi_select（photos_page.rs:419-421），点击对三套分组网格一并 set_multi_select_mode(true) 后把焦点交进当前可见瓦片（:747-757），reveal 由 refresh_selection_ui() 的 !any_multi 驱动（:1286-1288），与 exit_multi_select_btn 形成对称进出。factory.rs:97-111 追加 GestureLongPress(button=1, touch_only=true) 走与右键同一个 show_context_menu，touch_only 保证慢点击不会与 click-to-open 打架；右键项保留。刻意留下的两处缺口：旧 FlowBox 网格（搜索结果分区）还没有长按回退，AlbumDetailPage 整页没有选择 chrome，因此本提案的相册页那一半仍是提案。测试：ui::photos_page::tests（入口/退出交接 + 窄窗口分配）、ui::virtual_media_grid::tests（真实 factory 瓦片带 touch_only 长按）、--test ui_photos_toolbar（6 个 glass-toolbar-button）。"
     },
     {
       id: "p0-4",
@@ -955,8 +961,12 @@
       PROPOSALS.filter(function (p) { return p.prio === prio; }).forEach(function (p) {
         var chip = el("span", "ux-chip prio-" + prio.toLowerCase());
         chip.dataset.proposal = p.id;
+        if (p.landed) {
+          chip.classList.add("landed");
+          chip.title = "已落盘：" + p.landed;
+        }
         chip.appendChild(el("span", "dot"));
-        var toggle = el("button", "ux-chip-name", p.id.toUpperCase() + " " + p.title);
+        var toggle = el("button", "ux-chip-name", (p.landed ? "✓ " : "") + p.id.toUpperCase() + " " + p.title);
         toggle.type = "button";
         toggle.addEventListener("click", function () { PV.toggle(p.id); syncBar(); if (currentInspection === p.id) renderInspector(p.id); });
         chip.appendChild(toggle);
@@ -1123,6 +1133,7 @@
     host.appendChild(section("测试", p.tests));
     host.appendChild(section("需同步文档", p.docs));
     if (p.risk) host.appendChild(section("风险 / 边界", p.risk));
+    if (p.landed) host.appendChild(section("落地状态（已实施，含偏差）", p.landed));
 
     var demoSec = el("div", "pv-ins-section");
     demoSec.appendChild(el("h5", null, "在本页怎么验"));
@@ -1377,7 +1388,7 @@
       var rec = v[p.id] || {};
       var verdict = rec.v ? VERDICT_LABELS[rec.v] : "未评审";
       var note = (n[p.id] || rec.note || "").replace(/\|/g, "\\|").replace(/\n/g, " ");
-      lines.push("| " + p.id.toUpperCase() + " | " + p.title + " | " + p.prio + " | " + p.batch + " | " + verdict + " | " + note + " |");
+      lines.push("| " + p.id.toUpperCase() + " | " + p.title + (p.landed ? "（已实施）" : "") + " | " + p.prio + " | " + p.batch + " | " + verdict + " | " + note + " |");
       if (rec.v) counted[rec.v] = (counted[rec.v] || 0) + 1;
     });
     lines.push("");

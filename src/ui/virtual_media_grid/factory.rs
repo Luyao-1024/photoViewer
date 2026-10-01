@@ -87,6 +87,29 @@ pub(super) fn install(grid: &VirtualMediaGrid) {
             });
             tile.add_controller(gesture);
 
+            // Touch fallback for the same menu: a touchscreen has no right
+            // button, and this menu is where multi-select, albums, favourite
+            // and trash live. `touch_only` keeps it off the mouse path so a
+            // slow click never fights the click-to-open gesture.
+            let binding_for_long_press = binding.clone();
+            let weak_for_long_press = grid.downgrade();
+            let tile_for_long_press = tile.downgrade();
+            let long_press = gtk::GestureLongPress::builder()
+                .button(1)
+                .touch_only(true)
+                .build();
+            long_press.connect_pressed(move |_, x, y| {
+                let Some(binding) = binding_for_long_press.borrow().clone() else {
+                    return;
+                };
+                if let (Some(grid), Some(tile)) =
+                    (weak_for_long_press.upgrade(), tile_for_long_press.upgrade())
+                {
+                    grid.show_context_menu(tile.upcast_ref(), &binding, x, y);
+                }
+            });
+            tile.add_controller(long_press);
+
             list_item.set_child(Some(&tile));
             grid.register_factory_cell(FactoryCell::new(tile, binding));
         });

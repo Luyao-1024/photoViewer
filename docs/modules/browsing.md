@@ -321,6 +321,22 @@ would contradict itself). The menu acts on the full current selection when the
 right-clicked photo is already part of it, otherwise on just that photo. The
 explicit "enter multi-select" entry is the only context-menu path that selects
 its target. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
+
+Multi-select has two entries, because the context menu alone was unreachable on
+a touchscreen and invisible on a desktop:
+
+- `select_mode_btn` in the Photos header (inside `select_mode_revealer`) enters
+  the mode on **all three** grids at once, so the mode survives switching
+  grouping, then moves focus onto a visible tile so Space acts immediately. It
+  selects nothing itself — the user's first click does.
+- A `gtk::GestureLongPress` with `touch_only: true` on each virtual-grid tile
+  summons the same context menu a right-click does (`factory.rs` setup), so the
+  menu's actions are reachable without a right button. `touch_only` keeps it off
+  the mouse path; the legacy FlowBox grid (search result sections) has no
+  long-press fallback yet.
+
+`refresh_selection_ui` reveals the entry when multi-select is off and the exit
+button when it is on, so exactly one mode affordance is present at a time.
 Photos page "Select All" is intentionally capped at 2,000 live media items. For
 large virtualized libraries it loads the first 2,000 ids from the database's
 canonical live ordering, not from the current GTK seed or ready range.

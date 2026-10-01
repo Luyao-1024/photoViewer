@@ -253,7 +253,7 @@
   /* P2-4：给「连 tooltip 都没有」的图标控件补悬停说明与 accessible label。
      文案复用命名总览的 data-name，演示同一份标签既能看见又能被读屏念出。 */
   var A11Y_TARGETS = ".button.bare[data-act], .button.bare[data-nav], .button.round[data-ui], " +
-    ".button.danger[data-act], .tile .badge, img.viewer-sync-badge, .status-icon, .pv-p0-3--active-only";
+    ".button.danger[data-act], .tile .badge, img.viewer-sync-badge, .status-icon, .multi-only";
   function iconLabel(el) {
     var c = el.classList;
     var text = (el.textContent || "").trim();
@@ -621,21 +621,10 @@
 
   /* -------------------------------------------------------- 扫描状态 */
 
-  var scanTimer = null;
+  // P0-1 已落盘：三态占位页是真实 chrome，只看 body[data-pv-scan]，不需要提案开关。
+  // 落盘的扫描中页面只有 spinner 与固定文案，没有实时计数，所以这里不跑定时器。
   function setScan(state) {
     body.dataset.pvScan = state;
-    clearInterval(scanTimer);
-    if (state === "scanning" && enabled("p0-1")) {
-      var found = 0, done = 0, total = 1248;
-      var el = q("#scan-progress");
-      scanTimer = setInterval(function () {
-        found = Math.min(total, found + 47);
-        done = Math.min(found, done + 31);
-        if (el) el.textContent = "已发现 " + found.toLocaleString("zh-CN") + " 项 · 缩略图 " +
-          done.toLocaleString("zh-CN") + "/" + total.toLocaleString("zh-CN");
-        if (found >= total && done >= total) { clearInterval(scanTimer); }
-      }, 320);
-    }
     emit("scan", state);
   }
 

@@ -617,3 +617,96 @@ fn opening_viewer_pushes_through_browsing_root_page_wrapper() {
         "viewer should be the top page after activating a Photos thumbnail"
     );
 }
+
+/// Left-click opens the viewer, so batch actions used to be reachable only from
+/// the right-click menu — invisible on a desktop and unreachable on a
+/// touchscreen. The header must therefore carry a persistent entry that hands
+/// over to the exit button while multi-select is on, and restores itself on exit
+/// so the same gesture works twice in a row.
+#[gtk::test]
+fn multi_select_entry_button_hands_over_to_exit_and_back() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("select-entry.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+    let page = PhotosPage::new(media_list, loader);
+
+    let imp = page.imp();
+    assert!(
+        imp.select_mode_revealer.get().reveals_child(),
+        "the entry button is the discoverable half of the pair, so it starts visible"
+    );
+    assert!(
+        !imp.exit_multi_select_revealer.get().reveals_child(),
+        "the exit button must not appear before multi-select is on"
+    );
+
+    imp.select_mode_btn.get().emit_clicked();
+    assert!(
+        !imp.select_mode_revealer.get().reveals_child(),
+        "the entry button hides itself once multi-select is active"
+    );
+    assert!(
+        imp.exit_multi_select_revealer.get().reveals_child(),
+        "entering multi-select from the header must reveal the way back out"
+    );
+    assert!(
+        !imp.select_all_revealer.get().reveals_child(),
+        "entering multi-select with no selection must not fake a batch toolbar"
+    );
+
+    // Exiting returns to browsing: the entry reappears so the flow repeats.
+    page.clear_selection();
+    assert!(
+        !imp.exit_multi_select_revealer.get().reveals_child(),
+        "the exit button must collapse once multi-select is off"
+    );
+    imp.select_mode_btn.get().emit_clicked();
+    assert!(
+        imp.exit_multi_select_revealer.get().reveals_child(),
+        "the entry must work again after exiting multi-select"
+    );
+}
+
+/// The `[start]` header group gained a persistent button, so the narrow-window
+/// crowding the plan flagged has to stay bounded: at 800x600 both start icons
+/// must be allocated real width rather than squeezed to nothing.
+#[gtk::test]
+fn narrow_window_keeps_both_start_header_buttons_allocated() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("narrow-header.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.png")));
+    let page = PhotosPage::new(media_list, loader);
+
+    let window = gtk::Window::builder()
+        .default_width(800)
+        .default_height(600)
+        .child(&page)
+        .build();
+    window.present();
+
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let search = page.imp().search_btn.get().width();
+        let select = page.imp().select_mode_btn.get().width();
+        if (search >= 24 && select >= 24) || deadline.elapsed() > std::time::Duration::from_secs(3)
+        {
+            break;
+        }
+        context.iteration(true);
+    }
+
+    let search = page.imp().search_btn.get().width();
+    let select = page.imp().select_mode_btn.get().width();
+    assert!(
+        search >= 24 && select >= 24,
+        "both start header buttons must keep a tappable allocation at 800x600, \
+         got search={search} select={select}"
+    );
+}

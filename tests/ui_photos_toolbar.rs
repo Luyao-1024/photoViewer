@@ -45,12 +45,13 @@ fn photos_header_uses_glass_toolbar_classes() {
         "header_bar should carry glass-header, got {header_classes:?}",
     );
 
-    // The search button and four batch-action toolbar widgets carry
-    // glass-toolbar-button.
+    // The search button, the persistent multi-select entry, and four
+    // batch-action toolbar widgets carry glass-toolbar-button.
     // favorite_btn is now the merged heart trigger (icon-only); its two
     // actions live in a popover built in PhotosPage::new.
-    let buttons: [(&str, gtk::Button); 5] = [
+    let buttons: [(&str, gtk::Button); 6] = [
         ("search_btn", imp.search_btn.get()),
+        ("select_mode_btn", imp.select_mode_btn.get()),
         ("select_all_btn", imp.select_all_btn.get()),
         ("add_to_album_btn", imp.add_to_album_btn.get()),
         ("favorite_btn", imp.favorite_btn.get()),
@@ -67,6 +68,20 @@ fn photos_header_uses_glass_toolbar_classes() {
     assert!(
         imp.search_btn.get().has_css_class("round-search-button"),
         "search_btn should use the dedicated circular search-button class"
+    );
+    assert!(
+        imp.select_mode_btn
+            .get()
+            .has_css_class("round-search-button"),
+        "select_mode_btn should match search_btn so the two start-side icons read as one pair"
+    );
+    assert!(
+        !imp.select_mode_btn
+            .get()
+            .tooltip_text()
+            .unwrap_or_default()
+            .is_empty(),
+        "select_mode_btn is icon-only, so its tooltip is its label"
     );
     assert!(
         !imp.overview_revealer.get().reveals_child(),

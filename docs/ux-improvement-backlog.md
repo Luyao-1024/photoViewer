@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）与 P0-2（主网格焦点环）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）与 P0-3（多选入口，照片页+虚拟网格那一半）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -204,6 +204,13 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 **测试**：`cargo test ui::photos_page`（新增：点 `select_mode_btn` 后三个 grid 的 `is_multi_select_mode()` 为真、`exit_multi_select_revealer.reveal_child` 为真）；`cargo test --test e2e_browsing`。
 
 **需同步文档**：`docs/modules/browsing.md`（多选进入路径）、`docs/modules/ui-design.md:105-109`（原文「selection actions appear only when the user has selected media」把入口条件写成了循环依赖，需改写为「进入选择有一个常驻入口；选择动作按钮仅在有选择时出现」）、`docs/ui-naming-reference/index.html`。
+
+**实施结果**（已落盘，照片页那一半）：header `[start]` 组新增 `Gtk.Revealer select_mode_revealer → Gtk.Button select_mode_btn`（`photos-page.blp:49-58`，模板默认 `reveal-child: true`），点击对三套分组网格一并 `set_multi_select_mode(true)`，再 `refresh_selection_ui()` 与 `focus_visible_tile()`（`photos_page.rs:747-757`）；reveal 由 `refresh_selection_ui()` 的 `!any_multi` 驱动（`:1286-1288`），与 `exit_multi_select_btn` 形成对称进出。四处偏差：
+
+- 图标用 `selection-mode-symbolic`：草案首选的 `check-select-symbolic` 在本机 Adwaita 图标主题里不存在。
+- 图标-only 按钮必须自带 label，tooltip 复用 `photos.batch.multi_select`（`photos_page.rs:419-421`），不新增 i18n key。
+- 进入多选后主动把焦点交进网格（`VirtualMediaGrid::focus_visible_tile()`，`virtual_media_grid.rs:724`）：入口按钮正在收起，否则 GTK 自己挑一个 fallback 焦点并把视口滚回顶部一帧。
+- 长按回退只落在 `virtual_media_grid/factory.rs:97-111`（`GestureLongPress` + `button(1)` + `touch_only(true)`，走同一个 `show_context_menu`）。刻意留下的两处缺口记录在案：旧 `MediaGrid`（搜索结果分区）仍只有右键一条路；`AlbumDetailPage` 整页没有选择 chrome，所以「两页同步」这一半仍是提案，命名图里保留为 `album-select-mode-button-proposal`。
 
 **风险**：header `[start]` 已挤了 search + 两个 revealer，窄窗口下可能换行或裁切。需在 800×600 与 1280×800 两档目测；必要时把 `select_mode_btn` 放到 `[end]` 的最左位（注意 `[end]` 是 edge-first 反向声明，见 `photos-page.blp:11-15` 的注释）。
 
