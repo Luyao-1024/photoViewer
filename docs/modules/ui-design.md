@@ -79,6 +79,12 @@ Design intent:
   Trash lives in its own stable bottom navigation list below the album scroll.
 - Settings is exposed as a fixed gear button at the sidebar footer and opens a
   popup dialog (rather than a navigation row/page).
+- Window controls (minimize/maximize/close) are not app widgets. The shell sets
+  no `decoration-layout`, so libadwaita draws them from the desktop
+  `org.gnome.desktop.wm.preferences button-layout`, whose default
+  `:minimize,maximize,close` puts all three at the right end of the title bar.
+  Dialogs show the close button only. Keep any mock or screenshot on that side;
+  do not borrow macOS-style left placement.
 - The sidebar uses a single material owner: `.glass-sidebar-surface.glass-base`
   wraps both the navigation list and the settings footer. The `Gtk.ListBox`,
   rows, and footer stay transparent/layout-only. Do not put `glass-base` on
@@ -244,6 +250,14 @@ Design intent:
   locale-appropriate calendar date otherwise. It follows the sort date
   (`taken_at`, falling back to file mtime), so it is always shown, never blank.
   It is a passive label, not a hover/glass action.
+- The file name is **not** part of that start cluster. It is the
+  `Adw.NavigationPage` title (`set_title(item.display_name())`), which the
+  header bar centers in the window. The date label carries libadwaita's `title`
+  style class so its font size and weight match the centered name exactly.
+- The local cloud status badge (`Gtk.Image sync_badge`) sits immediately right
+  of the date inside the same start box (`spacing: 8`), at the icon's natural
+  size. It belongs to the date group, so it must never read as a prefix of the
+  file name.
 - The top header contains item actions, left-to-right: favorite, edit, delete
   (trash), and details. (Album assignment is reached from the photos grid batch
   menu, not the viewer.) These actions stay compact and icon-led, and use

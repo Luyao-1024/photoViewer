@@ -314,14 +314,14 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 - header 只有文件名标题（`viewer_page.rs:824 set_title(item.display_name())`）与日精度日期（`:825` → `src/ui/viewer/details.rs:276 update_date_label()`，标签 `date_label` 见 `data/ui/viewer-page.blp:26`）；全项目无位置计数器。
 - 末尾无反馈：`src/ui/viewer/navigation.rs:162` `Ok(None) => {}` 空分支；`Err` 才 `this.fire_nav(delta)`。
 - 倍率不可见：`viewer_page.rs:66-68` MIN 1.0/MAX 8.0/STEP 1.25，`transform.rs:47-88` 内部 `Cell<f64>`，无标签。
-- **重要陷阱**：`viewer_page.rs:643 list_n_items()` 返回的是**窗口化 store** 的长度（`navigation.rs:289 ensure_media_item_in_window`），不是全库总数，不能直接当总数用。可用真源：`src/core/repository.rs:136 count(query)` 与 `:165 page(query, start, limit) -> MediaPage`，而 `MediaPage` **已带 `total: u32`**（`src/core/repository.rs:34-39`）。
+- **重要陷阱**：`viewer_page.rs:643 list_n_items()` 返回的是**窗口化 store** 的长度（`viewer/navigation.rs:289 ensure_media_item_in_window`），不是全库总数，不能直接当总数用。可用真源：`src/core/repository.rs:136 count(query)` 与 `:165 page(query, start, limit) -> MediaPage`，而 `MediaPage` **已带 `total: u32`**（`src/core/repository.rs:34-39`）。
 
 **方案**：
 
 1. **位置计数器**：在 header 日期标签右侧加 `position_label`（`viewer-page.blp:26` 附近的 `[start]` box），格式「{current} / {total}」。
    - `total` 来自打开查看器时那次查询的 `MediaPage.total`（`viewer_page.rs` 已持有 `db_actor` 与 `MediaQuery`，见 `new_for_query(MediaQuery::LiveAll, …)` 调用点 `photos_page.rs:1743`），异步取一次并缓存，**不要**每次 `show_at` 重查。
    - `current` 优先用同一 `MediaPage`/窗口窗口的局部序号 + 窗口起始 offset；若 offset 不可靠，用一次 `items(query, start, limit)` 定位。取不到确切全局序号时，**宁可退化为窗口内「1 / 128」也不要显示错误数字**，并在代码注释写明。
-2. **到底反馈**：把 `navigation.rs:162` 的空分支改为可见反馈——两端时禁用 `prev_btn`/`next_btn`（`set_sensitive(false)`）并让键盘 `←/→` 在无目标时不再吞事件。禁用态视觉按 libadwaita 默认（约 0.4 不透明度）即可，无需新 CSS。
+2. **到底反馈**：把 `viewer/navigation.rs:162` 的空分支改为可见反馈——两端时禁用 `prev_btn`/`next_btn`（`set_sensitive(false)`）并让键盘 `←/→` 在无目标时不再吞事件。禁用态视觉按 libadwaita 默认（约 0.4 不透明度）即可，无需新 CSS。
 3. **倍率指示**：`zoom_scale != 1.0` 时在 `viewer_zoom_controls` 右侧显示 `trf("viewer.zoom.level", &[("percent", …)])`；`reset_viewer_transform()`（`transform.rs:60`）后隐藏。用 tabular 数字，避免宽度跳动（`format!` 前把 `%` 留在文案侧以便本地化）。
 4. **视觉成本控制**：三者都是 label/sensitive 变更，符合 `docs/modules/viewer.md:98-113`「只用 transform/outline/shadow，不动布局」的约束；计数器 label 需要固定最小宽度以免翻页时 header 抖动。
 
@@ -339,7 +339,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 **证据（已验证）**：
 
-- image stage 上**当前没有任何控制器**：`src/ui/viewer/stage.rs:730` 只有 `video.add_controller(click)`；`crop.rs:70` 的 drag 只挂在裁剪 overlay。
+- image stage 上**当前没有任何控制器**：`src/ui/viewer/stage.rs:730` 只有 `video.add_controller(click)`；`ui/viewer/crop.rs:70` 的 drag 只挂在裁剪 overlay。
 - 载体是 `Gtk.Picture picture`（`data/ui/viewer-page.blp:99`，在 `Gtk.Overlay image_overlay` 内，`can-shrink: true`，`content-fit: contain`）。
 - 缩放状态是 imp 的 `Cell`：`viewer_page.rs:204 zoom_scale`、`:209/:210 zoom_pan_x/zoom_pan_y`、`:207 viewer_rotation_degrees`；`transform.rs:73 set_viewer_zoom(scale, pan_x, pan_y)` 是私有（测试钩子 `:91 set_viewer_zoom_for_tests`）；`transform.rs:136 clamp_zoom_pan(...)` 因 pan 恒为 0 而实际不可达（`:56-63` 只重置）。
 - **反向约束**：`src/ui/viewer/transform/tests.rs:13-37` 是负向断言，遍历 `image_overlay.observe_controllers()`，要求不存在 `gtk::GestureZoom`/`gtk::GestureDrag`，消息为「image overlay should not install touch pinch zoom while buttons own zoom actions」。`docs/modules/viewer.md:204` 同样写明「Do not install touch-only pinch, pan, or global swipe controllers on the viewer image stage, because they compete with overlay buttons and keyboard-driven actions」。
@@ -419,7 +419,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 **落点文件**：`data/ui/viewer-page.blp`、`src/ui/viewer/stage.rs`、`data/css/base.css`、`data/css/liquid.css`、`data/css/plain.css`、`src/ui/square_tile.rs`、`src/ui/virtual_media_grid/factory.rs`、`i18n/*.json`。
 
-**测试**：`cargo test --test e2e_viewer`（不存在/损坏文件 → 可见错误框）；`cargo test ui::grid_css`（新 class 在两材质块都存在，沿用 `tests.rs:1130` 的镜像断言风格）。
+**测试**：`cargo test --test e2e_viewer`（不存在/损坏文件 → 可见错误框）；`cargo test ui::grid_css`（新 class 在两材质块都存在，沿用 `grid_css/tests.rs:1130` 的镜像断言风格）。
 
 **需同步文档**：`docs/modules/viewer.md`、`docs/modules/storage.md`（缩略图失败语义）、`docs/ui-naming-reference/index.html`。
 
@@ -570,7 +570,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 | 批次 | 内容 | 主要文件面 | 依赖 |
 |---|---|---|---|
 | B1 焦点环 | P0-2 | `a11y.css`/`base.css`/`grid_css` 测试 | 无（最小、最高价值，可独立先做） |
-| B2 扫描态 | P0-1、P2-6、P2-7 | `events.rs`/`bootstrap.rs`/`empty_states.rs`/`photos_page.rs`/`album_picker.rs`/`trash_page.rs`/i18n | 无 |
+| B2 扫描态 | P0-1、P2-6、P2-7、P2-8 | `events.rs`/`bootstrap.rs`/`empty_states.rs`/`photos_page.rs`/`album_picker.rs`/`trash_page.rs`/i18n | 无 |
 | B3 多选与选择 | P0-3、P1-6、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
 | B4 快捷键发现 | P0-4 | `src/ui/keyboard/*`/`window.rs`/`settings.rs`/i18n | 无 |
 | B5 搜索 | P0-5 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造） |
@@ -631,3 +631,4 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 - 能看：状态机是否覆盖全（扫描/失败/空、搜索四态、多选进出、脏标记守卫）、控件落点与顺序（P1-12 的两种排列）、提示文案与让位关系（P2-1/P2-2）、i18n 键是否真的两种语言都有（切「语言=en」即刻暴露硬编码中文）。
 - 不能看：GTK 真实渲染的材质/圆角/阴影、Flatpak 下的字体度量、以及 P1-13 的**实际**对比度。原型里的「对比度报告」用 WCAG 相对亮度公式量的是浏览器 DOM，只能作为筛选可疑组合的线索；结论仍以 `render.rs` 断言与真实截图为准。
 - 静态页只有 18 张样图，所以 P1-6 的 2000 上限、P2-5 的主线程掉帧都只能以标注或演示开关呈现，不是真实复现。
+- 标题栏是替身而非提案：窗口控件按桌面 `button-layout`（默认 `:minimize,maximize,close`）画在右端，对话框只有关闭按钮；这些都不受提案开关影响。查看器顶栏的分组照真实结构摆——日期与云状态角标是 header `[start]` 一组（`spacing: 8`），文件名是 `NavigationPage` 的 title 由 HeaderBar 居中——评审时不要把角标读成文件名的一部分。契约文字见 `docs/modules/ui-design.md` 的 Window Shell 与 Viewer Page 两节。

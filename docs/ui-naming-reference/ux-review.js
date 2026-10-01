@@ -21,6 +21,15 @@
 
   /* ============================================================ 登记表 */
 
+  // 每条提案的可见承载方式不必相同：多数是 index.html 里的 `.pv .pv-<id>` 标记 +
+  // `body[data-pv~="<id>"]` 门控，但有 6 条按设计就没有专属标记，改由 JS/CSS 呈现，
+  // 做一致性核对时不要把它们当成缺失：
+  //   p1-13 对比度报告（ux-review.js 计算并弹检查器）
+  //   p1-14 减少动画（styles.css 归零过渡时长，芯片本身即效果）
+  //   p2-1  toast 撤销（prototype.js 建 toast 时按开关加 .p2-1-off）
+  //   p2-2  toast 让位胶片条（styles.css 调 toast-host 位置）
+  //   p2-3  模式选择器无障碍语义（prototype.js 写 role/label）
+  //   p2-4  图标按钮 accessible name（prototype.js applyIconLabels）
   var PROPOSALS = [
     {
       id: "p0-1",
@@ -33,13 +42,13 @@
       evidence: [
         "photos_page.rs:391 is_empty = n_items()==0 → :533-543 立即显示 no_photos()；:547-559 items_changed 同样只按 0 判定",
         "empty_states.rs:57-71 scan_error() 与 loading() 全项目零调用者（grep empty_states:: 仅命中 no_photos/empty_trash/no_album_photos）",
-        "进度文案只存在于旧 MediaGrid：media_grid.rs:90、media_grid/loading.rs:450-511（1 秒轮询 repository.rs:225 library_stats()），Photos 已迁到 VirtualMediaGrid 拿不到该标签",
+        "进度文案只存在于旧 MediaGrid：media_grid.rs:90、media_grid/loading.rs:450-511（1 秒轮询 core/repository.rs:225 library_stats()），Photos 已迁到 VirtualMediaGrid 拿不到该标签",
         "全 src/ 不存在 scan/scanning/is_scanning/busy 布尔状态"
       ],
       solution: [
-        "新增 DomainEvent::ScanPhase { active: bool, error: Option<String> }，由 bootstrap.rs:104 scan_and_aggregate_with_actor() 的进入/退出/Err 分支发出（复用 DomainEventSender，events.rs:99）",
+        "新增 DomainEvent::ScanPhase { active: bool, error: Option<String> }，由 core/bootstrap.rs:104 scan_and_aggregate_with_actor() 的进入/退出/Err 分支发出（复用 DomainEventSender，events.rs:99）",
         "PhotosPage 空态判定改三态：active → loading_stats()；有 error → scan_error(err) + 重试；n_items==0 → no_photos() + 「打开设置」；否则网格。集中到一个 update_placeholder_child()",
-        "进度计数复用现成轮询：ThumbnailLoader::set_stats_dirty_callback（thumbnails.rs:348）触发一次 library_stats() 重读，不新建第二个 1 秒定时器",
+        "进度计数复用现成轮询：ThumbnailLoader::set_stats_dirty_callback（core/thumbnails.rs:348）触发一次 library_stats() 重读，不新建第二个 1 秒定时器",
         "空态必须带动作：adw::StatusPage::set_child(Gtk.Button)，no_photos 复用 KeyboardAction::OpenSettings 的处理函数"
       ],
       files: [
@@ -272,13 +281,13 @@
         "不知道「我在第几/共几张」；按到底时界面毫无反应（看起来像卡住）；放大后不知道当前倍率。",
       evidence: [
         "header 只有文件名标题（viewer_page.rs:824）与日精度日期（:825 → viewer/details.rs:276，标签 viewer-page.blp:26）；全项目无位置计数器",
-        "navigation.rs:162 Ok(None) => {} 空分支；Err 才 fire_nav(delta)",
+        "viewer/navigation.rs:162 Ok(None) => {} 空分支；Err 才 fire_nav(delta)",
         "viewer_page.rs:66-68 MIN 1.0/MAX 8.0/STEP 1.25，transform.rs:47-88 内部 Cell<f64>，无标签",
-        "重要陷阱：viewer_page.rs:643 list_n_items() 返回**窗口化 store** 长度（navigation.rs:289 ensure_media_item_in_window），不是全库总数。可用真源：repository.rs:136 count(query) 与 :165 page(...)->MediaPage，MediaPage 已带 total:u32（:34-39）"
+        "重要陷阱：viewer_page.rs:643 list_n_items() 返回**窗口化 store** 长度（viewer/navigation.rs:289 ensure_media_item_in_window），不是全库总数。可用真源：core/repository.rs:136 count(query) 与 :165 page(...)->MediaPage，MediaPage 已带 total:u32（:34-39）"
       ],
       solution: [
         "header 日期右侧加 position_label「{current} / {total}」：total 取打开查看器那次查询的 MediaPage.total（photos_page.rs:1743 new_for_query 调用点已持有 db_actor 与 MediaQuery），异步取一次并缓存，不要每次 show_at 重查；取不到确切全局序号时宁可退化为窗口内「1 / 128」也不显示错误数字，并在注释写明",
-        "到底反馈：navigation.rs:162 空分支改为两端 set_sensitive(false) prev/next，并让键盘 ←/→ 在无目标时不再吞事件；禁用态用 libadwaita 默认（约 0.4 不透明度），无需新 CSS",
+        "到底反馈：viewer/navigation.rs:162 空分支改为两端 set_sensitive(false) prev/next，并让键盘 ←/→ 在无目标时不再吞事件；禁用态用 libadwaita 默认（约 0.4 不透明度），无需新 CSS",
         "倍率指示：zoom_scale != 1.0 时在 viewer_zoom_controls 右侧显示 trf(\"viewer.zoom.level\")，reset_viewer_transform()（transform.rs:60）后隐藏；用 tabular 数字避免宽度跳动，% 留在文案侧以便本地化",
         "三者都只改 label/sensitive，符合 viewer.md:98-113「只用 transform/outline/shadow，不动布局」；计数器 label 需固定最小宽度以免翻页抖动"
       ],
@@ -307,7 +316,7 @@
       problem:
         "桌面图片查看器的肌肉记忆是 Ctrl+滚轮缩放 + 拖拽平移；这里只能点 +/- 每次 ×1.25，放大后无法移动画面。",
       evidence: [
-        "stage.rs:730 只有 video.add_controller(click)，image stage 上没有任何控制器；crop.rs:70 的 drag 只挂裁剪 overlay",
+        "stage.rs:730 只有 video.add_controller(click)，image stage 上没有任何控制器；ui/viewer/crop.rs:70 的 drag 只挂裁剪 overlay",
         "载体是 Gtk.Picture picture（viewer-page.blp:99，在 image_overlay 内，can-shrink:true，content-fit:contain）",
         "zoom_scale/zoom_pan_x/zoom_pan_y 是 imp 的 Cell（viewer_page.rs:204/209/210）；transform.rs:73 set_viewer_zoom 私有（测试钩子 :91）；transform.rs:136 clamp_zoom_pan 因 pan 恒为 0 而实际不可达",
         "反向约束：transform/tests.rs:13-37 是负向断言，遍历 image_overlay.observe_controllers() 要求不存在 GestureZoom/GestureDrag；viewer.md:204 同样写明不要装 touch-only 捏合/平移/全局滑动控制器"
@@ -385,7 +394,7 @@
       evidence: [
         "viewer/stage.rs:672-682 原始图解码 Err 分支只 warn + 收起 spinner；预览也失败时 :591-637 无内容可画，舞台留空",
         "错误 UI 只给视频：viewer-page.blp:128-163 video_error_box（样式 base.css:758-772），图片无对应物",
-        "网格侧：base.css:996 .glass-thumb-card.thumb-loading:not(.thumb-placeholder){opacity:0}（镜像 render.rs:41-48），失败瓦片不可见",
+        "网格侧：base.css:996 .glass-thumb-card.thumb-loading:not(.thumb-placeholder){opacity:0}（镜像 media_grid/render.rs:41-48），失败瓦片不可见",
         "ThumbnailLoader 只暴露 set_stats_dirty_callback（core/thumbnails.rs:348），无按 media_id 的失败回调"
       ],
       solution: [
@@ -406,7 +415,7 @@
       ],
       tests: [
         "cargo test --test e2e_viewer（不存在/损坏文件 → 可见错误框）",
-        "cargo test ui::grid_css（新 class 在两材质块都存在，沿用 tests.rs:1130 的镜像断言风格）"
+        "cargo test ui::grid_css（新 class 在两材质块都存在，沿用 grid_css/tests.rs:1130 的镜像断言风格）"
       ],
       docs: ["docs/modules/viewer.md", "docs/modules/storage.md", "docs/ui-naming-reference/index.html"],
       risk: "缩略图失败与「尚未加载」在现有回调里不可区分，需要 SquareTile 侧记录一次失败标志。",
@@ -526,7 +535,7 @@
       docs: ["docs/modules/ui-liquid-glass.md（新增「动效与 reduce-motion」一节，解释为何不用 @media）", "docs/testing.md"],
       risk: "GTK CSS 对全局 transition-duration 的支持需实测；不支持时退化为逐选择器重写。",
       demo:
-        "开启后用工具条「减少动画」开关（等效于系统设置里的 reduce-motion）：切换瞬间所有过渡归零，胶片条滚动、模式滑轨、Revealer 都改为直接切换；关闭时全部动画恢复。"
+        "点亮芯片本身就等效于系统 reduce-motion：所有过渡与动画时长归零，胶片条滚动、模式滑轨、Revealer 全部改为直接切换；关掉芯片动画恢复。工具条「减少动画」开关走同一套样式，用来单独验证环境轴。"
     },
     {
       id: "p2-1",
@@ -658,7 +667,7 @@
     {
       id: "p2-8",
       prio: "P2",
-      batch: "B9",
+      batch: "B2",
       title: "总览可点 disclosure + 同步失败重试",
       screens: ["photos"],
       problem: "全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮；同步状态失败也无重试按钮。",
@@ -697,7 +706,7 @@
 
   var BATCHES = {
     B1: { name: "B1 焦点环", ids: ["p0-2"] },
-    B2: { name: "B2 扫描态", ids: ["p0-1", "p2-6", "p2-7"] },
+    B2: { name: "B2 扫描态", ids: ["p0-1", "p2-6", "p2-7", "p2-8"] },
     B3: { name: "B3 多选与选择", ids: ["p0-3", "p1-6", "p2-5", "p2-9"] },
     B4: { name: "B4 快捷键发现", ids: ["p0-4"] },
     B5: { name: "B5 搜索", ids: ["p0-5"] },

@@ -1286,10 +1286,14 @@ body[data-pv~="p0-5"][data-pv-search="busy"] .search-spinner { display: flex; }
 body[data-pv~="p0-5"][data-pv-search="busy"] .result-section,
 body[data-pv~="p0-5"][data-pv-search="busy"] .status-page { display: none; }
 
-/* P1-14 减少动画 */
+/* P1-14 减少动画。提案芯片本身也要有可见反应：只挂环境开关的话，
+   评审时点亮 P1-14 什么也不会发生，就无法对比「有/无 reduce-motion」。 */
 body[data-pv-motion="off"] *,
 body[data-pv-motion="off"] *::before,
-body[data-pv-motion="off"] *::after {
+body[data-pv-motion="off"] *::after,
+body[data-pv~="p1-14"] *,
+body[data-pv~="p1-14"] *::before,
+body[data-pv~="p1-14"] *::after {
   transition-duration: 0ms !important;
   animation-duration: 0ms !important;
   scroll-behavior: auto !important;
