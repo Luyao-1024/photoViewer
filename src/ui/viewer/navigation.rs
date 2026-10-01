@@ -555,7 +555,7 @@ impl ViewerPage {
             let details_split_view = this.imp().details_split_view.get();
             let editor_split_view = this.imp().editor_split_view.get();
             if editor_split_view.shows_sidebar() {
-                this.stop_editing();
+                this.request_editor_close();
             } else if details_split_view.shows_sidebar() {
                 this.set_details_revealed(false, "navigation.pop");
             } else if !this.can_pop() {

@@ -125,10 +125,17 @@ mod imp {
         pub preview_scale: Cell<f64>,
         pub crop_mode_active: Cell<bool>,
         pub crop_ratio_index: Cell<usize>,
+        /// Compare-with-original is showing the unedited source preview.
+        pub compare_original: Cell<bool>,
+        /// The discard-changes dialog currently on screen, if any. A second
+        /// exit request must not stack another one on top of it.
+        pub close_guard: RefCell<Option<adw::AlertDialog>>,
         pub render_token: Cell<u64>,
         pub load_token: Cell<u64>,
         #[template_child]
         pub editor_title: TemplateChild<gtk::Label>,
+        #[template_child]
+        pub editor_dirty_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub editor_close_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -169,6 +176,8 @@ mod imp {
         pub crop_ratio_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub start_crop_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub compare_btn: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub cancel_btn: TemplateChild<gtk::Button>,
         #[template_child]
@@ -226,6 +235,15 @@ impl EditorPanel {
     fn apply_i18n(&self) {
         let imp = self.imp();
         imp.editor_title.get().set_label(&tr("page.editor.title"));
+        imp.editor_dirty_label
+            .get()
+            .set_label(&tr("editor.dirty.pending"));
+        imp.compare_btn
+            .get()
+            .set_label(&tr("editor.compare.original"));
+        imp.compare_btn
+            .get()
+            .set_tooltip_text(Some(&tr("editor.compare.tooltip")));
         imp.editor_close_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.details.close")));
@@ -288,13 +306,16 @@ impl EditorPanel {
         imp.preview_scale.set(1.0);
         imp.crop_mode_active.set(false);
         imp.crop_ratio_index.set(0);
+        imp.compare_original.set(false);
+        imp.compare_btn.get().set_active(false);
+        imp.close_guard.borrow_mut().take();
 
         imp.brightness_scale.get().set_value(0.0);
         imp.contrast_scale.get().set_value(0.0);
         imp.saturation_scale.get().set_value(0.0);
         self.update_crop_ratio_preview();
         self.update_crop_controls();
-        self.update_reset_button();
+        self.update_pending_edits();
         self.fire_crop_overlay_update();
 
         let tok = imp.load_token.get() + 1;
@@ -343,7 +364,7 @@ impl EditorPanel {
             Some(ratio_id),
         );
         self.imp().state.borrow_mut().crop = Some((rect.x, rect.y, rect.width, rect.height));
-        self.update_reset_button();
+        self.update_pending_edits();
         self.update_crop_controls();
         self.fire_crop_overlay_update();
     }
@@ -423,7 +444,18 @@ impl EditorPanel {
         imp.editor_close_btn
             .get()
             .connect_clicked(glib::clone!(@weak self as this => move |_| {
-                this.fire_close();
+                this.request_close();
+            }));
+
+        imp.compare_btn
+            .get()
+            .connect_toggled(glib::clone!(@weak self as this => move |btn| {
+                let comparing = btn.is_active();
+                if this.imp().compare_original.get() == comparing {
+                    return;
+                }
+                this.imp().compare_original.set(comparing);
+                this.schedule_preview_update();
             }));
 
         imp.reset_btn
@@ -435,7 +467,7 @@ impl EditorPanel {
         imp.cancel_btn
             .get()
             .connect_clicked(glib::clone!(@weak self as this => move |_| {
-                this.fire_close();
+                this.request_close();
             }));
 
         imp.rotate_90_cw
@@ -457,21 +489,21 @@ impl EditorPanel {
         imp.brightness_scale.get().connect_value_changed(
             glib::clone!(@weak self as this => move |s| {
                 this.imp().state.borrow_mut().brightness = s.value() as i32;
-                this.update_reset_button();
+                this.update_pending_edits();
                 this.schedule_preview_update();
             }),
         );
         imp.contrast_scale.get().connect_value_changed(
             glib::clone!(@weak self as this => move |s| {
                 this.imp().state.borrow_mut().contrast = s.value() as i32;
-                this.update_reset_button();
+                this.update_pending_edits();
                 this.schedule_preview_update();
             }),
         );
         imp.saturation_scale.get().connect_value_changed(
             glib::clone!(@weak self as this => move |s| {
                 this.imp().state.borrow_mut().saturation = s.value() as i32;
-                this.update_reset_button();
+                this.update_pending_edits();
                 this.schedule_preview_update();
             }),
         );
@@ -682,6 +714,7 @@ impl EditorPanel {
         ] {
             button.set_sensitive(!saving);
         }
+        self.imp().compare_btn.get().set_sensitive(!saving);
     }
 
     pub(crate) fn cancel_preview(&self) {
@@ -703,7 +736,7 @@ impl EditorPanel {
             self.ensure_crop_rect();
             self.fire_crop_overlay_update();
         }
-        self.update_reset_button();
+        self.update_pending_edits();
         tracing::debug!(target: crate::core::log_targets::EDITOR, "ROTATE_TRACE editor_memory_rotate delta={}", delta);
         self.schedule_preview_update();
     }
@@ -715,14 +748,69 @@ impl EditorPanel {
         self.imp().saturation_scale.get().set_value(0.0);
         self.imp().crop_mode_active.set(false);
         self.update_crop_controls();
-        self.update_reset_button();
+        self.update_pending_edits();
         self.fire_crop_overlay_update();
         self.schedule_preview_update();
     }
 
-    fn update_reset_button(&self) {
-        let has_pending_edits = self.imp().state.borrow().has_pending_edits();
-        self.imp().reset_btn.get().set_sensitive(has_pending_edits);
+    /// One dirty check drives every affordance that depends on it, so the
+    /// reset button, the header hint and compare can never disagree.
+    fn update_pending_edits(&self) {
+        let imp = self.imp();
+        let has_pending_edits = imp.state.borrow().has_pending_edits();
+        imp.reset_btn.get().set_sensitive(has_pending_edits);
+        imp.editor_dirty_label.get().set_visible(has_pending_edits);
+        imp.compare_btn.get().set_visible(has_pending_edits);
+        if !has_pending_edits {
+            imp.compare_btn.get().set_active(false);
+        }
+    }
+
+    /// The one entry point for a user-initiated exit. Leaving with pending
+    /// edits throws them away, so a dirty panel asks first; `keep` is both the
+    /// default and the close response, so dismissing the dialog cannot discard.
+    pub(crate) fn request_close(&self) {
+        let imp = self.imp();
+        if imp.saving.get() || imp.close_guard.borrow().is_some() {
+            return;
+        }
+        if !imp.state.borrow().has_pending_edits() {
+            self.fire_close();
+            return;
+        }
+
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("editor.unsaved.heading"))
+            .body(tr("editor.unsaved.body"))
+            .build();
+        dialog.add_css_class("glass-alert-dialog");
+        dialog.add_response("keep", &tr("editor.unsaved.keep"));
+        dialog.add_response("discard", &tr("editor.unsaved.discard"));
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+
+        imp.close_guard.replace(Some(dialog.clone()));
+        let weak = self.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            // The answer discharges the guard right away rather than waiting on
+            // the close animation, so an interrupted transition can never leave
+            // the editor refusing to close.
+            this.imp().close_guard.borrow_mut().take();
+            if response == "discard" {
+                this.fire_close();
+            }
+        });
+        let weak = self.downgrade();
+        dialog.connect_closed(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.imp().close_guard.borrow_mut().take();
+            }
+        });
+        dialog.present(self);
     }
 
     fn toggle_crop_mode(&self) {
@@ -733,7 +821,7 @@ impl EditorPanel {
         }
         self.imp().crop_mode_active.set(active);
         self.update_crop_controls();
-        self.update_reset_button();
+        self.update_pending_edits();
         self.fire_crop_overlay_update();
         self.schedule_preview_update();
     }
@@ -843,7 +931,7 @@ impl EditorPanel {
             return;
         };
         self.imp().state.borrow_mut().crop = Some((rect.x, rect.y, rect.width, rect.height));
-        self.update_reset_button();
+        self.update_pending_edits();
         self.update_crop_controls();
         self.fire_crop_overlay_update();
         self.schedule_preview_update();
@@ -891,7 +979,11 @@ impl EditorPanel {
             Some(s) => s,
             None => return,
         };
-        let state = imp.state.borrow().for_preview(imp.crop_mode_active.get());
+        let state = if imp.compare_original.get() {
+            EditState::default()
+        } else {
+            imp.state.borrow().for_preview(imp.crop_mode_active.get())
+        };
         let state = scaled_preview_state(&state, imp.preview_scale.get());
         let registry = match imp.registry.borrow().as_ref().cloned() {
             Some(r) => r,

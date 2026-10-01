@@ -483,6 +483,10 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **需同步文档**：`docs/modules/editor.md`（退出确认契约 + 对比按钮）、`docs/modules/ui-design.md:282-303`（Editor 一节）。
 
+**实施结果**（2026-10-02 已落盘）：退出闸门命名为 `EditorPanel::request_close`，四条用户路径（header 关闭、footer 取消、`Esc`、`navigation.pop`）全部经它——草案只列了三条，`viewer/navigation.rs` 的 pop action 同样会无条件 `stop_editing`，一并接进 `ViewerPage::request_editor_close`。干净状态直接 `fire_close`；脏状态弹 `adw::AlertDialog`，`add_response("keep")` 同时是 default 与 close response，只有 Destructive 的 `discard` 才真正退出。`update_pending_edits()`（原 `update_reset_button`）一处驱动 reset 敏感度、标题下 `editor_dirty_label` 与 `compare_btn` 可见性。对比是 `Gtk.ToggleButton` + `render_preview` 里的 `EditState::default()` 分支，复用既有 33ms 单飞预览，不新增渲染路径也不改待保存状态。
+
+偏差：闸门在**收到响应时**就释放，而不是等 `AdwDialog` 的关闭动画（`connect_closed` 再兜一次）。原因是关闭动画在无帧时钟的环境里不会完成，若只依赖它，一次被打断的关闭就会让编辑器永久拒绝退出；`ui_editor_panel` 的 keep 分支正是这样暴露出来的。`ui-design.md` 的 Editor 一节已随其它文档改动移位，故按标题而非行号引用。
+
 ---
 
 ### P1-10 查看器原图解码失败 → 空白无提示（网格已有不可用占位，需另行验证其辨识度）

@@ -66,6 +66,12 @@ impl ViewerPage {
         self.set_can_pop(false);
     }
 
+    /// Route a user-initiated exit (header close, Cancel, Esc, navigation pop)
+    /// through the panel, which asks before discarding pending edits.
+    pub(super) fn request_editor_close(&self) {
+        self.imp().editor_panel.get().request_close();
+    }
+
     /// Hide the editor side-panel, restore the original image, and
     /// re-enable navigation gestures.
     pub(super) fn stop_editing(&self) {

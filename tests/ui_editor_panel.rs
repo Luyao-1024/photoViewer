@@ -3,12 +3,16 @@
 //! `glass-toolbar-suggested`, and overwrite save gets `glass-toolbar-danger`.
 //!
 //! GTK is single-threaded; all checks live in one `#[test]` function.
+//!
+//! The same function covers the P1-9 exit guard: a clean editor closes at
+//! once, a dirty one asks first, and compare renders the unedited source.
 
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use libadwaita::prelude::AdwDialogExt;
 use photo_viewer::core::edit::Rotation;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::orientation::read_orientation;
@@ -351,4 +355,176 @@ fn editor_panel_buttons_use_glass() {
         !rotate_src.with_extension("jpg.bak").exists(),
         "editing rotate should not create a source backup before save"
     );
+
+    // --- P1-9: compare renders the unedited source through the one preview path
+    let compare_src = tmp.path().join("compare-original.jpg");
+    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(64, 48, |_, _| image::Rgb([128, 128, 128]))
+        .save(&compare_src)
+        .unwrap();
+    let compare_panel: EditorPanel = glib::Object::builder().build();
+    compare_panel.configure(make_media_for_path(compare_src), pool.clone());
+    let preview_size = Rc::new(Cell::new((0, 0)));
+    compare_panel.connect_texture_ready({
+        let preview_size = Rc::clone(&preview_size);
+        move |texture| preview_size.set((texture.width(), texture.height()))
+    });
+    for _ in 0..200 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        if preview_size.get() == (64, 48) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        preview_size.get(),
+        (64, 48),
+        "a freshly configured editor should render the source orientation"
+    );
+
+    compare_panel.imp().rotate_90_cw.get().emit_clicked();
+    for _ in 0..200 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        if preview_size.get() == (48, 64) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        preview_size.get(),
+        (48, 64),
+        "rotating should render the rotated preview"
+    );
+
+    compare_panel.imp().compare_btn.get().set_active(true);
+    for _ in 0..200 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        if preview_size.get() == (64, 48) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        preview_size.get(),
+        (64, 48),
+        "compare should show the unedited source without touching the edit state"
+    );
+    assert_eq!(
+        compare_panel.imp().state.borrow().rotation,
+        Rotation::R90,
+        "compare is a preview-only mode and must not reset the pending rotation"
+    );
+
+    compare_panel.imp().compare_btn.get().set_active(false);
+    for _ in 0..200 {
+        while ctx.pending() {
+            ctx.iteration(false);
+        }
+        if preview_size.get() == (48, 64) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        preview_size.get(),
+        (48, 64),
+        "releasing compare should return to the edited preview"
+    );
+
+    // --- P1-9: leaving with pending edits has to be an explicit choice
+    let guard_src = tmp.path().join("exit-guard.jpg");
+    image::ImageBuffer::<image::Rgb<u8>, _>::from_fn(64, 48, |_, _| image::Rgb([128, 128, 128]))
+        .save(&guard_src)
+        .unwrap();
+    let guard_panel: EditorPanel = glib::Object::builder().build();
+    guard_panel.configure(make_media_for_path(guard_src), pool.clone());
+    let guard_window = gtk::Window::builder().child(&guard_panel).build();
+    guard_window.present();
+    let closed = Rc::new(Cell::new(false));
+    guard_panel.connect_close({
+        let closed = Rc::clone(&closed);
+        move || closed.set(true)
+    });
+
+    assert!(
+        !guard_panel.imp().editor_dirty_label.get().is_visible(),
+        "a clean editor should not claim there is anything unsaved"
+    );
+    assert!(
+        !guard_panel.imp().compare_btn.get().is_visible(),
+        "compare needs nothing to compare against until the state is dirty"
+    );
+    guard_panel.imp().cancel_btn.get().emit_clicked();
+    assert!(closed.get(), "closing a clean editor should not ask first");
+
+    closed.set(false);
+    guard_panel.imp().rotate_90_cw.get().emit_clicked();
+    assert!(
+        guard_panel.imp().editor_dirty_label.get().is_visible(),
+        "pending edits need a visible signal besides the reset button"
+    );
+    assert!(
+        guard_panel.imp().compare_btn.get().is_visible(),
+        "compare should appear once there is something to compare against"
+    );
+
+    guard_panel.imp().editor_close_btn.get().emit_clicked();
+    assert!(
+        !closed.get(),
+        "closing with pending edits must not discard them silently"
+    );
+    let dialog = guard_panel
+        .imp()
+        .close_guard
+        .borrow()
+        .clone()
+        .expect("the first exit request should present a discard dialog");
+
+    guard_panel.imp().cancel_btn.get().emit_clicked();
+    let again = guard_panel
+        .imp()
+        .close_guard
+        .borrow()
+        .clone()
+        .expect("the guard dialog should still be open");
+    assert_eq!(
+        glib::object::ObjectType::as_ptr(&dialog),
+        glib::object::ObjectType::as_ptr(&again),
+        "a second exit request must not stack another dialog on the open one"
+    );
+
+    dialog.emit_by_name::<()>("response", &[&"keep"]);
+    assert!(
+        !closed.get(),
+        "keeping the edits must leave the editor open"
+    );
+    assert_eq!(
+        guard_panel.imp().state.borrow().rotation,
+        Rotation::R90,
+        "the edits survive a keep response"
+    );
+    assert!(
+        guard_panel.imp().close_guard.borrow().is_none(),
+        "an answered guard dialog should be released so the user can ask again"
+    );
+
+    guard_panel.imp().cancel_btn.get().emit_clicked();
+    let dialog = guard_panel
+        .imp()
+        .close_guard
+        .borrow()
+        .clone()
+        .expect("the retry exit request should present a discard dialog");
+    dialog.emit_by_name::<()>("response", &[&"discard"]);
+    assert!(
+        closed.get(),
+        "discarding from the guard dialog should close the editor"
+    );
+    dialog.close();
+    guard_window.close();
 }

@@ -64,6 +64,23 @@ Orientation-metadata rotation is still implemented in `src/core/orientation.rs` 
 
 The editor footer exposes Save Copy as the suggested action and Save Overwrite as a direct danger-styled button. Save Overwrite still shows its confirmation dialog before writing.
 
+Every user-initiated exit — header close, footer Cancel, `Esc`, and the
+navigation pop — goes through `EditorPanel::request_close`, the only exit gate.
+A clean panel closes at once; a panel with pending edits presents an
+`adw::AlertDialog` whose default and close response are both `keep`, so
+dismissing the dialog cannot discard work, and only the destructive `discard`
+response fires the close callback. The answer releases the gate immediately
+rather than waiting for the dialog's close animation, and the gate is closed to
+re-entrant requests while a save is in flight, so a second exit request can
+never stack a dialog or race the save. `stop_editing` stays the unconditional
+restore path used after a confirmed discard and after a successful save.
+
+One `EditState::has_pending_edits` check drives the reset button's sensitivity,
+the header's unsaved-changes label and the compare button's visibility, so the
+dirty signals cannot disagree. Compare is a preview-only mode: it renders the
+identity state through the same single-flight preview path instead of adding a
+second one, and never mutates the pending edits.
+
 The editor owns one reading glass surface. Nested preference pages and boxed
 lists remain transparent; action colors follow Adwaita's theme-aware accent
 and error foregrounds. Panel tint retains a minimum fill at high transparency,

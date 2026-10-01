@@ -14,11 +14,24 @@ template $EditorPanel : Gtk.Box {
     margin-top: 6;
     margin-bottom: 6;
 
-    Gtk.Label editor_title {
-      label: "";
-      xalign: 0;
+    Gtk.Box editor_title_box {
+      orientation: vertical;
+      spacing: 2;
       hexpand: true;
-      css-classes: ["title-3"];
+
+      Gtk.Label editor_title {
+        label: "";
+        xalign: 0;
+        hexpand: true;
+        css-classes: ["title-3"];
+      }
+
+      // Same dirty check drives this label and the reset button's sensitivity.
+      Gtk.Label editor_dirty_label {
+        xalign: 0;
+        visible: false;
+        css-classes: ["caption", "dim-label"];
+      }
     }
 
     Gtk.Button reset_btn {
@@ -154,6 +167,15 @@ template $EditorPanel : Gtk.Box {
         }
       }
     };
+  }
+
+  // Appears with pending edits: shows the unedited source through the same
+  // single-flight preview render, so comparing adds no second render path.
+  Gtk.ToggleButton compare_btn {
+    margin-start: 12;
+    margin-end: 12;
+    visible: false;
+    css-classes: ["glass-toolbar-button"];
   }
 
   Gtk.Box action_box {

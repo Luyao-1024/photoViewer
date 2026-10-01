@@ -587,7 +587,7 @@ impl ViewerPage {
             KeyboardAction::ViewerPrevious => self.handle_nav_key(-1),
             KeyboardAction::CancelOrClose => {
                 if self.imp().editor_split_view.get().shows_sidebar() {
-                    self.stop_editing();
+                    self.request_editor_close();
                 } else if self.imp().details_split_view.get().shows_sidebar() {
                     self.set_details_revealed(false, "keyboard action");
                 } else if !self.can_pop() {

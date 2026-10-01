@@ -389,22 +389,24 @@
         "可见脏标记：footer Cancel 旁或面板标题下加 editor_dirty_label（「有未保存的修改」），与 reset 敏感度由同一个 has_pending_edits() 驱动，避免漏更新",
         "前后对比：footer 加 compare_btn（Gtk.ToggleButton），切换时把面板参数临时置为单位变换并复用现成 33ms 单飞预览（editor_panel.rs:864-890），不新增渲染路径"
       ],
+      landed:
+        "P1-9 已落盘（2026-10-02）。四条用户退出路径（header 关闭、footer 取消、Esc、navigation.pop）统一进 EditorPanel::request_close：干净状态直接关，脏状态弹 adw::AlertDialog，default 与 close 响应都是 keep，只有 discard 才 fire_close。同一个 update_pending_edits() 驱动 reset 敏感度、标题下的「有未保存的修改」和对比按钮可见性。compare_btn 是 Gtk.ToggleButton，打开时 render_preview 用 EditState::default() 走既有的 33ms 单飞预览，不新增渲染路径也不改编辑状态。偏差：答案一落地就释放闸门（不等 AdwDialog 关闭动画，测试环境里该动画不完成），connect_closed 再兜一次；保存进行中与对话框已开时拒绝重复请求。落盘前的对照（无脏标记、无对比、取消即静默丢弃）只保留在本说明里，芯片开关已不再改变画面。",
       files: [
         "src/ui/editor_panel.rs",
         "src/ui/viewer/editor.rs",
         "src/ui/viewer_page.rs（Esc 路由）",
+        "src/ui/viewer/navigation.rs（navigation.pop 路由）",
         "data/ui/editor-panel.blp",
         "i18n/*.json"
       ],
       tests: [
-        "cargo test --test edit_state（补「有 pending edits 时 attempt_close 不退出」）",
-        "cargo test --test destructive_rotate（确认无回归）",
-        "cargo test --test e2e_editor"
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ui_editor_panel（干净直接关 / 脏不静默丢 / keep 保留 / discard 退出 / 不叠框 / compare 渲染原图且不动状态）",
+        "cargo test --locked --test edit_state --test destructive_rotate --test e2e_editor --test ui_template_copy --test ux_click_flows"
       ],
-      docs: ["docs/modules/editor.md", "docs/modules/ui-design.md:282-303"],
-      risk: "三条退出路径容易漏改（尤其 Esc 与对话框自身共用），attempt_close 必须成为唯一出口。",
+      docs: ["docs/modules/editor.md", "docs/modules/ui-design.md（Editor Panel And Crop Overlay）"],
+      risk: "退出路径容易漏改（尤其 Esc 与对话框自身共用），request_close 必须保持唯一出口；stop_editing 只留给已确认的 discard 与保存成功。",
       demo:
-        "开启后进查看器 → 编辑 → 拖任意滑块，面板出现「有未保存的修改」；点关闭/取消/Esc 会弹确认框，Esc 默认是「继续编辑」，只有「放弃修改」才真的退出。「对比」按钮临时还原为原图。关闭本提案时同样操作直接丢失改动（现状用 error toast 标注）。"
+        "进查看器 → 编辑 → 拖任意滑块，面板标题下出现「有未保存的修改」，footer 上方出现「对比」；点关闭/取消/Esc 会弹确认框，Esc 与默认都是「继续编辑」，只有「放弃修改」才真的退出。「对比」按下即还原为原图。本项已落盘，芯片开关不再改变画面。"
     },
     {
       id: "p1-10",

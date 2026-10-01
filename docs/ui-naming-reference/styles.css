@@ -1286,12 +1286,13 @@ body[data-pv~="p1-8"] .stage-hint.is-shown { display: block; }
 /* 自动收起只在 P0-2 + P1-12 都已落地时发生，见 prototype.js revealStageHint() */
 body[data-pv~="p1-8"] .stage-hint.is-dismissed { opacity: 0; pointer-events: none; }
 
-/* P1-9 编辑器脏标记 / 对比 / 退出确认 */
-body[data-pv~="p1-9"] .dirty-label.pv-p1-9 { display: inline-flex; }
-body[data-pv~="p1-9"] button.pv-p1-9 { display: inline-flex; }
-body[data-pv~="p1-9"] #discard-dialog.is-open { display: flex; }
-body[data-pv~="p1-9"] .panel-actions { grid-template-columns: repeat(3, 1fr); }
-body[data-pv~="p1-9"] .panel-actions .compare-toggle { grid-column: 1 / -1; }
+/* P1-9 已落盘：脏标记、对比按钮和退出确认都是真实 chrome，由编辑状态驱动，
+   不再挂提案 token。落盘前的对照（标题区没有脏标记、footer 没有对比、取消即静默
+   丢弃改动）记录在评审抽屉的 landed 说明里。 */
+.dirty-label { display: inline-flex; }
+#discard-dialog.is-open { display: flex; }
+.panel-actions .compare-toggle { grid-column: 1 / -1; display: none; }
+body[data-pv-dirty="1"] .panel-actions .compare-toggle { display: inline-flex; }
 
 /* P1-12 控件簇分隔 */
 body[data-pv~="p1-12"] .ctrl-sep { display: block; }
@@ -1667,9 +1668,8 @@ body[data-pv~="p1-11"] .tile.multi-selected .checkmark { opacity: 1; }
 body[data-pv~="p1-11"] .tile .checkmark { display: grid; }
 body[data-pv~="p1-11"] .tile.hover-demo .checkmark { display: grid; opacity: 0.62; }
 
-/* P1-9 脏标记：display 由 token 决定，可见性由编辑状态决定，
-   两者分离才能同时演示「有未保存的修改」与「已保存」。 */
-body[data-pv~="p1-9"] .dirty-label { visibility: hidden; }
+/* P1-9 脏标记的可见性跟随编辑状态，与真实应用里 has_pending_edits() 的驱动一致。 */
+.dirty-label { visibility: hidden; }
 body[data-pv-dirty="1"] .dirty-label { visibility: visible; }
 
 /* ---------- 5. P1-13 功能性文本对比度地板 ---------- */

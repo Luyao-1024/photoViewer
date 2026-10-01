@@ -399,13 +399,21 @@ Design intent:
 - Editing happens in context: the image preview remains on the viewer stage,
   while controls live in the side panel.
 - The editor header contains the panel title, reset, and close. Reset is a
-  circular icon button and is enabled only when there are pending edits.
+  circular icon button and is enabled only when there are pending edits. Under
+  the title, a caption-weight line names the same state ("Unsaved changes") so
+  the dirty signal does not depend on one icon brightening. Both the label and
+  the reset sensitivity come from the one pending-edits check.
 - Rotate controls are a compact horizontal group. Adjustment controls use
   standard scales in preference rows. Crop controls include a visual ratio
   selector and a compact crop action.
 - Footer actions are always available at the bottom: Cancel, Save Copy, and Save
   Overwrite. Save Copy is the suggested action; Save Overwrite is destructive
-  and still requires confirmation.
+  and still requires confirmation. Above them, a full-width compare toggle
+  appears only while edits are pending and previews the unedited image.
+- Leaving the editor is never silent: any exit request with pending edits asks
+  first, and the dialog's default and dismiss responses both keep the user in
+  the edit. Cancel and close stay plain buttons — they are the safe path when
+  there is nothing to lose, and the gate is what makes them safe.
 - Crop selection is drawn directly over the image with `GtkDrawingArea`, not in
   the side panel. The rectangle should remain visibly selected during drag or
   resize and should update without forcing full preview rendering on every move.

@@ -238,13 +238,13 @@
         </aside>
 
         <aside class="side-panel editor hotspot" tabindex="0" data-ui="editor-panel" data-name="编辑面板" data-impl="Adw.OverlaySplitView editor_split_view sidebar → $EditorPanel editor_panel" data-props="右侧可调宽 340-420；编辑时隐藏查看器上一张/下一张。">
-          <div class="panel-head"><strong>编辑</strong><span class="dirty-label pv pv-p1-9 hotspot" tabindex="0" data-ui="editor-dirty-label-proposal" data-name="提案 · 未保存标记" data-impl="提案：Gtk.Label editor_dirty_label，由 has_pending_edits() 驱动" data-props="P1-9：现状唯一的脏信号是 reset 按钮变敏感（editor_panel.rs:723-726），标题区没有任何「有未保存修改」提示。让同一个函数同时驱动标签与 reset 敏感度，避免漏更新。" data-source="方案 P1-9 · src/ui/editor_panel.rs:423-439, 723-726"><span class="pv-tag">P1-9</span>有未保存的修改</span><button class="button round bare" data-act="editor-reset" title="重置">↺</button><button class="button round bare" data-act="editor-close" title="关闭">×</button></div>
+          <div class="panel-head"><strong>编辑</strong><span class="dirty-label hotspot" tabindex="0" data-ui="editor-dirty-label" data-name="未保存标记" data-impl="Gtk.Label editor_dirty_label（editor-panel.blp editor_title_box 内）" data-props="P1-9 已落盘：由 EditorPanel::update_pending_edits 与 reset 敏感度、对比按钮可见性一起驱动，同一个 has_pending_edits() 判断，三者不会各说各话。" data-source="P1-9 · src/ui/editor_panel.rs update_pending_edits"><span>有未保存的修改</span></span><button class="button round bare" data-act="editor-reset" title="重置">↺</button><button class="button round bare" data-act="editor-close" title="关闭">×</button></div>
           <div class="panel-row hotspot" tabindex="0" data-ui="rotate-controls" data-name="旋转控件" data-impl="EditorPanel rotate buttons" data-props="编辑操作写入保存路径；视频不可编辑。">旋转 90 / 180 / -90</div>
           <div class="panel-row hotspot" tabindex="0" data-ui="adjustment-scales" data-name="调整滑块" data-impl="Gtk.Scale brightness/contrast/saturation_scale" data-props="亮度、对比度、饱和度；有未保存编辑时 reset 可用。">亮度<span class="scale" data-adjust="brightness"><span class="scale-fill"></span></span></div>
           <div class="panel-row"><span>对比度</span><span class="scale" data-adjust="contrast"><span class="scale-fill"></span></span></div>
           <div class="panel-row"><span>饱和度</span><span class="scale" data-adjust="saturation"><span class="scale-fill"></span></span></div>
           <div class="panel-row hotspot" tabindex="0" data-ui="crop-overlay" data-name="裁剪叠加" data-impl="Gtk.DrawingArea crop_overlay" data-props="裁剪矩形画在图片舞台上；可拖动/缩放选区。">裁剪比例 1:1 / 4:3 / 16:9</div>
-          <div class="panel-actions"><button class="button pv pv-p1-9 compare-toggle hotspot" tabindex="0" data-act="editor-compare" data-ui="editor-compare-button-proposal" data-name="提案 · 按住对比" data-impl="提案：Gtk.ToggleButton compare_btn，复用现成 33ms 单飞预览（editor_panel.rs:864-890）" data-props="P1-9：切到单位变换即回到原图，松手恢复；不新增渲染路径。" data-source="方案 P1-9 · src/ui/editor_panel.rs:864-890"><span class="pv-tag">P1-9</span>对比</button><button class="button" data-act="editor-cancel">取消</button><button class="button suggested" data-act="editor-save-copy">存副本</button><button class="button danger" data-act="editor-overwrite">覆盖</button></div>
+          <div class="panel-actions"><button class="button compare-toggle hotspot" tabindex="0" data-act="editor-compare" data-ui="editor-compare-button" data-name="对比原图开关" data-impl="Gtk.ToggleButton compare_btn（editor-panel.blp action_box 上方）" data-props="P1-9 已落盘：只在有未保存改动时出现；打开时 render_preview 用 EditState::default() 走同一条 33ms 单飞预览，不新增渲染路径，也不碰待保存的编辑状态。" data-source="P1-9 · src/ui/editor_panel.rs render_preview"><span>对比</span></button><button class="button" data-act="editor-cancel">取消</button><button class="button suggested" data-act="editor-save-copy">存副本</button><button class="button danger" data-act="editor-overwrite">覆盖</button></div>
         </aside>
       </div>
     </div>
@@ -434,10 +434,10 @@
   </div>
 </div>
 
-<div class="dialog-layer pv pv-p1-9" id="discard-dialog" role="alertdialog" aria-label="放弃未保存的修改">
-  <div class="dialog-card hotspot" tabindex="0" data-ui="editor-discard-dialog-proposal" data-name="提案 · 编辑器退出确认" data-impl="提案：attempt_close() → adw::AlertDialog + .glass-alert-dialog" data-props="P1-9：现状 header 关闭、footer 取消、Esc 三条路径都无条件 stop_editing 恢复原图（editor_panel.rs:423-439 → viewer/editor.rs:88-90）。提案集中为 attempt_close()，仅在 response==discard 时真退出；set_close_response(&quot;keep&quot;) 是关键——Esc 关闭对话框必须默认「留在编辑」，否则确认框会被 Esc 绕过。复用 viewer/actions.rs:21-30 的构造顺序。" data-source="方案 P1-9 · src/ui/editor_panel.rs:423-439 · src/ui/viewer/editor.rs:71-105"><span class="pv-tag">P1-9</span>
+<div class="dialog-layer" id="discard-dialog" role="alertdialog" aria-label="放弃未保存的修改">
+  <div class="dialog-card hotspot" tabindex="0" data-ui="editor-discard-dialog" data-name="编辑器退出确认" data-impl="EditorPanel::request_close → adw::AlertDialog + .glass-alert-dialog" data-props="P1-9 已落盘：header 关闭、footer 取消、Esc 与 navigation.pop 四条用户退出路径都经过这一个闸门（viewer/editor.rs request_editor_close → EditorPanel::request_close），只有 discard 响应会真正退出；set_default_response(&quot;keep&quot;) + set_close_response(&quot;keep&quot;) 保证 Esc 关掉对话框等于留在编辑。答案一落地就释放闸门，不等关闭动画，保存进行中和已开对话框期间都不再重复弹出。" data-source="P1-9 · src/ui/editor_panel.rs request_close · src/ui/viewer/editor.rs request_editor_close">
     <strong>放弃未保存的修改？</strong>
-    <small>当前编辑参数尚未保存。关闭编辑后图片会恢复为原图。</small>
+    <small>当前编辑参数尚未保存。放弃后编辑器会关闭并恢复原图。</small>
     <div class="dialog-actions"><button class="button suggested" data-act="discard-keep">继续编辑</button><button class="button danger" data-act="discard-confirm">放弃修改</button></div>
     <p class="dialog-note">默认响应与 Esc 关闭响应都是「继续编辑」。</p>
   </div>

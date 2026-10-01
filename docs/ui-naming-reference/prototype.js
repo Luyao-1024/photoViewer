@@ -445,15 +445,12 @@
         if (fill) fill.style.width = "0%";
       });
     }
-    if (enabled("p1-9") && editor.dirty) {
+    if (editor.dirty) {
       var dlg = q("#discard-dialog");
       if (dlg) dlg.classList.add("is-open");
       return;
     }
     reallyClose();
-    if (!enabled("p1-9")) {
-      toast("编辑改动已静默丢失（现状行为）", { kind: "error", ms: 4200 });
-    }
   }
 
   /* -------------------------------------------------------------- 搜索 */
@@ -1063,7 +1060,7 @@
         if (q("#discard-dialog.is-open")) { q("#discard-dialog").classList.remove("is-open"); return; }
         if (q("#shortcuts-window.is-open")) { q("#shortcuts-window").classList.remove("is-open"); return; }
         if (q("#context-menu.is-open")) { q("#context-menu").classList.remove("is-open"); return; }
-        if (body.dataset.pvEditing === "1" && enabled("p1-9") && editor.dirty) { attemptCloseEditor(); return; }
+        if (body.dataset.pvEditing === "1" && editor.dirty) { attemptCloseEditor(); return; }
         if (body.dataset.pvMode === "run" && current !== "photos") { back(); return; }
       }
       if (ctrl && (key === "a" || key === "A")) {
