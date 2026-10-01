@@ -222,6 +222,8 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 **风险**：header `[start]` 已挤了 search + 两个 revealer，窄窗口下可能换行或裁切。需在 800×600 与 1280×800 两档目测；必要时把 `select_mode_btn` 放到 `[end]` 的最左位（注意 `[end]` 是 edge-first 反向声明，见 `photos-page.blp:11-15` 的注释）。**已实测**：两页在 800×600 截图下 header 无溢出、无换行，窗口控件仍在右端，`select_mode_btn` 未进入裁切。
 
+**2026-10-02 更新（库主决定，部分回退）**：常驻多选入口按钮整体移除——两页模板的 `select_mode_revealer → select_mode_btn`、Imp 字段、点击 handler、tooltip（`photos.batch.multi_select`）与 `refresh_selection_ui()` 的 `!any_multi` 门控都删掉了；右键/长按菜单项、键盘 Space / Ctrl+A 重新成为进入多选的路径，退出按钮与批量 chrome 不变。理由：库主不喜欢 header 里常驻一枚平时用不上的图标。本条的其余部分（长按回退、退出绑定模式、全选按相册、不加收藏按钮）仍然成立，不要把常驻入口当作「已落地行为」恢复回来。
+
 ---
 
 ### P0-4 快捷键体系完整，但应用内 100% 不可发现
@@ -406,8 +408,8 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-CN.json`）/ en（`en.json`），两族总长 434/434 平。
 
 偏差：
-- **没有为本次行为写新测试**。应写的是：「DB 单测覆盖 `MediaRepository::position` 三档排名 + 1-based」、「viewer 标签 `2/3` 文案 + prefetch 后 next/prev 失活 + 键盘在已解析端返回 `Ignored`」两条单飞单元测试。用户中途要求停止后续任务后，这两条被刻意延后，留给下次开机时补上。已跑过的回归保障本次改动未破坏现有行为：`cargo test --lib` 611 passed / 0 failed / 2 ignored（含 `ui::viewer_page::navigation::tests::*` 4 条全部 PASS）；5 个 viewer/template/css/source 集成测试 `ui_viewer_toolbar` / `ui_template_copy` / `ui_grid_css_install` / `ui_viewer_source_structure` / `e2e_viewer`（合计 7 条）全部 PASS。
-- **未做手动视觉验证**。`base.css` 的 `:disabled opacity` 与 `[start]` 内的子项扩展、`dim-label` 在玻璃材质下的可读性都需要在运行窗口里看一眼才能盖章。同上，用户中途要求停止。
+- **测试缺口部分补上（2026-10-02）**：`ui::viewer_page::tests::switching_media_hides_the_previous_rank_until_the_new_one_resolves` 与 `::a_failed_rank_query_keeps_the_previous_rank_hidden` 经真实 DB 覆盖排名落地、切换隐藏与失败保持隐藏，`ui::viewer_page::navigation::tests::a_video_at_the_query_start_dims_the_previous_arrow_without_a_first_navigation` 覆盖 prefetch 后失活；**键盘在已解析端返回 `Ignored` 的专属断言仍缺**，留给下次补上。
+- **未做手动视觉验证**。`base.css` 的 `:disabled opacity` 与 `[start]` 内的子项扩展、`dim-label` 在玻璃材质下的可读性都需要在运行窗口里看一眼才能盖章；「两种材质下的箭头禁用态」与「窄窗口顶栏」两个目测项同样未做。
 - 方案 2「两端时禁用 prev_btn/next_btn」的措辞原本是「按 libadwaita 默认（约 0.4 不透明度）即可，无需新 CSS」——实测不行，因为那条规则固定了白色 icon color，insensitive 颜色会被覆盖，所以还是新增了一条 CSS。
 
 ---
