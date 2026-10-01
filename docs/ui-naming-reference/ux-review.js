@@ -29,7 +29,8 @@
   //   p2-1  toast 撤销（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-no-undo）
   //   p2-2  toast 让位胶片条（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-on-strip）
   //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
-  //   p2-4  图标按钮 accessible name（prototype.js applyIconLabels）
+  //   p2-4  宫格/徽标/图标的 accessible name（已落盘为常态：prototype.js applyIconLabels 恒定运行，
+  //         落盘前形态走 data-pv-demo=tiles-anonymous）
   // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
@@ -762,12 +763,38 @@
       solution: [
         "先给约 26 个图标按钮补 tooltip 兜底，再为状态类（同步状态、时长/云/收藏徽记 square_tile.rs）补 accessible label；用 tools/assert-at-spi.py 模式扩展断言面"
       ],
-      files: ["src/ui/square_tile.rs", "src/ui/photos_page.rs", "src/ui/viewer_page.rs", "tools/assert-at-spi.py"],
-      tests: ["cargo test --test flatpak_a11y"],
-      docs: ["docs/modules/ui-design.md"],
+      files: [
+        "src/ui/square_tile.rs",
+        "src/ui/media_grid/render.rs",
+        "src/ui/virtual_media_grid/factory.rs",
+        "data/ui/editor-panel.blp",
+        "data/ui/photos-page.blp",
+        "data/ui/viewer-page.blp",
+        "data/ui/window.blp",
+        "src/ui/album_picker.rs",
+        "src/ui/window/sidebar.rs",
+        "src/ui/window/settings.rs",
+        "i18n/zh-CN.json",
+        "i18n/en.json"
+      ],
+      landed:
+        "P2-4 已落盘（2026-10-02），但草案的测量口径要先更正：GTK4 里没有 set_accessible_label 这个 API，能写的只有 accessible-role 属性（可读写）与 gtk_accessible_update_property(Property::Label)，所以「调用为 0」grep 的是一个不存在的符号。真正的 0 是全仓 0 处 accessible-role、0 处 update_property——结论成立，落盘后是模板 7 处角色 + Rust 23 处角色/名称调用。\n\n「先给约 26 个图标按钮补 tooltip 兜底」同样要更正：按「有 icon-name 且没有 label」清点 data/ui/*.blp，26 枚图标按钮里 22 枚本来就有 tooltip，而且多数走 P0-4 的 tooltip_with_key（正是 risk 里担心的两套措辞——已经共用同一份，没有第二套）。真正既没提示也没名字的只有裁剪比例那两枚箭头，现在补了 editor.crop.previous.tooltip / editor.crop.next.tooltip（两份 json 同步，parity 452/452）；crop_ratio_prev/next、edit_btn、settings_button 四枚补了模板空槽，另两枚本来分别由 viewer_page.rs:522 与 window.rs:651 写入。兜底由 tests/ui_template_copy.rs::icon_only_buttons_reserve_a_tooltip_slot 扫描全部 icon-only 按钮，缺槽即红。这条断言的首版是假绿：它按 depth==0 判断根节点，嵌在 box 里的按钮根本没被检查，重写深度跟踪后当场揪出两枚真缺槽的按钮。\n\n名称侧（草案点名的「状态类」）：SquareTile 在 class_init 里取类级角色 img，绑定者把用户看得见的内容推成名字——set_accessible_name(item.display_name()) 出现在 media_grid::render 的 prepare_reused_tile / build_photo_picture 与 virtual_media_grid::factory::bind_ready_cell 三处，clear_for_rebind 连名字一起清掉，回收的格子不会继续回答上一张照片。时长/动态/收藏徽标与云徽标各报自己的名字（tile.badge.duration 把可见的 01:23 包成「视频时长 0:42」，云徽标与 tooltip 同源）。装饰性图标一律 presentation：overview_sync_icon（旁边的 label 已经说完）、查看器错误面图标（标题+副标题）、侧栏行图标与相册分组箭头、相册选择器的文件夹占位、设置页那枚 chevron。\n\n实测证据（本机，非 CI，命令在 docs/testing.md）：pyatspi 走真实应用的树。第一轮把名字给了常驻的对勾，格子念成「已选中 已收藏」而文件名全部消失——tile 当时是容器角色，GTK 直接丢掉推给它的名义；改成「对勾 presentation + tile 类级 img 角色」后，table cell 的名字变成 ['a.jpg', 'b.gif', '', '']，后两格是虚拟网格的 filler，本来就没有媒体。\n\n限制记录（不沉默处理）：选中目前不是 accessible state。虚拟网格的 GtkListItem 是 set_selectable(false)（选择由 VirtualMediaGrid 自己管，不是 GtkSelectionModel），对勾又是装饰，所以读屏听得到文件名、听不到「这张被选了」。补它需要 SquareTile::set_selected(bool) 统一那 4 处 CSS class 的增删并推 State::Selected，而且要先验 img 角色是否接受这个状态；本轮没做，写进了 browsing.md。AdwStatusPage 内部的警告图标同理没有动：标题与描述已经说完这句话，且那是 libadwaita 的内部节点。",
+      tests: [
+        "cargo test --locked --lib ui::square_tile（18 项，新增 the_tile_and_its_state_badges_are_named：类级角色、名字可回读、clear_for_rebind 清名、徽标键真的解析、对勾是装饰。负向验证：注释掉 klass.set_accessible_role(Img) 后该断言变红）",
+        "cargo test --locked --test ui_template_copy（3 项，含 icon_only_buttons_reserve_a_tooltip_slot）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::（403 项）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --test ui_editor_panel --test ui_album_picker --test ui_mode_selector --test ux_click_flows --test e2e_browsing --test ui_context_menu --test ui_grid_canvas --test inline_test_ownership（全绿）",
+        "手工 AT-SPI 探针（pyatspi 读真实应用的 table cell 名字）-> PASS，需要桌面会话与手工启动，没有进 CI"
+      ],
+      docs: [
+        "docs/modules/browsing.md（Accessible Names For Tiles And Badges）",
+        "docs/testing.md（探针补读名字与状态集的方法，以及容器角色丢名字这条坑）",
+        "AGENTS.md（UI Invariants：图标控件必须可命名，装饰图标必须 presentation）",
+        "docs/ui-naming-reference/index.html（宫格、徽标、同步行、错误面、编辑/设置按钮、新增 crop-ratio-arrows 条目）"
+      ],
       risk: "tooltip 文本要与 P0-4 的 tr_with_key 拼接共用，避免两套措辞。",
       demo:
-        "开启后把鼠标停在网格徽记（时长/云/收藏）与首页同步图标上会出现说明，读屏可念出状态；关闭时这些控件既无 tooltip 也无 accessible label。"
+        "常态即已落盘行为：每张格子带自己的文件名（原型写在格子内层一个零尺寸的 role=img 节点上，等价于真实实现里由 tile 本体承担 img 角色），时长/动态/收藏/云徽标各报自己的名字，对勾与状态页图标是 aria-hidden——打开浏览器无障碍树可核对，界面没有任何变化。落盘前形态走工具条「落盘前：宫格对读屏匿名（P2-4）」（data-pv-demo=tiles-anonymous）：那时把读屏实际听到的内容直接画在格子上（「读屏：无名称 · 角标念成「▶」」）。"
     },
     {
       id: "p2-5",
@@ -1161,6 +1188,13 @@
       syncBar();
       PV.toast("落盘前对照：可撤销的动作也只报成功，撤销只能自己去回收站找。清除演示态即回到带「撤销」按钮的 toast。", { kind: "info", ms: 5200 });
       PV.runAction("viewer-delete");
+    });
+    demoBtn("落盘前：宫格对读屏匿名（P2-4）", function () {
+      needScreen("photos");
+      body.dataset.pvDemo = "tiles-anonymous";
+      PV.applyIconLabels();
+      syncBar();
+      PV.toast("落盘前对照：格子没有名字，角标只念出「▶」「♥」「0:42」，常驻的对勾反而被当成状态朗读——第一轮尝试就翻在这里。清除演示态回到已落盘的名称。", { kind: "info", ms: 5200 });
     });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
@@ -1575,7 +1609,14 @@
         if (bar) bar.focus();
         PV.toast("P2-3 已落盘：胶囊是唯一 tab stop，焦点环在 capsule 外沿；左右方向键切换并环绕，读屏听到的是 radio group + 三个 radio（打开浏览器无障碍树可核对）。", { kind: "info", ms: 5200 });
       },
-      "p2-4": function () { needScreen("photos"); PV.toast("P2-4：把指针移到宫格角标与图标按钮上，tooltip 与 accessible label 已补上", { kind: "info", ms: 4200 }); },
+      "p2-4": function () {
+        needScreen("photos");
+        var tile = q(".screen[data-screen='photos'] .tile[data-media]");
+        if (tile) {
+          var face = PV.q(".pv-a11y-face", tile);
+          PV.toast("P2-4 已落盘：这张格子读屏念作「" + (face ? face.getAttribute("aria-label") : "(无名)") + "」；角标与云状态各报自己的名字，对勾是装饰。浏览器无障碍树可核对，落盘前形态见工具条演示按钮。", { kind: "info", ms: 5200 });
+        }
+      },
       "p2-5": function () { needScreen("photos"); },
       "p2-6": demoP26,
       "p2-7": function () {

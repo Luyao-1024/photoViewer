@@ -69,6 +69,7 @@ template $ViewerPage : Adw.NavigationPage {
 
       [end]
       Gtk.Button edit_btn {
+        tooltip-text: "";
         icon-name: "document-edit-symbolic";
         css-classes: ["glass-toolbar-button"];
       }
@@ -156,7 +157,10 @@ template $ViewerPage : Adw.NavigationPage {
                 valign: fill;
                 css-classes: ["viewer-media-surface", "viewer-image-frame", "viewer-media-error"];
 
+                // Title and subtitle carry the whole message; the glyph is
+                // decoration and must not be announced as an unnamed image.
                 Gtk.Image media_error_icon {
+                  accessible-role: presentation;
                   icon-name: "image-missing-symbolic";
                   pixel-size: 88;
                   halign: center;

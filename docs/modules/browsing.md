@@ -444,6 +444,54 @@ or Month therefore remains immediate. The Photos renderer has no
 section-heading widgets; deterministic filler slots give each section a clean
 row boundary while the label supplies the floating date context.
 
+### Accessible Names For Tiles And Badges
+
+A thumbnail is a picture with no text, so nothing a screen reader says about the
+grid comes from the widget tree itself:
+
+- A role is declared where the widget is built — `accessible-role` in Blueprint,
+  `AccessibleRole` on a builder, or `klass.set_accessible_role()` in
+  `ObjectSubclass::class_init`. Names are always pushed from Rust with
+  `gtk::accessible::Property::Label`, because GTK has no accessible-label
+  template property to set. `SquareTile` takes role `Img` in `class_init` — GTK
+  silently drops a name pushed onto a plain container role, so the role is what
+  makes the name reachable at all.
+- Whoever binds a tile names it after the file name the user can see:
+  `set_accessible_name(item.display_name())` from `media_grid::render`
+  (`prepare_reused_tile`, `build_photo_picture`) and
+  `virtual_media_grid::factory::bind_ready_cell`. `clear_for_rebind` clears the
+  name together with the thumbnail, so a recycled cell never keeps answering to
+  the previous photo while it is still a placeholder.
+- State overlays name themselves from the same i18n keys as their visible text:
+  motion `tile.badge.motion`, favorite `tile.badge.favorite`, duration
+  `tile.badge.duration` (wraps the bare `01:23` so the number is explained),
+  cloud `sync.badge.synced` / `sync.badge.off` (also used as their tooltips).
+- The selection checkmark is `presentation`. It is always parented and only faded
+  with CSS opacity, so a name on it is announced for every tile; a live AT-SPI
+  walk measured exactly that — cells read "已选中 已收藏" and the file names
+  disappeared. Unticked decoration is not a state.
+- Decorative icons elsewhere in the same surfaces are `presentation` for the same
+  reason: `overview_sync_icon` (the label beside it states the status, and
+  announcing both reads one sentence twice), the viewer media-error glyph (title
+  and subtitle carry the message), sidebar nav/section arrows, the settings
+  "keyboard reference" chevron, and the album-picker folder fallback.
+- Icon-only buttons take a `tooltip-text: ""` slot in the template filled from
+  `tr()` in Rust (`edit_btn`, `settings_button`, the crop-ratio arrows).
+  `tests/ui_template_copy.rs::icon_only_buttons_reserve_a_tooltip_slot` fails the
+  build when an icon button carries no tooltip slot at all.
+
+Limitation, recorded instead of papered over: tile selection is still not an
+accessible *state*. Selection is app-managed inside `VirtualMediaGrid` rather than
+by a `GtkSelectionModel`, so the virtual grid's `GtkListItem`s are
+`set_selectable(false)`, nothing pushes `State::Selected`, and the checkmark is
+decoration. An AT user can reach and read each named tile but hears nothing that
+says whether it is in the current selection. Closing this needs a
+`SquareTile::set_selected(bool)` that owns both the CSS class and a pushed state,
+replacing the three grid-side `add_css_class`/`remove_css_class` sites and
+`clear_for_rebind`, verified against the live tree (the role may well reject
+`selected` — that is the part to measure first) — see the probe in
+[`docs/testing.md`](../testing.md).
+
 ## Mode Selector
 
 The Year/Month/Day control is both navigation and the canonical Liquid Glass segmented control. Preserve its visual structure:

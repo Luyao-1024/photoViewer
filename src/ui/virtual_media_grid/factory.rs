@@ -262,6 +262,9 @@ fn bind_ready_cell(
     );
     *cell.binding.borrow_mut() = Some(binding.clone());
     cell.tile.set_cache_key(cache_key.clone());
+    // A thumbnail is a picture with no text: bind the name too, or keyboard
+    // focus lands on an anonymous cell.
+    cell.tile.set_accessible_name(item.display_name());
     let cancellation = Arc::new(AtomicBool::new(false));
     *cell.thumbnail_request.borrow_mut() = Some(PendingThumbnailRequest {
         cache_key: cache_key.clone(),

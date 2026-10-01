@@ -236,6 +236,29 @@ fn editor_panel_buttons_use_glass() {
         28,
         "crop ratio arrow buttons should stay close to the icon size"
     );
+    // P2-4: these two arrows were the last icon buttons in the app with no
+    // tooltip and no accessible name, so neither a mouse user hovering them nor
+    // a screen reader could tell what they do.
+    assert_eq!(
+        rotate_panel
+            .imp()
+            .crop_ratio_prev_btn
+            .get()
+            .tooltip_text()
+            .as_deref(),
+        Some(photo_viewer::core::i18n::tr("editor.crop.previous.tooltip").as_str()),
+        "the crop ratio arrows must say which way they step"
+    );
+    assert_eq!(
+        rotate_panel
+            .imp()
+            .crop_ratio_next_btn
+            .get()
+            .tooltip_text()
+            .as_deref(),
+        Some(photo_viewer::core::i18n::tr("editor.crop.next.tooltip").as_str()),
+        "the crop ratio arrows must say which way they step"
+    );
     assert!(
         probe_classes(&rotate_panel.imp().crop_ratio_prev_btn.get())
             .iter()

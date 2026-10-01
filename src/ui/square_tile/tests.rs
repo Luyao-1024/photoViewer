@@ -346,3 +346,74 @@ fn square_tile_accepts_zero_allocation_while_a_gridview_recycles_it() {
     // next fixed column layout. It must not trip the badge-size clamps.
     tile.size_allocate(&gtk::Allocation::new(0, 0, 0, 0), -1);
 }
+
+/// P2-4: a thumbnail is a picture with no text, and the state badges were bare
+/// glyphs, so to a screen reader the grid was anonymous boxes plus stray "▶"
+/// and "♡" characters. The tile takes its name from whoever binds it, and every
+/// state overlay names itself.
+#[gtk::test]
+fn the_tile_and_its_state_badges_are_named() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+
+    // The role is what makes the name reachable at all: GTK ignores an
+    // aria-label pushed onto a plain container.
+    assert_eq!(
+        tile.accessible_role(),
+        gtk::AccessibleRole::Img,
+        "a thumbnail is a picture, so it must take the role that carries a name"
+    );
+
+    tile.set_accessible_name("IMG_0123.jpg");
+    assert_eq!(
+        tile.accessible_name_for_tests().as_deref(),
+        Some("IMG_0123.jpg"),
+        "the name pushed to AT must be readable back"
+    );
+
+    // A recycled virtual-grid cell must not keep answering to the previous
+    // photo's name while it is still a placeholder.
+    tile.clear_for_rebind();
+    assert_eq!(
+        tile.accessible_name_for_tests(),
+        None,
+        "clear_for_rebind has to drop the stale name with the stale thumbnail"
+    );
+
+    for key in ["tile.badge.motion", "tile.badge.favorite"] {
+        let name = tr(key);
+        assert!(
+            !name.is_empty() && name != key,
+            "{key} must resolve to a real word in the active locale, got {name:?}"
+        );
+    }
+
+    let named = trf("tile.badge.duration", &[("duration", "01:23")]);
+    assert!(
+        named.contains("01:23") && named != "tile.badge.duration",
+        "the duration badge keeps the visible number inside its name, got {named:?}"
+    );
+
+    // The badges and the tile all read their names from the same i18n path the
+    // visible text uses, so a locale switch cannot desynchronise the two.
+    let duration = tile
+        .imp()
+        .duration_badge
+        .borrow()
+        .as_ref()
+        .expect("duration badge")
+        .clone();
+    tile.set_video_duration(Some("01:23"));
+    assert_eq!(duration.label(), "01:23", "the caption stays the bare time");
+    assert_eq!(
+        tile.imp()
+            .checkmark
+            .borrow()
+            .as_ref()
+            .expect("checkmark")
+            .accessible_role(),
+        gtk::AccessibleRole::Presentation,
+        "the tick is decoration: naming it would announce \
+         \"selected\" on every tile"
+    );
+}

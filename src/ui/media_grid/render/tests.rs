@@ -46,6 +46,11 @@ fn mem_cached_thumbnail_tile_is_built_without_loading_class() {
         !tile.has_css_class("thumb-loading"),
         "cached thumbnails should paint immediately instead of flashing the loading placeholder"
     );
+    assert_eq!(
+        tile.accessible_name_for_tests().as_deref(),
+        Some("cached.png"),
+        "a bound tile has to be named after its photo, or focus arrives in silence"
+    );
 }
 
 #[gtk::test]

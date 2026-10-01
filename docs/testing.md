@@ -109,6 +109,21 @@ of the role. Reading `State::Checked` back this way is how P2-3 was confirmed:
 `CHECKED`. This probe is manual and needs a display, so it is not part of the CI
 gate.
 
+The same walk is what settled P2-4. A `GtkGridView` surfaces as `table` with
+`table cell` children, so print the cells' names to check tile labels at all:
+before the change every cell was `''`, and the first attempt - naming the
+always-allocated selection checkmark - made the cells read `'已选中 已收藏'` while
+still losing the file names. Two facts explain that and are worth remembering
+before pushing a name anywhere: GTK ignores an accessible name on a plain
+container role (the tile only became nameable once its class-level role was
+`img`), and a decoration that is faded with CSS opacity rather than unparented is
+still in the tree, so it must be `presentation`. To read a *state* rather than a
+name, ask the node for its state set
+(`node.get_state_set().contains(Atspi.StateType.SELECTED)`); nothing in the
+in-process suite can, which is why "the checkmark is decoration, selection is not
+yet an accessible state" is recorded as a limitation in
+[`modules/browsing.md`](modules/browsing.md) instead of being asserted.
+
 ## Verification Stages
 
 ### Uncommitted Development

@@ -188,6 +188,14 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
         !imp.overview_sync_spinner.get().is_visible() && imp.overview_sync_icon.get().is_visible(),
         "completed synchronization should restore the static status icon"
     );
+    // P2-4: the same status is spelled out by overview_sync_label right next to
+    // the glyph, so the icon is presentation — announcing both would read the
+    // same sentence twice, and leaving it unnamed would read as "image".
+    assert_eq!(
+        imp.overview_sync_icon.get().accessible_role(),
+        gtk::AccessibleRole::Presentation,
+        "the sync glyph must not add a second, unnamed announcement to the sync row"
+    );
 }
 
 #[gtk::test]

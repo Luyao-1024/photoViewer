@@ -93,3 +93,61 @@ fn the_search_page_template_defers_its_segment_labels_to_rust() {
         );
     }
 }
+
+/// An icon-only button is unnamed unless Rust gives it a tooltip (or an
+/// accessible name), and the Rust side can only assign a tooltip the template
+/// reserved a slot for. So every `Gtk.Button` that declares an `icon-name` must
+/// also declare `tooltip-text` — empty is fine, absent is the P2-4 gap: the
+/// editor's crop-ratio arrows shipped with no slot and no assignment, so
+/// hovering them told a mouse user nothing and a screen reader said nothing.
+#[test]
+fn icon_only_buttons_reserve_a_tooltip_slot() {
+    let mut offenders = Vec::new();
+
+    for path in templates() {
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{path:?} should be readable: {err}"));
+        let mut depth = 0usize;
+        // header, first line, depth the block opened at, icon?, tooltip?
+        let mut block: Option<(String, usize, usize, bool, bool)> = None;
+
+        for (index, raw) in source.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let opened_at = depth;
+            if block.is_none() && line.starts_with("Gtk.Button") && line.contains('{') {
+                block = Some((line.to_string(), index + 1, opened_at, false, false));
+            }
+            if let Some((_, _, _, has_icon, has_tooltip)) = block.as_mut() {
+                *has_icon |= line.contains("icon-name:");
+                *has_tooltip |= line.contains("tooltip-text:");
+            }
+
+            depth += line.matches('{').count();
+            depth = depth.saturating_sub(line.matches('}').count());
+            if let Some((header, start, opened_at, has_icon, has_tooltip)) = block.take() {
+                if depth > opened_at {
+                    block = Some((header, start, opened_at, has_icon, has_tooltip));
+                    continue;
+                }
+                if has_icon && !has_tooltip {
+                    offenders.push(format!(
+                        "{}:{} — {header} has an icon but no tooltip-text slot",
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("?"),
+                        start
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "every icon button in a template needs a tooltip slot for Rust to fill: \
+         {offenders:#?}"
+    );
+}

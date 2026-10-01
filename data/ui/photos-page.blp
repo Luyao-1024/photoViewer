@@ -171,7 +171,11 @@ template $PhotosPage : Adw.NavigationPage {
             width-request: 18;
             height-request: 18;
 
+            // The state is spelled out by overview_sync_label next to it, so the
+            // glyph stays out of the accessibility tree rather than being read
+            // twice (or, worse, as an unnamed image).
             child: Gtk.Image overview_sync_icon {
+              accessible-role: presentation;
               icon-name: "folder-remote-symbolic";
               pixel-size: 18;
             };

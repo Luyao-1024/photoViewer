@@ -250,6 +250,12 @@ impl EditorPanel {
         imp.reset_btn
             .get()
             .set_tooltip_text(Some(&tr("editor.reset.tooltip")));
+        imp.crop_ratio_prev_btn
+            .get()
+            .set_tooltip_text(Some(&tr("editor.crop.previous.tooltip")));
+        imp.crop_ratio_next_btn
+            .get()
+            .set_tooltip_text(Some(&tr("editor.crop.next.tooltip")));
         imp.rotate_group.get().set_title(&tr("editor.panel.rotate"));
         imp.adjust_group.get().set_title(&tr("editor.panel.adjust"));
         imp.crop_group.get().set_title(&tr("editor.panel.crop"));

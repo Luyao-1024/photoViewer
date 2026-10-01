@@ -1657,6 +1657,35 @@ body[data-pv-demo="tile-states-flattened"] .tile.multi-selected {
     0 0 0 1px rgba(98,160,234,0.26);
 }
 
+/* P2-4 已落盘：格子有 accessible name（真实实现是 tile 本体的 img 角色 +
+   绑定者推的文件名），装饰节点从树里摘掉。常态只写无障碍属性，不改变像素：
+   .pv-a11y-face 是零尺寸、不可点的 role=img 节点。落盘前对照（工具条
+   「落盘前：宫格对读屏匿名（P2-4）」→ tiles-anonymous）才把可见的「读屏听到什么」画出来。 */
+.pv-a11y-face {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pv-a11y-note {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 9;
+  padding: 1px 4px;
+  border-radius: 0 0 4px 0;
+  background: rgba(8,19,31,0.82);
+  color: #ffd7d7;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* P1-9 脏标记的可见性跟随编辑状态，与真实应用里 has_pending_edits() 的驱动一致。 */
 .dirty-label { visibility: hidden; }
 body[data-pv-dirty="1"] .dirty-label { visibility: visible; }

@@ -233,7 +233,10 @@ fn album_tile(album: &Album, loader: &Arc<ThumbnailLoader>) -> (gtk::Button, Squ
     tile.set_height_for_width(true);
     tile.set_allow_width_shrink(true);
     cover.set_child(Some(&tile));
-    let fallback = gtk::Image::from_icon_name("folder-pictures-symbolic");
+    let fallback = gtk::Image::builder()
+        .icon_name("folder-pictures-symbolic")
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
     fallback.set_pixel_size(36);
     fallback.set_halign(gtk::Align::Center);
     fallback.set_valign(gtk::Align::Center);

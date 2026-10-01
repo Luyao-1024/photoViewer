@@ -25,6 +25,7 @@ pub(super) fn prepare_reused_tile(tile: &SquareTile, spec: ViewSpec, item: &Medi
         tile.set_video_duration(None);
     }
     tile.set_favorite_badge_visible(is_day && item.is_favorite);
+    tile.set_accessible_name(item.display_name());
     let item_mtime = thumbnail_request_mtime(item);
     tile.set_cache_key(ThumbnailLoader::cache_key_for(
         &item.uri,
@@ -68,6 +69,7 @@ pub(super) fn build_photo_picture(
         tile.set_video_duration(Some(&duration));
     }
     tile.set_favorite_badge_visible(is_day && item.is_favorite);
+    tile.set_accessible_name(item.display_name());
 
     let fallback_item = item.clone();
     let size = spec.thumb_size;

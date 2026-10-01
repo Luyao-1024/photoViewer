@@ -715,7 +715,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | **P2-1（已落盘）** | Toast 一律无撤销，删除只能去回收站找回 | `src/ui/toasts.rs:19-40` 三个工厂都用 `adw::Toast::new(msg)`，全项目无 `set_button_label` | 新增 `success_with_action(overlay, msg, label, f)`；删除/批量收藏接 `viewer/actions.rs:81-93` 已有的回滚 |
 | **P2-2（已落盘）** | Toast 可能盖住胶片条 | `data/ui/viewer-page.blp:7` 的 `ToastOverlay` 包裹整块内容 | 限定 overlay 区域到 stage，或为 toast 预留底部 inset |
 | **P2-3（已落盘）** | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
-| P2-4 | 全项目 `set_accessible_label`/`set_accessible_role` 调用为 **0** | grep 确认；`overview_sync_icon`（`photos_page.rs:949`）与警告图标（`:1037`）连 tooltip 都没有 | 约 26 个图标按钮先补 tooltip 兜底，再为「状态类」（同步状态、时长/云/收藏徽记 `src/ui/square_tile.rs`）补 accessible label；用 `tools/assert-at-spi.py` 模式扩展断言面 |
+| **P2-4（已落盘）** | 全项目没有任何无障碍角色/名称调用 | 原证据要更正：`set_accessible_label` 在 GTK4 里不是 API，grep 测的是不存在的符号；真实的 0 是模板 0 处 `accessible-role` + Rust 0 处 `update_property`。「26 个图标按钮都缺 tooltip」也不成立——26 枚里 22 枚本来就有，缺槽的是 4 枚（两枚裁剪比例箭头连 Rust 文案都没有） | 见「P2-4 实施结果」：4 枚补槽、2 枚补文案，名称侧给 tile 与全部状态徽标，装饰图标改 presentation；`tools/assert-at-spi.py` 那条被本机 pyatspi 探针替代（见 `docs/testing.md`） |
 | P2-5 | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 移入 `spawn_blocking` + generation 回投；大库下多选 header 会掉帧 |
 | P2-6 | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 复用 P0-1 的 loading/error 分离结论 |
 | P2-7 | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 首轮加载完成前不切空态 |
@@ -811,6 +811,60 @@ Blueprint 只认枚举名下划线形式 `radio_group`，写成 `radio-group` �
 后第一条变红）＋ `--test ui_mode_selector --test ux_click_flows`（段上的点击手势与模式切换
 不受 `constructed` 重构影响）。
 
+### P2-4 实施结果（2026-10-02 已落盘，草案的两条测量口径都要更正）
+
+**更正一：`set_accessible_label` 在 GTK4 里不是 API。** 可写的属性只有
+`accessible-role`（`data/ui/*.blp` 里可直接声明，Blueprint 用下划线枚举名），名称与状态要走
+`gtk_accessible_update_property(Property::Label)` / `update_state(...)`，而这两者都没有 getter。
+所以「全项目 `set_accessible_label` 调用为 0」grep 的是一个不存在的符号；结论仍然成立——落盘前
+全仓 0 处 `accessible-role`、0 处 `update_property`，落盘后是模板 7 处角色 + Rust 23 处
+角色/名称调用。
+
+**更正二：「约 26 个图标按钮先补 tooltip 兜底」不成立。** 按「有 `icon-name` 且没有 `label`」
+清点 `data/ui/*.blp`，图标按钮确实是 26 枚，但 22 枚本来就有 tooltip，而且多数与 P0-4 的
+`tooltip_with_key` 共用同一份文案——草案 risk 担心的「两套措辞」并没有发生。真正缺槽的是 4 枚：
+`crop_ratio_prev_btn`、`crop_ratio_next_btn`、`edit_btn`、`settings_button`。前两枚连 Rust 侧
+文案都没有（悬停无提示、读屏只念图标名），新写 `editor.crop.previous.tooltip` /
+`editor.crop.next.tooltip`（两份 json 同步，parity 452/452）；后两枚本来分别由
+`viewer_page.rs:522`、`window.rs:651` 写入，只补了模板空槽。兜底断言
+`tests/ui_template_copy.rs::icon_only_buttons_reserve_a_tooltip_slot` 扫全部 icon-only 按钮，
+缺槽即红。**这条断言的首版是假绿**：它按 `depth == 0` 判断根节点，嵌在 box 里的按钮根本没被
+检查过，重写成深度跟踪后当场揪出上面这 4 枚。
+
+**名称侧（草案点名的「状态类」）**：`SquareTile` 在 `class_init` 里取类级角色 `Img`，绑定者把
+用户看得见的内容推成名字——`set_accessible_name(item.display_name())` 落在
+`media_grid/render.rs` 的 `prepare_reused_tile` / `build_photo_picture` 与
+`virtual_media_grid/factory.rs::bind_ready_cell` 三处，`clear_for_rebind` 连名字一起清掉，回收的
+格子不会继续回答上一张照片。时长/动态/收藏徽标与云徽标各报自己的名字
+（`tile.badge.duration` 把可见的 `0:42` 包成「视频时长 0:42」；云徽标与 tooltip 同源）。装饰性
+图标一律 `presentation`：`overview_sync_icon`、查看器错误面图标、侧栏行图标与相册分组箭头、相册
+选择器的文件夹占位、设置页那枚 chevron。草案把「`overview_sync_icon`（`:949`）与警告图标
+（`:1037`）」算成两处，其实是同一个 `Gtk.Image` 的两种状态（`Failed →
+dialog-warning-symbolic`，`photos_page.rs:113`），旁边就是 `overview_sync_label`，所以按重复
+信息处理成装饰，而不是补 tooltip。
+
+**实测证据（本机、非 CI）**：`docs/testing.md` 的 pyatspi 探针走真实应用的树。第一轮把名字给了
+常驻的对勾，结果格子念成「已选中 已收藏」而文件名全部消失——`SquareTile` 当时是容器角色，GTK
+直接丢掉推给它的名义；改成「对勾 `presentation` + tile 类级 `Img`」后，`table cell` 的名字变成
+`['a.jpg', 'b.gif', '', '']`（后两格是虚拟网格的 filler，本来就没有媒体）。这轮如果没有实测，
+按草案原意（给状态角标补 label）落盘会稳定地让网格更难读。
+
+**限制记录（不沉默处理）**：选中目前**不是 accessible state**。虚拟网格的 `GtkListItem` 是
+`set_selectable(false)`（选择由 `VirtualMediaGrid` 自己管，不走 `GtkSelectionModel`），对勾又是
+装饰，所以读屏听得到文件名、听不到「这张被选了」。补它需要 `SquareTile::set_selected(bool)`
+统一现在散在 4 处的 CSS class 增删并推 `State::Selected`，而且要先验 `img` 角色是否接受这个状态；
+本轮没有做，写进了 `docs/modules/browsing.md`。`AdwStatusPage` 内部的警告图标同理没动：标题与
+描述已经说完这句话，且那是 libadwaita 的内部节点。
+
+**测试**：`cargo test --locked --lib ui::square_tile`（18 项，新增
+`the_tile_and_its_state_badges_are_named`：类级角色、名字可回读、`clear_for_rebind` 清名、徽标键
+真的解析、对勾是装饰；负向验证：注释掉 `klass.set_accessible_role(Img)` 后该断言变红）＋
+`--test ui_template_copy`（3 项）＋
+`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::`（403 项）＋
+`--test ui_editor_panel --test ui_album_picker --test ui_mode_selector --test ux_click_flows
+--test e2e_browsing --test ui_context_menu --test ui_grid_canvas --test inline_test_ownership`
+（全绿）＋ 手工 AT-SPI 探针（PASS，需要桌面会话，不进 CI）。
+
 ---
 
 ## 结构性议题：沉浸浏览与「F 是另一个窗口」
@@ -870,10 +924,11 @@ Blueprint 只认枚举名下划线形式 `radio_group`，写成 `radio-group` �
 | `docs/modules/keyboard.md:60-69` | 声明应用内发现路径与「binding ↔ shortcuts」防漂移断言 | B4 |
 | `docs/modules/editor.md` | 退出确认与前后对比契约 | B8 |
 | `docs/modules/ui-liquid-glass.md` | 焦点环属 a11y 层且与透明度无关；新增「动效与 reduce-motion」一节 | B1、B9 |
-| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示 | B2、B3、B5、B9 |
+| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示；B9 已补「Accessible Names For Tiles And Badges」（tile 类级 `Img` 角色、绑定者推名字、装饰图标 presentation、选中尚非 accessible state 的限制） | B2、B3、B5、B9 |
 | `docs/modules/storage.md` | `DomainEvent::ScanPhase` 契约、缩略图失败语义 | B2、B8 |
 | `docs/testing.md` | `--a11y-smoke` 的搜索字段期望值改为按 locale 从 `i18n/<locale>.json` 取，中文标签不再是常量 | B5 |
 | `AGENTS.md`（B5 已加） | UI 不变量已落地：「`data/ui/*.blp` 不得出现硬编码可见文案，一律 `tr()`/`trf()`」，由 `tests/ui_template_copy.rs` 全仓扫描把关 | B5 |
+| `AGENTS.md`（B9 已加） | UI 不变量已落地：「图标控件必须可命名——模板留空 `tooltip-text` 槽由 Rust 填，或推 `Property::Label`；纯装饰图标必须 `accessible-role: presentation`。角色写在构造点，名称只能从 Rust 推」 | B9 |
 
 ---
 
@@ -884,6 +939,7 @@ Blueprint 只认枚举名下划线形式 `radio_group`，写成 `radio-group` �
 - `ui::grid_css::tests::render` 里的真实像素采样断言自 P1-11 起已是常规聚焦测试的一部分（每次改动都会跑）；`PHOTOVIEWER_GLASS_SCREENSHOTS=...` 的导出分支仍未使用，因为它只向 `target/` 写文件、不参与断言。
 - 未做 Flatpak 运行时验证，也未做超大图库压测。
 - 未读取 AT-SPI 实际无障碍树（`tools/assert-at-spi.py --dump` 可在真实窗口上验证 P2-3/P2-4 的暴露情况），因此「读屏听到三个静态标签」的推断来自控件类型（`Gtk.Box` + 点击手势）而非实测。
+  - 这条已在落盘阶段补做，但换了工具：`tools/assert-at-spi.py` 要 Flatpak 运行时，本机跑不了，所以用本机等价的 pyatspi 探针（`env -u NO_AT_BRIDGE HOME=<tmp> tools/with-at-spi.sh xvfb-run -a ./target/debug/photo-viewer` + python3-gi 走树，配方与三个坑记在 `docs/testing.md`）。**P2-3 的推断成立**（读到 `grouping '照片分组方式'` 下挂三个 `radio button`）；**P2-4 的推断也成立但处方会致病**：按草案给状态角标补名字，实测把格子念成「已选中 已收藏」且文件名全部消失，因为 tile 当时是容器角色、GTK 丢掉推给它的名义。两处更正都记在「P2-4 实施结果」。
 - 检视中所有「零调用者」「零命中」结论都用 grep 交叉确认过（`empty_states::loading/scan_error`、`set_accessible_label`、`ShortcutsWindow`、`gtk::Settings`、`@media`、scan 进度布尔状态）。
 
 ### 交互评审原型能证明什么、不能证明什么

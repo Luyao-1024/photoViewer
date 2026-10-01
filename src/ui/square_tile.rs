@@ -1,6 +1,6 @@
 //! Square thumbnail widget shared by media grids, albums, trash, and sidebar covers.
 
-use crate::core::i18n::tr;
+use crate::core::i18n::{tr, trf};
 use crate::core::sync::CloudState;
 use crate::ui::cloud_badge;
 use gtk4 as gtk;
@@ -43,6 +43,10 @@ mod imp {
         /// 该 tile 的缩略图缓存键（建 tile 时预算，用于可见区提权匹配队列项）。
         pub cache_key: RefCell<Option<String>>,
         pub thumbnail_request: RefCell<Option<Rc<dyn Fn()>>>,
+        /// The accessible name last pushed onto the tile itself. `update_property`
+        /// has no getter, so this mirror is what tests read; keep it written only
+        /// beside the real call.
+        pub accessible_name: RefCell<Option<String>>,
         /// Whether a full-resolution thumbnail has been delivered to this tile.
         /// Guards the EXIF placeholder path so a low-res preview is never painted
         /// over a full thumbnail that already arrived (and vice-versa orderings).
@@ -66,6 +70,7 @@ mod imp {
                 background_is_light: Cell::new(None),
                 cache_key: RefCell::new(None),
                 thumbnail_request: RefCell::new(None),
+                accessible_name: RefCell::new(None),
                 full_thumbnail_painted: Cell::new(false),
             }
         }
@@ -76,6 +81,13 @@ mod imp {
         const NAME: &'static str = "PvSquareTile";
         type Type = super::SquareTile;
         type ParentType = gtk::Widget;
+
+        fn class_init(klass: &mut Self::Class) {
+            // A tile is a picture, so it takes the role that accepts an
+            // accessible name: GTK drops a name pushed onto a plain container,
+            // which left every cell in the grid anonymous.
+            klass.set_accessible_role(gtk::AccessibleRole::Img);
+        }
     }
 
     impl ObjectImpl for SquareTile {
@@ -138,6 +150,11 @@ mod imp {
             let checkmark = gtk::Image::builder()
                 .icon_name("object-select-symbolic")
                 .pixel_size(22)
+                // Presentation, not a name: the tick is always parented and only
+                // faded with CSS opacity, so a name on it would be announced for
+                // every tile whether or not it is selected. Selection belongs to
+                // the container's own state, not to the decoration.
+                .accessible_role(gtk::AccessibleRole::Presentation)
                 .build();
             checkmark.add_css_class("thumb-checkmark");
             checkmark.set_halign(gtk::Align::End);
@@ -149,6 +166,10 @@ mod imp {
 
             let motion_badge = gtk::Label::builder().label("▶").visible(false).build();
             motion_badge.add_css_class("thumb-motion-badge");
+            // Without a name the badge is announced as the glyph itself ("▶"),
+            // which reads as noise instead of "this is a live photo".
+            motion_badge
+                .update_property(&[gtk::accessible::Property::Label(&tr("tile.badge.motion"))]);
             motion_badge.set_can_target(true);
             motion_badge.set_halign(gtk::Align::Start);
             motion_badge.set_valign(gtk::Align::End);
@@ -170,6 +191,8 @@ mod imp {
 
             let favorite_badge = gtk::Label::builder().label("♡").visible(false).build();
             favorite_badge.add_css_class("thumb-favorite-badge");
+            favorite_badge
+                .update_property(&[gtk::accessible::Property::Label(&tr("tile.badge.favorite"))]);
             favorite_badge.set_can_target(true);
             favorite_badge.set_halign(gtk::Align::End);
             favorite_badge.set_valign(gtk::Align::Start);
@@ -339,6 +362,8 @@ impl SquareTile {
         self.imp().background_is_light.set(None);
         *self.imp().cache_key.borrow_mut() = None;
         *self.imp().thumbnail_request.borrow_mut() = None;
+        *self.imp().accessible_name.borrow_mut() = None;
+        self.update_property(&[gtk::accessible::Property::Label("")]);
         self.imp().full_thumbnail_painted.set(false);
         self.set_motion_badge_visible(false);
         self.set_video_duration(None);
@@ -359,6 +384,20 @@ impl SquareTile {
     pub fn show_loading_placeholder(&self) {
         self.add_css_class("thumb-loading");
         self.add_css_class("thumb-placeholder");
+    }
+
+    /// Name a screen reader announces for this tile. A thumbnail is a picture
+    /// with no text, so without a name the whole grid is a wall of anonymous
+    /// boxes and keyboard focus arrives in silence. Callers pass what the user
+    /// can see: the file name.
+    pub fn set_accessible_name(&self, name: &str) {
+        *self.imp().accessible_name.borrow_mut() = Some(name.to_string());
+        self.update_property(&[gtk::accessible::Property::Label(name)]);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accessible_name_for_tests(&self) -> Option<String> {
+        self.imp().accessible_name.borrow().clone()
     }
 
     pub fn set_background_is_light(&self, is_light: bool) {
@@ -410,6 +449,11 @@ impl SquareTile {
     pub fn set_video_duration(&self, label: Option<&str>) {
         if let Some(badge) = self.imp().duration_badge.borrow().as_ref() {
             badge.set_label(label.unwrap_or(""));
+            // The visible text is just "01:23"; say what that number is.
+            let name = label.map(|duration| trf("tile.badge.duration", &[("duration", duration)]));
+            badge.update_property(&[gtk::accessible::Property::Label(
+                name.as_deref().unwrap_or(""),
+            )]);
             badge.set_visible(label.is_some());
         }
     }
@@ -425,11 +469,15 @@ impl SquareTile {
             match state {
                 Some(CloudState::Synced) => {
                     badge.set_from_resource(Some(cloud_badge::resource(CloudState::Synced, true)));
-                    badge.set_tooltip_text(Some(&tr("sync.badge.synced")));
+                    let name = tr("sync.badge.synced");
+                    badge.set_tooltip_text(Some(&name));
+                    badge.update_property(&[gtk::accessible::Property::Label(&name)]);
                 }
                 Some(CloudState::Off) => {
                     badge.set_from_resource(Some(cloud_badge::resource(CloudState::Off, true)));
-                    badge.set_tooltip_text(Some(&tr("sync.badge.off")));
+                    let name = tr("sync.badge.off");
+                    badge.set_tooltip_text(Some(&name));
+                    badge.update_property(&[gtk::accessible::Property::Label(&name)]);
                 }
                 None => {}
             }

@@ -531,7 +531,12 @@ impl MainWindow {
         row.set_title(&tr("setting.keyboard.reference"));
         row.set_subtitle(&tr("setting.keyboard.reference_description"));
         row.set_activatable(true);
-        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        row.add_suffix(
+            &gtk::Image::builder()
+                .icon_name("go-next-symbolic")
+                .accessible_role(gtk::AccessibleRole::Presentation)
+                .build(),
+        );
 
         let weak = self.downgrade();
         row.connect_activated(move |_| {

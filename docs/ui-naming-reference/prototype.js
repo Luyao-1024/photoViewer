@@ -232,24 +232,34 @@
     });
   }
 
-  /* P2-4：给「连 tooltip 都没有」的图标控件补悬停说明与 accessible label。
-     文案复用命名总览的 data-name，演示同一份标签既能看见又能被读屏念出。 */
+  /* P2-4 已落盘，所以这里是常态而不是提案开关：格子的名字来自绑定它的代码
+     （真实实现 SquareTile::set_accessible_name(item.display_name())），徽标与图标
+     各报自己的状态，纯装饰的东西从树里摘掉。落盘前形态见 data-pv-demo=tiles-anonymous。
+     名字逐字取仓库 i18n 键，跟界面语言走，不另造同义词。 */
   var A11Y_TARGETS = ".button.bare[data-act], .button.bare[data-nav], .button.round[data-ui], " +
-    ".button.danger[data-act], .tile .badge, img.viewer-sync-badge, .status-icon, .multi-only";
+    ".button.danger[data-act], .tile .badge, img.viewer-sync-badge, .multi-only";
+  // 与真实实现同构的装饰图标：旁边的标题/标签已经说完这句话，图标进树只会重复
+  // 一遍或以「未命名图片」的形式多出一条噪音（overview_sync_icon、media_error_icon、
+  // AdwStatusPage 的图标、侧栏箭头都是这一类）。
+  var DECORATIVE = ".status-icon";
   function iconLabel(el) {
     var c = el.classList;
     var text = (el.textContent || "").trim();
-    if (c.contains("duration")) return "视频时长 " + text;
-    if (c.contains("motion")) return "动态照片（内嵌视频范围）";
-    if (c.contains("favorite")) return "已收藏";
-    if (c.contains("synced") || c.contains("viewer-sync-badge")) return "已同步到云端";
-    if (c.contains("warn")) return "同步状态异常";
+    if (c.contains("duration")) return tr("tile.badge.duration").replace("{duration}", text);
+    if (c.contains("motion")) return tr("tile.badge.motion");
+    if (c.contains("favorite")) return tr("tile.badge.favorite");
+    if (c.contains("synced") || c.contains("viewer-sync-badge")) return tr("sync.badge.synced");
     var named = el.closest("[data-name]");
     var base = named ? named.getAttribute("data-name") : "";
     return el.dataset.key ? base + "（" + el.dataset.key + "）" : base;
   }
   function applyIconLabels() {
-    var on = enabled("p2-4");
+    // 落盘前：格子匿名、徽标只念出 glyph、对勾被当成状态朗读者。
+    var on = body.dataset.pvDemo !== "tiles-anonymous";
+    qa(DECORATIVE).forEach(function (el) {
+      if (on) el.setAttribute("aria-hidden", "true");
+      else el.removeAttribute("aria-hidden");
+    });
     qa(A11Y_TARGETS).forEach(function (el) {
       if (el.dataset.pvLabelled === "1") {
         if (el.dataset.pvLabelledTitle === "1") el.removeAttribute("title");
@@ -269,6 +279,38 @@
       }
       el.setAttribute("aria-label", label);
       el.dataset.pvLabelled = "1";
+    });
+    // 格子本体：名字就是用户看得见的文件名。原型里 .tile 自己是命名总览的
+    // hotspot（data-name 是「视频宫格」这类控件标签），所以文件名写到内层
+    // role=img 节点上，等价于真实实现里 tile 本体承担 img 角色。
+    qa(".tile[data-media]").forEach(function (tile) {
+      var face = q(".pv-a11y-face", tile);
+      var note = q(".pv-a11y-note", tile);
+      if (on) {
+        if (note) note.remove();
+        if (!face) {
+          face = document.createElement("span");
+          face.className = "pv-a11y-face";
+          face.setAttribute("role", "img");
+          tile.insertBefore(face, tile.firstChild);
+        }
+        face.setAttribute("aria-label", mediaName(tile));
+        return;
+      }
+      if (face) face.remove();
+      if (!note) {
+        note = document.createElement("span");
+        note.className = "pv-a11y-note";
+        tile.appendChild(note);
+      }
+      var badge = q(".badge", tile);
+      note.textContent = "读屏：无名称" +
+        (badge ? " · 角标念成「" + (badge.textContent || "").trim() + "」" : "");
+    });
+    // 对勾在真实实现里是 presentation：它常驻树中、只用透明度淡入淡出。
+    qa(".tile .checkmark").forEach(function (tick) {
+      if (on) tick.setAttribute("aria-hidden", "true");
+      else tick.removeAttribute("aria-hidden");
     });
   }
 
@@ -559,6 +601,10 @@
       "photos.selection.count": "已选择 {n} 项", "photos.selection.limit": "（已达上限）",
       "photo.mode.group": "照片分组方式",
       "photo.mode.year": "年", "photo.mode.month": "月", "photo.mode.day": "日",
+      // P2-4 已落盘：以下 4 个键逐字取自仓库 i18n/zh-CN.json:30,189-191，
+      // 徽标的 accessible name 与真实代码用同一批键。
+      "sync.badge.synced": "已同步到云端", "tile.badge.motion": "动态图片",
+      "tile.badge.favorite": "已收藏", "tile.badge.duration": "视频时长 {duration}",
       // P0-5 已落盘：以下 8 个键逐字取自仓库 i18n/zh-CN.json，
       // 三个字段标签在真实代码里由 search_page.rs:198-200 填入，模板不再硬编码。
       "search.field.all": "全部", "search.field.name": "文件名", "search.field.date": "日期",
@@ -603,6 +649,9 @@
       "photos.selection.count": "{n} selected", "photos.selection.limit": " (limit reached)",
       "photo.mode.group": "Photo grouping",
       "photo.mode.year": "Year", "photo.mode.month": "Month", "photo.mode.day": "Day",
+      // P2-4 已落盘：与仓库 i18n/en.json 同值（:30, :189-191）。
+      "sync.badge.synced": "Synced to cloud", "tile.badge.motion": "Live photo",
+      "tile.badge.favorite": "Favorited", "tile.badge.duration": "Video duration {duration}",
       "search.field.all": "All", "search.field.name": "File name", "search.field.date": "Date",
       "empty.search_idle.title": "Search Your Library",
       "empty.search_idle.description": "Type a file name or a shooting date (YYYY/MM/DD) to start.",
@@ -694,7 +743,7 @@
     });
     updateCount();
     // P2-4 的 accessible name 取自 tooltip 文案，语言一变就要重算。
-    if (enabled("p2-4")) applyIconLabels();
+    applyIconLabels();
   }
 
   /* -------------------------------------------------------- 扫描状态 */

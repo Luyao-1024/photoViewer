@@ -32,7 +32,11 @@ pub(super) fn build_nav_row(
     let row = gtk::ListBoxRow::new();
     row.add_css_class("glass-sidebar-row");
 
-    let icon = gtk::Image::from_icon_name(icon_name);
+    // The row label already names the row; an announced icon would be said twice.
+    let icon = gtk::Image::builder()
+        .icon_name(icon_name)
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
     icon.add_css_class("glass-sidebar-icon");
 
     let lbl = gtk::Label::builder()
@@ -71,7 +75,10 @@ pub(super) fn build_albums_header_row(label: &str) -> (gtk::ListBoxRow, gtk::Ima
     row.add_css_class("glass-sidebar-row");
     row.add_css_class("glass-sidebar-section");
 
-    let arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+    let arrow = gtk::Image::builder()
+        .icon_name("pan-down-symbolic")
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
     arrow.add_css_class("glass-sidebar-arrow");
 
     let lbl = gtk::Label::builder()

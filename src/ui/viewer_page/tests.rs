@@ -515,6 +515,22 @@ fn viewer_is_immediately_poppable_with_date_visible_on_open() {
     );
 }
 
+/// The media-error surface states itself in a title and a subtitle, so its large
+/// glyph is decoration; P2-4 keeps it out of the accessibility tree instead of
+/// letting a screen reader announce an unnamed image above the message.
+#[gtk::test]
+fn the_media_error_glyph_is_presentation() {
+    init_viewer_test();
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let viewer = ViewerPage::new(media_list, 0);
+
+    assert_eq!(
+        viewer.imp().media_error_icon.get().accessible_role(),
+        gtk::AccessibleRole::Presentation,
+        "the error icon repeats what the title already says"
+    );
+}
+
 /// P2-2: a toast parked at the bottom of the viewer used to sit on the
 /// filmstrip - the control you are still using while the toast reports what you
 /// just did there. The fix is structural: `Adw.ToastOverlay` wraps the stage
