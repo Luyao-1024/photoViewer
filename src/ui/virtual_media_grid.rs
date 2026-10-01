@@ -678,9 +678,22 @@ impl VirtualMediaGrid {
     }
 
     pub fn set_multi_select_mode(&self, enabled: bool) {
-        self.imp().is_multi_select_mode.set(enabled);
+        self.set_multi_select_flag(enabled);
         if !enabled {
             self.clear_selection();
+        }
+    }
+
+    /// Record the multi-select flag and mirror it onto the grid view, so every
+    /// tile can show a resting checkmark instead of only the selected ones.
+    /// Every mutation of the flag must come through here.
+    fn set_multi_select_flag(&self, enabled: bool) {
+        self.imp().is_multi_select_mode.set(enabled);
+        let grid = self.imp().grid.get();
+        if enabled {
+            grid.add_css_class("multi-select-active");
+        } else {
+            grid.remove_css_class("multi-select-active");
         }
     }
 
@@ -690,7 +703,7 @@ impl VirtualMediaGrid {
     }
 
     pub fn select_ids(&self, ids: &[MediaId]) {
-        self.imp().is_multi_select_mode.set(!ids.is_empty());
+        self.set_multi_select_flag(!ids.is_empty());
         let next = ids.iter().copied().collect::<HashSet<_>>();
         let changed_ids = self
             .imp()
@@ -710,7 +723,7 @@ impl VirtualMediaGrid {
     pub fn clear_selection(&self) {
         let changed_ids = std::mem::take(&mut *self.imp().selected.borrow_mut());
         let changed = !changed_ids.is_empty();
-        self.imp().is_multi_select_mode.set(false);
+        self.set_multi_select_flag(false);
         self.sync_visible_selection(&changed_ids);
         if changed {
             self.fire_selection_changed();
@@ -841,7 +854,7 @@ impl VirtualMediaGrid {
                 let Some(GridSlotState::Ready { item, .. }) = self.model().slot_state(slot) else {
                     return KeyboardResult::Ignored;
                 };
-                self.imp().is_multi_select_mode.set(true);
+                self.set_multi_select_flag(true);
                 self.toggle_selection(MediaId::from(item.id));
                 KeyboardResult::Handled
             }
@@ -1133,7 +1146,7 @@ impl VirtualMediaGrid {
                 GlassMenuItemKind::Suggested,
                 move || {
                     if let Some(grid) = weak.upgrade() {
-                        grid.imp().is_multi_select_mode.set(true);
+                        grid.set_multi_select_flag(true);
                         grid.ensure_context_selection(media_id);
                     }
                 },

@@ -229,7 +229,9 @@ gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selecte
 
 /* Pointer emphasis and multi-selection are one interaction language. Use a
    shared dark scrim that covers the full thumbnail: it makes both states easy
-   to recognize over light photos without losing the image entirely. */
+   to recognize over light photos without losing the image entirely. The scrim
+   that actually renders is the `.thumb-state-glass` overlay below - the picture
+   is opaque, so the card background never shows through it. */
 .glass-thumb-card.media-selected,
 .glass-thumb-card.thumb-pointer-hover,
 flowbox.thumb-grid > flowboxchild:hover > .glass-thumb-card,
@@ -262,6 +264,15 @@ gridview.virtual-media-grid-view > child:hover > .glass-thumb-card.media-selecte
 .glass-thumb-card.media-selected.thumb-pointer-hover {
   border-color: transparent;
   box-shadow: none;
+}
+
+/* While multi-select is on, every tile carries a resting checkmark so the user
+   can see what is selectable, not just what already is. Selected tiles still
+   differ by the full-strength scrim above and take precedence: the resting rule
+   deliberately excludes them rather than losing a specificity contest. */
+flowbox.thumb-grid.multi-select-active > flowboxchild:not(:selected) > .glass-thumb-card .thumb-checkmark,
+gridview.virtual-media-grid-view.multi-select-active .glass-thumb-card:not(.media-selected) .thumb-checkmark {
+  opacity: 0.32;
 }
 
 /* The marker itself is targetable, so hovering the heart/play glyph gives a
@@ -922,10 +933,27 @@ video.viewer-media-surface controls scale slider {
   transition: opacity 120ms ease;
 }
 
-.glass-thumb-card.media-selected .thumb-state-glass,
+/* Pointer emphasis and selection share this one veil but must never be
+   interchangeable — a mouse sweep cannot read as a chosen photo. The pointer
+   gets about half the veil; selection keeps the full strength and is the only
+   state with an opaque checkmark. Selection is listed last and names the
+   combined class pair so a hovered, selected tile stays fully veiled. */
 .glass-thumb-card.thumb-pointer-hover .thumb-state-glass,
 flowbox.thumb-grid > flowboxchild:hover .thumb-state-glass,
 gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
+  opacity: 1;
+  background:
+    radial-gradient(circle at center, transparent 62%, alpha(black, 0.08) 100%),
+    linear-gradient(180deg, alpha(black, 0.14), alpha(black, 0.20));
+  border-color: alpha(black, 0.60);
+  box-shadow:
+    inset 0 1px alpha(white, 0.18),
+    inset 0 -1px alpha(black, 0.42),
+    inset 0 0 0 1px alpha(black, 0.26);
+}
+
+.glass-thumb-card.media-selected .thumb-state-glass,
+.glass-thumb-card.media-selected.thumb-pointer-hover .thumb-state-glass {
   opacity: 1;
   background:
     radial-gradient(circle at center, transparent 62%, alpha(black, 0.16) 100%),

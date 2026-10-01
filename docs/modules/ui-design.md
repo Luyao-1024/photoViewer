@@ -228,8 +228,13 @@ Design intent:
   Dynamic photos use a bottom-left playback glyph; ordinary videos use a
   bottom-left duration badge from persisted metadata.
 - Tile hover, selection, and focus states should be visible but restrained.
-  Hover and selection use the same full-tile dark scrim, strong enough to
-  stand out over light photos while preserving the thumbnail content.
+  Hover and selection share one material language — the same full-tile dark
+  scrim — but never the same strength: the pointer veil is about half the
+  selection veil, so a mouse sweep cannot read as a chosen photo. Both veils
+  still cover the tile to its edges.
+  `thumbnail_emphasis_covers_white_image_edges` samples a rendered white tile in
+  both states and guards the per-state ceiling and the gap between them; do not
+  flatten the two back into one value.
 - Keyboard focus is a separate, mandatory layer: `Space` (select) and `Delete`
   (move to trash) act on whichever tile holds focus, so the focused tile must be
   identifiable on screen. Both grids draw a ring in `@accent_bg_color` — the
@@ -258,6 +263,17 @@ Design intent:
   and revealed via `flowboxchild:selected .thumb-checkmark { opacity: 1 }`, so
   it tracks the FlowBox selection automatically. Keep this as the canonical
   grid selection affordance.
+- While multi-select is active, unselected tiles carry the same checkmark at
+  `opacity: 0.32`, so the grid answers "what can I choose here?" and the selected
+  ones stand out by contrast rather than by being the only ticks present. The
+  mode is a grid-wide class — `multi-select-active` on each section FlowBox (via
+  `apply_selection_mode`, which already owns the per-section selection mode) and
+  on the `GtkGridView` (via `set_multi_select_flag`, the only writer of the
+  flag). The resting rule is scoped with `:not(:selected)` /
+  `:not(.media-selected)` rather than by source order, so a selected tile keeps
+  full opacity without a specificity contest. The header's mode-bound exit button
+  and `selection_count_label` remain the global "am I in multi-select?" answer;
+  the ticks are the per-tile one.
 
 ## Year/Month/Day Mode Selector
 

@@ -152,6 +152,39 @@ fn selection_updates_realized_tile_without_replacing_the_list_model() {
     assert!(changes.borrow().is_empty());
 }
 
+/// The veil alone cannot tell a pointer sweep from a chosen photo, so
+/// unselected tiles carry a resting checkmark while multi-select is on. That is
+/// a grid-wide class, and every path that turns the mode on or off has to move
+/// it - including the implicit ones.
+#[gtk::test]
+fn multi_select_marks_the_grid_view_for_resting_checkmarks() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("grid.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, dir.path().join("thumbs")));
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    list.append(&glib::BoxedAnyObject::new(sample_item(1, "one.jpg")));
+    let grid = VirtualMediaGrid::new(list, GroupBy::Day, loader, noop_callbacks(), true);
+    let view = grid.imp().grid.get();
+
+    assert!(!view.has_css_class("multi-select-active"));
+
+    grid.set_multi_select_mode(true);
+    assert!(view.has_css_class("multi-select-active"));
+
+    grid.clear_selection();
+    assert!(
+        !view.has_css_class("multi-select-active"),
+        "clearing the selection leaves multi-select, so the resting ticks must go too"
+    );
+
+    grid.select_ids(&[MediaId::from(1)]);
+    assert!(
+        view.has_css_class("multi-select-active"),
+        "selecting through the model enters multi-select without an explicit entry"
+    );
+}
+
 #[gtk::test]
 fn context_menu_does_not_add_a_checkmark_on_right_click() {
     let _ = gtk::init();

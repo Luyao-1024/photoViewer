@@ -467,12 +467,25 @@
         "多选态要有全局提示（与 P1-6 的「已选择 N 项」合并）——比逐格区分更有效地回答「我在不在多选模式里」",
         "用 grid_css/tests/render.rs:112 thumbnail_emphasis_covers_white_image_edges 的像素采样手法新增断言：hover 与 selected 的采样亮度差需大于阈值，防止后来再次把两态压平"
       ],
-      files: ["data/css/base.css", "src/ui/grid_css/tests/render.rs", "docs/modules/ui-design.md"],
-      tests: ["cargo test ui::grid_css（含新的 hover/selected 亮度差断言，需 tools/with-at-spi.sh xvfb-run）"],
-      docs: ["docs/modules/ui-design.md:175-184"],
-      risk: "属材质契约改动，必须两主题各目测一次；与 P1-13 的 α 地板同批做更省事。",
+      landed:
+        "P1-11 已落盘（2026-10-02）。真正渲染状态层的是 .thumb-state-glass 覆盖子节点（图片不透明，卡片 background 透不过去——第一次把强度差写进 .glass-thumb-card 时像素采样两态都是 162.7，才定位到这里）：hover 的 veil 从 linear 0.30→0.42 降到 0.14→0.20，选中保持原值，并且选中组排在 hover 组之后、显式列出 .media-selected.thumb-pointer-hover，避免同不透明度下被 hover 抢走。对勾节点常驻，多选模式下未选中格子 opacity 0.32、选中 1；多选模式以 grid 级 class 表达——FlowBox 侧挂在每个分区（apply_selection_mode 顺手切换，它本来就拥有 selection-mode），GridView 侧挂在 GtkGridView（新增 set_multi_select_flag，成为 is_multi_select_mode 的唯一写入者，覆盖 set_multi_select_mode / select_ids / clear_selection / 键盘 Space / 右键进入五条路径）。常驻规则用 :not(:selected) 与 :not(.media-selected) 作用域排除选中格，不靠源码顺序压特异性。草案里的 accent 内环没有实施：实测强度差加常驻对勾已足够区分，多一条环会和 P0-2 的键盘焦点环竞争注意力。",
+      files: [
+        "data/css/base.css",
+        "src/ui/grid_css/tests/render.rs",
+        "src/ui/grid_css/tests.rs",
+        "src/ui/media_grid.rs",
+        "src/ui/media_grid/selection.rs",
+        "src/ui/virtual_media_grid.rs",
+        "docs/modules/ui-design.md"
+      ],
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css（含 hover/selected 采样差断言与常驻对勾的 CSS 契约）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::media_grid ui::virtual_media_grid（class 跟随多选模式的两条路径）"
+      ],
+      docs: ["docs/modules/ui-design.md（Media Grids And Tiles）"],
+      risk: "属材质契约改动，必须两主题各目测一次；render.rs 的断言已经在两种材质下分别采样，压平两态会直接失败。",
       demo:
-        "开启后先把工具条切到「交互原型」，把鼠标停在瓦片上（hover：极轻一层）再点选（selected：常驻对勾 + 明显暗罩），两态应一眼可分；用浅色样图（前几张）验证白底上仍可辨。关闭时两态几乎同构。"
+        "常态即已落盘行为：切到「交互原型」，鼠标停在瓦片上是极轻一层，点选后 veil 明显加深且对勾全不透明，多选模式下其它格子带 0.32 的常驻对勾。要看落盘前的同构状态用工具条「落盘前：悬停与选中同构（P1-11）」；提案芯片不再改动画面。"
     },
     {
       id: "p1-12",
@@ -1043,7 +1056,13 @@
       PV.setSearchLatency(200);
       syncBar();
       PV.toast("落盘前对照：查询前与零结果下方全空，英文界面三个分段标签仍是中文。清除演示态即回到已落盘状态。", { kind: "info", ms: 5200 });
-    });    demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
+    });    demoBtn("落盘前：悬停与选中同构（P1-11）", function () {
+      needScreen("photos");
+      body.dataset.pvDemo = "tile-states-flattened";
+      syncBar();
+      PV.toast("落盘前对照：hover 用满强度 veil，未选中的格子没有对勾，指针扫过读起来就像在选片。清除演示态回到已落盘状态。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
     demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });

@@ -129,16 +129,14 @@
       var on = !!selected[t.dataset.media];
       t.classList.toggle("multi-selected", on);
       t.setAttribute("aria-selected", on ? "true" : "false");
-      // P1-11 的「对勾常驻」要求未选中瓦片也有对勾节点，否则演示不出来。
-      var want = enabled("p1-11") ? true : on;
+      // 对勾节点常驻每个瓦片，与 SquareTile 一致：真实应用里它一直存在，
+      // 只有不透明度随多选/选中状态变化。
       var mark = q(".checkmark", t);
-      if (want && !mark) {
+      if (!mark) {
         mark = document.createElement("span");
         mark.className = "checkmark";
         mark.textContent = "✓";
         t.appendChild(mark);
-      } else if (!want && mark && !t.classList.contains("hover-demo")) {
-        mark.remove();
       }
     });
   }

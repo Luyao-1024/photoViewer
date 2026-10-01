@@ -139,7 +139,8 @@ impl MediaGrid {
     /// `:selected` even when the user never entered multi-select, surfacing a
     /// stray checkmark on a thumbnail.
     pub(super) fn apply_selection_mode(&self) {
-        let mode = if self.imp().is_multi_select_mode.get() {
+        let multi = self.imp().is_multi_select_mode.get();
+        let mode = if multi {
             gtk::SelectionMode::Multiple
         } else {
             gtk::SelectionMode::None
@@ -149,6 +150,13 @@ impl MediaGrid {
         while let Some(c) = child {
             if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
                 flow.set_selection_mode(mode);
+                // The resting checkmark is a grid-wide state, so the section
+                // carries the mode as a class instead of every tile tracking it.
+                if multi {
+                    flow.add_css_class("multi-select-active");
+                } else {
+                    flow.remove_css_class("multi-select-active");
+                }
             }
             child = c.next_sibling();
         }

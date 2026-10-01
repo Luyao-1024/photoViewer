@@ -305,6 +305,19 @@ pub(crate) mod test_support {
         }
         modes
     }
+
+    pub(super) fn section_flow_multi_select_classes(grid: &MediaGrid) -> Vec<bool> {
+        let content = grid.imp().content.get();
+        let mut active = Vec::new();
+        let mut child = content.first_child();
+        while let Some(c) = child {
+            if let Some(flow) = c.downcast_ref::<gtk::FlowBox>() {
+                active.push(flow.has_css_class("multi-select-active"));
+            }
+            child = c.next_sibling();
+        }
+        active
+    }
 }
 
 mod imp {

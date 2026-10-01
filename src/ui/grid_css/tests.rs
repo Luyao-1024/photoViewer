@@ -373,7 +373,7 @@ fn glass_chrome_eases_on_state_change() {
 /// wrapping FlowBoxChild is selected. This is the primary selected-state
 /// affordance.
 #[test]
-fn thumb_checkmark_shows_only_on_selected() {
+fn thumb_checkmark_tracks_selection_and_multi_select_mode() {
     let css = build_css(true);
 
     // Default: hidden (opacity 0), translucent white, with an icon shadow
@@ -389,6 +389,28 @@ fn thumb_checkmark_shows_only_on_selected() {
             "flowbox.thumb-grid > flowboxchild:selected .thumb-checkmark {\n  opacity: 1;"
         ),
         "thumb checkmark must be revealed (opacity 1) on flowboxchild:selected"
+    );
+
+    // While multi-select is on, unselected tiles carry a resting checkmark so
+    // the user can see what is selectable. `:not(...)` keeps selection at full
+    // opacity without a specificity contest, and both grid kinds need it.
+    for selector in [
+        "flowbox.thumb-grid.multi-select-active > flowboxchild:not(:selected) > .glass-thumb-card .thumb-checkmark",
+        "gridview.virtual-media-grid-view.multi-select-active .glass-thumb-card:not(.media-selected) .thumb-checkmark",
+    ] {
+        assert!(
+            css.contains(selector),
+            "missing the resting checkmark selector {selector}"
+        );
+    }
+    let resting = css_block(
+        &css,
+        "gridview.virtual-media-grid-view.multi-select-active .glass-thumb-card:not(.media-selected) .thumb-checkmark",
+    )
+    .expect("the resting checkmark block");
+    assert!(
+        resting.contains("opacity: 0.32"),
+        "the resting checkmark must stay clearly dimmer than a selected one, got {resting}"
     );
 }
 

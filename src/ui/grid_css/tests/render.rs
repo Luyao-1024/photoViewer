@@ -140,13 +140,18 @@ fn thumbnail_emphasis_covers_white_image_edges() {
         settle(300);
         let (width, normal) = pixels(&window, &tile);
         let height = normal.len() / (width * 4);
-        for class in ["thumb-pointer-hover", "media-selected"] {
+        let mut scrim_means: Vec<(&str, f64)> = Vec::new();
+        // Each state has its own ceiling: the veil must reach the tile edges in
+        // both, but the pointer stays the lighter of the two.
+        for (class, ceiling) in [("thumb-pointer-hover", 240u8), ("media-selected", 210u8)] {
             tile.add_css_class(class);
             settle(250);
             let (active_width, active) = pixels(&window, &tile);
             assert_eq!(active_width, width, "emphasis must not resize the tile");
             assert_eq!(active.len(), normal.len());
             // Follow the actual white picture extent, excluding rounded corners.
+            let mut covered = 0u64;
+            let mut covered_count = 0u64;
             for (x, y) in (0..width)
                 .map(|x| (x, height / 2))
                 .chain((0..height).map(|y| (width / 2, y)))
@@ -154,15 +159,29 @@ fn thumbnail_emphasis_covers_white_image_edges() {
                 let i = (y * width + x) * 4;
                 if normal[i] > 245 && normal[i + 3] > 245 {
                     assert!(
-                        active[i] < 210,
+                        active[i] < ceiling,
                         "uncovered white pixel at ({x}, {y}) in {class}: {}",
                         active[i]
                     );
+                    covered += u64::from(active[i]);
+                    covered_count += 1;
                 }
             }
+            scrim_means.push((class, covered as f64 / covered_count.max(1) as f64));
             tile.remove_css_class(class);
             settle(250);
         }
+        // P1-11: the two states share one material language but must never read
+        // as each other, so the pointer scrim has to stay visibly lighter than
+        // the selection scrim.
+        let [(_, hover), (_, selected)] = scrim_means.as_slice() else {
+            panic!("expected a hover and a selected sample, got {scrim_means:?}");
+        };
+        assert!(
+            hover - selected > 20.0,
+            "hover scrim {hover:.1} and selection scrim {selected:.1} are too close to \
+             tell apart on a white photo"
+        );
     }
     window.close();
     gtk::style_context_remove_provider_for_display(&display, &provider);

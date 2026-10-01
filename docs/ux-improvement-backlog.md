@@ -543,6 +543,12 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **落点文件**：`data/css/base.css`、`src/ui/grid_css/tests/render.rs`、`docs/modules/ui-design.md`。
 
+**实施结果**（2026-10-02 已落盘）：状态分级的落点是 `.thumb-state-glass` 覆盖子节点，不是草案指的 `.glass-thumb-card` background——图片不透明，卡片底色透不过去；先按草案改卡片底色时像素采样两态都是 162.7，才暴露出真正的渲染层。hover 的 veil 由 `linear-gradient(180deg, 0.30, 0.42)` 降到 `(0.14, 0.20)`（径向部分同比减半），选中保持原值；选中组写在 hover 组之后并显式列出 `.media-selected.thumb-pointer-hover`，否则同特异度下会被 hover 规则抢走。对勾常驻：多选模式下未选中格子 `opacity: 0.32`、选中 `1`，规则用 `:not(:selected)` / `:not(.media-selected)` 划作用域而不是靠源码顺序压特异性。模式本身是 grid 级 class `multi-select-active`——FlowBox 侧由既有的 `apply_selection_mode` 顺手挂到每个分区，GridView 侧新增 `set_multi_select_flag` 作为 `is_multi_select_mode` 的唯一写入者（覆盖 set_multi_select_mode / select_ids / clear_selection / 键盘 Space / 右键进入）。
+
+偏差：草案的备选「选中态加 accent 内环」没有实施——实测的强度差加常驻对勾已足够分开两态，多一条环会和 P0-2 的键盘焦点环竞争注意力。方案第 3 点（全局多选提示）确认由已落盘的 `selection_count_label` 与模式绑定的退出按钮承担，本次只补上逐格的常驻对勾，没有新增控件。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css`（含 hover/selected 采样差与常驻对勾的 CSS 契约）、`ui::media_grid`、`ui::virtual_media_grid`（class 跟随多选模式）。
+
 ---
 
 ### P1-12 查看器右上控件簇：分组、命中区、间距三处问题

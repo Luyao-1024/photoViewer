@@ -35,11 +35,23 @@ fn section_flowbox_selection_mode_tracks_multi_select() {
         modes.iter().all(|m| *m == gtk::SelectionMode::Multiple),
         "multi-select must flip every section to Multiple, got {modes:?}"
     );
+    assert!(
+        section_flow_multi_select_classes(&grid)
+            .iter()
+            .all(|active| *active),
+        "multi-select must mark every section so unselected tiles show a resting checkmark"
+    );
 
     grid.set_multi_select_mode(false);
     let modes = section_flow_selection_modes(&grid);
     assert!(
         modes.iter().all(|m| *m == gtk::SelectionMode::None),
         "exiting multi-select must restore None, got {modes:?}"
+    );
+    assert!(
+        section_flow_multi_select_classes(&grid)
+            .iter()
+            .all(|active| !*active),
+        "the resting checkmarks must disappear with multi-select"
     );
 }
