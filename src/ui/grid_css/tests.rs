@@ -181,6 +181,34 @@ fn viewer_media_error_background_has_dedicated_visual_style() {
     );
 }
 
+/// The viewer's overlay controls float directly on the photo, so their hit area
+/// is a deliberate minimum rather than an icon side effect, and the zoom cluster
+/// needs a resting outline to read as a control group at all. Both are painted
+/// in black over the image rather than as glass, so they live in base.css only
+/// and stay identical in both materials.
+#[test]
+fn overlay_viewer_controls_keep_their_hit_area_and_resting_outline() {
+    for liquid in [true, false] {
+        let css = build_css(liquid);
+        assert!(
+            css.contains(".viewer-overlay-nav-btn {\n  min-width: 40px;\n  min-height: 36px;"),
+            "overlay controls need a 40x36 hit area ({liquid} mode)"
+        );
+        assert!(
+            css.contains(".viewer-zoom-controls {\n  padding: 4px;"),
+            "the zoom cluster needs its own resting container ({liquid} mode)"
+        );
+        let cluster = css_block(&css, ".viewer-zoom-controls")
+            .expect("the zoom cluster block")
+            .to_string();
+        assert!(
+            cluster.contains("alpha(black, 0.16)")
+                && cluster.contains("border: 1px solid alpha(black"),
+            "the resting outline must stay a faint dark wash, not a theme fill: {cluster}"
+        );
+    }
+}
+
 #[test]
 fn viewer_video_controls_use_light_glass_progress_style() {
     let css = build_css(true);

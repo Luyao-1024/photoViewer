@@ -139,6 +139,11 @@ impl ViewerPage {
         imp.zoom_reset_btn.get().set_visible(zoomed);
         imp.rotate_left_btn.get().set_visible(!zoomed);
         imp.rotate_right_btn.get().set_visible(!zoomed);
+        // A separator has to sit between two groups that are both present. The
+        // transform group disappears entirely once zoomed, which would leave its
+        // separator dangling, so it follows that group and not the zoom one.
+        imp.zoom_transform_sep.get().set_visible(!zoomed);
+        imp.zoom_state_sep.get().set_visible(true);
     }
 }
 

@@ -1157,8 +1157,8 @@ button.viewer-thumb-item.viewer-thumb-current picture {
 }
 
 .viewer-overlay-nav-btn {
-  min-width: 36px;
-  min-height: 32px;
+  min-width: 40px;
+  min-height: 36px;
   padding: 0;
   border-radius: 10px;
   /* These buttons float bare over the photo at rest and gain a theme-following
@@ -1175,6 +1175,26 @@ button.viewer-thumb-item.viewer-thumb-current picture {
    channel left to carry the state — and it works in both glass modes. */
 .viewer-overlay-nav-btn:disabled {
   opacity: 0.32;
+}
+
+/* viewer-zoom-controls — the top-right cluster carries six controls that all
+   look like part of the photograph when nothing is hovered, so the cluster
+   itself was never discoverable. A faint resting outline says "this is a
+   control group" without promoting the buttons to a blocking chrome bar.
+   It is deliberately not a glass surface: no blur, no theme fill, just black
+   over the photo, which is why it needs no liquid/plain mirror and behaves the
+   same in both materials. The prev/next pair keeps no container so it stays
+   two light arrows. */
+.viewer-zoom-controls {
+  padding: 4px;
+  border-radius: 14px;
+  background: alpha(black, 0.16);
+  border: 1px solid alpha(black, 0.30);
+}
+
+.viewer-zoom-controls separator {
+  background: alpha(black, 0.38);
+  margin: 4px 0;
 }
 
 /* viewer-floating-panel 内容链透明化 ─────────────────────────────

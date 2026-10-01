@@ -570,7 +570,15 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **落点文件**：`data/ui/viewer-page.blp`、`data/css/base.css`（`1114-1125`）、`docs/ui-naming-reference/index.html`。
 
-**测试**：`cargo test --test e2e_viewer`（按钮 id→动作映射随重排仍正确，tooltip 断言不变）；`cargo test ui::grid_css`（尺寸变更不破坏 hover 采样）。
+**实施结果**（2026-10-02 已落盘）：落地了方案 1、2 和方案 3 的「容器轮廓」分支。
+
+1. **重排**：`viewer-page.blp` 的 `viewer_zoom_controls` 现按 `zoom_out_btn` → `zoom_in_btn` → `zoom_transform_sep` → `rotate_left_btn` → `rotate_right_btn` → `zoom_state_sep` → `zoom_reset_btn` → `fullscreen_btn` 声明，并在 blp 注释里写明「这是普通 `Gtk.Box`，声明顺序即视觉顺序」，以免和 `photos-page.blp` 的 `[end]` 反向声明混淆。分隔线不是静态装饰：`update_zoom_buttons`（`src/ui/viewer/transform.rs`）让 `zoom_transform_sep` 跟随「放大后整组消失的旋转组」，因此它不会悬在簇尾，而 `zoom_state_sep` 常驻——草案说的「用 `Gtk.Separator` 或增大组间 `margin`」选了前者，因为可见性由按钮组驱动比由 margin 驱动更可验证。
+2. **命中区与间距**：`.viewer-overlay-nav-btn` 由 36×32 提到 `min-width: 40px; min-height: 36px`（prev/next 与簇内按钮共用），两个簇的 `spacing` 从 4 到 6。静止态裸图标的材质规则未动。
+3. **可发现性**：`.viewer-zoom-controls` 获得 `padding: 4px; border-radius: 14px; background: alpha(black, 0.16); border: 1px solid alpha(black, 0.30)` 的常日内描边，`.viewer-zoom-controls separator` 用 `alpha(black, 0.38)`。它刻意不是玻璃面（无 blur、无主题底色，只是压在照片上的一层黑），因此不存在草案要求的「两处材质镜像」，两种材质下同一套值——这一点写进了 CSS 注释与 `viewer.md`。
+
+偏差：方案 3 的另一分支（首次进入播放 ≤600ms reveal 提示）没有实施，它依赖尚未落盘的 P1-14 reduce-motion 开关，且与 P1-8 的舞台输入提示属同一类一次性引导，留到那条一起做。方案 4（倍率标签计入簇宽）在本机是空谈：P1-7 的 `zoom_level_label` 从未实施，簇内目前不含动态宽度文本，因此没有窄窗口溢出的新风险。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::transform`（四组相邻断言锁住「声明顺序＝视觉顺序」，加两条分隔线可见性随缩放态）、`--lib ui::grid_css`（40×36 命中区与 `.viewer-zoom-controls` 日内描边在两种材质下都成立）、`--test ui_viewer_toolbar --test e2e_viewer --test ux_click_flows`。`tests/ui_viewer_toolbar.rs` 原本也按位置断言簇内顺序，与 `transform/tests.rs` 重复且已随重排失效，改为只断言整组仍住在一个容器里，顺序契约由模块内测试独占。
 
 ---
 
@@ -753,8 +761,8 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 ## 本次未执行的验证（诚实边界）
 
 - **未运行应用**，也未生成截图或视觉基线。因此以下结论属「代码确认 + 待视觉验证」，落地前必须目测：P1-13 的对比度判断（来自 α 数值与表面叠合推理）、P1-12 的间距/密度拥挤感、P1-11 的两态区分度、P0-3 的 header 宽度是否溢出。
-- 上条已在落盘阶段部分补做：**P0-3 的 header 溢出风险已用真实渲染截图目测**（照片页与相册详情页各看 800×600 与 1280×800 两档，无换行/裁切，窗口控件仍在右端）；P1-13/P1-12/P1-11 仍是「代码确认 + 待视觉验证」。
-- 未运行 `PHOTOVIEWER_GLASS_SCREENSHOTS=... tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::grid_css::tests::render`——它会向 `target/` 写文件，本文档阶段未执行。
+- 上条已在落盘阶段部分补做：**P0-3 的 header 溢出风险已用真实渲染截图目测**（照片页与相册详情页各看 800×600 与 1280×800 两档，无换行/裁切，窗口控件仍在右端）；**P1-12 的控件簇也已用真实 GTK 渲染目测**（一次性探针测试：把 ViewerPage 放进 900×600 窗口、舞台铺一张满幅合成照片，在 liquid/plain × 深色/浅色四种组合下截取右上簇，并额外截放大态；实测按钮分配 42×38、簇内节距 48px 均匀、放大时 `zoom_transform_sep` 确实随旋转组一起消失，浅色主题下簇身压暗照片的效果与深色一致）；**P1-11 的两态区分度**由 `render.rs` 的真实像素采样断言把关（hover 与 selected 的亮度差被钉成阈值，比目测更强）。P1-13 仍是「代码确认 + 待视觉验证」。
+- `ui::grid_css::tests::render` 里的真实像素采样断言自 P1-11 起已是常规聚焦测试的一部分（每次改动都会跑）；`PHOTOVIEWER_GLASS_SCREENSHOTS=...` 的导出分支仍未使用，因为它只向 `target/` 写文件、不参与断言。
 - 未做 Flatpak 运行时验证，也未做超大图库压测。
 - 未读取 AT-SPI 实际无障碍树（`tools/assert-at-spi.py --dump` 可在真实窗口上验证 P2-3/P2-4 的暴露情况），因此「读屏听到三个静态标签」的推断来自控件类型（`Gtk.Box` + 点击手势）而非实测。
 - 检视中所有「零调用者」「零命中」结论都用 grep 交叉确认过（`empty_states::loading/scan_error`、`set_accessible_label`、`ShortcutsWindow`、`gtk::Settings`、`@media`、scan 进度布尔状态）。

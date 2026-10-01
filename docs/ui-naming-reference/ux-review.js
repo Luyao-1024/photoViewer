@@ -506,15 +506,27 @@
         "可发现性：给整簇一个极淡的静止容器轮廓（复用 .glass-segmented 的轻底，不新增材质语义），或首次进入查看器播放一次 ≤600ms reveal 提示（须尊重 P1-14 的 reduce-motion 开关）",
         "与 P1-7 倍率标签同处布局，新增 label 要计入该簇宽度，避免窄窗口溢出"
       ],
-      files: ["data/ui/viewer-page.blp", "data/css/base.css（1114-1125）", "docs/ui-naming-reference/index.html"],
-      tests: [
-        "cargo test --test e2e_viewer（按钮 id→动作映射随重排仍正确，tooltip 断言不变）",
-        "cargo test ui::grid_css（尺寸变更不破坏 hover 采样）"
+      landed:
+        "P1-12 已落盘（2026-10-02），落地内容是方案里的前两条加第三条的容器轮廓分支。viewer-page.blp 的 viewer_zoom_controls 现按 zoom_out → zoom_in ｜ zoom_transform_sep → rotate_left → rotate_right ｜ zoom_state_sep → zoom_reset → fullscreen 声明；该容器是普通 Gtk.Box，声明顺序就是视觉顺序，不像 photos-page.blp 的 [end] HeaderBar 会反向排布，所以 blp 注释里写明了这一点。分隔线不是装饰：update_zoom_buttons 让 zoom_transform_sep 跟随「会整组消失的旋转组」（放大后 rotate 隐藏，分隔线也跟着隐藏，不会悬在簇尾），zoom_state_sep 常驻。命中区提到 40×36、组内 spacing 从 4 到 6；.viewer-zoom-controls 有一层 alpha(black,0.16) + 1px alpha(black,0.30) 的常日内描边，刻意不做成玻璃（因此没有 liquid/plain 双镜像要求，按钮各自仍是 .glass-toolbar-button，hover 才上材质）。草案第三条的「首次进入播放 reveal 提示」没有实施——它依赖尚未落盘的 P1-14 reduce-motion 开关，且与 P1-8 的舞台输入提示是同一类一次性引导，留到那条一起做。草案第四条（倍率标签计入簇宽）在本机是空谈：P1-7 的 zoom_level_label 从未实施，控件簇目前不含动态宽度文本。",
+      files: [
+        "data/ui/viewer-page.blp",
+        "data/css/base.css",
+        "src/ui/viewer/transform.rs",
+        "src/ui/viewer/transform/tests.rs",
+        "src/ui/grid_css/tests.rs",
+        "tests/ui_viewer_toolbar.rs",
+        "docs/modules/viewer.md",
+        "docs/ui-naming-reference/index.html"
       ],
-      docs: ["docs/ui-naming-reference/index.html"],
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::transform（声明顺序＝视觉顺序的四组相邻断言 + 两条分隔线可见性随缩放态）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css（40×36 命中区与 .viewer-zoom-controls 日内描边在两种材质下都在）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ui_viewer_toolbar --test e2e_viewer --test ux_click_flows"
+      ],
+      docs: ["docs/modules/viewer.md", "docs/ui-naming-reference/index.html"],
       risk: "重排会改变 e2e 里按位置断言的用例，需一起改。",
       demo:
-        "开启后查看器右上的控件顺序变成 缩小|放大 · 左转|右转 · 复位|全屏，组间出现分隔件且命中区更大；关闭时回到现状顺序（放大在最右、缩小在最左，中间夹着旋转与全屏）。切窄窗口观察是否与倍率标签挤在一起。"
+        "常态即已落盘行为：切到「交互原型」并打开查看器，右上簇是 缩小|放大 · 左转|右转 · 还原|全屏，组间有分隔线、命中区更大、整簇带一层日内描边。要看落盘前的乱序形态用工具条「落盘前：控件簇乱序（P1-12）」；提案芯片不再改动画面。"
     },
     {
       id: "p1-13",
@@ -1061,6 +1073,12 @@
       body.dataset.pvDemo = "tile-states-flattened";
       syncBar();
       PV.toast("落盘前对照：hover 用满强度 veil，未选中的格子没有对勾，指针扫过读起来就像在选片。清除演示态回到已落盘状态。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("落盘前：控件簇乱序（P1-12）", function () {
+      openViewerDemo();
+      body.dataset.pvDemo = "cluster-legacy";
+      syncBar();
+      PV.toast("落盘前对照：还原在最左、放大在最右，旋转与全屏把缩小/放大拆在两端，36×32、间距 4、无分隔线、簇身无描边。清除演示态回到已落盘顺序。", { kind: "info", ms: 5200 });
     });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });

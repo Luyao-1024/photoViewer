@@ -235,20 +235,18 @@ fn viewer_toolbar_uses_glass_classes() {
         .get()
         .parent()
         .expect("zoom-in button should have a parent container");
-    assert_eq!(
-        imp.rotate_right_btn.get().next_sibling().as_ref(),
-        Some(imp.fullscreen_btn.get().upcast_ref()),
-        "fullscreen should sit immediately to the left of zoom-in after rotate-right"
-    );
-    assert_eq!(
-        imp.fullscreen_btn.get().next_sibling().as_ref(),
-        Some(imp.zoom_in_btn.get().upcast_ref()),
-        "zoom-in should sit immediately to the right of fullscreen"
-    );
+    // The cluster's internal order is owned by
+    // `src/ui/viewer/transform/tests.rs`; this test only checks that the whole
+    // transform group really lives inside that one container.
     assert_eq!(
         imp.rotate_left_btn.get().parent().as_ref(),
         Some(&zoom_parent),
         "rotate buttons should live in the zoom controls container"
+    );
+    assert_eq!(
+        imp.fullscreen_btn.get().parent().as_ref(),
+        Some(&zoom_parent),
+        "fullscreen should live in the zoom controls container"
     );
 
     // Task: favorite-active class toggle on the viewer favorite button.

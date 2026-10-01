@@ -1282,9 +1282,9 @@ body[data-pv~="p0-2"] .tile.pv-p0-2 { display: block; }
 /* P1-7：位置常态可见，倍率仍是提案。 */
 body[data-pv~="p1-7"] .zoom-level.pv-p1-7--zoomed.is-zoomed { display: inline-flex; }
 
-/* P1-8 舞台输入提示 */
+/* P1-8 舞台输入提示：能力已落盘，这条一次性提示本身仍未实现（自动收起属于
+   结构性沉浸浏览项，prototype.js revealStageHint() 只做显式 reveal）。 */
 body[data-pv~="p1-8"] .stage-hint.is-shown { display: block; }
-/* 自动收起只在 P0-2 + P1-12 都已落地时发生，见 prototype.js revealStageHint() */
 body[data-pv~="p1-8"] .stage-hint.is-dismissed { opacity: 0; pointer-events: none; }
 
 /* P1-9 已落盘：脏标记、对比按钮和退出确认都是真实 chrome，由编辑状态驱动，
@@ -1295,8 +1295,10 @@ body[data-pv~="p1-8"] .stage-hint.is-dismissed { opacity: 0; pointer-events: non
 .panel-actions .compare-toggle { grid-column: 1 / -1; display: none; }
 body[data-pv-dirty="1"] .panel-actions .compare-toggle { display: inline-flex; }
 
-/* P1-12 控件簇分隔 */
-body[data-pv~="p1-12"] .ctrl-sep { display: block; }
+/* P1-12 已落盘：组间分隔线是真实 chrome，常态可见；落盘前没有分隔线的形态
+   挂在演示态（工具条「落盘前：控件簇乱序（P1-12）」），不挂在提案 token 上。 */
+.ctrl-sep { display: block; }
+body[data-pv-demo="cluster-legacy"] .ctrl-sep { display: none; }
 
 /* P0-4 已落盘：设置页那一行和快捷键参考窗口都是真实 chrome，不再受提案开关控制，
    命名总览里始终可查。打开 P0-4 标记不改动画面——落盘前的对照（应用内没有任何快捷键
@@ -1550,39 +1552,45 @@ body:not([data-pv-scan="ready"]) .screen[data-screen="photos"] .scroll-date-labe
 }
 .ctrl-sep {
   width: 1px;
-  margin: 4px 3px;
-  background: rgba(255,255,255,0.18);
+  align-self: stretch;
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.38);
 }
-/* P1-12：语义重排（zoom | rotate | reset/fullscreen）+ 命中区放大 */
-body[data-pv~="p1-12"] .stage-controls.top-right { gap: 6px; }
-body[data-pv~="p1-12"] .stage-controls.top-right button {
+/* P1-12 已落盘：语义重排（zoom ｜ rotate ｜ reset/fullscreen）+ 命中区放大 +
+   一层克制的常日内描边。DOM 顺序即 data/ui/viewer-page.blp 的声明顺序，也是屏幕
+   上的视觉顺序（普通 Gtk.Box，不是会反向排布的 AdwHeaderBar），所以这里不再需要
+   order 覆写。落盘前的形态走显式演示态 cluster-legacy。 */
+.stage-controls.top-right {
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.30);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.stage-controls.top-right button {
   min-width: 40px;
   min-height: 36px;
 }
-body[data-pv~="p1-12"] .stage-controls.top-right {
-  padding: 3px 5px;
-  border: 1px solid rgba(255,255,255,0.10);
-  border-radius: 11px;
-  background: rgba(255,255,255,0.045);
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right {
+  gap: 4px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 0;
+  background: none;
 }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal] { order: var(--pv-order, 99); }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="1"] { --pv-order: 1; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="2"] { --pv-order: 2; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="3"] { --pv-order: 3; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="4"] { --pv-order: 4; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="5"] { --pv-order: 5; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="6"] { --pv-order: 6; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="7"] { --pv-order: 7; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="8"] { --pv-order: 8; }
-body[data-pv~="p1-12"] .stage-controls.top-right [data-order-proposal="9"] { --pv-order: 9; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy] { order: var(--pv-order, 99); }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="1"] { --pv-order: 1; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="2"] { --pv-order: 2; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="3"] { --pv-order: 3; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="4"] { --pv-order: 4; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="5"] { --pv-order: 5; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right [data-order-legacy="6"] { --pv-order: 6; }
-body:not([data-pv~="p1-12"]) .stage-controls.top-right .zoom-level { order: 7; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right button {
+  min-width: 36px;
+  min-height: 32px;
+}
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy] { order: var(--pv-order, 99); }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="1"] { --pv-order: 1; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="2"] { --pv-order: 2; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="3"] { --pv-order: 3; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="4"] { --pv-order: 4; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="5"] { --pv-order: 5; }
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right [data-order-legacy="6"] { --pv-order: 6; }
+/* 落盘前没有倍率读数（P1-7 仍未实施），演示态把它压到簇尾，避免它冒充 chrome。 */
+body[data-pv-demo="cluster-legacy"] .stage-controls.top-right .zoom-level { order: 7; }
 /* P1-7：到两端时禁用而不是无响应 */
 .stage-controls.bottom-right button[disabled] {
   opacity: 0.34;

@@ -230,7 +230,7 @@ template $ViewerPage : Adw.NavigationPage {
               // the viewer-chrome hover rules in grid_css.
               Gtk.Box viewer_nav_buttons {
                 orientation: horizontal;
-                spacing: 4;
+                spacing: 6;
                 halign: end;
                 valign: end;
                 margin-bottom: 34;
@@ -253,25 +253,33 @@ template $ViewerPage : Adw.NavigationPage {
               [overlay]
               // Zoom controls live at the top-right of the image stage so they
               // do not compete with the bottom-right previous/next controls.
+              // Declaration order is visual order here (a plain Gtk.Box, not a
+              // HeaderBar with reversed [end] packing), so the grouping below
+              // is the contract: zoom out/in, then transform, then view state.
               Gtk.Box viewer_zoom_controls {
                 orientation: horizontal;
-                spacing: 4;
+                spacing: 6;
                 halign: end;
                 valign: start;
                 margin-top: 10;
                 margin-end: 10;
                 css-classes: ["viewer-zoom-controls"];
 
-                Gtk.Button zoom_reset_btn {
-                  icon-name: "zoom-fit-best-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
-
                 Gtk.Button zoom_out_btn {
                   icon-name: "zoom-out-symbolic";
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
                   tooltip-text: "";
+                }
+
+                Gtk.Button zoom_in_btn {
+                  icon-name: "zoom-in-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+
+                Gtk.Separator zoom_transform_sep {
+                  orientation: vertical;
+                  visible: false;
                 }
 
                 Gtk.Button rotate_left_btn {
@@ -286,16 +294,20 @@ template $ViewerPage : Adw.NavigationPage {
                   tooltip-text: "";
                 }
 
+                Gtk.Separator zoom_state_sep {
+                  orientation: vertical;
+                }
+
+                Gtk.Button zoom_reset_btn {
+                  icon-name: "zoom-fit-best-symbolic";
+                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  tooltip-text: "";
+                }
+
                 Gtk.Button fullscreen_btn {
                   icon-name: "view-fullscreen-symbolic";
                   tooltip-text: "";
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                }
-
-                Gtk.Button zoom_in_btn {
-                  icon-name: "zoom-in-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
                 }
               }
             }

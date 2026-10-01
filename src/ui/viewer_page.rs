@@ -391,6 +391,10 @@ mod imp {
         pub rotate_right_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub zoom_in_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub zoom_transform_sep: TemplateChild<gtk::Separator>,
+        #[template_child]
+        pub zoom_state_sep: TemplateChild<gtk::Separator>,
     }
 
     #[glib::object_subclass]

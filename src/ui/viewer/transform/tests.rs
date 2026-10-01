@@ -46,7 +46,7 @@ fn zoom_pan_is_clamped_to_the_visible_image_and_resets_at_identity() {
 }
 
 #[gtk::test]
-fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_order() {
+fn zoom_controls_live_in_top_right_grouped_as_zoom_then_transform_then_view_state() {
     init_viewer_test();
     let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
     media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
@@ -76,20 +76,28 @@ fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_ord
         "zoom controls should sit at the image area's top-right edge"
     );
 
+    // Semantic grouping: zoom out/in, then the transform pair, then view state.
+    // Zoom in/out must be neighbours - splitting them across the rotate and
+    // fullscreen buttons made the cluster unreadable.
     assert_eq!(
         zoom_parent.first_child(),
-        Some(imp.zoom_reset_btn.get().upcast::<gtk::Widget>()),
-        "zoom controls should start with reset"
-    );
-    assert_eq!(
-        imp.zoom_reset_btn.get().next_sibling(),
         Some(imp.zoom_out_btn.get().upcast::<gtk::Widget>()),
-        "zoom-out should follow reset"
+        "zoom controls should start with zoom-out"
     );
     assert_eq!(
         imp.zoom_out_btn.get().next_sibling(),
+        Some(imp.zoom_in_btn.get().upcast::<gtk::Widget>()),
+        "zoom-in must sit next to zoom-out"
+    );
+    assert_eq!(
+        imp.zoom_in_btn.get().next_sibling(),
+        Some(imp.zoom_transform_sep.get().upcast::<gtk::Widget>()),
+        "the zoom group should be divided from the transform group"
+    );
+    assert_eq!(
+        imp.zoom_transform_sep.get().next_sibling(),
         Some(imp.rotate_left_btn.get().upcast::<gtk::Widget>()),
-        "rotate-left should follow zoom-out"
+        "rotate-left should follow the transform separator"
     );
     assert_eq!(
         imp.rotate_left_btn.get().next_sibling(),
@@ -98,13 +106,18 @@ fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_ord
     );
     assert_eq!(
         imp.rotate_right_btn.get().next_sibling(),
-        Some(imp.fullscreen_btn.get().upcast::<gtk::Widget>()),
-        "fullscreen should follow rotate-right"
+        Some(imp.zoom_state_sep.get().upcast::<gtk::Widget>()),
+        "the transform group should be divided from the view-state group"
     );
     assert_eq!(
-        imp.fullscreen_btn.get().next_sibling(),
-        Some(imp.zoom_in_btn.get().upcast::<gtk::Widget>()),
-        "zoom-in should follow fullscreen"
+        imp.zoom_state_sep.get().next_sibling(),
+        Some(imp.zoom_reset_btn.get().upcast::<gtk::Widget>()),
+        "reset should follow the state separator"
+    );
+    assert_eq!(
+        imp.zoom_reset_btn.get().next_sibling(),
+        Some(imp.fullscreen_btn.get().upcast::<gtk::Widget>()),
+        "fullscreen should close the cluster"
     );
 
     for (name, button) in [
@@ -135,6 +148,11 @@ fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_ord
     assert!(imp.rotate_left_btn.get().is_visible());
     assert!(imp.rotate_right_btn.get().is_visible());
     assert!(imp.fullscreen_btn.get().is_visible());
+    assert!(
+        imp.zoom_transform_sep.get().is_visible(),
+        "both groups are present at identity zoom, so the divider is too"
+    );
+    assert!(imp.zoom_state_sep.get().is_visible());
 
     viewer.set_viewer_zoom_for_tests(1.25, 0.0, 0.0);
     assert!(imp.zoom_in_btn.get().is_visible());
@@ -143,6 +161,14 @@ fn zoom_controls_live_in_top_right_with_reset_out_rotate_fullscreen_increase_ord
     assert!(!imp.rotate_left_btn.get().is_visible());
     assert!(!imp.rotate_right_btn.get().is_visible());
     assert!(imp.fullscreen_btn.get().is_visible());
+    assert!(
+        !imp.zoom_transform_sep.get().is_visible(),
+        "the transform group is gone while zoomed, so its divider must not dangle"
+    );
+    assert!(
+        imp.zoom_state_sep.get().is_visible(),
+        "zoom and view state stay separated while zoomed"
+    );
 }
 
 #[gtk::test]
