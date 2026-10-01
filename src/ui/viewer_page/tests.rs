@@ -1,6 +1,161 @@
 use super::*;
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use std::cell::Cell;
+
+/// Pump the main context until `done` holds, so async position/badge replies
+/// can land inside a `#[gtk::test]`.
+fn pump_until(timeout: std::time::Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    let context = glib::MainContext::default();
+    while std::time::Instant::now() < deadline {
+        while context.iteration(false) {}
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    while context.iteration(false) {}
+    done()
+}
+
+fn pump_for(timeout: std::time::Duration) {
+    let _ = pump_until(timeout, || false);
+}
+
+fn seed_position_fixture(n: i64) -> (tempfile::TempDir, crate::core::db::DbPool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("position.db")).unwrap();
+    for id in 1..=n {
+        let taken = Utc.with_ymd_and_hms(2026, 6, id as u32, 12, 0, 0).unwrap();
+        crate::core::db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: format!("file:///tmp/lib/{id}.jpg"),
+                path: PathBuf::from(format!("/tmp/lib/{id}.jpg")),
+                folder_path: PathBuf::from("/tmp/lib"),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(100),
+                height: Some(100),
+                video_duration_secs: None,
+                taken_at: Some(taken),
+                file_mtime: taken,
+                file_size: 100,
+                blake3_hash: format!("hash-{id}"),
+            },
+        )
+        .unwrap();
+    }
+    (tmp, pool)
+}
+
+fn query_viewer_with_pool(
+    pool: crate::core::db::DbPool,
+    items: &[MediaItem],
+) -> (ViewerPage, gio::ListStore) {
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    for item in items {
+        list.append(&glib::BoxedAnyObject::new(item.clone()));
+    }
+    let viewer = ViewerPage::new_for_query(
+        MediaQuery::LiveAll,
+        MediaId::from(items[0].id),
+        list.clone(),
+    );
+    viewer.imp().pool.replace(Some(pool));
+    (viewer, list)
+}
+
+fn position_label_for(current: u32, total: u32) -> String {
+    crate::core::i18n::trf(
+        "viewer.position.count",
+        &[
+            ("current", &current.to_string()),
+            ("total", &total.to_string()),
+        ],
+    )
+}
+
+#[gtk::test]
+fn switching_media_hides_the_previous_rank_until_the_new_one_resolves() {
+    init_viewer_test();
+    let (_tmp, pool) = seed_position_fixture(3);
+    let items = crate::core::repository::MediaRepository::new(pool.clone())
+        .items(MediaQuery::LiveAll, 0, 10)
+        .unwrap();
+    assert_eq!(items.len(), 3, "fixture precondition: three ranked items");
+    let (viewer, _list) = query_viewer_with_pool(pool, &items);
+    let label = viewer.imp().position_label.get();
+
+    viewer.show_at(0);
+    assert!(
+        pump_until(std::time::Duration::from_secs(3), || label.is_visible()),
+        "the rank should resolve and reveal the counter for the first item"
+    );
+    assert_eq!(label.label(), position_label_for(1, 3));
+
+    viewer.show_at(1);
+    assert!(
+        !label.is_visible(),
+        "switching media must hide the previous item's rank the moment the new request starts"
+    );
+    assert!(
+        pump_until(std::time::Duration::from_secs(3), || label.is_visible()),
+        "the new item's rank should resolve"
+    );
+    assert_eq!(label.label(), position_label_for(2, 3));
+
+    // Rapid switch: the skipped item's reply lands late and must never paint.
+    viewer.show_at(2);
+    viewer.show_at(0);
+    assert!(!label.is_visible());
+    assert!(
+        pump_until(std::time::Duration::from_secs(3), || label.is_visible()),
+        "the final item's rank should resolve after the rapid switch"
+    );
+    assert_eq!(
+        label.label(),
+        position_label_for(1, 3),
+        "only the last switch's rank may end up on screen"
+    );
+}
+
+#[gtk::test]
+fn a_failed_rank_query_keeps_the_previous_rank_hidden() {
+    init_viewer_test();
+    let (_tmp, pool) = seed_position_fixture(2);
+    let items = crate::core::repository::MediaRepository::new(pool.clone())
+        .items(MediaQuery::LiveAll, 0, 10)
+        .unwrap();
+    let (viewer, _list) = query_viewer_with_pool(pool.clone(), &items);
+    let label = viewer.imp().position_label.get();
+
+    viewer.show_at(0);
+    assert!(
+        pump_until(std::time::Duration::from_secs(3), || label.is_visible()),
+        "precondition: the first item's rank resolved"
+    );
+
+    // Break the schema so the next COUNT fails: a failed rank request must
+    // leave the counter hidden instead of surviving as the last confirmed
+    // number for a different item.
+    pool.get()
+        .unwrap()
+        .execute_batch("DROP TABLE media_items;")
+        .unwrap();
+
+    viewer.show_at(1);
+    assert!(
+        !label.is_visible(),
+        "the new switch starts with the counter hidden"
+    );
+    pump_for(std::time::Duration::from_millis(600));
+    assert!(
+        !label.is_visible(),
+        "a failed rank query must not resurrect the previous item's rank"
+    );
+}
 
 #[gtk::test]
 fn synced_image_badge_is_available_in_viewer_header() {

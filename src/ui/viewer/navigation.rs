@@ -414,7 +414,7 @@ impl ViewerPage {
         } else {
             return;
         };
-        if exhausted.get() == !available {
+        if exhausted.get() != available {
             return;
         }
         exhausted.set(!available);
@@ -461,7 +461,10 @@ impl ViewerPage {
     /// after the frame; the navigation path itself stays count-free (see
     /// `db::media_position`). Applied only while both the originating `show_at`
     /// token and this request's token still match, mirroring
-    /// `refresh_sync_badge`.
+    /// `refresh_sync_badge`. Each new request hides the previous item's rank
+    /// up front, and a cancelled or failed count keeps it hidden — the counter
+    /// never shows a number the database has not confirmed for the item that
+    /// is on screen now.
     pub(super) fn update_position_label(&self, item: &MediaItem, token: u64) {
         let imp = self.imp();
         let Some(pool) = imp.pool.borrow().as_ref().cloned() else {
@@ -472,6 +475,10 @@ impl ViewerPage {
             imp.position_label.get().set_visible(false);
             return;
         };
+        // The old rank described the previous item and is unverified for this
+        // one: drop it now so a slow count cannot leave 「3 / 12」 on screen
+        // across a switch, and so the failure branch below keeps it hidden.
+        imp.position_label.get().set_visible(false);
         let request_token = imp.position_request_token.get().wrapping_add(1);
         imp.position_request_token.set(request_token);
         let id = item.id;
@@ -483,7 +490,7 @@ impl ViewerPage {
             })
             .await;
             let Ok(Ok(position)) = result else {
-                return; // cancelled, or a failed count: keep the last known rank
+                return; // cancelled, or a failed count: the rank stays hidden
             };
             let Some(this) = weak.upgrade() else {
                 return;

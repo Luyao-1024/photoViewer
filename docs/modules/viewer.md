@@ -153,7 +153,7 @@ volume controls.
 
 Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
 
-Reaching the head or the tail of the query must say so on the pair itself, not as silent a no-op. The arrow that has nowhere to go is dimmed (`set_sensitive(false)`, with the disabled visual carried in `base.css` as `.viewer-overlay-nav-btn:disabled { opacity: 0.32 }` — opacity is the only channel left because that selector already pins `color: #ffffff`). The dimmed-but-still-present state survives a switch: `show_at` calls `reset_nav_bounds()` so a different item is unknown until its own `prefetch_neighbors` resolves, then both directions are re-evaluated against the actual query. Keyboard `←/→` at a resolved end returns `KeyboardResult::Ignored` (via `viewer/navigation.rs::handle_nav_key`), so the press is not silently consumed while there is nothing on screen to act on. While the editor's own fields have focus, `←/→` stay `Handled` so they do not leak into the underlying grid.
+Reaching the head or the tail of the query must say so on the pair itself, not as silent a no-op. The arrow that has nowhere to go is dimmed (`set_sensitive(false)`, with the disabled visual carried in `base.css` as `.viewer-overlay-nav-btn:disabled { opacity: 0.32 }` — opacity is the only channel left because that selector already pins `color: #ffffff`). The dimmed-but-still-present state survives a switch: `show_at` calls `reset_nav_bounds()` so a different item is unknown until its own `prefetch_neighbors` resolves, then both directions are re-evaluated against the actual query. `preload_neighbor_pages` and `prefetch_neighbors` run before the image and video stage branches split, so the re-anchor early return for a re-shown video still reaches them — a video at either end of the query must dim its arrow on open, not after the first navigation. Keyboard `←/→` at a resolved end returns `KeyboardResult::Ignored` (via `viewer/navigation.rs::handle_nav_key`), so the press is not silently consumed while there is nothing on screen to act on. While the editor's own fields have focus, `←/→` stay `Handled` so they do not leak into the underlying grid.
 
 ## Switch Latency And The Deferred Switch
 
@@ -235,7 +235,10 @@ space between start and end groups, so the date and the sync badge never
 shift. The counter carries libadwaita's `dim-label` class so it sits behind
 the file name and date, plus a `viewer-position-label` class for tabular
 figures. It is hidden by default, revealed only once the rank resolves for the
-current `show_at` token — an unverified number is never displayed.
+current `show_at` token — an unverified number is never displayed. Each new
+rank request also hides the previous item's number up front, and a cancelled
+or failed count keeps it hidden, so switching media never leaves the old
+「N / M」 on screen.
 
 The rank is `(1-based, total)` from `MediaRepository::position(query, id)`
 (`repository.rs`), which delegates to `db::media_position` (`db.rs`). The

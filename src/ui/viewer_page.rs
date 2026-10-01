@@ -870,6 +870,21 @@ impl ViewerPage {
         if self.imp().details_split_view.get().shows_sidebar() {
             self.update_details(&item);
         }
+        // Warm the OS page cache for the ±1 neighbours so the next original
+        // decode does not stall on disk I/O. This only `read`s the bytes
+        // (cheap); thumbnail warming — the bigger win for perceived latency —
+        // is done by `prefetch_neighbors`.
+        self.preload_neighbor_pages(-1);
+        self.preload_neighbor_pages(1);
+        // Prefetch ±1 neighbour items (cuts the next switch's DB neighbour
+        // query) and warm their Medium preview thumbnails (makes the next
+        // switch's preview a mem-cache hit). This must run before the image
+        // and video branches split — `reset_nav_bounds` above marked both ends
+        // unknown, and only this call re-resolves them, so a video at either
+        // end of the query would otherwise keep its arrow enabled until the
+        // first navigation. The same-video re-anchor branch below returns
+        // early and still reaches it from here.
+        self.prefetch_neighbors();
         if item.is_video() {
             self.refresh_thumb_strip();
             self.imp().motion_play_btn.get().set_visible(false);
@@ -910,17 +925,6 @@ impl ViewerPage {
         let path = strip_file_uri(&item.uri);
 
         self.request_current_preview_thumbnail(&item, token);
-
-        // Warm the OS page cache for the ±1 neighbours so the next original
-        // decode does not stall on disk I/O. This only `read`s the bytes
-        // (cheap); thumbnail warming — the bigger win for perceived latency —
-        // is done by `prefetch_neighbors`.
-        self.preload_neighbor_pages(-1);
-        self.preload_neighbor_pages(1);
-        // Prefetch ±1 neighbour items (cuts the next switch's DB neighbour
-        // query) and warm their Medium preview thumbnails (makes the next
-        // switch's preview a mem-cache hit).
-        self.prefetch_neighbors();
 
         // Update the bottom filmstrip (highlight or rebuild + scroll).
         self.refresh_thumb_strip();
