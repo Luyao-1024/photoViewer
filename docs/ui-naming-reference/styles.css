@@ -1371,9 +1371,10 @@ body[data-pv-demo^="picker-"] .picker-actions { display: none; }
 body[data-pv-demo="album-empty"] .album-empty-page { display: flex; }
 body[data-pv-demo="album-empty"] .tile-grid.album,
 body[data-pv-demo="album-empty"] .section-title { display: none; }
-/* P2-7 的「提案态」是不闪，所以只有关掉提案时演示才切到现状空态 */
-body[data-pv-demo="trash-flash"]:not([data-pv~="p2-7"]) .legacy-trash-flash { display: flex; }
-body[data-pv-demo="trash-flash"]:not([data-pv~="p2-7"]) .tile-grid.compact { display: none; }
+/* P2-7 已落盘：常态是「首轮读取完成前停在 loading，不切空态」。演示按钮调出的是
+   落盘前那一闪（约 0.9 秒的空态），不再需要开着/关着提案来对照。 */
+body[data-pv-demo="trash-flash"] .legacy-trash-flash { display: flex; }
+body[data-pv-demo="trash-flash"] .tile-grid.compact { display: none; }
 
 /* P2-8 概览 disclosure / P2-9 收藏下拉指示 */
 body[data-pv~="p2-8"] .pref-row .caret.pv-p2-8,
@@ -1394,9 +1395,8 @@ body[data-pv-demo="toast-no-undo"] .toast button { display: none; }
   outline-offset: 1px;
 }
 
-/* P2-5 已落盘为常态：那条标注现在是「当前实现说明」而不是提案旗子，所以不再受
-   提案 token 控制（.header-note 默认即可见）。P2-7 仍是待办，保留 token 门控。 */
-body[data-pv~="p2-7"] .header-note.pv-p2-7 { display: inline-flex; }
+/* P2-5 与 P2-7 已落盘为常态：顶栏那两条标注现在是「当前实现说明」而不是提案旗子，
+   不再受提案 token 控制（.header-note 默认即可见）。 */
 .header-note {
   align-items: center;
   gap: 6px;

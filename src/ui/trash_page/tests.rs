@@ -48,6 +48,63 @@ fn trash_uses_query_backed_virtual_grid() {
     assert!(page.imp().grid.borrow().is_none());
 }
 
+/// P2-7: the stack used to open on the empty page, so every visit to Trash
+/// announced "回收站为空" until the first count came back - and a read that failed
+/// announced it too. The first frame is now "still reading", and the empty page is
+/// only reachable after a completed read.
+#[gtk::test]
+fn trash_opens_on_loading_and_only_then_decides() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("trash-first-frame.db")).unwrap();
+    let page = TrashPage::new(pool.clone(), loader_for(pool));
+    let ctx = glib::MainContext::default();
+    let stack = page.imp().content_stack.get();
+
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some("loading"),
+        "a page that has not read the database yet must not report an empty trash"
+    );
+    assert!(
+        !page.imp().first_load_done.get(),
+        "the empty page belongs to a finished read, not to a pending one"
+    );
+
+    pump_until(&ctx, 100, || page.imp().first_load_done.get());
+    assert!(
+        page.imp().first_load_done.get(),
+        "the first count should have landed"
+    );
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some("empty"),
+        "an actually empty trash still ends on the empty page"
+    );
+}
+
+/// The other half: content is never announced as empty, and a later refresh must
+/// not blank the tiles behind a spinner.
+#[gtk::test]
+fn trash_first_read_lands_on_content_and_refresh_keeps_it_there() {
+    let (page, _id, real_path) = page_with_one_trashed_item();
+    let stack = page.imp().content_stack.get();
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some("content"),
+        "one trashed item is not an empty trash"
+    );
+
+    page.refresh();
+    assert_eq!(
+        stack.visible_child_name().as_deref(),
+        Some("content"),
+        "a refresh after the first one keeps the tiles up instead of flashing a spinner"
+    );
+
+    let _ = std::fs::remove_file(&real_path);
+}
+
 #[gtk::test]
 fn trash_virtual_grid_keeps_multi_select_enabled() {
     let _ = gtk::init();

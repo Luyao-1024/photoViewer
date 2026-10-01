@@ -875,11 +875,20 @@
       evidence: ["src/ui/trash_page.rs:122-132 空态 child 常驻直到数据落地"],
       solution: ["首轮加载完成前不切空态"],
       files: ["src/ui/trash_page.rs", "src/ui/empty_states.rs"],
-      tests: ["cargo test ui::trash_page（首轮加载完成前 visible_child 不是空态）"],
-      docs: ["docs/modules/albums-trash.md"],
+      landed:
+        "P2-7 已落盘（2026-10-02）。回收站的 content_stack 现在是四页：loading / content / empty / error，外加一个 `first_load_done` 闸门。\n\n关键的一点跟草案的写法不同：**光把 `constructed` 的初始页改成 loading 不够**——`build()` 在构造末尾就调 `refresh()`，所以真正挡住闪烁的是 `refresh()` 里那道「只有首轮才切 loading」的判断。负向验证正好证明这件事：只回退 `constructed` 那一行时测试仍然是绿的，两处一起回退才变红。这条已经写进命名图的条目说明，免得下一个人只改初始页。\n\n之后的 refresh 不再退回 spinner：已经看到的网格不会因为一次重算被抹掉（草案没提这点，但如果每轮都切 loading，等于把闪空态换成闪白）。读取失败也不再伪装成空态——走 P2-6 刚落地的 `empty_states::load_failed`，带数据库原话与「重试」（重试就是再调一次 `refresh()`），并且失败时不设 `first_load_done`，所以重试会重新显示 loading。\n\nrisk 那条（要区分「未加载」与「已加载且为空」）就是这次的实现方式：两个状态两页，empty 只由一次完成的读取产生。",
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::trash_page（9 项，新增两条：trash_opens_on_loading_and_only_then_decides（构造后立刻断言可见页是 loading 且 first_load_done 为假，pump 之后才落到 empty）、trash_first_read_lands_on_content_and_refresh_keeps_it_there（有一件回收项时首轮落 content，再 refresh 不回退到 loading）",
+        "负向验证：只把 constructed 改回 empty 时测试仍绿（因为 build() 会调 refresh()），两处一起回退才红——这条差异已记进条目说明",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test e3e_albums_trash --test ux_click_flows（回收站还原/永久删除旅程不受新页序影响）"
+      ],
+      docs: [
+        "docs/modules/albums-trash.md（回收站四页与首轮加载闸门）",
+        "docs/ui-naming-reference/index.html（trash-first-load 转为已落盘说明；现状对照改名落盘前对照）"
+      ],
       risk: "需要区分「未加载」与「已加载且为空」两个状态。",
       demo:
-        "点工具条「回收站首帧闪烁」：关闭 P2-7 时先闪出「回收站为空」约 0.9 秒再回到列表（这就是现状）；开启后列表直接呈现并提示不切空态，即修复后的行为。"
+        "常态即已落盘行为：进回收站停在 loading，读取完成才决定出图还是出空态。工具条「落盘前：回收站首帧闪空态（P2-7）」（data-pv-demo=trash-flash）调出的那 0.9 秒才是修复前的样子；点提案芯片会直接播一遍这一闪并说明常态。"
     },
     {
       id: "p2-8",
@@ -1238,7 +1247,7 @@
       PV.toast("落盘前对照：查询失败与「真的没有相册」共用同一句话，既没有原因也没有重试。清除演示态后回到四页分开的事实。", { kind: "info", ms: 5200 });
     });
     demoBtn("空相册详情页（P2-6 关联，已是常态）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
-    demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
+    demoBtn("落盘前：回收站首帧闪空态（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
     demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });
     row4.appendChild(gDemo);
 
@@ -1660,17 +1669,13 @@
       "p2-6": demoP26,
       "p2-7": function () {
         needScreen("trash");
-        if (PV.tokens().indexOf("p2-7") >= 0) {
-          PV.toast("P2-7：首轮列表返回前不切空态，直接出图", { kind: "info", ms: 3000 });
-          return;
-        }
-        // 现状：先渲染「回收站为空」，等首轮列表回来再顶掉，肉眼看到的是闪一下。
+        // 落盘前：先渲染「回收站为空」，等首轮列表回来再顶掉，肉眼看到的是闪一下。
         body.dataset.pvDemo = "trash-flash";
         syncBar();
         setTimeout(function () {
           body.dataset.pvDemo = "";
           syncBar();
-          PV.toast("现状：空态闪了一下才出图；开启 P2-7 再点可看修复后", { kind: "info", ms: 3000 });
+          PV.toast("P2-7 已落盘：常态停在 loading，读取完成才决定出图还是出空态；刚才那 0.9 秒是修复前的一闪。", { kind: "info", ms: 4200 });
         }, 900);
       },
       "p2-8": function () { needScreen("photos"); },

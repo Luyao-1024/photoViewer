@@ -82,6 +82,10 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub trashed_ids: RefCell<Vec<i64>>,
         pub grid: RefCell<Option<VirtualMediaGrid>>,
+        /// False until the first trash count has landed. The stack opens on
+        /// `loading` and only this flag lets it show `empty`, so a page that is
+        /// merely still querying never claims the trash is empty (P2-7).
+        pub first_load_done: Cell<bool>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -120,17 +124,31 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
-            let empty = empty_states::empty_trash();
-            empty.set_hexpand(true);
-            empty.set_vexpand(true);
-            obj.imp()
-                .content_stack
-                .get()
-                .add_named(&empty, Some("empty"));
-            obj.imp()
-                .content_stack
-                .get()
-                .set_visible_child_name("empty");
+            let stack = obj.imp().content_stack.get();
+            // The stack used to open on "empty", so every visit to Trash flashed
+            // "回收站为空" until the first count came back. Still reading, holding
+            // items, genuinely empty and a failed read are four different facts
+            // and only one of them is the empty state (P2-7).
+            for (page, name) in [
+                (empty_states::empty_trash(), "empty"),
+                (empty_states::loading(), "loading"),
+                (
+                    empty_states::load_failed("", {
+                        let weak = obj.downgrade();
+                        std::rc::Rc::new(move || {
+                            if let Some(page) = weak.upgrade() {
+                                page.refresh();
+                            }
+                        })
+                    }),
+                    "error",
+                ),
+            ] {
+                page.set_hexpand(true);
+                page.set_vexpand(true);
+                stack.add_named(&page, Some(name));
+            }
+            stack.set_visible_child_name("loading");
         }
     }
     impl WidgetImpl for TrashPage {}
@@ -422,18 +440,40 @@ impl TrashPage {
         grid.set_multi_select_mode(true);
         grid.refresh_from_shared_projection();
 
+        // Only the first read shows the spinner: a later refresh keeps the tiles
+        // on screen instead of blanking them for the duration of a count.
+        if !self.imp().first_load_done.get() {
+            self.imp()
+                .content_stack
+                .get()
+                .set_visible_child_name("loading");
+        }
+
         let page_weak = self.downgrade();
         glib::spawn_future_local(async move {
-            if let Ok(Ok(total)) = gtk::gio::spawn_blocking(move || {
+            let result = gtk::gio::spawn_blocking(move || {
                 MediaRepository::new(pool).count(MediaQuery::Trash)
             })
-            .await
-            {
-                if let Some(page) = page_weak.upgrade() {
-                    page.imp()
-                        .content_stack
-                        .get()
-                        .set_visible_child_name(if total == 0 { "empty" } else { "content" });
+            .await;
+            let Some(page) = page_weak.upgrade() else {
+                return;
+            };
+            let stack = page.imp().content_stack.get();
+            match result {
+                Ok(Ok(total)) => {
+                    stack.set_visible_child_name(if total == 0 { "empty" } else { "content" });
+                    page.imp().first_load_done.set(true);
+                }
+                outcome => {
+                    let reason = format!("{outcome:?}");
+                    tracing::warn!("failed to count trashed media: {reason}");
+                    if let Some(error) = stack
+                        .child_by_name("error")
+                        .and_then(|child| child.downcast::<adw::StatusPage>().ok())
+                    {
+                        error.set_description(Some(&empty_states::load_failed_text(Some(&reason))));
+                    }
+                    stack.set_visible_child_name("error");
                 }
             }
         });

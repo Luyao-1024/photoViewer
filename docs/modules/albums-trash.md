@@ -248,6 +248,19 @@ needed and is not what ships.
 
 Trash views must distinguish reversible trash state from permanent delete. Database state and filesystem state need to remain consistent across restore/delete operations.
 
+`TrashPage`'s `content_stack` has four pages - `loading`, `content`, `empty`,
+`error` - and "not read yet" is not the same fact as "read, and it is empty". The
+stack opens on `loading`, and `refresh()` only switches to `loading` while
+`first_load_done` is false: the first completed count decides between `empty` and
+`content`, and every later refresh leaves whatever is on screen alone, so a
+recount never blanks the grid. Note that `build()` calls `refresh()` at the end of
+construction, so the gate inside `refresh()` - not the initial page in
+`constructed` - is what actually prevents the "回收站为空" flash; changing only one
+of the two reproduces the bug. A failed count shows
+`empty_states::load_failed()` with the database's own words and a retry that calls
+`refresh()` again, and it does not set `first_load_done`, so retrying re-arms the
+loading page.
+
 Trash toolbar and selection actions use the shared glass button classes.
 Restore uses the suggested role; Empty Trash and permanent deletion use the
 danger role, with theme-aware text colors and visible keyboard focus. Album
