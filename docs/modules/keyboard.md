@@ -128,6 +128,7 @@ Implementation notes worth keeping:
   reports lowercase `r` plus the Shift modifier.
 - `Restore` has no binding (the trash toolbar is its only entry point), so
   `accelerator_for` returns `None` and its tooltip degrades to a bare label.
-- Ctrl+wheel zoom is **not** bound; it remains proposal P1-8 in
-  `docs/ux-improvement-backlog.md`, and the naming map keeps that row hidden
-  until it lands.
+- Ctrl+wheel zoom is implemented in `ViewerPage::stage_input` and is intentionally
+  absent from the keyboard reference because that window advertises key
+  accelerators rather than pointer gestures. Drag panning is available only
+  after the image is enlarged.

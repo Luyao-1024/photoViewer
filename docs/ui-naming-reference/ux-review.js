@@ -343,28 +343,30 @@
         "反向约束：transform/tests.rs:13-37 是负向断言，遍历 image_overlay.observe_controllers() 要求不存在 GestureZoom/GestureDrag；viewer.md:204 同样写明不要装 touch-only 捏合/平移/全局滑动控制器"
       ],
       solution: [
-        "先改契约：既有理由针对的是 **touch-only** 控制器与按钮竞争。Ctrl+滚轮（精确指针）与「仅在 scale>1.0 时启用的拖拽平移」不属于 touch-only。把 viewer.md:204 与测试注释收窄，并把测试改为「禁止无按钮修饰条件的 touch 捏合控制器」+ 保留「fit 态（scale==1.0）拖拽不改变 pan」",
-        "gtk::EventControllerScroll（SMOOTH|VERTICAL）挂 image_overlay（不是 picture，以拿到整块 stage），仅当 combo 含 Ctrl 或触摸板捏合相位时步进；步长复用 step_zoom(current,direction)（transform.rs:127），避免两套倍率逻辑；无 Ctrl 时返回 Propagation::Proceed 让普通滚轮仍走页面滚动",
-        "gtk::GestureDrag 同挂 image_overlay，drag_update 里 set_viewer_zoom(scale, pan_x+dx, pan_y+dy) 走既有 clamp_zoom_pan（这条路径终于可达，需单测）；scale==1.0 直接 Proceed 不消费",
-        "GestureZoom 触摸捏合列为可选后置；若维持原契约拒绝，就把决策写进 viewer.md",
-        "顺带把 zoom_provider（viewer_page.rs:216）每帧 CSS 重装改为跟随指针 16ms 节流，否则连续拖拽高频重建 provider"
+        "先收窄契约：既有禁令针对 touch-only 控制器与按钮竞争，桌面 Ctrl+滚轮和 scale>1 后启用的主按钮拖拽不属于该禁令。",
+        "EventControllerScroll（VERTICAL，Capture 相位）挂在 image_overlay，以拿到完整舞台；仅在 Ctrl、图片可见、非编辑态且存在纵向 delta 时消费，普通滚轮 Proceed。gtk4 0.8 没有 SMOOTH flag，所以用「累计 90 度才走一步」的累加器把高频触控板事件收敛成离散缩放步。",
+        "GestureDrag 限定主按钮，保存手势起点 pan，drag update 使用 GTK 的累计 offset，而不是反复累加单帧 delta；fit 态不启用平移。",
+        "clamp_zoom_pan 先按 Paintable 固有尺寸与 Picture 分配算出 contain 可见矩形，再按 viewer rotation 交换宽高，边界只覆盖真正溢出视口的部分。",
+        "继续不安装 GestureZoom；触摸捏合如要加入，需要独立手势仲裁设计。"
       ],
+      landed:
+        "P1-8 已落盘（2026-10-02）：主图片舞台提供 Ctrl+滚轮缩放；仅在倍率大于 1 时以左键拖拽平移。拖拽保存起点 pan 并叠加 GTK 累计偏移，边界使用旋转后的 contain 图像尺寸计算，letterbox 空白不可平移。普通滚轮仍交给页面滚动，未实现 touch 捏合控制器。草案里的 16ms CSS 节流未实施（缺少真实帧采样），舞台输入提示条也未实施——发现性留给后续沉浸浏览项。",
       files: [
+        "src/ui/viewer/stage_input.rs",
+        "src/ui/viewer/stage_input/tests.rs",
         "src/ui/viewer/transform.rs",
-        "src/ui/viewer/transform/tests.rs",
-        "src/ui/viewer/stage.rs（或新 viewer/input.rs）",
         "src/ui/viewer_page.rs",
         "docs/modules/viewer.md"
       ],
       tests: [
-        "改写 transform/tests.rs（正/负断言各一条）+ 新增「pan 被 clamp 到视口边界」单测",
-        "cargo test --test e2e_viewer"
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::",
+        "cargo test --locked --test inline_test_ownership --test ui_viewer_source_structure"
       ],
-      docs: ["docs/modules/viewer.md"],
+      docs: ["docs/modules/viewer.md", "docs/modules/keyboard.md", "docs/ux-improvement-backlog.md"],
       risk:
-        "本项是唯一需要先推翻既有文档决策的项。若决定不做，请在 viewer.md 显式写出「有意不提供滚轮缩放」的理由，以免后续检视反复提出。",
+        "桌面滚轮和条件拖拽已替代原 touch-only 禁令；后续若增加触摸捏合，必须另做手势仲裁测试。",
       demo:
-        "开启后在查看器舞台按住 Ctrl 滚动即可缩放（不放大的图片上普通滚动不劫持页面），放大后出现「拖拽平移」提示并可拖动画面；关闭时只有 +/- 按钮，且提示条不出现。"
+        "真实应用里查看器舞台已支持 Ctrl+滚轮缩放与放大后的左键拖拽。原型开关只控制演示层的模拟输入、拖拽光标和提示条：关闭时舞台回到只有 +/- 按钮，提示条不出现。",
     },
     {
       id: "p1-9",

@@ -439,6 +439,10 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **风险**：这是本文唯一**需要先推翻既有文档决策**的项。若决定不做，请在 `viewer.md` 里显式写出「有意不提供滚轮缩放」的理由，以免后续检视反复提出同一问题。
 
+**实施结果**（2026-10-02 已落盘）：新增 `src/ui/viewer/stage_input.rs`，`EventControllerScroll` 只消费图片可见、非编辑态且 Ctrl 按下的纵向滚轮；滚轮先累计完整 90 度才执行一步，避免未达整格的触控板事件频繁缩放。`GestureDrag` 仅在主按钮且 `zoom_scale > MIN_VIEWER_ZOOM` 时记录起点 pan，后续每帧用 `起点 pan + GTK 累计 offset` 更新，避免草案写法反复累加。`clamp_zoom_pan` 先用 Paintable 固有尺寸与 Picture 分配算出 contain 后的可见矩形（GTK 的 `content-fit` 只看未旋转的图），再按 90°/270° 交换矩形宽高得到旋转后的可见框，平移边界取「可见框 × scale 超出视口的部分 / 2」，因此放大后超出部分之外（含 letterbox 空白）不可平移。契约与测试均已收窄为「禁止 touch 捏合，不禁止桌面滚轮/条件拖拽」。
+
+偏差：草案的 16ms `zoom_provider` 节流未实施——当前每次输入仍只重写一条 scoped CSS，未新增测量/布局路径；是否产生可感知开销需要真实拖拽帧采样后再决定，不能把未经测量的优化算作完成项。`keyboard.md` 也明确该指针手势不进入 `GtkShortcutsWindow`，因为表行只接受可解析 accelerator。
+
 ---
 
 ### P1-9 编辑器退出既不提示脏、也不确认，改动静默丢失

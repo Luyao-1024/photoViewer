@@ -106,8 +106,16 @@ fn viewer_page_tests_live_with_viewer_modules() {
             "src/ui/viewer/transform/tests.rs",
             &[
                 "zoom_step_clamps_to_viewer_limits",
-                "zoom_pan_is_clamped_and_resets_at_identity",
+                "zoom_pan_is_clamped_to_the_visible_image_and_resets_at_identity",
                 "reset_zoom_restores_identity_state",
+            ][..],
+        ),
+        (
+            "src/ui/viewer/stage_input/tests.rs",
+            &[
+                "wheel_zoom_consumes_a_full_notch_and_keeps_the_remainder",
+                "drag_pan_uses_the_offset_from_gesture_start",
+                "image_overlay_has_desktop_wheel_and_no_touch_pinch_controller",
             ][..],
         ),
     ] {

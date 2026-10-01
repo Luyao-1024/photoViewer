@@ -1,5 +1,6 @@
 use super::super::test_support::*;
 use super::super::*;
+use super::step_zoom;
 use super::*;
 
 #[test]
@@ -10,43 +11,37 @@ fn zoom_step_clamps_to_viewer_limits() {
     assert_eq!(step_zoom(MIN_VIEWER_ZOOM, -1), MIN_VIEWER_ZOOM);
 }
 
-#[gtk::test]
-fn image_overlay_has_no_touch_zoom_or_pan_gestures() {
-    init_viewer_test();
-    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
-    media_list.append(&glib::BoxedAnyObject::new(sample_media_item()));
-    let viewer = ViewerPage::new(media_list, 0);
-    let controllers = viewer.imp().image_overlay.get().observe_controllers();
-    let has_zoom = controllers
-        .snapshot()
-        .into_iter()
-        .any(|controller| controller.downcast::<gtk::GestureZoom>().is_ok());
-    let has_drag = controllers
-        .snapshot()
-        .into_iter()
-        .any(|controller| controller.downcast::<gtk::GestureDrag>().is_ok());
-
-    assert!(
-        !has_zoom,
-        "image overlay should not install touch pinch zoom while buttons own zoom actions"
-    );
-    assert!(
-        !has_drag,
-        "image overlay should not install touch drag pan while buttons own zoom/navigation actions"
-    );
-}
-
 #[test]
-fn zoom_pan_is_clamped_and_resets_at_identity() {
+fn zoom_pan_is_clamped_to_the_visible_image_and_resets_at_identity() {
     assert_eq!(
-        clamp_zoom_pan(1.0, 120.0, -80.0, 1000.0, 700.0),
+        clamp_zoom_pan(1.0, 120.0, -80.0, 1000.0, 700.0, 1000.0, 700.0, 0),
         (0.0, 0.0),
         "identity zoom should never keep a drag offset"
     );
     assert_eq!(
-        clamp_zoom_pan(2.0, 800.0, -500.0, 1000.0, 700.0),
+        clamp_zoom_pan(2.0, 800.0, -500.0, 1000.0, 700.0, 1000.0, 700.0, 0),
         (500.0, -350.0),
         "zoomed images should pan only across the extra visible area"
+    );
+    assert_eq!(
+        clamp_zoom_pan(2.0, 100.0, -100.0, 1000.0, 1000.0, 1000.0, 500.0, 0),
+        (100.0, 0.0),
+        "an enlarged image may pan along the overflowing axis, but its letterbox bars stay pinned"
+    );
+    assert_eq!(
+        clamp_zoom_pan(2.0, 100.0, 100.0, 1000.0, 700.0, 1000.0, 700.0, 0),
+        (100.0, 100.0),
+        "pan inside the bounds must pass through untouched"
+    );
+    assert_eq!(
+        clamp_zoom_pan(2.0, 400.0, -400.0, 1000.0, 800.0, 400.0, 800.0, 90),
+        (300.0, 0.0),
+        "rotation swaps the visible box, so the pan bounds swap with it"
+    );
+    assert_eq!(
+        clamp_zoom_pan(2.0, 400.0, -400.0, 0.0, 0.0, 1000.0, 700.0, 0),
+        (0.0, 0.0),
+        "an unmeasured stage cannot provide bounds"
     );
 }
 

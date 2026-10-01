@@ -27,6 +27,8 @@ mod fullscreen_window;
 mod navigation;
 #[path = "viewer/stage.rs"]
 mod stage;
+#[path = "viewer/stage_input.rs"]
+mod stage_input;
 #[path = "viewer/transform.rs"]
 mod transform;
 
@@ -67,6 +69,7 @@ type FavoriteStateCallback = Rc<dyn Fn(i64, bool)>;
 const MIN_VIEWER_ZOOM: f64 = 1.0;
 const MAX_VIEWER_ZOOM: f64 = 8.0;
 const VIEWER_ZOOM_STEP: f64 = 1.25;
+const VIEWER_ZOOM_WHEEL_STEPS_PER_DEGREE: f64 = 90.0;
 const VIEWER_FULLSCREEN_ICON: &str = "view-fullscreen-symbolic";
 
 /// Direction hint the host receives from keyboard input. `i32::MIN` is the
@@ -219,6 +222,14 @@ mod imp {
         /// Viewer image pan offset in allocated widget pixels.
         pub zoom_pan_x: Cell<f64>,
         pub zoom_pan_y: Cell<f64>,
+        /// Accumulated smooth-scroll degrees not yet consumed by a zoom step.
+        /// One notch represents 90 degrees, so sub-notch trackpad movement only
+        /// changes the image after the user has travelled a full step.
+        pub zoom_wheel_remainder: Cell<f64>,
+        /// Pointer position where the current image-pan gesture started. GTK
+        /// reports drag updates as deltas from this point, so the committed pan
+        /// is `start_pan + delta` rather than repeatedly adding delta again.
+        pub pan_gesture_start: Cell<Option<(f64, f64, f64, f64)>>,
         /// Callback registered by the host (PhotosPage) for keyboard navigation.
         pub nav_cb: RefCell<Option<NavCallback>>,
         /// Callback fired after this viewer successfully moves an item to trash.
@@ -445,6 +456,7 @@ impl ViewerPage {
         });
         *obj.imp().sync_badge_theme_handler.borrow_mut() = Some(handler);
         obj.setup_zoom_controls();
+        obj.setup_image_stage_input();
         obj.setup_zoom_transform_provider();
         obj.setup_video_playback_interactions();
         obj.setup_edit_button();

@@ -1298,8 +1298,9 @@ body[data-pv~="p1-12"] .ctrl-sep { display: block; }
 
 /* P0-4 已落盘：设置页那一行和快捷键参考窗口都是真实 chrome，不再受提案开关控制，
    命名总览里始终可查。打开 P0-4 标记不改动画面——落盘前的对照（应用内没有任何快捷键
-   入口、tooltip 只有动作名）记录在评审抽屉的 landed 说明里。表内唯一的提案行属于 P1-8：
-   Ctrl+滚轮缩放至今没有实现，不能冒充已落盘。 */
+   入口、tooltip 只有动作名）记录在评审抽屉的 landed 说明里。P1-8 的 Ctrl+滚轮缩放虽然
+   已经落盘，但 GtkShortcutsWindow 只列可解析的 accelerator，指针手势有意不进表
+   （docs/modules/keyboard.md），所以该行仍受开关控制，代表「若 advertise 会是什么样」。 */
 #shortcuts-window.is-open { display: flex; }
 body[data-pv~="p1-8"] .sc-row.pv-p1-8 { display: flex; }
 /* 落盘前对照走显式演示态（工具条「演示态」按钮 → shortcut-blind），

@@ -294,14 +294,13 @@
     revealStageHint(false);
   }
 
-  /* P1-8：首次进入查看器的一次性输入提示。
-     自动收起的前提是 P0-2 焦点环与 P1-12 命中区都已落地，否则收起后等于没有入口。 */
+  /* P1-8：真实代码已落盘；原型仍保留对照开关。自动收起属于后续沉浸浏览项。 */
   var stageHint = { seen: false, timer: 0 };
   function revealStageHint(force) {
     var el = q(".stage-hint");
     if (!el) return;
     clearTimeout(stageHint.timer);
-    if (!enabled("p1-8")) {
+    if (!enabled("p1-8") || current !== "viewer") {
       stageHint.seen = false;
       el.classList.remove("is-shown", "is-dismissed");
       return;
@@ -310,9 +309,6 @@
     stageHint.seen = true;
     el.classList.remove("is-dismissed");
     el.classList.add("is-shown");
-    if (enabled("p1-12") && body.dataset.pvMotion !== "off") {
-      stageHint.timer = setTimeout(function () { el.classList.add("is-dismissed"); }, 2600);
-    }
   }
   function stepViewer(delta) {
     var next = viewer.index + delta;
@@ -343,8 +339,7 @@
         viewer.scale + ") rotate(" + viewer.rot + "deg)";
     }
     if (media) {
-      var pannable = enabled("p1-8") && viewer.scale > 1.0001;
-      media.classList.toggle("is-pannable", pannable);
+      media.classList.toggle("is-pannable", enabled("p1-8") && viewer.scale > 1.0001);
     }
     var zoom = q("#viewer-zoom");
     if (zoom) {
@@ -1228,7 +1223,7 @@
       renderViewer();
       applyTransform();
       applyEditFilter();
-      // P1-8：刚开启提案就应看到舞台提示，不必重进查看器；关闭时清掉 reveal 状态。
+      // P1-8：切换提案或页面时同步提示的可见状态。
       revealStageHint(enabled("p1-8") && current === "viewer");
       applyModeSelectorA11y();
       applyIconLabels();
