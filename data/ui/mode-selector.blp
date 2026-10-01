@@ -7,6 +7,10 @@ using Gtk 4.0;
 template $ModeSelector : Gtk.Box {
   orientation: vertical;
   focusable: true;
+  // One tab stop with left/right arrows (see the key controller in
+  // mode_selector.rs), announced as a radio group: the three cells below are
+  // the radios, and the group name comes from Rust via tr().
+  accessible-role: radio_group;
   css-classes: ["mode-selector", "glass-raised"];
 
   Gtk.Box row {
@@ -16,6 +20,7 @@ template $ModeSelector : Gtk.Box {
     homogeneous: true;
 
     Gtk.Box label_cell_0 {
+      accessible-role: radio;
       css-classes: ["mode-cell"];
       halign: fill;
       hexpand: true;
@@ -27,6 +32,7 @@ template $ModeSelector : Gtk.Box {
       }
     }
     Gtk.Box label_cell_1 {
+      accessible-role: radio;
       css-classes: ["mode-cell"];
       halign: fill;
       hexpand: true;
@@ -38,6 +44,7 @@ template $ModeSelector : Gtk.Box {
       }
     }
     Gtk.Box label_cell_2 {
+      accessible-role: radio;
       css-classes: ["mode-cell"];
       halign: fill;
       hexpand: true;
@@ -57,7 +64,10 @@ template $ModeSelector : Gtk.Box {
   // the same width as the label row above (both hexpand/fill in the vertical
   // ModeSelector box), so cell_width = dot_row width / 3 keeps the indicator
   // centered under each of the three labels.
+  // Decorative: the sliding bar repeats what the active radio already says, so
+  // it must not reach the accessibility tree as a third thing to read.
   Gtk.Box dot_row {
+    accessible-role: presentation;
     orientation: horizontal;
     halign: fill;
     hexpand: true;

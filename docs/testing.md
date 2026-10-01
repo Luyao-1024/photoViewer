@@ -68,6 +68,47 @@ helper's readiness check remains the pass/fail signal.
 
 For a Flatpak-runtime check of the non-destructive keyboard entry path, run `tools/visual-check-x11.sh --keyboard-smoke`. It sends `Ctrl+F` through XTEST on X11 and saves startup and Search-page screenshots; it complements the deterministic GTK suite rather than replacing it. Run `tools/visual-check-x11.sh --a11y-smoke` to additionally use `python3-pyatspi` against the live AT-SPI tree: it requires the localized application frame, a focused Search entry, and the three Search field toggle buttons exposed under their accessible names. Those names are resolved from `i18n/<locale>.json` for the locale the probe predicts the app picked (its own `--locale {zh-CN,en}` flag overrides, mirroring the app's config → `PHOTO_VIEWER_LOCALE` → `LC_ALL`/`LANG`/`LANGUAGE` precedence), so under zh-CN the expectation is `全部`、`文件名`、`日期` and under en it is `All`、`File name`、`Date`; `tests/visual_check_script.rs` pins the probe's zh-CN fallback list to the catalogue. This verifies the key Search navigation semantics available to assistive technology; it does not replace manual screen-reader usability testing.
 
+### Probing the accessibility tree without Flatpak
+
+When a change is about what a screen reader *sees* (roles, names, checked states),
+the in-process GTK suite can only verify the half that GTK exposes readably -
+`gtk_accessible_update_state`/`update_property` have no getter, so a test can read
+`accessible_role()` but not the state it pushed. Read the live tree instead. The
+application does not have to be a Flatpak for that:
+
+```bash
+mkdir -p /tmp/pv-a11y/home/Pictures && cp tests/fixtures/media/*.jpg /tmp/pv-a11y/home/Pictures/
+env -u NO_AT_BRIDGE HOME=/tmp/pv-a11y/home PHOTO_VIEWER_LOCALE=zh-CN \
+  tools/with-at-spi.sh xvfb-run -a ./target/debug/photo-viewer &
+python3 - <<'PY'   # pip deps: python3-gi (Atspi 2.0)
+import gi; gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi
+Atspi.init()
+d = Atspi.get_desktop(0)
+app = next(d.get_child_at_index(i) for i in range(d.get_child_count())
+           if (d.get_child_at_index(i).get_name() or "").lower().startswith("photo"))
+def walk(n, depth=0):
+    print(f"{'  ' * depth}{n.get_role_name()} :: {n.get_name()!r}")
+    for i in range(n.get_child_count()):
+        c = n.get_child_at_index(i)
+        if c: walk(c, depth + 1)
+walk(app)
+PY
+```
+
+Three things will bite if you do not know them. `NO_AT_BRIDGE=1` is exported by
+development shells here and silently disables GTK's AT-SPI bridge - the app then
+appears on the bus with an empty tree, so unset it for the app, not just for the
+probe. The probe joins whatever `DBUS_SESSION_BUS_ADDRESS` already points at, and
+`/proc/<pid>/environ` of the *application process* (not the `xvfb-run` wrapper) is
+the place to check. And GTK's ARIA roles are renamed on the way through AT-SPI:
+`radio_group` shows up as `grouping`, `radio` as `radio button`, `button` as
+`push button`, and `checked` is an `Atspi.StateType.CHECKED` flag rather than part
+of the role. Reading `State::Checked` back this way is how P2-3 was confirmed:
+`grouping '照片分组方式'` with three `radio button` children, one carrying
+`CHECKED`. This probe is manual and needs a display, so it is not part of the CI
+gate.
+
 ## Verification Stages
 
 ### Uncommitted Development

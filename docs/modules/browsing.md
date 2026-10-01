@@ -452,8 +452,18 @@ The Year/Month/Day control is both navigation and the canonical Liquid Glass seg
 - Equal-width internal segments.
 - Active state shown through label contrast and a short bottom indicator.
 - No per-segment active background block.
+- One tab stop for the whole capsule; left/right arrows move between segments and
+  wrap. Segments are not individually focusable.
 
 Reusable segmented classes are documented in [`ui-liquid-glass.md`](ui-liquid-glass.md).
+
+The same single-capsule model governs what assistive technology sees: the widget
+is a `radio_group`, the three `label_cell`s are `radio`s whose accessible name is
+the same `tr()` string that is printed, exactly one carries `Checked`, and the
+indicator row is `presentation` so it never becomes a fourth item to read. The
+group's own name is `photo.mode.group`. Verify against the real tree rather than
+the sheet: `docs/testing.md` records the local AT-SPI probe recipe, which shows
+`grouping '照片分组方式'` with three `radio button` children.
 
 The selector pairs its foreground with a light/dark tint based on photo
 brightness. A new candidate must remain stable for 120 ms; unknown/unloaded

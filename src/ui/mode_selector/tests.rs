@@ -365,3 +365,81 @@ fn left_arrow_retreats_active_index_with_wrap() {
     let _: bool = ctrl.emit_by_name("key-pressed", args);
     assert_eq!(sel.active_index(), 1);
 }
+
+/// P2-3: the capsule is one visual surface, but a screen reader has to hear
+/// "radio group, three radios, one of them checked" instead of three static
+/// labels. The roles come from the template and are readable; the checked state
+/// is pushed through `update_state`, which has no getter, so the mirror written
+/// beside the call is what a test can read.
+#[gtk::test]
+fn the_selector_is_a_radio_group_of_three_radios() {
+    let sel = ModeSelector::new();
+
+    assert_eq!(
+        sel.accessible_role(),
+        gtk::AccessibleRole::RadioGroup,
+        "the segmented control selects one of three views, so it is a radio group"
+    );
+    for (i, cell) in sel.label_cells().iter().enumerate() {
+        assert_eq!(
+            cell.accessible_role(),
+            gtk::AccessibleRole::Radio,
+            "mode cell {i} should be a radio, not a static label"
+        );
+    }
+    assert_eq!(
+        sel.imp().dot_row.get().accessible_role(),
+        gtk::AccessibleRole::Presentation,
+        "the sliding indicator repeats what the checked radio already says, so it \
+         must not reach the accessibility tree"
+    );
+    assert!(
+        sel.is_focusable(),
+        "the group keeps the single tab stop - individual radios are not focusable"
+    );
+    for cell in sel.label_cells() {
+        assert!(
+            !cell.is_focusable(),
+            "cells stay non-focusable so Tab does not turn one control into three"
+        );
+    }
+}
+
+/// Exactly one radio is checked, and it is the one the capsule shows as active.
+#[gtk::test]
+fn the_checked_radio_follows_the_active_index() {
+    let sel = ModeSelector::new();
+    let imp = sel.imp();
+
+    assert_eq!(imp.accessible_checked_mask.get(), 0b001);
+    sel.set_active_index(2);
+    assert_eq!(imp.accessible_checked_mask.get(), 0b100);
+    sel.set_active_index(1);
+    assert_eq!(imp.accessible_checked_mask.get(), 0b010);
+
+    // A rejected write must not move the announced state either.
+    sel.set_active_index(7);
+    assert_eq!(imp.accessible_checked_mask.get(), 0b010);
+}
+
+/// The announced names are the same strings the capsule prints, so a locale
+/// switch cannot make a radio answer to a word the user never sees.
+#[gtk::test]
+fn the_radio_names_come_from_the_same_i18n_keys_as_the_labels() {
+    let sel = ModeSelector::new();
+    let keys = ["photo.mode.year", "photo.mode.month", "photo.mode.day"];
+
+    for (label, key) in labels(&sel).into_iter().zip(keys) {
+        let visible = label.label().to_string();
+        assert_eq!(
+            visible,
+            tr(key),
+            "the visible caption should read from i18n"
+        );
+        assert!(!visible.is_empty(), "{key} must not resolve to blank");
+    }
+    assert!(
+        !tr("photo.mode.group").is_empty(),
+        "the group needs a name of its own, not just three captions"
+    );
+}

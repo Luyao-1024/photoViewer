@@ -123,6 +123,7 @@
     "photo.mode.year": "Year",
     "photo.mode.month": "Month",
     "photo.mode.day": "Day",
+    "photo.mode.group": "Photo grouping",
     "section.label.day": "{year}-{month}-{day}, {weekday} · {count} photos",
     "section.label.month": "{year}-{month} · {count} photos",
     "section.label.year": "{year} · {count} photos",

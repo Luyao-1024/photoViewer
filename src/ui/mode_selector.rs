@@ -11,6 +11,12 @@
 //! Active index is the single source of truth. `set_stack` wires
 //! `GtkStack::visible-child` → `active_index` to keep the selector in sync if
 //! the stack is changed externally.
+//!
+//! Accessibility mirrors the visual model rather than the widget classes: the
+//! capsule is one `radio_group` and the only tab stop, its three cells are
+//! `radio`s named by the same strings it prints, and exactly one carries
+//! `Checked`. The indicator row is `presentation`. See
+//! `docs/modules/ui-liquid-glass.md` for the contract and its known limitation.
 
 use crate::core::i18n::tr;
 use gtk4 as gtk;
@@ -87,6 +93,19 @@ mod imp {
         pub label_1: TemplateChild<gtk::Label>,
         #[template_child]
         pub label_2: TemplateChild<gtk::Label>,
+        /// The three cells are the radios of the group: they own the click
+        /// gesture and carry the accessible name and checked state.
+        #[template_child]
+        pub label_cell_0: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub label_cell_1: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub label_cell_2: TemplateChild<gtk::Box>,
+        /// Mirror of the `Checked` states last pushed to the three radios
+        /// (bit `i` = cell `i` is the checked one). `gtk_accessible_update_state`
+        /// has no getter, so this is the only way a test can read what the
+        /// screen reader was told; it is written from `apply_state` alone.
+        pub accessible_checked_mask: Cell<u32>,
         #[template_child]
         pub dot_row: TemplateChild<gtk::Box>,
         /// The single sliding indicator bar under the labels. It is dot_row's
@@ -149,28 +168,15 @@ mod imp {
             // Click on any of the 3 label cells → switch to that mode.
             // The gesture is owned by its cell, so it lives as long
             // as the widget does.
-            if let Some(row) = self
-                .obj()
-                .first_child()
-                .and_then(|c| c.downcast::<gtk::Box>().ok())
-            {
-                let mut idx: u32 = 0;
-                let mut next = row.first_child();
-                while let Some(cell) = next {
-                    if let Ok(cell_box) = cell.clone().downcast::<gtk::Box>() {
-                        let sel_weak = self.obj().downgrade();
-                        let i = idx;
-                        let gesture = gtk::GestureClick::new();
-                        gesture.connect_pressed(move |_, _n, _x, _y| {
-                            if let Some(sel) = sel_weak.upgrade() {
-                                sel.set_active_index(i);
-                            }
-                        });
-                        cell_box.add_controller(gesture);
+            for (i, cell) in self.obj().label_cells().iter().enumerate() {
+                let sel_weak = self.obj().downgrade();
+                let gesture = gtk::GestureClick::new();
+                gesture.connect_pressed(move |_, _n, _x, _y| {
+                    if let Some(sel) = sel_weak.upgrade() {
+                        sel.set_active_index(i as u32);
                     }
-                    idx += 1;
-                    next = cell.next_sibling();
-                }
+                });
+                cell.add_controller(gesture);
             }
 
             // Arrow-key navigation: ←/→ cycle active_index (with wrap).
@@ -221,7 +227,9 @@ mod imp {
         /// invoking `set_visible_child_name`.
         pub(super) fn apply_state(&self) {
             let labels = [&self.label_0, &self.label_1, &self.label_2];
+            let cells = [&self.label_cell_0, &self.label_cell_1, &self.label_cell_2];
             let active = self.active_index.get();
+            let mut checked_mask = 0;
             for (i, lbl) in labels.iter().enumerate() {
                 let l = lbl.get();
                 if i == active as usize {
@@ -229,7 +237,22 @@ mod imp {
                 } else {
                     l.remove_css_class("active");
                 }
+                // A radio group has to say which one is chosen, not just show a
+                // dot: `Checked` is the state a screen reader reads aloud, and
+                // without it the three cells are indistinguishable.
+                let checked = i == active as usize;
+                cells[i]
+                    .get()
+                    .update_state(&[gtk::accessible::State::Checked(if checked {
+                        gtk::AccessibleTristate::True
+                    } else {
+                        gtk::AccessibleTristate::False
+                    })]);
+                if checked {
+                    checked_mask |= 1 << i;
+                }
             }
+            self.accessible_checked_mask.set(checked_mask);
             // The single indicator slides to the active label (no per-dot
             // show/hide). No-op until dot_row is allocated; WidgetImpl::
             // size_allocate re-runs it on every resize.
@@ -296,9 +319,33 @@ gtk::glib::wrapper! {
 impl ModeSelector {
     fn set_labels_i18n(&self) {
         let imp = self.imp();
-        imp.label_0.get().set_label(&tr("photo.mode.year"));
-        imp.label_1.get().set_label(&tr("photo.mode.month"));
-        imp.label_2.get().set_label(&tr("photo.mode.day"));
+        let names = [
+            tr("photo.mode.year"),
+            tr("photo.mode.month"),
+            tr("photo.mode.day"),
+        ];
+        let labels = [&imp.label_0, &imp.label_1, &imp.label_2];
+        let cells = self.label_cells();
+        for ((label, cell), name) in labels.iter().zip(&cells).zip(&names) {
+            label.get().set_label(name);
+            // The announced name is the same string as the visible text, so the
+            // two cannot drift apart when the locale changes.
+            cell.update_property(&[gtk::accessible::Property::Label(name)]);
+        }
+        self.update_property(&[
+            gtk::accessible::Property::Label(&tr("photo.mode.group")),
+            gtk::accessible::Property::Orientation(gtk::Orientation::Horizontal),
+        ]);
+    }
+
+    /// The three radio cells in mode order (0 = year, 1 = month, 2 = day).
+    pub(crate) fn label_cells(&self) -> [gtk::Box; 3] {
+        let imp = self.imp();
+        [
+            imp.label_cell_0.get().clone(),
+            imp.label_cell_1.get().clone(),
+            imp.label_cell_2.get().clone(),
+        ]
     }
 
     pub fn new() -> Self {

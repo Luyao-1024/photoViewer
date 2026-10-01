@@ -130,6 +130,26 @@ light background: outer add on-light-background
 
 The style is intentionally one glass container with lightweight internal state. Do not add active background blocks to individual segments.
 
+Accessibility follows the same single-capsule model rather than pretending the
+segments are buttons. `mode-selector.blp` declares `accessible-role:
+radio_group` on the widget, `radio` on the three `label_cell`s and
+`presentation` on the indicator row, because the sliding bar only repeats which
+radio is checked and must not become a fourth thing to read. Names and state come
+from Rust: `set_labels_i18n` pushes each caption through
+`accessible::Property::Label` using the *same* `tr()` string it prints, and the
+group takes `photo.mode.group` plus a horizontal orientation; `apply_state`
+pushes `accessible::State::Checked` so exactly one radio is checked, the one the
+capsule shows as active. Keep the whole widget the only tab stop with left/right
+arrows - making each cell focusable would draw three focus rings inside one capsule
+and turn one Tab into three, which breaks the contract above.
+`gtk_accessible_update_state` has no getter, so `imp.accessible_checked_mask`
+mirrors what was pushed for tests to read; write it only beside the real call.
+Known limitation, accepted deliberately: the cells are `Gtk.Box` + `GestureClick`,
+so they expose no AT-SPI *action* - a screen reader can announce the group and
+change it with arrows on the focused capsule, but cannot press one segment.
+Real buttons were rejected because swapping the cells to `Gtk.ToggleButton` puts a
+theme background back inside the capsule.
+
 Search field toggles compose `glass-raised glass-segmented` with native
 `GtkToggleButton.glass-segment` children. Their checked state uses text contrast
 and a reserved bottom underline; native grouping and accessibility remain intact.

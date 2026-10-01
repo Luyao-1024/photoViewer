@@ -100,10 +100,10 @@
             <div class="tile hover-demo hotspot" tabindex="0" data-media="18" data-img="s05" data-ui="square-tile-hover-demo" data-name="悬停态示例瓦片" data-impl=".thumb-pointer-hover（base.css 里 veil 减半）+ .thumb-checkmark 常驻，多选时 0.32、选中 1" data-props="P1-11 已落盘：这张格子常驻悬停强度，用来和已选中的格子对照。真实实现与草案不同——没有加 accent 内环，选中态靠整幅 veil 的强度差与唯一的全不透明对勾区分；多选模式下未选中格子带 0.32 的常驻对勾。" data-source="P1-11 · data/css/base.css thumb-state-glass / thumb-checkmark"><span class="checkmark">✓</span></div>
           </div>
 
-          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.mode-selector" data-props="一个玻璃胶囊，active 只有文本对比和底部短指示条；可通过 Tab 聚焦，左右方向键切换；根据背景稳定切换明暗底色。" data-source="data/ui/mode-selector.blp · src/ui/mode_selector.rs">
-            <span class="segment active" data-mode="year">年</span>
-            <span class="segment" data-mode="month">月</span>
-            <span class="segment" data-mode="day">日</span>
+          <div class="mode-selector hotspot" tabindex="0" data-ui="mode-selector" data-name="年/月/日模式选择器" data-impl="$ModeSelector mode_selector .glass-raised.mode-selector" data-props="一个玻璃胶囊，active 只有文本对比和底部短指示条；可通过 Tab 聚焦，左右方向键切换；根据背景稳定切换明暗底色。P2-3 已落盘的无障碍语义：整件控件 accessible-role=radio_group 且只有一个 tab stop，三段 label_cell 是 radio（名称与可见文案同源：photo.mode.year/month/day），选中段收 State::Checked=True、其余 False，指示条那一行是 presentation 不进无障碍树；组名 photo.mode.group。已知限制：段是 Gtk.Box + GestureClick，不暴露 AT-SPI action，所以读屏能播报与用方向键改选，不能「按下」单段。" data-source="data/ui/mode-selector.blp · src/ui/mode_selector.rs">
+            <span class="segment active" data-mode="year" data-i18n="photo.mode.year" data-ui="mode-cell-year" data-name="年段（radio）" data-impl="Gtk.Box label_cell_0 accessible-role=radio → Gtk.Label label_0" data-props="点击手势挂在这一段上；无障碍名与可见文案都取 tr(&quot;photo.mode.year&quot;)，选中时 State::Checked=True。">年</span>
+            <span class="segment" data-mode="month" data-i18n="photo.mode.month" data-ui="mode-cell-month" data-name="月段（radio）" data-impl="Gtk.Box label_cell_1 accessible-role=radio → Gtk.Label label_1" data-props="同上，取 tr(&quot;photo.mode.month&quot;)。">月</span>
+            <span class="segment" data-mode="day" data-i18n="photo.mode.day" data-ui="mode-cell-day" data-name="日段（radio）" data-impl="Gtk.Box label_cell_2 accessible-role=radio → Gtk.Label label_2" data-props="同上，取 tr(&quot;photo.mode.day&quot;)。三段都不可聚焦：Tab 停在胶囊上，方向键在段间循环。">日</span>
           </div>
         </div>
         <div class="grid-scrollbar hotspot" tabindex="0" data-ui="media-grid-scrollbar" data-name="媒体网格滚动条" data-impl="Gtk.ScrolledWindow scroller vertical scrollbar / GtkAdjustment" data-props="滚轮滚动时在照片页右侧出现；可拖动 thumb 快速移动到图库对应位置，大图库会按全库滚动比例切换可见 DB 页面。"></div>
@@ -310,7 +310,7 @@
         <div class="headerbar"><button class="button hotspot" tabindex="0" data-act="toggle-overlay" data-ui="sidebar-toggle" data-name="侧栏显隐按钮" data-impl="split_view.show-sidebar toggle" data-props="窄窗口中打开 overlay sidebar。">☰</button><span class="header-title">照片</span></div>
         <div class="grid-page">
           <div class="tile-grid compact"><div class="tile hotspot" tabindex="0" data-media="81" data-img="s01"></div><div class="tile hotspot" tabindex="0" data-media="82" data-img="s05"></div><div class="tile hotspot" tabindex="0" data-media="83" data-img="s09"></div><div class="tile hotspot" tabindex="0" data-media="84" data-img="s13"></div><div class="tile hotspot" tabindex="0" data-media="85" data-img="s03"></div><div class="tile hotspot" tabindex="0" data-media="86" data-img="s07"></div><div class="tile hotspot" tabindex="0" data-media="87" data-img="s11"></div><div class="tile hotspot" tabindex="0" data-media="88" data-img="s14"></div></div>
-          <div class="mode-selector"><span class="segment active">年</span><span class="segment">月</span><span class="segment">日</span></div>
+          <div class="mode-selector"><span class="segment active" data-i18n="photo.mode.year">年</span><span class="segment" data-i18n="photo.mode.month">月</span><span class="segment" data-i18n="photo.mode.day">日</span></div>
         </div>
       </div>
       <div class="scrim hotspot" tabindex="0" data-ui="collapsed-scrim" data-name="折叠侧栏遮罩" data-impl="OverlaySplitView generated overlay scrim" data-props="侧栏浮层打开时内容变暗。"></div>

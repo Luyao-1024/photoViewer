@@ -714,7 +714,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 |---|---|---|---|
 | **P2-1（已落盘）** | Toast 一律无撤销，删除只能去回收站找回 | `src/ui/toasts.rs:19-40` 三个工厂都用 `adw::Toast::new(msg)`，全项目无 `set_button_label` | 新增 `success_with_action(overlay, msg, label, f)`；删除/批量收藏接 `viewer/actions.rs:81-93` 已有的回滚 |
 | **P2-2（已落盘）** | Toast 可能盖住胶片条 | `data/ui/viewer-page.blp:7` 的 `ToastOverlay` 包裹整块内容 | 限定 overlay 区域到 stage，或为 toast 预留底部 inset |
-| P2-3 | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
+| **P2-3（已落盘）** | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
 | P2-4 | 全项目 `set_accessible_label`/`set_accessible_role` 调用为 **0** | grep 确认；`overview_sync_icon`（`photos_page.rs:949`）与警告图标（`:1037`）连 tooltip 都没有 | 约 26 个图标按钮先补 tooltip 兜底，再为「状态类」（同步状态、时长/云/收藏徽记 `src/ui/square_tile.rs`）补 accessible label；用 `tools/assert-at-spi.py` 模式扩展断言面 |
 | P2-5 | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 移入 `spawn_blocking` + generation 回投；大库下多选 header 会掉帧 |
 | P2-6 | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 复用 P0-1 的 loading/error 分离结论 |
@@ -779,6 +779,37 @@ Rust 绑定，`toastoverlay .toast` 选不中，而 `toast` 节点上的 `margin
 **测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::viewer_page`（新
 `a_toast_lands_above_the_filmstrip`；负向验证：把 `viewer-page.blp` 还原成页根包裹后该
 测试变红）＋ `--test e2e_viewer --test ui_viewer_toolbar --test ux_click_flows` 全绿。
+
+### P2-3 实施结果（2026-10-02 已落盘，取草案第一方案）
+
+没有换成 `Gtk.ToggleButton`：角色写在模板里（`accessible-role` 在 GTK 是可读写属性，但
+Blueprint 只认枚举名下划线形式 `radio_group`，写成 `radio-group` 直接编译失败）。整件控件
+`radio_group`，三个 `label_cell` 是 `radio`，指示条那一行是 `presentation`——滑动的短条只
+是重复「哪一段被选中」，不该在无障碍树里变成第四件要读的东西。名称与状态由 Rust 下发：
+`set_labels_i18n` 用**同一个** `tr()` 字符串同时写可见文案与 `accessible::Property::Label`
+（两者不可能在不同语言下漂移），整件控件取新键 `photo.mode.group`（两份 json 同步，parity
+447/447）并标 `Property::Orientation(Horizontal)`；`apply_state` 给三段各推
+`State::Checked(True/False)`，所以永远恰好一段被勾选。
+
+保留原样：整件控件是唯一 tab stop + 左右方向键（含环绕）。草案与原型都给每一段发
+`tabIndex`，落盘没有跟——逐段可聚焦会在一个胶囊里画出三个焦点环、把一次 Tab 变成三次，
+并直接违反上面那条「单胶囊、内部状态轻量」硬契约。
+
+实测证据（本机、非 CI）：`env -u NO_AT_BRIDGE HOME=<tmp> tools/with-at-spi.sh xvfb-run -a
+./target/debug/photo-viewer` 起真实应用（**必须**去掉 `NO_AT_BRIDGE`，开发 shell 里它默认为
+1，会静默关掉 GTK 的 AT-SPI 桥——应用照样注册到总线上但树是空的），再用 pyatspi 走树读到
+`grouping '照片分组方式'`（FOCUSABLE）下挂 `radio button '年' / '月' / '日'`，`CHECKED` 落在
+应用当时记住的那一段。注意角色会改名：`radio_group`→`grouping`、`radio`→`radio button`。
+配方与坑都记进了 `docs/testing.md`。
+
+限制记录（不做沉默处理）：三段仍是 `Gtk.Box` + `GestureClick`，**不暴露 AT-SPI action**——
+读屏能播报、也能在聚焦的胶囊上用方向键改选，但没法「按下」指定某一段。草案自己点过这条
+风险（换 ToggleButton 会触碰材质契约），所以这里记录限制而不是换控件。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::mode_selector`（19 项，新增
+3 条：角色树、恰好一段被勾选、名称与可见文案同源；负向验证：从 blp 删掉 `accessible-role`
+后第一条变红）＋ `--test ui_mode_selector --test ux_click_flows`（段上的点击手势与模式切换
+不受 `constructed` 重构影响）。
 
 ---
 

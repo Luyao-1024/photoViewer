@@ -136,8 +136,8 @@ fn mode_selector_integration_suite() {
             .get()
             .visible_child_name()
             .as_deref(),
-        None,
-        "initially empty page should show the untitled empty-state child"
+        Some("empty"),
+        "initially empty page should show the empty-library placeholder"
     );
     empty_then_filled.append(&glib::BoxedAnyObject::new(MediaItem {
         id: 2,

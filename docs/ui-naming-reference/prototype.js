@@ -213,28 +213,22 @@
     applyModeSelectorA11y();
   }
 
-  /* P2-3：年/月/日选择器的无障碍语义。单胶囊视觉是硬契约，这里只补角色与键盘可达性。 */
+  /* P2-3 已落盘为常态：单胶囊视觉不变，但年/月/日对读屏是 radio group 里的三个
+     radio。与 GTK 侧一致——整件控件是一个 tab stop（bar 可聚焦），三段自己不进
+     Tab 序列，靠左右方向键切换；指示条是 presentation，不进无障碍树。 */
   function applyModeSelectorA11y() {
-    var on = enabled("p2-3");
     qa(".mode-selector").forEach(function (bar) {
+      bar.setAttribute("role", "radiogroup");
+      bar.setAttribute("aria-label", tr("photo.mode.group"));
       qa(".segment", bar).forEach(function (s) {
-        if (on) {
-          s.tabIndex = 0;
-          s.setAttribute("role", "radio");
-          s.setAttribute("aria-checked", s.classList.contains("active") ? "true" : "false");
-        } else {
-          s.removeAttribute("tabindex");
-          s.removeAttribute("role");
-          s.removeAttribute("aria-checked");
-        }
+        s.setAttribute("role", "radio");
+        s.setAttribute("aria-checked", s.classList.contains("active") ? "true" : "false");
+        // 与 set_labels_i18n 一致：无障碍名是显式下发的同一个字符串，而不是靠读屏
+        // 自己从子节点里捞文本。
+        s.setAttribute("aria-label", (s.textContent || "").trim());
       });
-      if (on) {
-        bar.setAttribute("role", "radiogroup");
-        bar.setAttribute("aria-label", "分组方式");
-      } else {
-        bar.removeAttribute("role");
-        bar.removeAttribute("aria-label");
-      }
+      var dot = q(".mode-dot", bar);
+      if (dot) dot.setAttribute("role", "presentation");
     });
   }
 
@@ -563,6 +557,8 @@
       "album.no_albums_yet": "还没有相册",
       // 提案新增：P1-6 选择计数（仍未落盘）。
       "photos.selection.count": "已选择 {n} 项", "photos.selection.limit": "（已达上限）",
+      "photo.mode.group": "照片分组方式",
+      "photo.mode.year": "年", "photo.mode.month": "月", "photo.mode.day": "日",
       // P0-5 已落盘：以下 8 个键逐字取自仓库 i18n/zh-CN.json，
       // 三个字段标签在真实代码里由 search_page.rs:198-200 填入，模板不再硬编码。
       "search.field.all": "全部", "search.field.name": "文件名", "search.field.date": "日期",
@@ -605,6 +601,8 @@
       "album.animated.name": "Animated", "album.hdr.name": "HDR", "album.favorites.name": "Favorites",
       "album.no_albums_yet": "No Albums Yet",
       "photos.selection.count": "{n} selected", "photos.selection.limit": " (limit reached)",
+      "photo.mode.group": "Photo grouping",
+      "photo.mode.year": "Year", "photo.mode.month": "Month", "photo.mode.day": "Day",
       "search.field.all": "All", "search.field.name": "File name", "search.field.date": "Date",
       "empty.search_idle.title": "Search Your Library",
       "empty.search_idle.description": "Type a file name or a shooting date (YYYY/MM/DD) to start.",
@@ -668,6 +666,9 @@
     // 查看器 tooltip 在真实代码里已经过 tr()（viewer_page.rs:485），所以两种语言都要翻；
     // 键名后缀是 P0-4 落盘行为（tooltip_with_key），常态存在，只在「落盘前」演示态里摘掉。
     // baseTitle 只认一次，保证本函数可重复执行。
+    // 无障碍名与可见文案同源（mode_selector.rs 的 set_labels_i18n 一次写两者），
+    // 所以换语言时必须一起翻，否则读屏念的是另一种语言。
+    applyModeSelectorA11y();
     qa("[data-i18n-title], [data-key]").forEach(function (el) {
       if (el.dataset.baseTitle === undefined) el.dataset.baseTitle = el.getAttribute("title") || "";
       var base = el.dataset.i18nTitle ? tr(el.dataset.i18nTitle) : el.dataset.baseTitle;
@@ -1036,14 +1037,17 @@
       var tile = document.activeElement && document.activeElement.classList &&
         document.activeElement.classList.contains("tile") ? document.activeElement : null;
 
-      // P2-3：开启后年/月/日三段可 Tab 进入并用左右方向键切换（关闭时键盘进不去，即现状）。
-      var segEl = ev.target.closest ? ev.target.closest(".segment[data-mode]") : null;
-      if (segEl && enabled("p2-3") && (key === "ArrowLeft" || key === "ArrowRight")) {
+      // P2-3 已落盘：胶囊本身是唯一 tab stop，左右方向键在段间循环并环绕，
+      // 焦点始终留在整件控件上（与 mode_selector.rs 的 EventControllerKey 同语义）。
+      var segBar = ev.target.closest ? ev.target.closest(".mode-selector") : null;
+      if (segBar && (key === "ArrowLeft" || key === "ArrowRight")) {
         ev.preventDefault();
-        var segs = qa(".segment", segEl.closest(".mode-selector"));
-        var si = (segs.indexOf(segEl) + (key === "ArrowRight" ? 1 : segs.length - 1)) % segs.length;
-        selectSegment(segs[si]);
-        segs[si].focus();
+        var segs = qa(".segment", segBar);
+        if (!segs.length) return;
+        var current = segs.findIndex(function (seg) { return seg.classList.contains("active"); });
+        if (current < 0) current = 0;
+        var next = (current + (key === "ArrowRight" ? 1 : segs.length - 1)) % segs.length;
+        selectSegment(segs[next]);
         return;
       }
 

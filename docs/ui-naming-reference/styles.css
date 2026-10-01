@@ -1387,11 +1387,11 @@ body[data-pv-demo="toast-on-strip"][data-pv-screen="viewer"] .toast-host { botto
 /* P2-1 已落盘为常态：可撤销的动作自带撤销按钮；关掉按钮就是落盘前的纯文本提示。 */
 body[data-pv-demo="toast-no-undo"] .toast button { display: none; }
 
-/* P2-3：段落下用键盘焦点可见性代替底色块，保持单胶囊契约 */
-body[data-pv~="p2-3"] .segment:focus-visible {
+/* P2-3 已落盘为常态：焦点在整件控件上（一个 tab stop，段间靠左右方向键），
+   所以焦点环画在胶囊外沿而不是某一段上——单胶囊契约不变，没有 per-segment 底色块。 */
+.mode-selector:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  border-radius: 8px;
+  outline-offset: 1px;
 }
 
 /* P2-5：选择计数的查询线程标注（实现期条目，仅提醒） */

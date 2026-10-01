@@ -28,7 +28,7 @@
   //   p1-14 减少动画（styles.css 归零过渡时长，芯片本身即效果）
   //   p2-1  toast 撤销（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-no-undo）
   //   p2-2  toast 让位胶片条（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-on-strip）
-  //   p2-3  模式选择器无障碍语义（prototype.js 写 role/label）
+  //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
   //   p2-4  图标按钮 accessible name（prototype.js applyIconLabels）
   // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
@@ -731,11 +731,22 @@
         "保留单胶囊视觉（ui-liquid-glass.md:92-105 是硬契约），用 set_accessible_role(Button)+set_accessible_label 补语义；或改 Gtk.ToggleButton + .glass-segment（search-page.blp 已走此路，ui-liquid-glass.md:108-110）"
       ],
       files: ["data/ui/mode-selector.blp", "src/ui/mode_selector.rs"],
-      tests: ["tools/assert-at-spi.py --dump 确认三个子节点成为可访问按钮"],
-      docs: ["docs/modules/ui-liquid-glass.md"],
+      landed:
+        "P2-3 已落盘（2026-10-02），按草案的第一方案（accessible role），没有换成 ToggleButton。角色写在模板里（`accessible-role` 在 GTK 里是可读写属性，Blueprint 用枚举名下划线形式 `radio_group`，写成 `radio-group` 会编译失败）：整件控件 `radio_group`，三个 label_cell `radio`，指示条那一行 `presentation`——滑动的短条只是重复「哪一段被选中」，不该在无障碍树里变成第四件东西。名称与状态由 Rust 给：`set_labels_i18n` 把每段的可读名与可见文案用同一个 `tr()` 字符串同时下发（`Property::Label`），整件控件另取一个新键 `photo.mode.group`（两份 json 同步，parity 447/447）并标 `Property::Orientation(Horizontal)`；`apply_state` 给三段各推一个 `State::Checked(True/False)`，所以永远恰好一段被勾选。\n\n保留原样：整件控件是唯一 tab stop + 左右方向键（含环绕）。草案和原型都把 tabIndex 发到每一段上，落盘没有跟——逐段可聚焦会把焦点环画在三个 Box 上、把一次 Tab 变成三次，并且和「一个玻璃胶囊、内部状态轻量」这条硬契约相冲。\n\n实测证据（本机，非 CI）：`env -u NO_AT_BRIDGE HOME=<tmp> tools/with-at-spi.sh xvfb-run -a ./target/debug/photo-viewer` 起真实应用，再用 pyatspi 走树，得到 `grouping '照片分组方式'（FOCUSABLE）` 下挂 `radio button '年' / '月' / '日'`，CHECKED 落在应用当时记住的那一段（日）。读到的正是读屏会念的东西，命令已记进 docs/testing.md。\n\n限制记录（不做沉默处理）：三段仍是 `Gtk.Box` + GestureClick，因此**不暴露 AT-SPI action**——读屏能播报、也能用方向键在聚焦的胶囊上改选，但没法「按下」指定某一段。草案自己点过这条风险（改 ToggleButton 会触碰材质契约），所以这里选择记录限制而不是换控件。",
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::mode_selector（19 项，新增 3 条：角色树、恰好一段被勾选、名称与可见文案同源。负向验证：从 blp 删掉 accessible-role 后 the_selector_is_a_radio_group_of_three_radios 变红）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --test ui_mode_selector --test ux_click_flows（单元格点击手势与模式切换不受重构影响）",
+        "手工 AT-SPI 探针（pyatspi 读真实应用的树）-> PASS，需要桌面会话与手工启动，没有进 CI"
+      ],
+      docs: [
+        "docs/modules/ui-liquid-glass.md（分段控件的无障碍语义）",
+        "docs/modules/browsing.md（模式选择器）",
+        "docs/testing.md（本机 AT-SPI 探针配方 + NO_AT_BRIDGE 坑）",
+        "docs/ui-naming-reference/index.html（mode-selector 条目）"
+      ],
       risk: "改 ToggleButton 分组会触碰材质契约，优先用 accessible role 方案。",
       demo:
-        "开启后年/月/日三段可用 Tab 聚焦并按左右方向键切换（视觉不变，仍是一个胶囊）；关闭时它只是可点击的 Box，键盘无法进入。"
+        "常态即已落盘行为：胶囊是单一 tab stop，Tab 聚焦后左右方向键切换并环绕，焦点环画在胶囊外沿；无障碍语义（radio group + 三个 radio + checked）在浏览器无障碍树里可核对，界面无任何视觉变化。提案芯片不再改动画面。"
     },
     {
       id: "p2-4",
@@ -1558,7 +1569,12 @@
       },
       "p2-1": function () { needScreen("photos"); PV.setMulti(true); PV.runAction("batch-fav"); },
       "p2-2": function () { openViewerDemo(); setTimeout(function () { PV.toast("P2-2：提示让开底部胶片条", { kind: "info" }); }, 220); },
-      "p2-3": function () { needScreen("photos"); var s = q(".screen[data-screen='photos'] .segment[data-mode]"); if (s) s.focus(); },
+      "p2-3": function () {
+        needScreen("photos");
+        var bar = q(".screen[data-screen='photos'] .mode-selector");
+        if (bar) bar.focus();
+        PV.toast("P2-3 已落盘：胶囊是唯一 tab stop，焦点环在 capsule 外沿；左右方向键切换并环绕，读屏听到的是 radio group + 三个 radio（打开浏览器无障碍树可核对）。", { kind: "info", ms: 5200 });
+      },
       "p2-4": function () { needScreen("photos"); PV.toast("P2-4：把指针移到宫格角标与图标按钮上，tooltip 与 accessible label 已补上", { kind: "info", ms: 4200 }); },
       "p2-5": function () { needScreen("photos"); },
       "p2-6": demoP26,

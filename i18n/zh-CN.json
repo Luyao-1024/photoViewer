@@ -123,6 +123,7 @@
     "photo.mode.year": "年",
     "photo.mode.month": "月",
     "photo.mode.day": "日",
+    "photo.mode.group": "照片分组方式",
     "section.label.day": "{year}年{month}月{day}日 {weekday} · {count} 张",
     "section.label.month": "{year}年{month}月 · {count} 张",
     "section.label.year": "{year} · {count} 张",
