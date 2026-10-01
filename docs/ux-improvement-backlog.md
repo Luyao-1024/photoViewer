@@ -10,7 +10,7 @@
 功能骨架与工程规范是这个项目的强项：虚拟化网格、语义色 token、破坏性操作确认、变换不动布局，都已经达到或超过一般桌面相册应用的水准。当前 UX 短板集中在三类，而不是视觉风格：
 
 1. **状态可见性缺口**——扫描期误报「暂无照片」、主网格键盘焦点不可见、选中集被后台重建静默清空。这三项都会让用户对软件产生错误事实判断。
-2. **发现性缺口**——多选只能右键进入且无入口提示、13 个快捷键在应用内完全不可发现、全库总览只靠隐藏手势、查看器控件静止态全裸。**hover-only 材质是本项目的刻意设计（见「保留项」），但它必须有一个可发现的入口**，否则「克制」变成了「不存在」。
+2. **发现性缺口**——13 个快捷键在应用内完全不可发现、全库总览只靠隐藏手势、查看器控件静止态全裸。多选现已可由右键/长按菜单、Space 与 Ctrl+A 进入，并有显式退出按钮；库主已决定不恢复 header 常驻入口，因此剩余问题是不能假设所有用户都知道这些手势，而不是必须重新加入同一颗按钮。**hover-only 材质是本项目的刻意设计（见「保留项」），但它必须有一个可发现的入口**，否则「克制」变成了「不存在」。
 3. **反馈缺口**——搜索零结果、图片解码失败、编辑器退出丢改动，都是「用户做了动作但界面什么都不说」。
 
 优先级定义（沿用 [`improvement-backlog.md`](improvement-backlog.md) 的分级）：
@@ -162,7 +162,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 ---
 
-### P0-3 多选只能靠右键进入，无入口提示、无触控回退
+### P0-3 多选发现性不足且缺少触控回退（header 常驻入口已按库主决定撤回）
 
 **现象**：左键 = 打开查看器。进入多选的**唯一**入口是右键菜单里的「Multi-select」；进入后界面没有任何提示说明「点击语义已从打开变为选中」。触屏/触控板用户没有右键，等于无法批量操作。
 
@@ -218,7 +218,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 - **不加收藏按钮**：该页 `on_set_favorite` 目前是 no-op，放一颗心就是死控件；模板注释里写明了这个刻意的缺失。
 - **键盘对齐**：`handle_keyboard_action` 转发 `Ctrl+A`（全选相册）、`Delete`（有选择才进回收站，否则 Ignored）、`Escape`（先清选择/退出多选，再把剩下的交回导航栈）。
 
-**仍在 backlog 的缺口（不再是「刻意留下的例外」）**：旧 `MediaGrid`（FlowBox，仅搜索结果分区在用）以 `enable_context_menu: false` 构造，因此那批瓦片既没有右键菜单、也没有长按回退、更没有进入多选的通路。补它需要在搜索页提供 overlay 宿主并接上真实的 `on_add_to_album` / `on_set_favorite` 回调，作为独立条目跟进；现状描述见 `docs/modules/browsing.md`。
+**仍在 backlog 的缺口（不再是「刻意留下的例外」）**：旧 `MediaGrid`（FlowBox，仅搜索结果分区在用）以 `enable_context_menu: false` 构造，因此那批瓦片既没有右键菜单、也没有长按回退、更没有进入多选的通路。补它需要在搜索页提供 overlay 宿主并接上真实的 `on_add_to_album` / `on_set_favorite` 回调，作为 P1-15 跟进；现状描述见 `docs/modules/browsing.md`。照片页与相册详情页的右键/长按菜单和 Space / Ctrl+A 入口已可达，退出按钮始终提供明确退路；header 常驻入口已按库主决定撤回，后续方案不得把它当作默认修复。
 
 **风险**：header `[start]` 已挤了 search + 两个 revealer，窄窗口下可能换行或裁切。需在 800×600 与 1280×800 两档目测；必要时把 `select_mode_btn` 放到 `[end]` 的最左位（注意 `[end]` 是 edge-first 反向声明，见 `photos-page.blp:11-15` 的注释）。**已实测**：两页在 800×600 截图下 header 无溢出、无换行，窗口控件仍在右端，`select_mode_btn` 未进入裁切。
 
@@ -481,21 +481,21 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 ---
 
-### P1-10 大图解码失败 → 空白无提示
+### P1-10 查看器原图解码失败 → 空白无提示（网格已有不可用占位，需另行验证其辨识度）
 
-**现象**：原图解码失败时（文件损坏/已移动/权限），舞台留白，没有文字。缩略图失败在主网格里表现为「完全空白的格子」。
+**现象**：原图解码失败时（文件损坏/已移动/权限），舞台留白，没有文字。虚拟网格与旧 FlowBox 的缩略图失败路径会收到专门生成的“不可用”占位纹理，因此不能把二者都描述成完全空白；真正确认的缺口是查看器没有任何文本、原因或恢复动作。
 
 **证据（已验证）**：
 
 - `src/ui/viewer/stage.rs:672-682`：原始图解码 Err 分支只 `warn` + 收起 spinner；预览也失败时 `:591-637` 无内容可画，舞台留空。
 - 错误 UI 只给视频：`data/ui/viewer-page.blp:128-163` 的 `video_error_box`（样式 `base.css:758-772`），图片无对应物。
-- 网格侧：`data/css/base.css:996` `.glass-thumb-card.thumb-loading:not(.thumb-placeholder){opacity:0}`（镜像逻辑 `src/ui/media_grid/render.rs:41-48`）——失败瓦片不可见。
+- 缩略图侧：图片/视频解码失败由 `src/core/thumbnails/decode.rs:124-137` 转为 `generate_unavailable_placeholder()` 并成功交付，不是空白格子；`base.css:996` 的 `opacity:0` 只属于没有 `.thumb-placeholder` 的普通 `.thumb-loading` 状态。失败占位的辨识度需要真实截图验证，不能据旧文案直接重做状态。
 
 **方案**：
 
 1. **图片错误态**：把 `video_error_box` 泛化为 `media_error_box`（同一 `[overlay]` 兄弟节点、同一 `.viewer-video-error`→`.viewer-media-error` class 家族），在 `stage.rs:672-682` 的 Err 分支显示：图标 `image-missing-symbolic` + 文件名 + 一句原因 + 「在文件管理器中显示」/「重试」按钮。注意 `docs/modules/ui-liquid-glass.md:126` 要求新 selector 两处材质镜像。
    - 文案与 P0-1 的 `scan_error` 用同一措辞风格：说明原因 + 如何修复。
-2. **网格失败瓦片可见化**：`thumb-loading`/失败态改为显示 `image-x-generic-symbolic` 占位（去掉 `opacity: 0`），保留 `.thumb-placeholder` 骨架路径不变（`factory.rs:275-306` 的骨架是有效的）。需要一个新 class（如 `.thumb-broken`）区分「还在加载」与「失败」，否则把 spinner 常驻会误导。
+2. **先验证缩略图占位是否已足够可辨**。现有失败纹理会进入正常 `set_paintable()` 路径并清除 loading 类；只有运行截图证明确实无法与加载中/正常缩略图区分时，才增加 `.thumb-broken` 与 icon/text 层。不要预设“格子为空”，也不要先给 core 增加失败回调。
 3. **状态来源**：`ThumbnailLoader` 当前只暴露 `set_stats_dirty_callback`（`src/core/thumbnails.rs:348`），无失败回调。方案是给 loader 增加「按 media_id 请求失败」的回调或在 `SquareTile` 上直接置 `.thumb-broken` class（后者不动 core，优先）。
 
 **落点文件**：`data/ui/viewer-page.blp`、`src/ui/viewer/stage.rs`、`data/css/base.css`、`data/css/liquid.css`、`data/css/plain.css`、`src/ui/square_tile.rs`、`src/ui/virtual_media_grid/factory.rs`、`i18n/*.json`。
@@ -635,7 +635,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 1. 让预览分区的瓦片可达右键菜单：`build_result_section()` 改用 `MediaGrid::new_for_album_with_context_menu()`（`media_grid.rs:591-598` 已存在，无需新 API）。
 2. **顺序前提**：先接上真实回调，再开菜单。`on_add_to_album` 需要搜索页把 `MediaId` 交给现有的加入相册流程（与 `photos_page.rs` 同一批处理函数），`on_set_favorite` 走 `MediaRepository` 的收藏写入，`on_query_favorite_state` 改为查真实状态；否则就是在开一扇通向 no-op 的门。
 3. 菜单需要一个页面级 overlay 宿主：`GlassContextMenu` 通过页面 overlay 渲染，`search-page.blp` 目前没有对应容器，参照 `photos-page.blp` 的 `grid_overlay` 补一个。
-4. 如果只做分区而不做进入多选，就在分区 header 上放一枚与 P0-3 同款的入口按钮（复用 `photos.batch.multi_select` 文案），避免「能右键但选不了多个」。
+4. 若产品决定分区保留完整批量路径，应同时接入右键/长按进入多选和页面级批量 chrome；若分区只用于预览，则把「显示更多」后的 `VirtualMediaGrid` 作为唯一批量操作路径并在文档写清。header 常驻入口不属于默认方案（P0-3 已按库主决定撤回）。
 5. **收缩方案**（若判断分区不该有批量动作）：反向做法是明确让分区只用于预览、把「显示更多」当作唯一可批量操作的路径，并在文档与命名图里写成契约。这需要产品决策，不能靠沉默实现。
 
 **落点文件**：`src/ui/search_page.rs`、`data/ui/search-page.blp`、`src/ui/media_grid.rs`（`enable_context_menu` 的调用点）、`i18n/*.json`（若新增文案）。
@@ -657,7 +657,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | P2-5 | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 移入 `spawn_blocking` + generation 回投；大库下多选 header 会掉帧 |
 | P2-6 | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 复用 P0-1 的 loading/error 分离结论 |
 | P2-7 | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 首轮加载完成前不切空态 |
-| P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；否则同步状态入口等于不存在。同步状态失败也无重试按钮（`photos_page.rs:1024-1040`，`:1279` 错误仅日志） |
+| P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；同步状态失败需显示可操作的重试提示。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
 | P2-9 | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 混合态给按钮加下拉指示，让「会弹菜单」可预判 |
 
 ---
@@ -684,7 +684,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | B4 快捷键发现 | P0-4 | `src/ui/keyboard/*`/`window.rs`/`settings.rs`/i18n | 无 |
 | B5 搜索 | P0-5、P1-15 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造）；P1-15 还要先接上真实的加入相册/收藏回调 |
 | B6 查看器信息层 | P1-7、P1-12、P2-2 | `viewer-page.blp`/`viewer_page.rs`/`navigation.rs`/`transform.rs`/`base.css` | 无 |
-| B7 查看器输入 | P1-8 | `transform.rs`/`stage.rs`/`viewer.md` | B6（同文件，顺序执行避免冲突） |
+| B7 查看器输入 | P1-8 | `transform.rs`/`stage.rs`/`viewer.md` | B1（键盘焦点）、B6（控件尺寸与重排） |
 | B8 编辑与错误反馈 | P1-9、P1-10、P2-1 | `editor_panel.rs`/`viewer/editor.rs`/`viewer/stage.rs`/`square_tile.rs`/三材质 CSS | 无 |
 | B9 材质与动效 | P1-11、P1-13、P1-14、P2-3、P2-4 | 三份 CSS/`grid_css.rs`/`render.rs`/`filmstrip.rs`/`mode_selector.rs` | 建议最后做（触碰材质契约最广） |
 
@@ -712,7 +712,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 | 文档 | 需改动的结论 | 触发批次 |
 |---|---|---|
-| `docs/modules/ui-design.md:105-109` | 「选择动作只在有选择时出现」需补充「进入选择有常驻入口」，消除循环依赖 | B3 |
+| `docs/modules/ui-design.md:105-109` | 多选进入由网格右键/长按、Space 与 Ctrl+A 完成；仅修正选择动作的出现时机描述，不增加 header 常驻入口 | B3 |
 | `docs/modules/ui-design.md:151-152` | 空态/loading 需为三态且带下一步动作 | B2 |
 | `docs/modules/ui-design.md:175-184` | focus 态可见性落地；hover 与 selected 的强度差决策 | B1、B9 |
 | `docs/modules/viewer.md:98-113, 204` | 重新表述控制器禁令（区分 touch-only 与桌面滚轮）；新增位置/倍率契约 | B6、B7 |
