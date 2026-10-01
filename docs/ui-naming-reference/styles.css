@@ -924,6 +924,18 @@ h1 {
   font-weight: 700;
 }
 
+/* 分区 header：真实代码是 Gtk.Box（search_page.rs:368-380），label hexpand 后
+   把按钮推到行尾，所以标题占满剩余宽度。 */
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.result-head .result-title {
+  flex: 1;
+}
+
 .more-tile {
   display: flex;
   align-items: center;
@@ -1242,6 +1254,11 @@ body[data-pv-screen="trash"] #context-menu.is-open { display: block; }
 
 /* P1-6 已选计数 */
 body[data-pv~="p1-6"] .header-title.pv-p1-6 { display: block; }
+
+/* P1-15 搜索结果分区的批量动作入口（提案，未落盘） */
+body[data-pv~="p1-15"] button.pv-p1-15 { display: inline-flex; }
+/* 与照片页/相册页的落盘行为一致：进入多选后入口自身收起，退出按钮顶上来。 */
+body[data-pv-mode="run"][data-multi="1"] button.pv-p1-15 { display: none; }
 
 /* P0-2 焦点环 / P1-11 悬停示例 / P1-10 失败瓦片 */
 body[data-pv~="p0-2"] .tile.pv-p0-2 { display: block; }

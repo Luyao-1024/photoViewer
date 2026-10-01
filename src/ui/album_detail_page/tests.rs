@@ -225,3 +225,229 @@ fn visible_real_album_refresh_emits_single_addition_change() {
             "album refresh should emit one pure-addition change so MediaGrid can use its insertion path"
         );
 }
+
+/// Build an album page the way the sidebar does: a real folder album whose
+/// store is already populated, so `new()` takes the grid branch and wires the
+/// header selection chrome. The database holds `total` photos while the GTK
+/// store carries only the first `window` of them, which is how a large album
+/// reaches the page: a bounded seed list over an authoritative query. The
+/// `TempDir` owns the fixture database, so callers must keep it alive for as
+/// long as they use the page.
+fn album_page_with_photos(total: i64) -> (AlbumDetailPage, tempfile::TempDir) {
+    album_page_in_window(total, total as u32)
+}
+
+fn album_page_in_window(total: i64, window: u32) -> (AlbumDetailPage, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("album-chrome.db")).unwrap();
+    for id in 1..=total {
+        crate::core::db::insert_media_item(&pool, &new_item(id, "image/jpeg")).unwrap();
+    }
+    let folder = PathBuf::from("/tmp");
+    let items = crate::core::db::list_media_by_folder_page(&pool, &folder, 0, 200).unwrap();
+    let album = crate::core::albums::Album {
+        folder_path: folder,
+        name: "tmp".into(),
+        cover_uri: None,
+        photo_count: items.len() as i64,
+        last_modified: Utc.with_ymd_and_hms(2026, 6, 23, 12, 0, 0).unwrap(),
+        is_virtual: false,
+    };
+    let store = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    let master = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for item in items.into_iter().take(window as usize) {
+        store.append(&glib::BoxedAnyObject::new(item.clone()));
+        master.append(&glib::BoxedAnyObject::new(item));
+    }
+    let loader = Arc::new(crate::core::thumbnails::ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let page = AlbumDetailPage::new(album, store, master, pool, loader);
+    (page, tmp)
+}
+
+fn album_grid(page: &AlbumDetailPage) -> VirtualMediaGrid {
+    page.imp()
+        .grid
+        .borrow()
+        .clone()
+        .expect("a populated album should build a grid")
+}
+
+#[gtk::test]
+fn batch_actions_follow_the_album_selection_and_the_entry_button_covers_mode() {
+    let (page, _tmp) = album_page_with_photos(3);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+
+    assert!(
+        imp.select_mode_revealer.get().reveals_child(),
+        "the multi-select entry must be on screen before the user selects anything"
+    );
+    assert!(!imp.select_all_revealer.get().reveals_child());
+    assert!(!imp.add_to_album_revealer.get().reveals_child());
+    assert!(!imp.delete_to_trash_revealer.get().reveals_child());
+
+    grid.select_ids(&[MediaId::from(1)]);
+
+    assert!(imp.select_all_revealer.get().reveals_child());
+    assert!(imp.add_to_album_revealer.get().reveals_child());
+    assert!(imp.delete_to_trash_revealer.get().reveals_child());
+    assert!(imp.exit_multi_select_revealer.get().reveals_child());
+    assert!(
+        !imp.select_mode_revealer.get().reveals_child(),
+        "showing 'enter multi-select' while the user is in it would be a lie"
+    );
+    assert_eq!(
+        imp.select_all_btn.get().label().unwrap().as_str(),
+        crate::core::i18n::tr("photos.batch.unselect_all"),
+        "the toggle must read as an undo once a tile is selected"
+    );
+
+    grid.clear_selection();
+
+    assert!(!imp.add_to_album_revealer.get().reveals_child());
+    assert!(!imp.delete_to_trash_revealer.get().reveals_child());
+    assert!(
+        imp.select_mode_revealer.get().reveals_child(),
+        "deselecting everything must hand the entry button back"
+    );
+}
+
+#[gtk::test]
+fn the_entry_button_switches_the_album_grid_into_multi_select() {
+    let (page, _tmp) = album_page_with_photos(3);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+    assert!(!grid.is_multi_select_mode());
+
+    imp.select_mode_btn.get().emit_clicked();
+
+    assert!(grid.is_multi_select_mode());
+    assert!(imp.exit_multi_select_revealer.get().reveals_child());
+    assert!(
+        !imp.add_to_album_revealer.get().reveals_child(),
+        "entering multi-select with nothing chosen must not fake a batch toolbar"
+    );
+}
+
+#[gtk::test]
+fn the_select_all_button_toggles_between_the_whole_album_and_nothing() {
+    // 60 photos in the album, 10 of them in the page's bounded GTK seed list:
+    // select-all must follow the album, not the window that reached the page.
+    let (page, _tmp) = album_page_in_window(60, 10);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+
+    imp.select_all_btn.get().emit_clicked();
+
+    assert_eq!(
+        grid.selected_ids().len(),
+        60,
+        "select-all should cover the album, not only the rows the grid has loaded"
+    );
+    assert_eq!(
+        imp.select_all_btn.get().label().unwrap().as_str(),
+        crate::core::i18n::tr("photos.batch.unselect_all")
+    );
+
+    imp.select_all_btn.get().emit_clicked();
+
+    assert!(grid.selected_ids().is_empty());
+    assert_eq!(
+        imp.select_all_btn.get().label().unwrap().as_str(),
+        crate::core::i18n::tr("photos.batch.select_all")
+    );
+    assert!(!imp.select_all_revealer.get().reveals_child());
+}
+
+#[gtk::test]
+fn the_exit_button_leaves_multi_select_even_with_no_selection() {
+    let (page, _tmp) = album_page_with_photos(3);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+
+    imp.select_mode_btn.get().emit_clicked();
+    imp.exit_multi_select_btn.get().emit_clicked();
+
+    assert!(!grid.is_multi_select_mode());
+    assert!(grid.selected_ids().is_empty());
+    assert!(!imp.exit_multi_select_revealer.get().reveals_child());
+    assert!(
+        imp.select_mode_revealer.get().reveals_child(),
+        "the door back into multi-select must reopen on exit"
+    );
+    assert!(
+        !imp.add_to_album_revealer.get().reveals_child(),
+        "clicking a tile should open the viewer again once multi-select is off"
+    );
+}
+
+#[gtk::test]
+fn the_empty_album_header_still_wires_its_chrome_without_a_grid() {
+    let (page, _tmp) = album_page_with_photos(0);
+    let imp = page.imp();
+    assert!(
+        imp.grid.borrow().is_none(),
+        "an empty album shows a status page, not a grid"
+    );
+
+    imp.select_mode_btn.get().emit_clicked();
+    imp.select_all_btn.get().emit_clicked();
+    imp.exit_multi_select_btn.get().emit_clicked();
+
+    assert_eq!(
+        imp.select_all_btn.get().label().unwrap().as_str(),
+        crate::core::i18n::tr("photos.batch.select_all"),
+        "chrome copy must come from the catalogues even with nothing to select"
+    );
+    assert!(!imp.add_to_album_revealer.get().reveals_child());
+    assert!(!imp.delete_to_trash_revealer.get().reveals_child());
+}
+
+#[gtk::test]
+fn browse_scope_keys_drive_the_album_selection_and_leave_escape_to_navigation() {
+    let (page, _tmp) = album_page_with_photos(3);
+    let imp = page.imp();
+    let grid = album_grid(&page);
+
+    assert!(
+        page.handle_keyboard_action(KeyboardAction::SelectAll)
+            .is_handled(),
+        "Ctrl+A is advertised for any photo list, so an album must answer it"
+    );
+    assert_eq!(grid.selected_ids().len(), 3);
+    assert!(imp.add_to_album_revealer.get().reveals_child());
+
+    assert!(page
+        .handle_keyboard_action(KeyboardAction::CancelOrClose)
+        .is_handled());
+    assert!(grid.selected_ids().is_empty());
+    assert!(!imp.add_to_album_revealer.get().reveals_child());
+
+    assert!(
+        !page
+            .handle_keyboard_action(KeyboardAction::CancelOrClose)
+            .is_handled(),
+        "with nothing left to deselect, Escape must belong to the navigation stack"
+    );
+}
+
+#[gtk::test]
+fn delete_only_consumes_the_album_keyboard_action_when_something_is_selected() {
+    let (page, _tmp) = album_page_with_photos(3);
+
+    assert!(
+        !page
+            .handle_keyboard_action(KeyboardAction::Delete)
+            .is_handled(),
+        "Delete with no selection should fall through instead of trashing the album"
+    );
+
+    let grid = album_grid(&page);
+    grid.select_ids(&[MediaId::from(1)]);
+    assert!(page
+        .handle_keyboard_action(KeyboardAction::Delete)
+        .is_handled());
+}

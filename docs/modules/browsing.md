@@ -347,18 +347,19 @@ right-clicked photo is already part of it, otherwise on just that photo. The
 explicit "enter multi-select" entry is the only context-menu path that selects
 its target. See [`ui-design.md`](ui-design.md) "Media Grids And Tiles".
 
-Multi-select has two entries, because the context menu alone was unreachable on
-a touchscreen and invisible on a desktop:
+Multi-select has two entries on the virtual grids, because the context menu
+alone was unreachable on a touchscreen and invisible on a desktop:
 
 - `select_mode_btn` in the Photos header (inside `select_mode_revealer`) enters
   the mode on **all three** grids at once, so the mode survives switching
   grouping, then moves focus onto a visible tile so Space acts immediately. It
-  selects nothing itself — the user's first click does.
+  selects nothing itself — the user's first click does. The album detail page
+  carries the same button and revealers for its single Day grid; see
+  [`albums-trash.md`](albums-trash.md).
 - A `gtk::GestureLongPress` with `touch_only: true` on each virtual-grid tile
   summons the same context menu a right-click does (`factory.rs` setup), so the
   menu's actions are reachable without a right button. `touch_only` keeps it off
-  the mouse path; the legacy FlowBox grid (search result sections) has no
-  long-press fallback yet.
+  the mouse path.
 
 `refresh_selection_ui` reveals the entry when multi-select is off and the exit
 button when it is on, so exactly one mode affordance is present at a time.
@@ -366,7 +367,15 @@ Photos page "Select All" is intentionally capped at 2,000 live media items. For
 large virtualized libraries it loads the first 2,000 ids from the database's
 canonical live ordering, not from the current GTK seed or ready range.
 `VirtualMediaGrid` may therefore hold selected ids outside its currently
-realized factory cells.
+realized factory cells. The album detail page applies the same rule to its own
+album query (`ALBUM_SELECT_ALL_LIMIT`).
+
+The legacy FlowBox grid has neither door: the search result sections build it
+with `enable_context_menu: false` (`search_page.rs` `build_result_section`), so
+those tiles offer no right-click menu, no long-press menu, and no way into
+multi-select. Closing that gap needs an overlay host on the search page plus real
+`on_add_to_album`/`on_set_favorite` callbacks there — tracked in the UX backlog,
+not a silent exception.
 
 Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
 than `GtkPopover`, so they render through the same page-overlay path as the

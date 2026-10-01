@@ -30,6 +30,9 @@
   //   p2-2  toast 让位胶片条（styles.css 调 toast-host 位置）
   //   p2-3  模式选择器无障碍语义（prototype.js 写 role/label）
   //   p2-4  图标按钮 accessible name（prototype.js applyIconLabels）
+  // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
+  //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
+  //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
   var PROPOSALS = [
     {
       id: "p0-1",
@@ -156,9 +159,9 @@
       risk:
         "header [start] 已挤了 search + 两个 revealer，窄窗口可能换行或裁切；必要时放 [end] 最左位（注意 [end] 是 edge-first 反向声明，photos-page.blp:11-15）。",
       demo:
-        "照片页的常驻入口（select-mode-button）与触屏长按已是真实行为：命名总览里始终可查，交互原型里点它即进入多选，进入后入口收起、退出/全选/批量动作 reveal。开启本提案改为显示相册详情页那一半仍未落盘的入口（album-select-mode-button-proposal）。把「窗口宽度」切到窄，检查 header 是否溢出。",
+        "照片页与相册详情页的常驻入口（select-mode-button / album-select-mode-button）都已是真实行为：命名总览里始终可查，交互原型里相册详情顶栏现在与照片页同位同名地有完整的进出多选与批量动作 chrome，点入口即进入多选、入口收起、退出/全选/批量动作 reveal。把「窗口宽度」切到窄，检查两页 header 是否溢出。剩余未落盘的是长按回退覆盖旧 FlowBox 网格（搜索结果分区）——见 browsing.md 记录的独立缺口。",
       landed:
-        "B3 已落盘（照片页 + 虚拟网格），相册页未做。header [start] 新增 select_mode_revealer → select_mode_btn（photos-page.blp:49-58），图标实际用 selection-mode-symbolic——草案写的 check-select-symbolic 在本机 Adwaita 图标主题里不存在；tooltip 复用 photos.batch.multi_select（photos_page.rs:419-421），点击对三套分组网格一并 set_multi_select_mode(true) 后把焦点交进当前可见瓦片（:747-757），reveal 由 refresh_selection_ui() 的 !any_multi 驱动（:1286-1288），与 exit_multi_select_btn 形成对称进出。factory.rs:97-111 追加 GestureLongPress(button=1, touch_only=true) 走与右键同一个 show_context_menu，touch_only 保证慢点击不会与 click-to-open 打架；右键项保留。刻意留下的两处缺口：旧 FlowBox 网格（搜索结果分区）还没有长按回退，AlbumDetailPage 整页没有选择 chrome，因此本提案的相册页那一半仍是提案。测试：ui::photos_page::tests（入口/退出交接 + 窄窗口分配）、ui::virtual_media_grid::tests（真实 factory 瓦片带 touch_only 长按）、--test ui_photos_toolbar（6 个 glass-toolbar-button）。"
+        "B3 已落盘（照片页 + 虚拟网格 + 相册详情页）。照片页：header [start] 新增 select_mode_revealer → select_mode_btn（photos-page.blp:49-58），图标实际用 selection-mode-symbolic——草案写的 check-select-symbolic 在本机 Adwaita 图标主题里不存在；tooltip 复用 photos.batch.multi_select（photos_page.rs:419-421），点击对三套分组网格一并 set_multi_select_mode(true) 后把焦点交进当前可见瓦片（:747-757），reveal 由 refresh_selection_ui() 的 !any_multi 驱动（:1286-1288），与 exit_multi_select_btn 形成对称进出。factory.rs:97-111 追加 GestureLongPress(button=1, touch_only=true) 走与右键同一个 show_context_menu，touch_only 保证慢点击不会与 click-to-open 打架；右键项保留。相册页那一半也已落盘：album-detail-page.blp:24-89 复刻同名同位的五个 revealer/button（含 select_all、exit、add_to_album、delete_to_trash），wire_selection_chrome()（album_detail_page.rs:266）用同一批 photos.batch.* 文案，refresh_selection_ui()（:409）由 grid.connect_selection_changed 驱动；全选走 select_all_in_album()（:365）+ ALBUM_SELECT_ALL_LIMIT=2000 从 MediaRepository 按相册查询取 id，而不是网格已加载窗口——探针截图发现旧写法 select_all() 在未 realize 的 ready set 上会静默清空选择。Ctrl+A / Delete / Escape 在相册页与照片页语义一致。刻意保留：相册页不放假的收藏按钮（该页 on_set_favorite 目前是 no-op）。仍在 backlog 的缺口：旧 FlowBox 网格（搜索结果分区）以 enable_context_menu: false 构造，既无右键也无长按，也没有任何多选入口。测试：ui::photos_page::tests、ui::virtual_media_grid::tests、--test ui_photos_toolbar（6 个 glass-toolbar-button）、ui::album_detail_page::tests（12 个，含 60 张相册只加载 10 张时的全选）。"
     },
     {
       id: "p0-4",
@@ -548,6 +551,49 @@
         "点亮芯片本身就等效于系统 reduce-motion：所有过渡与动画时长归零，胶片条滚动、模式滑轨、Revealer 全部改为直接切换；关掉芯片动画恢复。工具条「减少动画」开关走同一套样式，用来单独验证环境轴。"
     },
     {
+      id: "p1-15",
+      prio: "P1",
+      batch: "B5",
+      title: "搜索结果分区的照片选不中",
+      screens: ["search"],
+      problem:
+        "搜索页的分区预览瓦片既不能右键、也没有长按回退、更没有进入多选的方式。P0-3 补齐照片页与相册详情页之后，这里是全应用唯一「选中不了」的媒体列表。",
+      evidence: [
+        "生产代码里旧 MediaGrid（FlowBox）只剩一处实例：search_page.rs:399 build_result_section()",
+        "它走 MediaGrid::new_for_album()（media_grid.rs:580-589），enable_context_menu 传 false（:605 的参数），整条右键路径关闭",
+        "search_page.rs:406-409 的 on_add_to_album 与 on_set_favorite 是空闭包，on_query_favorite_state 恒返回 FavoriteMenuState::default()",
+        "长按回退只在 virtual_media_grid/factory.rs:97-111；P0-3 期间曾给旧网格补 GestureLongPress，因 enable_context_menu: false 成为不可达代码，已回退",
+        "「更多」进去的完整结果页是 VirtualMediaGrid::new_for_query()（search_page.rs:733），入口与长按都在，不受本条影响"
+      ],
+      solution: [
+        "build_result_section() 改用已存在的 MediaGrid::new_for_album_with_context_menu()（media_grid.rs:591-598），无需新 API",
+        "顺序前提：先接上真实回调再开菜单——on_add_to_album 交给现有批量加入相册流程，on_set_favorite 走 MediaRepository 收藏写入，on_query_favorite_state 查真实状态；否则是开一扇通向 no-op 的门",
+        "菜单需要页面级 overlay 宿主：GlassContextMenu 经页面 overlay 渲染，search-page.blp 目前没这个容器，参照 photos-page.blp 的 grid_overlay 补",
+        "若只做分区不做进入多选，则在分区 header（search_page.rs:368-380 的 Gtk.Box）放一枚与 P0-3 同款入口按钮，复用 photos.batch.multi_select 文案，避免「能右键但选不了多个」",
+        "收缩方案（需产品决策，不能靠沉默实现）：明确分区只用于预览，把「显示更多」当作唯一可批量操作的路径，并写进文档与命名图"
+      ],
+      files: [
+        "src/ui/search_page.rs",
+        "data/ui/search-page.blp",
+        "src/ui/media_grid.rs",
+        "i18n/*.json（若新增文案）"
+      ],
+      tests: [
+        "cargo test --test ui_search_page（分区瓦片能产生非空 selected_ids()）",
+        "cargo test ui::media_grid",
+        "tools/assert-at-spi.py 增加搜索分区可达性检查"
+      ],
+      docs: [
+        "docs/modules/browsing.md（把「legacy FlowBox grid has neither door」改成已修复或明确契约）",
+        "docs/modules/ui-design.md（搜索分区行为）",
+        "docs/ui-naming-reference/index.html（search-results-box 与 image-results 的现状描述）"
+      ],
+      risk:
+        "在分区里开多选会让「点击=打开查看器」的语义在一个页面内分裂成两种（分区 vs 完整结果页）；若两套网格行为不一致，用户学到的是错误规律。落点顺序必须是回调→菜单→入口，不能反过来。",
+      demo:
+        "开启芯片后，图片分区 header 右端出现一枚与照片页同款的「选择」入口（search-section-select-mode-button-proposal），点它即进入多选、瓦片可勾选。关闭＝回到现状：分区里无论如何都选不中。真实落盘还需要先把加入相册/收藏两个空闭包接实。"
+    },
+    {
       id: "p2-1",
       prio: "P2",
       batch: "B8",
@@ -719,7 +765,7 @@
     B2: { name: "B2 扫描态", ids: ["p0-1", "p2-6", "p2-7", "p2-8"] },
     B3: { name: "B3 多选与选择", ids: ["p0-3", "p1-6", "p2-5", "p2-9"] },
     B4: { name: "B4 快捷键发现", ids: ["p0-4"] },
-    B5: { name: "B5 搜索", ids: ["p0-5"] },
+    B5: { name: "B5 搜索", ids: ["p0-5", "p1-15"] },
     B6: { name: "B6 查看器信息层", ids: ["p1-7", "p1-12", "p2-2"] },
     B7: { name: "B7 查看器输入", ids: ["p1-8"] },
     B8: { name: "B8 编辑与错误反馈", ids: ["p1-9", "p1-10", "p2-1"] },
@@ -1357,6 +1403,12 @@
       "p1-12": function () { openViewerDemo(); },
       "p1-13": function () { needScreen("photos"); },
       "p1-14": function () { PV.setMotion(true); needScreen("photos"); },
+      "p1-15": function () {
+        needScreen("search");
+        var input = q("#search-input");
+        if (input && !input.value) input.value = "IMG";
+        PV.runSearch(input ? input.value : "IMG");
+      },
       "p2-1": function () { needScreen("photos"); PV.setMulti(true); PV.runAction("batch-fav"); },
       "p2-2": function () { openViewerDemo(); setTimeout(function () { PV.toast("P2-2：提示让开底部胶片条", { kind: "info" }); }, 220); },
       "p2-3": function () { needScreen("photos"); var s = q(".screen[data-screen='photos'] .segment[data-mode]"); if (s) s.focus(); },

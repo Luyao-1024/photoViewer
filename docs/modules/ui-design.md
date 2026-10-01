@@ -269,7 +269,18 @@ Design intent:
 - The album title belongs in the page/header context, while the content area is
   still a media grid.
 - Album detail should feel like a scoped version of Photos, not a separate app
-  mode.
+  mode. That includes the header's selection chrome: the page carries the same
+  `select_mode_revealer`/`select_mode_btn` entry, `select_all_revealer`,
+  `exit_multi_select_revealer`, `add_to_album_revealer`, and
+  `delete_to_trash_revealer` trio as Photos, in the same packing order, so the
+  same gesture never lives in two different places.
+- The album header deliberately has no batch favorite button. The page builds
+  its grid with a no-op favorite callback, so a heart would be a dead control;
+  add the button only together with a real callback.
+- Batch actions here act on the album's own media list, not on the rows the
+  virtual grid happens to have loaded. `select_all_in_album()` reads that list
+  because the grid's `select_all()` is bounded by its resident window and would
+  silently clear instead of selecting when nothing is loaded yet.
 - Keep album filtering invisible to the user: the page should show the album's
   media and preserve the same activation, selection, tile, and empty-state
   expectations as the main Photos page.

@@ -9,11 +9,83 @@ template $AlbumDetailPage : Adw.NavigationPage {
       show-end-title-buttons: true;
       css-classes: ["glass-header"];
 
+      // Same selection chrome as PhotosPage: a persistent entry into
+      // multi-select on the left, and batch actions that only appear once
+      // something is selected. Adw.HeaderBar packs `[end]` children edge-first
+      // (first declared = rightmost), so the right group is declared in reverse
+      // of its left-to-right order.
+      //
+      // There is deliberately no batch favorite button here: AlbumDetailPage
+      // builds its grid with a no-op `on_set_favorite` callback, so a heart
+      // would be a dead control until that callback is wired for real.
+
+      // Keep search first among the start children so its position matches
+      // PhotosPage when the selection revealers are hidden.
       [start]
       Gtk.Button search_btn {
         icon-name: "system-search-symbolic";
         tooltip-text: "";
         css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
+
+      // Persistent entry into multi-select. It collapses as soon as
+      // multi-select is active, where the exit button takes its place.
+      [start]
+      Gtk.Revealer select_mode_revealer {
+        transition-type: slide_right;
+        reveal-child: true;
+
+        Gtk.Button select_mode_btn {
+          icon-name: "selection-mode-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "round-search-button"];
+        }
+      }
+
+      [start]
+      Gtk.Revealer select_all_revealer {
+        transition-type: slide_right;
+        reveal-child: false;
+
+        Gtk.Button select_all_btn {
+          css-classes: ["glass-toolbar-button"];
+        }
+      }
+
+      // Bound to multi-select mode, not to having a selection, so the user is
+      // never stuck in multi-select after deselecting everything.
+      [start]
+      Gtk.Revealer exit_multi_select_revealer {
+        transition-type: slide_right;
+        reveal-child: false;
+
+        Gtk.Button exit_multi_select_btn {
+          css-classes: ["glass-toolbar-button"];
+        }
+      }
+
+      [end]
+      Gtk.Revealer delete_to_trash_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Button delete_to_trash_btn {
+          icon-name: "user-trash-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+        }
+      }
+
+      [end]
+      Gtk.Revealer add_to_album_revealer {
+        transition-type: slide_left;
+        reveal-child: false;
+
+        Gtk.Button add_to_album_btn {
+          icon-name: "list-add-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button"];
+        }
       }
     }
 

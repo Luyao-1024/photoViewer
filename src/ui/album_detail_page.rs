@@ -27,6 +27,9 @@ use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+/// Caps how many album rows one select-all may hold, matching PhotosPage.
+const ALBUM_SELECT_ALL_LIMIT: u32 = 2_000;
+
 mod imp {
     use super::*;
 
@@ -51,6 +54,26 @@ mod imp {
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub select_mode_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub select_mode_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub select_all_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub select_all_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub exit_multi_select_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub exit_multi_select_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub add_to_album_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub add_to_album_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub delete_to_trash_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub delete_to_trash_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
@@ -198,6 +221,12 @@ impl AlbumDetailPage {
             grid.set_context_menu_overlay(Some(&obj.imp().grid_overlay.get()));
             *obj.imp().grid.borrow_mut() = Some(grid.clone());
             obj.imp().content_box.get().append(&grid);
+            let weak = obj.downgrade();
+            grid.connect_selection_changed(move || {
+                if let Some(this) = weak.upgrade() {
+                    this.refresh_selection_ui();
+                }
+            });
             tracing::debug!(
                 target: crate::core::log_targets::ALBUMS,
                 album_name = %album_name,
@@ -227,7 +256,180 @@ impl AlbumDetailPage {
                 }
             });
         }
+        obj.wire_selection_chrome();
         obj
+    }
+
+    /// Labels and handlers for the header selection chrome. Copy comes from the
+    /// same `photos.batch.*` keys the Photos header uses, so the two pages stay
+    /// in step and no album-only wording drifts in.
+    fn wire_selection_chrome(&self) {
+        let tr = crate::core::i18n::tr;
+        let imp = self.imp();
+        imp.select_all_btn
+            .get()
+            .set_label(&tr("photos.batch.select_all"));
+        imp.select_all_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.select_all")));
+        imp.exit_multi_select_btn
+            .get()
+            .set_label(&tr("photos.batch.exit_multi_select"));
+        imp.exit_multi_select_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.exit_multi_select")));
+        imp.add_to_album_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.add_to_album")));
+        imp.delete_to_trash_btn
+            .get()
+            .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
+        // The multi-select entry is icon-only, so its tooltip is its label.
+        imp.select_mode_btn
+            .get()
+            .set_tooltip_text(Some(&tr("photos.batch.multi_select")));
+
+        // Left-click opens the viewer, so before this button existed the only
+        // route to batch actions was the tile context menu — undiscoverable on
+        // a desktop and unreachable on a touchscreen.
+        let weak = self.downgrade();
+        imp.select_mode_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            // Bind the handle once: `imp().grid.borrow()` is a temporary whose
+            // `Ref` would otherwise have to outlive `this` across the `if let`.
+            let grid = this.imp().grid.borrow().clone();
+            if let Some(grid) = grid.as_ref() {
+                grid.set_multi_select_mode(true);
+            }
+            this.refresh_selection_ui();
+            // The entry button is about to slide away; hand focus to the grid so
+            // Space still acts on a tile instead of leaving GTK to choose.
+            if let Some(grid) = grid.as_ref() {
+                grid.focus_visible_tile();
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.exit_multi_select_btn.get().connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.clear_selection();
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.select_all_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let Some(grid) = this.imp().grid.borrow().as_ref().cloned() else {
+                return;
+            };
+            if grid.selected_ids().is_empty() {
+                this.select_all_in_album();
+            } else {
+                grid.clear_selection();
+            }
+            this.refresh_selection_ui();
+        });
+
+        let weak = self.downgrade();
+        imp.add_to_album_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let ids = this.selected_ids();
+            if !ids.is_empty() {
+                this.open_album_picker_for_ids(ids);
+            }
+        });
+
+        let weak = self.downgrade();
+        imp.delete_to_trash_btn.get().connect_clicked(move |_| {
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let ids = this.selected_ids();
+            if !ids.is_empty() {
+                this.delete_to_trash_for_ids(ids);
+            }
+        });
+    }
+
+    /// Every photo the album holds, bounded by the same cap PhotosPage uses.
+    /// The grid's own `select_all()` only sees rows it has loaded — an album
+    /// grid seeds one viewport and pages the rest by range — so answering
+    /// select-all from it would quietly select a slice, or nothing at all when
+    /// no row is resident yet.
+    fn select_all_in_album(&self) {
+        let Some(grid) = self.imp().grid.borrow().clone() else {
+            return;
+        };
+        let album = self.imp().album.borrow().as_ref().cloned();
+        let pool = self.imp().pool.borrow().as_ref().cloned();
+        let (Some(album), Some(pool)) = (album, pool) else {
+            grid.select_all();
+            return;
+        };
+        let repo = MediaRepository::new(pool);
+        let Ok(items) = repo.items(media_query_for_album(&album), 0, ALBUM_SELECT_ALL_LIMIT) else {
+            return;
+        };
+        let ids = items
+            .into_iter()
+            .map(|item| MediaId::from(item.id))
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return;
+        }
+        grid.select_ids(&ids);
+    }
+
+    fn selected_ids(&self) -> Vec<MediaId> {
+        self.imp()
+            .grid
+            .borrow()
+            .as_ref()
+            .map(|grid| grid.selected_ids())
+            .unwrap_or_default()
+    }
+
+    fn clear_selection(&self) {
+        if let Some(grid) = self.imp().grid.borrow().as_ref() {
+            grid.clear_selection();
+        }
+        self.refresh_selection_ui();
+    }
+
+    /// Reveal the batch actions only while something is selected, and swap the
+    /// entry button for the exit button while multi-select is on. Mirrors
+    /// `PhotosPage::refresh_selection_ui` for the controls this page has.
+    fn refresh_selection_ui(&self) {
+        let imp = self.imp();
+        let binding = imp.grid.borrow();
+        let Some(grid) = binding.as_ref() else {
+            return;
+        };
+        let has_any = !grid.selected_ids().is_empty();
+        let multi = grid.is_multi_select_mode();
+        imp.select_all_revealer.get().set_reveal_child(has_any);
+        imp.add_to_album_revealer.get().set_reveal_child(has_any);
+        imp.delete_to_trash_revealer.get().set_reveal_child(has_any);
+        // Exit is bound to multi-select *mode*, not to having a selection, so
+        // the user can always leave multi-select even after deselecting all.
+        imp.exit_multi_select_revealer.get().set_reveal_child(multi);
+        // Entering is a lie once selection mode is on: a tile click now toggles
+        // selection instead of opening the viewer.
+        imp.select_mode_revealer.get().set_reveal_child(!multi);
+        let label = if has_any {
+            "photos.batch.unselect_all"
+        } else {
+            "photos.batch.select_all"
+        };
+        let text = crate::core::i18n::tr(label);
+        imp.select_all_btn.get().set_label(&text);
+        imp.select_all_btn.get().set_tooltip_text(Some(&text));
     }
 
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
@@ -264,12 +466,50 @@ impl AlbumDetailPage {
     }
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
-        self.imp()
-            .grid
-            .borrow()
-            .as_ref()
-            .map(|grid| grid.handle_keyboard_action(action))
-            .unwrap_or(KeyboardResult::Ignored)
+        let grid = self.imp().grid.borrow().clone();
+        if matches!(
+            action,
+            KeyboardAction::ActivateFocused | KeyboardAction::ToggleSelection
+        ) {
+            if let Some(grid) = grid.as_ref() {
+                let result = grid.handle_keyboard_action(action);
+                if result.is_handled() {
+                    return result;
+                }
+            }
+        }
+        let Some(grid) = grid else {
+            return KeyboardResult::Ignored;
+        };
+        // Same browsing-scope bindings PhotosPage answers to. The shortcuts
+        // window advertises them for any photo list, so an album that silently
+        // ignored Ctrl+A/Esc/Delete would be a lie once it has a selection.
+        match action {
+            KeyboardAction::SelectAll => {
+                self.select_all_in_album();
+                self.refresh_selection_ui();
+                KeyboardResult::Handled
+            }
+            KeyboardAction::Delete => {
+                let ids = self.selected_ids();
+                if ids.is_empty() {
+                    KeyboardResult::Ignored
+                } else {
+                    self.delete_to_trash_for_ids(ids);
+                    KeyboardResult::Handled
+                }
+            }
+            KeyboardAction::CancelOrClose => {
+                if self.selected_ids().is_empty() && !grid.is_multi_select_mode() {
+                    // Nothing to deselect: leave Escape to pop the navigation page.
+                    KeyboardResult::Ignored
+                } else {
+                    self.clear_selection();
+                    KeyboardResult::Handled
+                }
+            }
+            _ => KeyboardResult::Ignored,
+        }
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {

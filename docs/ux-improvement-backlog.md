@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页+虚拟网格那一半）、P0-4（快捷键应用内可发现）与 P0-5（搜索三态 + 模板去硬编码中文）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -205,14 +205,22 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 **需同步文档**：`docs/modules/browsing.md`（多选进入路径）、`docs/modules/ui-design.md:105-109`（原文「selection actions appear only when the user has selected media」把入口条件写成了循环依赖，需改写为「进入选择有一个常驻入口；选择动作按钮仅在有选择时出现」）、`docs/ui-naming-reference/index.html`。
 
-**实施结果**（已落盘，照片页那一半）：header `[start]` 组新增 `Gtk.Revealer select_mode_revealer → Gtk.Button select_mode_btn`（`photos-page.blp:49-58`，模板默认 `reveal-child: true`），点击对三套分组网格一并 `set_multi_select_mode(true)`，再 `refresh_selection_ui()` 与 `focus_visible_tile()`（`photos_page.rs:747-757`）；reveal 由 `refresh_selection_ui()` 的 `!any_multi` 驱动（`:1286-1288`），与 `exit_multi_select_btn` 形成对称进出。四处偏差：
+**实施结果**（已落盘：照片页 + 相册详情页）：header `[start]` 组新增 `Gtk.Revealer select_mode_revealer → Gtk.Button select_mode_btn`（`photos-page.blp:49-58`，模板默认 `reveal-child: true`），点击对三套分组网格一并 `set_multi_select_mode(true)`，再 `refresh_selection_ui()` 与 `focus_visible_tile()`（`photos_page.rs:747-757`）；reveal 由 `refresh_selection_ui()` 的 `!any_multi` 驱动（`:1286-1288`），与 `exit_multi_select_btn` 形成对称进出。四处偏差：
 
 - 图标用 `selection-mode-symbolic`：草案首选的 `check-select-symbolic` 在本机 Adwaita 图标主题里不存在。
 - 图标-only 按钮必须自带 label，tooltip 复用 `photos.batch.multi_select`（`photos_page.rs:419-421`），不新增 i18n key。
 - 进入多选后主动把焦点交进网格（`VirtualMediaGrid::focus_visible_tile()`，`virtual_media_grid.rs:724`）：入口按钮正在收起，否则 GTK 自己挑一个 fallback 焦点并把视口滚回顶部一帧。
-- 长按回退只落在 `virtual_media_grid/factory.rs:97-111`（`GestureLongPress` + `button(1)` + `touch_only(true)`，走同一个 `show_context_menu`）。刻意留下的两处缺口记录在案：旧 `MediaGrid`（搜索结果分区）仍只有右键一条路；`AlbumDetailPage` 整页没有选择 chrome，所以「两页同步」这一半仍是提案，命名图里保留为 `album-select-mode-button-proposal`。
+- 长按回退只落在 `virtual_media_grid/factory.rs:97-111`（`GestureLongPress` + `button(1)` + `touch_only(true)`，走同一个 `show_context_menu`）。
 
-**风险**：header `[start]` 已挤了 search + 两个 revealer，窄窗口下可能换行或裁切。需在 800×600 与 1280×800 两档目测；必要时把 `select_mode_btn` 放到 `[end]` 的最左位（注意 `[end]` 是 edge-first 反向声明，见 `photos-page.blp:11-15` 的注释）。
+**相册详情页那一半（本轮补完）**：`data/ui/album-detail-page.blp:24-89` 复刻照片页同名同位的 chrome——`[start]` 是 `search_btn`、`select_mode_revealer → select_mode_btn`、`select_all_revealer → select_all_btn`、`exit_multi_select_revealer → exit_multi_select_btn`，`[end]`（edge-first 反序声明）是 `delete_to_trash_revealer → delete_to_trash_btn`（`glass-toolbar-danger`）与 `add_to_album_revealer → add_to_album_btn`。文案全部复用 `photos.batch.*` / `photos.add_to_album` / `viewer.tooltip.move_to_trash`，不新增 key（`wire_selection_chrome()`，`album_detail_page.rs:266`）。`grid.connect_selection_changed` 驱动 `refresh_selection_ui()`（`:408`）：批量动作按「有选择」reveal，退出按「多选态」reveal，入口按「非多选态」reveal，两页语义一致。三点额外落地决定：
+
+- **全选必须按相册而不是按已加载窗口**。实盘探针（截图 + `selected_ids()`）暴露出 `grid.select_all()` 在 ready set 为空的网格上会走 `select_ids(&[])`，那是**静默清空**而不是 no-op。改为 `select_all_in_album()`（`:365`）经 `MediaRepository::items(media_query_for_album(&album), 0, ALBUM_SELECT_ALL_LIMIT)` 取 id，上限 `ALBUM_SELECT_ALL_LIMIT = 2_000` 与照片页 `PHOTOS_SELECT_ALL_LIMIT` 对齐；空结果直接 return，不清选择。测试用 60 张相册只挂载 10 张的夹具断言选中 60，反向变异（改回 store 版）会失败。
+- **不加收藏按钮**：该页 `on_set_favorite` 目前是 no-op，放一颗心就是死控件；模板注释里写明了这个刻意的缺失。
+- **键盘对齐**：`handle_keyboard_action` 转发 `Ctrl+A`（全选相册）、`Delete`（有选择才进回收站，否则 Ignored）、`Escape`（先清选择/退出多选，再把剩下的交回导航栈）。
+
+**仍在 backlog 的缺口（不再是「刻意留下的例外」）**：旧 `MediaGrid`（FlowBox，仅搜索结果分区在用）以 `enable_context_menu: false` 构造，因此那批瓦片既没有右键菜单、也没有长按回退、更没有进入多选的通路。补它需要在搜索页提供 overlay 宿主并接上真实的 `on_add_to_album` / `on_set_favorite` 回调，作为独立条目跟进；现状描述见 `docs/modules/browsing.md`。
+
+**风险**：header `[start]` 已挤了 search + 两个 revealer，窄窗口下可能换行或裁切。需在 800×600 与 1280×800 两档目测；必要时把 `select_mode_btn` 放到 `[end]` 的最左位（注意 `[end]` 是 edge-first 反向声明，见 `photos-page.blp:11-15` 的注释）。**已实测**：两页在 800×600 截图下 header 无溢出、无换行，窗口控件仍在右端，`select_mode_btn` 未进入裁切。
 
 ---
 
@@ -583,6 +591,34 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 ---
 
+### P1-15 搜索结果分区里的照片没有任何批量动作通路
+
+**现象**：搜索页的年份/月份/类型预览分区里，瓦片既不能右键、也没有长按回退、更没有任何进入多选的方式。P0-3 补齐照片页与相册详情页之后，这里成了全应用唯一「选中不了」的媒体列表。
+
+**证据（已验证）**：
+
+- 生产代码里旧 `MediaGrid`（FlowBox）只剩一处实例：`search_page.rs:399` 的 `build_result_section()`。
+- 它走 `MediaGrid::new_for_album()`（`media_grid.rs:580-589`），第五个参数 `enable_context_menu` 传 `false`（`media_grid.rs:605`），因此 `imp().enable_context_menu` 为假，右键菜单路径整条关闭。
+- `search_page.rs:406-409` 的回调里 `on_add_to_album` 与 `on_set_favorite` 都是空闭包，`on_query_favorite_state` 恒返回 `FavoriteMenuState::default()`；也就是说即便打开菜单，收藏与加入相册两项也是死动作。
+- 长按回退只在 `virtual_media_grid/factory.rs:97-111`，旧网格没有对应实现；P0-3 期间曾尝试补上，因该网格 `enable_context_menu: false` 而成为不可达代码，已回退。
+- 搜索页另一条路径 `VirtualMediaGrid::new_for_query()`（`search_page.rs:733`，「显示更多」后的完整结果页）是虚拟网格，入口与长按都在，不受本条影响。
+
+**方案**：
+
+1. 让预览分区的瓦片可达右键菜单：`build_result_section()` 改用 `MediaGrid::new_for_album_with_context_menu()`（`media_grid.rs:591-598` 已存在，无需新 API）。
+2. **顺序前提**：先接上真实回调，再开菜单。`on_add_to_album` 需要搜索页把 `MediaId` 交给现有的加入相册流程（与 `photos_page.rs` 同一批处理函数），`on_set_favorite` 走 `MediaRepository` 的收藏写入，`on_query_favorite_state` 改为查真实状态；否则就是在开一扇通向 no-op 的门。
+3. 菜单需要一个页面级 overlay 宿主：`GlassContextMenu` 通过页面 overlay 渲染，`search-page.blp` 目前没有对应容器，参照 `photos-page.blp` 的 `grid_overlay` 补一个。
+4. 如果只做分区而不做进入多选，就在分区 header 上放一枚与 P0-3 同款的入口按钮（复用 `photos.batch.multi_select` 文案），避免「能右键但选不了多个」。
+5. **收缩方案**（若判断分区不该有批量动作）：反向做法是明确让分区只用于预览、把「显示更多」当作唯一可批量操作的路径，并在文档与命名图里写成契约。这需要产品决策，不能靠沉默实现。
+
+**落点文件**：`src/ui/search_page.rs`、`data/ui/search-page.blp`、`src/ui/media_grid.rs`（`enable_context_menu` 的调用点）、`i18n/*.json`（若新增文案）。
+
+**测试**：`cargo test --test ui_search_page`（新增：分区瓦片右键/入口按钮能产生非空 `selected_ids()`）；`cargo test ui::media_grid`；`tools/assert-at-spi.py` 增加搜索分区的一次可达性检查。
+
+**需同步文档**：`docs/modules/browsing.md`（当前那段「legacy FlowBox grid has neither door」需改为已修复或已明确的契约）、`docs/modules/ui-design.md`（搜索分区行为）、`docs/ui-naming-reference/index.html`（搜索分区的 `data-ui` 条目）。
+
+---
+
 ## P2 检视项（简表，实施时并入对应批次）
 
 | # | 现象 | 证据 | 建议 |
@@ -617,9 +653,9 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 |---|---|---|---|
 | B1 焦点环 | P0-2 | `a11y.css`/`base.css`/`grid_css` 测试 | 无（最小、最高价值，可独立先做） |
 | B2 扫描态 | P0-1、P2-6、P2-7、P2-8 | `events.rs`/`bootstrap.rs`/`empty_states.rs`/`photos_page.rs`/`album_picker.rs`/`trash_page.rs`/i18n | 无 |
-| B3 多选与选择 | P0-3、P1-6、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
+| B3 多选与选择 | P0-3（含相册详情页 chrome，已落盘）、P1-6、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`album-detail-page.blp`/`album_detail_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
 | B4 快捷键发现 | P0-4 | `src/ui/keyboard/*`/`window.rs`/`settings.rs`/i18n | 无 |
-| B5 搜索 | P0-5 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造） |
+| B5 搜索 | P0-5、P1-15 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造）；P1-15 还要先接上真实的加入相册/收藏回调 |
 | B6 查看器信息层 | P1-7、P1-12、P2-2 | `viewer-page.blp`/`viewer_page.rs`/`navigation.rs`/`transform.rs`/`base.css` | 无 |
 | B7 查看器输入 | P1-8 | `transform.rs`/`stage.rs`/`viewer.md` | B6（同文件，顺序执行避免冲突） |
 | B8 编辑与错误反馈 | P1-9、P1-10、P2-1 | `editor_panel.rs`/`viewer/editor.rs`/`viewer/stage.rs`/`square_tile.rs`/三材质 CSS | 无 |
@@ -666,6 +702,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 ## 本次未执行的验证（诚实边界）
 
 - **未运行应用**，也未生成截图或视觉基线。因此以下结论属「代码确认 + 待视觉验证」，落地前必须目测：P1-13 的对比度判断（来自 α 数值与表面叠合推理）、P1-12 的间距/密度拥挤感、P1-11 的两态区分度、P0-3 的 header 宽度是否溢出。
+- 上条已在落盘阶段部分补做：**P0-3 的 header 溢出风险已用真实渲染截图目测**（照片页与相册详情页各看 800×600 与 1280×800 两档，无换行/裁切，窗口控件仍在右端）；P1-13/P1-12/P1-11 仍是「代码确认 + 待视觉验证」。
 - 未运行 `PHOTOVIEWER_GLASS_SCREENSHOTS=... tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::grid_css::tests::render`——它会向 `target/` 写文件，本文档阶段未执行。
 - 未做 Flatpak 运行时验证，也未做超大图库压测。
 - 未读取 AT-SPI 实际无障碍树（`tools/assert-at-spi.py --dump` 可在真实窗口上验证 P2-3/P2-4 的暴露情况），因此「读屏听到三个静态标签」的推断来自控件类型（`Gtk.Box` + 点击手势）而非实测。
@@ -673,7 +710,7 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 ### 交互评审原型能证明什么、不能证明什么
 
-`docs/ui-naming-reference/index.html` 已升级为可交互评审原型（23 条提案逐条开关、深链、判定与 markdown 导出）。它证明的是**交互与信息架构层面**的取舍，不替代上面任何一条未执行的验证：
+`docs/ui-naming-reference/index.html` 已升级为可交互评审原型（24 条提案逐条开关、深链、判定与 markdown 导出）。它证明的是**交互与信息架构层面**的取舍，不替代上面任何一条未执行的验证：
 
 - 能看：状态机是否覆盖全（扫描/失败/空、搜索四态、多选进出、脏标记守卫）、控件落点与顺序（P1-12 的两种排列）、提示文案与让位关系（P2-1/P2-2）、i18n 键是否真的两种语言都有（切「语言=en」即刻暴露硬编码中文）。
 - 不能看：GTK 真实渲染的材质/圆角/阴影、Flatpak 下的字体度量、以及 P1-13 的**实际**对比度。原型里的「对比度报告」用 WCAG 相对亮度公式量的是浏览器 DOM，只能作为筛选可疑组合的线索；结论仍以 `render.rs` 断言与真实截图为准。

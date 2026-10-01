@@ -157,6 +157,27 @@ Within an album detail page, right-clicking a media tile can set that item as
 the album cover. The action writes `album_covers`, refreshes the sidebar, and
 leaves media files untouched.
 
+The album detail header carries the same selection chrome as Photos: a
+persistent `select_mode_btn` (inside `select_mode_revealer`) enters multi-select
+for the page's single Day grid, and `select_all_btn`, `exit_multi_select_btn`,
+`add_to_album_btn`, and `delete_to_trash_btn` reveal from
+`AlbumDetailPage::refresh_selection_ui`, which is driven by
+`VirtualMediaGrid::connect_selection_changed`. Exit is bound to multi-select
+*mode*, not to having a selection, so the user is never stranded in the mode
+after deselecting everything, and the entry button reappears exactly when the
+exit button leaves. There is intentionally **no** batch favorite button here: the
+page builds its grid with a no-op `on_set_favorite` callback, so a heart would
+be a dead control until that callback is wired for real.
+
+Select-all on this page is answered from `MediaRepository` with
+`media_query_for_album(album)` capped at `ALBUM_SELECT_ALL_LIMIT`, not from
+`VirtualMediaGrid::select_all()`. The grid only holds the rows it has loaded —
+one viewport-sized seed plus the ranges scrolled through — so the grid-backed
+version selects a slice of a large album, or silently clears when no row is
+resident yet. Browsing-scope keys follow the same rule: `Ctrl+A` selects the
+album, `Delete` trashes the selection, and `Escape` clears the selection first
+and only falls through to the navigation stack when there is nothing to deselect.
+
 Album rows are **drag-to-reorder** (long-press + drag). The order is persisted in a standalone `album_order(folder_path, sort_order)` table — kept separate from the `albums` materialized view because that view is `DELETE`d and rebuilt on every `albums::refresh` (scan / add-to-album). `albums::set_album_order` writes the full top-to-bottom order (keyed by `folder_path`, so virtual albums reorder too); `albums::list_with_favorites` re-applies it via `apply_saved_order`, and albums with no saved order fall to the end in their default relative order. In the UI, `MainWindow::attach_album_dnd` wires a per-row `DragSource` (payload = `folder_path`) + `DropTarget` (above/below indicator) that call `MainWindow::reorder_album` to persist and rebuild.
 
 The Albums page also has virtual logical albums:
