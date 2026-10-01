@@ -140,6 +140,7 @@ impl AlbumDetailPage {
         );
 
         let obj: Self = glib::Object::builder().build();
+        crate::ui::motion::apply_to(&obj);
         obj.set_title(&album.display_name());
         *obj.imp().media_list.borrow_mut() = Some(media_list.clone());
         *obj.imp().master_media_list.borrow_mut() = Some(master_media_list);

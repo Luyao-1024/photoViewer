@@ -60,6 +60,12 @@ pub(super) fn compute_thumb_positioning(
     (target, residual, transform)
 }
 
+/// A thumb jump shorter than half a pixel is not worth a frame clock, and the
+/// desktop's reduce-animation preference cancels the rest of them.
+pub(super) fn thumb_scroll_should_animate(distance: f64, motion_enabled: bool) -> bool {
+    motion_enabled && distance >= 0.5
+}
+
 pub(super) fn compute_thumb_animated_scroll_value(start: f64, target: f64, progress: f64) -> f64 {
     let t = progress.clamp(0.0, 1.0);
     let eased = 1.0 - (1.0 - t).powi(3);
@@ -843,7 +849,7 @@ impl ViewerPage {
         let animation_id = imp.thumb_scroll_animation_seq.get() + 1;
         imp.thumb_scroll_animation_seq.set(animation_id);
 
-        if distance < 0.5 {
+        if !thumb_scroll_should_animate(distance, crate::ui::motion::enabled()) {
             self.set_thumb_scroll_adjustment_value(clamped_target);
             tracing::debug!(
                 target: crate::core::log_targets::VIEWER,

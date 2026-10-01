@@ -178,6 +178,7 @@ impl TrashPage {
         crate::ui::grid_css::install();
 
         let obj: Self = glib::Object::builder().build();
+        crate::ui::motion::apply_to(&obj);
         obj.set_title(&tr("page.trash.title"));
         *obj.imp().pool.borrow_mut() = Some(pool.clone());
         *obj.imp().loader.borrow_mut() = Some(loader.clone());

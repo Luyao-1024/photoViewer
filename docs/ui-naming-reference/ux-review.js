@@ -579,19 +579,27 @@
         "代码侧动画同样要收：viewer/filmstrip.rs:837-945（adjustment 动画）、mode_selector.rs:222-263（滑轨 indicator）、photos-page.blp:108-109 scroll_date_revealer crossfade 200ms 与 :184-185 GtkStack crossfade 200ms、header 各 Revealer 的 slide_left/slide_right（:44-104）。统一由一个 motion_enabled() 查询函数供这些点读取（Revealer/Stack 用 set_transition_type(NONE)）",
         "测试：css_for_tests()（:255）注入开关，断言开启后 CSS 不含 120/140/180/200/220/300/350ms 等时长"
       ],
+      landed:
+        "P1-14 已落盘（2026-10-02）。新增 src/ui/motion.rs 作为全项目唯一读 gtk-enable-animations 的地方（Settings::default() 是 Option，没有后端时按 GTK 自己的默认值 true 处理）。CSS 通道按草案的尾块方案做：build_css_with_motion 在 base/material/a11y 之后追加 `* { transition-duration: 0ms; }`，install() 里连 notify::gtk-enable-animations 重建 provider，所以两个方向都是活的。草案担心的「全局 * 太宽、可能不被 GTK 接受」经实测不成立：GTK 的 CSS 子集接受该声明（motion/tests.rs 里用 connect_parsing_error 钉住），且只改 duration、不改 transition-property 列表，因此没有波及尺寸动画的副作用，逐选择器重写那 7 个时长的退路没有用上。代码通道：Revealer/Stack 由 motion::apply_to 递归走子树把 transition_type 设成 NONE（Stack 另设 duration 0），在页面构造时与开关转「关」时各跑一次；转「开」时不恢复已在屏幕上的页面，因为那需要记住每个控件模板里写的原值——新构造的页面会重新按开关取值，这一非对称写进了 motion.rs 与 ui-liquid-glass.md。胶片条的 frame-clock 滚动改由纯函数 thumb_scroll_should_animate(distance, motion_enabled) 决定，动画直接跳到目标。模式滑轨不需要改：它自 backdrop 重构后就是 CSS 的 transform 300ms 过渡，已被尾块覆盖（草案把它算作代码侧动画，这点与现状不符）。没有新增应用内开关，控件就是桌面「减少动画」辅助功能设置。",
       files: [
+        "src/ui/motion.rs",
+        "src/ui/motion/tests.rs",
         "src/ui/grid_css.rs",
         "src/ui/grid_css/tests.rs",
-        "data/css/a11y.css（或新尾块常量）",
         "src/ui/viewer/filmstrip.rs",
-        "src/ui/mode_selector.rs",
-        "相关 Revealer 设置点"
+        "src/ui/window.rs",
+        "docs/modules/ui-liquid-glass.md",
+        "docs/testing.md"
       ],
-      tests: ["cargo test ui::grid_css（reduce-motion 尾块断言）"],
-      docs: ["docs/modules/ui-liquid-glass.md（新增「动效与 reduce-motion」一节，解释为何不用 @media）", "docs/testing.md"],
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::motion（走子树剥离 / 开关为开时不动 / GTK 接受尾块）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css（尾块只追加一条、排在最后、不改写原表）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::filmstrip（thumb_scroll_should_animate 三个方向）"
+      ],
+      docs: ["docs/modules/ui-liquid-glass.md（「Motion and reduce-motion」一节）", "docs/testing.md"],
       risk: "GTK CSS 对全局 transition-duration 的支持需实测；不支持时退化为逐选择器重写。",
       demo:
-        "点亮芯片本身就等效于系统 reduce-motion：所有过渡与动画时长归零，胶片条滚动、模式滑轨、Revealer 全部改为直接切换；关掉芯片动画恢复。工具条「减少动画」开关走同一套样式，用来单独验证环境轴。"
+        "常态即已落盘行为：工具条「减少动画」就是系统开关的等价物，切下去所有过渡与动画时长归零，胶片条滚动、模式滑轨、Revealer 全部改为直接切换；再切回来恢复。提案芯片不再改动画面——点亮它什么也不发生才是正确行为。"
     },
     {
       id: "p1-15",
@@ -1485,7 +1493,10 @@
       "p1-11": function () { needScreen("photos"); PV.setMulti(true); },
       "p1-12": function () { openViewerDemo(); },
       "p1-13": function () { needScreen("photos"); },
-      "p1-14": function () { PV.setMotion(true); needScreen("photos"); },
+      "p1-14": function () {
+        needScreen("photos");
+        PV.toast("P1-14 已落盘：应用直接读桌面「减少动画」设置。原型里代表这个系统开关的是工具条「减少动画」按钮，切下去全部过渡归零。", { kind: "info", ms: 5200 });
+      },
       "p1-15": function () {
         needScreen("search");
         var input = q("#search-input");

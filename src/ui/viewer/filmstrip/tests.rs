@@ -465,3 +465,16 @@ fn thumb_strip_template_starts_without_layout_spacers() {
         "thumb_strip must not contain template spacer children because viewport-sized children feed back into ScrolledWindow allocation"
     );
 }
+
+#[test]
+fn thumb_scroll_skips_its_frame_clock_without_motion() {
+    assert!(thumb_scroll_should_animate(240.0, true));
+    assert!(
+        !thumb_scroll_should_animate(240.0, false),
+        "reduce-motion must jump straight to the target"
+    );
+    assert!(
+        !thumb_scroll_should_animate(0.4, true),
+        "sub-pixel jumps were already instant and stay that way"
+    );
+}

@@ -137,6 +137,16 @@ passing.
   They validate scan/group, thumbnail, edit persistence, album, and trash
   boundaries, but do not drive the GTK UI and are not UX end-to-end evidence.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
+- `src/ui/grid_css/tests/render.rs`: contracts measured from real GTK rendering
+  rather than from the CSS source — sampled pixel colours (the hover/selection
+  scrim gap) and WCAG ratios computed from a foreground composited over the
+  surface it was actually drawn on. Use this layer whenever a claim is about
+  what a user sees, not about what the sheet says.
+- Desktop-preference behavior is toggled, not mocked: `src/ui/motion/tests.rs`
+  flips `GtkSettings:gtk-enable-animations` and restores it, then asserts the
+  widget tree and the assembled sheet follow. `build_css*` variants keep a
+  motion-on default so ordinary CSS tests stay independent of the machine
+  running them.
 - `tests/*_flow.rs`: module-level behavior such as trash and destructive rotate.
 - `src/**/tests.rs` and `src/**/tests/*.rs`: unit tests close to implementation.
 

@@ -443,6 +443,7 @@ impl ViewerPage {
     /// to actually paint something.
     pub fn new(media_list: gtk::gio::ListStore, index: u32) -> Self {
         let obj: Self = glib::Object::builder().build();
+        crate::ui::motion::apply_to(&obj);
         obj.set_title(&tr("page.viewer.title"));
         *obj.imp().media_list.borrow_mut() = Some(media_list);
         obj.imp().current_index.set(index);

@@ -129,6 +129,7 @@ gtk::glib::wrapper! {
 impl SearchPage {
     pub fn new(pool: DbPool, loader: Arc<ThumbnailLoader>) -> Self {
         let obj: Self = glib::Object::builder().build();
+        crate::ui::motion::apply_to(&obj);
         obj.set_title(&tr("search.title"));
         obj.imp()
             .search_entry

@@ -72,7 +72,23 @@ fn build_css(liquid_glass: bool) -> String {
     build_css_with_transparency(liquid_glass, 0.0)
 }
 
+/// The shipped sheet with the desktop's reduce-motion preference applied.
+/// Every caller that installs CSS goes through this; the variants above stay
+/// motion-on so the string tests describe the authored sheet, not whatever the
+/// machine running them happens to prefer.
+fn live_css() -> String {
+    build_css_with_motion(
+        crate::core::prefs::liquid_glass_enabled(),
+        crate::core::prefs::liquid_glass_transparency(),
+        !crate::ui::motion::enabled(),
+    )
+}
+
 fn build_css_with_transparency(liquid_glass: bool, transparency: f64) -> String {
+    build_css_with_motion(liquid_glass, transparency, false)
+}
+
+fn build_css_with_motion(liquid_glass: bool, transparency: f64, reduce_motion: bool) -> String {
     let transparency = normalized_transparency(transparency);
     let material = if liquid_glass {
         LIQUID_GLASS_MATERIAL_CSS
@@ -85,12 +101,18 @@ fn build_css_with_transparency(liquid_glass: bool, transparency: f64) -> String 
     // and still resolve the current Adwaita palette live on theme changes.
     let reading_alpha = format_alpha(reading_surface_alpha(liquid_glass, transparency));
     let content_alpha = format_alpha(0.66 + 0.12 * (1.0 - transparency));
-    format!(
+    let sheet = format!(
         "@define-color glass_reading_bg alpha(@window_bg_color, {reading_alpha});\n\
          @define-color glass_content_dark_bg alpha(#17191e, {content_alpha});\n\
          @define-color glass_content_light_bg alpha(#ffffff, {content_alpha});\n\
          {BASE_CSS}\n{material}\n{A11Y_CSS}"
-    )
+    );
+    // Last so it wins over every authored transition, including the material
+    // block's; GTK has no @media, so this is the conditional.
+    if reduce_motion {
+        return sheet + crate::ui::motion::REDUCED_MOTION_CSS;
+    }
+    sheet
 }
 
 fn normalized_transparency(transparency: f64) -> f64 {
@@ -256,6 +278,13 @@ pub fn css_for_tests() -> String {
     build_css(true)
 }
 
+/// The same sheet with the desktop's reduce-motion preference forced on, so
+/// the tail block can be asserted without touching process-wide GtkSettings.
+#[doc(hidden)]
+pub fn css_for_tests_with_reduced_motion() -> String {
+    build_css_with_motion(true, 0.0, true)
+}
+
 /// Has [`install`] been called at least once on this process?
 /// Reads are non-blocking and safe to call from any thread.
 pub fn is_installed() -> bool {
@@ -321,10 +350,15 @@ pub fn install() {
     // MediaGrid / TrashPage / AlbumDetailPage constructors do not accumulate
     // duplicate CssProviders on the default display.
     if CSS_INSTALLED.set(()).is_ok() {
-        register(&build_css_with_transparency(
-            crate::core::prefs::liquid_glass_enabled(),
-            crate::core::prefs::liquid_glass_transparency(),
-        ));
+        register(&live_css());
+        // The desktop's reduce-animation toggle is a session preference users
+        // flip without restarting, and the tail block is part of the sheet, so
+        // the only way to honour it live is to rebuild the provider.
+        if let Some(settings) = gtk::Settings::default() {
+            settings.connect_gtk_enable_animations_notify(move |_| {
+                register(&live_css());
+            });
+        }
     }
 }
 
@@ -337,9 +371,10 @@ pub fn reapply(liquid_glass: bool) {
     // Defensive installs from page constructors read the pref at runtime, so
     // mark install as already-done to keep them no-ops after a live reapply.
     let _ = CSS_INSTALLED.set(());
-    register(&build_css_with_transparency(
+    register(&build_css_with_motion(
         liquid_glass,
         crate::core::prefs::liquid_glass_transparency(),
+        !crate::ui::motion::enabled(),
     ));
 }
 

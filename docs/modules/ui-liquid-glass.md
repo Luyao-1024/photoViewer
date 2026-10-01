@@ -16,6 +16,7 @@ This module owns the shared UI material system for glass chrome, including the u
 | `data/css/a11y.css` | Shared keyboard-focus affordances, independent of transparency |
 | `src/ui/grid_css/tests/render.rs` | GTK color resolution checks and optional material screenshots |
 | `src/ui/theme.rs` | Maps persisted theme preference to libadwaita color schemes |
+| `src/ui/motion.rs` | Reads `gtk-enable-animations` and applies it to CSS and to template transitions |
 | `src/ui/glass_context_menu.rs` | Overlay-backed right-click menu using raised glass material |
 | `src/core/prefs.rs` | `theme`, `liquid_glass`, and material transparency preference persistence |
 | `src/ui/window/settings.rs` | Settings dialog UI and live appearance preference handling |
@@ -171,6 +172,37 @@ The shared `.glass-toolbar-button` material is **always-on** by default — phot
   content in the Photos and album-detail headers.
 
 Each scope gets its own bare-at-rest reset plus a hover/focus material rule in **both** `LIQUID_GLASS_MATERIAL_CSS` and `PLAIN_GLASS_MATERIAL_CSS`. Add new hover-only buttons by introducing a unique class and mirroring these two rules; do not loosen the shared `.glass-toolbar-button` rule, which other headers depend on being always-on.
+
+## Motion and reduce-motion
+
+`src/ui/motion.rs` is the only place that reads the desktop's
+`GtkSettings:gtk-enable-animations` (GNOME Settings → Accessibility → Reduced
+Animations). Two channels carry it, because GTK gives them no common hook:
+
+- **CSS transitions.** `build_css_with_motion` appends `REDUCED_MOTION_CSS` —
+  `* { transition-duration: 0ms; }` — after the base, material and a11y blocks.
+  The tail block is deliberate: GTK's CSS subset has no `@media` feature
+  queries, and `grid_css.rs` keeps them out of the sheets, so a conditional
+  style is not available. Only the duration is overridden, so which properties
+  may animate stays as authored. `install()` connects
+  `notify::gtk-enable-animations` and rebuilds the provider, so the toggle is
+  live in both directions.
+- **Widget-level transitions.** `GtkRevealer` and `GtkStack` take their
+  transition from the Blueprint template and expose no CSS property, so
+  `motion::apply_to` walks the subtree and sets them to `None`. It runs when a
+  page is constructed and again when the preference turns on. Turning it back
+  off does **not** restore a page that is already on screen — that would mean
+  remembering each widget's authored value — so those pages pick the preference
+  back up when they are next built. Newly built pages are correct either way.
+- **Rust-driven animation.** The viewer filmstrip's frame-clock scroll asks
+  `motion::enabled()` through `thumb_scroll_should_animate` and jumps straight
+  to the target when motion is reduced.
+
+Tests: `ui::motion::tests` (the walk strips template transitions and leaves them
+alone when the preference is on; GTK parses the tail block),
+`ui::grid_css::tests::reduced_motion_tail_block_zeroes_every_authored_transition`
+(the override is appended last and rewrites nothing), and
+`ui::viewer_page::filmstrip::tests::thumb_scroll_skips_its_frame_clock_without_motion`.
 
 ## Runtime Notes
 

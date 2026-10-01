@@ -376,6 +376,7 @@ impl PhotosPage {
             "photos grid renderer initialized: GtkGridView"
         );
         let obj: Self = gtk::glib::Object::builder().build();
+        crate::ui::motion::apply_to(&obj);
         obj.set_title(&tr("page.photos.title"));
         // select_all_btn keeps a text label (toggles 全选/取消全选);
         // add_to_album_btn (+) and delete_to_trash_btn (trash) are icon-only.

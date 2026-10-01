@@ -656,6 +656,16 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **落点文件**：`src/ui/grid_css.rs`、`src/ui/grid_css/tests.rs`、`data/css/a11y.css`（或新尾块常量）、`src/ui/viewer/filmstrip.rs`、`src/ui/mode_selector.rs`、相关 `Revealer` 设置点。
 
+**实施结果**（2026-10-02 已落盘）：新增 `src/ui/motion.rs` 作为全项目唯一读取 `GtkSettings:gtk-enable-animations` 的入口（`Settings::default()` 返回 `Option`，没有设置后端时按 GTK 自身默认值 `true` 处理，无头测试不会因此改变行为）。三条通道：
+
+1. **CSS**：`build_css_with_motion(liquid, transparency, reduce_motion)` 在 base/material/a11y 之后追加 `REDUCED_MOTION_CSS`（`* { transition-duration: 0ms; }`）。`install()` 首次注册时连上 `notify::gtk-enable-animations` 并重建 provider，两个方向都是活的。草案担心的「全局 `*` 太宽 / GTK 可能不接受」经实测都不成立：`motion/tests.rs` 用 `connect_parsing_error` 钉住 GTK 确实解析该声明，而只改 duration、不动 `transition-property` 列表，也就不存在波及尺寸动画的副作用——**逐选择器重写 7 个时长的退路没有用上**。`build_css` / `build_css_with_transparency` 保持 motion-on，普通 CSS 字符串测试不会因为跑它的机器开了 reduce-motion 而变红，开关由 `css_for_tests_with_reduced_motion()` 显式注入。
+2. **模板级 transition**：`GtkRevealer` / `GtkStack` 的过渡写在 Blueprint 里、CSS 无入口，由 `motion::apply_to` 递归走子树设成 `None`（Stack 另设 duration 0）。调用点是五个页面与主窗口的构造，外加开关转「关」时对当前窗口再走一次。**已知非对称**：转「开」不恢复已经在屏幕上的页面——那需要记住每个控件模板里 authored 的值；新构造的页面会重新按开关取值。这条限制写进了 `motion.rs` 与 `ui-liquid-glass.md`。
+3. **Rust 驱动动画**：胶片条的 frame-clock 滚动改由纯函数 `thumb_scroll_should_animate(distance, motion_enabled)` 决定，reduce-motion 时直接跳到目标（复用原有的「小于半像素就不动画」早退路径）。
+
+偏差：草案把 `mode_selector.rs:222-263` 列为代码侧动画，现状不是——滑轨 indicator 自 backdrop 重构后只写 CSS `transform`，其 300ms 过渡已被尾块覆盖，因此该文件未改动。另外没有新增应用内「减少动画」开关：控件就是桌面的辅助功能设置，多一个应用内开关只会与它不一致。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::motion`（3 项：走子树剥离 / 开关为开时一律不动 / GTK 解析尾块）、`--lib ui::grid_css`（尾块只追加一条、排在最后、不改写原表）、`--lib ui::viewer_page::filmstrip`（早退条件三个方向）。
+
 **需同步文档**：`docs/modules/ui-liquid-glass.md`（新增「动效与 reduce-motion」一节，并解释为何不用 `@media`）、`docs/testing.md`（新单测说明）。
 
 ---

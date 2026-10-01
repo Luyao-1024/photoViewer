@@ -390,6 +390,19 @@ impl MainWindow {
             .property("application", app)
             .property("title", tr("app.title"))
             .build();
+        crate::ui::motion::apply_to(&window);
+        // Turning reduce-motion on mid-session also has to reach the pages that
+        // are already built; turning it off does not restore them, because that
+        // would mean remembering each widget's authored transition (see
+        // `ui::motion`). Newly built pages pick the preference back up.
+        if let Some(settings) = gtk::Settings::default() {
+            let weak = window.downgrade();
+            settings.connect_gtk_enable_animations_notify(move |_| {
+                if let Some(window) = weak.upgrade() {
+                    crate::ui::motion::apply_to(&window);
+                }
+            });
+        }
         // Apply the persisted Day-grid column preference before the window is
         // first presented. The virtual grid itself is created after async
         // initialization, so waiting for the Settings callback leaves a

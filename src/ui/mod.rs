@@ -13,6 +13,7 @@ pub mod media_grid;
 pub mod media_list;
 pub mod mode_selector;
 pub mod models;
+pub mod motion;
 pub mod photos_page;
 pub mod refresh_hub;
 pub mod search_page;

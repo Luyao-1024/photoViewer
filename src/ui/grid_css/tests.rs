@@ -1358,3 +1358,40 @@ fn opacity_muted_status_text_stays_above_the_floor() {
         }
     }
 }
+
+/// Reduce-motion is applied by appending a tail block, because GTK's CSS subset
+/// has no @media. That only works if the block lands after every authored
+/// `transition:` shorthand (the longhand wins the cascade from there), and it
+/// must not disturb the sheet otherwise. GTK exposes no computed-style hook for
+/// transitions, so the parse itself is asserted separately in
+/// `ui::motion::tests::reduce_motion_block_parses_in_gtk_css`.
+#[test]
+fn reduced_motion_tail_block_zeroes_every_authored_transition() {
+    let authored = css_for_tests();
+    let reduced = css_for_tests_with_reduced_motion();
+    let shorthands = |css: &str| css.matches("\n  transition:").count();
+
+    assert!(
+        shorthands(&authored) > 10,
+        "the sheet should still author its transitions, got {}",
+        shorthands(&authored)
+    );
+    assert_eq!(
+        shorthands(&reduced),
+        shorthands(&authored),
+        "reduce-motion must not rewrite the authored sheet"
+    );
+    assert_eq!(
+        reduced.matches("transition-duration: 0ms").count(),
+        1,
+        "exactly one override, appended"
+    );
+    assert!(
+        reduced.ends_with("* {\n  transition-duration: 0ms;\n}\n"),
+        "the override must be last so it wins the cascade"
+    );
+    assert!(
+        reduced.starts_with(&authored),
+        "reduce-motion must not remove or reorder anything"
+    );
+}
