@@ -194,7 +194,7 @@
       <span class="titlebar-title">Viewer</span>
       <div class="winctl"><span class="winctl-min"></span><span class="winctl-max"></span><span class="winctl-close"></span></div>
     </div>
-    <div class="workspace column hotspot" tabindex="0" data-ui="viewer-page" data-name="查看器页" data-impl="$ViewerPage : Adw.NavigationPage" data-props="ToastOverlay → root_box；外层 editor_split_view，内层 details_split_view。">
+    <div class="workspace column hotspot" tabindex="0" data-ui="viewer-page" data-name="查看器页" data-impl="$ViewerPage : Adw.NavigationPage" data-props="页根直接是 root_box；外层 editor_split_view，内层 details_split_view。Adw.ToastOverlay toast_overlay 在 content_box 里只包舞台（image_overlay），胶片条 viewer_bottom_stack 是它的兄弟节点，所以 toast 停在舞台下边缘、不会盖住胶片条。">
       <div class="viewer-wrap">
         <div class="headerbar viewer hotspot" tabindex="0" data-ui="viewer-header" data-name="查看器顶栏" data-impl="Adw.HeaderBar header_bar .glass-header.viewer-toolbar.viewer-chrome" data-props="[start] 是 date_label + sync_badge 一组（spacing 8）；文件名不属于这一组，它是 NavigationPage 的 title，由 HeaderBar 居中渲染（viewer_page.rs:753、:824 set_title(display_name)）。动作顺序：收藏、编辑、删除、详情。">
           <button class="button bare" tabindex="0" data-nav="photos" data-ui="viewer-back" data-name="查看器返回" data-impl="nav_view.pop（Alt+← / Esc）" data-props="交互原型里用这个按钮或键盘 Esc / Alt+← 回到进入前的页面，并保留滚动位置。">‹</button>
@@ -204,9 +204,9 @@
             <span class="header-title dim-label hotspot" tabindex="0" data-ui="viewer-position-label" data-name="查看器位置计数" data-impl="Gtk.Label position_label .dim-label .viewer-position-label" data-props="header [start] 最后一个子项；默认 visible:false，show_at 后由 db::media_position(off-thread) 异步刷出，1-based rank + total，格式「{current} / {total}」。font-variant-numeric: tabular-nums 避免翻页时宽度抖动；绝对不能显示未验证的数字。" id="viewer-position">1 / 17</span>
           </div>
           <span class="header-title viewer-title" id="viewer-filename">IMG_0123.jpg</span>
-          <button class="button bare hotspot" tabindex="0" data-key="H" data-i18n-title="viewer.tooltip.favorite" data-act="viewer-fav" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。" data-source="data/ui/viewer-page.blp · src/ui/keyboard/binding.rs:186">♡</button>
+          <button class="button bare hotspot" tabindex="0" data-key="H" data-i18n-title="viewer.tooltip.favorite" data-act="viewer-fav" data-ui="viewer-favorite" data-name="查看器收藏按钮" data-impl="Gtk.Button favorite_btn .viewer-favorite-btn" data-props="收藏状态只改变心形图标颜色，不把按钮面染红。P2-1 之后每次切换给出「已收藏 / 已取消收藏」toast，按钮就是撤销，撤销本身不再附带撤销（否则成链）。" data-source="data/ui/viewer-page.blp · src/ui/keyboard/binding.rs:186">♡</button>
           <button class="button bare hotspot" tabindex="0" data-key="E" data-i18n-title="viewer.tooltip.edit" data-act="viewer-edit" data-ui="viewer-edit" data-name="编辑入口" data-impl="Gtk.Button edit_btn" data-props="图片可用；普通 video/* 禁用。">✎</button>
-          <button class="button bare danger hotspot" tabindex="0" data-key="Delete" data-i18n-title="viewer.tooltip.move_to_trash" data-act="viewer-delete" data-ui="viewer-delete" data-name="移到回收站" data-impl="Gtk.Button delete_btn .glass-toolbar-danger" data-props="单张媒体删除入口。">⌫</button>
+          <button class="button bare danger hotspot" tabindex="0" data-key="Delete" data-i18n-title="viewer.tooltip.move_to_trash" data-act="viewer-delete" data-ui="viewer-delete" data-name="移到回收站" data-impl="Gtk.Button delete_btn .glass-toolbar-danger" data-props="单张媒体删除入口。确认后 toast 带「撤销」（P2-1）：撤销先把文件从回收站移回、再经 DbActor 清掉 DB 标记，成功后把行按 sort_datetime 插回正在浏览的实时列表并显示这张照片；文件没回来就不动列表，所以撤销失败不会留下指向空文件的瓦片。">⌫</button>
           <button class="button bare hotspot" tabindex="0" data-key="I" data-i18n-title="viewer.details.title" data-act="viewer-details" data-ui="viewer-details-button" data-name="详情按钮" data-impl="Gtk.Button details_btn" data-props="切换 details_split_view 的 show-sidebar。">i</button>
         </div>
 
@@ -447,7 +447,7 @@
   <div class="gm-card hotspot" tabindex="0" data-ui="glass-context-menu" data-name="右键 glass 菜单" data-impl="VirtualMediaGrid::show_context_menu → GlassMenu / GlassMenuItemKind" data-props="批量动作的完整落点：多选、打开、收藏、加入相册、设为封面、移到回收站都住在这里。2026-10-02 起它重新成为进入多选的主要路径——常驻 header 入口已按库主决定移除；触屏有长按（factory.rs:97-111），键盘有 Space / Ctrl+A。橡皮筋框选仍然显式关闭（virtual_media_grid.rs:494）。搜索结果分区的旧 FlowBox 网格自 P1-15 起也走这条路径（页面级 search_overlay 作宿主），但它没有长按回退——长按只在虚拟网格里，FlowBox 预览分区仍只有右键一条路。" data-source="src/ui/virtual_media_grid.rs:1091 show_context_menu（多选项 :1132） · src/ui/virtual_media_grid/factory.rs:76-111 · src/ui/media_grid/updates.rs:1133"><div class="gm-item suggested" data-act="enter-multi">多选</div><div class="gm-item">打开</div><div class="gm-item">收藏</div><div class="gm-item danger">移到回收站</div></div>
 </div>
 
-<div class="toast-host" id="toast-host" aria-live="polite"></div>
+<div class="toast-host" id="toast-host" aria-live="polite" data-ui="viewer-toast-overlay" data-name="查看器 toast 宿主" data-impl="Adw.ToastOverlay toast_overlay（viewer-page.blp，只包 image_overlay）" data-props="全应用唯一的 toast 宿主，挂在舞台上而不是页根：P2-2 之前它是 NavigationPage 的直接 child，提示会压在胶片条上。libadwaita 把提示贴在这个 overlay 子树的下边缘，所以舞台的下边缘就是胶片条的上边缘。内部子节点是未导出的 AdwToastWidget，CSS 节点名 toast，靠 margin-bottom 抬不起来（实测只是把节点撑高），位置只能由这里的结构决定。原型把这一个 host 全屏共用，所以照片页的 toast 也会用它。"></div>
 
 <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
 

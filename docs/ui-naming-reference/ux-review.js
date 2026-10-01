@@ -26,8 +26,8 @@
   // 做一致性核对时不要把它们当成缺失：
   //   p1-13 对比度报告（ux-review.js 计算并弹检查器）
   //   p1-14 减少动画（styles.css 归零过渡时长，芯片本身即效果）
-  //   p2-1  toast 撤销（prototype.js 建 toast 时按开关加 .p2-1-off）
-  //   p2-2  toast 让位胶片条（styles.css 调 toast-host 位置）
+  //   p2-1  toast 撤销（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-no-undo）
+  //   p2-2  toast 让位胶片条（已落盘为常态，芯片不再改动画面；落盘前形态走 data-pv-demo=toast-on-strip）
   //   p2-3  模式选择器无障碍语义（prototype.js 写 role/label）
   //   p2-4  图标按钮 accessible name（prototype.js applyIconLabels）
   // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
@@ -667,12 +667,29 @@
       solution: [
         "新增 success_with_action(overlay, msg, label, f)，删除/批量收藏接上已有回滚"
       ],
-      files: ["src/ui/toasts.rs", "src/ui/photos_page.rs", "src/ui/viewer/actions.rs", "i18n/*.json"],
-      tests: ["cargo test ui::toasts（带 action 的 toast 有可点按钮且回调执行）"],
-      docs: ["docs/modules/albums-trash.md"],
+      landed:
+        "P2-1 已落盘（2026-10-02）。`toasts::success_with_action(overlay, msg, label, f)` 6 秒超时——普通 success 的两倍，用户够不着的撤销不算撤销。收藏把 viewer/actions.rs 里的写入抽成 `apply_favorite_state(item_id, next_state, announce)`，toast 按钮以 `announce = false` 重入：可回滚的回滚是 toast 链，不是撤销。i18n 新增 favorited / unfavorited / undo / restore_failed 四键，两份 json 同步（parity 446/446），`moved_to_trash` 的「可在回收站找回」在按钮出现后收回成「已移入回收站」。\n\n草案的前提需要更正：actions.rs:81-93 那条 `RollbackTrashed` 只清 DB 标记，文件仍躺在回收站里，撤销直接接上去会留下指向空文件的瓦片。真正的还原在别处且早已存在——`core/trash.rs:830 restore_from_trash` / `repository.rs:469 restore_batch`（先 prepare_restore 把文件移回来，再经 DbActor 写 RestoreTrashed，最后 commit），回收站页一直在用。所以撤销走 `restore_batch(&ids, Some(&db_actor))`：经过 actor 才发得出 DomainEvent，其它页面才跟得上；直连 pool 只修好当前视图。顺序是文件先回来、列表后动（`media_list::insert_media_item_sorted`，从回收站页抽成共用 helper，按 sort_datetime 落回时间线原位而不是尾巴上），成功后 `show_at` 回到这张照片。\n\n偏差：草案点名的「批量收藏」没有撤销 toast——全应用只有查看器装了 AdwToastOverlay，照片页与搜索页没有任何 toast 宿主，而收藏本身是同一个菜单项可逆的开关；补一个窗口级 overlay 属于结构性改动，没有静悄悄塞进这条 P2。",
+      files: [
+        "src/ui/toasts.rs",
+        "src/ui/toasts/tests.rs",
+        "src/ui/viewer/actions.rs",
+        "src/ui/media_list.rs",
+        "src/ui/trash_page.rs",
+        "i18n/*.json",
+        "tests/ux_click_flows.rs"
+      ],
+      tests: [
+        "cargo test --lib ui::toasts（带 action 的 toast 有可点按钮且回调执行）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows（journey_viewer_delete_toast_offers_undo：真实文件进回收站 → 点 toast 的撤销 → 文件回到原目录、DB 标记清掉、瓦片回到网格、查看器重新显示这张照片；把 restore_deleted_item 改成 no-op 后该断言确实变红）"
+      ],
+      docs: [
+        "docs/modules/viewer.md（新增「Feedback Toasts And Undo」一节）",
+        "docs/modules/albums-trash.md（还原 helper 的位置）",
+        "docs/ui-naming-reference/index.html（收藏/删除按钮与 toast 宿主的现状）"
+      ],
       risk: "撤销需要事务化（回收站路径 + DB 状态同时回滚）。",
       demo:
-        "开启后批量收藏/移到回收站的 toast 带「撤销」按钮，点了直接回滚；关闭本提案时 toast 是纯文本，找不到撤销入口（同一动作对比可见）。"
+        "常态即已落盘行为：在查看器点收藏或移到回收站，toast 右侧就是「撤销」，点了直接回滚（删除那条会真的把文件移回来）。提案芯片不再改动画面；落盘前的纯文本 toast 走「落盘前：toast 没有撤销（P2-1）」演示按钮（data-pv-demo=toast-no-undo）。"
     },
     {
       id: "p2-2",
@@ -683,11 +700,24 @@
       problem: "Toast 出现在查看器底部，正好盖住胶片条。",
       evidence: ["viewer-page.blp:7 的 ToastOverlay 包裹整块内容"],
       solution: ["限定 overlay 区域到 stage，或为 toast 预留底部 inset"],
-      files: ["data/ui/viewer-page.blp", "src/ui/viewer_page.rs"],
-      tests: ["cargo test --test e2e_viewer（toast 出现时胶片条仍可点）"],
-      docs: ["docs/modules/viewer.md"],
+      landed:
+        "P2-2 已落盘（2026-10-02），取草案第一半：`Adw.ToastOverlay toast_overlay` 从页根挪进 content_box，只包 `image_overlay`（舞台），`viewer_bottom_stack` 变成它的兄弟节点，libadwaita 贴宿主下边缘画提示，于是下边缘＝胶片条上边缘。实测（tests.rs::a_toast_lands_above_the_filmstrip）：改结构前卡片在 410..456 而条带是 366..468，整条压住；改后卡片 288..334，舞台底 358、条带顶 366，让开 32px。两次测量的舞台（54..358）与条带（366..468）完全一致，插进一层容器没有改动布局。\n\n草案第二半「为 toast 预留底部 inset」实测不可用：内部子节点 AdwToastWidget 没有 Rust 绑定，`toastoverlay .toast` 选不中，而 `toast` 节点上的 `margin-bottom` 只是把节点撑高（底边仍钉在宿主下边缘），卡片并不上移。所以 base.css 里那条 margin 规则已删除，位置只由结构决定，不留一条「看起来生效」的 CSS。测量口径也要记一笔：`allocation()` 含主题外边距（82 对卡片 46），且 `Adw.ToastOverlay` 子节点的 `translate_coordinates` 与实际绘制位置差 32px，所以断言只用 `compute_bounds`。\n\n偏差：草案担心的「缩小 overlay 影响其他页面」不成立（别的页面没有宿主），但代价是详情/编辑侧栏触发的 toast 现在画在舞台上而不是窗口底部——提示说的就是这张照片，可以接受。舞台右下角的上一页/下一页与 toast 在很窄的窗口里可能相叠（卡片居中、实测宽 150，900px 窗口下与箭头相距约 165px），这一点没有真机目测。",
+      files: [
+        "data/ui/viewer-page.blp",
+        "src/ui/viewer_page/tests.rs",
+        "data/css/base.css"
+      ],
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::viewer_page（新增 a_toast_lands_above_the_filmstrip；负向验证：把 viewer-page.blp 还原成页根包裹后该测试变红）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --test e2e_viewer --test ui_viewer_toolbar --test ux_click_flows"
+      ],
+      docs: [
+        "docs/modules/viewer.md（Layout Contract 之后新增 toast 契约）",
+        "docs/ui-naming-reference/index.html（viewer-page 结构描述 + 新增 viewer-toast-overlay 条目）"
+      ],
       risk: "缩小 overlay 区域会影响其他页面的 toast 位置，需按页配置。",
-      demo: "开启后在查看器触发 toast（例如收藏），提示改到舞台上方而不覆盖底部胶片条；关闭本提案时同一提示压在胶片条上（对照 data-pv-screen=viewer 的 toast-host 位置）。"
+      demo:
+        "常态即已落盘行为：在查看器触发 toast（收藏、删除、编辑器保存），它停在舞台底部、胶片条之上。提案芯片不再改动画面；落盘前压在胶片条上的位置走「落盘前：toast 盖住胶片条（P2-2）」演示按钮（data-pv-demo=toast-on-strip）。"
     },
     {
       id: "p2-3",
@@ -1106,6 +1136,20 @@
       body.dataset.pvDemo = "low-contrast";
       syncBar();
       PV.toast("落盘前对照：库统计、侧栏计数、空态副标题与查看器错误面都掉在地板之下；把「透明度」拉高会更糟。清除演示态回到已落盘的地板。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("落盘前：toast 盖住胶片条（P2-2）", function () {
+      openViewerDemo();
+      body.dataset.pvDemo = "toast-on-strip";
+      syncBar();
+      PV.toast("落盘前对照：提示贴在窗口底部，正好压在胶片条上——报的就是刚才在条带上做的那一步。清除演示态回到已落盘的舞台锚点。", { kind: "info", ms: 5200 });
+      PV.runAction("viewer-delete");
+    });
+    demoBtn("落盘前：toast 没有撤销（P2-1）", function () {
+      openViewerDemo();
+      body.dataset.pvDemo = "toast-no-undo";
+      syncBar();
+      PV.toast("落盘前对照：可撤销的动作也只报成功，撤销只能自己去回收站找。清除演示态即回到带「撤销」按钮的 toast。", { kind: "info", ms: 5200 });
+      PV.runAction("viewer-delete");
     });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });

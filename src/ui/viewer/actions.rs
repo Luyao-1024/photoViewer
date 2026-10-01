@@ -127,14 +127,21 @@ impl ViewerPage {
                                 return;
                             }
                             if let Some(this) = weak_for_callback.upgrade() {
-                                toasts::success(
-                                    &this.imp().toast_overlay.get(),
-                                    &tr("viewer.toast.moved_to_trash"),
-                                );
                                 this.remove_deleted_item(item_id);
                                 if let Some(cb) = this.imp().trashed_cb.borrow().clone() {
                                     cb(item_id);
                                 }
+                                let undo_weak = this.downgrade();
+                                toasts::success_with_action(
+                                    &this.imp().toast_overlay.get(),
+                                    &tr("viewer.toast.moved_to_trash"),
+                                    &tr("viewer.toast.undo"),
+                                    move || {
+                                        if let Some(this) = undo_weak.upgrade() {
+                                            this.restore_deleted_item(item_id);
+                                        }
+                                    },
+                                );
                             }
                         },
                     );
@@ -166,6 +173,69 @@ impl ViewerPage {
         }
     }
 
+    /// Undo the delete: move the file back out of the trash, clear the DB mark,
+    /// then re-insert the row into the live list the viewer is browsing.
+    ///
+    /// The list is only touched once the file is really back, so a failed undo
+    /// cannot leave a tile pointing at a missing photo. Writing through the DB
+    /// actor is what emits the domain events other pages listen to; going
+    /// straight to the pool would fix this view and desynchronise the rest of
+    /// the library. Afterwards the viewer shows the restored photo — pressing
+    /// Undo means "I wanted that one", and landing anywhere else reads as a miss.
+    pub(super) fn restore_deleted_item(&self, item_id: i64) {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let db_actor = self.imp().db_actor.borrow().clone();
+        let list = self.imp().media_list.borrow().as_ref().cloned();
+        let delete_btn = self.imp().delete_btn.get().downgrade();
+        let weak_after = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                MediaRepository::new(pool)
+                    .restore_batch(&[MediaId::from(item_id)], db_actor.as_ref())
+            })
+            .await;
+            if let Some(btn) = delete_btn.upgrade() {
+                btn.set_sensitive(true);
+            }
+            let Some(this) = weak_after.upgrade() else {
+                return;
+            };
+            let batch = match result {
+                Ok(batch) if batch.failures.is_empty() => batch,
+                Ok(batch) => {
+                    tracing::warn!(
+                        "ViewerPage: undo move-to-trash failed: {:?}",
+                        batch.failures
+                    );
+                    toasts::error(
+                        &this.imp().toast_overlay.get(),
+                        &tr("viewer.toast.restore_failed"),
+                    );
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!("ViewerPage: undo move-to-trash worker failed: {error:?}");
+                    toasts::error(
+                        &this.imp().toast_overlay.get(),
+                        &tr("viewer.toast.restore_failed"),
+                    );
+                    return;
+                }
+            };
+            let Some(list) = list else {
+                return;
+            };
+            for item in batch.mutation.changed_items {
+                crate::ui::media_list::insert_media_item_sorted(&list, item);
+            }
+            if let Some(index) = super::navigation::find_media_index_by_id(&list, item_id) {
+                this.show_at(index);
+            }
+        });
+    }
+
     pub(super) fn setup_favorite_button(&self) {
         crate::ui::grid_css::assert_installed();
 
@@ -177,57 +247,82 @@ impl ViewerPage {
         self.refresh_favorite_button(false);
 
         let weak = self.downgrade();
-        imp.favorite_btn.get().connect_clicked(move |button| {
+        imp.favorite_btn.get().connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
-            let db_actor = match this.imp().db_actor.borrow().as_ref() {
-                Some(actor) => actor.clone(),
-                None => {
-                    tracing::warn!("ViewerPage: Favorite pressed but DB actor not set");
-                    return;
-                }
+            if this.imp().db_actor.borrow().is_none() {
+                tracing::warn!("ViewerPage: Favorite pressed but DB actor not set");
+                return;
+            }
+            let Some(item_id) = this.current_media_item().map(|item| item.id) else {
+                return;
             };
-            let item_id = match this.current_media_item() {
-                Some(i) => i.id,
-                None => return,
-            };
-
             let next_state = !this.imp().is_favorite.get();
-            button.set_sensitive(false);
-            let button_weak = button.downgrade();
-            let token = this.imp().current_token.get();
-            let weak_after = this.downgrade();
-            glib::spawn_future_local(async move {
-                let db_result = db_actor
-                    .execute(DbCommand::SetFavorite {
-                        ids: vec![MediaId::from(item_id)],
-                        is_favorite: next_state,
-                    })
-                    .await
-                    .map(|_| ());
-                if let Some(button) = button_weak.upgrade() {
-                    button.set_sensitive(true);
-                }
-                if let Some(this) = weak_after.upgrade() {
-                    if this.imp().current_token.get() != token {
-                        return;
+            this.apply_favorite_state(item_id, next_state, true);
+        });
+    }
+
+    /// Write a favorite state and announce it.
+    ///
+    /// `announce` adds the undo action, and the undo re-enters with it off: a
+    /// rollback that offers another rollback is a toast chain, not an undo.
+    pub(super) fn apply_favorite_state(&self, item_id: i64, next_state: bool, announce: bool) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            return;
+        };
+        let button = self.imp().favorite_btn.get();
+        button.set_sensitive(false);
+        let button_weak = button.downgrade();
+        let token = self.imp().current_token.get();
+        let weak_after = self.downgrade();
+        glib::spawn_future_local(async move {
+            let db_result = db_actor
+                .execute(DbCommand::SetFavorite {
+                    ids: vec![MediaId::from(item_id)],
+                    is_favorite: next_state,
+                })
+                .await
+                .map(|_| ());
+            if let Some(button) = button_weak.upgrade() {
+                button.set_sensitive(true);
+            }
+            let Some(this) = weak_after.upgrade() else {
+                return;
+            };
+            if this.imp().current_token.get() != token {
+                return;
+            }
+            match db_result {
+                Ok(()) => {
+                    this.refresh_favorite_button(next_state);
+                    if let Some(cb) = this.imp().favorite_state_cb.borrow().clone() {
+                        cb(item_id, next_state);
                     }
-                    match db_result {
-                        Ok(()) => {
-                            this.refresh_favorite_button(next_state);
-                            if let Some(cb) = this.imp().favorite_state_cb.borrow().clone() {
-                                cb(item_id, next_state);
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!("ViewerPage: Toggle favorite failed: {e}");
-                            toasts::error(
-                                &this.imp().toast_overlay.get(),
-                                &format!("{}: {e}", tr("viewer.toast.favorite_update_failed")),
-                            );
-                        }
+                    if announce {
+                        let undo_weak = this.downgrade();
+                        toasts::success_with_action(
+                            &this.imp().toast_overlay.get(),
+                            &tr(if next_state {
+                                "viewer.toast.favorited"
+                            } else {
+                                "viewer.toast.unfavorited"
+                            }),
+                            &tr("viewer.toast.undo"),
+                            move || {
+                                if let Some(this) = undo_weak.upgrade() {
+                                    this.apply_favorite_state(item_id, !next_state, false);
+                                }
+                            },
+                        );
                     }
                 }
-            });
+                Err(e) => {
+                    tracing::warn!("ViewerPage: Toggle favorite failed: {e}");
+                    toasts::error(
+                        &this.imp().toast_overlay.get(),
+                        &format!("{}: {e}", tr("viewer.toast.favorite_update_failed")),
+                    );
+                }
+            }
         });
     }
 

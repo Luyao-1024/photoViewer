@@ -1380,8 +1380,12 @@ body[data-pv~="p2-8"] .pref-row .caret.pv-p2-8,
 body[data-pv~="p2-8"] .pref-row button.pv-p2-8 { display: inline-flex; }
 body[data-pv~="p2-9"] .caret.pv-p2-9 { display: inline; }
 
-/* P2-2：查看器里 toast 让开底部胶片条（现状压在胶片条上）。 */
-body[data-pv~="p2-2"][data-pv-screen="viewer"] .toast-host { bottom: auto; top: 92px; }
+/* P2-2 已落盘为常态：宿主只覆盖舞台，libadwaita 把提示贴在宿主下边缘，于是它
+   停在胶片条上方（舞台下边缘＝胶片条上边缘）。落盘前的对照见演示开关。 */
+body[data-pv-screen="viewer"] .toast-host { bottom: 96px; }
+body[data-pv-demo="toast-on-strip"][data-pv-screen="viewer"] .toast-host { bottom: 22px; }
+/* P2-1 已落盘为常态：可撤销的动作自带撤销按钮；关掉按钮就是落盘前的纯文本提示。 */
+body[data-pv-demo="toast-no-undo"] .toast button { display: none; }
 
 /* P2-3：段落下用键盘焦点可见性代替底色块，保持单胶囊契约 */
 body[data-pv~="p2-3"] .segment:focus-visible {
@@ -1887,7 +1891,6 @@ kbd {
   font-weight: 700;
   cursor: pointer;
 }
-.toast.p2-1-off button { display: none; }
 
 /* ---------- 7. 评审工具条 ---------- */
 

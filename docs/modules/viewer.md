@@ -20,7 +20,7 @@ load the full query result just to move one step in the viewer. The current
 | File | Role |
 |---|---|
 | `src/ui/viewer_page.rs` | Viewer state, navigation, overlay panel behavior |
-| `src/ui/viewer/actions.rs` | Viewer toolbar delete/favorite actions, favorite state sync, and post-delete navigation |
+| `src/ui/viewer/actions.rs` | Viewer toolbar delete/favorite actions, favorite state sync, undo of the move to trash, and post-delete navigation |
 | `src/ui/viewer/transform.rs` | Image-stage zoom/rotation controls, CSS transform updates, and transform math helpers |
 | `src/ui/viewer/fullscreen_window.rs` | Independent fullscreen preview window, preview navigation buttons, and preview-local transforms |
 | `src/ui/viewer/filmstrip.rs` | Filmstrip geometry plus stateful UI wiring, bounded window rebuild/extend, thumbnail buttons, and centering animation |
@@ -31,6 +31,8 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/viewer/crop.rs` | Editor crop overlay drawing, hit-testing, drag/resize geometry, and overlay-to-source coordinate conversion |
 | `src/ui/viewer/editor.rs` | Editor side-panel lifecycle, editor callback wiring, save-result dialogs, and editor navigation lock state |
 | `src/ui/keyboard/` | Project-wide shortcut bindings and router |
+| `src/ui/toasts.rs` | Toast priorities/timeouts and the one inline Undo action |
+| `src/ui/media_list.rs` | Shared live-list helpers, including the sorted re-insert an undo relies on |
 | `data/ui/viewer-page.blp` | Viewer template |
 | `tests/e2e_viewer.rs` | Viewer flow coverage |
 | `tests/ui_viewer_toolbar.rs` | Viewer toolbar/template assertions |
@@ -94,6 +96,41 @@ offers 重试 (which re-enters `show_at` for the current index) and 在文件管
 (which opens the containing folder through `gtk::show_uri_full` and toasts when no
 handler accepts it). The error surface lives in `base.css` only — it is a flat
 themed wash, not a glass material — so it needs no liquid/plain mirror.
+
+## Feedback Toasts And Undo
+
+The viewer is the only page with a toast host, and `Adw.ToastOverlay` wraps the
+image stage inside `content_box` — never the page root. An overlay that spans
+the whole viewer parks its bottom toast on the filmstrip, which is the control
+the user is still operating while the toast reports what they just did there.
+`src/ui/viewer_page/tests.rs::a_toast_lands_above_the_filmstrip` measures the
+painted bounds of a real toast against the strip, so re-widening the overlay
+fails a test instead of a review. Note that `allocation()` is not usable for
+that check: the toast widget's allocation includes the theme margin around the
+card, and a child of `Adw.ToastOverlay` can report an offset different from the
+one it paints at. Use `compute_bounds`, and do not try to lift the card with CSS
+- `margin-bottom` on the internal toast node grows the node rather than moving
+the card.
+
+A toast button is the app's only inline affordance, so it is reserved for
+actions that can genuinely be undone from the toast (`toasts::success_with_action`,
+6 s so the button is reachable). Both viewer toolbar mutations qualify:
+
+- Favorite re-applies the previous state. The undo itself re-enters with
+  `announce = false`, because a rollback that offers another rollback is a toast
+  chain, not an undo.
+- Move to trash runs `restore_deleted_item`, which restores the *file* first
+  (`MediaRepository::restore_batch` moves it out of the trash root and clears the
+  DB mark through the actor, which is what emits the domain events other pages
+  listen to), and only then re-inserts the row into the live list with
+  `media_list::insert_media_item_sorted`, so a failed undo cannot leave a tile
+  pointing at a missing photo. Writing straight to the pool would fix this view
+  and desynchronise the rest of the library. The viewer then shows the restored
+  photo again.
+
+Batch favorite elsewhere (Photos selection, search results) deliberately has no
+undo toast: the action is a toggle the user can reverse with the same menu item,
+and those pages have no toast host.
 
 ## Thumbnail Strip
 

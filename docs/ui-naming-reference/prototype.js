@@ -187,7 +187,6 @@
     if (!host) return;
     var el = document.createElement("div");
     el.className = "toast";
-    if (opts.action && !enabled("p2-1")) el.classList.add("p2-1-off");
     var span = document.createElement("span");
     span.textContent = message;
     el.appendChild(span);

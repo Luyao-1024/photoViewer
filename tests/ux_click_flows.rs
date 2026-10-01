@@ -57,6 +57,7 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     journey_search_view_edit_and_save_copy();
     journey_select_copy_to_album_then_open_it();
     journey_trash_restore_and_permanently_delete();
+    journey_viewer_delete_toast_offers_undo();
 
     // Focused interaction contracts that protect important edge cases inside
     // those journeys (rapid activation, chrome states, and sidebar modes).
@@ -1128,6 +1129,99 @@ fn album_detail_context_menu_moves_to_album() {
             "album context-menu move should update the clicked item's folder"
         );
     }
+}
+
+/// The viewer's delete toast has to offer a real way back. Undo moves the file
+/// out of the trash, clears the DB mark, and puts the tile back into the list
+/// the user was browsing; a success toast without that button — or one whose
+/// button only re-flags the row while the file stays in the trash — fails here.
+fn journey_viewer_delete_toast_offers_undo() {
+    let shell = build_full_app_shell();
+    let nav = shell.window.nav_view();
+    let grid = visible_photos_grid(&shell.photos);
+    let first_slot = grid
+        .first_media_slot()
+        .expect("Photos should expose a media slot");
+    activate_virtual_grid_slot(&grid, first_slot);
+    let viewer = nav
+        .visible_page()
+        .and_downcast::<ViewerPage>()
+        .expect("tile activation should open Viewer");
+    assert!(
+        wait_until(Duration::from_secs(2), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "the viewer should finish loading the item before it can be deleted"
+    );
+    let item_id = viewer.imp().current_media_id.get();
+    let path = db::get_media_item(&shell.pool, item_id).unwrap().path;
+    assert!(
+        path.exists(),
+        "the fixture photo should exist before deleting"
+    );
+
+    click_button(&viewer.imp().delete_btn.get());
+    let confirm = wait_for_descendant::<adw::AlertDialog>(shell.window.upcast_ref())
+        .expect("the viewer should confirm the delete");
+    confirm.emit_by_name::<()>("response", &[&"trash"]);
+    confirm.close();
+    assert!(
+        wait_until(Duration::from_secs(4), || {
+            db::list_trashed_media(&shell.pool)
+                .map(|items| items.iter().any(|item| item.id == item_id))
+                .unwrap_or(false)
+        }),
+        "confirming the dialog should move the item to the trash"
+    );
+    assert!(
+        wait_until(Duration::from_secs(4), || !path.exists()),
+        "moving to the trash should take the file out of the library folder"
+    );
+
+    let overlay = viewer.imp().toast_overlay.get().clone();
+    assert!(
+        wait_until(Duration::from_secs(2), || toast_widget(&overlay).is_some()),
+        "the delete should report itself with a toast"
+    );
+    let toast = toast_widget(&overlay).expect("toast shown above");
+    let undo =
+        find_descendant::<gtk::Button>(&toast).expect("the toast should carry an Undo button");
+    assert_eq!(
+        undo.label().as_deref(),
+        Some(photo_viewer::core::i18n::tr("viewer.toast.undo").as_str()),
+        "the toast button should read as Undo"
+    );
+    click_button(&undo);
+
+    assert!(
+        wait_until(Duration::from_secs(6), || {
+            db::get_media_item(&shell.pool, item_id)
+                .is_ok_and(|item| item.trashed_at.is_none() && path.exists())
+        }),
+        "Undo should put the file back on disk and clear its trash mark"
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || {
+            viewer.imp().current_media_id.get() == item_id
+                && grid.logical_media_count() as usize == shell.items.len()
+        }),
+        "Undo should show the restored photo again and put its tile back in the grid"
+    );
+}
+
+/// The toast is an internal libadwaita widget (`AdwToastWidget` is not exported),
+/// so it is reached through the overlay's children by type name.
+fn toast_widget(overlay: &adw::ToastOverlay) -> Option<gtk::Widget> {
+    let mut child = overlay.first_child();
+    while let Some(node) = child {
+        if node.type_().name().contains("Toast") {
+            return Some(node);
+        }
+        child = node.next_sibling();
+    }
+    None
 }
 
 fn full_app_shell_renders_photos_and_opens_trash_via_sidebar() {

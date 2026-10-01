@@ -27,6 +27,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::DbActorHandle;
 use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
+#[cfg(test)]
 use crate::core::media::MediaItem;
 use crate::core::repository::{MediaBatchResult, MediaQuery, MediaRepository};
 use crate::core::thumbnails::ThumbnailLoader;
@@ -263,7 +264,7 @@ impl TrashPage {
                     let result = gtk::gio::spawn_blocking(move || restore_items(&pool, db_actor.as_ref(), ids)).await;
                     if let (Some(list), Ok(result)) = (media_list, &result) {
                         for item in result.mutation.changed_items.iter().cloned() {
-                            insert_media_item_sorted(&list, item);
+                            crate::ui::media_list::insert_media_item_sorted(&list, item);
                         }
                     }
                     grid.clear_selection();
@@ -437,30 +438,6 @@ impl TrashPage {
             }
         });
     }
-}
-
-fn insert_media_item_sorted(list: &gtk::gio::ListStore, item: MediaItem) {
-    if media_list_contains_id(list, item.id) {
-        return;
-    }
-    let insert_at = (0..list.n_items())
-        .find(|&idx| {
-            let Some(existing) = crate::ui::media_list::media_item_at(list, idx) else {
-                return false;
-            };
-            item.sort_datetime() > existing.sort_datetime()
-                || (item.sort_datetime() == existing.sort_datetime() && item.id > existing.id)
-        })
-        .unwrap_or_else(|| list.n_items());
-    list.insert(insert_at, &glib::BoxedAnyObject::new(item));
-}
-
-fn media_list_contains_id(list: &gtk::gio::ListStore, item_id: i64) -> bool {
-    (0..list.n_items()).any(|idx| {
-        crate::ui::media_list::media_item_at(list, idx)
-            .map(|item| item.id == item_id)
-            .unwrap_or(false)
-    })
 }
 
 #[cfg(test)]

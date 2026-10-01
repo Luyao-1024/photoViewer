@@ -219,6 +219,17 @@ Trash toolbar and selection actions use the shared glass button classes.
 Restore uses the suggested role; Empty Trash and permanent deletion use the
 danger role, with theme-aware text colors and visible keyboard focus. Album
 picker headers also use the shared glass-header material.
+Restore has two callers and one implementation. The TrashPage's Restore button
+and the viewer's post-delete Undo toast both go through
+`MediaRepository::restore_batch(ids, Some(&db_actor))`, which resolves the
+`.trashinfo` payload, moves the file back with no-overwrite semantics, writes
+`DbCommand::RestoreTrashed` through the actor, and only then commits the file
+move. Going through the actor is what emits the domain events other pages
+subscribe to; a restore that talks to the pool directly fixes the page the user
+is looking at and desynchronises the rest of the library. The row goes back into
+whatever live `gio::ListStore` that page is browsing via
+`media_list::insert_media_item_sorted`, which places it by `sort_datetime`
+(ties by id) instead of appending, and ignores ids the list never dropped.
 
 Restore never overwrites a file that has appeared at the original path. It
 moves the trash payload with no-overwrite semantics, keeps `.trashinfo` until

@@ -712,8 +712,8 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 | # | 现象 | 证据 | 建议 |
 |---|---|---|---|
-| P2-1 | Toast 一律无撤销，删除只能去回收站找回 | `src/ui/toasts.rs:19-40` 三个工厂都用 `adw::Toast::new(msg)`，全项目无 `set_button_label` | 新增 `success_with_action(overlay, msg, label, f)`；删除/批量收藏接 `viewer/actions.rs:81-93` 已有的回滚 |
-| P2-2 | Toast 可能盖住胶片条 | `data/ui/viewer-page.blp:7` 的 `ToastOverlay` 包裹整块内容 | 限定 overlay 区域到 stage，或为 toast 预留底部 inset |
+| **P2-1（已落盘）** | Toast 一律无撤销，删除只能去回收站找回 | `src/ui/toasts.rs:19-40` 三个工厂都用 `adw::Toast::new(msg)`，全项目无 `set_button_label` | 新增 `success_with_action(overlay, msg, label, f)`；删除/批量收藏接 `viewer/actions.rs:81-93` 已有的回滚 |
+| **P2-2（已落盘）** | Toast 可能盖住胶片条 | `data/ui/viewer-page.blp:7` 的 `ToastOverlay` 包裹整块内容 | 限定 overlay 区域到 stage，或为 toast 预留底部 inset |
 | P2-3 | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
 | P2-4 | 全项目 `set_accessible_label`/`set_accessible_role` 调用为 **0** | grep 确认；`overview_sync_icon`（`photos_page.rs:949`）与警告图标（`:1037`）连 tooltip 都没有 | 约 26 个图标按钮先补 tooltip 兜底，再为「状态类」（同步状态、时长/云/收藏徽记 `src/ui/square_tile.rs`）补 accessible label；用 `tools/assert-at-spi.py` 模式扩展断言面 |
 | P2-5 | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 移入 `spawn_blocking` + generation 回投；大库下多选 header 会掉帧 |
@@ -721,6 +721,64 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | P2-7 | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 首轮加载完成前不切空态 |
 | P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；同步状态失败需显示可操作的重试提示。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
 | P2-9 | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 混合态给按钮加下拉指示，让「会弹菜单」可预判 |
+
+### P2-1 实施结果（2026-10-02 已落盘，草案前提需要更正）
+
+`toasts::success_with_action(overlay, msg, label, f)` 已实现，超时 6 秒（普通
+success 的两倍——用户够不着的撤销不算撤销），返回 `adw::Toast` 供测试按名发出
+`button-clicked`。两条动作接上了它：
+
+1. **收藏**：`viewer/actions.rs` 的写入抽成 `apply_favorite_state(item_id, next_state, announce)`，
+   toast 按钮以 `announce = false` 重入。可回滚的回滚是 toast 链，不是撤销。
+2. **移到回收站**：草案说「接 `actions.rs:81-93` 已有的回滚」，但那条
+   `DbCommand::RollbackTrashed` **只清 DB 标记，文件仍在回收站里**，直接接上会留下
+   指向空文件的瓦片。真正的还原 API 确实存在，只是在别处且回收站页一直在用：
+   `core/trash.rs:830 restore_from_trash` 与 `core/repository.rs:469 restore_batch`
+   （`prepare_restore` 先把 payload 移回原路径 → 经 actor 写 `RestoreTrashed` → 再
+   commit）。所以撤销走 `restore_batch(&ids, Some(&db_actor))`：**经过 actor 才发得出
+   DomainEvent**，其它页面才跟得上；直连 pool 只修好当前视图。顺序是「文件先回来、
+   列表后动」，行由 `media_list::insert_media_item_sorted` 按 `sort_datetime` 落回时间线
+   原位（该 helper 从 `trash_page.rs` 提成共用，回收站页改为调用同一份），完成后
+   `show_at` 回到这张照片。
+
+偏差：草案点名的**批量收藏没有撤销 toast**。全应用只有查看器装了
+`Adw.ToastOverlay`，照片页与搜索结果页没有任何 toast 宿主；而收藏本身是同一个右键
+菜单项可逆的开关，补一个窗口级 overlay 属于结构性改动，不静悄悄塞进一条 P2。i18n
+新增 `favorited` / `unfavorited` / `undo` / `restore_failed` 四键（两份 json 同步，parity
+446/446），`moved_to_trash` 的「可在回收站找回」在按钮出现后收回成「已移入回收站」。
+
+**测试**：`cargo test --lib ui::toasts`（`an_action_toast_offers_its_button_and_fires_it`：
+按钮标签、超时 > 3s、`button-clicked` 确实触发回调）；
+`tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows` 新增
+`journey_viewer_delete_toast_offers_undo`——真实文件移到回收站 → 在 toast 上找到按钮并
+点击 → 断言文件回到原目录、DB `trashed_at` 清空、瓦片回到网格数量、查看器重新显示这张
+照片。负向验证：把 `restore_deleted_item` 改成 no-op 后该断言确实变红。
+
+### P2-2 实施结果（2026-10-02 已落盘，取草案第一半）
+
+`Adw.ToastOverlay toast_overlay` 从 `viewer-page.blp` 的页根挪进 `content_box`，只包
+`image_overlay`（舞台），`viewer_bottom_stack` 成为它的兄弟节点。libadwaita 把提示贴在
+宿主子节点的下边缘，于是宿主下边缘＝胶片条上边缘。实测
+（`src/ui/viewer_page/tests.rs::a_toast_lands_above_the_filmstrip`）：改结构前 toast 卡片
+画在 `410..456`，而胶片条条带是 `366..468`——整条被压住；改后卡片 `288..334`，舞台底
+`358`、条带顶 `366`，让开 32px。两次测量里舞台（`54..358`）与条带（`366..468`）分配完全
+一致，说明多插一层容器没有改动布局。
+
+草案第二半「为 toast 预留底部 inset」**实测不可用**：内部子节点 `AdwToastWidget` 没有
+Rust 绑定，`toastoverlay .toast` 选不中，而 `toast` 节点上的 `margin-bottom` 只是把节点
+撑高（底边仍钉在宿主下边缘），卡片并不上移。因此 base.css 里那条 margin 规则已删除，
+位置只由结构决定，不留一条「看起来生效」的 CSS。测量口径也要记一笔：`allocation()` 含
+主题外边距（节点 82 对卡片 46），且 `Adw.ToastOverlay` 子节点的 `translate_coordinates`
+与实际绘制位置差 32px，所以断言只用 `compute_bounds`。
+
+偏差与未验证：草案担心的「缩小 overlay 影响其它页面」不成立（别的页面没有宿主），但
+代价是详情/编辑侧栏触发的 toast 现在画在舞台上而不是窗口底部——提示说的就是这张照片，
+可以接受。舞台右下角的上一页/下一页与 toast 在很窄的窗口里可能相叠（卡片居中、实测宽
+150px，900px 窗口下与箭头相距约 165px），这一点没有真机目测。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --lib ui::viewer_page`（新
+`a_toast_lands_above_the_filmstrip`；负向验证：把 `viewer-page.blp` 还原成页根包裹后该
+测试变红）＋ `--test e2e_viewer --test ui_viewer_toolbar --test ux_click_flows` 全绿。
 
 ---
 
