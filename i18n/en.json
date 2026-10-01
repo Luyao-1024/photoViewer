@@ -54,6 +54,7 @@
     "viewer.details.captured": "Captured",
     "viewer.date.today": "Today",
     "viewer.date.yesterday": "Yesterday",
+    "viewer.position.count": "{current} / {total}",
     "viewer.not_available": "Not available",
     "viewer.video_error.title": "Video can't be played",
     "viewer.video_error.subtitle": "The file may be damaged or use an unsupported codec.",

@@ -1068,30 +1068,107 @@ fn media_neighbor_with_filter_and_order(
     // Compatibility projection for consumers that explicitly need a rank.
     // Interactive navigation calls seek_media_neighbor and skips both counts.
     let conn = pool.get()?;
-    let total: u32 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause}"),
-        params_from_iter(filter_params.iter()),
-        |r| r.get(0),
-    )?;
-    let sort = if trashed {
-        "trashed_at"
-    } else {
-        "COALESCE(taken_at, file_mtime)"
-    };
-    let time = if trashed {
+    let item_sort = if trashed {
         item.trashed_at.unwrap_or(item.file_mtime)
     } else {
         item.sort_datetime()
     }
     .timestamp();
-    let mut params = filter_params;
-    params.extend([
-        Value::Integer(time),
-        Value::Integer(time),
-        Value::Integer(item.id),
-    ]);
-    let index = conn.query_row(&format!("SELECT COUNT(*) FROM media_items WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"), params_from_iter(params.iter()), |r| r.get(0))?;
+    let (index, total) = rank_and_total(
+        &conn,
+        where_clause,
+        &filter_params,
+        trashed,
+        item_sort,
+        item.id,
+    )?;
     Ok(Some((index, total, item)))
+}
+
+/// The expression the viewer's cursor queries order rows by. Kept in one place
+/// so the neighbour seek, its rank projection and the position counter can
+/// never walk a different order than the grid renders.
+fn media_sort_expr(trashed: bool) -> &'static str {
+    if trashed {
+        "trashed_at"
+    } else {
+        "COALESCE(taken_at, file_mtime)"
+    }
+}
+
+/// Rows that come *before* `(sort_key, id)` in `where_clause`'s viewer order,
+/// plus that filter's row count — i.e. a 0-based rank, the same convention
+/// `media_neighbor_with_filter_and_order` reports. Both are COUNT queries over
+/// the same `(filter, sort)` pair the neighbour seek walks, so a rank can never
+/// disagree with the sequence ←/→ moves through.
+fn rank_and_total(
+    conn: &rusqlite::Connection,
+    where_clause: &str,
+    filter_params: &[Value],
+    trashed: bool,
+    sort_key: i64,
+    id: i64,
+) -> Result<(u32, u32)> {
+    let sort = media_sort_expr(trashed);
+    let total: u32 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause}"),
+        params_from_iter(filter_params.iter()),
+        |r| r.get(0),
+    )?;
+    let mut params = filter_params.to_vec();
+    params.extend([
+        Value::Integer(sort_key),
+        Value::Integer(sort_key),
+        Value::Integer(id),
+    ]);
+    let index = conn.query_row(
+        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"),
+        params_from_iter(params.iter()),
+        |r| r.get(0),
+    )?;
+    Ok((index, total))
+}
+
+/// Where `media_id` sits inside one query's result set: `(1-based rank, total)`.
+/// `None` when the row is gone or falls outside `where_clause` (deleted,
+/// trashed, un-favorited while the viewer was open), so the caller can hide the
+/// counter instead of showing a number it cannot verify.
+///
+/// Costs two COUNTs, which is why the interactive navigation path never calls
+/// this — `seek_media_neighbor` deliberately skips both. The viewer asks once
+/// per displayed item, off the GTK thread, only to fill the header counter.
+pub fn media_position(
+    pool: &DbPool,
+    media_id: i64,
+    where_clause: &str,
+    filter_params: &[Value],
+    trashed: bool,
+) -> Result<Option<(u32, u32)>> {
+    let conn = pool.get()?;
+    let sort = media_sort_expr(trashed);
+    let mut params = vec![Value::Integer(media_id)];
+    params.extend_from_slice(filter_params);
+    let item_sort = conn
+        .query_row(
+            &format!("SELECT {sort} FROM media_items WHERE id = ? AND {where_clause}"),
+            params_from_iter(params.iter()),
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(item_sort) = item_sort else {
+        return Ok(None);
+    };
+    let (rank, total) = rank_and_total(
+        &conn,
+        where_clause,
+        filter_params,
+        trashed,
+        item_sort,
+        media_id,
+    )?;
+    // `rank_and_total` is a 0-based projection shared with the neighbour seek;
+    // a position a person reads counts from one.
+    Ok(Some((rank + 1, total)))
 }
 
 /// Index seek for navigation: no full-result ranking, count, or global offset.
@@ -1107,11 +1184,7 @@ pub(crate) fn seek_media_neighbor(
         return Ok(None);
     }
     let conn = pool.get()?;
-    let sort = if trashed {
-        "trashed_at"
-    } else {
-        "COALESCE(taken_at, file_mtime)"
-    };
+    let sort = media_sort_expr(trashed);
     let mut current_params = vec![Value::Integer(current_id)];
     current_params.extend_from_slice(filter_params);
     let time: Option<i64> = conn

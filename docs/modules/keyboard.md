@@ -71,6 +71,13 @@ that focused tile without replacing the model.
 | Viewer | `H` | `ViewerToggleFavorite` |
 | Viewer | `Delete` | `Delete` |
 
+`ViewerPrevious` / `ViewerNext` at a resolved end of the query (the arrow
+itself is already dimmed, see [`docs/modules/viewer.md`](viewer.md) § *Navigation
+Buttons*) return `KeyboardResult::Ignored` rather than `Handled`, so the press
+is not silently consumed while there is nothing on screen to act on. While the
+editor is open the same keys stay `Handled` so they do not leak into the
+underlying grid's focus handlers.
+
 Modal and editor scopes do not fall back to global shortcuts. This prevents
 Search, Settings, and navigation commands from leaking through dialogs, glass
 context menus, or editing surfaces. `MainWindow` treats any open glass context

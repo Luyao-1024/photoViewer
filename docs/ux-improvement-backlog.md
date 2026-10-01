@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。P1 已开始：**P1-6 已实施**（header 选择计数器），并且实测证明其「选中集被后台重建清空」的前半前提只对无多选 UI 的旧网格成立，`VirtualMediaGrid` 由新单测守住，详见该节「证据更正」。其余 P1/P2 条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。P1 已开始：**P1-6 已实施**（header 选择计数器），并且实测证明其「选中集被后台重建清空」的前半前提只对无多选 UI 的旧网格成立，`VirtualMediaGrid` 由新单测守住，详见该节「证据更正」；**P1-7 已落盘其前两项**（位置计数器 + 到底反馈），第三项「倍率可见」留在草案里交给后续工作。其余 P1/P2 条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -389,6 +389,26 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 **测试**：`cargo test --test e2e_viewer`（首/末张的按钮敏感度、计数与窗口长度一致性）；`cargo test ui::viewer`（倍率标签在 1.0/1.25/8.0 的文本）。
 
 **需同步文档**：`docs/modules/viewer.md`（新增 header 信息契约与「total 来源是 MediaPage.total 而非窗口 store」这条陷阱）、`docs/ui-naming-reference/index.html`。
+
+**实施结果**（2026-10-01 已落盘前两项；倍率可见 P1-7b 留给后续工作，本节未覆盖）：
+
+方案被实测量改写两点：
+
+- 方案 1 默认从 `MediaPage.total` 缓存 total 是不适用的：viewer 入参只有窗口化 `gio::ListStore` 与 `MediaQuery`/`MediaId`（`photos_page.rs:1960`、`album_detail_page.rs:720`、`search_page.rs:793` 三个调用点都传 `media_list`，没有任何 `MediaPage` 入参）。`MediaPage.total` 仍存在（`repository.rs:34-39`），但 viewer 的「底」必须自己从查询解析。新增 `db::media_position(pool, id, where, params, trashed) -> Option<(u32, u32)>`（`(1-based rank, total)`，`db.rs`），与共享的 `db::rank_and_total`（0-based，与 `media_neighbor_with_filter_and_order` 的 `MediaNeighbor.index` 保持同一基准以让 rank 永不和 ←/→ 走的顺序不一致）+ `db::media_sort_expr`（`COALESCE(taken_at, file_mtime)` / `trashed_at` 单点）。
+- `MediaRepository` 侧抽出私有 `nav_projection(query) -> (filter, params, trashed)`，`neighbor_item` 与新增的 `position(query, id)` 走同一投影；`repository.rs` 的方案 1 那段 `let trashed = matches!(query, MediaQuery::Trash); let (filter, params) = match ... { ... };` 替换为一行 `let (filter, params, trashed) = nav_projection(&query);`。
+
+落点：viewer `imp` 新增 `position_label: TemplateChild<gtk::Label>`（`viewer_page.rs`）、`position_request_token: Cell<u64>`、`prev_exhausted: Cell<bool>`/`next_exhausted: Cell<bool>`；`viewer/navigation.rs` 新增 `update_position_label(&self, item, token)`（`gio::spawn_blocking` 拉 `MediaRepository::position`，`current_token` + `position_request_token` 双重 token 守住，仅在新 `show_at` 仍是当前帧时写入 label，否则静默丢弃——和 `refresh_sync_badge` 同款）、`set_nav_direction_available(delta, available)`/`nav_direction_available(delta)`/`reset_nav_bounds()`、`handle_nav_key(delta)`（编辑态仍 `Handled` 防 ←/→ 泄漏到 grid 焦点；已解析到无方向的端时返回 `Ignored`，键不被吞、dim 后的箭头本身已经是不需要回到键盘号票的反馈）；`navigate_by_delta` 的 `Ok(None) => {}` 改成 `this.set_nav_direction_available(delta, false)`（`navigation.rs`）；`prefetch_neighbors` 异步分支 `Ok(None) => this.set_nav_direction_available(delta, false)`——边界从「每次重新查」提前到「每帧 prefetch 落地后立即可见」，点击即落在生效位置的空洞、`cargo test ui::viewer::navigation` 的现有 `viewer_keyboard_action_navigates_and_closes`（未注入 pool，cells 默认 false=available）回归通过。
+
+`show_at` 在 `refresh_sync_badge` 旁调用 `update_position_label(&item, token)` 并在 `update_date_label` 之后立刻 `reset_nav_bounds()`；label 在 `[start]` 标签的最后一项（`viewer-page.blp`），按 `[start]` 顺序最左的子项其实是 `Gtk.Box` 自己，但其内部子项的分配方向是「向右扩展」——所以位置计数器变长不会推 date_label/`sync_badge`，只往中间空白里长。
+
+视觉：`base.css` 合并 `.viewer-date-label, .viewer-position-label { font-variant-numeric: tabular-nums }`（`base.css`），位置计数器还额外带 libadwaita 的 `.dim-label` 让其退在文件名/日期之后；浮动箭头 `.viewer-overlay-nav-btn` 自身有强制 `color: #ffffff`（`base.css`）使 libadwaita 默认的 insensitive 颜色失效，所以新增 `:disabled { opacity: 0.32 }`—— opacity 是该规则下唯一还能传达状态的通道，并且两种玻璃模式一致。
+
+i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-CN.json`）/ en（`en.json`），两族总长 434/434 平。
+
+偏差：
+- **没有为本次行为写新测试**。应写的是：「DB 单测覆盖 `MediaRepository::position` 三档排名 + 1-based」、「viewer 标签 `2/3` 文案 + prefetch 后 next/prev 失活 + 键盘在已解析端返回 `Ignored`」两条单飞单元测试。用户中途要求停止后续任务后，这两条被刻意延后，留给下次开机时补上。已跑过的回归保障本次改动未破坏现有行为：`cargo test --lib` 611 passed / 0 failed / 2 ignored（含 `ui::viewer_page::navigation::tests::*` 4 条全部 PASS）；5 个 viewer/template/css/source 集成测试 `ui_viewer_toolbar` / `ui_template_copy` / `ui_grid_css_install` / `ui_viewer_source_structure` / `e2e_viewer`（合计 7 条）全部 PASS。
+- **未做手动视觉验证**。`base.css` 的 `:disabled opacity` 与 `[start]` 内的子项扩展、`dim-label` 在玻璃材质下的可读性都需要在运行窗口里看一眼才能盖章。同上，用户中途要求停止。
+- 方案 2「两端时禁用 prev_btn/next_btn」的措辞原本是「按 libadwaita 默认（约 0.4 不透明度）即可，无需新 CSS」——实测不行，因为那条规则固定了白色 icon color，insensitive 颜色会被覆盖，所以还是新增了一条 CSS。
 
 ---
 

@@ -172,6 +172,10 @@ mod imp {
         pub sync_badge_request_token: Cell<u64>,
         pub sync_badge_state: Cell<Option<CloudState>>,
         pub sync_badge_theme_handler: RefCell<Option<glib::SignalHandlerId>>,
+        /// Per-request token for the header position counter, bumped on every
+        /// `show_at`. A rank answered for an item the user already skipped must
+        /// never overwrite the current frame's 「12 / 128」.
+        pub position_request_token: Cell<u64>,
         /// The `current_token` whose **original** full-resolution texture has
         /// already been painted. Lets the preview-thumbnail callback avoid
         /// overwriting the original with a late-arriving Medium thumbnail.
@@ -201,6 +205,12 @@ mod imp {
         pub cached_next_item: RefCell<Option<MediaItem>>,
         /// Prefetched -1 neighbour item (previous), warmed by `prefetch_neighbors`.
         pub cached_prev_item: RefCell<Option<MediaItem>>,
+        /// The current query has no row before the displayed item. `false` also
+        /// means "not resolved yet", so a viewer whose pool or loader is missing
+        /// never shows a disabled arrow it cannot justify.
+        pub prev_exhausted: Cell<bool>,
+        /// The current query has no row after the displayed item.
+        pub next_exhausted: Cell<bool>,
         /// Cumulative zoom scale (1.0 = identity).
         pub zoom_scale: Cell<f64>,
         /// Viewer-local image rotation in clockwise degrees. This affects only
@@ -290,6 +300,8 @@ mod imp {
         pub date_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub sync_badge: TemplateChild<gtk::Image>,
+        #[template_child]
+        pub position_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub details_title: TemplateChild<gtk::Label>,
         #[template_child]
@@ -559,18 +571,8 @@ impl ViewerPage {
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
         match action {
-            KeyboardAction::ViewerNext => {
-                if !self.is_editing_keyboard_scope() {
-                    self.navigate_by_delta(1);
-                }
-                KeyboardResult::Handled
-            }
-            KeyboardAction::ViewerPrevious => {
-                if !self.is_editing_keyboard_scope() {
-                    self.navigate_by_delta(-1);
-                }
-                KeyboardResult::Handled
-            }
+            KeyboardAction::ViewerNext => self.handle_nav_key(1),
+            KeyboardAction::ViewerPrevious => self.handle_nav_key(-1),
             KeyboardAction::CancelOrClose => {
                 if self.imp().editor_split_view.get().shows_sidebar() {
                     self.stop_editing();
@@ -851,8 +853,10 @@ impl ViewerPage {
         }
         self.set_title(item.display_name());
         self.update_date_label(&item);
+        self.reset_nav_bounds();
         self.sync_favorite_state(item.id);
         self.refresh_sync_badge(&item, token);
+        self.update_position_label(&item, token);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
             "VIEWER_TRACE viewer_show_at index={} list_len={} item_id={} item_name={} item_uri={} sort_time={}",

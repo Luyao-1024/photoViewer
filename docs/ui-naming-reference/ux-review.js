@@ -301,31 +301,34 @@
         "不知道「我在第几/共几张」；按到底时界面毫无反应（看起来像卡住）；放大后不知道当前倍率。",
       evidence: [
         "header 只有文件名标题（viewer_page.rs:824）与日精度日期（:825 → viewer/details.rs:276，标签 viewer-page.blp:26）；全项目无位置计数器",
-        "viewer/navigation.rs:162 Ok(None) => {} 空分支；Err 才 fire_nav(delta)",
-        "viewer_page.rs:66-68 MIN 1.0/MAX 8.0/STEP 1.25，transform.rs:47-88 内部 Cell<f64>，无标签",
-        "重要陷阱：viewer_page.rs:643 list_n_items() 返回**窗口化 store** 长度（viewer/navigation.rs:289 ensure_media_item_in_window），不是全库总数。可用真源：core/repository.rs:136 count(query) 与 :165 page(...)->MediaPage，MediaPage 已带 total:u32（:34-39）"
+        "viewer/navigation.rs:162 Ok(None) => {} 空分支；Err 才 fire_nav(delta)（实施后改为 set_nav_direction_available）",
+        "viewer_page.rs:66-68 MIN 1.0/MAX 8.0/STEP 1.25，transform.rs:47-88 内部 Cell<f64>，无标签（第三项倍率可见未落盘）",
+        "重要陷阱：viewer_page.rs:643 list_n_items() 返回**窗口化 store** 长度（viewer/navigation.rs:289 ensure_media_item_in_window），不是全库总数"
       ],
       solution: [
-        "header 日期右侧加 position_label「{current} / {total}」：total 取打开查看器那次查询的 MediaPage.total（photos_page.rs:1743 new_for_query 调用点已持有 db_actor 与 MediaQuery），异步取一次并缓存，不要每次 show_at 重查；取不到确切全局序号时宁可退化为窗口内「1 / 128」也不显示错误数字，并在注释写明",
-        "到底反馈：viewer/navigation.rs:162 空分支改为两端 set_sensitive(false) prev/next，并让键盘 ←/→ 在无目标时不再吞事件；禁用态用 libadwaita 默认（约 0.4 不透明度），无需新 CSS",
-        "倍率指示：zoom_scale != 1.0 时在 viewer_zoom_controls 右侧显示 trf(\"viewer.zoom.level\")，reset_viewer_transform()（transform.rs:60）后隐藏；用 tabular 数字避免宽度跳动，% 留在文案侧以便本地化",
-        "三者都只改 label/sensitive，符合 viewer.md:98-113「只用 transform/outline/shadow，不动布局」；计数器 label 需固定最小宽度以免翻页抖动"
+        "header 日期右侧加 position_label「{current} / {total}」：total 走 MediaRepository::position(query, id) → db::media_position 两 COUNT（一为 total、一为 1-based rank），off-thread（gio::spawn_blocking）异步取，current_token + position_request_token 双重 token 守住；nav_counter 不在导航 critical path——保持 db::seek_media_neighbor 跳过 COUNT 的现有约定",
+        "到底反馈：viewer/navigation.rs:162 空分支改为两端 set_sensitive(false) prev/next，并让键盘 ←/→ 在无目标时不再吞事件；禁用态视觉 .viewer-overlay-nav-btn:disabled { opacity: 0.32 }（该选择器原本把 color 钉成 #ffffff，libadwaita 的 insensitive 颜色无法生效，opacity 是唯一可传达状态的通道，且两种玻璃模式一致）",
+        "倍率指示：zoom_scale != 1.0 时在 viewer_zoom_controls 右侧显示 trf(\"viewer.zoom.level\")，reset_viewer_transform() 后隐藏；用 tabular 数字避免宽度跳动，% 留在文案侧以便本地化——**本项未落盘，留给 P1-7b**"
       ],
       files: [
         "data/ui/viewer-page.blp",
         "src/ui/viewer_page.rs",
         "src/ui/viewer/navigation.rs",
-        "src/ui/viewer/transform.rs",
+        "src/core/repository.rs",
+        "src/core/db.rs",
         "i18n/*.json"
       ],
       tests: [
-        "cargo test --test e2e_viewer（首/末张按钮敏感度、计数与窗口长度一致）",
-        "cargo test ui::viewer（倍率标签在 1.0/1.25/8.0 的文本）"
+        "本批（位置计数器 + 到底反馈）**未新增专属单测**。用户的停止指令在中途下达，留待后续工作补上：DB 单测覆盖 MediaRepository::position 三档排名与 1-based 边界；GTK 单测覆盖 viewer 标签文案 + prefetch 后 prev/next 失活 + 键盘在已解析端返回 Ignored",
+        "已跑的回归：cargo check --lib（PASS）、cargo test --lib（611 passed / 0 failed / 2 ignored，含 ui::viewer_page::navigation::tests::* 4 条全部 PASS）、tools/with-at-spi.sh xvfb-run -a cargo test --test ui_viewer_toolbar --test ui_template_copy --test ui_grid_css_install --test ui_viewer_source_structure --test e2e_viewer（7 条全部 PASS）",
+        "手动视觉验证 NOT RUN（同上理由）：.viewer-overlay-nav-btn:disabled opacity 在两种玻璃模式下的可读性、[start] 子项扩展、.dim-label 与标题字重的对比仍需开窗口亲眼盖章"
       ],
-      docs: ["docs/modules/viewer.md（含「total 来源是 MediaPage.total 而非窗口 store」陷阱）", "docs/ui-naming-reference/index.html"],
-      risk: "全库序号需要一次额外 count；缓存失效时机跟 LiveCountDirty 对齐。",
+      docs: ["docs/modules/viewer.md（Header Toolbar 段新增「rank 来源是 db::media_position 而非 list_n_items」陷阱，Navigation Buttons 段新增边界反馈契约）", "docs/modules/keyboard.md（ViewerPrevious/ViewerNext 在已解析端返回 Ignored 而非 Handled）", "docs/modules/storage.md（MediaRepository::position 不可进入导航 critical path）", "docs/modules/ui-design.md（位置计数器 + 边界 disabled 视觉两条 bullets）", "docs/ui-naming-reference/index.html"],
+      risk: "viewer 入参只有窗口化 ListStore 与 MediaQuery/MediaId，没有任何 MediaPage 入参（photos_page.rs:1960 / album_detail_page.rs:720 / search_page.rs:793 三个调用点都传 media_list）。所以方案里「打开查看器那次查询的 MediaPage.total」是一次不存在的入口；落盘改用每帧异步 db::media_position 拿 (rank, total)，off-thread 不污染导航 critical path。",
+      landed:
+        "位置计数器 + 到底反馈两项已落盘（2026-10-01）。落点：viewer-page.blp 在 [start] 末尾新增 Gtk.Label position_label（viewer-date-label 之后），base.css 把 .viewer-date-label 与 .viewer-position-label 合并为 font-variant-numeric: tabular-nums（位置计数器另带 libadwaita .dim-label）；viewer_page.rs imp 新增 position_label TemplateChild + position_request_token + prev_exhausted/next_exhausted；viewer/navigation.rs 新增 update_position_label（spwan_blocking + 双重 token 守卫）、set_nav_direction_available / nav_direction_available / reset_nav_bounds、handle_nav_key（编辑态仍 Handled）；navigate_by_delta 的 Ok(None) 改为 set_nav_direction_available(delta, false)；prefetch_neighbors 的 Ok(None) 同。db 侧：db::media_sort_expr + db::rank_and_total（0-based，与 media_neighbor_with_filter_and_order 共享，避免 rank 与 ←/→ 走序不一致）+ pub fn media_position()(1-based rank, total)；MediaRepository::position 新方法 + 抽出 nav_projection 让 neighbor_item / position 走同一 (filter, params, trashed)。i18n 两族新增 viewer.position.count = \"{current} / {total}\"（parity 434/434）。键盘 ←/→ 在已解析端返回 KeyboardResult::Ignored。",
       demo:
-        "开启后打开查看器：header 出现「N / M」定位、日期与文件名；按 → 走到最后一张时下一张按钮变灰（关闭时它会静默无反应）。放大（+ 或 Ctrl+滚轮）后右上出现「125%」倍率，按 0 复位后消失。"
+        "开启后打开查看器：header 出现「N / M」定位（默认 visible:false，show_at 后异步刷出）、日期与文件名；按 → 走到最后一张时下一张按钮以 opacity 0.32 灰度（关闭时它会静默无响应）。"
     },
     {
       id: "p1-8",

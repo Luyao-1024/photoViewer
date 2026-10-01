@@ -1,9 +1,10 @@
+use crate::core::i18n::trf;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaRepository;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
 use crate::ui::keyboard::shortcuts_window::tooltip_with_key;
-use crate::ui::keyboard::KeyboardAction;
+use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -160,7 +161,12 @@ impl ViewerPage {
                     this.imp().current_media_id.set(neighbor_id);
                     this.switch_when_thumb_ready(index, item, token);
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    // The query has no row in this direction: the viewer is at
+                    // an end. Say so on the arrow instead of resolving the
+                    // press into nothing happening.
+                    this.set_nav_direction_available(delta, false);
+                }
                 Err(err) => {
                     tracing::warn!("ViewerPage: repository navigation failed: {err}");
                     this.fire_nav(delta);
@@ -361,9 +367,9 @@ impl ViewerPage {
                 let _ = tx.send(repo.neighbor_item(query, MediaId::from(for_id), delta));
             });
             glib::spawn_future_local(async move {
-                let item = match rx.await {
-                    Ok(Ok(Some(n))) => n,
-                    _ => return,
+                let resolved = match rx.await {
+                    Ok(result) => result,
+                    Err(_) => return,
                 };
                 let Some(this) = weak.upgrade() else {
                     return;
@@ -374,14 +380,137 @@ impl ViewerPage {
                 {
                     return;
                 }
-                Self::warm_medium_thumbnail(&loader, &item);
-                match delta {
-                    1 => *this.imp().cached_next_item.borrow_mut() = Some(item),
-                    -1 => *this.imp().cached_prev_item.borrow_mut() = Some(item),
-                    _ => {}
+                match resolved {
+                    Ok(Some(item)) => {
+                        Self::warm_medium_thumbnail(&loader, &item);
+                        match delta {
+                            1 => *this.imp().cached_next_item.borrow_mut() = Some(item),
+                            -1 => *this.imp().cached_prev_item.borrow_mut() = Some(item),
+                            _ => {}
+                        }
+                    }
+                    // Nothing on this side of the query: the viewer is at an
+                    // end, so the arrow can be dimmed before the user presses
+                    // it. The other direction keeps whatever it resolved to.
+                    Ok(None) => this.set_nav_direction_available(delta, false),
+                    Err(err) => {
+                        tracing::warn!("ViewerPage: neighbour prefetch failed: {err}");
+                    }
                 }
             });
         }
+    }
+
+    /// Publish whether one navigation direction still has a row to move to, and
+    /// dim the matching arrow when it does not. `available == true` is also what
+    /// an *unresolved* direction reports, so the arrow only ever looks disabled
+    /// when the database has actually said there is nothing there.
+    pub(super) fn set_nav_direction_available(&self, delta: NavDelta, available: bool) {
+        let imp = self.imp();
+        let (exhausted, button) = if delta > 0 {
+            (&imp.next_exhausted, imp.next_btn.get())
+        } else if delta < 0 {
+            (&imp.prev_exhausted, imp.prev_btn.get())
+        } else {
+            return;
+        };
+        if exhausted.get() == !available {
+            return;
+        }
+        exhausted.set(!available);
+        button.set_sensitive(available);
+    }
+
+    /// Whether `delta` has a target. Unknown directions count as available.
+    pub(super) fn nav_direction_available(&self, delta: NavDelta) -> bool {
+        let imp = self.imp();
+        if delta > 0 {
+            !imp.next_exhausted.get()
+        } else {
+            !imp.prev_exhausted.get()
+        }
+    }
+
+    /// A different item is on screen, so neither end is known until this one's
+    /// prefetch resolves.
+    pub(super) fn reset_nav_bounds(&self) {
+        self.set_nav_direction_available(-1, true);
+        self.set_nav_direction_available(1, true);
+    }
+
+    /// ←/→ outside the editor. A press at a resolved end is returned as
+    /// unhandled rather than swallowed: the arrows are already dimmed, and a key
+    /// that has nothing to act on here should not look like a dead binding.
+    pub(crate) fn handle_nav_key(&self, delta: NavDelta) -> KeyboardResult {
+        if self.is_editing_keyboard_scope() {
+            // While editing, the focused field owns ←/→; consume the key.
+            return KeyboardResult::Handled;
+        }
+        if !self.nav_direction_available(delta) {
+            return KeyboardResult::Ignored;
+        }
+        self.navigate_by_delta(delta);
+        KeyboardResult::Handled
+    }
+
+    /// 「12 / 128」 beside the date: where the displayed item sits inside the
+    /// query the grid came from, so arriving from a long grid keeps your place
+    /// and hitting an end is a number rather than a guess.
+    ///
+    /// Two COUNT queries, so this runs off the GTK thread and lands a moment
+    /// after the frame; the navigation path itself stays count-free (see
+    /// `db::media_position`). Applied only while both the originating `show_at`
+    /// token and this request's token still match, mirroring
+    /// `refresh_sync_badge`.
+    pub(super) fn update_position_label(&self, item: &MediaItem, token: u64) {
+        let imp = self.imp();
+        let Some(pool) = imp.pool.borrow().as_ref().cloned() else {
+            imp.position_label.get().set_visible(false);
+            return;
+        };
+        let Some(query) = imp.media_query.borrow().clone() else {
+            imp.position_label.get().set_visible(false);
+            return;
+        };
+        let request_token = imp.position_request_token.get().wrapping_add(1);
+        imp.position_request_token.set(request_token);
+        let id = item.id;
+
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                MediaRepository::new(pool).position(query, MediaId::from(id))
+            })
+            .await;
+            let Ok(Ok(position)) = result else {
+                return; // cancelled, or a failed count: keep the last known rank
+            };
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let imp = this.imp();
+            if imp.current_token.get() != token || imp.position_request_token.get() != request_token
+            {
+                return; // a newer switch owns the header now
+            }
+            let label = imp.position_label.get();
+            match position {
+                Some((current, total)) if total > 0 => {
+                    label.set_label(&trf(
+                        "viewer.position.count",
+                        &[
+                            ("current", &current.to_string()),
+                            ("total", &total.to_string()),
+                        ],
+                    ));
+                    label.set_visible(true);
+                }
+                // The row left the query (trashed, un-favorited, deleted) while
+                // the viewer stayed open: show nothing rather than a rank the
+                // database no longer agrees with.
+                _ => label.set_visible(false),
+            }
+        });
     }
 
     /// Wire the `<` / `>` viewer navigation buttons.

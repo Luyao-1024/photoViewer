@@ -853,8 +853,13 @@ video.viewer-media-surface controls scale slider {
 /* viewer-date-label — capture date pinned to the start (left) of the viewer
    header. The widget also carries libadwaita's `title` class so its font
    size/weight matches the centered file name exactly; this rule only adds
-   tabular-nums so 今天/昨天 and ISO dates don't change width while navigating. */
-.viewer-date-label {
+   tabular-nums so 今天/昨天 and ISO dates don't change width while navigating.
+   viewer-position-label — 「12 / 128」 beside it: same tabular-nums need, and it
+   sits last in the start box so any width change extends rightward into free
+   space instead of moving the date or the sync badge. It carries libadwaita's
+   `.dim-label`, so the counter stays behind the file name and date. */
+.viewer-date-label,
+.viewer-position-label {
   font-variant-numeric: tabular-nums;
 }
 
@@ -1134,6 +1139,14 @@ button.viewer-thumb-item.viewer-thumb-current picture {
      photo and also over the light capsule a light theme produces on hover. */
   color: #ffffff;
   -gtk-icon-shadow: 0 1px 2px alpha(black, 0.9), 0 0 6px alpha(black, 0.65);
+}
+
+/* Boundary feedback: the arrow with nowhere to go is dimmed rather than hidden,
+   so the pair keeps its geometry. The rule above forces the icon white and
+   libadwaita's insensitive colour cannot win against it, so opacity is the only
+   channel left to carry the state — and it works in both glass modes. */
+.viewer-overlay-nav-btn:disabled {
+  opacity: 0.32;
 }
 
 /* viewer-floating-panel 内容链透明化 ─────────────────────────────

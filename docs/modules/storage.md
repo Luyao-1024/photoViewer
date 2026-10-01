@@ -152,6 +152,16 @@ instead of one adjacent row. The interactive path performs a `(sort key, id)`
 index seek and does not compute `ROW_NUMBER`, a global count, or a full-table
 offset.
 
+The viewer header's position counter (`position_label`, see
+[`docs/modules/viewer.md`](viewer.md) § *Header Toolbar*) reads from
+`MediaRepository::position(query, id) -> Option<(u32, u32)>`
+(`(1-based rank, total)`), which wraps `db::media_position` (two COUNT queries
+against the same `(filter, sort)` projection the neighbour seek uses). It must
+not run on the navigation critical path — the perf cost is the reason
+`seek_media_neighbor` deliberately skips both counts — and the viewer therefore
+queries it off the GTK thread per `show_at`, gated by a token pair. Do not add
+`position` calls inside `navigate_by_delta` or `prefetch_neighbors`.
+
 ## Media Model
 
 `MediaItem` values are wrapped in `glib::BoxedAnyObject` when surfaced to GTK model stores. Core code should stay independent from widget ownership even though UI adapters use GLib object wrappers.

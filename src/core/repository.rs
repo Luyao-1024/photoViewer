@@ -124,6 +124,42 @@ fn search_count_filter(
     }
 }
 
+/// The viewer's cursor projection for one query: `(WHERE fragment, params,
+/// trashed-order)`. The neighbour seek, the rank counter and `trashed`'s sort
+/// order all read it, so 「12 / 128」 and what ←/→ walks cannot diverge.
+fn nav_projection(query: &MediaQuery) -> (String, Vec<Value>, bool) {
+    let trashed = matches!(query, MediaQuery::Trash);
+    let (filter, params) = match query {
+        MediaQuery::LiveAll => ("trashed_at IS NULL".into(), vec![]),
+        MediaQuery::Trash => ("trashed_at IS NOT NULL".into(), vec![]),
+        MediaQuery::AlbumFolder(path) => (
+            "trashed_at IS NULL AND folder_path = ?".into(),
+            vec![Value::Text(path.to_string_lossy().into_owned())],
+        ),
+        MediaQuery::Favorites => ("trashed_at IS NULL AND is_favorite = 1".into(), vec![]),
+        MediaQuery::Images => ("trashed_at IS NULL AND media_kind = 'image'".into(), vec![]),
+        MediaQuery::Videos => ("trashed_at IS NULL AND media_kind = 'video'".into(), vec![]),
+        MediaQuery::MotionPhotos => (
+            format!(
+                "trashed_at IS NULL AND {}",
+                crate::core::media::LogicalMediaType::MotionPhoto.sql_predicate()
+            ),
+            vec![],
+        ),
+        MediaQuery::MediaType(kind) => (
+            format!("trashed_at IS NULL AND {}", kind.sql_predicate()),
+            vec![],
+        ),
+        MediaQuery::Search { term, field } => search_count_filter(term.clone(), None, *field),
+        MediaQuery::SearchKind {
+            term,
+            media_kind,
+            field,
+        } => search_count_filter(term.clone(), Some(media_kind.clone()), *field),
+    };
+    (filter, params, trashed)
+}
+
 impl MediaRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
@@ -314,35 +350,7 @@ impl MediaRepository {
         current_id: MediaId,
         delta: i32,
     ) -> Result<Option<MediaItem>> {
-        let trashed = matches!(query, MediaQuery::Trash);
-        let (filter, params) = match query {
-            MediaQuery::LiveAll => ("trashed_at IS NULL".into(), vec![]),
-            MediaQuery::Trash => ("trashed_at IS NOT NULL".into(), vec![]),
-            MediaQuery::AlbumFolder(path) => (
-                "trashed_at IS NULL AND folder_path = ?".into(),
-                vec![Value::Text(path.to_string_lossy().into_owned())],
-            ),
-            MediaQuery::Favorites => ("trashed_at IS NULL AND is_favorite = 1".into(), vec![]),
-            MediaQuery::Images => ("trashed_at IS NULL AND media_kind = 'image'".into(), vec![]),
-            MediaQuery::Videos => ("trashed_at IS NULL AND media_kind = 'video'".into(), vec![]),
-            MediaQuery::MotionPhotos => (
-                format!(
-                    "trashed_at IS NULL AND {}",
-                    crate::core::media::LogicalMediaType::MotionPhoto.sql_predicate()
-                ),
-                vec![],
-            ),
-            MediaQuery::MediaType(kind) => (
-                format!("trashed_at IS NULL AND {}", kind.sql_predicate()),
-                vec![],
-            ),
-            MediaQuery::Search { term, field } => search_count_filter(term, None, field),
-            MediaQuery::SearchKind {
-                term,
-                media_kind,
-                field,
-            } => search_count_filter(term, Some(media_kind), field),
-        };
+        let (filter, params, trashed) = nav_projection(&query);
         db::seek_media_neighbor(
             &self.pool,
             current_id.get(),
@@ -351,6 +359,15 @@ impl MediaRepository {
             &params,
             trashed,
         )
+    }
+
+    /// `(1-based rank, total)` of `id` inside `query`'s result order, or `None`
+    /// when the row no longer belongs to the query. Backs the viewer header's
+    /// 「12 / 128」 counter; two COUNTs, so callers must not put it on the
+    /// navigation critical path.
+    pub fn position(&self, query: MediaQuery, id: MediaId) -> Result<Option<(u32, u32)>> {
+        let (filter, params, trashed) = nav_projection(&query);
+        db::media_position(&self.pool, id.get(), &filter, &params, trashed)
     }
 
     pub fn neighbor(

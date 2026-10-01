@@ -153,6 +153,8 @@ volume controls.
 
 Left/right image navigation belongs to viewer chrome. The prev/next controls float as a compact pair near the bottom-right corner over the media, lifted just above `GtkVideo`'s built-in controls so videos keep their playback and mute buttons unobstructed. Their capsule container is intentionally bare (no background) — each button draws its own glass surface only on hover/focus — so they stay light and avoid blocking the original media more than necessary.
 
+Reaching the head or the tail of the query must say so on the pair itself, not as silent a no-op. The arrow that has nowhere to go is dimmed (`set_sensitive(false)`, with the disabled visual carried in `base.css` as `.viewer-overlay-nav-btn:disabled { opacity: 0.32 }` — opacity is the only channel left because that selector already pins `color: #ffffff`). The dimmed-but-still-present state survives a switch: `show_at` calls `reset_nav_bounds()` so a different item is unknown until its own `prefetch_neighbors` resolves, then both directions are re-evaluated against the actual query. Keyboard `←/→` at a resolved end returns `KeyboardResult::Ignored` (via `viewer/navigation.rs::handle_nav_key`), so the press is not silently consumed while there is nothing on screen to act on. While the editor's own fields have focus, `←/→` stay `Handled` so they do not leak into the underlying grid.
+
 ## Switch Latency And The Deferred Switch
 
 Left/right (and filmstrip) navigation must never show a loading animation.
@@ -224,6 +226,56 @@ so its font size and weight match the centered file name (it reads as a peer of
 the title, not secondary chrome), plus a `viewer-date-label` class for
 tabular-nums. It must never change layout or use a hover/glass surface like the
 action buttons.
+
+Beside the date sits the position counter `position_label`, formatted as
+`{current} / {total}` via `viewer.position.count` (identical string in both
+locales; only the digits vary). It is the last child in the header's start
+box on purpose: as the rank grows, the label grows rightward into the free
+space between start and end groups, so the date and the sync badge never
+shift. The counter carries libadwaita's `dim-label` class so it sits behind
+the file name and date, plus a `viewer-position-label` class for tabular
+figures. It is hidden by default, revealed only once the rank resolves for the
+current `show_at` token — an unverified number is never displayed.
+
+The rank is `(1-based, total)` from `MediaRepository::position(query, id)`
+(`repository.rs`), which delegates to `db::media_position` (`db.rs`). The
+underlying SQL runs the same `(filter, sort)` projection the neighbour seek
+uses, so the counter cannot disagree with what `←/→` moves to. The viewer
+`list_n_items()` (`viewer_page.rs:643`) is **not** a total — it is the length
+of the windowed `ListStore`, and using it would be wrong on the first open of
+a long grid and on any jump beyond the current window. The query is
+asynchronous (`gio::spawn_blocking`) and lands after the frame, so the
+navigation critical path is unaffected — the deliberate comment in `db.rs`
+calling `media_position` cost two COUNTs is the reason `seek_media_neighbor`
+keeps skipping counts. The answer is applied only while both the originating
+`show_at` `token` and a per-request `position_request_token` still match, so a
+late rank for an item the user has already skipped over cannot repaint the
+current frame.
+
+Beside the date sits the position counter `position_label`, formatted as
+`{current} / {total}` via `viewer.position.count` (identical string in both
+locales; only the digits vary). It is the last child in the header's start
+box on purpose: as the rank grows, the label grows rightward into the free
+space between start and end groups, so the date and the sync badge never
+shift. The counter carries libadwaita's `dim-label` class so it sits behind
+the file name and date, plus a `viewer-position-label` class for tabular
+figures. It is hidden by default, revealed only once the rank resolves for
+the current `show_at` token — an unverified number is never displayed.
+
+The rank is `(1-based, total)` from `MediaRepository::position(query, id)`
+(`repository.rs`), which delegates to `db::media_position` (`db.rs`). The
+underlying SQL runs the same `(filter, sort)` projection the neighbour seek
+uses, so the counter cannot disagree with what `←/→` moves to. The page they
+came from (`viewer_page.rs:643 list_n_items`) is **not** a total — it is the
+length of the windowed `ListStore`, and using it would be wrong on the first
+open of a long grid and on any jump beyond the current window. The query is
+asynchronous (`gio::spawn_blocking`) and lands after the frame, so the
+navigation critical path is unaffected — the deliberate comment in `db.rs`
+calling `media_position` cost two COUNTs is the reason `seek_media_neighbor`
+keeps skipping counts. The answer is applied only while both the originating
+`show_at` `token` and a per-request `position_request_token` still match, so a
+late rank for an item the user has already skipped over cannot repaint the
+current frame.
 
 The viewer header carries four actions, left-to-right: favorite, edit, delete,
 details. (The earlier add-to-album entry was removed from the

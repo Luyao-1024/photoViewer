@@ -327,6 +327,22 @@ Design intent:
   of the date inside the same start box (`spacing: 8`), at the icon's natural
   size. It belongs to the date group, so it must never read as a prefix of the
   file name.
+- Beside the cloud badge sits the position counter `position_label`
+  (`{current} / {total}` via `viewer.position.count`, identical string in both
+  locales). It carries libadwaita's `.dim-label` plus `.viewer-position-label`
+  for tabular figures, sits **last** in the start box on purpose so growth
+  pushes rightward into free space instead of shifting the date or badge, and
+  stays hidden until the DB rank for the current `show_at` token resolves —
+  displaying an unverified number is never an option.
+- Reaching the head or tail of the query must be visible on the prev/next pair
+  itself, not a silent no-op. The arrow that has nowhere to go is dimmed via
+  `.viewer-overlay-nav-btn:disabled { opacity: 0.32 }` (`.viewer-overlay-nav-btn`
+  pins `color: #ffffff`, so opacity is the only channel left to carry the
+  state, and the same value works in both glass modes). The dimmed-but-still-
+  present arrow survives a switch: `show_at` calls `reset_nav_bounds()` so a
+  different item is unknown until its own `prefetch_neighbors` resolves. The
+  pair keeps its geometry across disabled/enabled so a quick tap at the head
+  or tail does not visually pop.
 - The top header contains item actions, left-to-right: favorite, edit, delete
   (trash), and details. (Album assignment is reached from the photos grid batch
   menu, not the viewer.) These actions stay compact and icon-led, and use

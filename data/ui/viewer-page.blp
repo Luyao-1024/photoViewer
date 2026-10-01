@@ -35,6 +35,20 @@ template $ViewerPage : Adw.NavigationPage {
             visible: false;
             css-classes: ["viewer-sync-badge"];
           }
+
+          // Where this item sits inside the query the grid came from, so
+          // arriving from a 300-tile grid does not lose your place, and so
+          // 「到底了」 is a number instead of a guess. Last in the start box on
+          // purpose: it is the only child that grows with digit count, and
+          // growing rightward into free space keeps the date and badge still.
+          // Shown only once the rank resolves, so an unverified number is
+          // never displayed.
+          Gtk.Label position_label {
+            label: "";
+            xalign: 0;
+            visible: false;
+            css-classes: ["dim-label", "viewer-position-label"];
+          }
         }
 
         // Header actions render left-to-right as favorite, edit, delete,
