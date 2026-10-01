@@ -120,6 +120,9 @@ pub fn scanning() -> adw::StatusPage {
     page.add_css_class("compact");
     let spinner = gtk::Spinner::new();
     spinner.set_size_request(32, 32);
+    // `GtkSpinner::new` does not animate until started: a stopped spinner
+    // renders as a frozen empty circle and reads as a rendering bug.
+    spinner.start();
     page.set_child(Some(&spinner));
     page
 }
@@ -155,3 +158,6 @@ pub fn no_search_results(on_clear: Rc<dyn Fn()>) -> adw::StatusPage {
     add_action(&page, &tr("empty.search_none.clear"), on_clear);
     page
 }
+
+#[cfg(test)]
+mod tests;
