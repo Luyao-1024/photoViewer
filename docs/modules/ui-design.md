@@ -155,7 +155,12 @@ Design intent:
   shows a width- and height-aware flat preview that fills as much of the window
   as practical without internal scrolling; the preview is not broken up by
   per-year headers. Overflow is exposed through a small "More" button that
-  opens a type-specific results page.
+  opens a type-specific results page. Preview tiles are media, not decoration:
+  right-click (or long-press once the virtual grid takes over) opens the same
+  `GlassContextMenu` as the Photos and album grids — enter multi-select,
+  favorite/unfavorite, add to album, move to trash — rendered into the search
+  page's own overlay, so a preview never becomes a corner of the app where a
+  photo cannot be acted on.
 - The date range remains the first upper-left row below the header. The library
   overview starts hidden even when the grid is at its first image; an additional
   upward scroll at that edge (or a touch pull-down) reveals it below the date,

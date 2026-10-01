@@ -629,20 +629,29 @@
         "src/ui/media_grid.rs",
         "i18n/*.json（若新增文案）"
       ],
+      landed:
+        "P1-15 已落盘（2026-10-02），按草案 1→3 的顺序做：先把回调接实，再开菜单，最后补宿主。search_page.rs 的 build_result_section() 改用已存在的 MediaGrid::new_for_album_with_context_menu()（没有新网格 API），on_add_to_album 交给共享的 album_picker::AlbumPickerDialog::present（与照片页同一流程，对话框自己负责写入与缩略图失效），on_set_favorite 走 DbCommand::SetFavorite 并在成功后把标志写回 image_list/video_list 两个预览 ListStore 与 detail_grids，on_query_favorite_state 真查 MediaRepository::favorite_state，所以菜单给的是「收藏」还是「取消收藏」取决于选中行的实际状态。菜单宿主是 search-page.blp 新增的 Gtk.Overlay search_overlay（包住原 search_state_stack），GlassContextMenu 运行时 add_overlay 挂进去——没有宿主的网格是静默丢掉菜单的，所以这一层是必需而不是装饰。\n\n偏差与边界：草案 4 的分区 header 入口按钮没有做，命名图里那枚提案热点已删除——P0-3 刚按库主决定撤掉照片页与相册页的常驻入口、把右键定为主要路径，分区再放一枚就是当场把那条决定推翻。长按回退也没有补到旧 FlowBox 网格：草案自己记过这笔（P0-3 期间试过，因 enable_context_menu: false 成为不可达代码而回退），现在菜单虽然可达，旧网格仍然只有右键一条路，这一点写进了命名图的 glass-context-menu 条目。写入后清选中（apply_favorite_flags 之后 clear_selection），否则菜单关掉、瓦片还亮着，读起来像动作没完成。tools/assert-at-spi.py 的搜索分区可达性检查没有加：它需要 Flatpak 运行时才能跑，本机无法验证，留一条没跑过的探针比不加更糟。",
+      files: [
+        "src/ui/search_page.rs",
+        "src/ui/search_page/tests.rs",
+        "data/ui/search-page.blp",
+        "src/ui/media_grid.rs",
+        "docs/modules/browsing.md",
+        "docs/modules/ui-design.md"
+      ],
       tests: [
-        "cargo test --test ui_search_page（分区瓦片能产生非空 selected_ids()）",
-        "cargo test ui::media_grid",
-        "tools/assert-at-spi.py 增加搜索分区可达性检查"
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::search_page（新增两条：分区网格的菜单宿主就是页面 overlay 且进入多选后 selected_ids() 非空；收藏状态来自数据库而不是 default，并且写回会落到预览 ListStore）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ui_search_page --test ui_media_grid_source_structure"
       ],
       docs: [
-        "docs/modules/browsing.md（把「legacy FlowBox grid has neither door」改成已修复或明确契约）",
+        "docs/modules/browsing.md（「legacy FlowBox grid has neither door」已改成落盘契约）",
         "docs/modules/ui-design.md（搜索分区行为）",
         "docs/ui-naming-reference/index.html（search-results-box 与 image-results 的现状描述）"
       ],
       risk:
         "在分区里开多选会让「点击=打开查看器」的语义在一个页面内分裂成两种（分区 vs 完整结果页）；若两套网格行为不一致，用户学到的是错误规律。落点顺序必须是回调→菜单→入口，不能反过来。",
       demo:
-        "开启芯片后，图片分区 header 右端出现一枚与照片页同款的「选择」入口（search-section-select-mode-button-proposal），点它即进入多选、瓦片可勾选。关闭＝回到现状：分区里无论如何都选不中。真实落盘还需要先把加入相册/收藏两个空闭包接实。"
+        "常态即已落盘行为：切到搜索屏搜出结果后，图片/视频分区的瓦片可以进入多选并勾选（原型用 data-act=enter-multi 代表右键菜单里的同一项）。提案芯片不再改动画面；草案里那枚 header 常驻「选择」入口没有落盘，相关热点已从命名图移除。"
     },
     {
       id: "p2-1",

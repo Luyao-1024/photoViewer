@@ -223,3 +223,95 @@ fn a_settled_query_never_paints_the_busy_row() {
         "the settled query must retire its own busy token"
     );
 }
+
+/// The preview sections used to be the one media list in the app with no way to
+/// act on a photo: the grid was built with the context menu switched off and
+/// its favorite/add-to-album callbacks were empty closures.
+#[gtk::test]
+fn the_preview_sections_open_the_same_batch_door_as_albums() {
+    let _ = gtk::init();
+    let page = search_page();
+    page.imp().search_entry.get().set_text("cat");
+    page.replace_results(vec![media_item(701)], Vec::new());
+
+    let grid = page
+        .imp()
+        .image_grid
+        .borrow()
+        .clone()
+        .expect("a hit should build the image section grid");
+    assert_eq!(
+        grid.context_menu_overlay_for_tests()
+            .map(|overlay| overlay.upcast::<gtk::Widget>()),
+        Some(page.imp().search_overlay.get().upcast::<gtk::Widget>()),
+        "the section menu must render into the page overlay, not disappear"
+    );
+
+    grid.set_multi_select_mode(true);
+    grid.select_ids(&[MediaId::new(701)]);
+    assert_eq!(
+        grid.selected_ids(),
+        vec![MediaId::new(701)],
+        "entering multi-select from a section must actually select the tile"
+    );
+}
+
+#[gtk::test]
+fn the_favorite_menu_items_ask_the_database_instead_of_defaulting() {
+    let _ = gtk::init();
+    let dir = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("search-fav.db")).unwrap();
+    let rows = crate::core::db::upsert_media_items_batch(
+        &pool,
+        &[crate::core::NewMediaItem {
+            uri: "file:///tmp/702.jpg".into(),
+            path: PathBuf::from("/tmp/702.jpg"),
+            folder_path: PathBuf::from("/tmp"),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(1),
+            height: Some(1),
+            video_duration_secs: None,
+            taken_at: Some(Utc::now()),
+            file_mtime: Utc::now(),
+            file_size: 1,
+            blake3_hash: "h702".into(),
+        }],
+    )
+    .unwrap();
+    let id = MediaId::new(rows[0].id);
+    let page = SearchPage::new(pool.clone(), loader_for(pool.clone()));
+    page.replace_results(vec![rows[0].clone()], Vec::new());
+
+    let state = page.favorite_state_for_ids(&[id]);
+    assert!(
+        state.can_favorite && !state.can_unfavorite,
+        "an unfiled photo should offer 收藏 only, got {state:?}"
+    );
+
+    crate::core::repository::MediaRepository::new(pool)
+        .set_favorite(&[id], true)
+        .unwrap();
+    let state = page.favorite_state_for_ids(&[id]);
+    assert!(
+        state.can_unfavorite && !state.can_favorite,
+        "the menu must follow the written state, got {state:?}"
+    );
+
+    page.apply_favorite_flags(&[id], false);
+    let list = page
+        .imp()
+        .image_list
+        .borrow()
+        .clone()
+        .expect("the image section should own a result list");
+    let stored = list
+        .item(0)
+        .and_downcast::<glib::BoxedAnyObject>()
+        .expect("list items are boxed media rows");
+    assert!(
+        !stored.borrow::<MediaItem>().is_favorite,
+        "a written favorite has to reach the tile, not just the database"
+    );
+}

@@ -75,35 +75,44 @@ template $SearchPage : Adw.NavigationPage {
         }
       }
 
-      Gtk.Stack search_state_stack {
+      // Overlay host for the result sections' right-click menu. GlassContextMenu
+      // renders into a page-level Gtk.Overlay (same contract as photos-page's
+      // grid_overlay), so the menu is not clipped by the scrolled grid it was
+      // opened from.
+      Gtk.Overlay search_overlay {
         vexpand: true;
         hexpand: true;
-        // The result grid and the placeholder pages want very different sizes;
-        // a homogeneous stack would let whichever page is hidden set the height.
-        hhomogeneous: false;
-        vhomogeneous: false;
-        transition-type: crossfade;
-        transition-duration: 200;
 
-        Gtk.Box search_results_box {
-          orientation: vertical;
-          spacing: 12;
+        child: Gtk.Stack search_state_stack {
+          vexpand: true;
           hexpand: true;
+          // The result grid and the placeholder pages want very different sizes;
+          // a homogeneous stack would let whichever page is hidden set the height.
+          hhomogeneous: false;
+          vhomogeneous: false;
+          transition-type: crossfade;
+          transition-duration: 200;
 
-          Gtk.Box image_results_box {
+          Gtk.Box search_results_box {
             orientation: vertical;
-            spacing: 8;
+            spacing: 12;
             hexpand: true;
-            css-classes: ["search-results-section"];
-          }
 
-          Gtk.Box video_results_box {
-            orientation: vertical;
-            spacing: 8;
-            hexpand: true;
-            css-classes: ["search-results-section"];
+            Gtk.Box image_results_box {
+              orientation: vertical;
+              spacing: 8;
+              hexpand: true;
+              css-classes: ["search-results-section"];
+            }
+
+            Gtk.Box video_results_box {
+              orientation: vertical;
+              spacing: 8;
+              hexpand: true;
+              css-classes: ["search-results-section"];
+            }
           }
-        }
+        };
       }
     }
   };

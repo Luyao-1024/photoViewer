@@ -696,6 +696,16 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **需同步文档**：`docs/modules/browsing.md`（当前那段「legacy FlowBox grid has neither door」需改为已修复或已明确的契约）、`docs/modules/ui-design.md`（搜索分区行为）、`docs/ui-naming-reference/index.html`（搜索分区的 `data-ui` 条目）。
 
+**实施结果**（2026-10-02 已落盘）：严格按草案定的顺序做——**先接实回调，再开菜单，最后补宿主**。
+
+1. `build_result_section()` 改用已存在的 `MediaGrid::new_for_album_with_context_menu()`，没有新增网格 API。
+2. 三个空实现换成真流程：`on_add_to_album` → 共享的 `album_picker::AlbumPickerDialog::present(&nav, pool, db_actor, loader, ids)`（与照片页同一个对话框，写入与缩略图失效由它负责）；`on_set_favorite` → `DbCommand::SetFavorite`，成功后 `apply_favorite_flags` 把标志写回 `image_list`/`video_list` 两个预览 ListStore 与 `detail_grids`，并清掉选中（菜单关掉而瓦片还亮着，读起来像动作没完成）；`on_query_favorite_state` → `MediaRepository::favorite_state(ids)`，所以菜单给「收藏」还是「取消收藏」取决于选中行的真实状态。
+3. `search-page.blp` 把原 `search_state_stack` 包进新增的 `Gtk.Overlay search_overlay`；`GlassContextMenu` 运行时 `add_overlay` 挂进去。这一层是必需而非装饰：没有宿主的网格是**静默丢掉菜单**的。
+
+偏差与边界：草案 4 的分区 header 入口按钮没有做，命名图里那枚 `search-section-select-mode-button-proposal` 热点已删除——P0-3 刚按库主决定撤掉照片页与相册页的常驻入口、把右键定为主要路径，分区再放一枚等于当场推翻那条决定。长按回退也没有补到旧 FlowBox 网格：草案自己记过这笔（P0-3 试过，因 `enable_context_menu: false` 成为不可达代码而回退），现在菜单虽可达，旧网格仍只有右键一条路，这一点写进了 `glass-context-menu` 命名条目与 `browsing.md`。`tools/assert-at-spi.py` 的搜索分区可达性检查**没有加**：它要 Flatpak 运行时才能执行，本机跑不了，留一条没跑过的探针比不加更糟；同一契约由进程内 GTK 测试守住。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::search_page` 新增两条——`the_preview_sections_open_the_same_batch_door_as_albums`（分区网格的菜单宿主就是页面的 `search_overlay`，且进入多选后 `selected_ids()` 非空）、`the_favorite_menu_items_ask_the_database_instead_of_defaulting`（未收藏的行只给 `can_favorite`，写进库后翻成 `can_unfavorite`，`apply_favorite_flags` 的写回落到预览 ListStore）。为此 `MediaGrid` 增加 `context_menu_overlay_for_tests()` 读取器：网格是否带菜单此前没有对外可查的口径。
+
 ---
 
 ## P2 检视项（简表，实施时并入对应批次）

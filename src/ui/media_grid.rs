@@ -550,6 +550,14 @@ impl MediaGrid {
         *self.imp().context_menu_overlay.borrow_mut() = overlay.cloned();
     }
 
+    /// Which overlay the right-click menu renders into. A grid only has one
+    /// when it was built with the menu enabled, so this doubles as the
+    /// "does this list have a batch door" check for page tests.
+    #[doc(hidden)]
+    pub fn context_menu_overlay_for_tests(&self) -> Option<gtk::Overlay> {
+        self.imp().context_menu_overlay.borrow().clone()
+    }
+
     /// Build a MediaGrid that immediately renders `(media_list, mode)`.
     /// `on_activate` fires with the activated photo's stable media id when
     /// the user activates a photo (click without modifier).

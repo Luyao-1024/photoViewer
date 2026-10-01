@@ -399,12 +399,20 @@ canonical live ordering, not from the current GTK seed or ready range.
 realized factory cells. The album detail page applies the same rule to its own
 album query (`ALBUM_SELECT_ALL_LIMIT`).
 
-The legacy FlowBox grid has neither door: the search result sections build it
-with `enable_context_menu: false` (`search_page.rs` `build_result_section`), so
-those tiles offer no right-click menu, no long-press menu, and no way into
-multi-select. Closing that gap needs an overlay host on the search page plus real
-`on_add_to_album`/`on_set_favorite` callbacks there — tracked in the UX backlog,
-not a silent exception.
+The legacy FlowBox grid carries the same two doors as the virtual grids. The
+search result sections build it with `MediaGrid::new_for_album_with_context_menu`
+(`search_page.rs` `build_result_section`) and hand it real callbacks —
+`on_add_to_album` opens the shared `AlbumPickerDialog`, `on_set_favorite` writes
+through `DbCommand::SetFavorite` and pushes the result back into both preview
+lists and the full-results grids, `on_query_favorite_state` asks
+`MediaRepository::favorite_state` so the menu offers 收藏 or 取消收藏 according to
+the rows actually selected. The menu renders into the page's own
+`Gtk.Overlay search_overlay` (`search-page.blp`), which is why that overlay
+exists; a grid without an overlay host silently drops the menu rather than
+showing it clipped. Enabling the menu without the callbacks would have opened a
+door onto no-ops, which is the combination this rule exists to prevent:
+`the_preview_sections_open_the_same_batch_door_as_albums` and
+`the_favorite_menu_items_ask_the_database_instead_of_defaulting` pin both halves.
 
 Photo grid right-click actions use the custom overlay `GlassContextMenu` rather
 than `GtkPopover`, so they render through the same page-overlay path as the

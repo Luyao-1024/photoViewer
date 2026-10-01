@@ -20,6 +20,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
@@ -83,6 +84,8 @@ mod imp {
         pub search_busy_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub search_spinner: TemplateChild<gtk::Spinner>,
+        #[template_child]
+        pub search_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub search_state_stack: TemplateChild<gtk::Stack>,
         #[template_child]
@@ -397,20 +400,49 @@ impl SearchPage {
                 }
             })
         };
-        let grid = MediaGrid::new_for_album(
+        let on_add_to_album: Rc<dyn Fn(Vec<MediaId>)> = {
+            let weak = self.downgrade();
+            Rc::new(move |ids| {
+                if let Some(this) = weak.upgrade() {
+                    this.open_album_picker_for_ids(ids);
+                }
+            })
+        };
+        let on_set_favorite: Rc<dyn Fn(Vec<MediaId>, bool)> = {
+            let weak = self.downgrade();
+            Rc::new(move |ids, is_favorite| {
+                if let Some(this) = weak.upgrade() {
+                    this.set_favorite_for_ids(ids, is_favorite);
+                }
+            })
+        };
+        let on_query_favorite_state: Rc<dyn Fn(Vec<MediaId>) -> FavoriteMenuState> = {
+            let weak = self.downgrade();
+            Rc::new(move |ids| {
+                weak.upgrade()
+                    .map(|this| this.favorite_state_for_ids(&ids))
+                    .unwrap_or_default()
+            })
+        };
+        // The preview sections are the last media list in the app without a
+        // batch door, so they get the same right-click menu as albums - with
+        // real callbacks, because a menu whose actions do nothing is worse than
+        // no menu.
+        let grid = MediaGrid::new_for_album_with_context_menu(
             media_list,
             GroupBy::Year,
             loader,
             MediaGridCallbacks {
                 on_activate,
                 on_background_changed: Rc::new(|| {}),
-                on_add_to_album: Rc::new(|_| {}),
+                on_add_to_album,
                 on_move_to_trash,
-                on_set_favorite: Rc::new(|_, _| {}),
-                on_query_favorite_state: Rc::new(|_| FavoriteMenuState::default()),
+                on_set_favorite,
+                on_query_favorite_state,
                 on_set_album_cover: None,
             },
         );
+        grid.set_context_menu_overlay(Some(&self.imp().search_overlay.get()));
         grid.set_flat_sections(true);
         grid.set_content_sized_scroll(560);
         section.append(&grid);
@@ -856,6 +888,109 @@ impl SearchPage {
             },
         );
         nav.push(&viewer);
+    }
+
+    /// The preview sections reach the shared album-picker flow the same way the
+    /// Photos page does: hand the picked ids to the dialog, which owns the
+    /// write and the resulting thumbnail invalidation.
+    fn open_album_picker_for_ids(&self, ids: Vec<MediaId>) {
+        let imp = self.imp();
+        let nav = imp.nav_view.borrow().clone();
+        let pool = imp.pool.borrow().clone();
+        let db_actor = imp.db_actor.borrow().clone();
+        let loader = imp.loader.borrow().clone();
+        let (Some(nav), Some(pool), Some(db_actor), Some(loader)) = (nav, pool, db_actor, loader)
+        else {
+            return;
+        };
+        let raw_ids: Vec<i64> = ids.into_iter().map(MediaId::get).collect();
+        album_picker::AlbumPickerDialog::present(&nav, pool, db_actor, loader, raw_ids);
+    }
+
+    fn favorite_state_for_ids(&self, ids: &[MediaId]) -> FavoriteMenuState {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return FavoriteMenuState::default();
+        };
+        if ids.is_empty() {
+            return FavoriteMenuState::default();
+        }
+        let summary = MediaRepository::new(pool)
+            .favorite_state(ids)
+            .unwrap_or_default();
+        FavoriteMenuState {
+            can_favorite: summary.has_unfavorite,
+            can_unfavorite: summary.has_favorite,
+        }
+    }
+
+    fn set_favorite_for_ids(&self, ids: Vec<MediaId>, is_favorite: bool) {
+        let Some(db_actor) = self.imp().db_actor.borrow().as_ref().cloned() else {
+            return;
+        };
+        if ids.is_empty() {
+            return;
+        }
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = db_actor
+                .execute(DbCommand::SetFavorite {
+                    ids: ids.clone(),
+                    is_favorite,
+                })
+                .await;
+            match result {
+                Ok(crate::core::DbCommandResult::MediaItems(items)) => {
+                    if let Some(this) = weak.upgrade() {
+                        let changed: Vec<MediaId> =
+                            items.iter().map(|item| MediaId::from(item.id)).collect();
+                        this.apply_favorite_flags(&changed, is_favorite);
+                    }
+                }
+                Ok(other) => tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "search favorite batch returned unexpected result: {other:?}"
+                ),
+                Err(error) => tracing::warn!(
+                    target: crate::core::log_targets::BROWSING,
+                    "search favorite batch failed: {error}"
+                ),
+            }
+        });
+    }
+
+    /// Push a written favorite flag into both preview lists and the
+    /// full-results grids, then drop the selection. Without the clear, the
+    /// tiles stay selected after the menu closes and read as an action that
+    /// never finished.
+    fn apply_favorite_flags(&self, ids: &[MediaId], is_favorite: bool) {
+        let wanted: HashSet<MediaId> = ids.iter().copied().collect();
+        let preview_lists = [
+            self.imp().image_list.borrow().clone(),
+            self.imp().video_list.borrow().clone(),
+        ];
+        for list in preview_lists.into_iter().flatten() {
+            for i in 0..list.n_items() {
+                let Some(object) = list.item(i).and_downcast::<glib::BoxedAnyObject>() else {
+                    continue;
+                };
+                let mut item = object.borrow::<MediaItem>().clone();
+                if wanted.contains(&MediaId::from(item.id)) {
+                    item.is_favorite = is_favorite;
+                    list.splice(i, 1, &[glib::BoxedAnyObject::new(item)]);
+                }
+            }
+        }
+        let detail_grids = self.imp().detail_grids.borrow().clone();
+        for grid in detail_grids.iter() {
+            grid.update_favorite_flags(ids, is_favorite);
+        }
+        let preview_grids = [
+            self.imp().image_grid.borrow().clone(),
+            self.imp().video_grid.borrow().clone(),
+        ];
+        for grid in preview_grids.into_iter().flatten() {
+            grid.clear_selection();
+        }
     }
 
     fn delete_to_trash_for_ids(&self, ids: Vec<MediaId>) {
