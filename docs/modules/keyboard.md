@@ -18,7 +18,9 @@ and editor crop interactions.
 | `src/ui/keyboard/action.rs` | Shared `KeyboardAction` and `KeyboardResult` vocabulary |
 | `src/ui/keyboard/binding.rs` | `KeyCombo`, `KeyboardScope`, and default binding lookup |
 | `src/ui/keyboard/router.rs` | Capture-phase `EventControllerKey` installation and text-input guard |
+| `src/ui/keyboard/shortcuts_window.rs` | `GROUPS` reference table, `GtkShortcutsWindow`, and tooltip key hints |
 | `src/ui/window.rs` | Active-page scope resolution and global/window dispatch |
+| `src/ui/window/settings.rs` | The 「键盘」 settings group that opens the reference |
 | `src/ui/viewer_page.rs` | Viewer action handler for navigation, close, playback, and chrome shortcuts |
 
 ## Routing Contract
@@ -52,6 +54,7 @@ that focused tile without replacing the model.
 | Global | `Alt+Left` | `NavigateBack` |
 | Global | `Ctrl+F` | `Search` |
 | Global | `Ctrl+,` | `OpenSettings` |
+| Global | `F1` / `Ctrl+/` / `Ctrl+?` | `ShowShortcuts` |
 | Browsing | `Up` / `Down` / `Left` / `Right` | `BrowseUp` / `BrowseDown` / `BrowseLeft` / `BrowseRight` |
 | Browsing | `Enter` | `ActivateFocused` |
 | Browsing | `Space` | `ToggleSelection` |
@@ -80,3 +83,44 @@ widget-specific handler forwards an action.
 
 `Ctrl+F` opens Search from browsing pages and focuses an already-visible
 `SearchPage` instead of pushing a duplicate page.
+
+## Shortcut Discoverability
+
+`shortcuts_window::GROUPS` is the single published list of bindings. It renders
+as a modal `GtkShortcutsWindow` (`F1`, `Ctrl+/`, or the 「键盘」 row in Settings;
+`Ctrl+?` is accepted too because `/` needs Shift on some layouts), and it feeds
+the key hints appended to button tooltips through
+`tooltip_with_key(label_key, action)`.
+
+Two rules follow from that:
+
+- **Adding, renaming, or removing a binding means adding a `GROUPS` row.**
+  `shortcuts_window::tests` asserts both directions: every declared accelerator
+  really resolves to the action it claims, and every action the router can reach
+  in a scope has a row (Browsing and Viewer rows may fall through to the Global
+  table). A binding without a row, or a row without a binding, fails the test.
+- **`GtkShortcutsShortcut` takes one accelerator per row**, so a dual-convention
+  binding such as `F1` / `Ctrl+/` is listed twice.
+
+Implementation notes worth keeping:
+
+- The window is built from a generated Builder XML skeleton rather than
+  `ShortcutsWindow::add_section`, because that API needs the `v4_14` gtk4
+  feature while this crate pins `v4_8`. Translated strings are attached as
+  properties, never interpolated into the XML, so `&` and `<` in a catalog
+  cannot break the parse.
+- The window is rebuilt on every open so a runtime locale switch cannot leave a
+  stale translated copy behind.
+- `display_accelerator` spells keys the way the reference window does (letters
+  capitalised, `Shift+R` kept explicit) but keeps its own glyphs for
+  non-printables, since GTK translates `Up` to `上` and that reads badly in a
+  tooltip. Folding Shift away used to render rotate-left as `R`, the glyph
+  rotate-right already owned, so both actions advertised the same hint.
+- `ViewerRotateLeft` is declared `<Shift>R` and `binding.rs` matches
+  `Key::R | Key::r` with Shift, because `gtk_accelerator_parse("<Shift>R")`
+  reports lowercase `r` plus the Shift modifier.
+- `Restore` has no binding (the trash toolbar is its only entry point), so
+  `accelerator_for` returns `None` and its tooltip degrades to a bare label.
+- Ctrl+wheel zoom is **not** bound; it remains proposal P1-8 in
+  `docs/ux-improvement-backlog.md`, and the naming map keeps that row hidden
+  until it lands.

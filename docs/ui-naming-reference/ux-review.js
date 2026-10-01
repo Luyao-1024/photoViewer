@@ -199,7 +199,9 @@
       risk:
         "F1 当前未被占用（binding.rs 确认）；Ctrl+/ 在部分布局需要 Shift，考虑同时接受 Ctrl+question。",
       demo:
-        "开启后在交互原型按 F1 或 Ctrl+/ 打开快捷键窗口（设置页也有一行入口）；同时查看器按钮的 tooltip 会追加键名，例如「放大 (+)」。关闭时按 F1 无反应、tooltip 只有动作名。"
+        "本项已落盘，所以窗口和设置页那一行是常态 chrome：按 F1 或 Ctrl+/（Ctrl+? 同样有效）随时打开，查看器按钮 tooltip 常驻键名后缀「放大 (+)」。想对比落盘前，用工具条「演示态 → 落盘前：无快捷键入口」——它会隐藏设置行、摘掉 tooltip 后缀，并让 F1 只弹一条「应用内没有任何快捷键发现入口」。提案芯片本身不改变画面，因为已落盘的入口不该被开关削弱。",
+      landed:
+        "B4 已落盘。src/ui/keyboard/shortcuts_window.rs 的 GROUPS 是三 section 唯一的真源：28 行（全局 6 / 浏览与选择 8 / 图片查看 14），KeyboardScope 逐组绑定；tests.rs 双向断言——每条声明的 accelerator 经 gtk::accelerator_parse 后真的解析到它声称的动作，且路由器在该 scope 可达的每个动作都有行（Browsing/Viewer 允许落到 Global 表兜底）。五处偏差：(1) 改用 Builder XML 骨架而非 ShortcutsWindow::add_section/add_group/add_shortcut，那套 API 需要 gtk4 的 v4_14，本项目锁 v4_8，升上去会新增约 52 条弃用告警并被 CI 的 clippy -D warnings 拒掉；翻译串只作属性写入，不进 XML，含 & 或 < 的文案不会破坏解析。(2) 草案的 tr_with_key() 落地为 tooltip_with_key()，键名从同一张 GROUPS 派生而不是新增 *.tooltip.key 键，所以 tooltip 与窗口结构上不可能不一致；没有键位的动作（Restore）自动退回纯标签。(3) 向左旋转草案写 «R»，实测漂移测试直接红：gtk_accelerator_parse(\"<Shift>R\") 报成小写 r + Shift 位，binding.rs 的匹配臂因此同时接受 Key::R 与 Key::r，声明改为 \"<Shift>R\"。(4) GtkShortcutsShortcut 一行一个 accelerator，所以 F1 与 Ctrl+/ 是两行而不是草案里的一行。(5) 草案测试项 cargo test --test e2e_viewer 未做，覆盖放在 ui::keyboard::shortcuts_window::tests（含打开即断言 modal/transient/view-name/行高）。另外表内的 Ctrl+滚轮 行不属于本项：查看器至今没有任何 scroll 控制器（P1-8），已改挂 .pv-p1-8 标记，只在开启 P1-8 时出现，避免冒充已落盘。设置页新增「键盘」分组（settings.rs:523-545），点击先关设置弹窗再开窗，保证同一时刻只有一个模态窗。命名图侧：设置行、窗口、tooltip 提示三个热点已转为常态 data-ui 条目（shortcut-reference-group / shortcut-reference-window / shortcut-group-* / tooltip-key-hint）。"
     },
     {
       id: "p0-5",
@@ -934,11 +936,18 @@
     demoBtn("进入编辑（P1-9）", function () { needScreen("viewer", function () { PV.toggleEditor(); }); });
     demoBtn("标注已改动（脏）", function () { PV.setEditorDirty(); });
     demoBtn("快捷键窗口（P0-4）", function () { PV.openShortcuts(true); });
+    demoBtn("落盘前：无快捷键入口（P0-4）", function () {
+      needScreen("settings");
+      body.dataset.pvDemo = "shortcut-blind";
+      PV.applyLocale();
+      syncBar();
+      PV.toast("落盘前对照：设置里没有「键盘」分组，查看器 tooltip 只剩动作名，按 F1 无反应。清除演示态即回到已落盘状态。", { kind: "info", ms: 5200 });
+    });
     demoBtn("相册选择器报错（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-error"; syncBar(); });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
-    demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; syncBar(); });
+    demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); syncBar(); });
     row4.appendChild(gDemo);
 
     var gOut = group("输出");

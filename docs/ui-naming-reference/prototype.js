@@ -546,7 +546,21 @@
       "album.no_albums_yet": "还没有相册",
       // 提案新增：P1-6 选择计数；P0-5 字段切换（现状硬编码在 search-page.blp:36-47）。
       "photos.selection.count": "已选择 {n} 项", "photos.selection.limit": "（已达上限）",
-      "search.field.all": "全部", "search.field.name": "文件名", "search.field.date": "日期"
+      "search.field.all": "全部", "search.field.name": "文件名", "search.field.date": "日期",
+      // P0-4 已落盘：以下 34 个键来自仓库 i18n/zh.json，快捷键表与设置行直接引用。
+      "keyboard.window.title": "键盘快捷键", "keyboard.group.global": "全局", "keyboard.group.browsing": "浏览与选择",
+      "keyboard.group.viewer": "图片查看", "keyboard.show_shortcuts": "显示键盘快捷键", "keyboard.cancel_or_close": "取消或关闭",
+      "keyboard.navigate_back": "返回上一级", "keyboard.search": "搜索照片", "keyboard.settings": "打开设置",
+      "keyboard.move_focus_up": "焦点上移", "keyboard.move_focus_down": "焦点下移", "keyboard.move_focus_left": "焦点左移",
+      "keyboard.move_focus_right": "焦点右移", "keyboard.open_focused": "打开焦点项",
+      "keyboard.toggle_selection": "选中或取消当前项", "keyboard.select_all": "全选", "keyboard.move_to_trash": "移入回收站",
+      "keyboard.previous_media": "上一张", "keyboard.next_media": "下一张", "keyboard.close_viewer": "关闭查看器",
+      "keyboard.toggle_playback": "播放或暂停", "keyboard.zoom_in": "放大", "keyboard.zoom_out": "缩小",
+      "keyboard.zoom_reset": "恢复原始大小", "keyboard.rotate_right": "向右旋转", "keyboard.rotate_left": "向左旋转",
+      "keyboard.fullscreen_preview": "全屏预览", "keyboard.toggle_details": "显示或隐藏详细信息",
+      "keyboard.toggle_edit": "打开或关闭编辑面板", "keyboard.toggle_favorite": "标记或取消收藏", "setting.section.keyboard": "键盘",
+      "setting.section.keyboard_description": "所有快捷键都可以直接用键盘完成当前页面的操作。", "setting.keyboard.reference": "查看快捷键列表",
+      "setting.keyboard.reference_description": "随时按 F1 或 Ctrl+/ 打开"
     },
     "en": {
       "search.title": "Search", "search.placeholder": "Search by file name or shooting date",
@@ -567,7 +581,26 @@
       "album.animated.name": "Animated", "album.hdr.name": "HDR", "album.favorites.name": "Favorites",
       "album.no_albums_yet": "No Albums Yet",
       "photos.selection.count": "{n} selected", "photos.selection.limit": " (limit reached)",
-      "search.field.all": "All", "search.field.name": "File name", "search.field.date": "Date"
+      "search.field.all": "All", "search.field.name": "File name", "search.field.date": "Date",
+      // P0-4 已落盘：以下 34 个键来自仓库 i18n/en.json，快捷键表与设置行直接引用。
+      "keyboard.window.title": "Keyboard Shortcuts", "keyboard.group.global": "Global",
+      "keyboard.group.browsing": "Browsing & Selection", "keyboard.group.viewer": "Photo Viewer",
+      "keyboard.show_shortcuts": "Show keyboard shortcuts", "keyboard.cancel_or_close": "Cancel or close",
+      "keyboard.navigate_back": "Go back", "keyboard.search": "Search photos",
+      "keyboard.settings": "Open Settings", "keyboard.move_focus_up": "Move focus up",
+      "keyboard.move_focus_down": "Move focus down", "keyboard.move_focus_left": "Move focus left",
+      "keyboard.move_focus_right": "Move focus right", "keyboard.open_focused": "Open the focused item",
+      "keyboard.toggle_selection": "Select or deselect the current item", "keyboard.select_all": "Select all",
+      "keyboard.move_to_trash": "Move to Trash", "keyboard.previous_media": "Previous photo",
+      "keyboard.next_media": "Next photo", "keyboard.close_viewer": "Close the viewer",
+      "keyboard.toggle_playback": "Play or pause", "keyboard.zoom_in": "Zoom in", "keyboard.zoom_out": "Zoom out",
+      "keyboard.zoom_reset": "Reset zoom", "keyboard.rotate_right": "Rotate right",
+      "keyboard.rotate_left": "Rotate left", "keyboard.fullscreen_preview": "Fullscreen preview",
+      "keyboard.toggle_details": "Show or hide details", "keyboard.toggle_edit": "Show or hide the edit panel",
+      "keyboard.toggle_favorite": "Toggle favorite", "setting.section.keyboard": "Keyboard",
+      "setting.section.keyboard_description": "Every action on the current page can also be done with the keyboard.",
+      "setting.keyboard.reference": "View the shortcut list",
+      "setting.keyboard.reference_description": "Press F1 or Ctrl+/ any time"
     }
   };
   function locale() { return body.dataset.pvLocale || "zh"; }
@@ -604,16 +637,24 @@
       el.textContent = tr(key);
     });
     // 查看器 tooltip 在真实代码里已经过 tr()（viewer_page.rs:485），所以两种语言都要翻；
-    // 快捷键后缀由 P0-4 追加。baseTitle 只认一次，保证本函数可重复执行。
+    // 键名后缀是 P0-4 落盘行为（tooltip_with_key），常态存在，只在「落盘前」演示态里摘掉。
+    // baseTitle 只认一次，保证本函数可重复执行。
     qa("[data-i18n-title], [data-key]").forEach(function (el) {
       if (el.dataset.baseTitle === undefined) el.dataset.baseTitle = el.getAttribute("title") || "";
       var base = el.dataset.i18nTitle ? tr(el.dataset.i18nTitle) : el.dataset.baseTitle;
       if (!base) return;
       var key = el.dataset.key;
-      el.setAttribute("title", key && enabled("p0-4") ? base + " (" + key + ")" : base);
+      var blind = body.dataset.pvDemo === "shortcut-blind";
+      el.setAttribute("title", key && !blind ? base + " (" + key + ")" : base);
     });
     var input = q("#search-input");
     if (input) input.placeholder = tr("search.placeholder");
+    // 快捷键表里的字形来自 gtk_accelerator_get_label，方向键与空格跟随界面语言，
+    // 所以中文「上/下/左/右/空格」、英文 Up/Down/Left/Right/Space。
+    qa("kbd[data-kbd-en]").forEach(function (el) {
+      if (el.dataset.baseKbd === undefined) el.dataset.baseKbd = el.textContent;
+      el.textContent = locale() === "en" ? el.dataset.kbdEn : el.dataset.baseKbd;
+    });
     updateCount();
     // P2-4 的 accessible name 取自 tooltip 文案，语言一变就要重算。
     if (enabled("p2-4")) applyIconLabels();
@@ -897,8 +938,10 @@
   function openShortcuts(open) {
     var win = q("#shortcuts-window");
     if (!win) return;
-    if (!enabled("p0-4")) {
-      toast("P0-4 未开启：应用内没有任何快捷键发现入口", { kind: "error", ms: 3200 });
+    // P0-4 已落盘，所以窗口任何时候都能打开；只有「落盘前」演示态才模拟
+    // 当时应用内没有任何快捷键入口的情况。
+    if (body.dataset.pvDemo === "shortcut-blind") {
+      toast("落盘前对照：应用内没有任何快捷键发现入口，F1 无反应（P0-4 已落盘，清除演示态即可打开）", { kind: "error", ms: 4200 });
       return;
     }
     win.classList.toggle("is-open", open !== false);

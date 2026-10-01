@@ -319,7 +319,7 @@
           <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch" data-act="toggle-material"></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；装饰底色逐渐透明，模糊平滑减弱；菜单与文字面板保留阅读底色，焦点轮廓不受透明度影响。评审时把它拉到 100 再看 P1-13 的文本对比。"><span>透明度</span><span class="pref-scale-cell"><input class="range" type="range" min="0" max="100" value="0" id="transparency-range" aria-label="玻璃透明度"></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="reduce-motion-row-proposal" data-name="提案 · 减少动画" data-impl="提案：读取 GtkSettings:gtk-enable-animations + grid_css 尾块 REDUCE_MOTION_CSS" data-props="P1-14：全项目无任何 gtk::Settings 读取，系统「减少动画」对本应用无效。这里用 GTK 原生通路而不是 @media（grid_css.rs:66 禁止）。" data-source="方案 P1-14 · src/ui/grid_css.rs:71-93"><span class="pv-tag">P1-14</span><span>减少动画</span><span class="switch" data-act="toggle-motion"></span></div>
-          <div class="pref-row pv pv-p0-4 hotspot" tabindex="0" data-ui="shortcuts-row-proposal" data-name="提案 · 键盘快捷键入口" data-impl="提案：Adw.ActionRow「键盘快捷键」→ gtk::ShortcutsWindow（transient + modal）" data-props="P0-4：全项目无 GtkShortcutsWindow、无 Ctrl+/。快捷键窗口也可用 F1 或 Ctrl+/ 打开；三个 section 与 binding.rs 的 global/browsing/viewer 三张表一一对应，并加集合相等断言防漂移。" data-source="方案 P0-4 · src/ui/keyboard/binding.rs:75-189"><span class="pv-tag">P0-4</span><span>键盘快捷键</span><button class="button" data-act="open-shortcuts">打开</button></div>
+          <div class="pref-row hotspot" tabindex="0" data-ui="shortcut-reference-group" data-name="快捷键设置组" data-impl="Adw.PreferencesGroup「键盘」+ Adw.ActionRow → MainWindow::show_shortcuts_reference()" data-props="P0-4 已落盘：键位表从只能读 docs 变成应用内可发现。整行 activatable，右侧 go-next-symbolic；点击会先关闭设置弹窗再打开参考窗口，保证同一时刻只有一个模态窗。行下方描述提醒「随时按 F1 或 Ctrl+/ 打开」，让入口不依赖这次点击。" data-source="src/ui/window/settings.rs:523-545 构造 · :508 插入位置（About 之前）· src/ui/window.rs:929-936"><span data-i18n="setting.keyboard.reference">查看快捷键列表</span><button class="button" data-act="open-shortcuts">打开</button></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
           <details class="sync-settings-preview">
@@ -366,38 +366,47 @@
 
 <!-- 全局子页面 / 浮层：快捷键窗口、编辑器退出确认、右键 glass 菜单、Toast。
      它们在命名总览里默认隐藏（.pv），开启对应提案后才出现。 -->
-<div class="shortcuts-window pv pv-p0-4" id="shortcuts-window" role="dialog" aria-label="键盘快捷键">
-  <div class="sc-card hotspot" tabindex="0" data-ui="shortcuts-window-proposal" data-name="提案 · GtkShortcutsWindow" data-impl="提案：gtk::ShortcutsWindow（代码构造，src/ui/keyboard/shortcuts_window.rs 新增）" data-props="P0-4：三个 section 与 binding.rs 的 global_binding / browsing_binding / viewer_binding 一一对应；F1 与 Ctrl+/ 打开；设置里同一入口；用集合相等断言防止键位表与窗口漂移。" data-source="方案 P0-4 · src/ui/keyboard/binding.rs:75-189"><span class="pv-tag">P0-4</span>
-    <div class="sc-head"><strong>键盘快捷键</strong><button class="button round bare" data-act="close-shortcuts">×</button></div>
+<div class="shortcuts-window" id="shortcuts-window" role="dialog" aria-label="键盘快捷键">
+  <div class="sc-card hotspot" tabindex="0" data-ui="shortcut-reference-window" data-name="快捷键参考窗口" data-impl="gtk::ShortcutsWindow（modal + transient_for 主窗口，560×520）由 Builder XML 骨架生成，内容取自 GROUPS 常量表" data-props="P0-4 已落盘：F1 与 Ctrl+/ 打开（Ctrl+? 同时接受，部分布局斜杠需要 Shift），设置页也有一行入口；按 Esc 关闭。用 XML 而不是 ShortcutsWindow::add_section，是因为那套 API 需要 gtk4 的 v4_14 feature，而本项目锁在 v4_8（升到 v4_14 会新增约 52 条弃用告警，CI 的 clippy -D warnings 直接红）。翻译串只作为属性写入、不进 XML，所以含 &lt; 或 &amp; 的文案不会破坏解析。窗口每次打开重建，切换语言后不会残留旧译文。表里的字形是 GTK 自己算的（gtk_accelerator_get_label）：字母一律大写、Shift 显式写出，方向键与空格跟随界面语言，所以中文下是「上/下/左/右/空格」、英文下是 Up/Down/Left/Right/Space——切换语言即可看到，这部分不受我们代码控制。" data-source="src/ui/keyboard/shortcuts_window.rs:43-90 GROUPS · :207-241 open() · :252-283 skeleton()">
+    <div class="sc-head"><strong data-i18n="keyboard.window.title">键盘快捷键</strong><button class="button round bare" data-act="close-shortcuts">×</button></div>
     <div class="sc-body">
-      <section class="sc-section"><h4>全局</h4>
-        <div class="sc-row"><span>搜索</span><kbd>Ctrl</kbd><kbd>F</kbd></div>
-        <div class="sc-row"><span>设置</span><kbd>Ctrl</kbd><kbd>,</kbd></div>
-        <div class="sc-row"><span>返回</span><kbd>Alt</kbd><kbd>←</kbd></div>
-        <div class="sc-row"><span>取消 / 关闭</span><kbd>Esc</kbd></div>
-        <div class="sc-row pv-new"><span class="pv-tag">新增</span>显示快捷键窗口<em></em><kbd>F1</kbd><kbd>Ctrl</kbd><kbd>/</kbd></div>
+      <section class="sc-section hotspot" tabindex="0" data-ui="shortcut-group-global" data-name="全局分组" data-impl="GROUPS[0]：KeyboardScope::Global → GtkShortcutsGroup" data-props="与 binding.rs 的 global_binding 对应。测试双向：每条声明的键位真的解析到它声称的动作；路由器在每个 scope 能达到的动作也都有行。加键忘加行、或加行写错键位，都会红。" data-source="src/ui/keyboard/shortcuts_window.rs:44-55 · src/ui/keyboard/binding.rs:105-112"><h4 data-i18n="keyboard.group.global">全局</h4>
+        <div class="sc-row"><span data-i18n="keyboard.show_shortcuts">显示键盘快捷键</span><kbd>F1</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.show_shortcuts">显示键盘快捷键</span><kbd>Ctrl</kbd><kbd>/</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.cancel_or_close">取消或关闭</span><kbd>Esc</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.navigate_back">返回上一级</span><kbd>Alt</kbd><kbd data-kbd-en="Left">左</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.search">搜索照片</span><kbd>Ctrl</kbd><kbd>F</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.settings">打开设置</span><kbd>Ctrl</kbd><kbd>,</kbd></div>
       </section>
-      <section class="sc-section"><h4>浏览</h4>
-        <div class="sc-row"><span>在网格中移动焦点</span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></div>
-        <div class="sc-row"><span>打开查看器</span><kbd>Return</kbd></div>
-        <div class="sc-row"><span>切换选中</span><kbd>Space</kbd></div>
-        <div class="sc-row"><span>全选</span><kbd>Ctrl</kbd><kbd>A</kbd></div>
-        <div class="sc-row"><span>移到回收站</span><kbd>Delete</kbd></div>
+      <section class="sc-section hotspot" tabindex="0" data-ui="shortcut-group-browsing" data-name="浏览与选择分组" data-impl="GROUPS[1]：KeyboardScope::Browsing → GtkShortcutsGroup" data-props="与 browsing_binding 对应。这里的方向键是「网格内移动焦点」，与查看器里的「上一张 / 下一张」同键不同作用域，所以分成两组而不是一张表。" data-source="src/ui/keyboard/shortcuts_window.rs:56-69"><h4 data-i18n="keyboard.group.browsing">浏览与选择</h4>
+        <div class="sc-row"><span data-i18n="keyboard.move_focus_up">焦点上移</span><kbd data-kbd-en="Up">上</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.move_focus_down">焦点下移</span><kbd data-kbd-en="Down">下</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.move_focus_left">焦点左移</span><kbd data-kbd-en="Left">左</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.move_focus_right">焦点右移</span><kbd data-kbd-en="Right">右</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.open_focused">打开焦点项</span><kbd>Enter</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.toggle_selection">选中或取消当前项</span><kbd data-kbd-en="Space">空格</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.select_all">全选</span><kbd>Ctrl</kbd><kbd>A</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.move_to_trash">移入回收站</span><kbd>Delete</kbd></div>
       </section>
-      <section class="sc-section"><h4>查看器与编辑</h4>
-        <div class="sc-row"><span>上一张 / 下一张</span><kbd>←</kbd><kbd>→</kbd></div>
-        <div class="sc-row"><span>放大 / 缩小 / 重置</span><kbd>+</kbd><kbd>-</kbd><kbd>0</kbd></div>
-        <div class="sc-row pv-new"><span class="pv-tag">新增</span>滚轮缩放（放大后可拖拽平移）<em></em><kbd>Ctrl</kbd>+滚轮</div>
-        <div class="sc-row"><span>向右 / 向左旋转</span><kbd>R</kbd><kbd>Shift</kbd><kbd>R</kbd></div>
-        <div class="sc-row"><span>全屏预览</span><kbd>F</kbd></div>
-        <div class="sc-row"><span>详情面板</span><kbd>I</kbd></div>
-        <div class="sc-row"><span>编辑面板</span><kbd>E</kbd></div>
-        <div class="sc-row"><span>收藏</span><kbd>H</kbd></div>
-        <div class="sc-row"><span>播放 / 暂停</span><kbd>Space</kbd></div>
-        <div class="sc-row"><span>移到回收站</span><kbd>Delete</kbd></div>
+      <section class="sc-section hotspot" tabindex="0" data-ui="shortcut-group-viewer" data-name="图片查看分组" data-impl="GROUPS[2]：KeyboardScope::Viewer → GtkShortcutsGroup" data-props="与 viewer_binding 对应。向左旋转声明为 &lt;Shift&gt;R：gtk_accelerator_parse 把大写 R 报成小写 r + Shift 位，所以 binding.rs 的匹配臂同时接受 Key::R 与 Key::r，否则窗口与路由器会各说各话。GTK 把字母键一律渲染成大写，因此向右旋转是 R、向左旋转是 Shift+R——两者不会撞成同一个字形。" data-source="src/ui/keyboard/shortcuts_window.rs:70-89 · src/ui/keyboard/binding.rs ViewerRotateLeft 臂"><h4 data-i18n="keyboard.group.viewer">图片查看</h4>
+        <div class="sc-row"><span data-i18n="keyboard.previous_media">上一张</span><kbd data-kbd-en="Left">左</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.next_media">下一张</span><kbd data-kbd-en="Right">右</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.close_viewer">关闭查看器</span><kbd>Esc</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.toggle_playback">播放或暂停</span><kbd data-kbd-en="Space">空格</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.zoom_in">放大</span><kbd>+</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.zoom_out">缩小</span><kbd>-</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.zoom_reset">恢复原始大小</span><kbd>0</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.rotate_right">向右旋转</span><kbd>R</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.rotate_left">向左旋转</span><kbd>Shift</kbd><kbd>R</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.fullscreen_preview">全屏预览</span><kbd>F</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.toggle_details">显示或隐藏详细信息</span><kbd>I</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.toggle_edit">打开或关闭编辑面板</span><kbd>E</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.toggle_favorite">标记或取消收藏</span><kbd>H</kbd></div>
+        <div class="sc-row"><span data-i18n="keyboard.move_to_trash">移入回收站</span><kbd>Delete</kbd></div>
+        <div class="sc-row pv pv-p1-8"><span>滚轮缩放（放大后可拖拽平移）</span><em></em><kbd>Ctrl</kbd>+滚轮<span class="pv-tag">P1-8</span></div>
       </section>
     </div>
-    <p class="sc-note">tooltip 同步带上键名（例：「放大 (+)」），由一个 <code>tr_with_key()</code> helper 集中拼接，避免散落。</p>
+    <p class="sc-note hotspot" tabindex="0" data-ui="tooltip-key-hint" data-name="Tooltip 键名提示" data-impl="shortcuts_window::tooltip_with_key(label_key, action) → accelerator_for() + display_accelerator()" data-props="P0-4 已落盘：查看器与导航按钮的 tooltip 追加键名，例如「放大 (+)」，键名从同一张 GROUPS 表派生，所以提示与窗口说的永远是同一个绑定。字形按用户读法走（↑ 而非 Up、Esc 而非 Escape），字母与修饰位规则与 GTK 对齐：r → R、&lt;Shift&gt;R → Shift+R。早期版本把 Shift 折进字形（向左旋转显示成 R），与向右旋转的 R 撞成同一个提示，已修正并有断言守住。没有键位的动作（Restore 只在回收站工具栏出现）自动退回纯标签，不显示空括号。" data-source="src/ui/keyboard/shortcuts_window.rs:116-122, 126-194, 196-205 · src/ui/viewer_page.rs:463-527 · src/ui/viewer/navigation.rs:390-398 · src/ui/window.rs:639">tooltip 同步带上键名（例：「放大 (+)」），由 <code>tooltip_with_key()</code> 从同一张 GROUPS 表派生，因此提示与窗口不会各说各话。</p>
   </div>
 </div>
 

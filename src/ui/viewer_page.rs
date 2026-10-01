@@ -41,6 +41,7 @@ use crate::core::sync::{CloudState, SyncStore};
 use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::cloud_badge;
 use crate::ui::editor_panel::{CropOverlayUpdate, EditorPanel};
+use crate::ui::keyboard::shortcuts_window::tooltip_with_key;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::toasts;
 use gtk4 as gtk;
@@ -462,18 +463,30 @@ impl ViewerPage {
 
     fn apply_i18n(&self) {
         let imp = self.imp();
+        // Tooltips carry their shortcut, taken from the same table the
+        // reference window renders, so the hint can never go stale.
         imp.details_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.image_details")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.image_details",
+                KeyboardAction::ViewerToggleDetails,
+            )));
         imp.fullscreen_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.fullscreen")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.fullscreen",
+                KeyboardAction::ViewerFullscreenPreview,
+            )));
         imp.delete_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.move_to_trash")));
-        imp.edit_btn
-            .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.edit")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.move_to_trash",
+                KeyboardAction::Delete,
+            )));
+        imp.edit_btn.get().set_tooltip_text(Some(&tooltip_with_key(
+            "viewer.tooltip.edit",
+            KeyboardAction::ViewerToggleEdit,
+        )));
         imp.details_close_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.details.close")));
@@ -482,19 +495,34 @@ impl ViewerPage {
             .set_label(&tr("viewer.details.title"));
         imp.zoom_in_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_in")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.zoom_in",
+                KeyboardAction::ViewerZoomIn,
+            )));
         imp.zoom_out_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_out")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.zoom_out",
+                KeyboardAction::ViewerZoomOut,
+            )));
         imp.zoom_reset_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.zoom_reset")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.zoom_reset",
+                KeyboardAction::ViewerZoomReset,
+            )));
         imp.rotate_left_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.rotate_left")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.rotate_left",
+                KeyboardAction::ViewerRotateLeft,
+            )));
         imp.rotate_right_btn
             .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.rotate_right")));
+            .set_tooltip_text(Some(&tooltip_with_key(
+                "viewer.tooltip.rotate_right",
+                KeyboardAction::ViewerRotateRight,
+            )));
         imp.motion_play_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.play_motion_photo")));

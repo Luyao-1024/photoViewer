@@ -535,6 +535,10 @@ impl MainWindow {
                 self.show_settings_dialog();
                 keyboard::KeyboardResult::Handled
             }
+            keyboard::KeyboardAction::ShowShortcuts => {
+                self.show_shortcuts_reference();
+                keyboard::KeyboardResult::Handled
+            }
             keyboard::KeyboardAction::NavigateBack | keyboard::KeyboardAction::CancelOrClose => {
                 if self.browsing_root_is_visible()
                     && self
@@ -631,9 +635,12 @@ impl MainWindow {
         trash_list.append(&trash_row);
         trash_targets.push(SidebarTarget::Trash);
 
-        self.imp()
-            .settings_button
-            .set_tooltip_text(Some(&tr("sidebar.settings")));
+        self.imp().settings_button.set_tooltip_text(Some(
+            &keyboard::shortcuts_window::tooltip_with_key(
+                "sidebar.settings",
+                keyboard::KeyboardAction::OpenSettings,
+            ),
+        ));
 
         *self.imp().targets.borrow_mut() = targets;
         *self.imp().trash_targets.borrow_mut() = trash_targets;
@@ -914,6 +921,17 @@ impl MainWindow {
     fn close_settings_dialog(&self, dialog: adw::Dialog) {
         self.close_settings_dialog_state(&dialog);
         dialog.close();
+    }
+
+    /// Present the shortcut reference, from `F1`/`Ctrl+/` or the settings row.
+    /// The reference is modal, so an open settings dialog has to step aside
+    /// rather than sit underneath it.
+    pub(crate) fn show_shortcuts_reference(&self) {
+        let dialog = self.imp().settings_dialog.borrow().as_ref().cloned();
+        if let Some(dialog) = dialog {
+            self.close_settings_dialog(dialog);
+        }
+        keyboard::shortcuts_window::open(self);
     }
 
     fn close_settings_dialog_state(&self, dialog: &adw::Dialog) {

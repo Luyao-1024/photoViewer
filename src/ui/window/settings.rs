@@ -505,6 +505,8 @@ impl MainWindow {
             );
         });
 
+        content.append(&self.build_shortcuts_group());
+
         let spacer = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
@@ -513,6 +515,33 @@ impl MainWindow {
         content.append(&build_about_label());
 
         content
+    }
+
+    /// Mouse-only users need a path to the shortcut reference that does not
+    /// require knowing the key that opens it, so the row lives in settings and
+    /// closes the dialog before presenting the modal window.
+    pub(super) fn build_shortcuts_group(&self) -> adw::PreferencesGroup {
+        let group = adw::PreferencesGroup::new();
+        group.set_title(&tr("setting.section.keyboard"));
+        group.set_description(Some(&tr("setting.section.keyboard_description")));
+        group.add_css_class("settings-preferences-group");
+
+        let row = adw::ActionRow::new();
+        row.add_css_class("settings-action-row");
+        row.set_title(&tr("setting.keyboard.reference"));
+        row.set_subtitle(&tr("setting.keyboard.reference_description"));
+        row.set_activatable(true);
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+
+        let weak = self.downgrade();
+        row.connect_activated(move |_| {
+            if let Some(window) = weak.upgrade() {
+                window.show_shortcuts_reference();
+            }
+        });
+
+        group.add(&row);
+        group
     }
 
     pub(super) fn build_trash_settings_group(&self, parent: &gtk::Widget) -> adw::PreferencesGroup {

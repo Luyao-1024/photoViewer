@@ -11,6 +11,7 @@ pub enum KeyboardAction {
     SelectAll,
     Search,
     OpenSettings,
+    ShowShortcuts,
     Delete,
     Restore,
     ViewerPrevious,

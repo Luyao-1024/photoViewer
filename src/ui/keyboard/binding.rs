@@ -102,6 +102,15 @@ fn global_binding(combo: KeyCombo) -> Option<KeyboardAction> {
             alt: false,
             shift: false,
         } => Some(OpenSettings),
+        // The shortcut reference has to be reachable without reading the docs.
+        // `F1` is the freedesktop convention, and `Ctrl+/` the GNOME one;
+        // layouts that need Shift for `/` also get `Ctrl+?`.
+        c if c == KeyCombo::plain(gdk::Key::F1)
+            || c == KeyCombo::new(gdk::Key::slash, gdk::ModifierType::CONTROL_MASK)
+            || c == KeyCombo::new(gdk::Key::question, gdk::ModifierType::CONTROL_MASK) =>
+        {
+            Some(ShowShortcuts)
+        }
         _ => None,
     }
 }
@@ -174,8 +183,12 @@ fn viewer_binding(combo: KeyCombo) -> Option<KeyboardAction> {
             Some(ViewerZoomReset)
         }
         c if c == KeyCombo::plain(gdk::Key::r) => Some(ViewerRotateRight),
+        // A real Shift+R key event reports the uppercase keysym, while
+        // `gtk_accelerator_parse("<Shift>R")` reports lowercase `r` plus the
+        // modifier. Accept both so the shortcuts window can declare this row
+        // with a string that parses back to itself.
         KeyCombo {
-            key: gdk::Key::R,
+            key: gdk::Key::R | gdk::Key::r,
             ctrl: false,
             alt: false,
             shift: true,

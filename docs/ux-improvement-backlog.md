@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）与 P0-3（多选入口，照片页+虚拟网格那一半）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页+虚拟网格那一半）与 P0-4（快捷键应用内可发现）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -249,7 +249,17 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 
 **需同步文档**：`docs/modules/keyboard.md`（增加「应用内发现」一节并声明防漂移测试）、`docs/ui-naming-reference/index.html`。
 
-**风险**：`F1` 当前是否已被占用需确认（`binding.rs` 未见 F1，安全）；`Ctrl+/` 在部分布局需要 Shift，考虑同时接受 `Ctrl+question`。另外 `ShortcutsWindow` 在 `GtkSettings:gtk-shell-shows-app-menu` 等设置下的行为差异属已知，不影响 transient 用法。
+**实施结果**（已落盘，方案被实测证据改写）：新增 `src/ui/keyboard/shortcuts_window.rs`，`GROUPS` 是三 section 的唯一真源（全局 6 / 浏览与选择 8 / 图片查看 14，共 28 行，每行带 `KeyboardScope`），`KeyboardAction::ShowShortcuts` 由 `F1`、`Ctrl+/`、`Ctrl+?` 触发（`binding.rs:105-112`），`MainWindow::show_shortcuts_reference()`（`window.rs:929-936`）先关设置弹窗再开窗，保证同一时刻只有一个模态窗；设置页新增「键盘」分组与一行 activatable `Adw.ActionRow`（`window/settings.rs:523-545`，插在 About 之前）；9 个查看器按钮 + 上一张/下一张 + 侧栏设置按钮的 tooltip 走 `tooltip_with_key()`（`viewer_page.rs:463-527`、`viewer/navigation.rs:390-398`、`window.rs:639`）。偏差与实测结论：
+
+- **窗口用 Builder XML 骨架生成，而不是草案假设的 `ShortcutsWindow::add_section`/`add_group`/`add_shortcut`。** 那套 API 需要 gtk4 的 `v4_14` feature，本项目锁在 `v4_8`；实测把 feature 升到 `v4_14` 会新增约 52 条弃用告警（`Widget::allocation`、`CssProvider::load_from_data`、`StyleContextExt`、`FileChooserNative` 等），CI 的 `clippy -D warnings` 直接红。翻译串一律作为属性写入、不进 XML，因此含 `&` 或 `<` 的文案不会破坏解析（`translated_text_is_attached_as_properties` 守住这条）。
+- **草案的 `tr_with_key()` 落地为 `shortcuts_window::tooltip_with_key()`，且不新增 `*.tooltip.key` 键**：键名由 `accelerator_for(action)` 从同一张 `GROUPS` 反查，所以 tooltip 与参考窗口在结构上不可能声明不同的绑定；没有键位的动作（`Restore`）返回 `None`，tooltip 退回纯标签而不是空括号。`src/core/i18n.rs` 未改动。
+- **`<Shift>R` 与 `R` 的实测修正了草案的键位表**：`gtk_accelerator_parse("<Shift>R")` 报成小写 `r` + Shift 位，草案的 `binding.rs` 匹配臂会漏掉向左旋转。漂移测试的前向断言把这条抓了出来，最终声明改为 `"<Shift>R"`、匹配臂放宽为 `Key::R | Key::r`。另外 `display_accelerator` 早期把 Shift 折进字形（向左旋转显示成 `R`），与向右旋转的 `R` 撞成同一个提示，已改为与 `gtk_accelerator_get_label` 对齐（字母大写、Shift 显式），并有断言守住两个旋转动作的可区分性。
+- **`GtkShortcutsShortcut` 一行只接受一个 accelerator**，所以 `F1` 与 `Ctrl+/` 是两行，不是草案里的一行。
+- **草案测试项 `cargo test --test e2e_viewer`（F1 打开且不吞掉 viewer 的 `F`）未做**，覆盖改由 `ui::keyboard::shortcuts_window::tests` 承担（17 项，含「打开即断言 modal / transient_for / view-name / 行高」、「每条 accelerator 真的解析到它声称的动作」、「每个可路由动作都有行」）。
+- **表内的 `Ctrl+滚轮` 行不属于本项**：grep 确认查看器至今没有任何 scroll 控制器（`viewer/transform/tests.rs:13-37` 还有一条负向断言禁止 touch 捏合/平移控制器），所以该键位属 P1-8，命名图里改挂 `.pv-p1-8`，只在开启 P1-8 时出现。
+- **草案列的两份文档已同步**：`docs/modules/keyboard.md` 新增「Shortcut Discoverability」一节，写明「加/改/删绑定 ⇒ 必须同步 `GROUPS` 行，否则测试红」；`docs/ui-naming-reference/index.html` 里 `shortcut-reference-group` / `shortcut-reference-window` / `shortcut-group-global|browsing|viewer` / `tooltip-key-hint` 六个热点已转为常态 `data-ui` 条目，表内容与 `GROUPS` 逐行一致（脚本核对 28 行），字形按 `gtk_accelerator_get_label` 的实测输出渲染并随语言切换。落盘前的对照不挂在提案开关上，而是显式演示态 `data-pv-demo="shortcut-blind"`（工具条「演示态 → 落盘前：无快捷键入口」）。
+
+**风险**：`F1` 落盘后成为全局键位，`TextInput` 与 `Modal` 作用域按既有契约不回落到全局表，因此搜索框内按 `F1` 不会开窗——这是刻意保留的原生文本编辑行为，若后续要放开需显式加白名单。
 
 ---
 

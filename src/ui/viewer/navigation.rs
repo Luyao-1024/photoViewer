@@ -1,8 +1,9 @@
-use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaRepository;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize, TIER_BOOST};
+use crate::ui::keyboard::shortcuts_window::tooltip_with_key;
+use crate::ui::keyboard::KeyboardAction;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -386,12 +387,14 @@ impl ViewerPage {
     /// Wire the `<` / `>` viewer navigation buttons.
     pub(super) fn setup_nav_buttons(&self) {
         let imp = self.imp();
-        imp.prev_btn
-            .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.previous")));
-        imp.next_btn
-            .get()
-            .set_tooltip_text(Some(&tr("viewer.tooltip.next")));
+        imp.prev_btn.get().set_tooltip_text(Some(&tooltip_with_key(
+            "viewer.tooltip.previous",
+            KeyboardAction::ViewerPrevious,
+        )));
+        imp.next_btn.get().set_tooltip_text(Some(&tooltip_with_key(
+            "viewer.tooltip.next",
+            KeyboardAction::ViewerNext,
+        )));
 
         let weak = self.downgrade();
         imp.prev_btn.get().connect_clicked(move |_| {
