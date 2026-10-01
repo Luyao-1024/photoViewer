@@ -377,6 +377,35 @@ h1 {
   background: rgba(20,22,29,0.36);
 }
 
+/* Adw.HeaderBar 的 [start] 组：日期与同步角标是一伙的（viewer-page.blp:22-38，
+   spacing 8），文件名则是 NavigationPage 的 title，由 HeaderBar 单独居中。
+   两者不能排在同一条 flex 流里，否则角标会贴到文件名左边，看着像文件名的一部分。 */
+.viewer-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: none;
+  /* 标题改成绝对居中后离开了 flex 流，需要这一组自己吸收剩余空间，
+     否则后面的动作按钮会紧贴着排到左边。 */
+  margin-right: auto;
+}
+
+.viewer-start .header-title {
+  flex: none;
+}
+
+/* 绝对定位居中，等价于 libadwaita 把标题摆在整条 headerbar 的正中，
+   而不是「剩余空间的中点」；窄窗口下靠 max-width + 省略号收敛。 */
+.headerbar.viewer .viewer-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 44%;
+  flex: none;
+  text-align: center;
+}
+
 .header-title {
   min-width: 0;
   flex: 1 1 auto;
