@@ -514,3 +514,74 @@ fn viewer_is_immediately_poppable_with_date_visible_on_open() {
         "date label should be visible as soon as an item is shown"
     );
 }
+
+/// P2-2: a toast parked at the bottom of the viewer used to sit on the
+/// filmstrip - the control you are still using while the toast reports what you
+/// just did there. The fix is structural: `Adw.ToastOverlay` wraps the stage
+/// only, so its bottom edge is the top of the filmstrip band, and no CSS
+/// selector against libadwaita's internal toast node is load-bearing. This test
+/// measures the painted bounds of a real toast, so moving the overlay back to
+/// the page root fails here rather than in review.
+#[gtk::test]
+fn a_toast_lands_above_the_filmstrip() {
+    init_viewer_test();
+    let media_list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let viewer = ViewerPage::new(media_list, 0);
+    let overlay = viewer.imp().toast_overlay.get().clone();
+    let filmstrip = viewer.imp().viewer_bottom_stack.get().clone();
+    let window = gtk::Window::builder()
+        .default_width(900)
+        .default_height(600)
+        .child(&viewer)
+        .build();
+    window.present();
+    pump_for(std::time::Duration::from_millis(300));
+
+    overlay.add_toast(adw::Toast::new("已移入回收站"));
+    let toast = {
+        let mut found = None;
+        let mut child = overlay.first_child();
+        while let Some(node) = child {
+            if node.type_().name().contains("Toast") {
+                found = Some(node);
+                break;
+            }
+            child = node.next_sibling();
+        }
+        found.expect("the overlay should host the toast widget")
+    };
+    pump_for(std::time::Duration::from_millis(300));
+
+    // `allocation()` is useless here: the toast widget's allocation includes the
+    // theme margin around the card, and a child of `Adw.ToastOverlay` can even
+    // report a different offset than it paints at. `compute_bounds` gives the
+    // visible rectangle in the page's coordinate space, which is what the eye
+    // uses to decide whether the strip is covered.
+    fn painted_band(widget: &impl IsA<gtk::Widget>, page: &ViewerPage) -> (f64, f64) {
+        let bounds = widget
+            .compute_bounds(page)
+            .expect("widget is inside the viewer page");
+        (
+            f64::from(bounds.y()),
+            f64::from(bounds.y() + bounds.height()),
+        )
+    }
+    let (toast_top, toast_bottom) = painted_band(&toast, &viewer);
+    let (strip_top, _) = painted_band(&filmstrip, &viewer);
+    let (_, stage_bottom) = painted_band(&viewer.imp().image_overlay.get(), &viewer);
+
+    assert!(
+        toast_bottom <= stage_bottom + 0.5,
+        "the toast host has to stay inside the stage, it reached {toast_bottom:.1} while the \
+         stage ends at {stage_bottom:.1}"
+    );
+    assert!(
+        toast_bottom <= strip_top + 0.5,
+        "a toast must not cover the filmstrip: its bottom edge is at {toast_bottom:.1} while \
+         the strip starts at {strip_top:.1}"
+    );
+    assert!(
+        toast_top < strip_top,
+        "the toast has to be visible above the strip, not tucked under it"
+    );
+}

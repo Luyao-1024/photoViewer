@@ -220,3 +220,16 @@ released. See [`modules/viewer.md`](modules/viewer.md).
 Warnings such as negative width or height allocation usually mean hidden chrome is still participating in layout, a fixed-size area is being over-constrained, or an overlay child is measured while collapsed. Fix the layout cause rather than filtering logs.
 
 Viewer side panels and overlay controls should have stable dimensions and should hide child content when collapsed if that content would otherwise force invalid allocation.
+
+### Measuring where a widget actually paints
+
+When a test has to assert that two surfaces do not overlap, use
+`Widget::compute_bounds(other)` and nothing else. `allocation()` is the widget's
+own box *plus* its CSS margin, so an `AdwToast` reports 82px tall while its card
+paints 46px, and a child of `Adw.ToastOverlay` can report an offset 32px away
+from where it draws (`translate_coordinates` disagrees with the paint). Both
+measurements looked like a real overlap that was not there, and the reverse
+blind spot is worse: a CSS `margin-bottom` "lift" reads as movement in
+`allocation()` while the card never moves. Pixel-level checks in
+`src/ui/grid_css/tests/render.rs` sample the whole window for the same reason -
+a single widget's snapshot omits its parent's background.

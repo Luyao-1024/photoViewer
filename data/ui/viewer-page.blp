@@ -4,113 +4,120 @@ using Adw 1;
 template $ViewerPage : Adw.NavigationPage {
   title: "";
 
-  child: Adw.ToastOverlay toast_overlay {
-    child: Gtk.Box root_box {
-      orientation: vertical;
+  child: Gtk.Box root_box {
+    orientation: vertical;
 
-      Adw.HeaderBar header_bar {
-        show-end-title-buttons: true;
-        // `viewer-chrome` scopes the shared hover-only glass + square button
-        // geometry. `viewer-toolbar` is retained as the header identity
-        // asserted by tests.
-        css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
+    Adw.HeaderBar header_bar {
+      show-end-title-buttons: true;
+      // `viewer-chrome` scopes the shared hover-only glass + square button
+      // geometry. `viewer-toolbar` is retained as the header identity
+      // asserted by tests.
+      css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
-        // Capture date pinned to the start (left) side of the header, day
-        // precision only (no time). 今天 / 昨天 replace the last two days.
-        // Every item shows a date: follows the sort date (taken_at, else
-        // file_mtime), so it is always populated once an item is loaded.
-        [start]
-        Gtk.Box {
-          spacing: 8;
+      // Capture date pinned to the start (left) side of the header, day
+      // precision only (no time). 今天 / 昨天 replace the last two days.
+      // Every item shows a date: follows the sort date (taken_at, else
+      // file_mtime), so it is always populated once an item is loaded.
+      [start]
+      Gtk.Box {
+        spacing: 8;
 
-          Gtk.Label date_label {
-            label: "";
-            xalign: 0;
-            visible: false;
-            css-classes: ["title", "viewer-date-label"];
-          }
-
-          Gtk.Image sync_badge {
-            tooltip-text: "";
-            visible: false;
-            css-classes: ["viewer-sync-badge"];
-          }
-
-          // Where this item sits inside the query the grid came from, so
-          // arriving from a 300-tile grid does not lose your place, and so
-          // 「到底了」 is a number instead of a guess. Last in the start box on
-          // purpose: it is the only child that grows with digit count, and
-          // growing rightward into free space keeps the date and badge still.
-          // Shown only once the rank resolves, so an unverified number is
-          // never displayed.
-          Gtk.Label position_label {
-            label: "";
-            xalign: 0;
-            visible: false;
-            css-classes: ["dim-label", "viewer-position-label"];
-          }
+        Gtk.Label date_label {
+          label: "";
+          xalign: 0;
+          visible: false;
+          css-classes: ["title", "viewer-date-label"];
         }
 
-        // Header actions render left-to-right as favorite, edit, delete,
-        // details. Adw.HeaderBar packs `[end]` children edge-first (first
-        // declared = rightmost), so declare them in reverse.
-        [end]
-        Gtk.Button details_btn {
-          icon-name: "info-symbolic";
+        Gtk.Image sync_badge {
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button"];
+          visible: false;
+          css-classes: ["viewer-sync-badge"];
         }
 
-        [end]
-        Gtk.Button delete_btn {
-          icon-name: "user-trash-symbolic";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
-        }
-
-        [end]
-        Gtk.Button edit_btn {
-          icon-name: "document-edit-symbolic";
-          css-classes: ["glass-toolbar-button"];
-        }
-
-        [end]
-        Gtk.Button favorite_btn {
-          icon-name: "emblem-favorite-symbolic";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+        // Where this item sits inside the query the grid came from, so
+        // arriving from a 300-tile grid does not lose your place, and so
+        // 「到底了」 is a number instead of a guess. Last in the start box on
+        // purpose: it is the only child that grows with digit count, and
+        // growing rightward into free space keeps the date and badge still.
+        // Shown only once the rank resolves, so an unverified number is
+        // never displayed.
+        Gtk.Label position_label {
+          label: "";
+          xalign: 0;
+          visible: false;
+          css-classes: ["dim-label", "viewer-position-label"];
         }
       }
 
-      Adw.OverlaySplitView editor_split_view {
+      // Header actions render left-to-right as favorite, edit, delete,
+      // details. Adw.HeaderBar packs `[end]` children edge-first (first
+      // declared = rightmost), so declare them in reverse.
+      [end]
+      Gtk.Button details_btn {
+        icon-name: "info-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button"];
+      }
+
+      [end]
+      Gtk.Button delete_btn {
+        icon-name: "user-trash-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+      }
+
+      [end]
+      Gtk.Button edit_btn {
+        icon-name: "document-edit-symbolic";
+        css-classes: ["glass-toolbar-button"];
+      }
+
+      [end]
+      Gtk.Button favorite_btn {
+        icon-name: "emblem-favorite-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+      }
+    }
+
+    Adw.OverlaySplitView editor_split_view {
+      vexpand: true;
+      hexpand: true;
+      show-sidebar: false;
+      sidebar-position: end;
+      min-sidebar-width: 340;
+      max-sidebar-width: 420;
+
+      content: Adw.OverlaySplitView details_split_view {
         vexpand: true;
         hexpand: true;
         show-sidebar: false;
+        css-classes: ["details-split-view"];
+        // Overlay mode: the details panel floats over the image (collapsed)
+        // instead of squeezing it, and is pinned (no scrim / no
+        // click-outside-to-close) so the photo stays fully visible behind
+        // the translucent glass. show-sidebar still drives the slide-in.
+        collapsed: true;
+        pin-sidebar: true;
         sidebar-position: end;
-        min-sidebar-width: 340;
+        min-sidebar-width: 320;
         max-sidebar-width: 420;
 
-        content: Adw.OverlaySplitView details_split_view {
+        content: Gtk.Box content_box {
+          orientation: vertical;
           vexpand: true;
           hexpand: true;
-          show-sidebar: false;
-          css-classes: ["details-split-view"];
-          // Overlay mode: the details panel floats over the image (collapsed)
-          // instead of squeezing it, and is pinned (no scrim / no
-          // click-outside-to-close) so the photo stays fully visible behind
-          // the translucent glass. show-sidebar still drives the slide-in.
-          collapsed: true;
-          pin-sidebar: true;
-          sidebar-position: end;
-          min-sidebar-width: 320;
-          max-sidebar-width: 420;
 
-          content: Gtk.Box content_box {
-            orientation: vertical;
+          // Toasts are anchored to the stage, not to the page: an overlay that
+          // spans the whole viewer parks its bottom toast over the filmstrip.
+          // See src/ui/viewer_page/tests.rs::a_toast_lands_above_the_filmstrip.
+          Adw.ToastOverlay toast_overlay {
             vexpand: true;
             hexpand: true;
+            css-classes: ["viewer-toast-overlay"];
 
-            Gtk.Overlay image_overlay {
+            child: Gtk.Overlay image_overlay {
               vexpand: true;
               hexpand: true;
               css-classes: ["viewer-stage"];
@@ -310,130 +317,130 @@ template $ViewerPage : Adw.NavigationPage {
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
                 }
               }
-            }
-
-            Gtk.Box viewer_bottom_stack {
-              orientation: vertical;
-              margin-start: 24;
-              margin-end: 24;
-              margin-top: 8;
-              margin-bottom: 12;
-              spacing: 6;
-
-              Gtk.Box viewer_bottom_bar {
-                orientation: horizontal;
-                halign: fill;
-                spacing: 8;
-                css-classes: ["glass-raised", "viewer-thumb-bar", "viewer-thumb-carousel"];
-
-                Gtk.ScrolledWindow thumb_scrolled {
-                  hexpand: true;
-                  propagate-natural-width: false;
-                  // Keep a horizontal adjustment for programmatic filmstrip
-                  // positioning without showing a scrollbar. `never` disables
-                  // scrolling and lets the loaded thumbnail row feed its minimum
-                  // width into the viewer window.
-                  hscrollbar-policy: external;
-                  vscrollbar-policy: never;
-                  min-content-height: 64;
-
-                  child: Gtk.Box thumb_strip {
-                    orientation: horizontal;
-                    spacing: 6;
-                    css-classes: ["viewer-thumb-strip"];
-                  };
-                }
-
-              }
-            }
-          };
-
-          sidebar: Gtk.Box details_panel {
-          orientation: vertical;
-          width-request: 380;
-          css-classes: ["viewer-floating-panel"];
-
-      Gtk.Box details_header {
-            orientation: horizontal;
-            spacing: 6;
-            margin-start: 12;
-            margin-end: 6;
-            margin-top: 6;
-            margin-bottom: 6;
-
-            Gtk.Label details_title {
-              label: "";
-              xalign: 0;
-              hexpand: true;
-              css-classes: ["title-3"];
-            }
-
-            Gtk.Button details_close_btn {
-              icon-name: "window-close-symbolic";
-              tooltip-text: "";
-              css-classes: ["glass-toolbar-button"];
-            }
-          }
-
-          Gtk.ScrolledWindow {
-            vexpand: true;
-            hscrollbar-policy: never;
-
-            child: Adw.PreferencesPage details_page {
-              Adw.PreferencesGroup file_group {
-                title: "";
-
-                Adw.ActionRow name_row {
-                  title: "";
-                  activatable: true;
-                  css-classes: ["viewer-details-name-row"];
-
-                  [suffix]
-                  Gtk.Entry name_entry {
-                    visible: false;
-                    hexpand: true;
-                    width-chars: 18;
-                    max-width-chars: 28;
-                    css-classes: ["viewer-details-name-entry"];
-                  }
-                }
-
-                Adw.ActionRow folder_row {
-                  title: "";
-                  activatable: false;
-                }
-
-                Adw.ActionRow mime_row {
-                  title: "";
-                  activatable: false;
-                }
-
-                Adw.ActionRow dimensions_row {
-                  title: "";
-                  activatable: false;
-                }
-
-                Adw.ActionRow size_row {
-                  title: "";
-                  activatable: false;
-                }
-
-                Adw.ActionRow taken_row {
-                  title: "";
-                  activatable: false;
-                }
-              }
-
             };
           }
+
+          Gtk.Box viewer_bottom_stack {
+            orientation: vertical;
+            margin-start: 24;
+            margin-end: 24;
+            margin-top: 8;
+            margin-bottom: 12;
+            spacing: 6;
+
+            Gtk.Box viewer_bottom_bar {
+              orientation: horizontal;
+              halign: fill;
+              spacing: 8;
+              css-classes: ["glass-raised", "viewer-thumb-bar", "viewer-thumb-carousel"];
+
+              Gtk.ScrolledWindow thumb_scrolled {
+                hexpand: true;
+                propagate-natural-width: false;
+                // Keep a horizontal adjustment for programmatic filmstrip
+                // positioning without showing a scrollbar. `never` disables
+                // scrolling and lets the loaded thumbnail row feed its minimum
+                // width into the viewer window.
+                hscrollbar-policy: external;
+                vscrollbar-policy: never;
+                min-content-height: 64;
+
+                child: Gtk.Box thumb_strip {
+                  orientation: horizontal;
+                  spacing: 6;
+                  css-classes: ["viewer-thumb-strip"];
+                };
+              }
+
+            }
+          }
         };
 
-        };
+        sidebar: Gtk.Box details_panel {
+        orientation: vertical;
+        width-request: 380;
+        css-classes: ["viewer-floating-panel"];
 
-        sidebar: $EditorPanel editor_panel {
-        };
-      }
+    Gtk.Box details_header {
+          orientation: horizontal;
+          spacing: 6;
+          margin-start: 12;
+          margin-end: 6;
+          margin-top: 6;
+          margin-bottom: 6;
 
-    };
+          Gtk.Label details_title {
+            label: "";
+            xalign: 0;
+            hexpand: true;
+            css-classes: ["title-3"];
+          }
+
+          Gtk.Button details_close_btn {
+            icon-name: "window-close-symbolic";
+            tooltip-text: "";
+            css-classes: ["glass-toolbar-button"];
+          }
+        }
+
+        Gtk.ScrolledWindow {
+          vexpand: true;
+          hscrollbar-policy: never;
+
+          child: Adw.PreferencesPage details_page {
+            Adw.PreferencesGroup file_group {
+              title: "";
+
+              Adw.ActionRow name_row {
+                title: "";
+                activatable: true;
+                css-classes: ["viewer-details-name-row"];
+
+                [suffix]
+                Gtk.Entry name_entry {
+                  visible: false;
+                  hexpand: true;
+                  width-chars: 18;
+                  max-width-chars: 28;
+                  css-classes: ["viewer-details-name-entry"];
+                }
+              }
+
+              Adw.ActionRow folder_row {
+                title: "";
+                activatable: false;
+              }
+
+              Adw.ActionRow mime_row {
+                title: "";
+                activatable: false;
+              }
+
+              Adw.ActionRow dimensions_row {
+                title: "";
+                activatable: false;
+              }
+
+              Adw.ActionRow size_row {
+                title: "";
+                activatable: false;
+              }
+
+              Adw.ActionRow taken_row {
+                title: "";
+                activatable: false;
+              }
+            }
+
+          };
+        }
+      };
+
+      };
+
+      sidebar: $EditorPanel editor_panel {
+      };
+    }
+
   };
 }
