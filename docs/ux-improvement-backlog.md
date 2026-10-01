@@ -611,7 +611,17 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 
 **落点文件**：`data/css/base.css`、`data/css/liquid.css`、`data/css/plain.css`、`src/ui/grid_css/tests/render.rs`。
 
-**测试**：`cargo test ui::grid_css::tests::render`（需 `tools/with-at-spi.sh xvfb-run`，见 `docs/modules/ui-liquid-glass.md:155-159`）。
+**实施结果**（2026-10-02 已落盘）：地板值按方案 1 落地——媒体错误面 `0.76→0.80`、副标题 `0.58→0.80`、标题 `0.82→0.90`、图标 `0.54→0.72`（大图标走 3:1 档），搜索「更多」瓦片 `0.52→0.78`，库统计与总览同步行 `0.68→0.78`，查看器同步徽记 `0.72→0.78`，侧栏计数 `opacity 0.72→0.78`，关于文本 `opacity 0.56→0.72`（liquid/plain 两份）。方案 2 的断言已进 `render.rs`：新增 `functional_text_holds_a_contrast_floor_over_glass`，把每个站点**真实的表面**（`.viewer-media-error` 面、`.search-more-tile` 面、`@glass_reading_bg` 阅读面）在两种材质 × 两种主题 × 透明度 0/100 下渲染，从**整窗**快照按控件分配取中位色当背景，再把解析出的前景按 source-over 合成上去量 WCAG 比值（文本 4.5:1、大号与图标 3:1）。
+
+三处与草案不同，都是落地时才发现的：
+
+1. **必须量整窗而不是控件自身**。`gtk::WidgetPaintable::new(Some(widget)).snapshot()` 只画该控件，父层透进来的照片不在里面——第一版这样量，深色主题下读到的是「不透明深底上的浅字」，比值 13:1，把 0.52 也判通过。改成整窗快照 + `translate_coordinates` 定位分配区之后，同一组数字立刻落到 4.1:1 一档。
+2. **对抗底不能取纯白/纯黑**。透明度拉满时 Liquid 阅读面是 `alpha(@window_bg_color, 0.72)`，其下若真是 255 白，文本要 α≈0.87 才够 4.5:1——那等于取消半透明设计。测试取「与文字对抗但仍是照片」的一侧（深色主题 0.85 白、浅色主题 0.15 黑），比值门槛保持 4.5:1。这条边界写进了测试注释，不是悄悄放宽。
+3. **`opacity` 类站点量不到**。GTK 的 opacity 在渲染期合成，`style_context().color()` 读不到它，所以关于文本与侧栏计数改在样式表上断言（`grid_css/tests.rs::opacity_muted_status_text_stays_above_the_floor`，复用既有 `css_block` 解析器）。
+
+方案 3/4 按草案执行：照片叠层的白前景 + 暗光晕未改，模式选择器的 0.72 未动（它由 `ui-liquid-glass.md` 的选择器地板 0.66–0.78 单独管辖）。菜单禁用态保留 0.45，但「同时降敏感度」在 GTK4 里是结构性成立的——`:disabled` 只在 insensitive 时匹配，这一点写进了 CSS 注释。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css`（53 项）。契约有效性用回退旧值反向验证过：`library-stats` 0.68 → 4.41:1 失败、`search-more-tile` 0.52 → 3.29:1 失败、`viewer-media-error-subtitle` 0.58 → 3.38:1 失败、`settings-about-text` 0.56 被地板测试拦下。
 
 ---
 
@@ -761,7 +771,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 ## 本次未执行的验证（诚实边界）
 
 - **未运行应用**，也未生成截图或视觉基线。因此以下结论属「代码确认 + 待视觉验证」，落地前必须目测：P1-13 的对比度判断（来自 α 数值与表面叠合推理）、P1-12 的间距/密度拥挤感、P1-11 的两态区分度、P0-3 的 header 宽度是否溢出。
-- 上条已在落盘阶段部分补做：**P0-3 的 header 溢出风险已用真实渲染截图目测**（照片页与相册详情页各看 800×600 与 1280×800 两档，无换行/裁切，窗口控件仍在右端）；**P1-12 的控件簇也已用真实 GTK 渲染目测**（一次性探针测试：把 ViewerPage 放进 900×600 窗口、舞台铺一张满幅合成照片，在 liquid/plain × 深色/浅色四种组合下截取右上簇，并额外截放大态；实测按钮分配 42×38、簇内节距 48px 均匀、放大时 `zoom_transform_sep` 确实随旋转组一起消失，浅色主题下簇身压暗照片的效果与深色一致）；**P1-11 的两态区分度**由 `render.rs` 的真实像素采样断言把关（hover 与 selected 的亮度差被钉成阈值，比目测更强）。P1-13 仍是「代码确认 + 待视觉验证」。
+- 上条已在落盘阶段补做完毕：**P0-3**（真实渲染截图，照片页与相册详情页各 800×600 与 1280×800 两档，无换行/裁切，窗口控件仍在右端）、**P1-12**（一次性探针把 ViewerPage 放进 900×600 窗口、舞台铺满合成照片，在 liquid/plain × 深/浅四组下截右上簇并加截放大态；实测按钮分配 42×38、簇内节距 48px 均匀、放大时 `zoom_transform_sep` 随旋转组一起消失）、**P1-11**（`render.rs` 的真实像素采样把 hover 与 selected 的亮度差钉成阈值，比目测更强）、**P1-13**（不再是「待视觉验证」：`functional_text_holds_a_contrast_floor_over_glass` 直接量渲染出来的表面与合成后的前景比值，并用回退旧值反向确认它会红）。
 - `ui::grid_css::tests::render` 里的真实像素采样断言自 P1-11 起已是常规聚焦测试的一部分（每次改动都会跑）；`PHOTOVIEWER_GLASS_SCREENSHOTS=...` 的导出分支仍未使用，因为它只向 `target/` 写文件、不参与断言。
 - 未做 Flatpak 运行时验证，也未做超大图库压测。
 - 未读取 AT-SPI 实际无障碍树（`tools/assert-at-spi.py --dump` 可在真实窗口上验证 P2-3/P2-4 的暴露情况），因此「读屏听到三个静态标签」的推断来自控件类型（`Gtk.Box` + 点击手势）而非实测。

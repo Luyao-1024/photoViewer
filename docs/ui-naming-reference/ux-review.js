@@ -548,13 +548,17 @@
         "白前景+阴影的照片叠层（base.css:934-959、:1206-1212）不在本次范围：暗光晕已提供局部底衬且注释说明了动机（P1-12 保留）",
         "mode_selector.rs:322-331 的 on-light-background 对比采样是已验证的好设计，继续作为照片叠层文本的参照实现"
       ],
-      files: ["data/css/base.css", "data/css/liquid.css", "data/css/plain.css", "src/ui/grid_css/tests/render.rs"],
-      tests: ["cargo test ui::grid_css::tests::render（需 tools/with-at-spi.sh xvfb-run）"],
+      landed:
+        "P1-13 已落盘（2026-10-02）。功能性文本的 α 地板：媒体错误面 0.76→0.80、副标题 0.58→0.80、标题 0.82→0.90、图标 0.54→0.72（大图标走 3:1 档），搜索「更多」瓦片 0.52→0.78，库统计与总览同步行 0.68→0.78，查看器同步徽记 0.72→0.78，侧栏计数 opacity 0.72→0.78，关于文本 opacity 0.56→0.72（liquid 与 plain 两份都改）。菜单禁用态保留 0.45：GTK4 的 :disabled 只在 insensitive 时匹配，草案要求的「同时降敏感度」在这条选择器里是结构性成立的，CSS 注释写明了这一点，不会被误读成「能点但颜色淡」。模式选择器的 0.72 没有动，它由 ui-liquid-glass.md 的选择器地板（0.66–0.78）单独管辖。\n\n契约落在 render.rs 新增的 functional_text_holds_a_contrast_floor_over_glass：把每个站点真实的表面（.viewer-media-error 面、.search-more-tile 面、@glass_reading_bg 阅读面）在两种材质 × 两种主题 × 透明度 0/100 下渲染出来，从整窗快照按控件分配取中位色当背景，再把解析出的前景按 source-over 合成上去量 WCAG 比值（文本 4.5:1、大号与图标 3:1）。取整窗而不是控件自身快照是必须的——WidgetPaintable 只画控件本身，父层透进来的照片不在里面，直接量会拿到假的高对比。玻璃背后取「与文字对抗」的一侧（深色主题 0.85 白、浅色主题 0.15 黑）而不是纯黑白：纯白底配透明度拉满时要求 α≈0.87，等于取消半透明设计，这条边界写进了测试注释。回退任一站点都会红（实测 0.68→4.41:1、0.52→3.29:1、副标题 0.58→3.38:1）。opacity 类站点（关于文本、侧栏计数）改在样式表上断言，因为 GTK 的 opacity 是渲染期合成的，style context 读不到它。",
+      files: ["data/css/base.css", "data/css/liquid.css", "data/css/plain.css", "src/ui/grid_css/tests/render.rs", "src/ui/grid_css/tests.rs", "docs/modules/ui-liquid-glass.md"],
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::grid_css（新增像素级 WCAG 契约 + opacity 地板，53 项全绿；已用回退旧值验证三组站点都会失败）"
+      ],
       docs: ["docs/modules/ui-liquid-glass.md"],
       risk:
         "对比不足的判定本身属「待视觉验证」：α 数值是实测的，比值结论需要在 Flatpak GNOME 运行时目测。",
       demo:
-        "开启后点工具条「对比度报告」：右侧抽屉列出各功能性文本的实测 WCAG 比值与通过与否。把「透明度」拉到 100 再看报告，关闭提案时若干行会跌破 4.5:1，开启后回到阈上。"
+        "常态即已落盘行为：功能性文本已在地板上，工具条「对比度报告」量到的比值随之全部通过；要看落盘前的淡字形态用「落盘前：玻璃下文字过淡（P1-13）」。提案芯片不再改动画面。"
     },
     {
       id: "p1-14",
@@ -1080,6 +1084,12 @@
       syncBar();
       PV.toast("落盘前对照：还原在最左、放大在最右，旋转与全屏把缩小/放大拆在两端，36×32、间距 4、无分隔线、簇身无描边。清除演示态回到已落盘顺序。", { kind: "info", ms: 5200 });
     });
+    demoBtn("落盘前：玻璃下文字过淡（P1-13）", function () {
+      needScreen("photos");
+      body.dataset.pvDemo = "low-contrast";
+      syncBar();
+      PV.toast("落盘前对照：库统计、侧栏计数、空态副标题与查看器错误面都掉在地板之下；把「透明度」拉高会更糟。清除演示态回到已落盘的地板。", { kind: "info", ms: 5200 });
+    });
     demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
@@ -1347,7 +1357,8 @@
       cSec.appendChild(re);
       cSec.appendChild(el("p", null,
         "只量当前真正渲染在屏幕上的节点，没渲染的目标标成「未渲染」而不是猜一个比值：切到对应界面后点「重新测量」。" +
-        "对应实现建议：把同样的比值断言搬进 src/ui/grid_css/tests/render.rs，让它成为不可回退的契约。先切「透明度」到 100 再测，最能看出差距。"));
+        "应用侧的同一契约已落盘：src/ui/grid_css/tests/render.rs 的 functional_text_holds_a_contrast_floor_over_glass 渲染真实表面、按控件分配取中位色当背景，再量合成后的前景比值（文本 4.5:1、大号与图标 3:1），回退任一站点都会让 CI 变红。" +
+        "先切「透明度」到 100 再测，最能看出差距；要看落盘前的淡字用工具条「落盘前：玻璃下文字过淡（P1-13）」。"));
       host.appendChild(cSec);
     }
   }

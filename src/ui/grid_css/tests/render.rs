@@ -16,6 +16,23 @@ fn luminance(color: &gdk::RGBA) -> f64 {
     0.2126 * linear(color.red()) + 0.7152 * linear(color.green()) + 0.0722 * linear(color.blue())
 }
 
+/// Source-over compositing, so an alpha'd foreground can be judged against the
+/// surface it actually lands on instead of an idealised opaque one.
+fn over(foreground: &gdk::RGBA, background: &gdk::RGBA) -> gdk::RGBA {
+    let a = foreground.alpha();
+    gdk::RGBA::new(
+        foreground.red() * a + background.red() * (1.0 - a),
+        foreground.green() * a + background.green() * (1.0 - a),
+        foreground.blue() * a + background.blue() * (1.0 - a),
+        1.0,
+    )
+}
+
+fn contrast(a: &gdk::RGBA, b: &gdk::RGBA) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
 fn settle(milliseconds: u64) {
     glib::MainContext::default().block_on(glib::timeout_future(std::time::Duration::from_millis(
         milliseconds,
@@ -486,4 +503,161 @@ fn virtual_grid_tile_focus_ring_renders() {
 
     window.close();
     gtk::style_context_remove_provider_for_display(&display, &provider);
+}
+
+/// Alpha is not contrast, so P1-13 is asserted the way a user sees it: render
+/// the real surface, sample it, then composite the resolved foreground over
+/// that sample. Two things make this the worst case rather than a formality:
+/// the glass is backed by content that *fights* the text - a translucent panel
+/// over a bright photo is where a low alpha actually disappears - and it is
+/// dialled to both transparency endpoints. Reverting any raised value fails.
+#[gtk::test]
+fn functional_text_holds_a_contrast_floor_over_glass() {
+    adw::init().unwrap();
+    let manager = adw::StyleManager::default();
+    let previous_scheme = manager.color_scheme();
+    let display = gdk::Display::default().unwrap();
+    let provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    // (class, WCAG floor, which surface it actually lands on). `.pv-reading`
+    // carries the app's own reading-surface token; the media-error block and
+    // the search tile are the real classes, so their background washes are
+    // measured rather than modelled.
+    let sites = [
+        ("library-stats", 4.5, "reading"),
+        ("photos-overview-sync-row", 4.5, "reading"),
+        ("viewer-sync-badge", 4.5, "reading"),
+        ("search-more-tile", 4.5, "tile"),
+        ("viewer-media-error", 4.5, "error"),
+        ("viewer-media-error-subtitle", 4.5, "error"),
+        ("viewer-media-error-title", 3.0, "error"),
+        ("viewer-media-error-icon", 3.0, "error"),
+    ];
+    let photo = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    photo.add_css_class("pv-behind-photo");
+    let stage = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    stage.add_css_class("pv-behind-stage");
+    let reading = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    reading.add_css_class("pv-reading");
+    let tile = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    tile.add_css_class("search-more-tile");
+    let error = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    error.add_css_class("viewer-media-error");
+    reading.append(&tile);
+    photo.append(&reading);
+    stage.append(&error);
+    let surfaces = [("reading", &reading), ("tile", &tile), ("error", &error)];
+    let mut labels = Vec::new();
+    for (class, _, kind) in sites {
+        let label = gtk::Label::new(Some("1,024 张 · 状态"));
+        label.add_css_class(class);
+        label.set_margin_top(10);
+        label.set_margin_bottom(10);
+        label.set_margin_start(10);
+        label.set_margin_end(10);
+        let host: &gtk::Box = if kind == "error" { &error } else { &reading };
+        host.append(&label);
+        labels.push(label);
+    }
+    let holder = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    holder.append(&photo);
+    holder.append(&stage);
+    let window = gtk::Window::builder()
+        .default_width(520)
+        .default_height(420)
+        .child(&holder)
+        .build();
+    window.present();
+    settle(400);
+
+    for scheme in [adw::ColorScheme::ForceDark, adw::ColorScheme::ForceLight] {
+        manager.set_color_scheme(scheme);
+        settle(200);
+        // Content that fights the text: a bright photo highlight under the
+        // dark scheme's light ink, a deep shadow under the light scheme's dark
+        // ink. Not pure white/black, because a photo that bright is a clipped
+        // sensor, not a photograph - but far enough from the theme's own
+        // background that a low alpha actually costs something. The viewer
+        // stage keeps its opaque theme background: an error surface replaces
+        // the image, it does not sit over it.
+        let opposing = if scheme == adw::ColorScheme::ForceDark {
+            "#d9d9d9"
+        } else {
+            "#262626"
+        };
+        for liquid in [true, false] {
+            for transparency in [0.0, 1.0] {
+                let css = format!(
+                    "{}\n.pv-behind-photo {{ background: {opposing}; }}\n\
+                     .pv-behind-stage {{ background: @window_bg_color; }}\n\
+                     .pv-reading {{ background: @glass_reading_bg; }}\n",
+                    build_css_with_transparency(liquid, transparency)
+                );
+                provider.load_from_data(&runtime_compatible_css(&css));
+                settle(250);
+                for (label, (class, floor, site_kind)) in labels.iter().zip(sites) {
+                    let (_, surface) = surfaces
+                        .iter()
+                        .find(|(kind, _)| *kind == site_kind)
+                        .expect("site names a known surface");
+                    let backdrop = median_surface(&window, *surface);
+                    let painted = over(&label.style_context().color(), &backdrop);
+                    let ratio = contrast(&painted, &backdrop);
+                    assert!(
+                        ratio >= floor,
+                        "{class} is {ratio:.2}:1 over a {} surface in {scheme:?} {}-glass \
+                         at transparency {transparency}, below the {floor}:1 floor",
+                        if site_kind == "error" {
+                            "stage"
+                        } else {
+                            "glass"
+                        },
+                        if liquid { "liquid" } else { "plain" },
+                    );
+                }
+            }
+        }
+    }
+
+    window.close();
+    gtk::style_context_remove_provider_for_display(&display, &provider);
+    manager.set_color_scheme(previous_scheme);
+}
+
+/// The surface colour a user actually sees, sampled from the whole-window
+/// render at the widget's own allocation. Snapshotting the widget alone would
+/// drop whatever the parent painted underneath, and a translucent panel over
+/// an opaque black is a different surface from the same panel over a photo.
+fn median_surface(window: &gtk::Window, widget: &impl IsA<gtk::Widget>) -> gdk::RGBA {
+    let (width, data) = pixels(window, window);
+    let scale = width as f64 / f64::from(window.width().max(1));
+    let allocation = widget.allocation();
+    let (origin_x, origin_y) = widget
+        .translate_coordinates(window, 0.0, 0.0)
+        .unwrap_or((0.0, 0.0));
+    let left = (origin_x * scale).max(0.0) as usize;
+    let top = (origin_y * scale).max(0.0) as usize;
+    let right = ((origin_x + f64::from(allocation.width())) * scale) as usize;
+    let bottom = ((origin_y + f64::from(allocation.height())) * scale) as usize;
+    let mut samples = Vec::new();
+    for y in top..bottom {
+        for x in left..right {
+            let i = (y * width + x) * 4;
+            if i + 2 < data.len() {
+                samples.push([data[i], data[i + 1], data[i + 2]]);
+            }
+        }
+    }
+    assert!(!samples.is_empty(), "surface has no rendered pixels");
+    let middle = |channel: usize| {
+        let mut values: Vec<u8> = samples.iter().map(|pixel| pixel[channel]).collect();
+        values.sort_unstable();
+        values[values.len() / 2] as f32 / 255.0
+    };
+    gdk::RGBA::new(middle(0), middle(1), middle(2), 1.0)
 }

@@ -84,6 +84,23 @@ panels retain alpha 0.72–0.78 in Liquid mode and 0.82–0.88 in Plain mode.
 The photo-backed mode selector retains a paired tint at alpha 0.66–0.78.
 The Settings subtitle explicitly explains these readability exceptions.
 
+Foreground ink has its own floor, because alpha is not contrast: text that
+reports state — an error, a count, a sync line, the search "more" tile — holds
+`alpha(@window_fg_color, 0.78)` or higher (0.80 inside the media-error surface,
+0.72 for its large icon, which clears the 3:1 large-glyph tier instead), and
+`opacity`-muted status copy stays at 0.72–0.78. Genuinely disabled items are the
+one exception and keep 0.45; GTK only matches `:disabled` for an insensitive
+widget, so the muted look cannot be mistaken for a usable row. The contract is
+measured, not asserted from the sheet:
+`ui::grid_css::tests::render::functional_text_holds_a_contrast_floor_over_glass`
+renders each real surface, samples the median colour at the widget's allocation
+from the *whole-window* snapshot (a widget's own paintable omits what the parent
+showed through it, which would fake the ratio), composites the resolved
+foreground over it and requires 4.5:1 for text and 3:1 for large glyphs, in both
+themes, both materials, and at both transparency endpoints against content that
+fights the text. `opacity` is composited at render time and invisible to the
+style context, so those two sites are floored on the sheet instead.
+
 Text, icons, and focus outlines are independent of the transparency slider.
 Blur falls with the square root of material strength, preserving more detail
 suppression at intermediate transparency; saturation and brightness converge

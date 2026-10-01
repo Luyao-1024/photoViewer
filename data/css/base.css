@@ -533,6 +533,10 @@ box.mode-dot {
   outline: none;
 }
 
+/* Disabled is the one state allowed below the functional-text floor: it is
+   deliberately quiet, and GTK only matches :disabled for an insensitive
+   widget, so the muted look can never be mistaken for a usable item that
+   simply has low contrast (P1-13). */
 .glass-menu-item:disabled {
   color: alpha(currentColor, 0.45);
 }
@@ -669,10 +673,11 @@ box.mode-dot {
   border-radius: 0;
 }
 
-/* Right-aligned count badge on album rows. */
+/* Right-aligned count badge on album rows. Counts are status text, so they
+   sit at the functional floor (P1-13); the selected row still lifts above it. */
 .glass-sidebar-count {
   color: inherit;
-  opacity: 0.72;
+  opacity: 0.78;
   font-size: 0.92em;
   font-weight: 500;
 }
@@ -770,28 +775,34 @@ video.viewer-media-surface picture {
   background: @window_bg_color;
 }
 
+/* Contrast floor for functional text (P1-13). Anything that reports state —
+   an error, a count, a sync line — has to stay readable on a translucent
+   surface that the user can dial to fully transparent, so it is held at
+   alpha >= 0.78 (>= 4.5:1 against the reading surface in both themes).
+   Decorative glyphs and genuinely disabled items are the exceptions and keep
+   a lower value; the icon here is a large glyph, so it clears 3:1 instead. */
 .viewer-media-error {
   background:
     radial-gradient(circle at 50% 42%, alpha(@accent_bg_color, 0.16), transparent 30%),
     radial-gradient(circle at 50% 44%, alpha(@window_fg_color, 0.06), transparent 54%),
     alpha(@window_fg_color, 0.08);
-  color: alpha(@window_fg_color, 0.76);
+  color: alpha(@window_fg_color, 0.80);
 }
 
 .viewer-media-error-icon {
-  color: alpha(@window_fg_color, 0.54);
+  color: alpha(@window_fg_color, 0.72);
   -gtk-icon-shadow: 0 10px 28px alpha(black, 0.22);
 }
 
 .viewer-media-error-title {
   font-size: 18px;
   font-weight: 700;
-  color: alpha(@window_fg_color, 0.82);
+  color: alpha(@window_fg_color, 0.90);
 }
 
 .viewer-media-error-subtitle {
   font-size: 13px;
-  color: alpha(@window_fg_color, 0.58);
+  color: alpha(@window_fg_color, 0.80);
 }
 
 video.viewer-media-surface controls {
@@ -1004,12 +1015,14 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   -gtk-icon-shadow: 0 1px 2px alpha(black, 0.85), 0 0 4px alpha(black, 0.65);
 }
 
+/* Status text on a glass surface — functional, so it sits at the 0.78 floor
+   above rather than the 0.68/0.72 it started at (P1-13). */
 .viewer-sync-badge {
-  color: alpha(@window_fg_color, 0.72);
+  color: alpha(@window_fg_color, 0.78);
 }
 
 .library-stats {
-  color: alpha(@window_fg_color, 0.68);
+  color: alpha(@window_fg_color, 0.78);
   font-size: 12pt;
   font-weight: 500;
 }
@@ -1023,7 +1036,7 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
 }
 
 .photos-overview-sync-row {
-  color: alpha(@window_fg_color, 0.68);
+  color: alpha(@window_fg_color, 0.78);
   font-size: 11pt;
 }
 
@@ -1047,7 +1060,9 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   box-shadow: inset 0 0 0 1px alpha(@window_fg_color, 0.10);
 }
 
-/* search-more-tile: show-more button styled as a grid tile */
+/* search-more-tile: show-more button styled as a grid tile. It is an action,
+   not decoration, so its label holds the functional-text floor even though
+   the tile body is deliberately faint (P1-13). */
 .search-more-tile {
   min-width: 90px;
   min-height: 90px;
@@ -1055,7 +1070,7 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   padding: 0;
   background: alpha(@window_fg_color, 0.06);
   border: 1px solid alpha(@window_fg_color, 0.12);
-  color: alpha(@window_fg_color, 0.52);
+  color: alpha(@window_fg_color, 0.78);
   font-size: 11pt;
   font-weight: 600;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;

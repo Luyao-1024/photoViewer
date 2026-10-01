@@ -696,7 +696,7 @@ fn library_stats_text_is_larger_than_auxiliary_tile_text() {
     let css = build_css(true);
     assert!(
         css.contains(
-            ".library-stats {\n  color: alpha(@window_fg_color, 0.68);\n  font-size: 12pt;"
+            ".library-stats {\n  color: alpha(@window_fg_color, 0.78);\n  font-size: 12pt;"
         ),
         "library stats should stay plain text but read larger than thumbnail badges"
     );
@@ -713,7 +713,7 @@ fn photos_overview_uses_compact_typography() {
     );
     assert!(
         css.contains(
-            ".photos-overview-sync-row {\n  color: alpha(@window_fg_color, 0.68);\n  font-size: 11pt;"
+            ".photos-overview-sync-row {\n  color: alpha(@window_fg_color, 0.78);\n  font-size: 11pt;"
         ),
         "sync status should remain visually quieter than the media count"
     );
@@ -1326,5 +1326,35 @@ fn sidebar_cover_has_square_corners() {
             img_block.contains("border-radius: 0"),
             "sidebar album cover image must have square corners ({liquid} mode), got {img_block}"
         );
+    }
+}
+
+/// GTK applies `opacity` at render time, so the style context cannot report it
+/// and the pixel test in `render.rs` would read the glyph as pure background.
+/// These two sites mute functional copy with opacity instead of an alpha'd
+/// colour, so their P1-13 floor is asserted on the sheet itself.
+#[test]
+fn opacity_muted_status_text_stays_above_the_floor() {
+    for liquid in [true, false] {
+        let css = build_css(liquid);
+        for (selector, floor) in [
+            (".settings-about-text", 0.72),
+            (".glass-sidebar-count", 0.78),
+        ] {
+            let block = css_block(&css, selector)
+                .unwrap_or_else(|| panic!("{selector} must keep an explicit opacity rule"));
+            let opacity = block
+                .split(';')
+                .find(|line| line.trim_start().starts_with("opacity"))
+                .and_then(|line| line.split(':').nth(1))
+                .and_then(|value| value.trim().parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("{selector} has no parsable opacity in {block}"));
+            assert!(
+                opacity >= floor,
+                "{selector} opacity {opacity} is below the {floor} functional-text floor \
+                 in {} mode",
+                if liquid { "liquid" } else { "plain" }
+            );
+        }
     }
 }

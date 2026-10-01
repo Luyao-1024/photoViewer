@@ -186,10 +186,11 @@ row.settings-action-row:hover {
   background: alpha(@window_bg_color, 0.34);
 }
 
+/* Same floor as the liquid block — see the P1-13 note there. */
 .settings-about-text {
   margin-top: 8px;
   font-size: 0.86em;
-  opacity: 0.56;
+  opacity: 0.72;
 }
 
 /* viewer-overlay-nav capsule is bare in plain mode too — see liquid block. */

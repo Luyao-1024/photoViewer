@@ -1659,30 +1659,52 @@ body[data-pv-demo="tile-states-flattened"] .tile.multi-selected {
 .dirty-label { visibility: hidden; }
 body[data-pv-dirty="1"] .dirty-label { visibility: visible; }
 
-/* ---------- 5. P1-13 功能性文本对比度地板 ---------- */
+/* ---------- 5. P1-13 功能性文本对比度地板（已落盘） ---------- */
 
-body[data-pv~="p1-13"] .row .count { color: #d9dfe8; }
-body[data-pv~="p1-13"] .row.group { color: #eef1f5; }
-body[data-pv~="p1-13"] .stats-line,
-body[data-pv~="p1-13"] .section-title { color: #e4e8ef; }
-body[data-pv~="p1-13"] .pref-row > span:last-child,
-body[data-pv~="p1-13"] .pref-row > span:first-child { color: #e4e8ef; }
-body[data-pv~="p1-13"] .status-page small { color: #cfd6e0; }
-body[data-pv~="p1-13"] .status-page { color: #e4e8ef; }
-body[data-pv~="p1-13"] .more-tile {
+/* 这些提升值现在就是常态 chrome：应用里对应的 α 已被钉在地板之上，并由
+   render.rs 的像素断言守住（前景叠在真实渲染出的表面上量 WCAG 比值）。
+   落盘前的低对比形态挂在演示态 low-contrast，不挂在提案 token 上。 */
+.row .count { color: #d9dfe8; }
+.row.group { color: #eef1f5; }
+.stats-line,
+.section-title { color: #e4e8ef; }
+.pref-row > span:last-child,
+.pref-row > span:first-child { color: #e4e8ef; }
+.status-page small { color: #cfd6e0; }
+.status-page { color: #e4e8ef; }
+.more-tile {
   color: #eef1f5;
   background: rgba(255,255,255,0.10);
 }
-body[data-pv~="p1-13"] .media-error .err-icon { color: rgba(255,255,255,0.72); }
-body[data-pv~="p1-13"] .media-error small { color: rgba(255,255,255,0.80); }
-body[data-pv~="p1-13"] .media-error strong { color: rgba(255,255,255,0.94); }
-body[data-pv~="p1-13"] .footer { color: #cfd6e0; }
-body[data-pv~="p1-13"] .hint { color: #dbe1ea; }
-body[data-pv~="p1-13"] .button[disabled],
-body[data-pv~="p1-13"] .stage-controls.bottom-right button[disabled] {
+.media-error .err-icon { color: rgba(255,255,255,0.72); }
+.media-error small { color: rgba(255,255,255,0.80); }
+.media-error strong { color: rgba(255,255,255,0.94); }
+.footer { color: #cfd6e0; }
+.hint { color: #dbe1ea; }
+/* 禁用态是唯一允许低于地板的状态：它同时降敏感度，所以不会被误读成
+   「能点但颜色淡」——应用里 :disabled 只在 insensitive 时匹配，正是这个意思。 */
+.button[disabled],
+.stage-controls.bottom-right button[disabled] {
   opacity: 0.45;
   filter: saturate(0.4);
 }
+body[data-pv-demo="low-contrast"] .row .count { color: var(--text-muted); }
+body[data-pv-demo="low-contrast"] .row.group { color: var(--text-dim); }
+body[data-pv-demo="low-contrast"] .stats-line,
+body[data-pv-demo="low-contrast"] .section-title,
+body[data-pv-demo="low-contrast"] .pref-row > span:last-child,
+body[data-pv-demo="low-contrast"] .pref-row > span:first-child,
+body[data-pv-demo="low-contrast"] .status-page { color: var(--text-dim); }
+body[data-pv-demo="low-contrast"] .status-page small,
+body[data-pv-demo="low-contrast"] .footer { color: var(--text-muted); }
+body[data-pv-demo="low-contrast"] .hint { color: var(--text-muted); }
+body[data-pv-demo="low-contrast"] .more-tile {
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.06);
+}
+body[data-pv-demo="low-contrast"] .media-error .err-icon { color: rgba(255,255,255,0.54); }
+body[data-pv-demo="low-contrast"] .media-error small { color: rgba(255,255,255,0.58); }
+body[data-pv-demo="low-contrast"] .media-error strong { color: rgba(255,255,255,0.82); }
 /* 透明度滑杆：越低越实，越高越接近「文字悬在照片上」 */
 body.pv-transparency .sidebar {
   background: linear-gradient(180deg,

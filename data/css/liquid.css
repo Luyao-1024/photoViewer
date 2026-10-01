@@ -230,10 +230,12 @@ row.settings-action-row:hover {
   background: alpha(@window_bg_color, 0.26);
 }
 
+/* Version and about copy is functional information on a glass dialog, so it
+   holds the P1-13 floor instead of the old 0.56. */
 .settings-about-text {
   margin-top: 8px;
   font-size: 0.86em;
-  opacity: 0.56;
+  opacity: 0.72;
 }
 
 /* viewer-overlay-nav capsule is intentionally bare — no background, border,
