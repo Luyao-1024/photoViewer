@@ -52,7 +52,7 @@ glass settings should not force light or dark mode.
 | `data/css/base.css` | Shared layout, size, radius, state selectors |
 | `data/css/liquid.css` | Blur/saturate/brightness, highlights, heavier shadows |
 | `data/css/plain.css` | Plain translucent fallback with no `backdrop-filter` |
-| `data/css/a11y.css` | GTK `:focus-visible` outlines and menu focus treatment |
+| `data/css/a11y.css` | GTK keyboard-focus outlines (`:focus-visible` for chrome, `:focus` for grid tiles) and menu focus treatment |
 
 Window chrome fills, borders, and text use libadwaita theme colors. Suggested
 and destructive actions use `@accent_color` and `@error_color`, including
@@ -60,6 +60,14 @@ hover states, so light mode does not inherit pale dark-mode action text.
 Specular top highlights use translucent white independently of text color;
 drop shadows use black. Neither light source should reverse with the theme.
 GTK resolves these colors live without a CSS reinstall on theme changes.
+
+Focus rings on photo-backed surfaces use `@accent_bg_color`, not
+`@accent_color`: libadwaita derives `@accent_color` as the *legible-on-accent
+text* colour, so it can resolve to a pale tone that disappears over a bright
+thumbnail (measured as `[255,208,129]` on one desktop). Grid tiles also cannot
+use an inset `box-shadow` ring — GTK paints a widget's inset shadow under its
+content, so it never reaches the photo; only `outline` does. See
+`ui::grid_css::tests::render::virtual_grid_tile_focus_ring_renders`.
 
 Photo-backed affordances (selection marks, badges, date text, navigation
 arrows) keep white foregrounds with local dark backing or shadows. The mode
