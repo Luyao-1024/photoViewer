@@ -1146,6 +1146,83 @@ fn both_modes_share_base_and_a11y() {
     }
 }
 
+/// Grid tiles are the target of Space/Delete, so their focus ring is a
+/// safety-critical affordance and must survive assembly in both material
+/// modes. GridView can put focus on either its internal list-item wrapper or
+/// the tile itself, so both nodes need coverage, and the ring must be
+/// assembled after the base.css state resets.
+#[test]
+fn grid_tile_focus_ring_is_assembled() {
+    for liquid in [true, false] {
+        let css = build_css(liquid);
+
+        let wrapper_ring = "gridview.virtual-media-grid-view > child:focus > .glass-thumb-card";
+        let tile_ring = "gridview.virtual-media-grid-view > child > .glass-thumb-card:focus";
+        assert!(
+            css.contains(wrapper_ring),
+            "focus on GridView's list-item wrapper needs a ring ({liquid} mode)"
+        );
+        assert!(
+            css.contains(tile_ring),
+            "focus returned to the tile itself needs a ring ({liquid} mode)"
+        );
+
+        let rule_start = css
+            .find(&format!("{wrapper_ring},\n{tile_ring} {{"))
+            .unwrap_or_else(|| {
+                panic!("the two focus selectors must share one rule ({liquid} mode)")
+            });
+        let block = &css[rule_start..css[rule_start..].find('}').unwrap() + rule_start + 1];
+        assert!(
+            block.contains("outline: 3px solid @accent_bg_color"),
+            "the tile ring must use the saturated accent, got: {block}"
+        );
+        assert!(
+            block.contains("outline-offset: -3px"),
+            "the ring must be drawn inside the tile, which GridView clips: {block}"
+        );
+        // Evidence from ui::grid_css::tests::render::virtual_grid_tile_focus_ring_renders:
+        // GTK paints a tile's inset box-shadow under the thumbnail, so a shadow
+        // ring there is invisible. Only `outline` reaches the photo.
+        assert!(
+            !block.contains("box-shadow"),
+            "the tile ring must not rely on an inset box-shadow: {block}"
+        );
+
+        // The wrapper hairline keeps the accent separable from a photo that
+        // happens to match the accent colour.
+        let hairline = css_block(
+            &css,
+            "gridview.virtual-media-grid-view > child:focus-within",
+        )
+        .unwrap_or_else(|| panic!("missing list-item focus block ({liquid} mode)"));
+        assert!(
+            hairline.contains("outline: 1px solid alpha(black, 0.85)"),
+            "the list item needs a dark hairline behind the accent ring: {hairline}"
+        );
+
+        // One focus language: FlowBox's ring uses the same accent color.
+        let flowbox_ring = "flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card";
+        let flowbox_block =
+            css_block(&css, flowbox_ring).unwrap_or_else(|| panic!("missing FlowBox block"));
+        assert!(
+            flowbox_block.contains("outline: 2px solid @accent_bg_color"),
+            "FlowBox focus ring must use the saturated accent, got: {flowbox_block}"
+        );
+
+        let reset = css
+            .find("multi-selection are expressed exclusively by the full-image dark scrim")
+            .unwrap_or_else(|| panic!("expected the base.css state reset to stay ({liquid} mode)"));
+        let focus_rule = css
+            .find(wrapper_ring)
+            .unwrap_or_else(|| panic!("missing focus rule ({liquid} mode)"));
+        assert!(
+            focus_rule > reset,
+            "the focus rule must be assembled after the state resets"
+        );
+    }
+}
+
 /// The floating details panel overlays the photo, so its metadata content
 /// (AdwPreferencesPage / .boxed-list rows) must be forced transparent in
 /// BOTH glass modes — otherwise libadwaita's default opaque card

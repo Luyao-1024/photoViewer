@@ -190,6 +190,27 @@ Design intent:
 - Tile hover, selection, and focus states should be visible but restrained.
   Hover and selection use the same full-tile dark scrim, strong enough to
   stand out over light photos while preserving the thumbnail content.
+- Keyboard focus is a separate, mandatory layer: `Space` (select) and `Delete`
+  (move to trash) act on whichever tile holds focus, so the focused tile must be
+  identifiable on screen. Both grids draw a ring in `@accent_bg_color` — the
+  saturated accent, because `@accent_color` is the legibility-for-text variant
+  and can resolve to a pale colour that disappears over a photo. The virtual
+  Photos grid uses `outline: 3px solid @accent_bg_color; outline-offset: -3px` on
+  the card plus a `1px alpha(black, 0.85)` hairline on GridView's list-item
+  wrapper, so the ring stays separable from a photo that happens to match the
+  accent; the FlowBox grids draw `2px @accent_bg_color` in the inter-card gutter
+  instead. Two facts measured in `ui::grid_css::tests::render`:
+  `box-shadow: inset 0 0 0 Npx …` is painted *under* the thumbnail on a tile, so
+  an inset shadow ring is invisible there and only `outline` reaches the photo;
+  and GtkGridView owns focus on its internal list-item wrapper (it refuses the
+  tile as the focus widget), which is why `data/css/a11y.css` matches the
+  wrapper's `:focus`/`:focus-within` as well as the tile's own `:focus` (the
+  direct `grab_focus()` fallback in `glass_context_menu.rs`). Focus uses
+  `:focus`, not `:focus-visible`, so the ring also appears when the context menu
+  returns it. These rules live in `data/css/a11y.css`, which is assembled after
+  both material blocks and is never scaled by the transparency slider.
+  `grid_tile_focus_ring_is_assembled` guards the CSS and
+  `virtual_grid_tile_focus_ring_renders` guards the paint.
 - Selection is shown primarily by a translucent-white checkmark
   (`object-select-symbolic`) pinned to the tile's bottom-right corner, plus a
   full-tile dark scrim with no border. The checkmark widget (`SquareTile`'s

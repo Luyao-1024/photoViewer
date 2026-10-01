@@ -304,3 +304,167 @@ fn materials_resolve_in_both_themes_and_at_transparency_endpoints() {
     gtk::style_context_remove_provider_for_display(&display, &provider);
     manager.set_color_scheme(previous_scheme);
 }
+
+/// The Photos grid is where Space (select) and Delete (move to trash) act on
+/// whatever tile holds keyboard focus, so that ring has to render, not merely
+/// exist in the CSS source. GtkGridView owns focus on its internal list-item
+/// wrapper, which is the node path exercised here against a white thumbnail.
+///
+/// The check is deliberately colour-agnostic: `@accent_bg_color` is the theme's
+/// accent, which the desktop user can change, so the test compares the focused
+/// snapshot against the unfocused one and requires the difference to hug the
+/// tile edge. That also proves the ring repaints nothing over the picture.
+#[gtk::test]
+fn virtual_grid_tile_focus_ring_renders() {
+    adw::init().unwrap();
+    let display = gdk::Display::default().unwrap();
+    let provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+
+    let tiles: Rc<RefCell<Vec<crate::ui::square_tile::SquareTile>>> = Rc::default();
+    let factory = gtk::SignalListItemFactory::new();
+    {
+        let tiles = tiles.clone();
+        factory.connect_setup(move |_, object| {
+            let Ok(list_item) = object.clone().downcast::<gtk::ListItem>() else {
+                return;
+            };
+            let tile = crate::ui::square_tile::SquareTile::new();
+            tile.set_paintable(Some(&gdk::MemoryTexture::new(
+                32,
+                32,
+                gdk::MemoryFormat::R8g8b8a8,
+                &glib::Bytes::from_owned(vec![255u8; 32 * 32 * 4]),
+                32 * 4,
+            )));
+            tile.set_can_focus(true);
+            tiles.borrow_mut().push(tile.clone());
+            list_item.set_child(Some(&tile));
+        });
+    }
+
+    let model = gtk::NoSelection::new(Some(gtk::StringList::new(&["a", "b", "c", "d"])));
+    let grid = gtk::GridView::builder()
+        .model(&model)
+        .factory(&factory)
+        .build();
+    grid.add_css_class("virtual-media-grid-view");
+    grid.set_max_columns(2);
+    let window = gtk::Window::builder()
+        .default_width(260)
+        .default_height(260)
+        .child(&grid)
+        .build();
+    window.present();
+    settle(300);
+    assert!(
+        tiles.borrow().iter().any(|t| t.width() > 20),
+        "the GridView fixture must allocate real tiles"
+    );
+
+    let tile = tiles.borrow()[0].clone();
+    let wrapper = tile
+        .parent()
+        .expect("tile must sit in a GridView child")
+        .upcast::<gtk::Widget>();
+    assert_eq!(
+        wrapper.css_name().as_str(),
+        "child",
+        "GtkGridView must keep its list-item node named `child` for the CSS selector"
+    );
+
+    for liquid in [true, false] {
+        provider.load_from_data(&runtime_compatible_css(&build_css_with_transparency(
+            liquid, 0.0,
+        )));
+        settle(300);
+
+        // GtkGridView owns keyboard focus on its internal list-item wrapper and
+        // rejects the tile as the focus widget, so this is the reachable node
+        // path for arrow navigation and grab_visible_focus. The tile's own
+        // `:focus` selector stays in the CSS for the direct `grab_focus()`
+        // fallback in glass_context_menu.rs; it cannot be provoked here.
+        // The snapshot is taken on the wrapper because that is what the user
+        // sees: the accent ring is drawn inside the card and the dark hairline
+        // on the wrapper node itself.
+        gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
+        settle(250);
+        let (width, unfocused) = pixels(&window, &wrapper);
+        let height = unfocused.len() / (width * 4);
+
+        gtk::prelude::GtkWindowExt::set_focus(&window, Some(&wrapper));
+        assert_eq!(
+            gtk::prelude::GtkWindowExt::focus(&window)
+                .as_ref()
+                .map(gtk::Widget::as_ptr),
+            Some(wrapper.as_ptr()),
+            "the fixture must be able to focus the GridView list item ({liquid} mode)"
+        );
+        settle(250);
+        let (_, focused) = pixels(&window, &wrapper);
+
+        assert_eq!(
+            focused.len(),
+            unfocused.len(),
+            "focus must not resize the list item"
+        );
+        let changed = |x: usize, y: usize| -> bool {
+            let i = (y * width + x) * 4;
+            (0..3).any(|c| (i32::from(focused[i + c]) - i32::from(unfocused[i + c])).abs() > 24)
+        };
+        let repaint = (0..height)
+            .flat_map(|y| (0..width).map(move |x| changed(x, y)))
+            .filter(|c| *c)
+            .count();
+        // A 3 px band around the edge of the tile repaints roughly this much.
+        assert!(
+            repaint >= 2 * (width + height),
+            "focus must paint a ring around the photo, repainted {repaint} px \
+             in a {width}x{height} tile ({liquid} mode)"
+        );
+        let inner = (8..height.saturating_sub(8))
+            .any(|y| (8..width.saturating_sub(8)).any(|x| changed(x, y)));
+        assert!(
+            !inner,
+            "focus must only ring the tile edge, not repaint the picture ({liquid} mode)"
+        );
+
+        // Contrast is checked without naming the accent colour, which the
+        // desktop user can change: the ring must separate widely from the white
+        // photo, and the hairline behind it must reach near-black.
+        let row = height / 2;
+        let band = (0..width).filter(|x| *x < 4 || *x >= width - 4);
+        let separation = band
+            .clone()
+            .map(|x| {
+                let i = (row * width + x) * 4;
+                (0..3)
+                    .map(|c| (i32::from(unfocused[i + c]) - i32::from(focused[i + c])).abs())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            separation >= 60,
+            "the focus ring must be clearly distinguishable from a white photo, \
+             closest band colour was only {separation} apart ({liquid} mode)"
+        );
+        let dark_halo = (0..4.min(width)).any(|x| {
+            let i = (row * width + x) * 4;
+            (0..3).all(|c| focused[i + c] < 180 && unfocused[i + c] > 240)
+        });
+        assert!(
+            dark_halo,
+            "a dark hairline must back the accent ring so it survives a photo that \
+             matches the accent ({liquid} mode)"
+        );
+    }
+
+    window.close();
+    gtk::style_context_remove_provider_for_display(&display, &provider);
+}

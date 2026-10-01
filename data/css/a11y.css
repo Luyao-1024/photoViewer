@@ -17,3 +17,32 @@ box.mode-selector:focus-visible {
 .glass-context-menu-item:focus-visible {
   background: alpha(@window_fg_color, 0.10);
 }
+
+/* Virtual Photos grid keyboard focus. Space and Delete act on whichever tile
+   holds focus, so that tile must be identifiable — including when focus
+   arrived from the right-click menu rather than an arrow key, which is why
+   this uses `:focus` instead of `:focus-visible`. GtkGridView keeps focus on
+   its internal list-item wrapper for arrow navigation and the context-menu path
+   can hand it to the tile, so both nodes are matched.
+
+   Only `outline` survives on a thumbnail: GTK paints a widget's inset
+   box-shadow *under* its content, so a shadow ring is invisible over a photo —
+   verified by ui::grid_css::tests::render::virtual_grid_tile_focus_ring_renders.
+   The ring is drawn inside the card because GridView clips tile paint, and it
+   uses `@accent_bg_color` (the saturated accent) rather than `@accent_color`,
+   which the theme lightens toward the window foreground and which then reads as
+   a pale wash on a bright photo. */
+gridview.virtual-media-grid-view > child:focus > .glass-thumb-card,
+gridview.virtual-media-grid-view > child > .glass-thumb-card:focus {
+  outline: 3px solid @accent_bg_color;
+  outline-offset: -3px;
+}
+
+/* One dark hairline just inside the cell, painted by the list-item wrapper, so
+   the accent band stays separable from a photo that happens to be the same
+   colour as the accent. */
+gridview.virtual-media-grid-view > child:focus,
+gridview.virtual-media-grid-view > child:focus-within {
+  outline: 1px solid alpha(black, 0.85);
+  outline-offset: -1px;
+}

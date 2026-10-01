@@ -64,9 +64,11 @@ flowbox.thumb-grid > flowboxchild:selected {
 
 /* Keyboard focus — glass ring. Hidden once the pointer leaves the grid
    (see .pointer-left rule below) so the ring doesn't linger on the
-   last-hovered tile after the mouse moves away. */
+   last-hovered tile after the mouse moves away. `@accent_bg_color` is the
+   saturated accent, matching the virtual grid's ring in a11y.css so one app
+   speaks one focus language and the ring stays readable over a bright photo. */
 flowbox.thumb-grid > flowboxchild:focus > .glass-thumb-card {
-  outline: 2px solid alpha(@window_fg_color, 0.55);
+  outline: 2px solid @accent_bg_color;
   outline-offset: 2px;
 }
 
