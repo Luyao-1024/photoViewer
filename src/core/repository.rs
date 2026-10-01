@@ -429,18 +429,12 @@ impl MediaRepository {
     }
 
     pub fn favorite_state(&self, ids: &[MediaId]) -> Result<FavoriteSummary> {
-        let mut summary = FavoriteSummary::default();
-        for id in ids {
-            match db::is_media_favorite(&self.pool, id.get()) {
-                Ok(true) => summary.has_favorite = true,
-                Ok(false) => summary.has_unfavorite = true,
-                Err(_) => summary.has_unfavorite = true,
-            }
-            if summary.has_favorite && summary.has_unfavorite {
-                break;
-            }
-        }
-        Ok(summary)
+        let raw: Vec<i64> = ids.iter().map(|id| id.get()).collect();
+        let (has_favorite, has_unfavorite) = db::favorite_state_for_ids(&self.pool, &raw)?;
+        Ok(FavoriteSummary {
+            has_favorite,
+            has_unfavorite,
+        })
     }
 
     pub fn set_favorite(&self, ids: &[MediaId], is_favorite: bool) -> Result<MediaMutation> {

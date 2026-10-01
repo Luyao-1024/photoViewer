@@ -85,16 +85,31 @@ fn large_library_query_baseline() {
     let unchanged = db::load_unchanged_index(&pool).unwrap();
     let unchanged_elapsed = unchanged_started.elapsed();
 
+    // The batch header asks this on every selection change, over up to the whole
+    // select-all cap. It used to cost one SELECT per id (P2-5).
+    let selection: Vec<_> = repository
+        .items(MediaQuery::LiveAll, 0, 2_000)
+        .unwrap()
+        .into_iter()
+        .map(|item| photo_viewer::core::MediaId::from(item.id))
+        .collect();
+    let favorite_started = Instant::now();
+    let favorite = repository.favorite_state(&selection).unwrap();
+    let favorite_elapsed = favorite_started.elapsed();
+
     assert_eq!(first_page.total, count as u32);
     assert!(!random_page.items.is_empty());
     assert_eq!(search.total, 1);
     assert_eq!(unchanged.len(), count);
+    assert!(!favorite.has_favorite && favorite.has_unfavorite);
     println!(
-        "items={count} insert_ms={} first_page_ms={} random_offset_ms={} search_ms={} unchanged_snapshot_ms={}",
+        "items={count} insert_ms={} first_page_ms={} random_offset_ms={} search_ms={} unchanged_snapshot_ms={} favorite_state_ids={} favorite_state_ms={}",
         insert_started.elapsed().as_millis(),
         first_page_elapsed.as_millis(),
         random_page_elapsed.as_millis(),
         search_elapsed.as_millis(),
         unchanged_elapsed.as_millis(),
+        selection.len(),
+        favorite_elapsed.as_millis(),
     );
 }

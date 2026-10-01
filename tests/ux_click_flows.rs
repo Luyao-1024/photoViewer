@@ -194,7 +194,13 @@ fn journey_select_copy_to_album_then_open_it() {
         gtk::gdk::Key::a,
         gtk::gdk::ModifierType::CONTROL_MASK,
     ));
-    assert!(visible_photos_grid(&shell.photos).is_all_displayed_selected());
+    assert!(
+        wait_until(Duration::from_secs(5), || visible_photos_grid(
+            &shell.photos
+        )
+        .is_all_displayed_selected()),
+        "Ctrl+A should select every live id in the library once the off-thread fetch lands"
+    );
     click_button(&shell.photos.imp().add_to_album_btn.get());
 
     let dialog = album_picker_dialog(&shell.window);
@@ -490,7 +496,7 @@ fn keyboard_shortcuts_drive_full_shell_navigation() {
         gtk::gdk::ModifierType::CONTROL_MASK,
     ));
     assert!(
-        grid.is_all_displayed_selected(),
+        wait_until(Duration::from_secs(5), || grid.is_all_displayed_selected()),
         "Ctrl+A should select the rendered Photos tiles through the window keyboard router"
     );
     assert!(
@@ -659,7 +665,7 @@ fn photos_batch_toolbar_clicks_select_favorite_and_album() {
 
     click_button(&shell.photos.imp().select_all_btn.get());
     assert!(
-        grid.is_all_displayed_selected(),
+        wait_until(Duration::from_secs(5), || grid.is_all_displayed_selected()),
         "clicking Select All selects every rendered tile in the current mode"
     );
     click_button(&shell.photos.imp().select_all_btn.get());
@@ -1260,6 +1266,15 @@ fn journey_trash_restore_and_permanently_delete() {
         gtk::gdk::Key::a,
         gtk::gdk::ModifierType::CONTROL_MASK,
     ));
+    // Select-all reads its ids off-thread, so the batch buttons only have
+    // something to act on once that answer has landed.
+    assert!(
+        wait_until(Duration::from_secs(5), || visible_photos_grid(
+            &shell.photos
+        )
+        .is_all_displayed_selected()),
+        "Ctrl+A should have selected both items before the trash action runs"
+    );
     click_button(&shell.photos.imp().delete_to_trash_btn.get());
     let confirm = wait_for_descendant::<adw::AlertDialog>(shell.window.upcast_ref())
         .expect("Move to Trash should present a confirmation dialog");

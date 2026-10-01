@@ -1394,8 +1394,8 @@ body[data-pv-demo="toast-no-undo"] .toast button { display: none; }
   outline-offset: 1px;
 }
 
-/* P2-5：选择计数的查询线程标注（实现期条目，仅提醒） */
-body[data-pv~="p2-5"] .header-note.pv-p2-5,
+/* P2-5 已落盘为常态：那条标注现在是「当前实现说明」而不是提案旗子，所以不再受
+   提案 token 控制（.header-note 默认即可见）。P2-7 仍是待办，保留 token 门控。 */
 body[data-pv~="p2-7"] .header-note.pv-p2-7 { display: inline-flex; }
 .header-note {
   align-items: center;

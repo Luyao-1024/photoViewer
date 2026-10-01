@@ -716,7 +716,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | **P2-2（已落盘）** | Toast 可能盖住胶片条 | `data/ui/viewer-page.blp:7` 的 `ToastOverlay` 包裹整块内容 | 限定 overlay 区域到 stage，或为 toast 预留底部 inset |
 | **P2-3（已落盘）** | 模式选择器对读屏是三个静态标签 | `data/ui/mode-selector.blp:18-45` 用 `Gtk.Box` + 点击手势，无 role/label | 保留单胶囊视觉（`ui-liquid-glass.md:92-105` 是硬契约），用 `set_accessible_role(Button)`+`set_accessible_label` 补语义；或改 `Gtk.ToggleButton` + `.glass-segment`（`search-page.blp` 已走此路，`ui-liquid-glass.md:108-110`） |
 | **P2-4（已落盘）** | 全项目没有任何无障碍角色/名称调用 | 原证据要更正：`set_accessible_label` 在 GTK4 里不是 API，grep 测的是不存在的符号；真实的 0 是模板 0 处 `accessible-role` + Rust 0 处 `update_property`。「26 个图标按钮都缺 tooltip」也不成立——26 枚里 22 枚本来就有，缺槽的是 4 枚（两枚裁剪比例箭头连 Rust 文案都没有） | 见「P2-4 实施结果」：4 枚补槽、2 枚补文案，名称侧给 tile 与全部状态徽标，装饰图标改 presentation；`tools/assert-at-spi.py` 那条被本机 pyatspi 探针替代（见 `docs/testing.md`） |
-| P2-5 | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 移入 `spawn_blocking` + generation 回投；大库下多选 header 会掉帧 |
+| **P2-5（已落盘）** | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 见「P2-5 实施结果」：三处都不在选择节拍上了，另加数据层一条被漏掉的 N+1 |
 | P2-6 | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 复用 P0-1 的 loading/error 分离结论 |
 | P2-7 | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 首轮加载完成前不切空态 |
 | P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；同步状态失败需显示可操作的重试提示。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
@@ -864,6 +864,48 @@ dialog-warning-symbolic`，`photos_page.rs:113`），旁边就是 `overview_sync
 `--test ui_editor_panel --test ui_album_picker --test ui_mode_selector --test ux_click_flows
 --test e2e_browsing --test ui_context_menu --test ui_grid_canvas --test inline_test_ownership`
 （全绿）＋ 手工 AT-SPI 探针（PASS，需要桌面会话，不进 CI）。
+
+### P2-5 实施结果（2026-10-02 已落盘，草案低估了数据层那一处）
+
+三处同步查库都不在选择节拍上了：
+
+1. **`refresh_selection_ui` 不再问库**。它先 bump 一个 `selection_generation`（只在选中集合
+   真的变了才 bump——同一份选择被重复 emit 不该把在途答案判成过期），然后
+   `refresh_selection_favorite_state` 起一次 `glib::spawn_future_local` +
+   `gtk::gio::spawn_blocking`。答案回来时代次已变就丢弃并立刻重查，所以「停下来的那份选择
+   一定拿到自己的答案」，同时最多一条查询在飞。
+2. **全选取 2000 条 id** 移进 `select_all_in_current_mode` 的 worker，`select_all_in_flight`
+   挡住连点（连点时第二次直接早退，不会出现「选两遍」或「清空一个还没选上的集合」）。
+3. **`count(LiveAll)` 不再单独查**：它挂到本来每 2 秒就在后台跑的总览快照
+   （`PhotosOverviewSnapshot.live_total`），首帧之前退回「当前可见格是否全选」。
+
+**草案把这三处写成三次查询，真正的瓶颈是其中一次的形状**：`repository.favorite_state` 是
+**每个 id 一条 `SELECT`**，2000 项选择＝2000 次 prepare，而不是「一次 favorite_state 查询」。
+只把它挪到后台线程等于把掉帧换个地方掉。现在换成每 500 个 id 一条聚合语句
+（`db::favorite_state_for_ids`：`SELECT COUNT(*), MAX(is_favorite=1), MAX(is_favorite=0)`），
+并保留原来「查不到该 id 记为未收藏」的容错口径（返回行数少于请求数即视为有未收藏）。
+20000 库、2000 项选择实测 **15ms → 2ms**（debug 构建；命令与输出字段已加进 opt-in 基准
+`tests/library_benchmark.rs`，不再是口头结论）。
+
+**risk 里担心的中间态确实出现过，而且是测试逼出来的**：中途把收藏按钮改成读「画出来的状态」
+（省一次查询），`ux_click_flows` 的批量收藏旅程立刻变红——刚换完选择就点，缓存还是上一份
+选择的结论（清空＝两个都 false），于是点下去什么都不发生。所以点击路径
+`decide_favorite_action` 自己问库再决定分支，只在代次未变时顺手更新绘制。心形是智能开关，
+「按下去什么也没发生」不是可接受的中间态。
+
+偏差：瓦片右键菜单的 `on_query_favorite_state` **仍然同步**——它是一次性动作、不在选择节拍
+上，异步化要改 `GlassContextMenu` 「先问再建菜单」的契约；它现在也被同一条聚合语句兜住了。
+`search_page.rs` 有一份同名同语义的私有 helper，同样留在同步路径，没有一并改。
+
+**测试**：`tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::photos_page`（18 项，
+新增两条：`the_favorite_state_of_a_selection_lands_from_a_worker`（选择节拍里画不出答案 →
+worker 落地后心形才红 → 把在途刷新钉住后立刻点击，仍按新选择行动）、
+`the_select_all_label_decides_from_the_cached_total`（故意让缓存与库不一致，证明读的是缓存）。
+负向验证：把刷新换回同步查询后第一条变红；把点击改回读缓存后它不去收藏而是去弹 popover）＋
+`cargo test --locked --test repository`（27 项，新增三条 favorite_state 语义：均匀选择不被报
+成混合、跨 500 分块边界、缺失 id 记为未收藏；负向验证：去掉「行数少于请求数」那一支后第三条
+变红）＋ `--test ux_click_flows`（四处全选断言改成 `wait_until`，同时抓出上面那个真 bug）＋
+opt-in 基准手工测量（不进 CI）。
 
 ---
 

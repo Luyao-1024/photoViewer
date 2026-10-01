@@ -399,6 +399,37 @@ canonical live ordering, not from the current GTK seed or ready range.
 realized factory cells. The album detail page applies the same rule to its own
 album query (`ALBUM_SELECT_ALL_LIMIT`).
 
+### Selection Queries Off The Main Thread
+
+`refresh_selection_ui` runs once per `selection-changed` tick - during a
+drag-select, once per pointer motion - so it must not touch the database. The
+decisions it makes are answered by workers instead:
+
+- The batch heart's favorite state comes from `refresh_selection_favorite_state`
+  (`glib::spawn_future_local` + `gtk::gio::spawn_blocking`). A
+  `selection_generation` counter, bumped only when the selected set actually
+  changed, invalidates an answer computed for an older selection: the stale
+  result is dropped and a fresh query starts, so the settled selection always
+  gets its own answer while at most one query is in flight.
+- Clicking the heart asks the same question rather than trusting what is painted
+  (`decide_favorite_action`). The painted state can still belong to the previous
+  selection, and acting on it turned the click into a no-op - the regression
+  `ux_click_flows`'s batch-favorite journey caught.
+- "Is everything reachable already selected?" reads `live_total`, which rides
+  along with the overview worker that already runs off-thread every two seconds.
+  Until its first snapshot lands, the question falls back to whether the realized
+  grid is fully selected. Select-all itself fetches its 2,000 ids in a worker
+  guarded by `select_all_in_flight`, so tiles change one loop after the click and
+  a double click cannot start a second fetch.
+
+`MediaRepository::favorite_state` answers with one aggregate statement per 500
+ids (`db::favorite_state_for_ids`), not one `SELECT` per id, and an id with no row
+counts as unfavorited - that is what the per-id loop's error branch meant, and the
+chunk/missing-id semantics are pinned in `tests/repository.rs`. The tile context
+menu's `on_query_favorite_state` stays synchronous on purpose: it is one-shot
+rather than per-tick, and making it async would change `GlassContextMenu`'s
+build-before-show contract.
+
 The legacy FlowBox grid carries the same two doors as the virtual grids. The
 search result sections build it with `MediaGrid::new_for_album_with_context_menu`
 (`search_page.rs` `build_result_section`) and hand it real callbacks —

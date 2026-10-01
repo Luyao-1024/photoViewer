@@ -1489,6 +1489,40 @@ pub fn list_trashed_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result
         .map_err(AppError::from)
 }
 
+/// 一次查询回答「这批 id 里有没有已收藏的、有没有未收藏的」。
+/// 逐条 `is_media_favorite` 在 2000 项的多选下是 2000 次 prepare，而问的只是两个
+/// 存在性；缺失的 id 按「未收藏」算，与 `MediaRepository::favorite_state` 原来的
+/// 容错口径一致。自动分块，避开 SQLite 参数上限。
+pub fn favorite_state_for_ids(pool: &DbPool, ids: &[i64]) -> Result<(bool, bool)> {
+    if ids.is_empty() {
+        return Ok((false, false));
+    }
+    const CHUNK: usize = 500;
+    let conn = pool.get()?;
+    let mut has_favorite = false;
+    let mut has_unfavorite = false;
+    for chunk in ids.chunks(CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT COUNT(*), MAX(is_favorite = 1), MAX(is_favorite = 0) \
+             FROM media_items WHERE id IN ({placeholders})"
+        );
+        let (rows, favored, unfavored): (i64, Option<i64>, Option<i64>) =
+            conn.query_row(&sql, params_from_iter(chunk.iter()), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        has_favorite |= favored == Some(1);
+        // 行数少于请求数即有 id 查不到，与逐条查询把 Err 记成未收藏同义。
+        has_unfavorite |= unfavored == Some(1) || (rows as usize) < chunk.len();
+        if has_favorite && has_unfavorite {
+            break;
+        }
+    }
+    Ok((has_favorite, has_unfavorite))
+}
+
 /// 查询媒体是否已收藏。找不到 id 则返回错误。
 pub fn is_media_favorite(pool: &DbPool, media_id: i64) -> Result<bool> {
     let conn = pool.get()?;

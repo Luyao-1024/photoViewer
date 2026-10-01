@@ -55,6 +55,25 @@ fn sample_new_item(name: &str, ts: i64) -> crate::core::media::NewMediaItem {
     }
 }
 
+/// Drive the main loop until `settled` holds. A batch-header answer now crosses a
+/// thread boundary, so the assertion can no longer run on the same statement
+/// that triggered it. Polls with a deadline instead of `iteration(true)`, which
+/// would block forever if the worker never woke the loop.
+fn pump_until(settled: impl Fn() -> bool) {
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !settled() {
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        settled(),
+        "the Photos page worker never settled the main loop within the deadline"
+    );
+}
+
 #[gtk::test]
 fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     let _ = gtk::init();
@@ -160,6 +179,7 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
     page.apply_overview_snapshot(PhotosOverviewSnapshot {
         photos: 2,
         videos: 1,
+        live_total: 3,
         sync: SyncOverview {
             status: SyncOverviewStatus::Running,
             job_count: 1,
@@ -209,6 +229,7 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
     page.apply_overview_snapshot(PhotosOverviewSnapshot {
         photos: 2,
         videos: 1,
+        live_total: 3,
         sync: SyncOverview {
             status: SyncOverviewStatus::Disabled,
             job_count: 1,
@@ -453,12 +474,132 @@ fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
     let page = PhotosPage::new(media_list, loader);
     page.set_db_pool(pool);
     page.select_all_in_current_mode();
+    // P2-5: the id fetch left the tick, so the selection lands one loop later.
+    pump_until(|| page.selected_count_for_tests() == 2_000);
 
     assert_eq!(
             page.selected_count_for_tests(),
             2_000,
             "Photos select-all should select the first 2000 live media ids, not only the loaded 500-item window"
         );
+}
+
+/// P2-5: the batch heart used to ask the database inside the `selection-changed`
+/// tick - once per pointer motion during a drag-select, over up to 2000 ids. The
+/// answer now comes from a worker, which keeps the tick cheap while the settled
+/// selection still gets an answer of its own.
+#[gtk::test]
+fn the_favorite_state_of_a_selection_lands_from_a_worker() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("favorite-worker.db")).unwrap();
+    let inserted = crate::core::db::upsert_media_items_batch(
+        &pool,
+        &[sample_new_item("fav", 20), sample_new_item("plain", 10)],
+    )
+    .unwrap();
+    crate::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    for item in inserted.iter() {
+        media_list.append(&glib::BoxedAnyObject::new(item.clone()));
+    }
+
+    let page = PhotosPage::new(media_list, loader);
+    page.set_db_pool(pool.clone());
+    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
+    page.set_db_actor(crate::core::db_actor::start_db_actor(pool.clone(), sender));
+    let imp = page.imp();
+    let heart = imp.favorite_btn.get();
+    let grid = page.current_grid().expect("the photos page owns a grid");
+
+    grid.select_ids(&[MediaId::from(inserted[0].id)]);
+    assert!(
+        !heart.has_css_class("favorite-active"),
+        "the tick must not already know the answer - that query is what moved off-thread"
+    );
+    pump_until(|| heart.has_css_class("favorite-active"));
+    assert_eq!(
+        heart.tooltip_text().as_deref(),
+        Some(crate::core::i18n::tr("photos.batch.unfavorite").as_str()),
+        "a fully favorited selection should offer to unfavorite, once the worker says so"
+    );
+
+    grid.select_ids(&[MediaId::from(inserted[0].id), MediaId::from(inserted[1].id)]);
+    pump_until(|| !heart.has_css_class("favorite-active"));
+    assert!(
+        imp.selection_favorite_state.get().can_favorite,
+        "a mixed selection must leave the favorite branch wired rather than the older answer"
+    );
+
+    // Clicking right after a selection change must act on the new selection. The
+    // header's own refresh is parked here, so the painted state is provably still
+    // the previous, mixed answer when the click lands: a handler that trusted the
+    // paint would open the popover instead of favoriting.
+    imp.favorite_state_in_flight.set(true);
+    grid.select_ids(&[MediaId::from(inserted[1].id)]);
+    assert!(
+        imp.selection_favorite_state.get().can_unfavorite,
+        "the cached state must still belong to the mixed selection"
+    );
+    heart.emit_clicked();
+    let plain_id = inserted[1].id;
+    pump_until(|| crate::core::db::is_media_favorite(&pool, plain_id).unwrap_or(false));
+    assert!(
+        !imp.favorite_popover
+            .borrow()
+            .as_ref()
+            .is_some_and(|popover| popover.is_visible()),
+        "a uniformly unfavorited selection must act directly, not offer a choice"
+    );
+}
+
+/// P2-5: "is everything reachable already selected?" answered itself with a
+/// COUNT over the whole library on every selection tick. It now reads the total
+/// the overview worker already fetches, so a cache that disagrees with the
+/// database shows which one the header listens to.
+#[gtk::test]
+fn the_select_all_label_decides_from_the_cached_total() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("live-total.db")).unwrap();
+    let inserted =
+        crate::core::db::upsert_media_items_batch(&pool, &[sample_new_item("only", 10)]).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(inserted[0].clone()));
+
+    let page = PhotosPage::new(media_list, loader);
+    page.set_db_pool(pool);
+    let imp = page.imp();
+    // The library holds one row; the cache claims five. Selecting that one row is
+    // "not everything" by the cache and "everything" by the database.
+    imp.live_total.set(Some(5));
+    imp.selected_ids
+        .borrow_mut()
+        .insert(MediaId::from(inserted[0].id));
+    assert!(
+        !page.selected_reaches_select_all_limit(),
+        "the limit check must consult the cached total, not run a COUNT"
+    );
+    imp.selected_ids.borrow_mut().clear();
+
+    imp.overview_refresh_in_flight.set(true); // do not let the worker overwrite the cache mid-test
+    page.current_grid()
+        .expect("the photos page owns a grid")
+        .select_ids(&[MediaId::from(inserted[0].id)]);
+    let select_all = crate::core::i18n::tr("photos.batch.select_all");
+    assert_eq!(
+        imp.select_all_btn.get().label().as_deref(),
+        Some(select_all.as_str()),
+        "one of five is not everything, so the button must still offer 全选"
+    );
 }
 
 #[gtk::test]

@@ -592,6 +592,92 @@ fn repository_favorite_summary_batches_ids() {
     assert!(summary.has_unfavorite);
 }
 
+/// The batch header and the context menu only ask two existence questions, so
+/// `favorite_state` answers them with one statement per chunk instead of one
+/// query per id (P2-5). A uniform selection must not report the other half.
+#[test]
+fn repository_favorite_summary_separates_uniform_selections() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs-uniform.db")).unwrap();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(
+        &pool,
+        &[item("a", 10), item("b", 20), item("c", 30)],
+    )
+    .unwrap();
+    for row in &inserted {
+        common::db::set_media_favorite(&pool, row.id, true).unwrap();
+    }
+
+    let repo = MediaRepository::new(pool.clone());
+    let all_ids = inserted.iter().map(|row| row.id.into()).collect::<Vec<_>>();
+    let favored = repo.favorite_state(&all_ids).unwrap();
+    assert!(favored.has_favorite);
+    assert!(
+        !favored.has_unfavorite,
+        "a fully favorited selection must not look mixed"
+    );
+
+    common::db::set_media_favorite(&pool, inserted[2].id, false).unwrap();
+    let mixed = repo.favorite_state(&all_ids).unwrap();
+    assert!(mixed.has_favorite && mixed.has_unfavorite);
+
+    let empty = repo.favorite_state(&[]).unwrap();
+    assert!(
+        !empty.has_favorite && !empty.has_unfavorite,
+        "no ids is neither favorited nor unfavorited"
+    );
+}
+
+/// Ids are bound in chunks of 500 to stay under SQLite's parameter limit, so the
+/// answer has to survive a selection that spans chunks — including one where the
+/// decisive row is in the last chunk.
+#[test]
+fn repository_favorite_summary_spans_the_chunk_boundary() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs-chunks.db")).unwrap();
+    let items = (0..1_200)
+        .map(|idx| item(&format!("c-{idx:04}"), 10_000 - idx))
+        .collect::<Vec<_>>();
+    let inserted = photo_viewer::core::db::upsert_media_items_batch(&pool, &items).unwrap();
+    let last = inserted.last().expect("1200 rows inserted");
+
+    let repo = MediaRepository::new(pool.clone());
+    let all_ids = inserted.iter().map(|row| row.id.into()).collect::<Vec<_>>();
+    let none_favored = repo.favorite_state(&all_ids).unwrap();
+    assert!(!none_favored.has_favorite && none_favored.has_unfavorite);
+
+    common::db::set_media_favorite(&pool, last.id, true).unwrap();
+    let one_favored = repo.favorite_state(&all_ids).unwrap();
+    assert!(
+        one_favored.has_favorite,
+        "a favorited row in the final chunk must still be found"
+    );
+    assert!(one_favored.has_unfavorite);
+}
+
+/// The old per-id loop counted an id that is not in the index as "unfavorited"
+/// rather than failing the whole summary; the aggregate keeps that behaviour so a
+/// selection racing a deletion still offers 收藏.
+#[test]
+fn repository_favorite_summary_treats_unknown_ids_as_unfavorited() {
+    let dir = common::tmp_dir();
+    let pool = photo_viewer::core::db::init_pool(&dir.path().join("repo-favs-missing.db")).unwrap();
+    let inserted =
+        photo_viewer::core::db::upsert_media_items_batch(&pool, &[item("a", 10)]).unwrap();
+    common::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+
+    let repo = MediaRepository::new(pool);
+    let summary = repo
+        .favorite_state(&[inserted[0].id.into(), 999_999.into()])
+        .unwrap();
+
+    assert!(summary.has_favorite);
+    assert!(
+        summary.has_unfavorite,
+        "an id with no row must read as unfavorited, not as an error"
+    );
+}
+
 #[test]
 fn repository_set_favorite_returns_changed_items() {
     let dir = common::tmp_dir();

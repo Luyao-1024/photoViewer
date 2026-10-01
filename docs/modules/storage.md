@@ -73,6 +73,16 @@ snapshots and mutations (`MediaPage`, `MediaMutation`, `FavoriteSummary`) keyed
 by stable `MediaId` values, so future SQL optimizations can stay behind this
 boundary.
 
+Id-set access inside that boundary has two rules. Id lists are chunked at 500 per
+statement because SQLite caps bound parameters (`delete_media_by_ids`,
+`favorite_state_for_ids`), and a question that only asks *whether* the set has a
+property must be answered by one aggregate statement rather than one `SELECT` per
+id — `favorite_state` over a 2,000-item selection measured 15 ms per-id versus
+2 ms aggregated in a debug build (`PHOTOVIEWER_BENCH_ITEMS=20000 cargo test --test
+library_benchmark -- --ignored --nocapture`, which prints both). An id with no row
+counts as "not favorited" there, matching the error branch the per-id loop used to
+have; `tests/repository.rs` pins that plus the chunk-boundary behaviour.
+
 Viewer inline rename also goes through `MediaRepository::rename_media_file`.
 That path renames the filesystem entry first, preserves the original extension
 instead of accepting a new suffix from UI text, then calls

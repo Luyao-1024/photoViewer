@@ -51,6 +51,11 @@ const OVERVIEW_SYNC_PULL_COOLDOWN: Duration = Duration::from_secs(2);
 struct PhotosOverviewSnapshot {
     photos: u32,
     videos: u32,
+    /// Every live media, i.e. what 全选 can actually reach. The select-all limit
+    /// used to run its own COUNT on each `selection-changed` tick; this worker
+    /// already runs off the main thread every two seconds, so the number comes
+    /// from here instead (P2-5).
+    live_total: u32,
     sync: SyncOverview,
     sync_progress: Option<SyncLiveProgress>,
 }
@@ -196,6 +201,19 @@ mod imp {
         /// or race with viewer-level back handling during the transition.
         pub viewer_open_pending: Cell<bool>,
         pub overview_refresh_in_flight: Cell<bool>,
+        /// Live-media total, refreshed by the overview worker. It only decides
+        /// 全选 vs 取消全选, and reading it on a `selection-changed` tick used to
+        /// mean a synchronous COUNT on the main thread (P2-5).
+        pub live_total: Cell<Option<u32>>,
+        /// Bumped whenever the selection set actually changes, so an answer
+        /// computed for an older selection is dropped instead of painting the
+        /// batch heart from stale data.
+        pub selection_generation: Cell<u64>,
+        pub favorite_state_in_flight: Cell<bool>,
+        /// The favorite visuals currently applied to the batch heart. The click
+        /// handler decides from this rather than querying again.
+        pub selection_favorite_state: Cell<FavoriteMenuState>,
+        pub select_all_in_flight: Cell<bool>,
         pub overview_poll_source: RefCell<Option<glib::SourceId>>,
         pub overview_sync_running: Cell<bool>,
         pub overview_sync_tick_active: Cell<bool>,
@@ -286,6 +304,11 @@ mod imp {
                 scan_retry_in_flight: Cell::new(false),
                 viewer_open_pending: Cell::new(false),
                 overview_refresh_in_flight: Cell::new(false),
+                live_total: Cell::new(None),
+                selection_generation: Cell::new(0),
+                favorite_state_in_flight: Cell::new(false),
+                selection_favorite_state: Cell::new(FavoriteMenuState::default()),
+                select_all_in_flight: Cell::new(false),
                 overview_poll_source: RefCell::new(None),
                 overview_sync_running: Cell::new(false),
                 overview_sync_tick_active: Cell::new(false),
@@ -813,7 +836,6 @@ impl PhotosPage {
             // selection acts directly (favorite all / unfavorite all); only a
             // mixed selection opens the popover with both options.
             let weak = obj.downgrade();
-            let popover_for_trigger = popover.clone();
             obj.imp().favorite_btn.get().connect_clicked(move |_| {
                 let Some(this) = weak.upgrade() else {
                     return;
@@ -822,14 +844,7 @@ impl PhotosPage {
                 if ids.is_empty() {
                     return;
                 }
-                let state = this.favorite_state_for_ids(&ids);
-                if state.can_favorite && state.can_unfavorite {
-                    popover_for_trigger.popup();
-                } else if state.can_favorite {
-                    this.set_favorite_for_ids(ids, true);
-                } else if state.can_unfavorite {
-                    this.set_favorite_for_ids(ids, false);
-                }
+                this.decide_favorite_action(ids);
             });
         }
 
@@ -1050,6 +1065,7 @@ impl PhotosPage {
                 Ok::<_, crate::core::error::AppError>(PhotosOverviewSnapshot {
                     photos: repository.count(MediaQuery::Images)?,
                     videos: repository.count(MediaQuery::Videos)?,
+                    live_total: repository.count(MediaQuery::LiveAll)?,
                     sync: SyncStore::new(pool).overview()?,
                     sync_progress: live_progress(),
                 })
@@ -1074,24 +1090,38 @@ impl PhotosPage {
     }
 
     fn apply_overview_snapshot(&self, snapshot: PhotosOverviewSnapshot) {
+        let PhotosOverviewSnapshot {
+            photos,
+            videos,
+            live_total,
+            sync,
+            sync_progress,
+        } = snapshot;
+        // The select-all label asks "is everything reachable already selected?",
+        // which needs this number; it arrives asynchronously now, so re-run the
+        // chrome once when a selection was waiting on it.
+        let total_changed = self.imp().live_total.replace(Some(live_total)) != Some(live_total);
+        if total_changed && !self.imp().selected_ids.borrow().is_empty() {
+            self.refresh_selection_ui();
+        }
         self.imp().overview_count_label.get().set_label(&trf(
             "photos.overview.counts",
             &[
-                ("photos", &snapshot.photos.to_string()),
-                ("videos", &snapshot.videos.to_string()),
+                ("photos", &photos.to_string()),
+                ("videos", &videos.to_string()),
             ],
         ));
         self.imp()
             .overview_sync_label
             .get()
-            .set_label(&sync_overview_text(snapshot.sync, snapshot.sync_progress));
-        let sync_visible = snapshot.sync.status != SyncOverviewStatus::Disabled;
+            .set_label(&sync_overview_text(sync, sync_progress));
+        let sync_visible = sync.status != SyncOverviewStatus::Disabled;
         self.imp().overview_sync_row.get().set_visible(sync_visible);
         if !sync_visible {
             self.set_overview_sync_running(false);
             return;
         }
-        self.apply_overview_sync_icon(snapshot.sync.status);
+        self.apply_overview_sync_icon(sync.status);
     }
 
     pub(crate) fn refresh_day_sync_badges(&self) {
@@ -1235,6 +1265,15 @@ impl PhotosPage {
             .borrow()
             .iter()
             .any(|g| g.is_multi_select_mode());
+        // Only a real change invalidates the in-flight favorite query: a grid can
+        // re-emit the same selection, and bumping then would make the answer for
+        // the current set look stale forever.
+        let selection_changed = *self.imp().selected_ids.borrow() != union;
+        if selection_changed {
+            self.imp()
+                .selection_generation
+                .set(self.imp().selection_generation.get() + 1);
+        }
         *self.imp().selected_ids.borrow_mut() = union;
         let select_all_limit_reached = self.selected_reaches_select_all_limit();
         self.imp()
@@ -1293,21 +1332,77 @@ impl PhotosPage {
             .get()
             .set_reveal_child(has_any);
 
-        let state = if has_any {
-            let ids: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
-            self.favorite_state_for_ids(&ids)
-        } else {
-            FavoriteMenuState::default()
-        };
         // Smart favorite toggle. The heart button shows whenever there is a
         // selection. It turns red (favorite-active — the same class/effect as
         // the viewer's favorited heart) when every selected photo is already
         // favorited; clicking then unfavorites all. If none are favorited,
         // clicking favorites all. A mixed selection leaves the heart plain and
         // opens the popover (handled in the click handler).
+        self.imp().favorite_revealer.get().set_reveal_child(has_any);
+        if has_any {
+            self.refresh_selection_favorite_state();
+        } else {
+            self.apply_selection_favorite_state(FavoriteMenuState::default());
+        }
+    }
+
+    /// Ask the database what the batch heart should look like, off the main
+    /// thread (P2-5). This ran synchronously on every `selection-changed` tick -
+    /// once per pointer motion during a drag-select, over up to 2000 ids.
+    /// At most one query is in flight; when it lands, either the selection has
+    /// not moved and the answer is applied, or it has and a fresh query starts,
+    /// so the settled selection always gets its own answer.
+    fn refresh_selection_favorite_state(&self) {
+        let ids: Vec<MediaId> = self.imp().selected_ids.borrow().iter().copied().collect();
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        if self.imp().favorite_state_in_flight.replace(true) {
+            return;
+        }
+        let generation = self.imp().selection_generation.get();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                let repository = crate::core::repository::MediaRepository::new(pool);
+                repository
+                    .favorite_state(&ids)
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().favorite_state_in_flight.set(false);
+            match result {
+                Ok(Ok(summary)) => {
+                    if this.imp().selection_generation.get() != generation {
+                        this.refresh_selection_favorite_state();
+                        return;
+                    }
+                    this.apply_selection_favorite_state(FavoriteMenuState {
+                        can_favorite: summary.has_unfavorite,
+                        can_unfavorite: summary.has_favorite,
+                    });
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!("failed to read the selection's favorite state: {error}")
+                }
+                Err(error) => {
+                    tracing::warn!("favorite-state worker failed: {error:?}");
+                }
+            }
+        });
+    }
+
+    /// Paint the favorite-dependent chrome from an answer that is current for
+    /// `selected_ids`, and remember it for the tests that ask what the header
+    /// believes.
+    fn apply_selection_favorite_state(&self, state: FavoriteMenuState) {
+        self.imp().selection_favorite_state.set(state);
+        let has_any = !self.imp().selected_ids.borrow().is_empty();
         let all_favorited = has_any && !state.can_favorite && state.can_unfavorite;
         let fav_btn = self.imp().favorite_btn.get();
-        self.imp().favorite_revealer.get().set_reveal_child(has_any);
         if all_favorited {
             fav_btn.add_css_class("favorite-active");
             fav_btn.set_tooltip_text(Some(&tr("photos.batch.unfavorite")));
@@ -1322,6 +1417,59 @@ impl PhotosPage {
         if let Some(btn) = self.imp().unfavorite_item_btn.borrow().as_ref() {
             btn.set_sensitive(state.can_unfavorite);
         }
+    }
+
+    /// Carry out the heart's smart toggle. Which branch applies is a database
+    /// question, and the painted state may still belong to the selection before
+    /// this one, so the click asks rather than trusting the paint (P2-5). The
+    /// action then runs where it always ran - asynchronously - so the extra hop
+    /// is not a new wait for the user.
+    fn decide_favorite_action(&self, ids: Vec<MediaId>) {
+        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+            return;
+        };
+        let generation = self.imp().selection_generation.get();
+        let query_ids = ids.clone();
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                let repository = crate::core::repository::MediaRepository::new(pool);
+                repository
+                    .favorite_state(&query_ids)
+                    .map_err(|error| error.to_string())
+            })
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            let summary = match result {
+                Ok(Ok(summary)) => summary,
+                Ok(Err(error)) => {
+                    tracing::warn!("failed to read the selection's favorite state: {error}");
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!("favorite-state worker failed: {error:?}");
+                    return;
+                }
+            };
+            let state = FavoriteMenuState {
+                can_favorite: summary.has_unfavorite,
+                can_unfavorite: summary.has_favorite,
+            };
+            if this.imp().selection_generation.get() == generation {
+                this.apply_selection_favorite_state(state);
+            }
+            if state.can_favorite && state.can_unfavorite {
+                if let Some(popover) = this.imp().favorite_popover.borrow().as_ref() {
+                    popover.popup();
+                }
+            } else if state.can_favorite {
+                this.set_favorite_for_ids(ids, true);
+            } else if state.can_unfavorite {
+                this.set_favorite_for_ids(ids, false);
+            }
+        });
     }
 
     fn favorite_state_for_ids(&self, ids: &[MediaId]) -> FavoriteMenuState {
@@ -1513,17 +1661,39 @@ impl PhotosPage {
             }
             return;
         };
-        let repo = crate::core::repository::MediaRepository::new(pool);
-        let Ok(items) = repo.items(MediaQuery::LiveAll, 0, PHOTOS_SELECT_ALL_LIMIT) else {
+        if self.imp().select_all_in_flight.replace(true) {
             return;
-        };
-        let ids = items
-            .into_iter()
-            .map(|item| MediaId::from(item.id))
-            .collect::<Vec<_>>();
-        for grid in self.imp().grids.borrow().iter() {
-            grid.select_ids(&ids);
         }
+        // P2-5: reading up to 2000 rows was a synchronous main-thread query, so
+        // the header button froze for the duration of the fetch. The grids are
+        // only told once the ids are back.
+        let weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            let result = gtk::gio::spawn_blocking(move || {
+                let repository = crate::core::repository::MediaRepository::new(pool);
+                let ids = repository
+                    .items(MediaQuery::LiveAll, 0, PHOTOS_SELECT_ALL_LIMIT)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|item| MediaId::from(item.id))
+                    .collect::<Vec<_>>();
+                Ok::<_, String>(ids)
+            })
+            .await;
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            this.imp().select_all_in_flight.set(false);
+            match result {
+                Ok(Ok(ids)) => {
+                    for grid in this.imp().grids.borrow().iter() {
+                        grid.select_ids(&ids);
+                    }
+                }
+                Ok(Err(error)) => tracing::warn!("failed to load select-all ids: {error}"),
+                Err(error) => tracing::warn!("select-all worker failed: {error:?}"),
+            }
+        });
     }
 
     fn selected_reaches_select_all_limit(&self) -> bool {
@@ -1531,14 +1701,14 @@ impl PhotosPage {
         if selected_count == 0 {
             return false;
         }
-        let Some(pool) = self.imp().pool.borrow().as_ref().cloned() else {
+        // P2-5: this used to COUNT the whole library on the main thread, once per
+        // `selection-changed` tick. The total now rides along with the overview
+        // worker that already runs off-thread; until its first snapshot lands,
+        // fall back to what the loaded grid can actually answer.
+        let Some(total) = self.imp().live_total.get() else {
             return self
                 .current_grid()
                 .is_some_and(|grid| grid.is_all_displayed_selected());
-        };
-        let repo = crate::core::repository::MediaRepository::new(pool);
-        let Ok(total) = repo.count(MediaQuery::LiveAll) else {
-            return false;
         };
         let target = total.min(PHOTOS_SELECT_ALL_LIMIT) as usize;
         target > 0 && selected_count >= target

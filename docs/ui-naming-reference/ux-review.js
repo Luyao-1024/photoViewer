@@ -31,9 +31,10 @@
   //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
   //   p2-4  宫格/徽标/图标的 accessible name（已落盘为常态：prototype.js applyIconLabels 恒定运行，
   //         落盘前形态走 data-pv-demo=tiles-anonymous）
-  // 另有 2 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
+  // 另有 3 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
+  //   p2-5 选择计数查询线程（顶栏 .header-note 常态可见，条目本身即实现说明）
   // 半落盘的条目只给未落盘那一半留标记：
   //   p1-6 的照片/相册计数是常态，.pv-p1-6 仅代表回收站计数。
   //   p1-7 的位置计数和边界反馈是常态，.pv-p1-7 仅代表倍率标签。
@@ -809,12 +810,28 @@
         ":1360（同步 count）"
       ],
       solution: ["移入 spawn_blocking + generation 回投"],
-      files: ["src/ui/photos_page.rs", "src/core/repository.rs"],
-      tests: ["cargo test ui::photos_page（generation 丢弃过期回投）"],
-      docs: ["docs/modules/browsing.md"],
+      files: [
+        "src/ui/photos_page.rs",
+        "src/core/repository.rs",
+        "src/core/db.rs",
+        "tests/library_benchmark.rs"
+      ],
+      landed:
+        "P2-5 已落盘（2026-10-02），三处同步查库都不在选择节拍上了：\n\n1. `refresh_selection_ui` 不再问库。它 bump 一个 `selection_generation`（只在选中集合真的变了才 bump——同一份选择被重复 emit 不该把在途答案判成过期），然后 `refresh_selection_favorite_state` 起一次 `glib::spawn_future_local` + `gtk::gio::spawn_blocking`；答案回来时如果代次已经变了就丢弃并立刻重查，所以「停下来的那份选择一定拿到自己的答案」，同时最多一条查询在飞。\n2. 全选取 2000 条 id 移进 `select_all_in_current_mode` 的 worker，`select_all_in_flight` 挡住连点。\n3. 全选/取消全选要的那个总数不再单独 COUNT：它挂到本来每 2 秒就在后台跑的总览快照（`PhotosOverviewSnapshot.live_total`），首帧之前退回「当前可见格是否全选」。\n\n真正的瓶颈其实在数据层，落盘时才量出来：`repository.favorite_state` 是**每个 id 一次 SELECT**，2000 项选择＝2000 次 prepare——草案把它写成一次「favorite_state 查询」，低估了一个数量级。现在换成每 500 个 id 一条聚合语句（`db::favorite_state_for_ids`，`SELECT COUNT(*), MAX(is_favorite=1), MAX(is_favorite=0)`），并且保留原来「查不到该 id 记为未收藏」的容错口径（行数少于请求数即视为有未收藏）。20000 库、2000 项选择实测 15ms → 2ms（debug 构建，opt-in 基准 `PHOTOVIEWER_BENCH_ITEMS=20000 cargo test --test library_benchmark -- --ignored --nocapture`，这一行已加进基准输出）。\n\n一处按原样保留：瓦片右键菜单的 `on_query_favorite_state` 仍然同步——它是一次性动作、不在选择节拍上，而异步化要改 `GlassContextMenu` 的建菜单契约；它现在也被同一条聚合语句兜住了。\n\nrisk 里担心的中间态确实出现过，而且是被测试逼出来的：把收藏按钮改成读「画出来的状态」之后，`ux_click_flows` 的批量收藏旅程红了——刚换选择就点，缓存还是上一份选择的（清空＝两边都 false），于是点下去什么都不发生。所以点击路径 `decide_favorite_action` 自己问库再决定（心形是智能开关，答案决定它是直接切换还是弹两选菜单），只在代次未变时顺手更新绘制。",
+      tests: [
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::photos_page（18 项。新增 the_favorite_state_of_a_selection_lands_from_a_worker：选择节拍里画不出答案、worker 落地后心形才红、连点选择后点心形按新选择行动；the_select_all_label_decides_from_the_cached_total：故意让缓存与库不一致，证明读的是缓存。负向验证：把 refresh 换回同步查询后第一条变红；把点击改回读缓存状态后第三条不收藏而是去弹 popover）",
+        "cargo test --locked --test repository（27 项，新增三条 favorite_state 语义：均匀选择不再报成混合、跨 500 分块边界、缺失 id 记为未收藏。负向验证：去掉「行数少于请求数」那一支后第三条变红）",
+        "tools/with-at-spi.sh xvfb-run -a cargo test --locked --test ux_click_flows（全选改异步后四处断言改成 wait_until；这一步同时抓出了点击读缓存的真 bug）",
+        "PHOTOVIEWER_BENCH_ITEMS=20000 cargo test --test library_benchmark -- --ignored --nocapture -> 15ms（逐条）/ 2ms（聚合），手工测量，不进 CI"
+      ],
+      docs: [
+        "docs/modules/browsing.md（选择计数与收藏状态改为异步）",
+        "docs/modules/storage.md（favorite_state 的聚合查询与缺失 id 口径）",
+        "docs/ui-naming-reference/index.html（selection-query-thread 条目转为已落盘说明）"
+      ],
       risk: "generation 处理不当会出现计数与选择不一致的中间态。",
       demo:
-        "本页无法真实复现主线程掉帧，作为实现期条目保留；开启后照片页顶栏出现「计数查询：后台线程」落点标注，全选可对照 P1-6 的计数联动是否顺滑。"
+        "常态即已落盘行为：顶栏那条「计数查询：后台线程」标注现在是实现说明，不再受提案开关控制（点亮芯片不会改动画面，静态页本来也复现不了掉帧）。可核对的是联动本身：进入多选、全选、再点一次取消全选，计数与按钮文案的切换不再夹一次同步查库。15ms→2ms 的数字来自 opt-in 基准 tests/library_benchmark.rs，不是这一页能演示的东西。"
     },
     {
       id: "p2-6",
