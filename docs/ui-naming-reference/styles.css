@@ -451,6 +451,15 @@ h1 {
   box-shadow: none;
 }
 
+/* Search-style circular icons mirror the app's .round-search-button: bare at
+   rest, and only a hover/keyboard focus reveals the circular glass capsule. */
+.button.round.bare:hover,
+.button.round.bare:focus-visible {
+  border-color: var(--border);
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 .button.suggested {
   border-color: rgba(98,160,234,0.46);
   background: rgba(98,160,234,0.22);
@@ -1250,9 +1259,11 @@ body[data-pv~="p0-3"] .header-title.pv-p0-3 { display: block; }
 body[data-pv~="p0-3"][data-pv-screen="viewer"] #context-menu.is-open,
 body[data-pv-screen="photos"] #context-menu.is-open,
 body[data-pv-screen="album"] #context-menu.is-open,
-body[data-pv-screen="trash"] #context-menu.is-open { display: block; }
+body[data-pv-screen="trash"] #context-menu.is-open,
+body[data-pv-screen="search-more"] #context-menu.is-open,
+body[data-pv~="p1-15"][data-pv-screen="search"] #context-menu.is-open { display: block; }
 
-/* P1-6 已选计数 */
+/* P1-6 的回收站计数仍是提案；照片页与相册页已是常态。 */
 body[data-pv~="p1-6"] .header-title.pv-p1-6 { display: block; }
 
 /* P1-15 搜索结果分区的批量动作入口（提案，未落盘） */
@@ -1267,8 +1278,7 @@ body[data-pv~="p1-10"] .tile.pv-p1-10 { display: flex; }
 body[data-pv~="p1-10"] .media-error.is-open { display: flex; }
 body:not([data-pv~="p1-10"]) .tile.legacy-loading { display: block; }
 
-/* P1-7 查看器定位信息 */
-body[data-pv~="p1-7"] .header-title.pv-p1-7 { display: block; }
+/* P1-7：位置常态可见，倍率仍是提案。 */
 body[data-pv~="p1-7"] .zoom-level.pv-p1-7--zoomed.is-zoomed { display: inline-flex; }
 
 /* P1-8 舞台输入提示 */
@@ -1424,10 +1434,10 @@ body[data-pv~="p2-7"] .header-note.pv-p2-7 { display: inline-flex; }
 }
 .status-page .status-icon.warn { background: rgba(255,127,122,0.16); color: var(--danger); }
 .status-page button { margin-top: 8px; }
-body:not([data-pv-scan="ready"]) .grid-page > .stats-line,
-body:not([data-pv-scan="ready"]) .grid-page > .tile-grid,
-body:not([data-pv-scan="ready"]) .grid-page > .mode-selector,
-body:not([data-pv-scan="ready"]) > .scroll-date-label { display: none; }
+body:not([data-pv-scan="ready"]) .screen[data-screen="photos"] .grid-page > .stats-line,
+body:not([data-pv-scan="ready"]) .screen[data-screen="photos"] .grid-page > .tile-grid,
+body:not([data-pv-scan="ready"]) .screen[data-screen="photos"] .grid-page > .mode-selector,
+body:not([data-pv-scan="ready"]) .screen[data-screen="photos"] .scroll-date-label { display: none; }
 
 .tile { outline: none; background-size: cover; background-position: center; }
 .tile[data-img-set]::before {
@@ -1579,13 +1589,13 @@ body:not([data-pv~="p1-12"]) .stage-controls.top-right .zoom-level { order: 7; }
 
 /* ---------- 4. 焦点、悬停、选中三态 ---------- */
 
-/* P0-2：键盘焦点环。命名总览里也生效，便于与现状对照检视。 */
-body[data-pv~="p0-2"] .tile:focus-visible {
+/* P0-2 已落盘：焦点环在命名和运行模式都可见。 */
+.tile:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.55);
 }
-body[data-pv~="p0-2"] .tile.kbd-focus {
+.tile.kbd-focus {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
@@ -1891,6 +1901,13 @@ kbd {
   font-size: 12px;
 }
 body[data-pv-mode="run"] .ux-bar { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; }
+
+/* 收纳开关：常驻行靠右一枚按钮；收起后整条工具条只剩它，不再遮挡原型。 */
+.ux-toggle-row { justify-content: flex-end; }
+.ux-collapse-btn { margin-left: auto; }
+.ux-bar.ux-collapsed { padding: 4px 12px; gap: 0; margin-bottom: 8px; }
+.ux-bar.ux-collapsed .ux-row:not(.ux-toggle-row),
+.ux-bar.ux-collapsed .ux-hint { display: none; }
 .ux-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .ux-group { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .ux-label {

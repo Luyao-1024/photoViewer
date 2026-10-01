@@ -71,7 +71,7 @@
 
   /* ---------------------------------------------------------------- 路由 */
 
-  var SCREENS = ["photos", "album", "trash", "viewer", "search", "collapsed", "settings", "picker"];
+  var SCREENS = ["photos", "album", "trash", "viewer", "search", "search-more", "collapsed", "settings", "picker"];
   var stack = [];
   var current = "photos";
 
@@ -168,28 +168,17 @@
     updateCount(false);
   }
 
-  /* P1-6 演示：后台扫描落地触发一次 rebuild */
+  /* 后台扫描触发重建时，虚拟网格保持选中 ID 和多选模式。 */
   function simulateRebuild() {
-    var kept = Object.keys(selected);
-    var wasMulti = multi;
-    selected = {};
-    paintSelection();
+    var kept = selectedIds().length;
     var grid = q(".screen.is-active .tile-grid");
     if (grid) {
       grid.style.opacity = "0.25";
       setTimeout(function () { grid.style.opacity = ""; }, 140);
     }
-    if (enabled("p1-6")) {
-      kept.forEach(function (id) { selected[id] = true; });
-      if (!kept.length && wasMulti) { /* 空集合时保留多选模式：select_ids([]) 会误关 */ }
-      paintSelection();
-      updateCount();
-      toast(kept.length ? "rebuild 后仍保留 " + kept.length + " 项选择" : "rebuild 完成（多选模式保留）", { kind: "success" });
-    } else {
-      setMulti(false);
-      updateCount();
-      toast("rebuild 完成", { kind: "info" });
-    }
+    paintSelection();
+    updateCount();
+    toast(kept ? "rebuild 后仍保留 " + kept + " 项选择" : "rebuild 完成（多选模式保留）", { kind: "info" });
   }
 
   /* ------------------------------------------------------------- Toast */
@@ -321,16 +310,13 @@
     stageHint.seen = true;
     el.classList.remove("is-dismissed");
     el.classList.add("is-shown");
-    if (enabled("p0-2") && enabled("p1-12") && body.dataset.pvMotion !== "off") {
+    if (enabled("p1-12") && body.dataset.pvMotion !== "off") {
       stageHint.timer = setTimeout(function () { el.classList.add("is-dismissed"); }, 2600);
     }
   }
   function stepViewer(delta) {
     var next = viewer.index + delta;
     if (next < 0 || next >= viewer.tiles.length) {
-      if (enabled("p1-7")) {
-        toast(delta < 0 ? "已经是第一张" : "已经是最后一张", { kind: "info", ms: 1600 });
-      }
       renderViewerChrome();
       return;
     }
@@ -405,15 +391,13 @@
   function renderViewerChrome() {
     var total = viewer.tiles.length;
     var pos = q("#viewer-position");
-    if (pos) pos.textContent = (viewer.index + 1) + " / " + total;
-    var prev = q("#viewer-prev"), next = q("#viewer-next");
-    if (enabled("p1-7")) {
-      if (prev) prev.disabled = viewer.index === 0;
-      if (next) next.disabled = viewer.index >= total - 1;
-    } else {
-      if (prev) prev.disabled = false;
-      if (next) next.disabled = false;
+    if (pos) {
+      pos.textContent = total ? (viewer.index + 1) + " / " + total : "1 / 17";
+      pos.style.visibility = !total && body.dataset.pvMode === "run" ? "hidden" : "";
     }
+    var prev = q("#viewer-prev"), next = q("#viewer-next");
+    if (prev) prev.disabled = !total || viewer.index === 0;
+    if (next) next.disabled = !total || viewer.index >= total - 1;
   }
   function setText(sel, value) { var el = q(sel); if (el) el.textContent = value; }
 
@@ -482,48 +466,86 @@
   var SEARCH_INDEX = null;
   function searchIndex() {
     if (SEARCH_INDEX) return SEARCH_INDEX;
-    SEARCH_INDEX = qa('.screen[data-screen="photos"] .tile[data-media]').map(function (t, i) {
-      return { name: mediaName(t), date: mediaDate(t, i), tile: t };
+    SEARCH_INDEX = qa('.screen[data-screen="search"] .result-section .tile[data-media]').map(function (t, i) {
+      return { name: mediaName(t), date: mediaDate(t, i), video: isVideo(t), tile: t };
     });
     return SEARCH_INDEX;
   }
+  function searchField() {
+    var active = q('.screen[data-screen="search"] .field.active');
+    return active ? active.dataset.field : "all";
+  }
+  function match(item, query, field) {
+    var name = item.name.toLowerCase().indexOf(query.toLowerCase()) >= 0;
+    var parts = item.date.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+    var date = parts[1] + parts[2].padStart(2, "0") + parts[3].padStart(2, "0");
+    var dateQuery = query.replace(/[^\d]/g, "");
+    return ((field === "all" || field === "name") && name) ||
+      ((field === "all" || field === "date") && /\d/.test(query) && date.indexOf(dateQuery) >= 0);
+  }
+  function searchHits(query) {
+    var field = searchField();
+    return searchIndex().filter(function (item) { return match(item, query, field); });
+  }
+  function renderSearchResults(hits) {
+    qa('.screen[data-screen="search"] .result-section').forEach(function (section) {
+      var video = section.dataset.kind === "video";
+      var matching = hits.filter(function (item) { return item.video === video; });
+      section.style.display = matching.length ? "" : "none";
+      qa('.tile[data-media]', section).forEach(function (tile) {
+        var index = matching.findIndex(function (item) { return item.tile === tile; });
+        tile.style.display = index >= 0 && index < (video ? 1 : 4) ? "" : "none";
+      });
+      var more = q(".more-tile", section);
+      if (more) more.style.display = matching.length > (video ? 1 : 4) ? "" : "none";
+    });
+  }
+  function openSearchMore(section) {
+    var query = ((q("#search-input") || {}).value || "").trim();
+    var video = section.dataset.kind === "video";
+    var results = searchHits(query).filter(function (item) { return item.video === video; });
+    var grid = q("#search-more-grid");
+    grid.replaceChildren();
+    results.forEach(function (item) {
+      var tile = item.tile.cloneNode(true);
+      tile.removeAttribute("data-ui");
+      tile.removeAttribute("data-name");
+      tile.removeAttribute("data-impl");
+      tile.removeAttribute("data-props");
+      tile.style.display = "";
+      grid.appendChild(tile);
+    });
+    applyImages();
+    setText("#search-more-title", tr(video ? "search.videos" : "search.images"));
+    go("search-more");
+  }
   var searchTimer = null;
   var searchBusyTimer = null;
-  // 假延迟默认 200ms，低于 SEARCH_BUSY_DELAY_MS(300ms)，所以常态下看不到进行中指示——
-  // 这正是落盘行为「瞬时搜索不闪指示」。工具条的「慢查询」把它抬到 300ms 以上。
   var searchLatencyMs = 200;
   function setSearchLatency(ms) { searchLatencyMs = ms; runSearch((q("#search-input") || {}).value); }
   function runSearch(raw) {
     var query = (raw || "").trim();
-    // 「落盘前」演示态：查询前与零结果下方全空，也没有任何进行中反馈。
-    if (body.dataset.pvDemo === "search-blank") {
-      clearTimeout(searchTimer); clearTimeout(searchBusyTimer);
-      var hits = query ? searchIndex().filter(function (m) { return match(m, query); }) : searchIndex();
-      qa(".screen[data-screen='search'] .result-section").forEach(function (s) {
-        s.style.display = hits.length ? "" : "none";
-      });
-      body.dataset.pvSearch = hits.length ? "results" : "idle";
+    clearTimeout(searchTimer); clearTimeout(searchBusyTimer);
+    if (!query) {
+      renderSearchResults([]);
+      body.dataset.pvSearch = "idle";
       return;
     }
-    // P0-5 已落盘：三态互斥由 search_state_stack 决定，慢查询才在顶部起 spinner。
-    clearTimeout(searchTimer); clearTimeout(searchBusyTimer);
-    qa(".screen[data-screen='search'] .result-section").forEach(function (s) { s.style.display = ""; });
-    if (!query) { body.dataset.pvSearch = "idle"; return; }
+    if (body.dataset.pvDemo === "search-blank") {
+      var beforeHits = searchHits(query);
+      renderSearchResults(beforeHits);
+      body.dataset.pvSearch = beforeHits.length ? "results" : "idle";
+      return;
+    }
     searchBusyTimer = setTimeout(function () { body.dataset.pvSearch = "busy"; }, 300);
     searchTimer = setTimeout(function () {
       clearTimeout(searchBusyTimer);
-      var hits = searchIndex().filter(function (m) { return match(m, query); });
+      var hits = searchHits(query);
       var title = q("#search-none-title");
       if (title) title.textContent = tr("empty.search_none.title").replace("{query}", query);
-      qa(".screen[data-screen='search'] .result-section").forEach(function (s) {
-        s.style.display = hits.length ? "" : "none";
-      });
+      renderSearchResults(hits);
       body.dataset.pvSearch = hits.length ? "results" : "none";
     }, searchLatencyMs);
-  }
-  function match(item, query) {
-    var q = query.toLowerCase();
-    return item.name.toLowerCase().indexOf(q) >= 0 || item.date.indexOf(query) >= 0;
   }
 
   /* ------------------------------------------------------------ i18n */
@@ -704,6 +726,7 @@
       qa(".screen").forEach(function (s) { s.classList.remove("is-active"); });
     }
     emit("mode", mode);
+    renderViewerChrome();
     emit("routes");
   }
   function setTransparency(value) {
@@ -714,6 +737,7 @@
     // 深链/批次预设直接调本函数，界面里的滑杆要跟着反映状态。
     var range = q("#transparency-range");
     if (range && range !== document.activeElement) range.value = String(Math.round(t * 100));
+    emit("transparency", Math.round(t * 100));
   }
   function setMotion(off) {
     body.dataset.pvMotion = off ? "off" : "auto";
@@ -832,6 +856,7 @@
         qa(".field", field.closest(".field-bar")).forEach(function (f) {
           f.classList.toggle("active", f === field);
         });
+        runSearch((q("#search-input") || {}).value);
         return;
       }
       var thumb = ev.target.closest(".film-thumb[data-media]");
@@ -843,7 +868,8 @@
 
     document.addEventListener("contextmenu", function (ev) {
       var tile = ev.target.closest(".tile[data-media]");
-      if (!tile || body.dataset.pvMode !== "run") return;
+      if (!tile || body.dataset.pvMode !== "run" ||
+          (tile.closest('.screen[data-screen="search"]') && !enabled("p1-15"))) return;
       ev.preventDefault();
       var menu = q("#context-menu");
       if (!menu) return;
@@ -858,20 +884,22 @@
       }
     });
 
-    qa(".tile[data-media]").forEach(function (tile) {
-      tile.addEventListener("click", function (ev) {
-        if (body.dataset.pvMode !== "run") return;
-        ev.stopPropagation();
-        var grid = tile.closest(".tile-grid");
-        var tiles = qa(".tile[data-media]", grid);
-        var index = tiles.indexOf(tile);
-        if (multi) { toggleTile(tile); } else { openViewer(tiles, index); }
+    document.addEventListener("click", function (ev) {
+      if (body.dataset.pvMode !== "run") return;
+      var more = ev.target.closest(".screen[data-screen='search'] .more-tile");
+      if (more) {
+        openSearchMore(more.closest(".result-section"));
+        return;
+      }
+      var tile = ev.target.closest(".screen.is-active .tile[data-media]");
+      if (!tile) return;
+      if (tile.closest('.screen[data-screen="search"]') && multi && !enabled("p1-15")) return;
+      var grid = tile.closest(".tile-grid");
+      var tiles = qa('.tile[data-media]', grid).filter(function (item) {
+        return getComputedStyle(item).display !== "none";
       });
-    });
-    qa(".more-tile").forEach(function (m) {
-      m.addEventListener("click", function () {
-        toast("push 类型专属结果页（现状已实现）", { kind: "info", ms: 1800 });
-      });
+      if (multi) toggleTile(tile);
+      else openViewer(tiles, tiles.indexOf(tile));
     });
   }
 
@@ -883,6 +911,7 @@
         if (searchInput) { searchInput.value = ""; searchInput.focus(); }
         runSearch("");
         break;
+      case "search-more-back": back(); break;
       case "enter-multi": setMulti(true); toast("已进入多选：点击语义从「打开」翻转为「切换选中」", { kind: "info", ms: 2600 }); break;
       case "exit-multi": setMulti(false); break;
       case "select-all": selectAllInScreen(); break;
@@ -1002,7 +1031,7 @@
     tiles[next].focus();
     // :focus-visible 对脚本 focus 的判定是浏览器启发式，评审要可复现就显式标记。
     qa(".tile.kbd-focus").forEach(function (t) { t.classList.remove("kbd-focus"); });
-    if (enabled("p0-2")) tiles[next].classList.add("kbd-focus");
+    tiles[next].classList.add("kbd-focus");
     tiles[next].scrollIntoView({ block: "nearest", behavior: body.dataset.pvMotion === "off" ? "auto" : "smooth" });
     return true;
   }
@@ -1201,9 +1230,6 @@
       applyEditFilter();
       // P1-8：刚开启提案就应看到舞台提示，不必重进查看器；关闭时清掉 reveal 状态。
       revealStageHint(enabled("p1-8") && current === "viewer");
-      // P0-2 关掉后残留的显式焦点环要一起清掉。
-      if (!enabled("p0-2")) qa(".tile.kbd-focus").forEach(function (t) { t.classList.remove("kbd-focus"); });
-      // P2-3 / P2-4 是属性级补丁，开关一拨就得立刻生效，不必等重建。
       applyModeSelectorA11y();
       applyIconLabels();
     });

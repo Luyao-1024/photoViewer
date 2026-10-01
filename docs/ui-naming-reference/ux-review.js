@@ -34,10 +34,8 @@
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
   // 半落盘的条目只给未落盘那一半留标记：
-  //   p1-6 的「已选择 N 项」计数在照片页与相册详情页已落盘，两个标签因此转为常态
-  //        data-ui 条目（photos-selection-count-label / album-selection-count-label，
-  //        用 .multi-only 按真实 reveal 时机出现）；残留的 .pv-p1-6 标记只代表仍未
-  //        落盘的回收站计数，以及「rebuild 是否保留选择」这个演示开关。
+  //   p1-6 的照片/相册计数是常态，.pv-p1-6 仅代表回收站计数。
+  //   p1-7 的位置计数和边界反馈是常态，.pv-p1-7 仅代表倍率标签。
   var PROPOSALS = [
     {
       id: "p0-1",
@@ -117,7 +115,7 @@
       risk:
         "SquareTile 是自绘控件，需确认 GTK 的 :focus-visible 状态位能到达它；若到不了，退路是把 attach_kbd_nav（grid_css.rs:480-525）从「只接受 FlowBox」泛化为接受容器+焦点节点选择器。",
       demo:
-        "开启后照片页出现一枚常驻焦点环示例瓦片（tile-focus-ring），并在交互原型里让 :focus-visible 走查生效：按 Tab 让焦点进入网格，再用方向键走查。把「窗口宽度」调窄、「透明度」拉到 100 各看一次，环都应保持。关闭本提案＝回到落盘前的不可见焦点。",
+        "焦点环已落盘：照片、相册与回收站瓦片的键盘焦点在默认态可见。用 Tab 和方向键走查，再切换窗宽与透明度确认环不消失；提案芯片不关闭已落地行为。",
       landed:
         "B1 已落盘，方案被实测证据改写。GTK 把 widget 的 inset box-shadow 画在内容之下，缩略图直接盖掉它，所以暗描边由 list-item wrapper 承接：gridview.virtual-media-grid-view > child:focus / :focus-within { outline: 1px solid alpha(black,0.85) }，瓦片节点是 outline: 3px solid @accent_bg_color; outline-offset: -3px。@accent_color 在本机析出为浅橙（它是 accent 底色上的「可读文字色」），饱和色 @accent_bg_color 才压得住照片；FlowBox 网格同步换成它，保持一套焦点语言。GtkGridView 把焦点留在内部 wrapper 上并拒绝瓦片成为 focus widget，所以渲染测试快照取自 wrapper。规则放在 data/css/a11y.css 末尾（材质无关层，两种模式共用，不进 liquid/plain 镜像块）。测试：ui::grid_css::tests::grid_tile_focus_ring_is_assembled 与 tests::render::virtual_grid_tile_focus_ring_renders（断言与具体 accent 色无关：环带与白底通道差 ≥ 60、hairline 近黑、内芯 8px 不变、周边重绘 ≥ 2*(w+h)）。"
     },
@@ -153,7 +151,7 @@
         "i18n/*.json"
       ],
       tests: [
-        "cargo test ui::photos_page（点 select_mode_btn 后三个 grid 的 is_multi_select_mode() 为真、exit revealer.reveal_child 为真）",
+        "cargo test ui::photos_page（经网格路径进入多选后 exit revealer.reveal_child 为真；2026-10-02 起没有 select_mode_btn 可点）",
         "cargo test --test e2e_browsing"
       ],
       docs: [
@@ -164,9 +162,9 @@
       risk:
         "header [start] 已挤了 search + 两个 revealer，窄窗口可能换行或裁切；必要时放 [end] 最左位（注意 [end] 是 edge-first 反向声明，photos-page.blp:11-15）。",
       demo:
-        "照片页与相册详情页的常驻入口（select-mode-button / album-select-mode-button）都已是真实行为：命名总览里始终可查，交互原型里相册详情顶栏现在与照片页同位同名地有完整的进出多选与批量动作 chrome，点入口即进入多选、入口收起、退出/全选/批量动作 reveal。把「窗口宽度」切到窄，检查两页 header 是否溢出。剩余未落盘的是长按回退覆盖旧 FlowBox 网格（搜索结果分区）——见 browsing.md 记录的独立缺口。",
+        "照片页与相册详情页都已是完整的进出多选与批量动作 chrome，但没有常驻入口（2026-10-02 按库主决定移除）：在交互原型里右键瓦片 → 「多选」即进入，入口热区已从两页 header 摘除，进入后退出/全选/批量动作照常 reveal。把「窗口宽度」切到窄，检查两页 header 是否溢出。剩余未落盘的是长按回退覆盖旧 FlowBox 网格（搜索结果分区）——见 browsing.md 记录的独立缺口。",
       landed:
-        "B3 已落盘（照片页 + 虚拟网格 + 相册详情页）。照片页：header [start] 新增 select_mode_revealer → select_mode_btn（photos-page.blp:49-58），图标实际用 selection-mode-symbolic——草案写的 check-select-symbolic 在本机 Adwaita 图标主题里不存在；tooltip 复用 photos.batch.multi_select（photos_page.rs:419-421），点击对三套分组网格一并 set_multi_select_mode(true) 后把焦点交进当前可见瓦片（:747-757），reveal 由 refresh_selection_ui() 的 !any_multi 驱动（:1286-1288），与 exit_multi_select_btn 形成对称进出。factory.rs:97-111 追加 GestureLongPress(button=1, touch_only=true) 走与右键同一个 show_context_menu，touch_only 保证慢点击不会与 click-to-open 打架；右键项保留。相册页那一半也已落盘：album-detail-page.blp:24-89 复刻同名同位的五个 revealer/button（含 select_all、exit、add_to_album、delete_to_trash），wire_selection_chrome()（album_detail_page.rs:266）用同一批 photos.batch.* 文案，refresh_selection_ui()（:409）由 grid.connect_selection_changed 驱动；全选走 select_all_in_album()（:365）+ ALBUM_SELECT_ALL_LIMIT=2000 从 MediaRepository 按相册查询取 id，而不是网格已加载窗口——探针截图发现旧写法 select_all() 在未 realize 的 ready set 上会静默清空选择。Ctrl+A / Delete / Escape 在相册页与照片页语义一致。刻意保留：相册页不放假的收藏按钮（该页 on_set_favorite 目前是 no-op）。仍在 backlog 的缺口：旧 FlowBox 网格（搜索结果分区）以 enable_context_menu: false 构造，既无右键也无长按，也没有任何多选入口。测试：ui::photos_page::tests、ui::virtual_media_grid::tests、--test ui_photos_toolbar（6 个 glass-toolbar-button）、ui::album_detail_page::tests（12 个，含 60 张相册只加载 10 张时的全选）。"
+        "B3 已落盘（照片页 + 虚拟网格 + 相册详情页）。照片页：header [start] 新增 select_mode_revealer → select_mode_btn（photos-page.blp:49-58），图标实际用 selection-mode-symbolic——草案写的 check-select-symbolic 在本机 Adwaita 图标主题里不存在；tooltip 复用 photos.batch.multi_select（photos_page.rs:419-421），点击对三套分组网格一并 set_multi_select_mode(true) 后把焦点交进当前可见瓦片（:747-757），reveal 由 refresh_selection_ui() 的 !any_multi 驱动（:1286-1288），与 exit_multi_select_btn 形成对称进出。factory.rs:97-111 追加 GestureLongPress(button=1, touch_only=true) 走与右键同一个 show_context_menu，touch_only 保证慢点击不会与 click-to-open 打架；右键项保留。相册页那一半也已落盘：album-detail-page.blp:24-89 复刻同名同位的五个 revealer/button（含 select_all、exit、add_to_album、delete_to_trash），wire_selection_chrome()（album_detail_page.rs:266）用同一批 photos.batch.* 文案，refresh_selection_ui()（:409）由 grid.connect_selection_changed 驱动；全选走 select_all_in_album()（:365）+ ALBUM_SELECT_ALL_LIMIT=2000 从 MediaRepository 按相册查询取 id，而不是网格已加载窗口——探针截图发现旧写法 select_all() 在未 realize 的 ready set 上会静默清空选择。Ctrl+A / Delete / Escape 在相册页与照片页语义一致。刻意保留：相册页不放假的收藏按钮（该页 on_set_favorite 目前是 no-op）。仍在 backlog 的缺口：旧 FlowBox 网格（搜索结果分区）以 enable_context_menu: false 构造，既无右键也无长按，也没有任何多选入口。测试：ui::photos_page::tests、ui::virtual_media_grid::tests、--test ui_photos_toolbar（6 个 glass-toolbar-button）、ui::album_detail_page::tests（12 个，含 60 张相册只加载 10 张时的全选）。**2026-10-02 更新**：常驻 header 入口（select_mode_revealer → select_mode_btn，两页模板与 Imp 字段、点击 handler、tooltip、refresh_selection_ui 的 !any_multi 门控）按库主决定整体移除；进入多选改回右键/长按菜单项、键盘 Space / Ctrl+A，退出按钮与批量 chrome 不变。测试改为：ui::photos_page::tests::multi_select_entered_without_a_header_entry_hands_over_to_exit_and_back、--test ui_photos_toolbar（5 个 glass-toolbar-button）、ui::album_detail_page::tests。"
     },
     {
       id: "p0-4",
@@ -287,7 +285,7 @@
       docs: ["docs/modules/browsing.md", "docs/modules/ui-design.md:105-109"],
       risk: "重放依赖 MediaId 稳定；移出库的 id 自然消失，需确认 select_ids 对不存在 id 静默跳过。",
       demo:
-        "开启后在照片页多选几张，点工具条「触发一次 rebuild」：选择保留并提示保留数量。关闭本提案再看计数：header 里没有「已选择 N 项」（P1-6 落盘前的现状）。本条「跳到演示界面」是三步循环：选 3 项 → 全选 → 模拟命中 2000 上限的「（已达上限）」变体；静态页只有 18 张样图，上限只能显式模拟。",
+        "照片页与相册页计数已落地：选几项后点「触发一次 rebuild」，无论 P1-6 芯片开关如何，选择与多选模式都保留。芯片只控制尚未落地的回收站计数；本条演示的三步循环依次显示普通计数、全选计数与模拟 2000 上限文案。",
       landed:
         "计数那一半已落盘（照片页 + 相册详情页），「重建清空选择」那一半经实测不成立。落点：photos-page.blp:122-139 / album-detail-page.blp:91-106 的 selection_count_revealer→selection_count_label，photos_page.rs:1317-1331 / album_detail_page.rs:439-447 写文案与 reveal，i18n 两表新增 photos.selection.count / photos.selection.limit（parity 429/429），base.css:472-480 的 .selection-count 保持扁平 header 文本。两处偏差：(1) 草案说放 [start]，实施先试 header title-widget，被 libadwaita 的真实行为否决——放在 Adw.NavigationPage 里的 Adw.HeaderBar 会在 title 槽显示页面标题（「照片」/相册名），占用它等于无选择时删掉页面身份；(2) 最终落 [end] 最左，读作「已选择 N 项 ＋ ♡ ⌫」，并用 photos_page/tests.rs:754 在 800x600 实测计数与批量图标不互相挤出 24px。证据更正：loading.rs:562/591 的 clear_selection 属于旧 FlowBox 网格，而它在生产里只剩搜索结果分区（enable_context_menu: false，无多选 UI），所以没有可丢失的用户选择；VirtualMediaGrid 的共享投影刷新路径不清 selected，已由 virtual_media_grid/tests.rs:773 锁住（追加第 7 项后断言 layout 真的长大且 id 集合与多选模式都保留）。剩余尾巴：回收站 action bar 计数（trash-page.blp / trash_page.rs:91,226）与 2000 上限档的真实复现仍未落地。"
     },
@@ -328,7 +326,7 @@
       landed:
         "位置计数器 + 到底反馈两项已落盘（2026-10-01）。落点：viewer-page.blp 在 [start] 末尾新增 Gtk.Label position_label（viewer-date-label 之后），base.css 把 .viewer-date-label 与 .viewer-position-label 合并为 font-variant-numeric: tabular-nums（位置计数器另带 libadwaita .dim-label）；viewer_page.rs imp 新增 position_label TemplateChild + position_request_token + prev_exhausted/next_exhausted；viewer/navigation.rs 新增 update_position_label（spwan_blocking + 双重 token 守卫）、set_nav_direction_available / nav_direction_available / reset_nav_bounds、handle_nav_key（编辑态仍 Handled）；navigate_by_delta 的 Ok(None) 改为 set_nav_direction_available(delta, false)；prefetch_neighbors 的 Ok(None) 同。db 侧：db::media_sort_expr + db::rank_and_total（0-based，与 media_neighbor_with_filter_and_order 共享，避免 rank 与 ←/→ 走序不一致）+ pub fn media_position()(1-based rank, total)；MediaRepository::position 新方法 + 抽出 nav_projection 让 neighbor_item / position 走同一 (filter, params, trashed)。i18n 两族新增 viewer.position.count = \"{current} / {total}\"（parity 434/434）。键盘 ←/→ 在已解析端返回 KeyboardResult::Ignored。",
       demo:
-        "开启后打开查看器：header 出现「N / M」定位（默认 visible:false，show_at 后异步刷出）、日期与文件名；按 → 走到最后一张时下一张按钮以 opacity 0.32 灰度（关闭时它会静默无响应）。"
+        "位置计数与两端箭头禁用已落地，默认态打开查看器即可看到「N / M」并在首尾看到禁用态。P1-7 芯片只演示未落地的缩放倍率：点放大后显示百分比；真实应用的倍率标签和视频首尾箭头预判仍待处理。"
     },
     {
       id: "p1-8",
@@ -872,6 +870,27 @@
     if (!bar) return;
     // 保留 <noscript>
     qa(".ux-row", bar).forEach(function (r) { r.remove() });
+
+    /* ---- 行 0：收纳开关。收起后整条评审工具条只剩这一行，不再遮挡
+       下方原型内容（也方便对页面截图）。状态存 localStorage。---- */
+    var rowToggle = el("div", "ux-row ux-toggle-row");
+    var uxBarCollapsed = false;
+    try { uxBarCollapsed = localStorage.getItem("pv-uxbar-collapsed") === "1"; } catch (e) { }
+    var collapseBtn = chipBtn("收起检视 ▴", function () {
+      uxBarCollapsed = !uxBarCollapsed;
+      try { localStorage.setItem("pv-uxbar-collapsed", uxBarCollapsed ? "1" : "0"); } catch (e) { }
+      applyUxBarCollapse();
+    }, "ux-collapse-btn");
+    collapseBtn.setAttribute("aria-expanded", "true");
+    rowToggle.appendChild(collapseBtn);
+    bar.appendChild(rowToggle);
+
+    function applyUxBarCollapse() {
+      bar.classList.toggle("ux-collapsed", uxBarCollapsed);
+      collapseBtn.textContent = uxBarCollapsed ? "展开检视 ▾" : "收起检视 ▴";
+      collapseBtn.setAttribute("aria-expanded", uxBarCollapsed ? "false" : "true");
+    }
+    applyUxBarCollapse();
 
     /* ---- 行 1：模式 + 路由 ---- */
     var row1 = el("div", "ux-row");
@@ -1580,7 +1599,7 @@
     buildBar();
     trackCrumb();
     ["proposal", "proposalChange", "screen", "routes", "multi", "selection", "scan",
-      "mode", "width", "locale", "motionUI", "materialUI"].forEach(function (evt) {
+      "mode", "width", "locale", "transparency", "motionUI", "materialUI"].forEach(function (evt) {
       PV.on(evt, function () {
         syncBar();
         writeHash();
