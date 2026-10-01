@@ -1280,20 +1280,30 @@ body[data-pv~="p1-8"] .sc-row.pv-p1-8 { display: flex; }
 body[data-pv-demo="shortcut-blind"] .pref-row[data-ui="shortcut-reference-group"] { display: none; }
 body[data-pv-demo="shortcut-blind"] #shortcuts-window { display: none; }
 
-/* P0-5 搜索三态 */
-body[data-pv~="p0-5"] .status-page.pv-p0-5--idle,
-body[data-pv~="p0-5"] .status-page.pv-p0-5--none { display: flex; }
-body[data-pv~="p0-5"][data-pv-search="idle"] .pv-p0-5--idle { display: flex; }
-body[data-pv~="p0-5"][data-pv-search="idle"] .pv-p0-5--none,
-body[data-pv~="p0-5"][data-pv-search="none"] .pv-p0-5--idle,
-body[data-pv~="p0-5"][data-pv-search="results"] .pv-p0-5--idle,
-body[data-pv~="p0-5"][data-pv-search="results"] .pv-p0-5--none,
-body[data-pv~="p0-5"][data-pv-search="idle"] .result-section,
-body[data-pv~="p0-5"][data-pv-search="none"] .result-section { display: none; }
-body[data-pv~="p0-5"][data-pv-search="none"] .pv-p0-5--none { display: flex; }
-body[data-pv~="p0-5"][data-pv-search="busy"] .search-spinner { display: flex; }
-body[data-pv~="p0-5"][data-pv-search="busy"] .result-section,
-body[data-pv~="p0-5"][data-pv-search="busy"] .status-page { display: none; }
+/* P0-5 已落盘：搜索页三态（查询前 / 结果 / 零结果）与慢查询进行中指示都是常态行为，
+   由 body[data-pv-search] 驱动，不再挂提案 token。规则限定在搜索屏内，因为
+   .status-page 是跨屏幕复用的类名，其它屏幕的空态不能被搜索态牵动。 */
+.screen[data-screen="search"] .search-busy { display: none; align-items: center; gap: 8px; }
+.screen[data-screen="search"] .status-page--idle,
+.screen[data-screen="search"] .status-page--none { display: none; }
+body[data-pv-search="idle"] .screen[data-screen="search"] .status-page--idle,
+body[data-pv-search="none"] .screen[data-screen="search"] .status-page--none { display: flex; }
+body[data-pv-search="idle"] .screen[data-screen="search"] .result-section,
+body[data-pv-search="none"] .screen[data-screen="search"] .result-section { display: none; }
+/* 进行中指示只在超过 300ms 的慢查询里出现，且压在结果之上而不是整页替换。 */
+body[data-pv-search="busy"] .screen[data-screen="search"] .search-busy { display: flex; }
+body[data-pv-search="busy"] .screen[data-screen="search"] .status-page { display: none; }
+/* 落盘前对照走显式演示态（工具条「落盘前：搜索页只有搜索框」→ search-blank），
+   不挂在提案 token 上：已落盘的三态是命名图的一部分，点一下芯片不该让它消失。 */
+body[data-pv-demo="search-blank"] .screen[data-screen="search"] .search-busy,
+body[data-pv-demo="search-blank"] .screen[data-screen="search"] .status-page { display: none; }
+/* 栈容器与结果页：命名图里各自是一个热点，隐藏页不占位。 */
+.screen[data-screen="search"] .search-state-stack,
+.screen[data-screen="search"] .search-results-box { display: flex; flex-direction: column; gap: 14px; }
+.screen[data-screen="search"] .search-state-stack { flex: 1; }
+body[data-pv-search="idle"] .screen[data-screen="search"] .search-results-box,
+body[data-pv-search="none"] .screen[data-screen="search"] .search-results-box { display: none; }
+body[data-pv-demo="search-blank"] .screen[data-screen="search"] .search-results-box { display: flex; }
 
 /* P1-14 减少动画。提案芯片本身也要有可见反应：只挂环境开关的话，
    评审时点亮 P1-14 什么也不会发生，就无法对比「有/无 reduce-motion」。 */

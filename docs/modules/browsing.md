@@ -170,6 +170,31 @@ counts instead of splitting the page 50/50. Opening the viewer from a result
 section passes a kind-scoped search query so previous/next navigation remains
 inside that section's result set.
 
+`SearchPage` has exactly three content states, held in one `Gtk.Stack`
+(`search_state_stack`) so a placeholder can never overlap live results: `idle`
+(an `Adw.StatusPage` prompting for a query, shown whenever the entry is blank),
+`results` (the image and video sections), and `no-results` (an `Adw.StatusPage`
+naming the trimmed term with a Clear Search action that returns to `idle`).
+`set_search_state` chooses the state from the current entry text and the result
+counts, and `remove_media_ids_from_results` refreshes it so trashing the last
+match lands on the miss page. The stack disables both `hhomogeneous` and
+`vhomogeneous` so the placeholder and the grid do not dictate each other's size.
+
+A slow query shows a spinner in `search_busy_box` only after
+`SEARCH_BUSY_DELAY_MS` (300 ms) has elapsed, so an instant search never flashes
+an indicator. The delay is armed per query and disarmed through the
+`busy_generation` token rather than by removing a `glib::SourceId`: removing an
+already-fired source id panics and dropping the id does not cancel the source.
+
+Every string on this page comes from `i18n/*.json` at runtime. Blueprint
+templates must carry no literal `label`, `title`, `text`, `placeholder-text`,
+`tooltip-text`, `subtitle` or `description`; `tests/ui_template_copy.rs`
+enforces that across `data/ui/*.blp`. The segmented field buttons therefore have
+empty labels in the template and are labelled in `SearchPage::new`, and
+`tools/assert-at-spi.py` derives the expected toggle names from the catalogue for
+the locale the app resolves, so `全部`、`文件名`、`日期` is a zh-CN expectation
+rather than a frozen constant.
+
 When the initial DB snapshot is empty, `PhotosPage` shows an empty-state child, but it must switch back to the Day grid as soon as the shared `media_list` receives items from background startup scanning. Do not leave the `ViewStack` pinned to the empty child after `items-changed` adds media.
 
 Emptiness has three different causes and each needs its own child, all routed by

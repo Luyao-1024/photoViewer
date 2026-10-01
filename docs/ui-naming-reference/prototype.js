@@ -486,9 +486,16 @@
     return SEARCH_INDEX;
   }
   var searchTimer = null;
+  var searchBusyTimer = null;
+  // 假延迟默认 200ms，低于 SEARCH_BUSY_DELAY_MS(300ms)，所以常态下看不到进行中指示——
+  // 这正是落盘行为「瞬时搜索不闪指示」。工具条的「慢查询」把它抬到 300ms 以上。
+  var searchLatencyMs = 200;
+  function setSearchLatency(ms) { searchLatencyMs = ms; runSearch((q("#search-input") || {}).value); }
   function runSearch(raw) {
     var query = (raw || "").trim();
-    if (!enabled("p0-5")) {
+    // 「落盘前」演示态：查询前与零结果下方全空，也没有任何进行中反馈。
+    if (body.dataset.pvDemo === "search-blank") {
+      clearTimeout(searchTimer); clearTimeout(searchBusyTimer);
       var hits = query ? searchIndex().filter(function (m) { return match(m, query); }) : searchIndex();
       qa(".screen[data-screen='search'] .result-section").forEach(function (s) {
         s.style.display = hits.length ? "" : "none";
@@ -496,24 +503,21 @@
       body.dataset.pvSearch = hits.length ? "results" : "idle";
       return;
     }
-    if (!query) {
-      body.dataset.pvSearch = "idle";
-      qa(".screen[data-screen='search'] .result-section").forEach(function (s) { s.style.display = ""; });
-      return;
-    }
-    body.dataset.pvSearch = "busy";
-    clearTimeout(searchTimer);
+    // P0-5 已落盘：三态互斥由 search_state_stack 决定，慢查询才在顶部起 spinner。
+    clearTimeout(searchTimer); clearTimeout(searchBusyTimer);
+    qa(".screen[data-screen='search'] .result-section").forEach(function (s) { s.style.display = ""; });
+    if (!query) { body.dataset.pvSearch = "idle"; return; }
+    searchBusyTimer = setTimeout(function () { body.dataset.pvSearch = "busy"; }, 300);
     searchTimer = setTimeout(function () {
+      clearTimeout(searchBusyTimer);
       var hits = searchIndex().filter(function (m) { return match(m, query); });
       var title = q("#search-none-title");
-      if (title) title.textContent = locale() === "en"
-        ? "No results for “" + query + "”"
-        : "未找到与「" + query + "」相关的结果";
+      if (title) title.textContent = tr("empty.search_none.title").replace("{query}", query);
       qa(".screen[data-screen='search'] .result-section").forEach(function (s) {
         s.style.display = hits.length ? "" : "none";
       });
       body.dataset.pvSearch = hits.length ? "results" : "none";
-    }, 420);
+    }, searchLatencyMs);
   }
   function match(item, query) {
     var q = query.toLowerCase();
@@ -544,9 +548,16 @@
       "album.images.name": "图片", "album.videos.name": "视频", "album.motion_photos.name": "动态图片",
       "album.animated.name": "动图", "album.hdr.name": "HDR", "album.favorites.name": "收藏",
       "album.no_albums_yet": "还没有相册",
-      // 提案新增：P1-6 选择计数；P0-5 字段切换（现状硬编码在 search-page.blp:36-47）。
+      // 提案新增：P1-6 选择计数（仍未落盘）。
       "photos.selection.count": "已选择 {n} 项", "photos.selection.limit": "（已达上限）",
+      // P0-5 已落盘：以下 8 个键逐字取自仓库 i18n/zh-CN.json，
+      // 三个字段标签在真实代码里由 search_page.rs:198-200 填入，模板不再硬编码。
       "search.field.all": "全部", "search.field.name": "文件名", "search.field.date": "日期",
+      "empty.search_idle.title": "搜索你的图库",
+      "empty.search_idle.description": "输入文件名或拍摄日期（YYYY/MM/DD）开始搜索。",
+      "empty.search_none.title": "没有找到「{query}」",
+      "empty.search_none.description": "换一个关键词，或将搜索字段切回「全部」。",
+      "empty.search_none.clear": "清除搜索",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/zh.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "键盘快捷键", "keyboard.group.global": "全局", "keyboard.group.browsing": "浏览与选择",
       "keyboard.group.viewer": "图片查看", "keyboard.show_shortcuts": "显示键盘快捷键", "keyboard.cancel_or_close": "取消或关闭",
@@ -582,6 +593,11 @@
       "album.no_albums_yet": "No Albums Yet",
       "photos.selection.count": "{n} selected", "photos.selection.limit": " (limit reached)",
       "search.field.all": "All", "search.field.name": "File name", "search.field.date": "Date",
+      "empty.search_idle.title": "Search Your Library",
+      "empty.search_idle.description": "Type a file name or a shooting date (YYYY/MM/DD) to start.",
+      "empty.search_none.title": 'No results for "{query}"',
+      "empty.search_none.description": "Try a different term, or switch the search field back to All.",
+      "empty.search_none.clear": "Clear Search",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/en.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "Keyboard Shortcuts", "keyboard.group.global": "Global",
       "keyboard.group.browsing": "Browsing & Selection", "keyboard.group.viewer": "Photo Viewer",
@@ -628,9 +644,9 @@
     qa(LOCALIZED_TEXT).forEach(localizeText);
     qa("[data-i18n]").forEach(function (el) {
       var key = el.dataset.i18n;
-      // data-i18n-hardcoded：真实代码里这个字符串写死在模板中（search-page.blp:36-47），
-      // 未开启 P0-5 时英文界面下依然是中文——这正是缺陷本身，不要「修好」它。
-      if (el.hasAttribute("data-i18n-hardcoded") && !enabled("p0-5")) {
+      // data-i18n-hardcoded：字符串仍写死在模板里的历史形态（search-page.blp:36-47 旧版），
+      // 只在「落盘前」演示态复现——P0-5 之后真实代码走 tr()，英文界面显示英文标签。
+      if (el.hasAttribute("data-i18n-hardcoded") && body.dataset.pvDemo === "search-blank") {
         el.textContent = I18N.zh[key];
         return;
       }
@@ -649,6 +665,13 @@
     });
     var input = q("#search-input");
     if (input) input.placeholder = tr("search.placeholder");
+    // 零结果标题回显关键词，所以只能由搜索流程写入；这里跟着语言重算一次，
+    // 与真实实现一致（set_search_state 每次显示前刷新标题）。
+    var noneTitle = q("#search-none-title");
+    var noneQuery = ((input && input.value) || "").trim();
+    if (noneTitle && noneQuery) {
+      noneTitle.textContent = tr("empty.search_none.title").replace("{query}", noneQuery);
+    }
     // 快捷键表里的字形来自 gtk_accelerator_get_label，方向键与空格跟随界面语言，
     // 所以中文「上/下/左/右/空格」、英文 Up/Down/Left/Right/Space。
     qa("kbd[data-kbd-en]").forEach(function (el) {
@@ -852,6 +875,12 @@
 
   function runAction(act, el, ev) {
     switch (act) {
+      // P0-5 已落盘：零结果页的「清除搜索」清空输入框、把焦点交回搜索框并回到查询前态。
+      case "search-clear":
+        var searchInput = q("#search-input");
+        if (searchInput) { searchInput.value = ""; searchInput.focus(); }
+        runSearch("");
+        break;
       case "enter-multi": setMulti(true); toast("已进入多选：点击语义从「打开」翻转为「切换选中」", { kind: "info", ms: 2600 }); break;
       case "exit-multi": setMulti(false); break;
       case "select-all": selectAllInScreen(); break;
@@ -1192,6 +1221,7 @@
     setTransparency: setTransparency, setMotion: setMotion, setMaterial: setMaterial,
     setWidth: setWidth, setLocale: setLocale, applyLocale: applyLocale,
     setMulti: setMulti, toggleTile: toggleTile, selectedIds: selectedIds, updateCount: updateCount,
+    runSearch: runSearch, setSearchLatency: setSearchLatency,
     selectAll: selectAllInScreen, simulateRebuild: simulateRebuild,
     openViewer: openViewer, stepViewer: stepViewer, stepZoom: stepZoom,
     resetTransform: resetTransform, toggleDetails: toggleDetails, toggleEditor: toggleEditor,

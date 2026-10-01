@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页+虚拟网格那一半）与 P0-4（快捷键应用内可发现）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页+虚拟网格那一半）、P0-4（快捷键应用内可发现）与 P0-5（搜索三态 + 模板去硬编码中文）已实施并本地提交，未实施的条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -295,6 +295,21 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 **需同步文档**：`docs/modules/browsing.md`（搜索三态）、`docs/ui-naming-reference/index.html`（新 stack/StatusPage 命名）、`AGENTS.md`（若把「模板禁止硬编码文案」升级为规则——建议升级，见文末建议）。
 
 **风险**：`tools/assert-at-spi.py` 是黑盒 AT-SPI 探针，改动会降低其对真实标签漂移的敏感度；用「从 i18n json 取期望值」而不是「放宽断言」来避免这一点。
+
+**实施结果**（已落盘）：三态收进一个 `Gtk.Stack search_state_stack`（页名 `idle`/`results`/`no-results`，`set_search_state`（`search_page.rs:547-567`）依当前输入与命中数选页），两个占位页由 `empty_states::search_idle()`（`:130-140`）与 `empty_states::no_search_results(on_clear)`（`:149-166`）提供，零结果标题每次显示前用 `no_search_results_title(&query)`（`:142-146`）刷新并回显 `trim()` 后的关键词；`remove_media_ids_from_results` 末尾补一次状态刷新，删掉最后一张命中图会落到零结果页。模板侧 `search-page.blp:65-107` 新增 `search_busy_box → search_spinner` 与 `search_state_stack → search_results_box`。与方案的偏差：
+
+1. **进行中指示用 `gtk::Spinner` 而非 `adw::Spinner`**，且只有图标、不带「正在搜索…」文案：这一行只在查询超过 `SEARCH_BUSY_DELAY_MS = 300`（`search_page.rs:35`）后才出现，为一条瞬时提示再造第 9 个键不值当。
+2. **栈只负责整页互斥，两个分区各自的 `set_visible` 保留**：否则只命中图片或只命中视频时会露出一个空分区标题。
+3. **必须关掉 `hhomogeneous`/`vhomogeneous`**：结果网格与占位页尺寸差很多，隐藏页会决定栈高。
+4. **「移除计时器 SourceId」在本机是真崩溃**：`end_search_busy()` 对已触发的 source 调 `SourceId::remove()` 报 `GLib-CRITICAL g_source_remove: Source ID 10 was not found` 后 panic，而 drop `SourceId` 并不取消源（gtk4-rs 0.8.2 无 `Drop` impl）。改为 `busy_generation: Cell<Option<u64>>` 代次失效，测试 `a_settled_query_never_paints_the_busy_row` 锁住这条。
+5. **文案在落地时收敛**：草案的「搜索图库」→「搜索你的图库」，「未找到与「zzz」相关的结果」→「没有找到 `{query}`」，描述→「换一个关键词，或将搜索字段切回「全部」。」；新增 8 个键（`search.field.*` 3 + `empty.search_idle.*` 2 + `empty.search_none.*` 3），`i18n/zh-CN.json` 与 `en.json` 各 427 键对齐。
+6. **顺带修掉一处公共缺陷**：`AdwStatusPage` 会填满自己的 child，`empty_states::add_action` 建的 pill 按钮被拉成整页宽（截图实测），加 `halign=CENTER`（`empty_states.rs:30`）后 P0-1 那两张照片页占位同时受益。
+7. **「模板禁止硬编码文案」已升级为不变量**：`AGENTS.md` 的 UI Invariants 收录，`tests/ui_template_copy.rs` 全仓扫描 `data/ui/*.blp` 的七种文案属性（`label`/`title`/`text`/`placeholder-text`/`tooltip-text`/`subtitle`/`description`），并单独断言 `search-page.blp` 以注释形式留下三个 i18n 键名；用注入字面量的方式验证过该测试不是空跑。
+8. **读屏探针改为按 locale 推导**：`tools/assert-at-spi.py` 的 `SEARCH_FIELD_KEYS` + `search_field_labels(locale)` 从 `i18n/<locale>.json` 取期望值，locale 解析顺序与应用一致（config `i18n.json` → `PHOTO_VIEWER_LOCALE` → `LC_ALL`/`LANG`/`LANGUAGE` → `en`），另有 `--locale` 覆盖；`tests/visual_check_script.rs` 把脚本保留的 zh 兜底常量逐字钉在 `i18n/zh-CN.json` 上，标签漂移仍会红。
+
+**实测过的验证**：`ui::search_page::tests` 7 项、`--test ui_search_page` 2 项、`--test ui_template_copy` 2 项、`--test visual_check_script` 7 项、`--test inline_test_ownership` 5 项、`--test ux_click_flows` 1 项（真实点击穿过新栈）、`core::i18n` 2 项，全部在 `tools/with-at-spi.sh xvfb-run -a` 下 PASS。
+
+**无头截图里的一个假缺陷**：`results` 态截图在页面中部残留一行极淡的文字，一度怀疑隐藏的栈子节点仍在 painting。三条证据判定它是 Xvfb 的脏背板而非产品缺陷：(1) 部件树 dump 显示任一时刻只有一个栈子节点 `is_mapped()`；(2) 关掉 crossfade 残留仍在，而让 idle 页从头就不显示则残留消失；(3) 强制窗口 resize 后画面干净。即 headless 下帧时钟在切页后停摆，最后一帧的残影留在 X 背板里——这条只影响截图判读，不影响真机。
 
 ---
 
@@ -641,9 +656,10 @@ gridview.virtual-media-grid-view > child > .glass-thumb-card:focus-visible {
 | `docs/modules/keyboard.md:60-69` | 声明应用内发现路径与「binding ↔ shortcuts」防漂移断言 | B4 |
 | `docs/modules/editor.md` | 退出确认与前后对比契约 | B8 |
 | `docs/modules/ui-liquid-glass.md` | 焦点环属 a11y 层且与透明度无关；新增「动效与 reduce-motion」一节 | B1、B9 |
-| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态 | B2、B3、B9 |
+| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示 | B2、B3、B5、B9 |
 | `docs/modules/storage.md` | `DomainEvent::ScanPhase` 契约、缩略图失败语义 | B2、B8 |
-| `AGENTS.md`（建议） | 新增一条 UI 不变量：「`data/ui/*.blp` 中不得出现硬编码可见文案，一律 `tr()`/`trf()`」 | B5 |
+| `docs/testing.md` | `--a11y-smoke` 的搜索字段期望值改为按 locale 从 `i18n/<locale>.json` 取，中文标签不再是常量 | B5 |
+| `AGENTS.md`（B5 已加） | UI 不变量已落地：「`data/ui/*.blp` 不得出现硬编码可见文案，一律 `tr()`/`trf()`」，由 `tests/ui_template_copy.rs` 全仓扫描把关 | B5 |
 
 ---
 

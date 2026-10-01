@@ -126,7 +126,9 @@ fn at_spi_semantics_probe_documents_the_required_search_contract() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("roles, names, and focus") && stdout.contains("--timeout"),
+        stdout.contains("roles, names, and focus")
+            && stdout.contains("--timeout")
+            && stdout.contains("--locale"),
         "AT-SPI semantics probe should document its contract\nstdout:\n{stdout}"
     );
 
@@ -135,16 +137,45 @@ fn at_spi_semantics_probe_documents_the_required_search_contract() {
     for required in [
         "Photo Viewer",
         "照片查看器",
-        "全部",
-        "文件名",
-        "日期",
         "ROLE_TOGGLE_BUTTON",
         "ROLE_ENTRY",
         "STATE_FOCUSED",
+        "FALLBACK_SEARCH_FIELD_LABELS",
     ] {
         assert!(
             probe.contains(required),
             "AT-SPI semantics probe should require {required:?}"
+        );
+    }
+
+    // The Search field switch is translated, so the probe must resolve what a
+    // screen reader hears from the app's own catalogues. Freezing one language
+    // here made the smoke fail in a correctly-rendered English session (P0-5).
+    let field_keys = ["search.field.all", "search.field.name", "search.field.date"];
+    for key in field_keys {
+        assert!(
+            probe.contains(key),
+            "AT-SPI semantics probe should read {key:?} from the catalogues"
+        );
+    }
+    assert!(
+        probe.contains("i18n") && probe.contains("json.loads"),
+        "AT-SPI semantics probe should load the i18n catalogues instead of hard-coding labels"
+    );
+
+    // The built-in tuple is only a fallback for an unreadable checkout, so it has
+    // to stay a faithful copy of the zh-CN catalogue.
+    let zh: std::collections::BTreeMap<String, String> = serde_json::from_str(
+        &std::fs::read_to_string("i18n/zh-CN.json").expect("read the zh-CN catalogue"),
+    )
+    .expect("zh-CN catalogue should parse");
+    for key in field_keys {
+        let label = zh
+            .get(key)
+            .unwrap_or_else(|| panic!("zh-CN catalogue is missing {key:?}"));
+        assert!(
+            probe.contains(label.as_str()),
+            "AT-SPI semantics probe fallback should still carry the {key:?} label {label:?}"
         );
     }
 }

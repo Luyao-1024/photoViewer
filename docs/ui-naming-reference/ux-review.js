@@ -237,11 +237,13 @@
         "cargo test ui::search_page（零结果 → 可见 StatusPage；查询前 → 提示态）",
         "a11y 冒烟脚本相关测试 + 人工双 locale 目测三个标签"
       ],
-      docs: ["docs/modules/browsing.md", "docs/ui-naming-reference/index.html", "AGENTS.md"],
+      docs: ["docs/modules/browsing.md", "docs/testing.md", "docs/ui-naming-reference/index.html", "AGENTS.md"],
       risk:
         "改 assert-at-spi.py 会降低其对真实标签漂移的敏感度；用「从 i18n json 取期望值」而非放宽断言来避免。",
       demo:
-        "开启后进入搜索页：清空输入是「查询前」态，输入不存在的关键词（如 zzz）先看到 spinner 再看到「没有匹配结果」+ 清除按钮；把语言切到 EN，三个分段标签随 locale 变。关闭本提案时标签恒为中文、零结果下方全空。"
+        "本项已落盘，所以三态与进行中指示是常态：进入搜索页清空输入即「查询前」态，输入不存在的关键词（如 zzz）落到「没有找到「zzz」」+「清除搜索」，命中则回到结果分区；把语言切到 EN，三个分段标签随之变成 All / File name / Date。提案芯片不再改动画面（已落盘的行为不该被开关削弱）；要看两种对照用工具条：「慢查询：进行中指示（P0-5）」把假延迟抬到 650ms 让转圈出现，「落盘前：搜索页只有搜索框（P0-5）」复现查询前与零结果全空、英文界面仍是中文标签。清除演示态即回到落盘状态。",
+      landed:
+        "B5 已落盘。三态收进一个 Gtk.Stack search_state_stack（页名 idle/results/no-results，set_search_state 依当前输入与命中数选页），两个占位页由 empty_states::search_idle() 与 no_search_results(on_clear) 提供，零结果标题每次显示前用 trf(\"empty.search_none.title\", {query}) 刷新并回显去空白后的关键词，「清除搜索」清空输入 + grab_focus + 重跑空查询；remove_media_ids_from_results 末尾补一次状态刷新，所以删掉最后一张命中图会落到零结果页。四处与草案不同：(1) 进行中指示用 gtk::Spinner 而不是 adw::Spinner，且只有转圈图标没有「正在搜索…」文案，避免为一条瞬时提示再造第 9 个键；(2) 栈只负责整页互斥，image/video 两个分区各自的 set_visible 保留，否则只命中一类结果时会露出空分区标题；(3) 关掉栈的 hhomogeneous/vhomogeneous——结果网格与占位页尺寸差很多，隐藏页会决定栈高；(4) 草案设想的「移除计时器 SourceId」在本机是真崩溃：end_search_busy() 对已触发的 source 调 SourceId::remove() 直接 GLib-CRITICAL + panic，而 drop SourceId 又不取消源，所以改为 busy_generation 代次失效（新测试 a_settled_query_never_paints_the_busy_row 锁住这条）。落盘时另外修掉一处公共缺陷：AdwStatusPage 会填满自己的 child，所以 empty_states::add_action 建的 pill 按钮被拉成整页宽，加 halign=CENTER 后 B2 那两张照片页占位同时受益。i18n 侧新增 8 个键两份 json 同步（parity 427/427），草案里的文案在落地时收敛为「搜索你的图库 / 没有找到「{query}」 / 换一个关键词，或将搜索字段切回「全部」」。模板去硬编码按建议升级为不变量：blp 里三个 label 留空、标签在 SearchPage::new 用 tr() 填入，tests/ui_template_copy.rs 把「data/ui/*.blp 不得出现可见文案字面量」做成全仓扫描（对 label/title/text/placeholder-text/tooltip-text/subtitle/description 七种属性生效，已用注入字面量的方式验证不是空跑），并把这条写进 AGENTS.md 的 UI Invariants。读屏侧 tools/assert-at-spi.py 不再写死中文：SEARCH_FIELD_KEYS 三个键按 locale 从 i18n/<locale>.json 取期望值，locale 解析顺序与应用一致（config i18n.json → PHOTO_VIEWER_LOCALE → LC_ALL/LANG/LANGUAGE → en），新增 --locale 覆盖；tests/visual_check_script.rs 把脚本里保留的 zh 兜底常量钉在 i18n/zh-CN.json 上，标签漂移仍会红。测试：ui::search_page::tests 7 项（标签跟随 locale、空查询→idle、零结果回显关键词并可清除、命中→结果分区、删最后一张→零结果、慢查询才起指示、已结束的查询永不显示指示）、--test ui_search_page 2 项、--test ui_template_copy 2 项、--test visual_check_script 7 项、--test ux_click_flows 1 项（真实点击穿过新栈）、core::i18n 2 项。命名图侧：三个 .pv-p0-5 提案热点已转为常态 data-ui 条目（search-busy-row / search-state-stack / search-idle-page / search-no-results-page / search-results-box），落盘前对照改挂 body[data-pv-demo=\"search-blank\"]。"
     },
     {
       id: "p1-6",
@@ -944,10 +946,26 @@
       PV.toast("落盘前对照：设置里没有「键盘」分组，查看器 tooltip 只剩动作名，按 F1 无反应。清除演示态即回到已落盘状态。", { kind: "info", ms: 5200 });
     });
     demoBtn("相册选择器报错（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-error"; syncBar(); });
-    demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
+    demoBtn("慢查询：进行中指示（P0-5）", function () {
+      needScreen("search", function () {
+        var input = PV.q("#search-input");
+        if (input && !input.value) input.value = "zzz";
+        PV.setSearchLatency(650);
+        PV.runSearch(input ? input.value : "zzz");
+      });
+      PV.toast("已把这次搜索抬到 650ms：超过 300ms 才在顶部起转圈，结果不会被整页替换。清除演示态回到瞬时搜索。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("落盘前：搜索页只有搜索框（P0-5）", function () {
+      needScreen("search");
+      body.dataset.pvDemo = "search-blank";
+      PV.applyLocale();
+      PV.setSearchLatency(200);
+      syncBar();
+      PV.toast("落盘前对照：查询前与零结果下方全空，英文界面三个分段标签仍是中文。清除演示态即回到已落盘状态。", { kind: "info", ms: 5200 });
+    });    demoBtn("相册选择器加载中（P2-6）", function () { needScreen("picker"); body.dataset.pvDemo = "picker-loading"; syncBar(); });
     demoBtn("相册为空（P2-6）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("回收站首帧闪烁（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
-    demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); syncBar(); });
+    demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });
     row4.appendChild(gDemo);
 
     var gOut = group("输出");

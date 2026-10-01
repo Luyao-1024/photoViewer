@@ -20,6 +20,7 @@ use crate::core::repository::{MediaQuery, MediaRepository};
 use crate::core::runtime_config;
 use crate::core::section_model::GroupBy;
 use crate::core::thumbnails::ThumbnailLoader;
+use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
@@ -29,6 +30,16 @@ const SEARCH_PREVIEW_MIN_ROWS: usize = 2;
 const SEARCH_YEAR_TILE_SIZE: i32 = 90;
 const SEARCH_YEAR_TILE_GAP: i32 = 8;
 const SEARCH_SECTION_HEADER_HEIGHT: i32 = 40;
+/// A query that resolves faster than this must not show the busy row: flashing
+/// an indicator for an instant search is noise, not feedback.
+const SEARCH_BUSY_DELAY_MS: u64 = 300;
+
+/// `GtkStack` page names for the Search result area. The three states are
+/// mutually exclusive; before they existed a miss left the page as a lone
+/// search field over blank space.
+const SEARCH_STATE_IDLE: &str = "idle";
+const SEARCH_STATE_RESULTS: &str = "results";
+const SEARCH_STATE_NO_RESULTS: &str = "no-results";
 
 mod imp {
     use super::*;
@@ -56,12 +67,26 @@ mod imp {
         /// viewer. Search result grids can live on the search page or on a
         /// separate "more results" page, so this state belongs to SearchPage.
         pub viewer_open_pending: Cell<bool>,
+        /// The query allowed to paint the busy row, cleared the moment a search
+        /// settles. A fired `SourceId` cannot be removed without aborting, so the
+        /// timer is disarmed by invalidating this token instead of by cancellation.
+        pub busy_generation: Cell<Option<u64>>,
+        /// Reused across every miss; only its title changes with the term.
+        pub no_results_page: RefCell<Option<adw::StatusPage>>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_entry: TemplateChild<gtk::SearchEntry>,
         #[template_child]
         pub content_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub search_busy_box: TemplateChild<gtk::Box>,
+        #[template_child]
+        pub search_spinner: TemplateChild<gtk::Spinner>,
+        #[template_child]
+        pub search_state_stack: TemplateChild<gtk::Stack>,
+        #[template_child]
+        pub search_results_box: TemplateChild<gtk::Box>,
         #[template_child]
         pub image_results_box: TemplateChild<gtk::Box>,
         #[template_child]
@@ -140,11 +165,39 @@ impl SearchPage {
             .preview_capacity
             .set(Self::fallback_preview_capacity());
 
+        // Results are one page of a stack so a miss can swap in a status page
+        // without touching the section boxes themselves.
+        let stack = obj.imp().search_state_stack.get();
+        stack
+            .page(&obj.imp().search_results_box.get())
+            .set_name(SEARCH_STATE_RESULTS);
+        let idle_page = empty_states::search_idle();
+        stack.add_named(&idle_page, Some(SEARCH_STATE_IDLE));
+        let weak = obj.downgrade();
+        let no_results_page = empty_states::no_search_results(Rc::new(move || {
+            let Some(this) = weak.upgrade() else { return };
+            let entry = this.imp().search_entry.get();
+            entry.set_text("");
+            entry.grab_focus();
+            // GtkSearchEntry does emit search-changed for a programmatic change,
+            // but the idle state should not depend on that detail.
+            this.run_search("");
+        }));
+        stack.add_named(&no_results_page, Some(SEARCH_STATE_NO_RESULTS));
+        *obj.imp().no_results_page.borrow_mut() = Some(no_results_page);
+        stack.set_visible_child_name(SEARCH_STATE_IDLE);
+
         // Wire up the search field toggle buttons as a group.
         // In GTK4, all buttons in the same radio group should set the same group leader.
         let field_all = obj.imp().field_all.get();
         let field_name = obj.imp().field_name.get();
         let field_date = obj.imp().field_date.get();
+        // The template leaves these labels empty: hard-coded Chinese copy would
+        // stay Chinese in an English session. tools/assert-at-spi.py resolves the
+        // same keys, so it checks whatever the user actually reads.
+        field_all.set_label(&tr("search.field.all"));
+        field_name.set_label(&tr("search.field.name"));
+        field_date.set_label(&tr("search.field.date"));
         field_name.set_group(Some(&field_all));
         field_date.set_group(Some(&field_all));
 
@@ -398,6 +451,7 @@ impl SearchPage {
         };
         let field = self.imp().search_field.get();
         let limit = runtime_config::ui_media_list_cap().min(u32::MAX as usize) as u32;
+        self.begin_search_busy(generation);
         let weak = self.downgrade();
         glib::spawn_future_local(async move {
             let result = gtk::gio::spawn_blocking(move || {
@@ -424,6 +478,13 @@ impl SearchPage {
             })
             .await;
 
+            let Some(this) = weak.upgrade() else {
+                return;
+            };
+            if this.imp().search_generation.get() != generation {
+                return;
+            }
+            this.end_search_busy();
             let (images, videos) = match result {
                 Ok(Ok(result)) => result,
                 Ok(Err(err)) => {
@@ -436,17 +497,12 @@ impl SearchPage {
                 }
             };
 
-            let Some(this) = weak.upgrade() else {
-                return;
-            };
-            if this.imp().search_generation.get() != generation {
-                return;
-            }
             this.replace_results(images, videos);
         });
     }
 
     fn replace_results(&self, images: Vec<MediaItem>, videos: Vec<MediaItem>) {
+        self.end_search_busy();
         self.refresh_preview_capacity_from_layout();
         let preview_capacity = self.imp().preview_capacity.get();
         let has_images = !images.is_empty();
@@ -468,6 +524,7 @@ impl SearchPage {
         *self.imp().video_full_results.borrow_mut() = videos.clone();
         self.imp().image_results_box.get().set_visible(has_images);
         self.imp().video_results_box.get().set_visible(has_videos);
+        self.set_search_state(has_images || has_videos);
         if let Some(btn) = self.imp().image_more_tile.borrow().as_ref() {
             btn.set_visible(image_has_more);
         }
@@ -482,6 +539,53 @@ impl SearchPage {
         }
         // Re-append tiles after list update (grid rebuilds its FlowBox).
         self.reattach_more_tiles();
+    }
+
+    /// Show results, the miss page, or the pre-query prompt — exactly one at a
+    /// time. The miss page echoes the trimmed term, which is what the database
+    /// actually searched for, not what the entry currently shows.
+    fn set_search_state(&self, has_results: bool) {
+        let query = self.imp().search_entry.get().text().trim().to_string();
+        let state = if query.is_empty() {
+            SEARCH_STATE_IDLE
+        } else if has_results {
+            SEARCH_STATE_RESULTS
+        } else {
+            SEARCH_STATE_NO_RESULTS
+        };
+        if state == SEARCH_STATE_NO_RESULTS {
+            if let Some(page) = self.imp().no_results_page.borrow().as_ref() {
+                page.set_title(&empty_states::no_search_results_title(&query));
+            }
+        }
+        let stack = self.imp().search_state_stack.get();
+        if stack.visible_child_name().as_deref() != Some(state) {
+            stack.set_visible_child_name(state);
+        }
+    }
+
+    /// Arm the busy row for `generation`. It only paints if this same query is
+    /// still in flight once the delay expires, so a fast search never flashes it.
+    fn begin_search_busy(&self, generation: u64) {
+        self.imp().busy_generation.set(Some(generation));
+        let weak = self.downgrade();
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(SEARCH_BUSY_DELAY_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    if this.imp().busy_generation.get() == Some(generation) {
+                        this.imp().search_busy_box.get().set_visible(true);
+                        this.imp().search_spinner.get().set_spinning(true);
+                    }
+                }
+            },
+        );
+    }
+
+    fn end_search_busy(&self) {
+        self.imp().busy_generation.set(None);
+        self.imp().search_busy_box.get().set_visible(false);
+        self.imp().search_spinner.get().set_spinning(false);
     }
 
     /// Re-append the "show more" tiles into their grids' FlowBoxes.
@@ -840,6 +944,11 @@ impl SearchPage {
         for grid in self.imp().detail_grids.borrow().iter() {
             grid.refresh_from_shared_projection();
         }
+        // Trashing the last hit from the result grid has to reach the same
+        // verdict as a query that never returned anything.
+        let has_results = !(self.imp().image_full_results.borrow().is_empty()
+            && self.imp().video_full_results.borrow().is_empty());
+        self.set_search_state(has_results);
     }
 }
 
@@ -883,3 +992,6 @@ fn remove_media_items_by_ids(list: &gtk::gio::ListStore, ids: &HashSet<i64>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

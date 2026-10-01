@@ -48,6 +48,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 - Reuse the shared `.glass-*` and `.glass-segment*` CSS classes before adding selectors.
 - Any new glass surface must work in both Liquid Glass and plain translucent modes.
 - Viewer side panels must avoid hidden children participating in layout in a way that produces negative GTK allocation warnings.
+- Blueprint templates must not carry user-visible copy: no literal `label`, `title`, `text`, `placeholder-text`, `tooltip-text`, `subtitle` or `description` in `data/ui/*.blp`. Leave the attribute empty and set `tr("…")` from Rust in `initialize`. `tests/ui_template_copy.rs` fails the build otherwise, and the AT-SPI probe reads its expected names from `i18n/<locale>.json`, so a hardcoded string is invisible to localization and to assistive technology.
 - The main navigation sidebar keeps a stable width so pushing viewer pages does not shrink it.
 - When a `GtkScrolledWindow` needs to size to content and scroll only when overflowing, use `propagate-natural-height: true` and omit `vexpand`. Default is `false`, which means the scrolled window reports 0 natural height to its parent — do not try to compensate with `vexpand` + `max-content-height` combos.
 

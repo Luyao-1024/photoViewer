@@ -31,20 +31,24 @@ template $SearchPage : Adw.NavigationPage {
         homogeneous: true;
         css-classes: ["glass-raised", "glass-segmented"];
 
+        // Labels come from i18n: search.field.all, search.field.name,
+        // search.field.date, set in SearchPage::new(). A template literal here
+        // would stay Chinese in an English session, and tools/assert-at-spi.py
+        // reads those same keys to know what a screen reader should announce.
         Gtk.ToggleButton field_all {
           css-classes: ["glass-segment"];
-          label: "全部";
+          label: "";
           active: true;
         }
 
         Gtk.ToggleButton field_name {
           css-classes: ["glass-segment"];
-          label: "文件名";
+          label: "";
         }
 
         Gtk.ToggleButton field_date {
           css-classes: ["glass-segment"];
-          label: "日期";
+          label: "";
         }
       }
     }
@@ -58,18 +62,48 @@ template $SearchPage : Adw.NavigationPage {
       margin-end: 16;
       margin-bottom: 16;
 
-      Gtk.Box image_results_box {
-        orientation: vertical;
-        spacing: 8;
-        hexpand: true;
-        css-classes: ["search-results-section"];
+      // Slow-query indicator. It sits above the results instead of replacing
+      // them, so a re-run never blanks the grid the user is still looking at.
+      Gtk.Box search_busy_box {
+        orientation: horizontal;
+        halign: center;
+        visible: false;
+
+        Gtk.Spinner search_spinner {
+          width-request: 16;
+          height-request: 16;
+        }
       }
 
-      Gtk.Box video_results_box {
-        orientation: vertical;
-        spacing: 8;
+      Gtk.Stack search_state_stack {
+        vexpand: true;
         hexpand: true;
-        css-classes: ["search-results-section"];
+        // The result grid and the placeholder pages want very different sizes;
+        // a homogeneous stack would let whichever page is hidden set the height.
+        hhomogeneous: false;
+        vhomogeneous: false;
+        transition-type: crossfade;
+        transition-duration: 200;
+
+        Gtk.Box search_results_box {
+          orientation: vertical;
+          spacing: 12;
+          hexpand: true;
+
+          Gtk.Box image_results_box {
+            orientation: vertical;
+            spacing: 8;
+            hexpand: true;
+            css-classes: ["search-results-section"];
+          }
+
+          Gtk.Box video_results_box {
+            orientation: vertical;
+            spacing: 8;
+            hexpand: true;
+            css-classes: ["search-results-section"];
+          }
+        }
       }
     }
   };

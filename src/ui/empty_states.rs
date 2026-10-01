@@ -1,6 +1,6 @@
 //! Empty-state `AdwStatusPage` factories.
 //!
-//! Each view (Photos, Albums, Trash, AlbumDetail) shows a friendly
+//! Each view (Photos, Albums, Trash, AlbumDetail, Search) shows a friendly
 //! `AdwStatusPage` when its underlying data list is empty. The factories
 //! are pure (no I/O) — pages decide *whether* to show an empty state
 //! based on data shape, and call into this module to obtain the widget.
@@ -25,6 +25,9 @@ use std::rc::Rc;
 pub fn add_action(page: &adw::StatusPage, label: &str, on_activate: Rc<dyn Fn()>) -> gtk::Button {
     let button = gtk::Button::builder()
         .label(label)
+        // `AdwStatusPage` fills its child, which would stretch a pill button
+        // across the whole page width.
+        .halign(gtk::Align::Center)
         .css_classes(["pill", "suggested-action"])
         .build();
     button.connect_clicked(move |_| on_activate());
@@ -118,5 +121,37 @@ pub fn scanning() -> adw::StatusPage {
     let spinner = gtk::Spinner::new();
     spinner.set_size_request(32, 32);
     page.set_child(Some(&spinner));
+    page
+}
+
+/// Pre-query state for the Search page. Without it an empty query leaves the
+/// page as a text field floating over blank space, which reads as a broken
+/// page rather than as "nothing typed yet".
+pub fn search_idle() -> adw::StatusPage {
+    let page = adw::StatusPage::builder()
+        .icon_name("system-search-symbolic")
+        .title(tr("empty.search_idle.title"))
+        .description(tr("empty.search_idle.description"))
+        .build();
+    page.add_css_class("compact");
+    page
+}
+
+/// Title for a search that returned nothing. Split out of [`no_search_results`]
+/// because a page built once and reused only needs this string to change.
+pub fn no_search_results_title(query: &str) -> String {
+    trf("empty.search_none.title", &[("query", query)])
+}
+
+/// Zero-hit search state. The term itself is not set here — the caller refreshes
+/// the title with [`no_search_results_title`] before every show, since one page
+/// instance serves every query. It always carries the clear-search escape.
+pub fn no_search_results(on_clear: Rc<dyn Fn()>) -> adw::StatusPage {
+    let page = adw::StatusPage::builder()
+        .icon_name("system-search-symbolic")
+        .description(tr("empty.search_none.description"))
+        .build();
+    page.add_css_class("compact");
+    add_action(&page, &tr("empty.search_none.clear"), on_clear);
     page
 }

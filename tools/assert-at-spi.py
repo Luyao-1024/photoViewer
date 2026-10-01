@@ -5,19 +5,88 @@ This is deliberately a small black-box probe: it connects to the desktop
 AT-SPI registry after the real Flatpak window has received Ctrl+F.  It verifies
 the user-visible controls that a screen reader needs to navigate the Search
 page, rather than treating a reachable accessibility bus as sufficient.
+
+The Search field switch is translated, so the probe resolves the labels it
+expects from the same catalogues the app reads.  Freezing one language here
+would make the smoke fail in a correctly-rendered English session.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 
-APP_NAMES = {"photo-viewer", "Photo Viewer", "io.github.luyao_1024.photoviewer"}
+APP_ID = "io.github.luyao_1024.photoviewer"
+APP_NAMES = {"photo-viewer", "Photo Viewer", APP_ID}
 WINDOW_NAMES = ("Photo Viewer", "照片查看器")
-SEARCH_FIELD_NAMES = ("全部", "文件名", "日期")
+SEARCH_FIELD_KEYS = ("search.field.all", "search.field.name", "search.field.date")
+# The zh-CN catalogue values these keys had when the probe was written; used only
+# if the checkout's catalogues cannot be read.
+FALLBACK_SEARCH_FIELD_LABELS = ("全部", "文件名", "日期")
+
+
+def normalize_locale(value: str) -> str:
+    lowered = value.replace("_", "-").lower()
+    if lowered.startswith("zh"):
+        return "zh-CN"
+    if lowered.startswith("en"):
+        return "en"
+    return ""
+
+
+def configured_locale() -> str:
+    """Mirror src/core/i18n.rs: config file, then env, then English."""
+    home = Path.home()
+    config_dirs = []
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
+    if os.path.isabs(xdg_config_home):
+        config_dirs.append(Path(xdg_config_home) / APP_ID)
+    config_dirs += [
+        home / ".config" / APP_ID,
+        # A sandboxed run keeps its config under the per-app Flatpak directory.
+        home / ".var" / "app" / APP_ID / "config" / APP_ID,
+    ]
+    for config_dir in config_dirs:
+        try:
+            config = json.loads((config_dir / "i18n.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        locale = normalize_locale(str(config.get("locale") or ""))
+        if locale:
+            return locale
+
+    for variable in ("PHOTO_VIEWER_LOCALE", "LC_ALL", "LANG", "LANGUAGE"):
+        locale = normalize_locale(os.environ.get(variable, ""))
+        if locale:
+            return locale
+    return "en"
+
+
+def search_field_labels(locale: str) -> tuple[str, ...]:
+    catalogue_path = Path(__file__).resolve().parent.parent / "i18n" / f"{locale}.json"
+    try:
+        catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        print(
+            f"warning: cannot read {catalogue_path} ({error}); "
+            f"asserting the built-in {FALLBACK_SEARCH_FIELD_LABELS} labels",
+            file=sys.stderr,
+        )
+        return FALLBACK_SEARCH_FIELD_LABELS
+
+    labels = tuple(catalogue.get(key, "") for key in SEARCH_FIELD_KEYS)
+    if not all(labels):
+        missing = [
+            key for key, label in zip(SEARCH_FIELD_KEYS, labels) if not label
+        ]
+        raise AssertionError(f"{catalogue_path} is missing {', '.join(missing)}")
+    return labels
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +98,13 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=10.0,
         help="seconds to wait for the Search accessibility tree (default: 10)",
+    )
+    parser.add_argument(
+        "--locale",
+        choices=("zh-CN", "en"),
+        default=None,
+        help="catalogue to read the expected toggle-button names from "
+        "(default: resolved the way the app resolves its locale)",
     )
     parser.add_argument(
         "--dump",
@@ -109,7 +185,7 @@ def tree_lines(app) -> list[str]:
     ]
 
 
-def assert_search_page(app, pyatspi) -> None:
+def assert_search_page(app, pyatspi, field_names: tuple[str, ...]) -> None:
     nodes = [node for node, _ in walk(app)]
 
     if not any(
@@ -119,12 +195,14 @@ def assert_search_page(app, pyatspi) -> None:
         expected = " or ".join(repr(name) for name in WINDOW_NAMES)
         raise AssertionError(f"missing localized application frame named {expected}")
 
-    for field_name in SEARCH_FIELD_NAMES:
+    for key, field_name in zip(SEARCH_FIELD_KEYS, field_names):
         if not any(
             role_is(node, pyatspi.ROLE_TOGGLE_BUTTON) and name_is(node, field_name)
             for node in nodes
         ):
-            raise AssertionError(f"missing toggle button named '{field_name}'")
+            raise AssertionError(
+                f"missing toggle button named {field_name!r} (i18n key {key})"
+            )
 
     if not any(
         role_is(node, pyatspi.ROLE_ENTRY) and has_state(node, pyatspi.STATE_FOCUSED)
@@ -147,6 +225,9 @@ def main() -> int:
         )
         raise SystemExit(1) from error
 
+    locale = args.locale or configured_locale()
+    field_names = search_field_labels(locale)
+
     deadline = time.monotonic() + args.timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -154,15 +235,15 @@ def main() -> int:
             application = find_photo_viewer_application(pyatspi.Registry.getDesktop(0), pyatspi)
             if args.dump:
                 print("\n".join(tree_lines(application)))
-            assert_search_page(application, pyatspi)
+            assert_search_page(application, pyatspi, field_names)
         except Exception as error:
             last_error = error
             time.sleep(0.25)
             continue
 
         print(
-            "AT-SPI Search semantics verified: localized application frame, focused Search entry, "
-            "and 全部/文件名/日期 toggle buttons."
+            f"AT-SPI Search semantics verified for locale {locale}: localized application frame, "
+            f"focused Search entry, and {'/'.join(field_names)} toggle buttons."
         )
         return 0
 
