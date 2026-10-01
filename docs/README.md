@@ -7,7 +7,6 @@ This is the human entry point for project documentation. Agents should start fro
 - Current behavior lives in [`modules/`](modules/), split by functional ownership.
 - Cross-cutting development process lives in [`development.md`](development.md) and [`testing.md`](testing.md).
 - Root files such as [`../README.md`](../README.md) and [`../CONTRIBUTING.md`](../CONTRIBUTING.md) stay short and link here instead of duplicating detailed commands.
-- Historical specs and plans under [`superpowers/`](superpowers/) are archived context. Do not treat them as active behavior unless a current module document links to a specific invariant.
 - The visual UI naming map under [`ui-naming-reference/`](ui-naming-reference/) is maintained documentation, not generated scratch output.
 
 ## Core Docs
@@ -45,4 +44,4 @@ Update this reference when adding, renaming, or removing a UI widget, changing a
 
 ## Historical Material
 
-[`superpowers/specs/`](superpowers/specs/) and [`superpowers/plans/`](superpowers/plans/) preserve previous design and implementation planning. They are useful for rationale, but the maintained module docs above are the current source for behavior and workflow.
+Earlier milestone specs and plans lived under `docs/superpowers/` and have been removed from the tree. Use git history to recover one when you need the original rationale; the maintained module docs above are the current source for behavior and workflow.

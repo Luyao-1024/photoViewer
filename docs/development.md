@@ -181,5 +181,4 @@ test file or trash entry.
 - Keep root `README.md`, `CONTRIBUTING.md`, and `AGENTS.md` short. They should point to `docs/README.md` or a specific module doc instead of repeating long command blocks or architecture details.
 - Keep `docs/README.md` as the canonical documentation index. Add new module docs there and in `AGENTS.md` when they become required reading for code changes.
 - When changing a module contract, UI invariant, or development workflow, update the matching module/core doc in the same change.
-- Historical plans/specs under `docs/superpowers/` are archived context. Do not update them as the primary source for current behavior; migrate lasting rules into the relevant maintained doc.
 - Prefer replacing duplicate detailed documents with a short compatibility pointer to the active source of truth.

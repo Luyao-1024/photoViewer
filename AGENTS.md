@@ -29,7 +29,6 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Visual UI component naming map | [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) |
 | Open UX findings and drafted proposals | [`docs/ux-improvement-backlog.md`](docs/ux-improvement-backlog.md) |
 | Liquid Glass and shared UI material classes | [`docs/modules/ui-liquid-glass.md`](docs/modules/ui-liquid-glass.md) |
-| Historical milestone plans/specs | [`docs/superpowers/`](docs/superpowers/) |
 
 ## Development Rules
 

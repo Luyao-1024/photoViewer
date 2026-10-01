@@ -29,7 +29,7 @@ cargo test
 
 ## Documentation
 
-Start from [docs/README.md](docs/README.md). Current behavior is documented by functional module under `docs/modules/`; historical design specs and implementation plans are archived under `docs/superpowers/` for background context only.
+Start from [docs/README.md](docs/README.md). Current behavior is documented by functional module under `docs/modules/`. Earlier milestone specs and plans are not kept in the tree; recover them from git history when you need the original rationale.
 
 Agent workflow rules live in [AGENTS.md](AGENTS.md). Contributor workflow lives in [CONTRIBUTING.md](CONTRIBUTING.md).
 
