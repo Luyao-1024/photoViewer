@@ -179,7 +179,7 @@ fn sidebar_navigation_suite() {
     window.populate_sidebar();
 
     // The main sidebar width must stay stable when viewer pages change content
-    // sizing (UI invariant — see CLAUDE.md).
+    // sizing (UI invariant — see AGENTS.md).
     let split_view = find_overlay_split_view(window.upcast_ref())
         .expect("main window should contain an OverlaySplitView");
     assert_eq!(

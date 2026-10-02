@@ -7,7 +7,8 @@
  *       也不改写 tooltip.js 的事件。删除本文件后页面退回纯命名图。
  * 交互能力全部走 window.PV（prototype.js）。
  *
- * 提案内容来源：docs/ux-improvement-backlog.md（现象/证据/方案/落点/测试/批次）。
+ * 提案内容来源：2026-10-01 UX 专项检视（现象/证据/方案/落点/测试/批次），
+ * 及其后的落盘实施结果。原始检视记录已不在树内，需要时用 git 历史找回。
  */
 (function () {
   "use strict";
@@ -370,7 +371,7 @@
         "tools/with-at-spi.sh xvfb-run -a cargo test --locked --lib ui::viewer_page::",
         "cargo test --locked --test inline_test_ownership --test ui_viewer_source_structure"
       ],
-      docs: ["docs/modules/viewer.md", "docs/modules/keyboard.md", "docs/ux-improvement-backlog.md"],
+      docs: ["docs/modules/viewer.md", "docs/modules/keyboard.md"],
       risk:
         "桌面滚轮和条件拖拽已替代原 touch-only 禁令；后续若增加触摸捏合，必须另做手势仲裁测试。",
       demo:
@@ -1775,7 +1776,7 @@
     var lines = [];
     lines.push("# PhotoViewer UI 提案评审结论");
     lines.push("");
-    lines.push("导出于 " + new Date().toLocaleString("zh-CN") + "。来源评审页：docs/ui-naming-reference/index.html；方案细节见 docs/ux-improvement-backlog.md。");
+    lines.push("导出于 " + new Date().toLocaleString("zh-CN") + "。来源评审页：docs/ui-naming-reference/index.html；方案细节见 docs/modules/ui-design.md 与 docs/ui-naming-reference/ux-review.js。");
     lines.push("");
     lines.push("| 提案 | 标题 | 优先级 | 批次 | 结论 | 备注 |");
     lines.push("|---|---|---|---|---|---|");

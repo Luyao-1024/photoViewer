@@ -16,15 +16,13 @@ This is the human entry point for project documentation. Agents should start fro
 | [`architecture.md`](architecture.md) | Layer boundaries, runtime integration, navigation model, GTK widget pattern |
 | [`development.md`](development.md) | Dependencies, build/run, Flatpak, visual checks, documentation workflow |
 | [`testing.md`](testing.md) | Test commands, CI-equivalent policy, test layout, known GTK/GStreamer warnings |
-| [`improvement-backlog.md`](improvement-backlog.md) | 2026-09-19 project review: prioritized improvement backlog, evidence, and verification results |
-| [`webdav-sync-design.md`](webdav-sync-design.md) | Implemented local-first WebDAV synchronization, current limits, persistent tasks, and conflict handling |
-| [`designs/sync-architecture-and-flows.md`](designs/sync-architecture-and-flows.md) | Bidirectional sync target architecture, key flows, recovery state machine, constraints, and acceptance criteria |
 
 ## Functional Modules
 
 | Module | Scope |
 |---|---|
-| [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails, provider-neutral WebDAV sync |
+| [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails |
+| [`modules/sync.md`](modules/sync.md) | Provider-neutral bidirectional sync, WebDAV adapter, planner, conflicts, recovery, cloud badges |
 | [`modules/browsing.md`](modules/browsing.md) | Photos page, Year/Month/Day grouping, thumbnail grids, mode selector |
 | [`modules/viewer.md`](modules/viewer.md) | Viewer page, image/video playback, overlay controls, thumbnail strip, details/editor panels |
 | [`modules/albums-trash.md`](modules/albums-trash.md) | Albums, album detail, sidebar album management, trash restore/delete flows |
@@ -44,4 +42,8 @@ Update this reference when adding, renaming, or removing a UI widget, changing a
 
 ## Historical Material
 
-Earlier milestone specs and plans lived under `docs/superpowers/` and have been removed from the tree. Use git history to recover one when you need the original rationale; the maintained module docs above are the current source for behavior and workflow.
+Point-in-time review records, sync design proposals, and earlier milestone specs are not kept in the tree. Their findings were folded into the module documents above; recover the originals from git history when you need the original rationale, for example:
+
+```bash
+git log --diff-filter=D --name-only --pretty=format: -- docs/
+```

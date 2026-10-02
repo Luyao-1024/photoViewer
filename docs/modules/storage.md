@@ -2,7 +2,7 @@
 
 ## Scope
 
-Storage covers the SQLite schema, media rows, filesystem scanning, metadata extraction, live filesystem watching, provider-neutral synchronization, thumbnails, and preferences.
+Storage covers the SQLite schema, media rows, filesystem scanning, metadata extraction, live filesystem watching, thumbnails, and preferences. Provider-neutral synchronization is owned by [`sync.md`](sync.md), which also holds the tables in `schema.sql` that sync owns.
 
 ## Key Files
 
@@ -26,8 +26,6 @@ Storage covers the SQLite schema, media rows, filesystem scanning, metadata extr
 | `src/core/cache.rs` | Cache utilities |
 | `src/core/prefs.rs` | User preferences |
 | `src/core/runtime_config.rs` | Runtime sizing, loading, and worker strategy config |
-| `src/core/sync/` | Provider-neutral sync model, planner, persistent state, recovery, local publication, and WebDAV adapter |
-| `src/platform/credentials.rs` | Secret Service-backed synchronization credentials |
 
 Storage/core unit tests live in child test modules instead of inline source
 blocks. Production source files declare `#[cfg(test)] mod tests;`, with test
@@ -59,7 +57,8 @@ Schema version 4 adds the per-job upload scope and
 `sync_job_upload_albums`. Existing version-3 jobs migrate as `all` so an
 upgrade never silently disables established uploads. Newly created jobs start
 as `selected_albums` with no checked album: cloud content can download, but no
-local album uploads until the user explicitly checks it.
+local album uploads until the user explicitly checks it. The semantics of those
+tables belong to [`sync.md`](sync.md).
 
 Filesystem paths and stored URIs must cross through `core::file_uri`; do not
 build or strip `file://` strings by hand. This preserves the identity of `%`,
@@ -309,85 +308,6 @@ commits the prepared row changes.
 The notify callback uses a bounded 4,096-event channel. A burst flushes at 512
 events or 750 ms even if imports never become quiet. Queue overflow or a notify
 error triggers a full scan followed by permission-safe missing-row reconciliation.
-
-## Bidirectional Synchronization
-
-`SyncProvider` isolates transport capabilities and errors from planning and local publication. `WebDavProvider` is the first adapter and uses HTTPS, Basic authentication, `PROPFIND Depth: 1`, `MKCOL`, streaming GET/PUT, exclusive WebDAV `LOCK`/`UNLOCK`, `If-None-Match: *`, and strong-ETag `If-Match`. A server that supports locks gets an atomic version check plus write under the lock; a server that returns 405/501 for `LOCK` falls back to HTTP conditional requests. DAV hrefs are decoded only after origin/root validation, successful properties are selected per `propstat`, directory XML responses are capped at 32 MiB, redirects are disabled, and weak ETags never authorize automatic replacement.
-
-`planner.rs` is the pure three-way decision layer: local observation, remote observation, and last proven common baseline. It never chooses a winner by timestamp. Checked upload albums use this bidirectional policy, so both-side changes create a persistent conflict. Unchecked albums use an explicit remote-authoritative download policy: remote additions and updates publish locally, local-only content is neither hashed nor uploaded, and remote absence never deletes local content. Deletion propagation remains disabled. The service enumerates the whole remote root but hashes only checked local albums plus paths already present remotely, persists observations through `DbActor`, snapshots uploads, stages downloads outside the library, publishes without blind overwrite, and commits a new baseline only after content or a transfer result is proven.
-
-Before planning a run, the service adds every discovered remote media album to the persisted local upload selection, including the root album for remote files directly under the configured root. This makes cloud-backed albums bidirectional on both sides; only local-only albums remain manually selectable. The updated configuration generation is used for the same run, and an unchanged selection is not rewritten.
-
-WebDAV has a persisted global opt-in switch, off by default. When off, home-pull sync and conflict resolution are disabled. When enabled, the new-connection form becomes available; a task is saved only after complete server configuration is validated and the connection is probed. Creating a task does not start a transfer. Pulling down at the top of Photos triggers one run of every saved job; paused jobs resume for that run. Each application launch triggers the same one-shot run once, in parallel with the startup scan; there is no timer-based sync. A trigger arriving while its job is already running is intercepted and remembered: the job is never run concurrently, and after the active run settles exactly one supplementary run fires to pick up anything new, so repeated pulls during a long run coalesce into a single catch-up. Each job has a separate collapsed album checklist. Expanding it automatically pauses the task and waits for its current file operation to finish; checking a physical folder album enables uploads for files directly in that album, while every remote album remains in download scope. Browsing/changing the cloud folder and deleting a task use the same pause-and-wait behavior. Creating a job requires non-overlapping local and remote roots. Passwords are stored through the platform keyring and only a credential reference is stored in SQLite.
-
-Saved tasks expose a cloud-folder browser populated by recursively listing WebDAV collections from the configured endpoint. Browsing or changing the remote root automatically pauses the task and waits for its current file operation to finish. Applying a new root clears that job's old sync entries, conflicts, operation records, and staging artifacts so observations from the previous collection cannot be reused; it remains paused until the next Photos pull. Roots that overlap another task on the same connection are rejected. The confirmation warns that cloud files may replace same-name local files in albums not selected for upload; changing roots never deletes cloud content.
-
-Saved tasks can be deleted individually at any time. Deletion automatically pauses the task and waits for its current file operation to finish. Removing a relationship cascades its task, entries, conflicts, unfinished operations, and staging artifacts without removing local or remote media. A connection and its keyring credential are removed only when no other job references that connection; a keyring cleanup error is reported after the relationship is removed.
-
-`SyncStore::media_cloud_states()` checks a bounded set of image/video IDs
-against enabled jobs and their selected physical albums. It returns no state
-outside those albums, cloud-off when a local item lacks a current completed
-baseline, and cloud when `state='synced'`, the entry's local fingerprint and
-size match the baseline, and indexed file size and nanosecond mtime match the
-observation. The media scanner intentionally leaves `blake3_hash` empty, so
-badge reads must not rely on that column or hash files on the GTK path.
-`settings.json` stores `day_cloud_badges_visible` (default `true`); it gates
-only Day-grid badges, independently of the WebDAV master switch and viewer.
-Sync writes that change badge state emit `DomainEvent::SyncStateDirty` through
-the DB actor's normal event channel. The UI refresh hub then updates visible
-Photos/album tiles and an open viewer, including during file transfers and
-after upload-album selection changes. There is no badge-specific sync timer.
-
-`SyncStore::overview()` is the provider-neutral read projection for compact UI
-status surfaces. It derives disabled, not-configured, paused, running, failed,
-ready, or completed from the global opt-in and enabled jobs' persisted
-lifecycle timestamps/errors. The Photos overview hides the sync row while
-globally disabled and polls this projection only while its disclosure is open.
-The completed label counts distinct image and video paths with a proven common
-baseline across enabled jobs, and separately counts distinct unresolved image
-conflict paths. A conflict does not erase an earlier proven baseline.
-Blocked upload recovery keeps the overview in failed status even when the
-last sync run finished, so a protected, unresolved upload is not labeled
-complete.
-
-While a run is active, the overview label shows live transfer progress from an
-in-memory, process-wide session in `SyncService` (never persisted). The home
-pull and each application launch open the session (`trigger_saved_jobs_once`);
-each job pre-plans every path with the same pure planner used by
-`reconcile_one` and adds planned download/upload totals; `reconcile_one`
-marks the active phase when a transfer starts and counts it only after the
-transfer is committed, with a verification that resolves as a conflict
-counting too and completed counters clamped to the planned totals.
-`sync::live_progress()` returns the snapshot (`None` outside a run); while a
-file streams, its byte counters advance through the `TransferProgress` sink
-attached to the `WebDavProvider`, but those bytes surface only in the
-STORAGE-target logs (one info line per completed transfer plus a per-job
-summary), never in the overview label. The Photos overview renders "正在同步，
-已同步 X/Y" while downloading and "正在上传 X/Y 个图片/视频" while
-uploading, falling back to the generic running label before totals are
-known. Sessions are bounded to a
-trigger: crash-recovery transfers that run before planning are not counted,
-and totals accumulate across the sequential jobs of one pull instead of
-resetting per job. A duplicate trigger intercepted during an active run never
-opens or closes the session — the closing side keeps the session alive while
-any job is still running.
-
-Open conflicts expose three guarded choices. “Use local” requires a strong current remote ETag. “Use cloud” downloads to staging, checks the recorded remote version and local fingerprint again, then publishes with a recoverable backup. “Keep both” creates a stable `*.cloud-conflict-<id>.<ext>` copy on both sides before conditionally converging the original path. If either recorded version has changed, the selection is rejected and a fresh reconciliation is required.
-
-`sync_tasks` is the crash evidence log. Startup reconciliation proves completed uploads by downloading and hashing the current remote object, and proves completed downloads from the published local fingerprint plus remote version before committing. Ambiguous or interrupted conflict resolutions become blocked and retain their artifact reference for review; cleanup must never delete a referenced artifact by age alone.
-Blocked upload tasks remain eligible for reconciliation. For an interrupted new
-upload, recovery replaces a remote object only when its downloaded bytes are a
-strict prefix of the preserved upload snapshot and the server supplies a strong
-ETag. The replacement is conditional and downloaded again for hash verification.
-If the local file is itself a strict prefix of the snapshot, recovery restores
-it even when its truncation point differs from the current remote prefix.
-Unresolved upload paths are excluded from normal download planning,
-including when the album was subsequently unchecked; the snapshot is retained
-until both copies are proven complete.
-Task operation IDs include a random per-process session UUID and a sequence number. Flatpak can reuse the same PID across launches, so PID plus a reset sequence is not unique across restarts. Existing task IDs and their staging artifacts remain valid for recovery after upgrading.
-Downloaded files are copied to a hidden sibling temporary file before atomic publication in the local album. Flatpak's data directory and the home-library mount may reject a direct cross-mount rename even when both paths appear under the same host filesystem. The original download artifact stays available for crash recovery until the task is marked successful.
-
-Current limits are intentional: no deletion propagation, no private-CA UI, and no range resume or sync-token enumeration. The Aliyun-hosted rclone WebDAV acceptance endpoint has been exercised with DAV locking, but that result does not imply compatibility with every WebDAV implementation. Remote enumeration and BLAKE3 hashing for checked/remote-present paths still run on every cycle, so large selected albums still need metadata/watcher-based dirty-item optimization. See [`../webdav-sync-design.md`](../webdav-sync-design.md) for current delivery status and [`../designs/sync-architecture-and-flows.md`](../designs/sync-architecture-and-flows.md) for the target constraints.
 
 ## Thumbnails
 

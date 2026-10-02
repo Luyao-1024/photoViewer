@@ -11,14 +11,15 @@ the visual naming map at [`docs/ui-naming-reference/index.html`](../ui-naming-re
 implementation type, and key properties). Keep that map in sync with these
 screens when the UI structure changes.
 
-The same page doubles as an interactive review prototype: a toolbar toggles the
-23 proposals recorded in
-[`docs/ux-improvement-backlog.md`](../ux-improvement-backlog.md) on and off, so a
-proposal can be compared against current behavior before any code changes. Deep
-links (`#mode=run&screen=viewer&pv=p1-12&locale=en`) reproduce a specific setup,
-and the inspector exports the verdicts as markdown. The naming map stays fully
-functional in both modes; treat the proposal layer as additive and never remove
-`data-ui` / `data-name` coverage while editing it.
+The same page doubles as an interactive review prototype: a toolbar toggles 23
+recorded UX proposals — the 2026-10-01 UX review and the changes it drove — on
+and off, so a proposal can be compared against current behavior before any code
+changes. The proposal text lives in `ux-review.js` next to the map; recover the
+original review record from git history if you need the original rationale.
+Deep links (`#mode=run&screen=viewer&pv=p1-12&locale=en`) reproduce a specific
+setup, and the inspector exports the verdicts as markdown. The naming map stays
+fully functional in both modes; treat the proposal layer as additive and never
+remove `data-ui` / `data-name` coverage while editing it.
 
 ## Scope
 
@@ -538,8 +539,8 @@ Design intent:
 - Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
   Both. Executing a choice re-checks both recorded versions; if either side
   changed, the stale selection is rejected and a fresh reconciliation is
-  required. See [`storage.md`](storage.md) "Bidirectional Synchronization"
-  for the behavior contracts behind this group.
+  required. See [`sync.md`](sync.md) for the behavior contracts behind this
+  group.
 - Buttons inside the Settings dialog use always-on glass
   (`.glass-toolbar-button`), consistent with the toolbar-button rule for
   dedicated sub-window surfaces.

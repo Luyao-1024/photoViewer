@@ -22,7 +22,7 @@ GTK-facing async setup is dispatched through `gtk::glib::MainContext::default().
 The WebDAV sync engine (`src/core/sync/`) runs on the same Tokio runtime as an
 in-process service: network I/O stays off the GTK thread, and every sync state
 commit goes through the single `DbActor` connection owner. See
-[`modules/storage.md`](modules/storage.md) "Bidirectional Synchronization".
+[`modules/sync.md`](modules/sync.md).
 
 ## Navigation
 

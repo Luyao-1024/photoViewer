@@ -254,7 +254,3 @@ Avoid full-window `filter` or `backdrop-filter` on modal scrims. The Settings
 dialog may dim the gallery while open, but large-scene blur during dialog
 animations is too expensive; keep blur on bounded chrome surfaces such as the
 dialog card, menus, and side panels.
-
-## Legacy Pointer
-
-[`../liquid-glass.md`](../liquid-glass.md) is kept only as a compatibility pointer for older links. This module document is the active source of truth for Liquid Glass material contracts.

@@ -181,4 +181,6 @@ test file or trash entry.
 - Keep root `README.md`, `CONTRIBUTING.md`, and `AGENTS.md` short. They should point to `docs/README.md` or a specific module doc instead of repeating long command blocks or architecture details.
 - Keep `docs/README.md` as the canonical documentation index. Add new module docs there and in `AGENTS.md` when they become required reading for code changes.
 - When changing a module contract, UI invariant, or development workflow, update the matching module/core doc in the same change.
-- Prefer replacing duplicate detailed documents with a short compatibility pointer to the active source of truth.
+- Prefer replacing duplicate detailed documents with a short compatibility pointer to the active source of truth, and delete the duplicate once the pointer proves unnecessary.
+- Do not add a point-in-time review record as a maintained document. Fold its findings into the owning module doc, and keep the record in git history. `docs/README.md` explains how to recover one.
+- Do not create a directory for a single file. Promote a subdirectory to `docs/modules/` only once it holds a document that has its own functional ownership.
