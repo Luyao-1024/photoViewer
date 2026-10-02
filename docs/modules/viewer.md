@@ -35,7 +35,7 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/toasts.rs` | Toast priorities/timeouts and the one inline Undo action |
 | `src/ui/media_list.rs` | Shared live-list helpers, including the sorted re-insert an undo relies on |
 | `data/ui/viewer-page.blp` | Viewer template |
-| `tests/e2e_viewer.rs` | Viewer flow coverage |
+| `tests/pipeline_thumbnails.rs` | Thumbnail pipeline coverage (no viewer window) |
 | `tests/ux_viewer_pointer_flows.rs` | Real-pointer viewer UX runs: hit test, press, assert the switch |
 | `tests/ui_viewer_toolbar.rs` | Viewer toolbar/template assertions |
 | `tests/ui_viewer_source_structure.rs` | Display-free viewer source/template invariants |

@@ -809,6 +809,28 @@ impl VirtualMediaGrid {
             .min()
     }
 
+    /// The realized tile that currently paints `media_id`, if the grid has one
+    /// on screen.
+    ///
+    /// This is how a caller aims at *a particular photo* instead of at a slot
+    /// number: a pointer has to be aimed at a widget, and the widget that shows
+    /// a given item is what the user actually sees. Interaction tests and
+    /// accessibility hit-testing both need this mapping, and neither can derive
+    /// it from a slot index, because virtualization recycles the item widgets.
+    pub fn tile_for_media(&self, media_id: MediaId) -> Option<crate::ui::square_tile::SquareTile> {
+        let generation = self.imp().layout_generation.get();
+        self.imp()
+            .factory_cells
+            .borrow()
+            .iter()
+            .find(|cell| {
+                cell.binding.borrow().as_ref().is_some_and(|binding| {
+                    binding.layout_generation == generation && binding.media_id() == media_id
+                })
+            })
+            .map(|cell| cell.tile.clone())
+    }
+
     fn focused_ready_media_slot(&self) -> Option<u32> {
         let focus = self.root().and_then(|root| root.focus())?;
         let generation = self.imp().layout_generation.get();

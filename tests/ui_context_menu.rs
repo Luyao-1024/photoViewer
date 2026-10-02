@@ -5,7 +5,8 @@
 //! handler (src/ui/media_grid.rs ~lines 716-833). We don't rebuild the full
 //! `MediaGrid` here; this test stands in for the same construction and
 //! verifies the new `glass-menu*` class assignments. The click-handler
-//! behaviour is already covered by `tests/e2e_browsing.rs` and
+//! behaviour is already covered by `tests/ux_click_flows.rs`
+//! (`journey_context_menu_select_then_favorite_the_selection`) and
 //! `tests/trash_flow.rs`.
 //!
 //! GTK is single-threaded; we use a single `#[test]` function for the whole

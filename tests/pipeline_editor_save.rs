@@ -1,21 +1,13 @@
-//! M4 end-to-end coverage for the Edit → Save Copy / Save Overwrite flow.
+//! Data-pipeline coverage for the editor's two save paths.
 //!
-//! This test exercises the *real* call chain the UI uses when the user
-//! clicks Save Copy or Save Overwrite inside `EditorPage`:
+//! Calls `save_as_copy` / `save_overwrite` directly — the exact functions
+//! `EditorPage` delegates to — and checks the file on disk, the `.bak` backup and
+//! the DB row. It spins up no GTK widgets, so it proves the save pipeline, not
+//! that a user can reach the Save buttons.
 //!
-//! 1. `db::init_pool` + `db::insert_media_item` (the path the gallery
-//!    uses to persist scanned files)
-//! 2. `save_as_copy` / `save_overwrite` (the exact functions called by
-//!    `EditorPage::save_as_copy` / `EditorPage::perform_save_overwrite`)
-//! 3. Verify file-on-disk + DB row + DB row count for Save Copy
-//! 4. Verify `.jpg.bak` backup + DB metadata update for Save Overwrite
-//!
-//! It does NOT spin up GTK widgets — `EditorPage` requires a running
-//! GTK main loop (loading the source image goes through
-//! `glib::spawn_future_local`), which is not feasible in a headless unit
-//! test. Instead we cover the *whole* save-side pipeline that the UI
-//! delegates to, which is the most important contract: a user-edited
-//! photo must produce the right file and the right DB row.
+//! The button-level coverage is owned by
+//! `tests/ux_click_flows.rs::journey_search_view_edit_and_save_copy` and
+//! `journey_save_overwrite_rewrites_the_file_and_keeps_a_backup`.
 
 mod common;
 

@@ -23,7 +23,8 @@ trash backend with restore and delete flows.
 | `data/ui/trash-page.blp` | Trash template |
 | `tests/album_navigation.rs` | Album detail + viewer push |
 | `tests/album_order.rs` | Persistent sidebar album ordering (`set_album_order`) |
-| `tests/e3e_albums_trash.rs` | End-to-end albums/trash flow |
+| `tests/pipeline_albums_trash.rs` | Data-pipeline albums/trash coverage (no GTK UI) |
+| `tests/ux_click_flows.rs` | Real-pointer albums/trash journeys: batch bar, dialogs, restore, permanent delete |
 | `tests/trash_flow.rs` | Trash behavior |
 
 ## Albums

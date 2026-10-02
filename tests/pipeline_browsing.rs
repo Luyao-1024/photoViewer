@@ -1,4 +1,10 @@
-//! 端到端：扫描测试目录 + 加载到 GListStore + 分组验证
+//! Data-pipeline coverage: scan a test directory, load it into a `GListStore`,
+//! and verify day/month/year grouping.
+//!
+//! Not a UX test: it drives no GTK window. The user-facing equivalent — switching
+//! the Photos mode capsule and watching the grid really change — is owned by
+//! `tests/ux_click_flows.rs::mode_selector_click_switches_photos_view`.
+
 mod common;
 use chrono::NaiveDate;
 use common::*;

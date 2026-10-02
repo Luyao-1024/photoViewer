@@ -4,6 +4,8 @@
 //! others. Allow the warning at module level.
 #![allow(dead_code)]
 pub mod db;
+pub mod interaction;
+pub mod shell;
 use image::{ImageBuffer, Rgb};
 use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;

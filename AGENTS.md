@@ -9,7 +9,8 @@ This file is the entry point for coding agents working in this repository. Keep 
 3. Inspect implementation with `rg`/targeted file reads; follow existing GTK/Rust patterns.
 4. For behavior changes, add or update focused tests before implementation when practical.
 5. While changes are uncommitted, run only the new or directly modified focused tests. Reserve the full CI suite for the remote-push gate.
-6. Update the relevant module docs when changing contracts, UI invariants, or development workflow.
+6. For UX behaviour, drive the real input path through `tests/common/interaction.rs` + `tests/common/shell.rs` — hit-test, then press. Never emit `clicked`, and never set a widget's end state (selection, visibility, a DB row) to reach the state under test. UX commands need a desktop-sized display: `xvfb-run -a -s "-screen 0 1920x1080x24"`.
+7. Update the relevant module docs when changing contracts, UI invariants, or development workflow.
 
 ## Module Map
 
@@ -40,7 +41,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 - When you add/rename/remove a UI widget, change a template `child-id`, or alter a drag/resize affordance, update [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) to match. It is a maintained visual naming map (source of truth: `data/ui/*.blp`, `src/ui/*.rs`), not a one-time artifact.
 - **Do not run the full suite merely because changes are still uncommitted.** During implementation, run only tests added or directly modified by the change (plus the narrowest command needed to execute them). A local commit may be created from that focused evidence.
 - **Every commit message must contain a `Tests:` section** listing the commands actually run and their result (`PASS`, `FAIL`, or `NOT RUN` with a reason). Never report an unexecuted check as passing.
-- **Run the full CI suite only before pushing commits to a remote.** Test the final code tree that will be pushed with exactly the commands from `.github/workflows/ci.yml`: `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, `cargo build --locked --all-targets`, and `tools/with-at-spi.sh xvfb-run -a cargo test --locked --all`. Record those results in the pushed commit's `Tests:` section; amend the message after the run when necessary. A message-only amend does not require rerunning the suite because the tested code tree is unchanged. A focused test is not a substitute at the push gate. If `main` is already red from an unrelated failure, record the exact failure instead of making the commit look green.
+- **Run the full CI suite only before pushing commits to a remote.** Test the final code tree that will be pushed with exactly the commands from `.github/workflows/ci.yml`: `cargo fmt --all --check`, `cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments`, `cargo build --locked --all-targets`, and `tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --all`. Record those results in the pushed commit's `Tests:` section; amend the message after the run when necessary. A message-only amend does not require rerunning the suite because the tested code tree is unchanged. A focused test is not a substitute at the push gate. If `main` is already red from an unrelated failure, record the exact failure instead of making the commit look green.
 
 ## UI Invariants
 
@@ -60,6 +61,7 @@ cargo build
 cargo run
 cargo test
 cargo test --test ui_grid_css_install
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --test ux_click_flows
 cargo fmt
 cargo clippy --all-targets
 ./run-flatpak.sh
@@ -71,5 +73,5 @@ Run only at the remote-push gate — mirrors `.github/workflows/ci.yml`:
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
 cargo build --locked --all-targets
-tools/with-at-spi.sh xvfb-run -a cargo test --locked --all   # GTK tests need a display and AT-SPI; matches CI
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --all   # display + AT-SPI; matches CI
 ```

@@ -401,14 +401,23 @@ impl TrashPage {
         self.refresh();
         let message = match result {
             Ok(result) => {
-                if let Some(grid) = self.imp().grid.borrow().as_ref() {
-                    grid.select_ids(
-                        &result
-                            .failures
-                            .iter()
-                            .map(|(id, _)| *id)
-                            .collect::<Vec<_>>(),
-                    );
+                // Highlight only what actually failed. An empty failure list has to
+                // be left alone rather than handed to `select_ids`: that call takes
+                // its multi-select flag from "is anything selected", so passing the
+                // empty success case through it dropped the grid out of
+                // multi-select — after restoring one photo the remaining ones could
+                // no longer be ticked at all, and the batch bar never came back.
+                if !result.failures.is_empty() {
+                    if let Some(grid) = self.imp().grid.borrow().as_ref() {
+                        grid.select_ids(
+                            result
+                                .failures
+                                .iter()
+                                .map(|(id, _)| *id)
+                                .collect::<Vec<_>>()
+                                .as_slice(),
+                        );
+                    }
                 }
                 result.error_message()
             }

@@ -21,7 +21,8 @@ The editor module covers non-destructive operation state, orientation-metadata r
 | `src/ui/editor_panel.rs` | Editor controls |
 | `data/ui/editor-panel.blp` | Editor panel template |
 | `tests/edit_ops.rs` | Operation coverage |
-| `tests/e2e_editor.rs` | Editor flow coverage |
+| `tests/pipeline_editor_save.rs` | Save-pipeline coverage: `save_as_copy`/`save_overwrite` called directly, no GTK UI |
+| `tests/ux_click_flows.rs` | Real-pointer editor journeys: Save a copy, Save and Overwrite, close guard |
 
 ## Operation Pipeline
 

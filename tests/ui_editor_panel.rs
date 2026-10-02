@@ -6,6 +6,15 @@
 //!
 //! The same function covers the P1-9 exit guard: a clean editor closes at
 //! once, a dirty one asks first, and compare renders the unedited source.
+//!
+//! This is a widget-state contract, not UX evidence. The panel is built bare, so
+//! its buttons are driven with `emit_clicked()` and the guard dialog with an
+//! emitted `response` — neither is a pointer press, and neither can tell whether a
+//! user could reach the control at all. What the user actually experiences —
+//! opening a photo, changing it, being asked before it is lost, and checking that
+//! "keep editing" really kept the edit while "discard" really wrote nothing — is
+//! owned by
+//! `tests/ux_click_flows.rs::journey_editor_close_guard_keeps_or_discards_pending_edits`.
 
 use gtk4 as gtk;
 use gtk4::glib;

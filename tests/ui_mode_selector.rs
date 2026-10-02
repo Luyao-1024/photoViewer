@@ -10,12 +10,16 @@
 //! (which serializes tests on the GTK main thread but requires
 //! `gtk4-macros`, not currently a dev-dependency).
 
+mod common;
+
+use common::interaction::Ui;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::ui::{ModeSelector, PhotosPage};
+use std::time::Duration;
 
 #[test]
 fn mode_selector_integration_suite() {
@@ -38,7 +42,13 @@ fn mode_selector_integration_suite() {
     sel2.set_stack(&stack);
     assert_eq!(sel2.active_index(), 1);
 
-    // --- Test 3: clicking a label cell updates the bound stack ---
+    // --- Test 3: a real pointer press on a label cell switches the bound stack ---
+    //
+    // The cell owns a `GtkGestureClick`, but a press only means anything if a
+    // pointer aimed at the cell's own centre reaches it, so the capsule sits in a
+    // presented window and is driven through the shared harness. Pressing the
+    // gesture directly on an unrealized cell would pass even if the cell had no
+    // allocation at all.
     let sel3 = ModeSelector::new();
     let stack3 = gtk::Stack::new();
     stack3.add_titled(&gtk::Label::new(Some("A")), Some("year"), "年");
@@ -46,26 +56,42 @@ fn mode_selector_integration_suite() {
     stack3.add_titled(&gtk::Label::new(Some("C")), Some("day"), "日");
     sel3.set_stack(&stack3);
 
-    // Find the third label cell and emit a click.
-    let row = sel3
-        .first_child()
-        .and_then(|c| c.downcast::<gtk::Box>().ok())
-        .unwrap();
-    let cells: Vec<gtk::Box> = (0..3)
-        .scan(row.first_child(), |cur, _| {
-            let c = cur.clone()?;
-            *cur = c.next_sibling();
-            c.downcast::<gtk::Box>().ok()
-        })
-        .collect();
-    let gesture = cells[2]
-        .observe_controllers()
-        .snapshot()
-        .into_iter()
-        .find_map(|c| c.downcast::<gtk::GestureClick>().ok())
-        .expect("third cell should have a GtkGestureClick");
-    gesture.emit_by_name::<()>("pressed", &[&0i32, &0.0f64, &0.0f64]);
-    assert_eq!(stack3.visible_child_name().as_deref(), Some("day"));
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.append(&sel3);
+    let win = gtk::Window::new();
+    win.set_default_size(900, 240);
+    win.set_child(Some(&holder));
+    win.present();
+    let ui = Ui::for_widget(&win);
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || {
+            common::interaction::find_label_containing(&sel3, "日")
+                .is_some_and(|l| ui.pointer_at_center_of(&l).is_some())
+        }),
+        "the mode capsule should be laid out with a hittable Day cell"
+    );
+
+    let day_label = common::interaction::find_label_containing(&sel3, "日").expect("Day cell");
+    ui.click(&day_label, "the Day cell");
+    assert_eq!(
+        stack3.visible_child_name().as_deref(),
+        Some("day"),
+        "pressing the Day cell should switch the bound stack"
+    );
+
+    let month_label = common::interaction::find_label_containing(&sel3, "月").expect("Month cell");
+    ui.click(&month_label, "the Month cell");
+    assert_eq!(
+        stack3.visible_child_name().as_deref(),
+        Some("month"),
+        "pressing the Month cell should switch the bound stack back"
+    );
+    assert_eq!(
+        sel3.active_index(),
+        1,
+        "the capsule's own state should follow the cell that was pressed"
+    );
+    win.destroy();
 
     // --- Test 4: PhotosPage builds via its template; ModeSelector TemplateChild
     // resolves and the template applies halign=center / valign=end.

@@ -15,64 +15,167 @@ code is shared; full-suite coverage belongs to the remote-push gate below.
 
 ## UX Test Strategy
 
-UX coverage is organized by user goal. The primary deterministic gate is
-`tests/ux_click_flows.rs`; it initializes GTK once and runs serially because
-multiple GTK application shells are not safe to drive concurrently in one test
-process. Its leading scenarios are complete journeys through the real
-`MainWindow`, sidebar, navigation stack, pages, persistence layer, and
-filesystem effects:
+UX coverage is organized by user goal. Both UX binaries are built on one shared
+harness, so "real input" means the same thing everywhere:
 
-1. Search for a photo, open Viewer, inspect details, favorite it, edit it, and
-   save a copy.
-2. Select the Photos collection, copy it through the album picker, reopen the
-   album from the sidebar, and open an item in Viewer.
-3. Move selected Photos items to Trash through the confirmation dialog, then
-   cancel selection, restore one item, and permanently delete the other.
+- **`tests/common/interaction.rs`** — `Ui`, a pointer and keyboard bound to one
+  pick root. `click` / `right_click` / `double_click` hit-test first, then deliver
+  press and release to the gesture controllers that control's click path runs
+  through. `type_search` / `type_entry` / `activate_entry` for text, `press_key` /
+  `key_gesture` for the production router, and `pump` / `wait_until` for the loop.
+- **`tests/common/shell.rs`** — `Shell`, a presented `MainWindow` over a real
+  SQLite library of real distinct JPEGs on a real filesystem, wired with the same
+  pool, `ThumbnailLoader`, `media_list` and `DbActor` the app uses. `Shell::new()`
+  seeds two photos; `Shell::with_photos(n)` more. Every scenario drops its shell,
+  which destroys the window, so runs do not starve each other's frame clock.
 
-The rest of that binary contains interaction contracts for important variants
-such as rapid double activation, mode switching, keyboard routing, settings,
-rename/zoom/rotate controls, and album multi-select. Keep a contract only when
-putting the assertion into a journey would make the journey branch unnaturally
-or hide the behavior being diagnosed. New UX regressions should first extend
-the nearest journey; add an isolated widget test only for a reusable widget
-contract or a state that cannot be reached deterministically through GTK.
+The primary deterministic gate is `tests/ux_click_flows.rs`. It initializes GTK
+once and runs its scenarios serially, because multiple GTK application shells are
+not safe to drive concurrently in one test process. Its journeys are complete
+goals through the real sidebar, navigation stack, pages, persistence layer and
+filesystem:
 
-Run this focused gate during development when the change adds or modifies the
-UX journey:
+1. Search for a photo by name, open it, read its details, favorite it, brighten
+   it, save a copy — then check the copy is a real file in the library, the
+   original is byte-for-byte unchanged, and the copy's bytes differ.
+2. Enter multi-select from a photo's context menu, copy the collection through the
+   album picker, reopen the album by clicking its sidebar row, and open a copied
+   photo in the Viewer.
+3. Trash both photos through the confirmation dialog, verify the files left the
+   library folder, cancel the selection, restore one and verify it came back on
+   disk, then delete the other permanently.
+4. Delete from the Viewer and use the toast's Undo — which must put the file back,
+   not just re-flag the row.
+5. Rename from the details panel — the real file changes name, the old path is
+   gone, the library row follows, and the tile repaints under the new name.
+6. Save Overwrite, confirming the destructive dialog — the original's bytes change,
+   the `.bak` the dialog promised exists and holds the pre-edit bytes, and no extra
+   library row appears.
+7. Empty the whole Trash — rows gone, files gone for good, page still open.
+8. Edit, ask to leave, be asked first — "keep editing" keeps the pending edit;
+   "discard" closes the editor and writes nothing to disk.
+9. Select through the context menu and favorite the selection from the batch bar.
+
+Plus interaction contracts for variants a journey would have to contort to reach:
+double activation pushing exactly one Viewer, the mode capsule, keyboard routing
+(including that a held key dispatches one action), the batch toolbar, Viewer
+chrome and zoom state, sidebar navigation, album multi-select, the album picker's
+copy and move, the album context menu, and the sync badge surviving the jump from a
+grid tile to the Viewer header.
+
+Keep a contract only when putting the assertion into a journey would make the
+journey branch unnaturally or hide the behavior being diagnosed. New UX
+regressions should first extend the nearest journey; add an isolated widget test
+only for a reusable widget contract or a state that cannot be reached
+deterministically through GTK.
+
+Run this focused gate when a change adds or modifies UX:
 
 ```bash
-tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --test ux_click_flows
 ```
 
-## Pointer Targeting: hit-test before you press
+### The display has to be desktop-sized
+
+`xvfb-run`'s built-in default screen is **640x480**. A UX scenario asserts pointer
+coordinates, and on a 640x480 display the window is clamped, `AdwBreakpointBin`
+switches the layout to its narrow breakpoints, and controls that are perfectly
+reachable for a user end up outside the surface. `Shell` therefore refuses to start
+below 1000x700 and names the flag to pass. Use 1920x1080 for every UX command,
+including CI.
+
+## Pointer targeting: hit-test before you press
 
 A `clicked` signal emitted with `emit_by_name` is not a click. It bypasses the
 entire input path, so it cannot see anything that is wrong *between* the pointer
 and the button: a transparent overlay, a filled `Gtk.Overlay` child, a stale
-allocation. That gap is exactly how the viewer's Previous/Next pair could stop
-responding while the whole suite stayed green.
+allocation. That gap is how the viewer's Previous/Next pair could stop responding
+while the whole suite stayed green.
 
-So a test that claims to cover a pointer affordance has to do what the input
-path does, in this order:
+It hides the mirror-image problem too. Chrome a user cannot reach still answers an
+emitted signal, so a test can "click" a button that was never revealed — and can
+thereby paper over a state bug in the code that reveals it. Converting the suite to
+real presses found exactly that: after a successful Trash restore or delete,
+`finish_operation` handed an **empty** failure list to `grid.select_ids(&[])`, and
+`select_ids` derives its multi-select flag from "is anything selected". The grid
+dropped out of multi-select, so the remaining photos could no longer be ticked and
+the batch bar never came back. The old test reached the same end state by calling
+`select_ids` itself, which set the flag it was testing, so nothing was visible.
 
-1. let the widget be really laid out (a presented window and a mapped
-   allocation, not a `compute_bounds` on an unrealized tree);
-2. ask GTK where a pointer at that position lands — `gtk_widget_pick` — and
-   assert the target is the control under test or a descendant of it;
-3. hand press and release to the gesture controller that control actually owns
-   (for a `Gtk.Button`, the `GtkGestureClick` it installs);
+So a test that claims to cover a pointer affordance has to do what the input path
+does, in this order:
+
+1. let the widget be really laid out (a presented window and a mapped allocation,
+   not a `compute_bounds` on an unrealized tree);
+2. ask GTK where a pointer at that position lands — `gtk_widget_pick` — and assert
+   it resolves to the control under test or one of its descendants;
+3. hand press and release to the gesture controller(s) that control's click path
+   runs through, in the controller's own coordinate space;
 4. assert the user-visible result.
 
-`tests/ux_viewer_pointer_flows.rs` is the reference implementation of that
-pattern. It builds a real `MainWindow`, pushes a real `ViewerPage` through
-`ViewerPage::new_for_query` with a live `MediaQuery`, seeds a library of real
-distinct JPEGs, and runs five cases: the navigation pair walking the whole
-library to both ends, the stage centre never being claimed by chrome, the zoom
-cluster, the header actions, and the chrome coming back clickable after an
-immersive fold. Each case destroys its window on drop, so cases do not starve
-each other's frame clock.
+### Which widget owns the click
 
-Two rules learned while writing it:
+Measured against GTK 4.22 / libadwaita 1.6, not guessed:
+
+| control | gesture owner |
+|---|---|
+| `Gtk.Button`, `ModeSelector` label cell, sidebar album row | the widget itself |
+| `Gtk.GridView` / `Gtk.ListView` item | the `GtkListItemWidget` wrapper, **not** the tile |
+| `Gtk.ListBox` row | the `GtkListBox` |
+| `Gtk.FlowBox` child | the `Gtk.FlowBox` |
+| `AdwActionRow` | its own gesture drives only its pressed visuals; `activated` comes from the enclosing `GtkListBox` resolving the press coordinates |
+| `AdwAlertDialog` response | a real `Gtk.Button`, inside the dialog's **own surface** |
+
+`Ui` therefore propagates a press innermost → outermost and stops at the first
+owner that actually activates (`Ui::ends_the_line`: buttons, list boxes, list and
+grid views, flow boxes, `GtkListItemWidget`, toggles, switches). Stopping matters as
+much as continuing: delivering all the way to the window fires handlers a real press
+never reaches, because the first controller claims the sequence.
+
+Two consequences worth knowing before writing a case:
+
+- `GtkListBoxRow` and `GtkFlowBoxChild` are **not** end-of-line. `AdwActionRow` is a
+  `GtkListBoxRow` subclass with its own primary `GtkGestureClick`, and pressing only
+  that gesture leaves `activated` unfired.
+- `AdwAlertDialog` is its own surface: `compute_bounds()` from the main window
+  returns `None` for its buttons, so content inside a dialog is driven through
+  `Ui::for_widget(...)`, which walks to the top of the tree and binds to whichever
+  surface really holds the widget.
+
+### Waiting for the layout to settle
+
+A hit test taken during a transition measures the wrong thing, and this shows up
+constantly: a `GtkStack` crossfade keeps the outgoing page hit-testable, so the
+first pointer after a page swap lands on the page the user already left.
+`assert_reachable` allows a bounded settle window before failing, so it matches a
+user who aims again, and still fails when a control never becomes reachable.
+
+The same rule applies to virtualized grids. A realized tile is not a painted one and
+the grid rebinds its item widgets when decoded thumbnails land, so a widget held
+across a reload can point at a different photo — or at none. `Shell::tile_for`
+resolves the tile **from the photo's identity** every time and waits for it to be
+painted, and scenarios re-resolve after any action that reloads a grid.
+
+### Aim at what the user reads
+
+Scenarios name controls the way a user does: by visible label
+(`find_button_with_label(&dialog, &tr("dialog.trash"))`), by displayed text
+(`find_label_containing(&album_list, &album.display_name())`), or by which photo a
+tile paints (`grid.tile_for_media(id)`). That is why an `Album` is aimed at by
+`display_name()` — the sidebar row shows the folder's basename while `name` holds
+the raw path.
+
+### Text input
+
+GTK 4.22 emits `GtkSearchEntry`'s `search-changed` only from its key-handler path:
+`set_text`, `insert_text` and `activate` each leave a connected listener silent, and
+Rust has no public API to fabricate the `GdkEvent` that path needs. So
+`Ui::type_search` inserts each character through the editable's real insert path and
+then emits the signal the keystroke would have emitted. This is the harness's one
+measurable departure from event-level fidelity, and it is the reason a search
+journey must not use `set_text`.
+
+### Rules learned while writing the viewer suite
 
 - Use the production entry point. `ViewerPage::new(media_list, index)` leaves
   `media_query` unset, so `prefetch_neighbors` returns early and the
@@ -92,26 +195,34 @@ Two rules learned while writing it:
   measures the wrong thing. Return "nothing picked it" for unmapped widgets, and
   do not assert on animation-driven transitions.
 
-Because that suite needs a display, keep a display-free source gate next to the
+`tests/ux_viewer_pointer_flows.rs` applies the harness to the Viewer: a real
+`MainWindow`, a real `ViewerPage` pushed through `new_for_query` with a live
+`MediaQuery`, and a library of real distinct JPEGs, across five cases — the
+navigation pair walking the whole library to both ends, the stage centre never being
+claimed by chrome, the zoom cluster, the header actions and the navigation lock, and
+the chrome coming back clickable after an immersive fold.
+
+```bash
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --test ux_viewer_pointer_flows
+```
+
+Because these suites need a display, keep a display-free source gate next to the
 runtime one when a template invariant is what broke:
 `tests/ui_viewer_source_structure.rs::overlay_chrome_revealers_are_not_fill_aligned`
 parses the Revealer's own property lines (not the whole block — the wrapped child
 has an alignment of its own and would otherwise satisfy the check) and runs under
 plain `cargo test`.
 
-Run it with:
-
-```bash
-tools/with-at-spi.sh xvfb-run -a cargo test --test ux_viewer_pointer_flows
-```
-
 The full-shell fixtures use valid media files and a normal filesystem under the
 current user's home directory. This lets the journeys exercise image decode,
 editor save, and GIO trash/restore behavior rather than pre-seeding their final
 database states. Every fixture is isolated and cleaned up after the scenario.
-The suite sends keyboard input through the production capture-phase router and
-uses GTK click/activation/response signals; it must not call page-level action
-handlers directly.
+A UX scenario must not call a page-level action handler, must not emit `clicked`,
+and must not set a widget's end state (selection, visibility, a database row) to
+reach the state under test — set it by interacting, then assert what the
+interaction produced.
+
+### Environment and expected log noise
 
 `tools/with-at-spi.sh` starts an isolated session D-Bus when needed, then
 checks that both `org.a11y.Bus` and `org.a11y.atspi.Registry` are available
@@ -126,6 +237,21 @@ After a successful wrapped command, the registry may print `A connection to
 the bus can't be made` while the temporary session is shutting down. This is
 post-test service cleanup, not an application startup connection failure; the
 helper's readiness check remains the pass/fail signal.
+
+A real-pointer run also prints `Gdk-CRITICAL: gdk_event_get_modifier_state:
+assertion 'GDK_IS_EVENT (event)' failed` a handful of times (five in the current
+`ux_click_flows`). It is the cost of the harness: Rust emits `pressed`/`released`
+on a `GtkGestureClick` without a `GdkEvent`, because GTK 4 exposes no public API
+for fabricating one, and some handler partway up the press path then asks the
+absent current event for its modifier state. Measured: no single harness
+primitive produces it on its own — a left/right/double click, a key press, a hold
+gesture, `type_search`, `type_entry` and a dialog response button are all silent
+in isolation — and it appears only inside the scenarios that drive presses into
+album lists and the album picker. The press still lands (the surrounding
+expectations pass), so treat the line as noise, not as evidence of a skipped
+click; if it ever becomes loud, that is a hint a new gesture owner is reading
+the event. MESA `DRI3`/`vulkan` lines are the same story under `xvfb-run` —
+software rendering, not a failure.
 
 For a Flatpak-runtime check of the non-destructive keyboard entry path, run `tools/visual-check-x11.sh --keyboard-smoke`. It sends `Ctrl+F` through XTEST on X11 and saves startup and Search-page screenshots; it complements the deterministic GTK suite rather than replacing it. Run `tools/visual-check-x11.sh --a11y-smoke` to additionally use `python3-pyatspi` against the live AT-SPI tree: it requires the localized application frame, a focused Search entry, and the three Search field toggle buttons exposed under their accessible names. Those names are resolved from `i18n/<locale>.json` for the locale the probe predicts the app picked (its own `--locale {zh-CN,en}` flag overrides, mirroring the app's config → `PHOTO_VIEWER_LOCALE` → `LC_ALL`/`LANG`/`LANGUAGE` precedence), so under zh-CN the expectation is `全部`、`文件名`、`日期` and under en it is `All`、`File name`、`Date`; `tests/visual_check_script.rs` pins the probe's zh-CN fallback list to the catalogue. This verifies the key Search navigation semantics available to assistive technology; it does not replace manual screen-reader usability testing.
 
@@ -195,7 +321,7 @@ by the current change. Examples:
 ```bash
 cargo test --lib path::to::new_test
 cargo test --test changed_integration_test
-tools/with-at-spi.sh xvfb-run -a cargo test --lib path::to::new_gtk_test
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --lib path::to::new_gtk_test
 ```
 
 Do not run `cargo test --all` at this stage unless the change is immediately
@@ -232,7 +358,7 @@ the final code tree that will be pushed:
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments
 cargo build --locked --all-targets
-tools/with-at-spi.sh xvfb-run -a cargo test --locked --all
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --all
 ```
 
 The pushed commit's `Tests:` section must show the result of all four gate
@@ -242,6 +368,9 @@ passing.
 
 ## Test Layers
 
+- `tests/common/interaction.rs` + `tests/common/shell.rs`: the real-input harness
+  and the full application shell every UX scenario drives. Shared by both UX
+  binaries; new UX coverage starts here rather than reimplementing hit testing.
 - `tests/ux_click_flows.rs`: full-shell user journeys first, then narrowly
   scoped interaction contracts. This is the deterministic UX release gate.
 - `tools/visual-check-x11.sh`: Flatpak/runtime smoke checks and screenshots for
@@ -250,9 +379,11 @@ passing.
 - `tests/fixtures/media/`: checked-in real media fixtures used by default
   tests, including phone HEIC/video coverage that must not be hidden behind
   `#[ignore]`.
-- `tests/e2e_*` and `tests/e3e_*`: legacy-named data-pipeline integration tests.
-  They validate scan/group, thumbnail, edit persistence, album, and trash
-  boundaries, but do not drive the GTK UI and are not UX end-to-end evidence.
+- `tests/pipeline_*` (formerly named `e2e_*` / `e3e_*`): data-pipeline integration
+  tests for scan/group, thumbnails, edit persistence, album and trash boundaries.
+  They call `core::` functions directly, drive no GTK window, and are not UX
+  end-to-end evidence; each file's header names the journey that covers its
+  user-facing route.
 - `tests/ui_*`: GTK template, CSS, and widget behavior checks.
 - `src/ui/grid_css/tests/render.rs`: contracts measured from real GTK rendering
   rather than from the CSS source — sampled pixel colours (the hover/selection

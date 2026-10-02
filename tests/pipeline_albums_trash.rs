@@ -1,3 +1,10 @@
+//! Data-pipeline coverage for the album and trash boundaries: add/move/copy
+//! between folders, move to trash, restore, delete permanently.
+//!
+//! Exercises `core::album_ops` and `core::trash` directly, with no GTK UI. The
+//! user-facing routes through the picker, the batch bar and the confirmation
+//! dialogs live in `tests/ux_click_flows.rs`.
+
 mod common;
 use common::*;
 use photo_viewer::core::album_ops::{add_to_album, AlbumOpMode};

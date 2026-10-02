@@ -55,5 +55,9 @@ jobs:
       - name: Build
         run: cargo build --locked --all-targets
 
-      - name: Test (headless)
-        run: tools/with-at-spi.sh xvfb-run -a cargo test --locked --all
+      # xvfb-run's own default screen is 640x480, which clamps the window, trips
+      # the layout's narrow breakpoints and puts controls outside the surface —
+      # the pointer-targeted UX tests hit-test real coordinates, so they need a
+      # desktop-sized display. 1920x1080 matches the Flatpak visual checks.
+      - name: Test (headless, 1080p display)
+        run: tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --all

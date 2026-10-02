@@ -2,7 +2,12 @@
 //!
 //! Albums are opened directly from the sidebar now (see `sidebar_navigation`),
 //! so this builds an `AlbumDetailPage` the same way the sidebar does — with a
-//! pre-filtered media list — and checks the day-grouped grid + viewer wiring.
+//! pre-filtered media list — and checks the page's structure: template chrome,
+//! header styling and the day-grouped virtual grid.
+//!
+//! This is a structure test, not UX evidence: its media items point at paths that
+//! do not exist, so no photo can really be opened here. The album-open-and-view
+//! journey lives in `tests/ux_click_flows.rs`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +23,7 @@ use photo_viewer::core::albums::Album;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::thumbnails::ThumbnailLoader;
 use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
-use photo_viewer::ui::{AlbumDetailPage, ViewerPage};
+use photo_viewer::ui::AlbumDetailPage;
 
 fn item(id: i64, folder: &str, file: &str) -> MediaItem {
     MediaItem {
@@ -121,33 +126,12 @@ fn album_detail_pushes_day_grouped_grid_and_viewer() {
         .expect("album detail should use VirtualMediaGrid");
     assert_eq!(grid.mode(), photo_viewer::core::section_model::GroupBy::Day);
 
-    let view = find_descendant::<gtk::GridView>(grid.upcast_ref())
-        .expect("album detail should contain a virtual GtkGridView");
-    view.emit_by_name::<()>("activate", &[&0u32]);
-
-    let viewer = nav
-        .visible_page()
-        .and_downcast::<ViewerPage>()
-        .expect("activating an album photo should push ViewerPage");
-    assert!(
-        viewer.imp().pool.borrow().is_some(),
-        "album detail viewer must receive DbPool so Delete works"
-    );
-}
-
-fn find_descendant<T>(root: &gtk::Widget) -> Option<T>
-where
-    T: glib::object::IsA<gtk::Widget> + glib::object::ObjectType,
-{
-    if let Some(found) = root.downcast_ref::<T>() {
-        return Some(found.clone());
-    }
-    let mut child = root.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_descendant::<T>(&widget) {
-            return Some(found);
-        }
-        child = widget.next_sibling();
-    }
-    None
+    // Stopping here is deliberate. Emitting `activate` on the GridView used to be
+    // this file's way of "opening" a photo, but that signal bypasses the hit test
+    // a real click runs and the fixture's media files do not exist on disk, so it
+    // proved nothing a user could rely on. Opening an album photo by aiming at the
+    // tile that paints it is owned by
+    // `tests/ux_click_flows.rs::journey_select_copy_to_album_then_open_it`, which
+    // also asserts the viewer receives a working pool and loader.
+    let _ = nav;
 }

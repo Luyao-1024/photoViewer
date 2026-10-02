@@ -1,3 +1,9 @@
+//! Data-pipeline coverage: scan, then generate thumbnails for the result.
+//!
+//! Uses `gio` list models and the real `ThumbnailLoader`, but drives no viewer
+//! window. Opening a photo and seeing its picture is covered by
+//! `tests/ux_viewer_pointer_flows.rs`.
+
 mod common;
 use common::*;
 use gtk::gio;
