@@ -22,7 +22,7 @@ The editor module covers non-destructive operation state, orientation-metadata r
 | `data/ui/editor-panel.blp` | Editor panel template |
 | `tests/edit_ops.rs` | Operation coverage |
 | `tests/pipeline_editor_save.rs` | Save-pipeline coverage: `save_as_copy`/`save_overwrite` called directly, no GTK UI |
-| `tests/ux_click_flows.rs` | Real-pointer editor journeys: Save a copy, Save and Overwrite, close guard |
+| `tests/ux_click_flows.rs` | Real-pointer editor journeys: Save a copy, Save and Overwrite, close guard, rotation + Reset, crop ratio arrows + Start Crop |
 
 ## Operation Pipeline
 
@@ -37,6 +37,16 @@ Entering the editor loads the source image into memory with orientation applied 
 The reset button is a circular icon button in the editor header. It is enabled only when `EditState::has_pending_edits()` is true, and it restores rotation, adjustments, and crop to defaults without closing the editor.
 
 Crop coordinates are stored in oriented source-image pixel coordinates so Save Copy and Save Overwrite apply the same crop to the original file. If the preview image is downsampled for rendering, `EditorPanel` scales the crop rectangle only for preview rendering. Crop controls stay inside the editor panel: Start Crop toggles crop mode, and the graphical ratio selector uses previous/next arrow buttons to switch original/1:1/4:3/3:2/16:9/free. The ratio preview is intentionally larger than a toolbar icon, while the previous/next buttons are narrow vertical controls. The crop completion button is a compact centered action, not a full-width row. The header reset button clears pending crop along with other unsaved edits.
+
+The ratio selector is absent until crop mode is on: `crop_ratio_box` is
+`visible: false` in the template and `update_crop_controls` is the only thing
+that reveals it. So Start Crop is the sole route into the ratio arrows, and
+entering crop mode is also what stages the first rectangle
+(`ensure_crop_rect`, at the active ratio — the source ratio means the whole
+image). `apply_crop_ratio` returns early while crop mode is off, so a ratio
+change made outside the mode is not merely invisible, it is dropped. The
+selector is a ring: `step_crop_ratio` wraps with `rem_euclid`, so the arrows
+never dead-end at either end.
 
 While crop mode is active, the viewer keeps showing the full edited preview without applying the crop, then draws a draggable crop overlay above the image. Clicking or dragging the rectangle selects it and changes the border/handle treatment so users can see it is active. Dragging inside the rectangle moves it; dragging corner handles resizes it. The overlay writes changes back to `EditState.crop` without scheduling a preview render, so dragging the crop box only redraws the overlay and does not show the image loading spinner. The final crop is rendered when crop mode is finished or when the user saves.
 

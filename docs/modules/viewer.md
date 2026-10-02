@@ -100,6 +100,18 @@ offers 重试 (which re-enters `show_at` for the current index) and 在文件管
 handler accepts it). The error surface lives in `base.css` only — it is a flat
 themed wash, not a glass material — so it needs no liquid/plain mirror.
 
+Both buttons are the only way off a photo that will not decode, so both are
+driven end to end by
+`journey_corrupt_photo_offers_retry_and_reveal`, against a file that really is
+corrupt (`Shell::seed_broken_photo` writes JPEG magic bytes and no image). That
+fixture choice matters: the failure has to be in the *file* for this path to be
+the thing under test — a missing row never reaches the viewer, and
+`show_original_decode_error`'s "only when there is nothing to paint" guard means
+a file that decoded at thumbnail size would correctly suppress the surface. The
+scenario presses Show in File Manager for real but asserts only what a headless
+run can observe (the press is reachable, the viewer survives it), because
+`gtk::show_uri_full` hands the folder to a desktop that is not there to answer.
+
 ## Feedback Toasts And Undo
 
 The viewer is the only page with a toast host, and `Adw.ToastOverlay` wraps the

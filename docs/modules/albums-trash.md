@@ -49,7 +49,15 @@ Album picker copy/move operations are the exception because they perform
 blocking filesystem work through `album_ops::add_to_album`; after they return,
 the UI must refresh the shared Photos `ListStore`, any visible
 `AlbumDetailPage`, and the sidebar snapshot together so counts and grids do not
-diverge. When the refreshed Photos projection is only adding media, preserve
+diverge. Album *delete* is the same kind of exception: it runs through
+`album_ops::delete_albums_to_trash_with_actor`, which rewrites `media_items` but
+not the `albums` projection, so `delete_albums_to_trash_worker` issues
+`DbCommand::RefreshAlbumsInternal` afterwards — exactly as `ignore_album_worker`
+does after its own mutation. Without it the sidebar keeps listing a deleted
+album with its old photo count and a cover whose file is already in the Trash.
+A refresh failure is logged, never surfaced as a failed delete: the photos are
+trashed by that point, and the result re-reads real state from `media_items`.
+When the refreshed Photos projection is only adding media, preserve
 the existing `ListStore` items and emit a pure insertion rather than replacing
 the whole model; otherwise hidden Photos grids destroy and recreate every
 thumbnail tile when the user returns to the page.
@@ -153,6 +161,15 @@ album list.
 Virtual albums such as Favorites, Photos, and Videos are navigable but not
 ignorable or deletable. Album multi-select is limited to deleting multiple real
 folder albums through the same configured trash-backed operation.
+
+Ignore and Delete sit one menu apart and promise opposite things, so
+`journey_album_context_menu_deletes_and_ignores_real_albums` drives both through
+the real right-click menu and asserts the difference on disk: Ignore leaves every
+file and its folder exactly where they were and only drops the rows, Delete
+sends the files to the Trash. Routing one through the other would destroy a
+user's folders, and until this journey the only thing asserted about these menu
+entries was their CSS classes — `tests/ui_context_menu.rs` rebuilds the menu and
+never triggers a callback.
 
 Within an album detail page, right-clicking a media tile can set that item as
 the album cover. The action writes `album_covers`, refreshes the sidebar, and

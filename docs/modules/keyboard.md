@@ -110,6 +110,20 @@ tests a permanently-held key.
 | Viewer | `H` | `ViewerToggleFavorite` |
 | Viewer | `Delete` | `Delete` |
 
+**What is pressed end to end.** The bindings above are the contract; which of
+them a full-shell scenario actually presses is a separate question, because a
+binding that silently stops dispatching — a renamed action, a scope that no
+longer resolves, a handler that stopped being connected — leaves every other
+suite green. `keyboard_shortcuts_drive_full_shell_navigation` covers `Ctrl+A`,
+`Escape`, `Ctrl+F` (including the text-input guard), `I` and `H`;
+`journey_viewer_shortcuts_reach_the_same_handlers_as_the_buttons` covers the
+viewer's own actions `R`, `Shift+R`, `+`, `0`, `Left`, `Right` and `E` against
+the same state the toolbar buttons move, so a keyboard regression and a pointer
+regression cannot both hide. Still unpressed end to end: `Alt+Left`, `Ctrl+,`,
+`F1`/`Ctrl+/`/`Ctrl+?`, the browsing arrow keys, `Enter`, `Space`, `Delete`, and
+the viewer `Space`/`-`/`F`/`Shift+F` rows. Add them to the nearest journey rather
+than in a new binary.
+
 `Escape` in the viewer scope unwinds one layer per press, in this order: editor
 panel → details panel → immersive browsing → navigation pop. Consuming the press
 at the innermost layer is what keeps "back" predictable now that `F` changes the

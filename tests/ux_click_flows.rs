@@ -36,6 +36,7 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
 use libadwaita::prelude::NavigationPageExt;
 use photo_viewer::core::db;
+use photo_viewer::core::edit::Rotation;
 use photo_viewer::core::i18n::tr;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::MediaItem;
@@ -63,6 +64,13 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     journey_editor_close_guard_keeps_or_discards_pending_edits();
     journey_context_menu_select_then_favorite_the_selection();
     journey_empty_trash_destroys_every_photo_for_good();
+    journey_editor_rotation_buttons_then_reset_restore_the_source();
+    journey_editor_crop_ratio_arrows_drive_a_pending_crop();
+    journey_album_multi_select_cancel_keeps_every_album_on_disk();
+    journey_album_multi_select_delete_moves_that_album_to_the_trash();
+    journey_corrupt_photo_offers_retry_and_reveal();
+    journey_album_context_menu_deletes_and_ignores_real_albums();
+    journey_viewer_shortcuts_reach_the_same_handlers_as_the_buttons();
 
     // Interaction contracts for variants a journey would have to contort to reach.
     mode_selector_click_switches_photos_view();
@@ -81,6 +89,446 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
 // ---------------------------------------------------------------------------
 // Journeys
 // ---------------------------------------------------------------------------
+
+/// Open a photo whose bytes cannot be decoded, and prove the viewer's dead end
+/// is a real, reachable escape hatch rather than a blank stage.
+///
+/// The file is genuinely corrupt — it scans, it gets a row, it gets a tile a
+/// pointer lands on — so the error surface is reached by the same path a user
+/// takes, not by setting the surface visible. Both buttons on that surface are
+/// the only things standing between a user and a dead viewer, and neither had
+/// any scenario behind it: `ui_viewer_toolbar.rs` only asserts the chrome's CSS
+/// classes and never once opens a viewer.
+///
+/// "Show in File Manager" hands the folder to the desktop, which a headless run
+/// cannot observe, so what is asserted is the part that *is* observable and
+/// matters: the button is on screen, it takes a real click through the same
+/// hit-test every other control passes, and the viewer survives it.
+fn journey_corrupt_photo_offers_retry_and_reveal() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let nav = shell.window.nav_view();
+    let broken_item = shell.seed_broken_photo("broken");
+    let broken = broken_item.path.clone();
+    let grid = shell.visible_photos_grid();
+
+    // The corrupt photo is a real, hittable tile: the failure is in the bytes,
+    // not in the row. `Shell::tile_for` is deliberately not used — it insists
+    // on a painted thumbnail, which is the one thing this file can never have.
+    let mut found = None;
+    let reached = ui.wait_until(Duration::from_secs(10), || {
+        found = grid.tile_for_media(MediaId::from(broken_item.id));
+        found.is_some()
+    });
+    assert!(
+        reached,
+        "a corrupt photo should still get a tile the user can click"
+    );
+    let tile = found.expect("the tile was captured above");
+    ui.click(&tile, "the corrupt photo");
+
+    let viewer = expect_page::<ViewerPage>(ui, &nav, "opening the corrupt photo");
+    assert!(
+        ui.wait_until(Duration::from_secs(15), || viewer
+            .imp()
+            .media_error_box
+            .get()
+            .is_visible()),
+        "a photo that cannot be decoded should raise the viewer's media-error surface"
+    );
+
+    // The wording names the file, because the real causes are a moved, renamed
+    // or unreadable file and the name is what a user can act on.
+    let title = viewer.imp().media_error_title.get().text().to_string();
+    assert_eq!(
+        title,
+        tr("viewer.image_error.title"),
+        "the error surface should use the catalogue's image-error title"
+    );
+    let subtitle = viewer.imp().media_error_subtitle.get().text().to_string();
+    assert!(
+        subtitle.contains(&tr("viewer.image_error.subtitle").replace("{name}", "broken.jpg")),
+        "the error surface should name the file the user has to find, got {subtitle:?}"
+    );
+
+    // Retry re-runs the load. The file is still corrupt, so the honest outcome
+    // is the same error again — the point is that the button is live and the
+    // viewer does not wedge or panic behind it.
+    let retry = viewer.imp().media_error_retry_btn.get();
+    assert_eq!(retry.label().unwrap().as_str(), tr("viewer.error.retry"));
+    ui.click(&retry, "Retry");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer
+            .imp()
+            .media_error_box
+            .get()
+            .is_visible()),
+        "retrying a still-corrupt file should land back on the error surface, not a blank stage"
+    );
+
+    // Reveal is the other way out. It shells out to the desktop, so the durable
+    // assertion is that a real pointer reached it and the viewer is still alive.
+    let reveal = viewer.imp().media_error_reveal_btn.get();
+    assert_eq!(
+        reveal.label().unwrap().as_str(),
+        tr("viewer.error.reveal"),
+        "the second way out should be labelled from the catalogue"
+    );
+    ui.click(&reveal, "Show in File Manager");
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || viewer
+            .imp()
+            .spinner
+            .get()
+            .is_visible()
+            || viewer.imp().media_error_box.get().is_visible()),
+        "pressing Reveal should leave the viewer in a real state rather than tear it down"
+    );
+
+    // And the user can still leave: the error surface is a dead end for the
+    // picture, not for the viewer.
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::Escape,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "Escape should still pop the viewer after a decode failure"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || nav
+            .visible_page()
+            .and_downcast::<ViewerPage>()
+            .is_none()),
+        "the viewer should pop so the user gets back to their library"
+    );
+    assert!(
+        broken.is_file(),
+        "nothing about a failed decode should touch the file on disk"
+    );
+}
+
+/// Take an album's sidebar row, right-click it, and press the named entry in the
+/// menu that appears — the whole route a user takes to reach a destructive album
+/// action.
+fn press_album_context_action(shell: &Shell, album_name: &str, action_label: &str) {
+    let ui = &shell.ui;
+    let row_label = wait_for_label_containing(
+        &shell.window.imp().album_list.get(),
+        album_name,
+        Duration::from_secs(5),
+    )
+    .unwrap_or_else(|| panic!("the sidebar should list {album_name:?}"));
+    ui.right_click(&row_label, &format!("{album_name:?} album row"));
+    let entry = wait_for_button_with_label(&shell.window, action_label, Duration::from_secs(4))
+        .unwrap_or_else(|| panic!("the album menu should offer {action_label:?}"));
+    ui.click(&entry, action_label);
+}
+
+/// Ignore and Delete sit one menu apart and promise opposite things, which is
+/// exactly why one journey drives both: Ignore must leave every file on disk and
+/// only take the album out of the library, while Delete must move the files to
+/// the Trash. A regression that routed one through the other would destroy a
+/// user's folders, and neither action had a scenario — `ui_context_menu.rs`
+/// rebuilds the menu to check its CSS classes and never triggers a callback, so
+/// "the item has the right style" was the only thing ever asserted.
+fn journey_album_context_menu_deletes_and_ignores_real_albums() {
+    // --- Ignore: files stay, library forgets them ---
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let window = &shell.window;
+    let ignored = shell.seed_extra_album();
+    window.populate_album_rows();
+    let ignored_photo = ignored.join("three.jpg");
+    let kept_dirs: Vec<PathBuf> = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
+        .filter(|dir| dir != &ignored)
+        .collect();
+    let kept_photos: Vec<PathBuf> = kept_dirs
+        .iter()
+        .flat_map(|dir| {
+            shell
+                .items
+                .iter()
+                .map(|i| i.path.clone())
+                .filter(move |p| p.starts_with(dir))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let ignored_name = ignored.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(
+        ignored_photo.is_file(),
+        "the album to ignore should hold a real photo at {}",
+        ignored_photo.display()
+    );
+
+    press_album_context_action(&shell, &ignored_name, &tr("album.context.ignore"));
+    respond_to_alert(ui, window, &tr("album.ignore.confirm_action"));
+
+    assert!(
+        ui.wait_until(Duration::from_secs(15), || !window
+            .imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .any(|album| album.folder_path == ignored)),
+        "ignoring an album should take it out of the sidebar"
+    );
+    assert!(
+        ignored_photo.is_file(),
+        "Ignore must never touch the user's files: {} is gone",
+        ignored_photo.display()
+    );
+    assert!(
+        ignored.is_dir(),
+        "Ignore must leave the album's folder exactly where it was"
+    );
+    assert!(
+        !db::list_all_media(&shell.pool)
+            .unwrap()
+            .iter()
+            .any(|item| item.path == ignored_photo),
+        "Ignore should drop the album's rows from the library, not trash them"
+    );
+    for photo in &kept_photos {
+        assert!(
+            photo.is_file(),
+            "ignoring one album must not disturb another: {} is gone",
+            photo.display()
+        );
+    }
+
+    // --- Delete: files go to the Trash ---
+    let deleted = shell.seed_extra_album();
+    window.populate_album_rows();
+    let deleted_photo = deleted.join("three.jpg");
+    let deleted_name = deleted.file_name().unwrap().to_string_lossy().into_owned();
+
+    press_album_context_action(&shell, &deleted_name, &tr("album.context.delete"));
+    respond_to_alert(ui, window, &tr("album.delete.confirm_action"));
+
+    assert!(
+        ui.wait_until(Duration::from_secs(15), || !deleted_photo.exists()),
+        "deleting an album should move its photo out of the library, looked for at {}",
+        deleted_photo.display()
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || db::list_trashed_media(
+            &shell.pool
+        )
+        .is_ok_and(|items| items.iter().any(|item| item.path == deleted_photo))),
+        "Delete should send the album's photos to the Trash, where they are recoverable"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || !window
+            .imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .any(|album| album.folder_path == deleted)),
+        "a deleted album should leave the sidebar"
+    );
+    for photo in &kept_photos {
+        assert!(
+            photo.is_file(),
+            "deleting one album must not touch another: {} is gone",
+            photo.display()
+        );
+    }
+    assert!(
+        db::list_all_media(&shell.pool)
+            .unwrap()
+            .iter()
+            .all(|item| item.trashed_at.is_none()),
+        "only the deleted album's photo should carry a trash flag"
+    );
+}
+
+/// Prove the Viewer shortcuts reach the same handlers as the buttons beside them.
+///
+/// The toolbar contract already proves the *buttons* move zoom, rotation, details
+/// and favourite state, and the keyboard contract proves navigation, Search and
+/// the text-input guard. Between them, the viewer's own actions had a gap in the
+/// middle: the actions a user reaches with one keystroke were never pressed, so a
+/// binding that silently stopped dispatching — a renamed action, a scope that no
+/// longer resolves, a handler that stopped being connected — would have left both
+/// suites green.
+fn journey_viewer_shortcuts_reach_the_same_handlers_as_the_buttons() {
+    let shell = Shell::with_photos(3);
+    let ui = &shell.ui;
+    let nav = shell.window.nav_view();
+    let grid = shell.visible_photos_grid();
+    let target = shell.items[0].clone();
+    let original_bytes = std::fs::read(&target.path).unwrap();
+
+    let tile = shell.tile_for(&grid, MediaId::from(target.id), "the Photos grid");
+    ui.click(&tile, "the photo to drive by keyboard");
+    let viewer = expect_page::<ViewerPage>(ui, &nav, "opening the photo");
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "the photo should finish loading before the shortcuts are pressed"
+    );
+    let start_index = viewer.current_index();
+
+    // R and Shift+R are the rotation bindings, and they are pending edits: the
+    // file on disk must not move.
+    assert_eq!(
+        viewer.imp().viewer_rotation_degrees.get(),
+        0,
+        "the viewer should open unrotated"
+    );
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::r,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "R should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || viewer
+            .imp()
+            .viewer_rotation_degrees
+            .get()
+            == 90),
+        "R should rotate the viewer a quarter turn, got {}",
+        viewer.imp().viewer_rotation_degrees.get()
+    );
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::R,
+            gtk::gdk::ModifierType::SHIFT_MASK
+        ),
+        "Shift+R should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || viewer
+            .imp()
+            .viewer_rotation_degrees
+            .get()
+            == 0),
+        "Shift+R should rotate the other way and land back at zero, got {}",
+        viewer.imp().viewer_rotation_degrees.get()
+    );
+
+    // The zoom bindings share the buttons' state, so pressing them is checked
+    // against the same scale the toolbar contract moves.
+    let zoom_before = viewer.imp().zoom_scale.get();
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::plus,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "+ should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || viewer.imp().zoom_scale.get()
+            > zoom_before),
+        "+ should zoom in past the {} it started at, got {}",
+        zoom_before,
+        viewer.imp().zoom_scale.get()
+    );
+    let zoomed = viewer.imp().zoom_scale.get();
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::_0,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "0 should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || {
+            let now = viewer.imp().zoom_scale.get();
+            now < zoomed && (now - 1.0).abs() < f64::EPSILON
+        }),
+        "0 should return the viewer to 1:1, got {}",
+        viewer.imp().zoom_scale.get()
+    );
+
+    // Arrow navigation walks the same list the Next button walks.
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::Right,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "Right should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || viewer.current_index()
+            != start_index),
+        "Right should advance to another photo, still at index {start_index}"
+    );
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::Left,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "Left should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || viewer.current_index()
+            == start_index),
+        "Left should walk back to the photo we started on"
+    );
+
+    // E is the same action as the Edit button, and it must land in the same place.
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::e,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "E should be handled by the viewer keyboard router"
+    );
+    let editor = viewer.imp().editor_panel.get();
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer
+            .imp()
+            .editor_split_view
+            .get()
+            .shows_sidebar()
+            && editor.imp().source_image.borrow().is_some()),
+        "E should open the editor exactly as the Edit button does"
+    );
+
+    // Leaving through the editor's own gate, then leaving the viewer, must still
+    // work — the keyboard is a way in, not a way to get stranded.
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::Escape,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "Escape should be handled while the editor is open"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || !viewer
+            .imp()
+            .editor_split_view
+            .get()
+            .shows_sidebar()),
+        "Escape should close a clean editor without asking about unsaved work"
+    );
+    assert_eq!(
+        std::fs::read(&target.path).unwrap(),
+        original_bytes,
+        "keyboard-driven rotation and the editor are pending edits; the source must be unchanged"
+    );
+}
 
 /// Search for a photo by name, open it, read its details, favorite it, brighten
 /// it, and save a copy — then prove the copy is a real file that entered the
@@ -904,6 +1352,606 @@ fn journey_empty_trash_destroys_every_photo_for_good() {
             .get()
             .is_revealed()),
         "with nothing left, the batch bar should not be offering actions"
+    );
+}
+
+/// Open a photo in the editor and hand the caller the panel, already loaded.
+///
+/// Every editor journey starts the same way a user does — grid, tile, viewer,
+/// Edit — and that prefix is long enough that repeating it hides what each
+/// journey is actually about. It also asserts the two things a scenario cannot
+/// work without: the source image is decoded, and the panel has settled so a
+/// click lands on a live button rather than one that is still spinning up.
+fn open_editor(shell: &Shell, label: &str) -> (ViewerPage, photo_viewer::ui::EditorPanel) {
+    let ui = &shell.ui;
+    let nav = shell.window.nav_view();
+    let grid = shell.visible_photos_grid();
+    let target = shell.items[0].clone();
+
+    let tile = shell.tile_for(&grid, MediaId::from(target.id), "the Photos grid");
+    ui.click(&tile, label);
+    let viewer = expect_page::<ViewerPage>(ui, &nav, "opening the photo");
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "the photo should finish loading and enable Edit"
+    );
+
+    ui.click(&viewer.imp().edit_btn.get(), "Edit");
+    let editor = viewer.imp().editor_panel.get();
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || viewer
+            .imp()
+            .editor_split_view
+            .get()
+            .shows_sidebar()
+            && editor.imp().source_image.borrow().is_some()),
+        "Edit should load the source image into the editor panel"
+    );
+    (viewer, editor)
+}
+
+/// Wait until the editor's single-flight preview is neither running nor queued,
+/// so the next click is judged against a settled panel.
+fn settle_editor_preview(ui: &Ui, editor: &photo_viewer::ui::EditorPanel) {
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || !editor
+            .imp()
+            .render_running
+            .get()
+            && !editor.imp().render_pending.get()),
+        "the editor preview should finish rendering before the next assertion"
+    );
+}
+
+/// Rotate a photo with the three rotation buttons, undo the rotation with the
+/// header reset, and prove the two things that make this more than button
+/// bookkeeping: the pending edit really is non-destructive (the source file is
+/// byte-for-byte unchanged), and reset really returns the panel to the state it
+/// opened in — including re-disarming itself, so a second press cannot fire a
+/// reset that has nothing to do.
+fn journey_editor_rotation_buttons_then_reset_restore_the_source() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let (_viewer, editor) = open_editor(&shell, "the photo to rotate");
+    let original_bytes = std::fs::read(&shell.items[0].path).unwrap();
+
+    // Reset is armed by `has_pending_edits`, so with a clean session it must not
+    // be pressable at all — a test that could reset an untouched panel would
+    // pass no matter what the button did.
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::None,
+        "a freshly opened editor should have no pending rotation"
+    );
+    assert!(
+        !editor.imp().reset_btn.get().is_sensitive(),
+        "Reset must stay insensitive until there is a pending edit to undo"
+    );
+
+    // 90° clockwise, by pointer on the real button.
+    ui.click(&editor.imp().rotate_90_cw.get(), "Rotate 90° clockwise");
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::R90,
+        "Rotate 90° CW should leave a 90° pending rotation"
+    );
+    assert!(
+        editor.imp().reset_btn.get().is_sensitive(),
+        "a pending rotation should arm Reset"
+    );
+
+    // Another 90° CW composes to 180° rather than replacing the first press.
+    ui.click(
+        &editor.imp().rotate_90_cw.get(),
+        "Rotate 90° clockwise again",
+    );
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::R180,
+        "rotating twice clockwise should compose to 180°"
+    );
+
+    // A half turn back returns to square one: the rotation is a delta on one
+    // state, not a latch that only ever turns one way.
+    ui.click(&editor.imp().rotate_180.get(), "Rotate 180°");
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::None,
+        "a 180° turn on top of 180° should land back at no rotation"
+    );
+
+    // Counter-clockwise is its own path, not a mirrored repeat of CW.
+    ui.click(
+        &editor.imp().rotate_90_ccw.get(),
+        "Rotate 90° anticlockwise",
+    );
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::R270,
+        "Rotate 90° CCW should leave a 270° pending rotation"
+    );
+    assert!(
+        editor.imp().editor_dirty_label.get().is_visible(),
+        "a pending edit should show the unsaved-changes label"
+    );
+
+    // Reset clears the pending edit without closing the editor.
+    ui.click(&editor.imp().reset_btn.get(), "Reset");
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().state.borrow().rotation,
+        Rotation::None,
+        "Reset should clear the pending rotation"
+    );
+    assert!(
+        !editor.imp().reset_btn.get().is_sensitive(),
+        "Reset should disarm itself once there is nothing left to undo"
+    );
+    assert!(
+        !editor.imp().editor_dirty_label.get().is_visible(),
+        "with no pending edits the unsaved-changes label should go away"
+    );
+    assert!(
+        editor.imp().source_image.borrow().is_some(),
+        "Reset must not close the editor or drop the loaded source"
+    );
+
+    // The durable half of the contract: nothing above touched a byte on disk.
+    assert_eq!(
+        std::fs::read(&shell.items[0].path).unwrap(),
+        original_bytes,
+        "rotating and resetting are pending edits; the source file must be byte-for-byte unchanged"
+    );
+    let item = db::get_media_item(&shell.pool, shell.items[0].id).unwrap();
+    assert_eq!(
+        item.blake3_hash, shell.items[0].blake3_hash,
+        "a pending edit must not rewrite the library row's content hash"
+    );
+}
+
+/// Enter crop mode, step the ratio selector with its two narrow arrows, and
+/// prove the arrows really drive a *pending* crop.
+///
+/// The ratio selector is deliberately absent until crop mode is on
+/// (`crop_ratio_box` is `visible: false` in the template and
+/// `update_crop_controls` is what reveals it), so this journey is also the
+/// evidence that the arrows are unreachable by design before the mode starts —
+/// a group that leaked its controls would let a user crop without ever entering
+/// crop mode. The arrows are also narrow vertical controls inside the editor's
+/// scrolled side panel, which is exactly the sort of control a stale allocation
+/// or a folded group makes unpressable, so they are reached by pointer and
+/// scrolled to rather than set directly.
+fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let (_viewer, editor) = open_editor(&shell, "the photo to crop");
+    let original_bytes = std::fs::read(&shell.items[0].path).unwrap();
+    let (source_w, source_h) = editor.imp().source_dimensions.get();
+    assert!(
+        source_w > 0 && source_h > 0,
+        "the editor should know the source dimensions before cropping"
+    );
+
+    // Before crop mode the ratio arrows are not on screen at all.
+    assert!(
+        !editor.imp().crop_ratio_box.get().is_visible(),
+        "the ratio selector must stay hidden until crop mode is entered"
+    );
+    ui.assert_not_reachable(
+        &editor.imp().crop_ratio_next_btn.get(),
+        "Next crop ratio before crop mode",
+    );
+    assert!(
+        editor.imp().state.borrow().crop.is_none(),
+        "a freshly opened editor should have no pending crop"
+    );
+
+    // Start Crop is the only route into the mode, and entering it is what stages
+    // the first rectangle.
+    ui.click(&editor.imp().start_crop_btn.get(), "Start Crop");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || editor
+            .imp()
+            .crop_mode_active
+            .get()),
+        "Start Crop should enter crop mode"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(2), || editor
+            .imp()
+            .crop_ratio_box
+            .get()
+            .is_visible()),
+        "entering crop mode should reveal the ratio selector"
+    );
+    let staged = editor
+        .imp()
+        .state
+        .borrow()
+        .crop
+        .expect("entering crop mode should stage a crop rectangle");
+    assert_eq!(
+        staged,
+        (0, 0, source_w, source_h),
+        "the first ratio is the untouched source, so the rectangle should be the whole image"
+    );
+    let source_ratio_label = editor.imp().crop_ratio_label.get().text().to_string();
+
+    // Scroll the arrows into reach, then step forward. The fixture's photos are
+    // square, so the first step lands on 1:1 and the rectangle is unchanged by
+    // it — the label is what proves the press registered.
+    ui.scroll_to_reveal(&editor.imp().crop_ratio_next_btn.get(), "Next crop ratio");
+    ui.click(&editor.imp().crop_ratio_next_btn.get(), "Next crop ratio");
+    settle_editor_preview(ui, &editor);
+    let after_one = editor.imp().crop_ratio_label.get().text().to_string();
+    assert_ne!(
+        after_one, source_ratio_label,
+        "the next arrow should move the ratio off {source_ratio_label:?}"
+    );
+    assert_eq!(
+        after_one,
+        tr("editor.crop.ratio.square"),
+        "one step forward from the source ratio should offer 1:1"
+    );
+
+    // A second step reaches 4:3, which genuinely changes the geometry: the
+    // rectangle has to lose height against a square source. This is the
+    // assertion that the arrows change what will be saved, not just what is
+    // written on a label.
+    ui.click(
+        &editor.imp().crop_ratio_next_btn.get(),
+        "Next crop ratio a second time",
+    );
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().crop_ratio_label.get().text().to_string(),
+        tr("editor.crop.ratio.4_3"),
+        "two steps forward from the source ratio should offer 4:3"
+    );
+    let four_three = editor
+        .imp()
+        .state
+        .borrow()
+        .crop
+        .expect("a 4:3 ratio should stage a rectangle");
+    assert!(
+        four_three.3 < source_h,
+        "a 4:3 crop of a {source_w}x{source_h} source should be shorter than the source, \
+         got {four_three:?}"
+    );
+    assert!(
+        four_three.2 * 3 == four_three.3 * 4,
+        "the staged rectangle should hold the 4:3 aspect the selector promised, got {four_three:?}"
+    );
+
+    // The previous arrow walks the same ring backwards, and returning to the
+    // source ratio hands back the whole image rather than leaving the narrower
+    // 4:3 rectangle staged with nothing on screen to explain it.
+    ui.click(
+        &editor.imp().crop_ratio_prev_btn.get(),
+        "Previous crop ratio",
+    );
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().crop_ratio_label.get().text().to_string(),
+        after_one,
+        "the previous arrow should step back to the 1:1 ratio"
+    );
+    ui.click(
+        &editor.imp().crop_ratio_prev_btn.get(),
+        "Previous crop ratio again",
+    );
+    settle_editor_preview(ui, &editor);
+    assert_eq!(
+        editor.imp().crop_ratio_label.get().text().to_string(),
+        source_ratio_label,
+        "stepping back twice should return the selector to the source ratio"
+    );
+    assert_eq!(
+        editor.imp().state.borrow().crop,
+        Some((0, 0, source_w, source_h)),
+        "returning to the source ratio should restore the whole-image rectangle"
+    );
+
+    // Reset clears pending crop along with every other edit, per the editor's
+    // single `has_pending_edits` contract.
+    ui.click(&editor.imp().reset_btn.get(), "Reset");
+    settle_editor_preview(ui, &editor);
+    assert!(
+        editor.imp().state.borrow().crop.is_none(),
+        "Reset should clear the pending crop too"
+    );
+    assert!(
+        !editor.imp().crop_mode_active.get(),
+        "Reset should leave crop mode"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(2), || !editor
+            .imp()
+            .crop_ratio_box
+            .get()
+            .is_visible()),
+        "leaving crop mode should take the ratio selector away again"
+    );
+
+    assert_eq!(
+        std::fs::read(&shell.items[0].path).unwrap(),
+        original_bytes,
+        "staging and clearing a crop is a pending edit; the source must be unchanged"
+    );
+}
+
+/// Enter album multi-select the way a user does — right-click a real album row,
+/// choose Multi select, then tick real album rows by clicking them — and return
+/// the ticked albums together with the folder paths they stand for.
+///
+/// A test that set `album_selection_bar` visible or pushed paths into the
+/// selection itself would never notice that the context menu is unreachable, so
+/// the whole route in is driven by pointer.
+fn tick_real_albums_in_multi_select(shell: &Shell) -> Vec<PathBuf> {
+    let ui = &shell.ui;
+    let window = &shell.window;
+    let album_name = real_album_name_in_sidebar(shell);
+    let row_label = wait_for_label_containing(
+        &window.imp().album_list.get(),
+        &album_name,
+        Duration::from_secs(5),
+    )
+    .expect("the sidebar should list a real album");
+    ui.right_click(&row_label, &format!("{album_name:?} album row"));
+    let multi = wait_for_button_with_label(
+        window,
+        &tr("album.context.multi_select"),
+        Duration::from_secs(4),
+    )
+    .expect("the album row menu should offer multi-select");
+    ui.click(&multi, "Multi select albums");
+
+    assert!(
+        ui.wait_until(Duration::from_secs(4), || window
+            .imp()
+            .album_selection_bar
+            .get()
+            .is_revealed()),
+        "album multi-select should reveal the batch bar"
+    );
+
+    for name in sidebar_real_album_names(shell) {
+        let label = find_label_containing(&window.imp().album_list.get(), &name)
+            .unwrap_or_else(|| panic!("the sidebar should still list {name:?}"));
+        ui.click(&label, &format!("{name:?} album row"));
+    }
+    assert!(
+        ui.wait_until(Duration::from_secs(4), || window
+            .selected_album_delete_count()
+            >= 1),
+        "clicking real album rows should add them to the album selection"
+    );
+    assert!(
+        window.imp().album_selection_delete_btn.get().is_sensitive(),
+        "selecting a real album should arm the delete action"
+    );
+
+    window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
+        .collect()
+}
+
+/// Cancel out of album multi-select with real albums already ticked, and prove
+/// the two things a user would be afraid of: nothing is deleted, and the mode
+/// really is over rather than left armed behind a hidden bar.
+///
+/// `album_selection_cancel_btn` had no scenario at all — its sibling Delete was
+/// exercised only as far as "the button is now sensitive", so the button a user
+/// reaches for when they change their mind was the one control in this bar with
+/// no evidence behind it.
+fn journey_album_multi_select_cancel_keeps_every_album_on_disk() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let window = &shell.window;
+    shell.seed_extra_album();
+    window.populate_album_rows();
+
+    let album_dirs = tick_real_albums_in_multi_select(&shell);
+    assert!(
+        !album_dirs.is_empty() && album_dirs.iter().all(|dir| dir.is_dir()),
+        "the fixture should give at least one real album directory on disk, got {album_dirs:?}"
+    );
+
+    ui.click(
+        &window.imp().album_selection_cancel_btn.get(),
+        "Cancel album selection",
+    );
+
+    assert!(
+        ui.wait_until(Duration::from_secs(4), || !window
+            .imp()
+            .album_selection_bar
+            .get()
+            .is_revealed()),
+        "Cancel should take the album batch bar away"
+    );
+    assert_eq!(
+        window.selected_album_delete_count(),
+        0,
+        "Cancel should clear the pending album selection rather than keep it armed"
+    );
+    assert!(
+        !window.imp().album_selection_delete_btn.get().is_sensitive(),
+        "leaving multi-select should disarm Delete, so a later stray press cannot fire it"
+    );
+    for dir in &album_dirs {
+        assert!(
+            dir.is_dir(),
+            "Cancel must not delete anything: {} is gone",
+            dir.display()
+        );
+    }
+    assert!(
+        !sidebar_real_album_names(&shell).is_empty(),
+        "the sidebar should still list its real albums after cancelling"
+    );
+}
+
+/// Delete one album through the batch bar and the confirmation dialog, and end
+/// on the durable result the user would check: the photos in that album are
+/// gone from the library and recoverable in the Trash, the album itself leaves
+/// the sidebar because it has no live photos left, and every other album is
+/// untouched.
+///
+/// The existing sidebar contract stopped at "the delete button is now
+/// sensitive", so the destructive response — the part that actually destroys a
+/// user's folder arrangement — had no evidence behind it.
+fn journey_album_multi_select_delete_moves_that_album_to_the_trash() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let window = &shell.window;
+    let extra = shell.seed_extra_album();
+    window.populate_album_rows();
+
+    // The album's own photo, and a photo belonging to an album that must survive.
+    let doomed = extra.join("three.jpg");
+    let survivor_dirs: Vec<PathBuf> = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
+        .filter(|dir| dir != &extra)
+        .collect();
+    let survivor_photos: Vec<PathBuf> = survivor_dirs
+        .iter()
+        .flat_map(|dir| {
+            shell
+                .items
+                .iter()
+                .map(|i| i.path.clone())
+                .filter(move |p| p.starts_with(dir))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        doomed.is_file(),
+        "the extra album should hold a real photo at {}",
+        doomed.display()
+    );
+    assert!(
+        !survivor_photos.is_empty(),
+        "the fixture should keep at least one other album's photo so the journey can prove \
+         the deletion is selective"
+    );
+    let survivor_bytes: Vec<Vec<u8>> = survivor_photos
+        .iter()
+        .map(|p| std::fs::read(p).unwrap())
+        .collect();
+
+    // Tick only the extra album, so the deletion has to be selective to pass.
+    let album_name = extra.file_name().unwrap().to_string_lossy().into_owned();
+    let row_label = wait_for_label_containing(
+        &window.imp().album_list.get(),
+        &album_name,
+        Duration::from_secs(5),
+    )
+    .unwrap_or_else(|| panic!("the sidebar should list {album_name:?}"));
+    ui.right_click(&row_label, &format!("{album_name:?} album row"));
+    let multi = wait_for_button_with_label(
+        window,
+        &tr("album.context.multi_select"),
+        Duration::from_secs(4),
+    )
+    .expect("the album row menu should offer multi-select");
+    ui.click(&multi, "Multi select albums");
+    assert!(
+        ui.wait_until(Duration::from_secs(4), || window
+            .imp()
+            .album_selection_bar
+            .get()
+            .is_revealed()),
+        "album multi-select should reveal the batch bar"
+    );
+    ui.click(&row_label, &format!("{album_name:?} album row"));
+    assert!(
+        ui.wait_until(Duration::from_secs(4), || window
+            .selected_album_delete_count()
+            == 1),
+        "ticking one album should put exactly one album in the selection"
+    );
+
+    ui.click(
+        &window.imp().album_selection_delete_btn.get(),
+        "Delete selected albums",
+    );
+    respond_to_alert(ui, window, &tr("album.delete.confirm_action"));
+
+    // Durable result 1: the album's photo left the library on disk, recoverable
+    // in the Trash rather than destroyed.
+    assert!(
+        ui.wait_until(Duration::from_secs(15), || !doomed.exists()),
+        "confirming should move the album's photo out of the library, looked for at {}",
+        doomed.display()
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || db::list_trashed_media(
+            &shell.pool
+        )
+        .is_ok_and(|items| items.iter().any(|item| item.path == doomed))),
+        "the album's photo should be in the Trash, not destroyed"
+    );
+
+    // Durable result 2: the album leaves the sidebar, because it has no live
+    // photos left to represent it.
+    assert!(
+        ui.wait_until(Duration::from_secs(8), || !window
+            .imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .any(|album| album.folder_path == extra)),
+        "a deleted album should be gone from the sidebar's album list"
+    );
+
+    // Durable result 3: the other albums are untouched, byte for byte.
+    for (path, bytes) in survivor_photos.iter().zip(&survivor_bytes) {
+        assert_eq!(
+            &std::fs::read(path).unwrap(),
+            bytes,
+            "deleting one album must not touch the photos in another: {}",
+            path.display()
+        );
+    }
+    assert!(
+        db::list_all_media(&shell.pool)
+            .unwrap()
+            .iter()
+            .all(|item| item.trashed_at.is_none()),
+        "only the ticked album's photos should be trashed"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !window
+            .imp()
+            .album_selection_bar
+            .get()
+            .is_revealed()),
+        "finishing the deletion should leave album multi-select"
+    );
+    assert_eq!(
+        window.selected_album_delete_count(),
+        0,
+        "the pending album selection should be cleared once the deletion is done"
     );
 }
 

@@ -300,6 +300,67 @@ impl Ui {
         );
     }
 
+    /// Scroll the control into a pointer's reach and assert it got there.
+    ///
+    /// A control that lives below the fold of a `GtkScrolledWindow` — the editor's
+    /// crop group is one — has no pointer position until the user scrolls to it,
+    /// so a pointer-targeted scenario has to scroll first. This is a *precondition*
+    /// of the interaction, in the same class as the shell claiming a desktop-sized
+    /// window: it moves the viewport, never the state the scenario is about to
+    /// assert. Crop ratio, pending edits and selection are all untouched by it.
+    ///
+    /// GTK 4.22 exposed no way to fabricate a `GdkEventScroll` from Rust, and the
+    /// bindings offer no `gtk_widget_scroll_to`, so the scroll is delivered the way
+    /// a wheel leaves it: by moving the adjustment the scroll controller would have
+    /// moved. The control is then held to the same reachability bar as any other,
+    /// so a control that scrolling genuinely cannot reveal still fails here.
+    pub fn scroll_to_reveal(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
+        let widget = widget.as_ref();
+        if self.pointer_at_center_of(widget).is_some() {
+            return;
+        }
+        let mut viewport = None;
+        let mut ancestor = widget.parent();
+        while let Some(node) = ancestor {
+            if let Ok(scrolled) = node.clone().downcast::<gtk::ScrolledWindow>() {
+                viewport = Some(scrolled);
+                break;
+            }
+            ancestor = node.parent();
+        }
+        let Some(viewport) = viewport else {
+            panic!(
+                "{label} has no pointer position and no scrollable ancestor to scroll it into \
+                 view: it is hidden, folded, or torn down"
+            );
+        };
+        let adjustment = viewport.vadjustment();
+        let top = adjustment.value();
+        let bottom = (adjustment.upper() - adjustment.page_size()).max(0.0);
+        assert!(
+            bottom > top,
+            "{label} has no pointer position but its scroll container cannot scroll \
+             (content {top:.0}..{:.0} fits the viewport), so it is hidden, not off-screen",
+            top + adjustment.page_size()
+        );
+
+        // Sweep downward the way a user scrolls looking for the control, settling
+        // between steps so the layout reallocates the clipped children.
+        const STEPS: u32 = 24;
+        let span = (bottom - top) / f64::from(STEPS);
+        for step in 1..=STEPS {
+            adjustment.set_value((top + span * f64::from(step)).min(bottom));
+            self.pump(Duration::from_millis(20));
+            if self.pointer_at_center_of(widget).is_some() {
+                return;
+            }
+        }
+        panic!(
+            "scrolling {label}'s container to its end never gave the control a pointer position: \
+             it is hidden, folded, or covered rather than below the fold"
+        );
+    }
+
     // ---------------------------------------------------------------------
     // Clicking
     // ---------------------------------------------------------------------

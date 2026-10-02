@@ -144,6 +144,36 @@ impl Shell {
             .expect("the active Photos mode should use VirtualMediaGrid")
     }
 
+    /// Add a photo whose bytes are not a decodable image — what a truncated or
+    /// corrupted file looks like to a user. The row scans and indexes normally,
+    /// so the tile is a real tile a pointer can land on; only the viewer
+    /// discovers the problem, when it tries to paint it and finds no paintable.
+    ///
+    /// This is deliberately a *file* problem rather than a missing row: a row
+    /// that does not exist yet never reaches the viewer, and setting the error
+    /// surface by hand would prove nothing about the path that produces it.
+    ///
+    /// Returns the inserted item, so the caller can aim at the tile by id —
+    /// `Shell::tile_for` cannot be used here because it insists on a painted
+    /// thumbnail, which is exactly what a corrupt file will never produce.
+    pub fn seed_broken_photo(&self, stem: &str) -> MediaItem {
+        let dir = self.tmp.path().join("photos");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{stem}.jpg"));
+        std::fs::write(
+            &path,
+            b"\xff\xd8\xff\xe0 truncated garbage that gdk-pixbuf cannot decode",
+        )
+        .expect("write a corrupt photo");
+        let mut item = sample_item(i64::try_from(self.items.len()).unwrap_or(0) + 500, path, 26);
+        item.blake3_hash = format!("shell-broken-{stem}");
+        let id = super::db::insert_media_item(&self.pool, &NewMediaItem::from(&item)).unwrap();
+        item.id = id;
+        self.media_list
+            .append(&glib::BoxedAnyObject::new(item.clone()));
+        item
+    }
+
     /// Add a second real album directory, `second-album/three.jpg`, so album
     /// scenarios have more than the one folder album the library implies.
     pub fn seed_extra_album(&self) -> PathBuf {

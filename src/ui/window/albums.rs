@@ -680,6 +680,24 @@ pub(super) fn delete_albums_to_trash_worker(
         crate::core::album_ops::delete_albums_to_trash_with_actor(&pool, &db_actor, &albums)
             .map_err(|err| err.to_string());
 
+    // `albums` is a materialized view rebuilt only by an album refresh, and the
+    // sidebar reads it through `rebuild_album_rows`. Trashing an album's photos
+    // changes `media_items` but not that table, so without this the sidebar kept
+    // listing the album the user had just deleted, with its old photo count and a
+    // cover whose file was already in the Trash. A partially failed delete needs
+    // it just as much — that path rolls rows back but may have trashed some of
+    // them first. `ignore_album_worker` refreshes for the same reason, and through
+    // the same actor command, after its own mutation.
+    //
+    // A refresh failure must not be reported as a failed delete: the photos are
+    // already in the Trash by this point, and the result below re-reads the real
+    // state from `media_items` either way.
+    if let Err(refresh_err) =
+        db_actor.execute_blocking(crate::core::db_actor::DbCommand::RefreshAlbumsInternal)
+    {
+        tracing::warn!("failed to refresh albums after album delete: {refresh_err}");
+    }
+
     let mut remaining_live_uris = HashSet::new();
     let mut remaining_live_folder_paths = HashSet::new();
     let mut unknown_remaining_live_paths = HashSet::new();

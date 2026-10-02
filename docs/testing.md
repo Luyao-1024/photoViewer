@@ -26,8 +26,12 @@ harness, so "real input" means the same thing everywhere:
 - **`tests/common/shell.rs`** — `Shell`, a presented `MainWindow` over a real
   SQLite library of real distinct JPEGs on a real filesystem, wired with the same
   pool, `ThumbnailLoader`, `media_list` and `DbActor` the app uses. `Shell::new()`
-  seeds two photos; `Shell::with_photos(n)` more. Every scenario drops its shell,
-  which destroys the window, so runs do not starve each other's frame clock.
+  seeds two photos; `Shell::with_photos(n)` more. `Shell::seed_extra_album()`
+  adds a second folder album, and `Shell::seed_broken_photo()` adds a row whose
+  bytes are not a decodable image — the fixture a media-error scenario needs,
+  because the failure has to be in the file for the viewer's error path to be
+  the thing under test. Every scenario drops its shell, which destroys the
+  window, so runs do not starve each other's frame clock.
 
 The primary deterministic gate is `tests/ux_click_flows.rs`. It initializes GTK
 once and runs its scenarios serially, because multiple GTK application shells are
@@ -55,6 +59,29 @@ filesystem:
 8. Edit, ask to leave, be asked first — "keep editing" keeps the pending edit;
    "discard" closes the editor and writes nothing to disk.
 9. Select through the context menu and favorite the selection from the batch bar.
+10. Rotate a photo with all three rotation buttons — checking they compose as
+    deltas and that CCW is its own path — then press Reset and check the editor
+    returned to the state it opened in, disarmed itself, and wrote nothing to
+    disk.
+11. Enter crop mode, step the ratio selector with both arrows — check the
+    selector is absent before the mode starts, that a 4:3 choice really narrows
+    the staged rectangle, and that Reset clears the pending crop and leaves the
+    mode.
+12. Enter album multi-select with real albums ticked and press Cancel — check
+    nothing was deleted, the pending selection was dropped, and Delete disarmed
+    itself.
+13. Delete one album through the batch bar and the confirmation dialog — check
+    that album's photos reached the Trash rather than being destroyed, the album
+    left the sidebar, and every other album's files are byte-for-byte unchanged.
+14. Open a photo whose bytes cannot be decoded — the surface must name the file,
+    Retry must re-run the load and land back on the same honest error, Show in
+    File Manager must take a real press, and Escape must still get the user out.
+15. Ignore one album and Delete another through the row's right-click menu — the
+    contrast is the point: Ignore must leave every file on disk and only drop the
+    rows, Delete must move the files to the Trash.
+16. Drive the Viewer from the keyboard — `R`/`Shift+R` rotate and come back, `+`
+    and `0` move the same zoom scale the toolbar does, arrows walk the same list
+    the Next button walks, `E` lands in the same editor, and Escape still exits.
 
 Plus interaction contracts for variants a journey would have to contort to reach:
 double activation pushing exactly one Viewer, the mode capsule, keyboard routing
@@ -62,6 +89,21 @@ double activation pushing exactly one Viewer, the mode capsule, keyboard routing
 chrome and zoom state, sidebar navigation, album multi-select, the album picker's
 copy and move, the album context menu, and the sync badge surviving the jump from a
 grid tile to the Viewer header.
+
+### Reaching a control that is below the fold
+
+A control inside a `GtkScrolledWindow` — the editor's crop group is one — has no
+pointer position until the user scrolls to it, so `Ui::click` correctly refuses it.
+Scenarios use `Ui::scroll_to_reveal(&control, "label")` first, which moves the
+nearest scrollable ancestor's vertical adjustment the way a wheel would and then
+holds the control to the same reachability bar as any other. It is a precondition
+of the interaction, in the same class as the shell claiming a desktop-sized
+window: it moves the viewport and never the state under test (crop ratio, pending
+edits and selection are untouched). GTK 4.22 exposes no way to fabricate a
+`GdkEventScroll` from Rust and the bindings offer no `gtk_widget_scroll_to`, so the
+scroll lands on the adjustment rather than through a synthesized event. A control
+that scrolling genuinely cannot reveal still fails, with a message that says
+"hidden or folded" rather than "off-screen".
 
 Keep a contract only when putting the assertion into a journey would make the
 journey branch unnaturally or hide the behavior being diagnosed. New UX
