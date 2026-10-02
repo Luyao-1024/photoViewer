@@ -21,6 +21,10 @@ pub enum KeyboardAction {
     ViewerZoomReset,
     ViewerRotateLeft,
     ViewerRotateRight,
+    /// In-place immersive browsing: the viewer's own chrome folds away so the
+    /// picture owns the page. Distinct from [`Self::ViewerFullscreenPreview`],
+    /// which is the separate system-fullscreen window.
+    ViewerImmersive,
     ViewerFullscreenPreview,
     ViewerToggleDetails,
     ViewerToggleEdit,

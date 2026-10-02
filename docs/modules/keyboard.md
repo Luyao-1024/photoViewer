@@ -65,11 +65,17 @@ that focused tile without replacing the model.
 | Viewer | `Space` | `ViewerTogglePlayback` |
 | Viewer | `+` / `Shift+=` / keypad `+` / `-` / `0` | `ViewerZoomIn` / `ViewerZoomOut` / `ViewerZoomReset` |
 | Viewer | `R` / `Shift+R` | `ViewerRotateRight` / `ViewerRotateLeft` |
-| Viewer | `F` | `ViewerFullscreenPreview` |
+| Viewer | `F` | `ViewerImmersive` |
+| Viewer | `Shift+F` | `ViewerFullscreenPreview` |
 | Viewer | `I` | `ViewerToggleDetails` |
 | Viewer | `E` | `ViewerToggleEdit` |
 | Viewer | `H` | `ViewerToggleFavorite` |
 | Viewer | `Delete` | `Delete` |
+
+`Escape` in the viewer scope unwinds one layer per press, in this order: editor
+panel → details panel → immersive browsing → navigation pop. Consuming the press
+at the innermost layer is what keeps "back" predictable now that `F` changes the
+same page instead of opening a second window.
 
 `ViewerPrevious` / `ViewerNext` at a resolved end of the query (the arrow
 itself is already dimmed, see [`docs/modules/viewer.md`](viewer.md) § *Navigation

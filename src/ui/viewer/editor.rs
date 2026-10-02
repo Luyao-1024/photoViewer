@@ -56,6 +56,9 @@ impl ViewerPage {
 
     /// Reveal the editor side-panel and lock navigation gestures.
     pub(super) fn start_editing(&self) {
+        // Editing needs its header and its sliders; an armed immersive state
+        // would fold them away mid-stroke.
+        self.exit_immersive_for_chrome();
         self.reset_viewer_transform();
         self.imp().is_editing.set(true);
         self.set_overlay_navigation_visible(false);

@@ -23,6 +23,8 @@ mod filmstrip;
 mod fullscreen;
 #[path = "viewer/fullscreen_window.rs"]
 mod fullscreen_window;
+#[path = "viewer/immersive.rs"]
+mod immersive;
 #[path = "viewer/navigation.rs"]
 mod navigation;
 #[path = "viewer/stage.rs"]
@@ -303,8 +305,20 @@ mod imp {
         pub crop_overlay_dimensions: Cell<(u32, u32)>,
         pub(super) crop_drag: RefCell<Option<CropDragState>>,
         pub fullscreen_preview_window: RefCell<Option<gtk::Window>>,
+        /// Immersive browsing state (see `src/ui/viewer/immersive.rs`).
+        pub immersive: Cell<bool>,
+        pub chrome_revealed: Cell<bool>,
+        pub immersive_idle_source: RefCell<Option<glib::SourceId>>,
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
+        #[template_child]
+        pub header_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub filmstrip_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub nav_buttons_revealer: TemplateChild<gtk::Revealer>,
+        #[template_child]
+        pub zoom_controls_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
@@ -468,6 +482,7 @@ impl ViewerPage {
         *obj.imp().sync_badge_theme_handler.borrow_mut() = Some(handler);
         obj.setup_zoom_controls();
         obj.setup_image_stage_input();
+        obj.setup_immersive();
         obj.setup_zoom_transform_provider();
         obj.setup_video_playback_interactions();
         obj.setup_media_error_buttons();
@@ -594,6 +609,9 @@ impl ViewerPage {
     }
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        // A keyboard user gets the same "stillness folds the chrome, activity
+        // brings it back" contract as a pointer user (immersive browsing).
+        self.note_immersive_activity();
         match action {
             KeyboardAction::ViewerNext => self.handle_nav_key(1),
             KeyboardAction::ViewerPrevious => self.handle_nav_key(-1),
@@ -602,6 +620,11 @@ impl ViewerPage {
                     self.request_editor_close();
                 } else if self.imp().details_split_view.get().shows_sidebar() {
                     self.set_details_revealed(false, "keyboard action");
+                } else if self.is_immersive() {
+                    // Escape leaves immersion first; it does not also pop the
+                    // viewer, which is the confusion the old F-to-a-second-window
+                    // design created.
+                    self.set_immersive(false);
                 } else if !self.can_pop() {
                     tracing::debug!(
                         target: crate::core::log_targets::VIEWER,
@@ -634,11 +657,20 @@ impl ViewerPage {
             KeyboardAction::ViewerRotateRight => self.handle_image_keyboard_action(|this| {
                 this.rotate_viewer_image(90);
             }),
+            KeyboardAction::ViewerImmersive => {
+                self.toggle_immersive();
+                KeyboardResult::Handled
+            }
             KeyboardAction::ViewerFullscreenPreview => self.handle_image_keyboard_action(|this| {
                 this.open_fullscreen_preview_window();
             }),
             KeyboardAction::ViewerToggleDetails => {
                 let next = !self.imp().details_split_view.get().shows_sidebar();
+                // Opening a panel on purpose ends immersion rather than
+                // competing with it.
+                if next {
+                    self.exit_immersive_for_chrome();
+                }
                 self.set_details_revealed(next, "keyboard action");
                 if next {
                     if let Some(item) = self.current_media_item() {

@@ -23,6 +23,7 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/viewer/actions.rs` | Viewer toolbar delete/favorite actions, favorite state sync, undo of the move to trash, and post-delete navigation |
 | `src/ui/viewer/transform.rs` | Image-stage zoom/rotation controls, CSS transform updates, and transform math helpers |
 | `src/ui/viewer/fullscreen_window.rs` | Independent fullscreen preview window, preview navigation buttons, and preview-local transforms |
+| `src/ui/viewer/immersive.rs` | In-place immersive browsing: the stillness timer, the four chrome revealers, and the two refusals |
 | `src/ui/viewer/filmstrip.rs` | Filmstrip geometry plus stateful UI wiring, bounded window rebuild/extend, thumbnail buttons, and centering animation |
 | `src/ui/viewer/details.rs` | Details panel wiring, EXIF/video row population, and metadata formatting helpers |
 | `src/ui/viewer/navigation.rs` | Stable-id lookup, viewer navigation actions, deferred switch, neighbour cache, and prefetch helpers |
@@ -337,6 +338,56 @@ at rest, glass surface on hover/focus, scoped via the `.viewer-chrome` class so
 the shared `.glass-toolbar-button` rule used by other pages' headers stays
 always-on.
 
+### Immersive Browsing
+
+`F` folds the viewer's own chrome away in place; it does **not** open another
+window. The four regions live in `Gtk.Revealer`s so the picture grows into the
+freed rows instead of being painted over:
+
+| Region | Revealer | Transition |
+|---|---|---|
+| `header_bar` | `header_revealer` | `slide_down` |
+| `viewer_bottom_stack` (filmstrip) | `filmstrip_revealer` | `slide_up` |
+| `viewer_nav_buttons` | `nav_buttons_revealer` | `crossfade` |
+| `viewer_zoom_controls` | `zoom_controls_revealer` | `crossfade` |
+
+Rules, all owned by `src/ui/viewer/immersive.rs`:
+
+- Pressing `F` **arms** immersion; the chrome then stays visible and folds only
+  after `IMMERSIVE_IDLE_MS` (2.5 s) of pointer stillness. Movement — anywhere on
+  the page, not just over the photo — re-reveals it and re-arms the one-shot.
+  A key press counts as activity too (`handle_keyboard_action` calls
+  `note_immersive_activity` before dispatching), so a keyboard user never has to
+  guess whether the buttons are gone.
+- The countdown is a single pending source: `arm_immersive_idle` clears the old
+  id first, and the callback empties the cell before returning, so
+  `clear_immersive_idle` never touches a fired `SourceId` (removing one aborts).
+- `Escape` leaves immersion *first* and does not also pop the viewer. Ordering in
+  `CancelOrClose`: editor panel → details panel → immersion → pop.
+- `immersive_allowed(is_editing, shows_side_panel)` is the gate. Entering is
+  refused while editing or while a panel is open, and opening details or starting
+  an edit calls `exit_immersive_for_chrome()`. Chrome that vanishes mid-stroke,
+  or a panel that folds away behind the user, are the two ways this feature could
+  strand someone.
+- `set_immersive(false)` always restores all four regions, so no state can leave
+  the viewer permanently chromeless. `imp.chrome_revealed` mirrors the template's
+  revealed-by-default starting point; without that seed the first fold is a no-op.
+- Transition duration is re-read from `motion::enabled()` on every change
+  (P1-14). `motion::apply_to()` only runs at construction, so it cannot handle
+  the setting being toggled while a page is open — that limitation is documented
+  in `ui-liquid-glass.md`, and this path does not depend on it.
+- The toast host stays outside all four revealers: a toast that reports a
+  successful action must remain visible with the chrome folded, and
+  `docs/modules/viewer.md`'s toast-placement contract is untouched.
+
+`Shift+F` is the separate system-fullscreen preview window, described below. The
+distinction is the point of the split: the old single `F` opened a *second
+top-level window* whose `Escape` returned to a different instance, which is why
+the backlog asked for immersion in place.
+
+The image-stage top-right control group also includes a fullscreen preview
+action, placed between rotate-right and zoom-in. It opens a separate independent top-level `GtkWindow`,
+
 The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the Favorites album). Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
 
 The image-stage top-right control group also includes a fullscreen preview
@@ -354,7 +405,9 @@ actions, details/editor controls, and the bottom thumbnail strip do not appear
 in this window. Preview zoom/rotation state is local to the fullscreen window;
 preview previous/next reuses the main viewer navigation and keeps the preview
 paintable synced when the main viewer image changes. Escape or the restore
-button closes only that preview.
+button closes only that preview. Its accelerator is `Shift+F` (`<Shift>F` in the
+shortcuts table); the button in the zoom cluster is the pointer path and needs no
+key.
 
 ## Details And Editor Panels
 

@@ -7,12 +7,23 @@ template $ViewerPage : Adw.NavigationPage {
   child: Gtk.Box root_box {
     orientation: vertical;
 
-    Adw.HeaderBar header_bar {
-      show-end-title-buttons: true;
-      // `viewer-chrome` scopes the shared hover-only glass + square button
-      // geometry. `viewer-toolbar` is retained as the header identity
-      // asserted by tests.
-      css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
+    // Immersive browsing (see src/ui/viewer/immersive.rs) folds these four
+    // regions away. They start revealed, so nothing changes until F is pressed;
+    // a Gtk.Revealer is used rather than set_visible(false) so the picture grows
+    // into the freed space with a short slide instead of a snap, and so a hidden
+    // region leaves the layout entirely (a faded-but-present header would still
+    // eat clicks and screen-reader focus).
+    Gtk.Revealer header_revealer {
+      transition-type: slide_down;
+      transition-duration: 220;
+      reveal-child: true;
+
+      Adw.HeaderBar header_bar {
+        show-end-title-buttons: true;
+        // `viewer-chrome` scopes the shared hover-only glass + square button
+        // geometry. `viewer-toolbar` is retained as the header identity
+        // asserted by tests.
+        css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
       // Capture date pinned to the start (left) side of the header, day
       // precision only (no time). 今天 / 昨天 replace the last two days.
@@ -80,6 +91,7 @@ template $ViewerPage : Adw.NavigationPage {
         tooltip-text: "";
         css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
       }
+    }
     }
 
     Adw.OverlaySplitView editor_split_view {
@@ -234,6 +246,11 @@ template $ViewerPage : Adw.NavigationPage {
               }
 
               [overlay]
+              Gtk.Revealer nav_buttons_revealer {
+                transition-type: crossfade;
+                transition-duration: 220;
+                reveal-child: true;
+
               // Previous/next float as a compact bare pair in the bottom-right
               // corner over the photo: no capsule background (just the symbolic
               // arrows), lifted just above GtkVideo's built-in control strip,
@@ -260,8 +277,14 @@ template $ViewerPage : Adw.NavigationPage {
                   tooltip-text: "";
                 }
               }
+              }
 
               [overlay]
+              Gtk.Revealer zoom_controls_revealer {
+                transition-type: crossfade;
+                transition-duration: 220;
+                reveal-child: true;
+
               // Zoom controls live at the top-right of the image stage so they
               // do not compete with the bottom-right previous/next controls.
               // Declaration order is visual order here (a plain Gtk.Box, not a
@@ -321,8 +344,14 @@ template $ViewerPage : Adw.NavigationPage {
                   css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
                 }
               }
+              }
             };
           }
+
+          Gtk.Revealer filmstrip_revealer {
+            transition-type: slide_up;
+            transition-duration: 220;
+            reveal-child: true;
 
           Gtk.Box viewer_bottom_stack {
             orientation: vertical;
@@ -357,6 +386,7 @@ template $ViewerPage : Adw.NavigationPage {
               }
 
             }
+          }
           }
         };
 

@@ -114,6 +114,21 @@ fn viewer_focused_modules_exist() {
             ][..],
         ),
         (
+            "src/ui/viewer/immersive.rs",
+            &[
+                "impl ViewerPage",
+                "pub(super) const IMMERSIVE_IDLE_MS",
+                "pub(super) fn immersive_allowed",
+                "pub(super) fn setup_immersive",
+                "pub(super) fn set_immersive",
+                "pub(super) fn note_immersive_activity",
+                "pub(super) fn exit_immersive_for_chrome",
+                "fn arm_immersive_idle",
+                "fn clear_immersive_idle",
+                "fn set_chrome_revealed",
+            ][..],
+        ),
+        (
             "src/ui/viewer/crop.rs",
             &[
                 "impl ViewerPage",
@@ -161,6 +176,7 @@ fn viewer_focused_modules_exist() {
         "actions",
         "transform",
         "fullscreen_window",
+        "immersive",
         "crop",
         "editor",
     ] {

@@ -437,12 +437,14 @@
     var panel = q(".side-panel.details");
     if (!panel) return;
     panel.classList.toggle("open");
+    if (panel.classList.contains("open")) setImmersive(false);
   }
   function toggleEditor() {
     var panel = q(".side-panel.editor");
     if (!panel) return;
     var open = !panel.classList.contains("open");
     panel.classList.toggle("open", open);
+    if (open) setImmersive(false);
     body.dataset.pvEditing = open ? "1" : "0";
   }
   function setDirty(value) {
@@ -585,7 +587,7 @@
       "viewer.tooltip.zoom_in": "放大", "viewer.tooltip.zoom_out": "缩小",
       "viewer.tooltip.zoom_reset": "还原缩放",
       "viewer.tooltip.rotate_left": "向左旋转", "viewer.tooltip.rotate_right": "向右旋转",
-      "viewer.tooltip.fullscreen": "全屏预览", "viewer.tooltip.favorite": "收藏",
+      "viewer.tooltip.fullscreen": "全屏预览窗口", "viewer.tooltip.favorite": "收藏",
       "viewer.tooltip.edit": "编辑", "viewer.tooltip.move_to_trash": "移入回收站",
       "viewer.details.title": "详情",
       "app.title": "照片查看器", "window.sidebar": "图库",
@@ -633,7 +635,7 @@
       "keyboard.previous_media": "上一张", "keyboard.next_media": "下一张", "keyboard.close_viewer": "关闭查看器",
       "keyboard.toggle_playback": "播放或暂停", "keyboard.zoom_in": "放大", "keyboard.zoom_out": "缩小",
       "keyboard.zoom_reset": "恢复原始大小", "keyboard.rotate_right": "向右旋转", "keyboard.rotate_left": "向左旋转",
-      "keyboard.fullscreen_preview": "全屏预览", "keyboard.toggle_details": "显示或隐藏详细信息",
+      "keyboard.fullscreen_preview": "全屏预览窗口（独立窗口）", "keyboard.immersive_browsing": "沉浸浏览（收起查看器界面）", "keyboard.toggle_details": "显示或隐藏详细信息",
       "keyboard.toggle_edit": "打开或关闭编辑面板", "keyboard.toggle_favorite": "标记或取消收藏", "setting.section.keyboard": "键盘",
       "setting.section.keyboard_description": "所有快捷键都可以直接用键盘完成当前页面的操作。", "setting.keyboard.reference": "查看快捷键列表",
       "setting.keyboard.reference_description": "随时按 F1 或 Ctrl+/ 打开"
@@ -645,7 +647,7 @@
       "viewer.tooltip.zoom_in": "Zoom In", "viewer.tooltip.zoom_out": "Zoom Out",
       "viewer.tooltip.zoom_reset": "Reset Zoom",
       "viewer.tooltip.rotate_left": "Rotate Left", "viewer.tooltip.rotate_right": "Rotate Right",
-      "viewer.tooltip.fullscreen": "Fullscreen Preview", "viewer.tooltip.favorite": "Favorite",
+      "viewer.tooltip.fullscreen": "Fullscreen Preview Window", "viewer.tooltip.favorite": "Favorite",
       "viewer.tooltip.edit": "Edit", "viewer.tooltip.move_to_trash": "Move to Trash",
       "viewer.details.title": "Details",
       "app.title": "Photo Viewer", "window.sidebar": "Library",
@@ -691,7 +693,7 @@
       "keyboard.next_media": "Next photo", "keyboard.close_viewer": "Close the viewer",
       "keyboard.toggle_playback": "Play or pause", "keyboard.zoom_in": "Zoom in", "keyboard.zoom_out": "Zoom out",
       "keyboard.zoom_reset": "Reset zoom", "keyboard.rotate_right": "Rotate right",
-      "keyboard.rotate_left": "Rotate left", "keyboard.fullscreen_preview": "Fullscreen preview",
+      "keyboard.rotate_left": "Rotate left", "keyboard.fullscreen_preview": "Fullscreen preview window (separate window)", "keyboard.immersive_browsing": "Immersive browsing (hide viewer chrome)",
       "keyboard.toggle_details": "Show or hide details", "keyboard.toggle_edit": "Show or hide the edit panel",
       "keyboard.toggle_favorite": "Toggle favorite", "setting.section.keyboard": "Keyboard",
       "setting.section.keyboard_description": "Every action on the current page can also be done with the keyboard.",
@@ -802,6 +804,51 @@
       sync.textContent = tr(body.dataset.pvOvr === "failed"
         ? "photos.overview.sync.failed" : "photos.overview.sync.paused");
     }
+  }
+
+  /* ------------------------------------------------- 沉浸浏览（结构性议题） */
+
+  // 已落盘为常态：F 原地收起查看器自己的四块界面（顶栏、右下上一张/下一张、
+  // 右上缩放簇、胶片条），指针静止 2.5 秒才收，移动即现；Shift+F 才是那个
+  // 独立无边框顶层窗口。命名模式不折叠——那些 data-ui 条目要一直可见，
+  // 显隐门控在 styles.css 的 body[data-pv-mode="run"] 规则里。
+  var IMMERSIVE_IDLE_MS = 2500;
+  var immersiveTimer = null;
+  function immersiveArmed() { return body.dataset.pvImmersive === "1"; }
+  function clearImmersiveIdle() {
+    if (immersiveTimer) { clearTimeout(immersiveTimer); immersiveTimer = null; }
+  }
+  function armImmersiveIdle() {
+    clearImmersiveIdle();
+    immersiveTimer = setTimeout(function () { body.dataset.pvChrome = "hidden"; }, IMMERSIVE_IDLE_MS);
+  }
+  function noteImmersiveActivity() {
+    if (!immersiveArmed()) return;
+    body.dataset.pvChrome = "visible";
+    armImmersiveIdle();
+  }
+  function setImmersive(on) {
+    var busyWithChrome = body.dataset.pvEditing === "1" || !!q(".side-panel.details.open");
+    if (on && busyWithChrome) {
+      toast("编辑或详情面板开着时不进入沉浸：收起界面会把你正在用的控件一起收掉", { kind: "info", ms: 3400 });
+      return;
+    }
+    if (on === immersiveArmed()) return;
+    body.dataset.pvImmersive = on ? "1" : "0";
+    if (on) {
+      noteImmersiveActivity();
+      toast("已武装沉浸浏览：指针静止 2.5 秒后收起四块界面，移动即现；Esc 先退出沉浸而不是翻页", { kind: "info", ms: 4600 });
+    } else {
+      clearImmersiveIdle();
+      body.dataset.pvChrome = "visible";
+    }
+    emit("immersive", on);
+  }
+  function toggleImmersive() { setImmersive(!immersiveArmed()); }
+  function wireImmersive() {
+    var screen = q(".screen[data-screen='viewer']");
+    if (!screen) return;
+    screen.addEventListener("pointermove", function () { noteImmersiveActivity(); });
   }
 
   /* -------------------------------------------------------- 扫描状态 */
@@ -1218,6 +1265,8 @@
         if (q("#shortcuts-window.is-open")) { q("#shortcuts-window").classList.remove("is-open"); return; }
         if (q("#context-menu.is-open")) { q("#context-menu").classList.remove("is-open"); return; }
         if (body.dataset.pvEditing === "1" && editor.dirty) { attemptCloseEditor(); return; }
+        // 真实实现里 Escape 一层层退：编辑 → 详情 → 沉浸 → 翻页。
+        if (immersiveArmed()) { setImmersive(false); return; }
         if (body.dataset.pvMode === "run" && current !== "photos") { back(); return; }
       }
       if (ctrl && (key === "a" || key === "A")) {
@@ -1246,6 +1295,8 @@
         return;
       }
       if (body.dataset.pvScreen !== "viewer") return;
+      // 键盘用户和指针用户拿到同一条约定：有动作就说明人还在，界面要回来。
+      noteImmersiveActivity();
       switch (key) {
         case "ArrowLeft": ev.preventDefault(); stepViewer(-1); break;
         case "ArrowRight": ev.preventDefault(); stepViewer(1); break;
@@ -1257,8 +1308,11 @@
         case "i": case "I": toggleDetails(); break;
         case "e": case "E": toggleEditor(); break;
         case "h": case "H": runAction("viewer-fav", q('[data-act="viewer-fav"]')); break;
-        case "f": case "F":
-          toast("F 打开的是独立无边框顶层窗口（结构性议题，见 backlog 文末）", { kind: "info", ms: 3600 });
+        case "f":
+          toggleImmersive();
+          break;
+        case "F":
+          toast("Shift+F 打开独立无边框顶层窗口（全屏预览）；原地收起界面的是 F", { kind: "info", ms: 3600 });
           break;
         default: break;
       }
@@ -1364,6 +1418,9 @@
     // P2-9：没有选择时心形是「收藏」，也没有角标。
     body.dataset.pvFav = "none";
     applyFavoriteState();
+    // 沉浸浏览默认未武装、界面完整可见。
+    body.dataset.pvImmersive = "0";
+    body.dataset.pvChrome = "visible";
     body.dataset.pvEditing = "0";
     wireNavigation();
     wireKeyboard();
@@ -1371,6 +1428,7 @@
     wireEditorScales();
     wireSearch();
     wireChromeControls();
+    wireImmersive();
     setTransparency(0);
     applyLocale();
     renderViewerChrome();
@@ -1404,6 +1462,7 @@
     setTransparency: setTransparency, setMotion: setMotion, setMaterial: setMaterial,
     setWidth: setWidth, setLocale: setLocale, applyLocale: applyLocale,
     setOverview: setOverview, applyOverview: applyOverview,
+    setImmersive: setImmersive, toggleImmersive: toggleImmersive,
     setFavoriteState: setFavoriteState, applyFavoriteState: applyFavoriteState,
     setMulti: setMulti, toggleTile: toggleTile, selectedIds: selectedIds, updateCount: updateCount,
     runSearch: runSearch, setSearchLatency: setSearchLatency,

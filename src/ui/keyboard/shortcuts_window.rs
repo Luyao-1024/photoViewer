@@ -80,7 +80,12 @@ pub const GROUPS: &[ShortcutGroup] = &[
             spec(ViewerZoomReset, "0", "keyboard.zoom_reset"),
             spec(ViewerRotateRight, "r", "keyboard.rotate_right"),
             spec(ViewerRotateLeft, "<Shift>R", "keyboard.rotate_left"),
-            spec(ViewerFullscreenPreview, "f", "keyboard.fullscreen_preview"),
+            spec(ViewerImmersive, "f", "keyboard.immersive_browsing"),
+            spec(
+                ViewerFullscreenPreview,
+                "<Shift>F",
+                "keyboard.fullscreen_preview",
+            ),
             spec(ViewerToggleDetails, "i", "keyboard.toggle_details"),
             spec(ViewerToggleEdit, "e", "keyboard.toggle_edit"),
             spec(ViewerToggleFavorite, "h", "keyboard.toggle_favorite"),

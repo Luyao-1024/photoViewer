@@ -1387,6 +1387,14 @@ body[data-pv-demo="overview-no-disclosure"] .overview-disclosure,
 body[data-pv-demo="overview-no-disclosure"] .overview-retry { display: none !important; }
 
 /* P2-9 收藏下拉指示（尚未落盘，仍由提案 token 控制） */
+/* 沉浸浏览（结构性议题）已落盘为常态：F 收起的是查看器自己的四块界面——顶栏、
+   右下上一张/下一张、右上缩放簇、底部胶片条——图片因此占满整页。只有交互原型会折叠：
+   命名总览里这些 data-ui 条目必须一直可见。data-pv-chrome 由 prototype.js 的静止计时器写，
+   移动或按键立刻回到 visible。 */
+body[data-pv-mode="run"][data-pv-chrome="hidden"] .headerbar.viewer,
+body[data-pv-mode="run"][data-pv-chrome="hidden"] .stage-controls,
+body[data-pv-mode="run"][data-pv-chrome="hidden"] .filmstrip { display: none; }
+
 /* P2-9 已落盘为常态：心形按钮的三种点击行为要先可见。caret 是真实 chrome
    （favorite_menu_hint，Gtk.Overlay 的 [overlay] 子节点），所以命名模式恒可见；
    运行模式只在混合态出现——常驻的箭头会对那两次「直接执行」的点击撒谎。

@@ -47,7 +47,12 @@ Key implementation locations:
 ## Global Design Principles
 
 - Content owns the screen. Browsing grids, the active media item, and album or
-  trash collections should occupy the largest continuous region.
+  trash collections should occupy the largest continuous region. In the viewer
+  this has two levels: the normal layout keeps the header and filmstrip, and `F`
+  arms **immersive browsing**, which folds those regions away after the pointer
+  has been still for a moment and returns them on movement. Immersion is in place
+  — it never opens a second window, and `Escape` leaves it before it pops the
+  page.
 - Chrome floats or frames content without competing with it. Header bars,
   sidebars, panels, toolbar buttons, and popovers should use shared glass
   classes when they sit above visual content.

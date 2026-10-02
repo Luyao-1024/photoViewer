@@ -1269,6 +1269,13 @@
       syncBar();
       PV.toast("落盘前对照：header 里没有那枚圆钮，同步失败也只有一句话——总览只能靠「顶部再往上滚」发现。清除演示态即回到已落盘的两个入口与重试。", { kind: "info", ms: 5200 });
     });
+    demoBtn("沉浸浏览：F 收起界面（结构性议题）", function () {
+      openViewerDemo();
+      body.dataset.pvDemo = "";
+      PV.setImmersive(true);
+      syncBar();
+      PV.toast("已落盘的常态：F 只是「武装」沉浸——指针静止 2.5 秒后顶栏、翻页、缩放簇与胶片条才收起，移动即现，Esc 先退出沉浸而不是翻页。Shift+F 才是那个独立顶层窗口。", { kind: "info", ms: 5600 });
+    });
     demoBtn("心形：混合态角标（P2-9 常态）", function () {
       needScreen("photos");
       PV.setMulti(true);

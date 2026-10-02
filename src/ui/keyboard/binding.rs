@@ -193,7 +193,16 @@ fn viewer_binding(combo: KeyCombo) -> Option<KeyboardAction> {
             alt: false,
             shift: true,
         } => Some(ViewerRotateLeft),
-        c if c == KeyCombo::plain(gdk::Key::f) => Some(ViewerFullscreenPreview),
+        c if c == KeyCombo::plain(gdk::Key::f) => Some(ViewerImmersive),
+        // The separate system-fullscreen preview window keeps a key too, and it
+        // follows the Shift+R lesson above: a real press reports the uppercase
+        // keysym while `<Shift>F` parses back to lowercase plus the modifier.
+        KeyCombo {
+            key: gdk::Key::F | gdk::Key::f,
+            ctrl: false,
+            alt: false,
+            shift: true,
+        } => Some(ViewerFullscreenPreview),
         c if c == KeyCombo::plain(gdk::Key::i) => Some(ViewerToggleDetails),
         c if c == KeyCombo::plain(gdk::Key::e) => Some(ViewerToggleEdit),
         c if c == KeyCombo::plain(gdk::Key::h) => Some(ViewerToggleFavorite),
