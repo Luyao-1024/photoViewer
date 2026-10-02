@@ -250,6 +250,14 @@ template $ViewerPage : Adw.NavigationPage {
                 transition-type: crossfade;
                 transition-duration: 220;
                 reveal-child: true;
+                // NOT fill. A windowless Gtk.Overlay child that fills the whole
+                // stage becomes GTK's hit-test target for any point that is not
+                // inside its own small child, so a fill-aligned chrome Revealer
+                // silently eats the clicks aimed at the chrome layered below it
+                // (and at the media). The Revealer must carry the same
+                // non-filling alignment as the content it wraps.
+                halign: end;
+                valign: end;
 
                 // Previous/next float as a compact bare pair in the bottom-right
                 // corner over the photo: no capsule background (just the symbolic
@@ -284,6 +292,11 @@ template $ViewerPage : Adw.NavigationPage {
                 transition-type: crossfade;
                 transition-duration: 220;
                 reveal-child: true;
+                // See nav_buttons_revealer: an overlay chrome Revealer must
+                // never be fill-aligned, or it picks the pointer for the whole
+                // stage and the chrome beneath it becomes unclickable.
+                halign: end;
+                valign: start;
 
                 // Zoom controls live at the top-right of the image stage so they
                 // do not compete with the bottom-right previous/next controls.

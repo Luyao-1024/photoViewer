@@ -181,6 +181,15 @@ pub(super) mod test_support {
         (tmp, loader)
     }
 
+    /// Deliver one physical key press to the production router.
+    ///
+    /// The release is part of the gesture, not an optional extra: the router
+    /// latches a combo for the duration of a physical press so auto-repeat
+    /// cannot be dispatched as a stream of fresh presses, and only a release
+    /// re-arms it. A helper that emitted `key-pressed` alone would model a key
+    /// that is being held forever, and every second press of the same key would
+    /// be swallowed — which is exactly the bug shape
+    /// `tests/ux_viewer_pointer_flows.rs` guards against.
     pub(super) fn emit_key_for_tests<W: IsA<gtk::Widget>>(
         widget: &W,
         key: gtk::gdk::Key,
@@ -195,7 +204,9 @@ pub(super) mod test_support {
                 controller.name().as_deref() == Some("photo-viewer-keyboard-router")
             })
             .expect("keyboard router should be installed");
-        controller.emit_by_name("key-pressed", &[&key, &0_u32, &state])
+        let handled: bool = controller.emit_by_name("key-pressed", &[&key, &0_u32, &state]);
+        controller.emit_by_name::<()>("key-released", &[&key, &0_u32, &state]);
+        handled
     }
 
     pub(super) fn media_list_uris(list: &gtk::gio::ListStore) -> Vec<String> {

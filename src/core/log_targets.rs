@@ -39,6 +39,9 @@ pub const METADATA: &str = "metadata";
 /// 编辑器操作 — 旋转、裁剪、保存
 pub const EDITOR: &str = "editor";
 
+/// 键盘路由 — 按键解析、作用域、一次物理按下只派发一个动作的锁存
+pub const KEYBOARD: &str = "keyboard";
+
 /// 相册与回收站操作
 pub const ALBUMS: &str = "albums";
 

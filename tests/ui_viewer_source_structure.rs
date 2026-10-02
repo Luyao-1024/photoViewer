@@ -298,3 +298,63 @@ fn viewer_focused_modules_exist() {
         );
     }
 }
+
+/// An overlay chrome region must never be fill-aligned.
+///
+/// `GtkOverlay` allocates every non-main child the full overlay area, and GTK's
+/// hit test falls back to a windowless child whenever the pointer is not inside
+/// that child's own content. A fill-aligned `Gtk.Revealer` around a small
+/// button cluster therefore becomes the target for the whole stage: it swallows
+/// the clicks meant for the chrome layered below it, and the real buttons never
+/// see a press. That is exactly how the viewer's Previous/Next pair stopped
+/// responding.
+///
+/// The runtime proof is
+/// `tests/ux_viewer_pointer_flows.rs::stage_center_is_never_swallowed_by_chrome`,
+/// but that needs a display, so this stays as a plain source gate.
+#[test]
+fn overlay_chrome_revealers_are_not_fill_aligned() {
+    let source =
+        fs::read_to_string(Path::new("data/ui/viewer-page.blp")).expect("viewer template readable");
+
+    for (revealer, expected_valign) in [
+        ("nav_buttons_revealer", "end"),
+        ("zoom_controls_revealer", "start"),
+    ] {
+        let open = source
+            .find(&format!("Gtk.Revealer {revealer} {{"))
+            .unwrap_or_else(|| panic!("viewer-page.blp should declare {revealer}"));
+        // Only the Revealer's *own* properties matter. The block also contains
+        // the button cluster it wraps, which has an alignment of its own, so
+        // reading the whole block would let the child's `halign: end` satisfy a
+        // check meant for the parent.
+        let rest = &source[open..];
+        let mut own_properties = String::new();
+        for line in rest.split_once('{').unwrap().1.lines() {
+            let trimmed = line.trim();
+            if trimmed.ends_with('{') {
+                // The first child widget declaration ends the Revealer's own
+                // property list.
+                break;
+            }
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                continue;
+            }
+            own_properties.push_str(trimmed);
+            own_properties.push(' ');
+        }
+
+        assert!(
+            !own_properties.contains("halign: fill") && !own_properties.contains("valign: fill"),
+            "{revealer} must not be fill-aligned (its own properties: {own_properties:?}): a \
+             fill-aligned overlay child becomes the hit-test target for the whole stage and eats \
+             the clicks aimed at the chrome below it"
+        );
+        assert!(
+            own_properties.contains("halign: end;")
+                && own_properties.contains(&format!("valign: {expected_valign};")),
+            "{revealer} should carry the same non-filling alignment as the content it wraps \
+             (halign: end, valign: {expected_valign}), got {own_properties:?}"
+        );
+    }
+}

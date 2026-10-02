@@ -46,6 +46,44 @@ GridView-native so it crosses virtualized rows and scrolls new ranges into view.
 Enter activates the focused ready tile; Space enters multi-select and toggles
 that focused tile without replacing the model.
 
+### One physical press dispatches at most one action
+
+Holding a key down makes GDK emit `key-pressed` again and again, and every
+repeat is indistinguishable from a fresh press by the time it reaches the
+router. The router latches the resolved `KeyCombo` for the duration of a
+physical press and releases the latch on any `key-released`, so a held key is
+one action.
+
+Without that, every auto-repeat was dispatched as new user intent, which
+thrashed every toggle and spammed every non-idempotent action:
+
+- `F` (immersive browsing) walked immersive on/off/on at the OS repeat rate.
+  Each repeat both re-revealed the chrome — any activity counts — and toggled
+  immersion again, so the 220 ms transition never completed and a held `F`
+  looked like the picture twitching rather than a mode change. The end state
+  depended on the repeat count's parity, so the feature appeared to do nothing.
+- `H` / `I` / `E` toggled the heart, details panel, and editor repeatedly, and
+  `Delete` re-ran the move-to-trash path.
+- Holding `→` spent the whole hold bumping `nav_token`, so each press cancelled
+  the previous press's pending switch.
+
+GTK 4 exposes no auto-repeat flag on `GdkKeyEvent`, which is why the latch is
+released on a key release rather than filtered by time: a time window would
+either swallow a genuine fast double-tap or let repeats through on a slow
+machine.
+
+The regression case is
+`tests/ux_viewer_pointer_flows.rs::chrome_returns_and_stays_clickable_after_immersive_fold`,
+which delivers a whole gesture — press, five auto-repeats, release — and
+asserts that exactly one action was dispatched.
+
+**Test helpers must model the release.** `emit_key_for_tests` (`src/ui/window.rs`)
+and `emit_window_key` (`tests/ux_click_flows.rs`) used to emit `key-pressed`
+alone, which models a key held forever: under the latch every second press of
+the same key would be swallowed. Both now emit a matching `key-released`. Any
+new helper that synthesizes a key press has to do the same, or it silently
+tests a permanently-held key.
+
 ## Default Keymap
 
 | Scope | Keys | Action |

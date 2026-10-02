@@ -36,7 +36,9 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/media_list.rs` | Shared live-list helpers, including the sorted re-insert an undo relies on |
 | `data/ui/viewer-page.blp` | Viewer template |
 | `tests/e2e_viewer.rs` | Viewer flow coverage |
+| `tests/ux_viewer_pointer_flows.rs` | Real-pointer viewer UX runs: hit test, press, assert the switch |
 | `tests/ui_viewer_toolbar.rs` | Viewer toolbar/template assertions |
+| `tests/ui_viewer_source_structure.rs` | Display-free viewer source/template invariants |
 
 Viewer unit tests live beside the behavior they cover. Production source files
 declare `#[cfg(test)] mod tests;`, and test bodies live in child test files such
@@ -205,6 +207,41 @@ Left/right image navigation belongs to viewer chrome. The prev/next controls flo
 
 Reaching the head or the tail of the query must say so on the pair itself, not as silent a no-op. The arrow that has nowhere to go is dimmed (`set_sensitive(false)`, with the disabled visual carried in `base.css` as `.viewer-overlay-nav-btn:disabled { opacity: 0.32 }` — opacity is the only channel left because that selector already pins `color: #ffffff`). The dimmed-but-still-present state survives a switch: `show_at` calls `reset_nav_bounds()` so a different item is unknown until its own `prefetch_neighbors` resolves, then both directions are re-evaluated against the actual query. `preload_neighbor_pages` and `prefetch_neighbors` run before the image and video stage branches split, so the re-anchor early return for a re-shown video still reaches them — a video at either end of the query must dim its arrow on open, not after the first navigation. Keyboard `←/→` at a resolved end returns `KeyboardResult::Ignored` (via `viewer/navigation.rs::handle_nav_key`), so the press is not silently consumed while there is nothing on screen to act on. While the editor's own fields have focus, `←/→` stay `Handled` so they do not leak into the underlying grid.
 
+### Overlay chrome must never be fill-aligned
+
+`nav_buttons_revealer` and `zoom_controls_revealer` are `Gtk.Overlay` children
+of `image_overlay`, and they must carry the **same non-filling alignment as the
+cluster they wrap** (`halign: end` plus `valign: end` / `valign: start`). Do not
+drop those properties and let them default to `fill`.
+
+`Gtk.Overlay` allocates every non-main child the whole overlay area, and GTK's
+hit test falls back to a windowless child whenever the pointer is not inside that
+child's own content. A fill-aligned Revealer around a small button cluster is
+therefore the target for *every* point on the stage. Because
+`zoom_controls_revealer` is declared after `nav_buttons_revealer`, it wins that
+fallback, so a real press anywhere in the bottom-right corner landed on an
+invisible container and the prev/next pair stopped responding entirely — the
+`clicked` signal is never emitted, so every signal-level test stayed green.
+
+Two gates hold this: the runtime proof is
+`tests/ux_viewer_pointer_flows.rs` (it hit-tests the stage centre and every
+chrome button through `gtk_widget_pick` before pressing), and
+`tests/ui_viewer_source_structure.rs::overlay_chrome_revealers_are_not_fill_aligned`
+reads the revealer's *own* property lines so a plain `cargo test` catches the
+regression without a display.
+
+The Revealer sits *outside* the cluster it animates
+(`Revealer → Gtk.Box viewer_nav_buttons → prev_btn / next_btn`), which is what
+keeps the two visibility features independent. `set_overlay_navigation_visible`
+and `set_zoom_controls_visible` reach the cluster through
+`prev_btn.parent()` / `zoom_in_btn.parent()`, and that parent is the `Gtk.Box`
+both before and after the revealer was added — they toggle the cluster's own
+`visible`, while immersive browsing toggles the revealer's `reveal_child`. If a
+new container is ever inserted *between* a button and its cluster, those two
+helpers will hide only that new layer instead of the cluster, and
+`tests/ux_viewer_pointer_flows.rs::header_actions_reach_their_panels_and_mutations`
+is what catches it.
+
 ## Switch Latency And The Deferred Switch
 
 Left/right (and filmstrip) navigation must never show a loading animation.
@@ -353,10 +390,31 @@ freed rows instead of being painted over:
 
 Rules, all owned by `src/ui/viewer/immersive.rs`:
 
-- Pressing `F` **arms** immersion; the chrome then stays visible and folds only
-  after `IMMERSIVE_IDLE_MS` (2.5 s) of pointer stillness. Movement — anywhere on
-  the page, not just over the photo — re-reveals it and re-arms the one-shot.
-  A key press counts as activity too (`handle_keyboard_action` calls
+- A stillness clock has to measure **stillness**, not event delivery. GDK keeps
+  sending motion events for a pointer that has not gone anywhere — folding the
+  chrome re-targets what sits under it, among other reasons — and treating each
+  of those as "the user moved" cancelled and re-armed the pending timer on every
+  event, so the timer could never reach its deadline. The chrome then stayed
+  pinned open for as long as the pointer rested on the picture, and immersive
+  browsing read as a flicker: fold, instant re-reveal, fold, re-reveal.
+  `setup_immersive` therefore compares each position against the last
+  **accepted** movement and ignores anything within
+  `STILLNESS_MOVE_EPS_PX` (1 px). Comparing against the last accepted position
+  rather than the previous event is what keeps a slow drag registering: sub-pixel
+  steps accumulate until they cross the threshold, while sensor jitter around one
+  point never does. The first motion event after a page opens has no baseline and
+  is treated as movement, which is the conservative direction — better to show
+  chrome than hide it while the user is genuinely moving.
+  `src/ui/viewer/immersive/tests.rs::a_pointer_that_did_not_move_is_not_activity`
+  pins both halves: a resting pointer must not re-arm the timer, and a real move
+  must.
+- Pressing `F` folds the chrome right away (`set_immersive(true)` calls
+  `set_chrome_revealed(false)` in the same call, which
+  `immersive/tests.rs::entering_immersive_folds_chrome_and_leaving_restores_it`
+  pins). The 2.5 s stillness clock governs the *re*-fold: movement — anywhere on
+  the page, not just over the photo — re-reveals the chrome and re-arms the
+  one-shot, so a moving user never actually watches it disappear. A key press
+  counts as activity too (`handle_keyboard_action` calls
   `note_immersive_activity` before dispatching), so a keyboard user never has to
   guess whether the buttons are gone.
 - The countdown is a single pending source: `arm_immersive_idle` clears the old

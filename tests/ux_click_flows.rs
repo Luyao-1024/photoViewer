@@ -1629,9 +1629,14 @@ fn click_button(button: &gtk::Button) {
     button.emit_by_name::<()>("clicked", &[]);
 }
 
-/// Deliver a key through the same capture-phase controller installed on the
-/// production window.  This intentionally tests the router boundary rather
-/// than calling page-level keyboard handlers directly.
+/// Deliver one physical key press through the same capture-phase controller
+/// installed on the production window.  This intentionally tests the router
+/// boundary rather than calling page-level keyboard handlers directly.
+///
+/// The release is part of the press: the router latches a combo for the duration
+/// of a physical press so auto-repeat is not dispatched as fresh presses, and
+/// only a release re-arms it. Emitting `key-pressed` on its own would model a
+/// key held forever and silently swallow every later press of the same key.
 fn emit_window_key(window: &MainWindow, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
     let controller = window
         .observe_controllers()
@@ -1640,7 +1645,9 @@ fn emit_window_key(window: &MainWindow, key: gtk::gdk::Key, state: gtk::gdk::Mod
         .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
         .filter(|controller| controller.name().as_deref() == Some("photo-viewer-keyboard-router"))
         .expect("MainWindow should install the production keyboard router");
-    controller.emit_by_name("key-pressed", &[&key, &0_u32, &state])
+    let handled: bool = controller.emit_by_name("key-pressed", &[&key, &0_u32, &state]);
+    controller.emit_by_name::<()>("key-released", &[&key, &0_u32, &state]);
+    handled
 }
 
 /// Composite widgets such as `GtkSearchEntry` put focus on an internal text

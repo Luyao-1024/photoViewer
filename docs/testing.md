@@ -44,6 +44,67 @@ UX journey:
 tools/with-at-spi.sh xvfb-run -a cargo test --test ux_click_flows
 ```
 
+## Pointer Targeting: hit-test before you press
+
+A `clicked` signal emitted with `emit_by_name` is not a click. It bypasses the
+entire input path, so it cannot see anything that is wrong *between* the pointer
+and the button: a transparent overlay, a filled `Gtk.Overlay` child, a stale
+allocation. That gap is exactly how the viewer's Previous/Next pair could stop
+responding while the whole suite stayed green.
+
+So a test that claims to cover a pointer affordance has to do what the input
+path does, in this order:
+
+1. let the widget be really laid out (a presented window and a mapped
+   allocation, not a `compute_bounds` on an unrealized tree);
+2. ask GTK where a pointer at that position lands — `gtk_widget_pick` — and
+   assert the target is the control under test or a descendant of it;
+3. hand press and release to the gesture controller that control actually owns
+   (for a `Gtk.Button`, the `GtkGestureClick` it installs);
+4. assert the user-visible result.
+
+`tests/ux_viewer_pointer_flows.rs` is the reference implementation of that
+pattern. It builds a real `MainWindow`, pushes a real `ViewerPage` through
+`ViewerPage::new_for_query` with a live `MediaQuery`, seeds a library of real
+distinct JPEGs, and runs five cases: the navigation pair walking the whole
+library to both ends, the stage centre never being claimed by chrome, the zoom
+cluster, the header actions, and the chrome coming back clickable after an
+immersive fold. Each case destroys its window on drop, so cases do not starve
+each other's frame clock.
+
+Two rules learned while writing it:
+
+- Use the production entry point. `ViewerPage::new(media_list, index)` leaves
+  `media_query` unset, so `prefetch_neighbors` returns early and the
+  end-of-library arrow dimming — a real UX contract — never happens. Use
+  `new_for_query`.
+- A synthetic key press is a *gesture*, not a `key-pressed` event. The router
+  latches a combo until a key release so auto-repeat cannot be dispatched as
+  fresh presses, so a helper that emits `key-pressed` alone models a key held
+  forever and every second press of that key is silently swallowed. Emit a
+  matching `key-released`, and to test a *hold* deliver press + repeats +
+  release as one unit — then assert on how many presses the router actually
+  dispatched, which is deterministic, rather than on a visual end state that a
+  stray pointer event could legitimately change.
+- A widget that is not mapped has no pointer position. Its last allocation is
+  stale and `compute_bounds` will happily return coordinates that belong to
+  whatever sits there now, so a hit test taken on a folded or torn-down control
+  measures the wrong thing. Return "nothing picked it" for unmapped widgets, and
+  do not assert on animation-driven transitions.
+
+Because that suite needs a display, keep a display-free source gate next to the
+runtime one when a template invariant is what broke:
+`tests/ui_viewer_source_structure.rs::overlay_chrome_revealers_are_not_fill_aligned`
+parses the Revealer's own property lines (not the whole block — the wrapped child
+has an alignment of its own and would otherwise satisfy the check) and runs under
+plain `cargo test`.
+
+Run it with:
+
+```bash
+tools/with-at-spi.sh xvfb-run -a cargo test --test ux_viewer_pointer_flows
+```
+
 The full-shell fixtures use valid media files and a normal filesystem under the
 current user's home directory. This lets the journeys exercise image decode,
 editor save, and GIO trash/restore behavior rather than pre-seeding their final

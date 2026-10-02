@@ -609,9 +609,18 @@ impl ViewerPage {
     }
 
     pub(crate) fn handle_keyboard_action(&self, action: KeyboardAction) -> KeyboardResult {
+        tracing::debug!(
+            target: crate::core::log_targets::KEYBOARD,
+            "VIEWER keyboard action={action:?} (immersive={}, editing={}, \
+             details_open={}, editor_open={})",
+            self.is_immersive(),
+            self.imp().is_editing.get(),
+            self.imp().details_split_view.get().shows_sidebar(),
+            self.imp().editor_split_view.get().shows_sidebar(),
+        );
         // A keyboard user gets the same "stillness folds the chrome, activity
         // brings it back" contract as a pointer user (immersive browsing).
-        self.note_immersive_activity();
+        self.note_immersive_activity("a key press");
         match action {
             KeyboardAction::ViewerNext => self.handle_nav_key(1),
             KeyboardAction::ViewerPrevious => self.handle_nav_key(-1),
