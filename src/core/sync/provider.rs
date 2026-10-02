@@ -86,6 +86,14 @@ pub enum ProviderError {
 
 pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 
+/// A remote store the sync engine can read and write.
+///
+/// `#[allow(clippy::double_must_use)]`: every `async fn` here is desugared by
+/// `async_trait` into a method carrying a bare `#[must_use]`, and each one returns
+/// `ProviderResult`, which is already must-use. Clippy 0.1.99's `double_must_use`
+/// flags that pairing, and the attribute it objects to is macro-generated rather
+/// than written here, so it cannot be given the explicit reason the lint suggests.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SyncProvider: Send + Sync {
     fn capabilities(&self) -> ProviderCapabilities;
