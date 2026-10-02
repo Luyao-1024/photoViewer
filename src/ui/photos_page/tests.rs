@@ -752,6 +752,82 @@ fn the_select_all_label_decides_from_the_cached_total() {
     );
 }
 
+/// P2-9: the heart changes *what it does* with the selection's favorite state —
+/// act directly, or open a menu — and nothing on screen predicted which. Only the
+/// mixed case gets the caret, so the other two keep the plain verb they always
+/// had, and the name carries the same distinction for anyone who cannot see it.
+#[gtk::test]
+fn only_the_mixed_selection_marks_the_heart_as_opening_a_menu() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("favorite-hint.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    let heart = page.imp().favorite_btn.get();
+    let hint = page.imp().favorite_menu_hint.get();
+    // Constructed with no selection: named, and no caret pretending to be needed.
+    assert_eq!(
+        heart.tooltip_text().as_deref(),
+        Some(tr("photos.batch.favorite").as_str()),
+        "the heart is icon-only, so its verb has to be painted before the first selection"
+    );
+    assert!(!hint.is_visible());
+
+    page.imp()
+        .selected_ids
+        .borrow_mut()
+        .insert(MediaId::from(1));
+
+    page.apply_selection_favorite_state(FavoriteMenuState {
+        can_favorite: true,
+        can_unfavorite: false,
+    });
+    assert!(
+        !hint.is_visible(),
+        "nothing is favorited, so the click favorites directly and a caret would lie"
+    );
+    assert!(!heart.has_css_class("favorite-active"));
+
+    page.apply_selection_favorite_state(FavoriteMenuState {
+        can_favorite: false,
+        can_unfavorite: true,
+    });
+    assert!(
+        !hint.is_visible(),
+        "everything is favorited, so the click unfavorites directly"
+    );
+    assert!(heart.has_css_class("favorite-active"));
+    assert_eq!(
+        heart.tooltip_text().as_deref(),
+        Some(tr("photos.batch.unfavorite").as_str())
+    );
+
+    page.apply_selection_favorite_state(FavoriteMenuState {
+        can_favorite: true,
+        can_unfavorite: true,
+    });
+    assert!(
+        hint.is_visible(),
+        "a mixed selection opens the menu, and that is the one state the caret marks"
+    );
+    assert_eq!(
+        heart.tooltip_text().as_deref(),
+        Some(tr("photos.batch.favorite.mixed").as_str()),
+        "the tooltip must say a choice follows, not promise a favorite"
+    );
+    assert!(
+        !heart.has_css_class("favorite-active"),
+        "mixed is not the same as all-favorited"
+    );
+    // P2-4 invariant: the caret repeats the name the button already carries.
+    assert_eq!(
+        hint.accessible_role(),
+        gtk::AccessibleRole::Presentation,
+        "the caret must not add a second, unnamed announcement to the heart"
+    );
+}
+
 #[gtk::test]
 fn virtual_grid_creates_and_switches_all_three_photos_modes() {
     let _ = gtk::init();

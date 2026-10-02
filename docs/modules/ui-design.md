@@ -200,8 +200,16 @@ Design intent:
   turns translucent red (`.viewer-favorite-btn.favorite-active`, identical to the
   viewer) and clicking unfavorites all; if none are favorited, clicking favorites
   all; only a mixed selection (some favorited, some not) opens the `glass-menu`
-  popover with 收藏 / 取消收藏. Do not split favorite/unfavorite back into two
-  header buttons. (The per-tile right-click context menu keeps its own separate
+  popover with 收藏 / 取消收藏. Which of the three a click will do has to be
+  predictable before the click: the mixed state alone carries a 12 px
+  `pan-down-symbolic` pinned to the button's bottom-right (`favorite_menu_hint`, a
+  `Gtk.Overlay` child so the heart stays one 38 px round control), and its tooltip
+  and accessible name switch to `photos.batch.favorite.mixed` — a name that
+  promises 「收藏」 and then asks a question is the same defect in either channel.
+  Do not split favorite/unfavorite back into two header buttons, and do not add a
+  split-button arrow: the caret marks the rarest state only, so the two direct
+  actions keep the plain verb they always had.
+  (The per-tile right-click context menu keeps its own separate
   favorite/unfavorite entries.)
 - The grid area should extend behind the floating selector. Do not add fixed
   bottom padding or a dark reserved band for the selector.

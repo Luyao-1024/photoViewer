@@ -97,13 +97,35 @@ template $PhotosPage : Adw.NavigationPage {
         transition-type: slide_left;
         reveal-child: false;
 
-        Gtk.Button favorite_btn {
-          // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
-          // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
-          // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
-          icon-name: "emblem-favorite-symbolic";
-          tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+        // The hint is an overlay, not a second control: the heart stays the only
+        // button (the design contract forbids splitting favorite/unfavorite), and
+        // a corner glyph says "this one opens a menu" for the mixed selection
+        // without changing the button's 38 px round allocation.
+        Gtk.Overlay favorite_btn_host {
+          child: Gtk.Button favorite_btn {
+            // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
+            // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
+            // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
+            icon-name: "emblem-favorite-symbolic";
+            tooltip-text: "";
+            css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+          };
+
+          [overlay]
+          Gtk.Image favorite_menu_hint {
+            // The heart's tooltip and accessible name already say a choice opens;
+            // this glyph is the pointer-visible echo of that, so it stays out of
+            // the tree rather than announcing itself as an unnamed image.
+            accessible-role: presentation;
+            can-target: false;
+            visible: false;
+            icon-name: "pan-down-symbolic";
+            pixel-size: 12;
+            halign: end;
+            valign: end;
+            margin-end: 3;
+            margin-bottom: 2;
+          }
         }
       }
 

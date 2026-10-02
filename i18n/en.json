@@ -186,6 +186,7 @@
     "photos.batch.exit_multi_select": "Exit Multi-select",
     "photos.batch.move_to_album": "Move to Album",
     "photos.batch.favorite": "Favorite",
+    "photos.batch.favorite.mixed": "Favorite (the selection is mixed; choose after clicking)",
     "photos.batch.unfavorite": "Unfavorite",
     "photos.selection.count": "{n} selected",
     "photos.selection.limit": " (limit reached)",

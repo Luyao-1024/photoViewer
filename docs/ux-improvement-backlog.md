@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路），它也已落地。**P1 全条已落盘**（P1-6 header 选择计数器、P1-7 前两项＝位置计数器 + 到底反馈、P1-8 查看器桌面输入、P1-9 编辑器退出保护、P1-10 图片错误可见化、P1-11 选择态区分、P1-12 查看器控件簇、P1-13 对比度地板、P1-14 减少动画、P1-15 搜索批量通路）。**P2 除 P2-9 外已落盘**（P2-1 toast 撤销、P2-2 toast 让位胶片条、P2-3 模式选择器语义、P2-4 无障碍名称、P2-5 选择查询移出主线程、P2-6 相册选择器四态、P2-7 回收站首帧、P2-8 总览 disclosure + 同步重试）。仍在 backlog 的只剩三项：P1-7 的「倍率可见」、P2-9 收藏按钮混合态下拉指示、以及下面的结构性沉浸浏览议题（需产品决策）。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路），它也已落地。**P1 全条已落盘**（P1-6 header 选择计数器、P1-7 前两项＝位置计数器 + 到底反馈、P1-8 查看器桌面输入、P1-9 编辑器退出保护、P1-10 图片错误可见化、P1-11 选择态区分、P1-12 查看器控件簇、P1-13 对比度地板、P1-14 减少动画、P1-15 搜索批量通路）。**P2 全条已落盘**（P2-1 toast 撤销、P2-2 toast 让位胶片条、P2-3 模式选择器语义、P2-4 无障碍名称、P2-5 选择查询移出主线程、P2-6 相册选择器四态、P2-7 回收站首帧、P2-8 总览 disclosure + 同步重试、P2-9 心形混合态指示）。至此 P0 / P1 / P2 的**可执行条目全部落地**，只剩两项：P1-7 的「倍率可见」（当时明确留给后续），以及下面的结构性沉浸浏览议题（需产品决策，且依赖本轮已落盘的 P0-2 与 P1-12）。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -720,7 +720,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | **P2-6（已落盘）** | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 见「P2-6 实施结果」：四页 Gtk.Stack（loading/empty/albums/error）＋可重试的错误页；顺带纠正草案对相册详情页的一处误判 |
 | **P2-7（已落盘）** | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 见「P2-7 实施结果」：四页 stack ＋ `first_load_done` 闸门；真正挡住闪烁的是 `refresh()` 里的判断，不是 `constructed` 的初始页 |
 | **P2-8（已落盘）** | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 见「P2-8 实施结果」：chevron 逐字复用搜索的材质、状态从 revealer 派生；重试只在 Failed 与读取失败两处出现，且走既有 pull。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
-| P2-9 | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 混合态给按钮加下拉指示，让「会弹菜单」可预判 |
+| **P2-9（已落盘）** | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 见「P2-9 实施结果」：混合态独享一枚 overlay 角标（`favorite_menu_hint`），tooltip 与 accessible name 同步换成 `photos.batch.favorite.mixed`；没有拆分按钮，所以 header 密度契约不被触碰 |
 
 ### P2-1 实施结果（2026-10-02 已落盘，草案前提需要更正）
 
@@ -999,6 +999,34 @@ glass 按钮，并断言两枚圆钮同类）＋ `--test ui_template_copy`（新
 
 ---
 
+### P2-9 实施结果（2026-10-02 已落盘，risk 那一条决定了控件形状）
+
+指示物是一枚 12 px `pan-down-symbolic`（`photos-page.blp:115` `favorite_menu_hint`），
+挂在心形右下角的 `Gtk.Overlay` `[overlay]` 上（`favorite_btn_host`，:104）。**为什么不是
+拆分按钮**：草案的 risk 写「指示图标要与 P0-3 的 header 密度一起看，别挤爆」，而 split button
+会为了最稀有的一种状态永久撑宽 header，同时撞上 `ui-design.md` 里「不要把收藏/取消收藏拆成两枚
+header 按钮」的既有契约。overlay 的角标不占分配、不改按钮尺寸（38 px 圆钮不变），
+`can-target: false` 保证它不吃掉本该落在心形上的按下。
+
+**状态写入收成一个函数。** `apply_selection_favorite_state` 一次画好三样：`favorite-active`
+红心、tooltip 与 `accessible::Property::Label`（**同一个串**，两条通道不能各说一套）、以及这枚
+角标。混合态另有一键 `photos.batch.favorite.mixed`（中英同步，parity 457/457），因为「承诺收藏、
+然后反问一句」在 tooltip 与读屏里是同一个谎——草案只提了视觉那一半。`new()` 里按
+`FavoriteMenuState::default()` 先画一次，所以第一次选择之前按钮就已经有名字（这条同时补上了
+P2-4 遗留的一处缺口：心形此前只有构造时那句裸 tooltip）。
+
+角标**只属于混合态**：常驻会对着「直接执行」的那两种点击撒谎。红心与文案沿用原有分支，
+`all_favorited` 的 `photos.batch.unfavorite` 不变。
+
+**测试**：`--lib ui::photos_page::tests`（21 项，新增
+`only_the_mixed_selection_marks_the_heart_as_opening_a_menu`：构造后的初始名字、三种状态各自的
+文案/红心/角标、以及角标的 `presentation` 角色）＋ `--test ui_photos_toolbar`、
+`--test ux_click_flows`（批量收藏旅程在 overlay 嵌套后仍绿）、`--test ui_context_menu`、
+`--test e2e_browsing`。两处负向验证各自变红：删掉 `set_visible(mixed)` → 角标断言红；
+把混合文案退回 `photos.batch.favorite` → 名字断言红。
+
+---
+
 ## 结构性议题：沉浸浏览与「F 是另一个窗口」
 
 **观察**：查看器 header 常驻（`data/ui/viewer-page.blp:11-69`，全项目 viewer 侧无 `Revealer`/autohide），沉浸态靠 `F` 打开一个**独立无边框顶层窗口**（`src/ui/keyboard/binding.rs:183` → `viewer_page.rs:583` → `src/ui/viewer/fullscreen_window.rs:52-58` `decorated(false).fullscreened(true)`，`Escape` 关闭 `:256-267`）。用户很难预期「F 之后 Esc 回到的是另一个窗口实例」。同时 header + 右上 6 按钮 + 右下 2 按钮 + 胶片条，与 `docs/modules/ui-design.md:40`「内容占据最大连续区域」存在张力。
@@ -1017,7 +1045,7 @@ glass 按钮，并断言两枚圆钮同类）＋ `--test ui_template_copy`（新
 |---|---|---|---|
 | B1 焦点环 | P0-2 | `a11y.css`/`base.css`/`grid_css` 测试 | 无（最小、最高价值，可独立先做） |
 | B2 扫描态 | P0-1、P2-6、P2-7、P2-8 | `events.rs`/`bootstrap.rs`/`empty_states.rs`/`photos_page.rs`/`album_picker.rs`/`trash_page.rs`/i18n | 无 |
-| B3 多选与选择 | P0-3（含相册详情页 chrome，已落盘）、P1-6（header 选择计数器，已落盘）、P2-5、P2-9 | `photos-page.blp`/`photos_page.rs`/`album-detail-page.blp`/`album_detail_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
+| B3 多选与选择 | P0-3（含相册详情页 chrome，已落盘）、P1-6（header 选择计数器，已落盘）、P2-5（已落盘）、P2-9（已落盘）| `photos-page.blp`/`photos_page.rs`/`album-detail-page.blp`/`album_detail_page.rs`/`virtual_media_grid*`/`loading.rs` | B1（焦点环让多选态更易验证） |
 | B4 快捷键发现 | P0-4 | `src/ui/keyboard/*`/`window.rs`/`settings.rs`/i18n | 无 |
 | B5 搜索 | P0-5、P1-15 | `search_page.rs`/`search-page.blp`/`tools/assert-at-spi.py`/i18n | B2（复用空态工厂改造）；P1-15 还要先接上真实的加入相册/收藏回调 |
 | B6 查看器信息层 | P1-7、P1-12、P2-2 | `viewer-page.blp`/`viewer_page.rs`/`navigation.rs`/`transform.rs`/`base.css` | 无 |
@@ -1052,12 +1080,13 @@ glass 按钮，并断言两枚圆钮同类）＋ `--test ui_template_copy`（新
 | `docs/modules/ui-design.md:105-109` | 多选进入由网格右键/长按、Space 与 Ctrl+A 完成；仅修正选择动作的出现时机描述，不增加 header 常驻入口 | B3 |
 | `docs/modules/ui-design.md:151-152` | 空态/loading 需为三态且带下一步动作 | B2 |
 | `docs/modules/ui-design.md`（Photos 一节，已改） | 「There is no disclosure button」这条契约已被 P2-8 推翻并改写：概览有两个入口（header 圆钮 + 顶部再滚一格），失败态多一个走既有 pull 的重试；同时新增 `overview_toggle_btn` 的材质说明（逐字复用 `.round-search-button`，不是新玻璃） | B2 |
+| `docs/modules/ui-design.md`（Favorite 契约，已改） | 保留「只有一枚心形按钮」，但补上「点之前要可预判」：混合态独享 overlay 角标 + `photos.batch.favorite.mixed` 的 tooltip 与 accessible name，并显式禁止拆分按钮/split arrow | B3 |
 | `docs/modules/ui-design.md:175-184` | focus 态可见性落地；hover 与 selected 的强度差决策 | B1、B9 |
 | `docs/modules/viewer.md:98-113, 204` | 重新表述控制器禁令（区分 touch-only 与桌面滚轮）；新增位置/倍率契约 | B6、B7 |
 | `docs/modules/keyboard.md:60-69` | 声明应用内发现路径与「binding ↔ shortcuts」防漂移断言 | B4 |
 | `docs/modules/editor.md` | 退出确认与前后对比契约 | B8 |
 | `docs/modules/ui-liquid-glass.md` | 焦点环属 a11y 层且与透明度无关；新增「动效与 reduce-motion」一节 | B1、B9 |
-| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示；B9 已补「Accessible Names For Tiles And Badges」（tile 类级 `Img` 角色、绑定者推名字、装饰图标 presentation、选中尚非 accessible state 的限制）；B2 已补「Overview Disclosure And Sync Retry」（状态从 revealer 派生、重试只属于失败、`photos.overview.hide` 死键接上） | B2、B3、B5、B9 |
+| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示；B9 已补「Accessible Names For Tiles And Badges」（tile 类级 `Img` 角色、绑定者推名字、装饰图标 presentation、选中尚非 accessible state 的限制）；B2 已补「Overview Disclosure And Sync Retry」（状态从 revealer 派生、重试只属于失败、`photos.overview.hide` 死键接上）；B3 已补「The Batch Heart Predicts Its Own Behavior」（一个写入者画好红心/名字/角标三样，混合态独享 caret） | B2、B3、B5、B9 |
 | `docs/modules/storage.md` | `DomainEvent::ScanPhase` 契约、缩略图失败语义 | B2、B8 |
 | `docs/testing.md` | `--a11y-smoke` 的搜索字段期望值改为按 locale 从 `i18n/<locale>.json` 取，中文标签不再是常量 | B5 |
 | `AGENTS.md`（B5 已加） | UI 不变量已落地：「`data/ui/*.blp` 不得出现硬编码可见文案，一律 `tr()`/`trf()`」，由 `tests/ui_template_copy.rs` 全仓扫描把关 | B5 |

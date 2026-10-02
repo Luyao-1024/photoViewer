@@ -186,6 +186,7 @@
     "photos.batch.exit_multi_select": "退出多选",
     "photos.batch.move_to_album": "移动到相册",
     "photos.batch.favorite": "收藏",
+    "photos.batch.favorite.mixed": "收藏（所选内容已有混合状态，点击后请选择）",
     "photos.batch.unfavorite": "取消收藏",
     "photos.selection.count": "已选择 {n} 项",
     "photos.selection.limit": "（已达上限）",

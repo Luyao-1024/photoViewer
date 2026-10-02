@@ -262,6 +262,10 @@ mod imp {
         pub add_to_album_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub favorite_btn: TemplateChild<gtk::Button>,
+        /// The corner caret that says "this heart opens a menu" — only for a
+        /// mixed selection (P2-9).
+        #[template_child]
+        pub favorite_menu_hint: TemplateChild<gtk::Image>,
         /// 收藏/取消收藏弹层菜单项（在 new 里建好并 set_parent 到 favorite_btn；
         /// refresh_selection_ui 按选中集状态切换 sensitive）。
         pub favorite_popover: RefCell<Option<gtk::Popover>>,
@@ -340,6 +344,7 @@ mod imp {
                 exit_multi_select_btn: TemplateChild::default(),
                 add_to_album_btn: TemplateChild::default(),
                 favorite_btn: TemplateChild::default(),
+                favorite_menu_hint: TemplateChild::default(),
                 favorite_popover: RefCell::new(None),
                 favorite_item_btn: RefCell::new(None),
                 unfavorite_item_btn: RefCell::new(None),
@@ -431,11 +436,9 @@ impl PhotosPage {
             .get()
             .set_tooltip_text(Some(&tr("photos.add_to_album")));
         // favorite_btn is the merged heart trigger (icon-only); clicking it
-        // opens a popover with 收藏/取消收藏, so it carries a tooltip only.
-        obj.imp()
-            .favorite_btn
-            .get()
-            .set_tooltip_text(Some(&tr("photos.batch.favorite")));
+        // opens a popover with 收藏/取消收藏. Its tooltip, accessible name and
+        // mixed-state caret are painted once below by
+        // apply_selection_favorite_state, which is the single writer.
         obj.imp()
             .delete_to_trash_btn
             .get()
@@ -897,6 +900,9 @@ impl PhotosPage {
                 this.decide_favorite_action(ids);
             });
         }
+        // Paint the heart before the first selection so an AT user hears the same
+        // verb the tooltip shows, and the mixed-state caret starts hidden.
+        obj.apply_selection_favorite_state(FavoriteMenuState::default());
 
         let weak = obj.downgrade();
         obj.imp()
@@ -1490,14 +1496,27 @@ impl PhotosPage {
         self.imp().selection_favorite_state.set(state);
         let has_any = !self.imp().selected_ids.borrow().is_empty();
         let all_favorited = has_any && !state.can_favorite && state.can_unfavorite;
+        // Both verbs still apply, so the click cannot pick one: that is the case
+        // where the heart opens the menu instead of acting (P2-9).
+        let mixed = has_any && state.can_favorite && state.can_unfavorite;
+        let key = if all_favorited {
+            "photos.batch.unfavorite"
+        } else if mixed {
+            "photos.batch.favorite.mixed"
+        } else {
+            "photos.batch.favorite"
+        };
+        let name = tr(key);
         let fav_btn = self.imp().favorite_btn.get();
         if all_favorited {
             fav_btn.add_css_class("favorite-active");
-            fav_btn.set_tooltip_text(Some(&tr("photos.batch.unfavorite")));
         } else {
             fav_btn.remove_css_class("favorite-active");
-            fav_btn.set_tooltip_text(Some(&tr("photos.batch.favorite")));
         }
+        fav_btn.set_tooltip_text(Some(&name));
+        // The name has to carry it too: a screen-reader user never sees the caret.
+        fav_btn.update_property(&[gtk::accessible::Property::Label(&name)]);
+        self.imp().favorite_menu_hint.set_visible(mixed);
         // Popover items stay wired for the mixed case.
         if let Some(btn) = self.imp().favorite_item_btn.borrow().as_ref() {
             btn.set_sensitive(state.can_favorite);

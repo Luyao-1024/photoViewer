@@ -478,7 +478,38 @@ or Month therefore remains immediate. The Photos renderer has no
 section-heading widgets; deterministic filler slots give each section a clean
 row boundary while the label supplies the floating date context.
 
+### The Batch Heart Predicts Its Own Behavior
+
+One control, three different clicks: a uniformly unfavorited selection favorites,
+a uniformly favorited selection unfavorites, and a mixed selection opens the
+`glass-menu` popover. That asymmetry used to be invisible — the only hint was
+experience. `apply_selection_favorite_state` is now the single writer for all
+three, and it owns:
+
+- `.viewer-favorite-btn.favorite-active` (the translucent red heart, unchanged
+  from the viewer's own hook),
+- the tooltip **and** the pushed `gtk::accessible::Property::Label` — one string
+  for both, so the pointer and the screen reader cannot drift. The mixed state
+  has its own key, `photos.batch.favorite.mixed`, because promising 「收藏」 and
+  then asking a question is the same lie in either channel,
+- `favorite_menu_hint`, a 12 px `pan-down-symbolic` pinned to the heart button's
+  bottom-right by a `Gtk.Overlay` (`favorite_btn_host` in
+  `photos-page.blp:96-130`). It is visible **only** for the mixed state: a caret
+  that is always there says "opens a menu" about the two clicks that do not.
+
+The overlay is why the heart stays one button. The design contract in
+[`ui-design.md`](ui-design.md) forbids splitting favorite/unfavorite into two
+header controls, and a split button would also widen the header for the state
+that is rarest. The hint is `accessible-role: presentation` and
+`can-target: false`: it repeats a name the button already carries, and it must
+never eat a press meant for the heart.
+
+`new()` paints the state once at construction (`apply_selection_favorite_state
+(FavoriteMenuState::default())`), so the heart is named before the first
+selection rather than after the first click.
+
 ### Accessible Names For Tiles And Badges
+
 
 A thumbnail is a picture with no text, so nothing a screen reader says about the
 grid comes from the widget tree itself:
@@ -526,7 +557,7 @@ replacing the three grid-side `add_css_class`/`remove_css_class` sites and
 `selected` — that is the part to measure first) — see the probe in
 [`docs/testing.md`](../testing.md).
 
-## Overview Disclosure And Sync Retry
+### Overview Disclosure And Sync Retry
 
 The overview used to have exactly one entry point and no exit from a bad state:
 it opened only when the grid was already at its first row and the user scrolled

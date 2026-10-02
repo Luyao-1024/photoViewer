@@ -31,7 +31,7 @@
   //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
   //   p2-4  宫格/徽标/图标的 accessible name（已落盘为常态：prototype.js applyIconLabels 恒定运行，
   //         落盘前形态走 data-pv-demo=tiles-anonymous）
-  // 另有 5 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
+  // 另有 6 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
   //   p2-5 选择计数查询线程（顶栏 .header-note 常态可见，条目本身即实现说明）
@@ -39,6 +39,8 @@
   //        落盘前对照走 data-pv-demo=picker-error-as-empty）
   //   p2-8 总览 disclosure 与同步重试（header .overview-disclosure 与行内 .overview-retry
   //        常态渲染；失败态与落盘前对照各走一个演示按钮）
+  //   p2-9 心形混合态角标（.favorite-menu-hint 常态渲染，随 body[data-pv-fav] 显隐；
+  //        落盘前对照走 data-pv-demo=heart-unpredictable）
   // 半落盘的条目只给未落盘那一半留标记：
   //   p1-6 的照片/相册计数是常态，.pv-p1-6 仅代表回收站计数。
   //   p1-7 的位置计数和边界反馈是常态，.pv-p1-7 仅代表倍率标签。
@@ -927,7 +929,9 @@
       docs: ["docs/modules/ui-design.md:140-147"],
       risk: "指示图标要与 P0-3 的 header 密度一起看，别挤爆。",
       demo:
-        "开启后进入多选并只选入一部分收藏项（混合态），批量收藏按钮右侧出现 ▾ 指示，表示点击会弹菜单而非直接切换；全选或全不选时指示消失。"
+        "本项已落盘，所以角标是常态 chrome 而不是提案开关：进入多选后用心形按钮演示三种点击——混合态才有右下角那枚 ⌄，全同态直接执行且红心/文案各自对应。演示按钮「心形：混合态（P2-9 常态）」把选择切到混合态；「落盘前：心形按钮行为不可预判（P2-9）」摘掉角标并让三种状态长得一模一样，回到只能靠经验预判的旧样子。",
+      landed:
+        "B3 已落盘（2026-10-02）。指示物是一枚 12 px pan-down-symbolic（photos-page.blp:115 favorite_menu_hint），挂在心形右下角的 Gtk.Overlay [overlay] 上（favorite_btn_host，:104），can-target: false 所以不吃按下，accessible-role: presentation 所以不重复播报——它复述的是按钮自己的名字。为什么用 overlay 而不是拆分按钮：ui-design.md 的契约禁止把收藏/取消收藏拆成两枚 header 按钮，而 split button 会为了最稀有的一种状态把 header 撑宽（草案 risk 担心的正是密度）。状态写入收成一个函数：apply_selection_favorite_state 一次画好三样——favorite-active 红心、tooltip 与 accessible name（同一个串，两条通道不能各说一套）、以及这枚角标；混合态另有一键 photos.batch.favorite.mixed（中英同步，parity 457/457），因为「承诺收藏、然后反问」在 tooltip 与读屏里是同一个谎。new() 里按 FavoriteMenuState::default() 先画一次，第一次选择之前按钮就已经有名字。角标只在混合态出现：常驻会对着「直接执行」的那两种点击撒谎。测试：ui::photos_page::tests::only_the_mixed_selection_marks_the_heart_as_opening_a_menu（三种状态各自的名字、红心与角标；构造后的初始态；presentation 角色）。两处负向验证：删掉 set_visible(mixed) → 测试红；把 mixed 文案退回 photos.batch.favorite → 测试红。--test ui_photos_toolbar 与 --test ux_click_flows 的批量收藏旅程在 overlay 嵌套后仍绿。"
     }
   ];
 
@@ -1264,6 +1268,22 @@
       PV.setOverview("closed");
       syncBar();
       PV.toast("落盘前对照：header 里没有那枚圆钮，同步失败也只有一句话——总览只能靠「顶部再往上滚」发现。清除演示态即回到已落盘的两个入口与重试。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("心形：混合态角标（P2-9 常态）", function () {
+      needScreen("photos");
+      PV.setMulti(true);
+      PV.setFavoriteState("mixed");
+      syncBar();
+      PV.toast("已落盘的常态：只有混合态在心形右下角带一枚 ⌄，tooltip 与读屏名字同时换成 photos.batch.favorite.mixed；换成全收藏或全未收藏，角标就消失。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("落盘前：心形按钮行为不可预判（P2-9）", function () {
+      needScreen("photos");
+      PV.setMulti(true);
+      // 顺序要紧：applyFavoriteState 会读演示态，先挂标记再算名字。
+      body.dataset.pvDemo = "heart-unpredictable";
+      PV.setFavoriteState("mixed");
+      syncBar();
+      PV.toast("落盘前对照：混合态与另外两种状态长得完全一样，名字也只承诺「收藏」——只有点下去才知道会弹菜单。清除演示态回到带角标的常态。", { kind: "info", ms: 5200 });
     });
     demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });
     row4.appendChild(gDemo);
@@ -1708,7 +1728,20 @@
           syncBar();
         }, 1600);
       },
-      "p2-9": function () { needScreen("photos"); PV.setMulti(true); }
+      "p2-9": function () {
+        needScreen("photos");
+        PV.setMulti(true);
+        // 已落盘：三种状态轮一遍，让「点之前就知道」这件事自己演出来。
+        var states = ["none", "all", "mixed"];
+        var i = 0;
+        PV.setFavoriteState(states[0]);
+        var timer = setInterval(function () {
+          i += 1;
+          if (i >= states.length) { clearInterval(timer); return; }
+          PV.setFavoriteState(states[i]);
+          PV.toast("心形状态：" + { none: "全未收藏 → 点击直接收藏", all: "全已收藏 → 点击直接取消（红心）", mixed: "混合 → 点击弹出菜单，右下角那枚 ⌄ 说的就是它" }[states[i]], { kind: "info", ms: 2200 });
+        }, 2400);
+      }
     };
     if (map[id]) map[id]();
     else needScreen(screen);

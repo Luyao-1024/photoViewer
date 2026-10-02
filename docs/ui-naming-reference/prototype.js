@@ -613,6 +613,10 @@
       "empty.search_none.title": "没有找到「{query}」",
       "empty.search_none.description": "换一个关键词，或将搜索字段切回「全部」。",
       "empty.search_none.clear": "清除搜索",
+      // P2-9 已落盘：以下三键逐字取自仓库 i18n/zh-CN.json:188-190。
+      "photos.batch.favorite": "收藏",
+      "photos.batch.favorite.mixed": "收藏（所选内容已有混合状态，点击后请选择）",
+      "photos.batch.unfavorite": "取消收藏",
       // P2-8 已落盘：以下四键逐字取自仓库 i18n/zh-CN.json:168-169, 174, 178, 274。
       "photos.overview.show": "展开图库概览",
       "photos.overview.hide": "收起图库概览",
@@ -664,6 +668,10 @@
       "empty.search_none.title": 'No results for "{query}"',
       "empty.search_none.description": "Try a different term, or switch the search field back to All.",
       "empty.search_none.clear": "Clear Search",
+      // P2-9 已落盘：与仓库 i18n/en.json:188-190 同值。
+      "photos.batch.favorite": "Favorite",
+      "photos.batch.favorite.mixed": "Favorite (the selection is mixed; choose after clicking)",
+      "photos.batch.unfavorite": "Unfavorite",
       // P2-8 已落盘：与仓库 i18n/en.json:168-169, 174, 178, 274 同值。
       "photos.overview.show": "Show library overview",
       "photos.overview.hide": "Hide library overview",
@@ -758,6 +766,8 @@
     applyIconLabels();
     // P2-8 同理：chevron 的名字与 glyph 都随展开状态重算。
     applyOverview();
+    // P2-9：心形的名字随混合状态重算。
+    applyFavoriteState();
   }
 
   /* ---------------------------------------------------- 图库概览（P2-8） */
@@ -801,6 +811,34 @@
   function setScan(state) {
     body.dataset.pvScan = state;
     emit("scan", state);
+  }
+
+  /* ---------------------------------------------------- 批量心形（P2-9） */
+
+  // P2-9 已落盘为常态：同一条心形有三种点击行为，点之前就要看得出来。
+  // body[data-pv-fav] 是这里唯一的状态位，对应真实实现里
+  // apply_selection_favorite_state 一次写下的三样东西（红心 class、
+  // tooltip + accessible name、混合态 caret）。
+  var FAVORITE_KEYS = {
+    none: "photos.batch.favorite",
+    all: "photos.batch.unfavorite",
+    mixed: "photos.batch.favorite.mixed"
+  };
+  function setFavoriteState(state) {
+    body.dataset.pvFav = state;
+    applyFavoriteState();
+    emit("favoriteState", state);
+  }
+  function applyFavoriteState() {
+    var btn = q('[data-ui="favorite-button"]');
+    if (!btn) return;
+    var state = body.dataset.pvFav || "none";
+    btn.classList.toggle("favorite-active", state === "all");
+    // 落盘前对照：既没有角标，也没有那条会先告诉你「会弹菜单」的名字。
+    var before = body.dataset.pvDemo === "heart-unpredictable" && state === "mixed";
+    var name = tr(before ? FAVORITE_KEYS.none : (FAVORITE_KEYS[state] || FAVORITE_KEYS.none));
+    btn.setAttribute("title", name);
+    btn.setAttribute("aria-label", name);
   }
 
   /* ------------------------------------------------------- 环境开关 */
@@ -1002,12 +1040,29 @@
       case "enter-multi": setMulti(true); toast("已进入多选：点击语义从「打开」翻转为「切换选中」", { kind: "info", ms: 2600 }); break;
       case "exit-multi": setMulti(false); break;
       case "select-all": selectAllInScreen(); break;
-      case "batch-fav":
-        toast("已收藏 " + selectedIds().length + " 项", {
+      case "batch-fav": {
+        // P2-9 已落盘：三种点击行为要能预判，所以这里照真实分支走。
+        var favState = body.dataset.pvFav || "none";
+        var favCount = selectedIds().length;
+        if (favState === "mixed") {
+          toast("混合状态：这一步会弹出「收藏 / 取消收藏」菜单——右下角那枚 ⌄ 说的就是它", { kind: "info", ms: 3200 });
+          break;
+        }
+        if (favState === "all") {
+          toast("已取消收藏 " + favCount + " 项", {
+            kind: "success",
+            action: { label: "撤销", run: function () { setFavoriteState("all"); toast("已撤销取消收藏", { kind: "info" }); } }
+          });
+          setFavoriteState("none");
+          break;
+        }
+        toast("已收藏 " + favCount + " 项", {
           kind: "success",
-          action: { label: "撤销", run: function () { toast("已撤销收藏", { kind: "info" }); } }
+          action: { label: "撤销", run: function () { setFavoriteState("none"); toast("已撤销收藏", { kind: "info" }); } }
         });
+        setFavoriteState("all");
         break;
+      }
       case "batch-trash":
         var moved = selectedIds().length;
         toast("已移到回收站（" + moved + " 项）", {
@@ -1306,6 +1361,9 @@
     // P2-8：真实应用启动时总览是收起的，chevron 因此显示「展开」。
     body.dataset.pvOvr = "closed";
     applyOverview();
+    // P2-9：没有选择时心形是「收藏」，也没有角标。
+    body.dataset.pvFav = "none";
+    applyFavoriteState();
     body.dataset.pvEditing = "0";
     wireNavigation();
     wireKeyboard();
@@ -1346,6 +1404,7 @@
     setTransparency: setTransparency, setMotion: setMotion, setMaterial: setMaterial,
     setWidth: setWidth, setLocale: setLocale, applyLocale: applyLocale,
     setOverview: setOverview, applyOverview: applyOverview,
+    setFavoriteState: setFavoriteState, applyFavoriteState: applyFavoriteState,
     setMulti: setMulti, toggleTile: toggleTile, selectedIds: selectedIds, updateCount: updateCount,
     runSearch: runSearch, setSearchLatency: setSearchLatency,
     selectAll: selectAllInScreen, simulateRebuild: simulateRebuild,
