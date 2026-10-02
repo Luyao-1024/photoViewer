@@ -437,12 +437,16 @@ fn chrome_returns_and_stays_clickable_after_immersive_fold() {
     // could never reach its deadline and the chrome stayed pinned open for as
     // long as the pointer rested on the picture. That is what made immersive
     // browsing read as a flicker instead of a fold.
+    //
+    // Nothing here pumps the main loop: the watcher anchors on the last accepted
+    // movement, and a real pointer event landing between "set the baseline" and
+    // "assert" would move that anchor and make this a coin flip under load.
+    run.press_key(gtk::gdk::Key::Escape);
     run.pointer_motion(300.0, 300.0);
-    run.key_gesture(gtk::gdk::Key::Escape, 0);
-    let refold = run.press_key(gtk::gdk::Key::f);
+    let refold = run.key_gesture_unsettled(gtk::gdk::Key::f, 0);
     assert_eq!(
         refold.after_press, [false; 4],
-        "F should fold all four regions"
+        "F should fold all four chrome regions"
     );
     for _ in 0..12 {
         run.pointer_motion(300.0, 300.0);
@@ -460,7 +464,8 @@ fn chrome_returns_and_stays_clickable_after_immersive_fold() {
         [true; 4],
         "actually moving the pointer must still bring the chrome straight back"
     );
-    run.pointer_motion(300.0, 300.0);
+    // Leave immersion so the hold below starts from the state a user is in
+    // before pressing F: chrome present, not immersive.
     run.press_key(gtk::gdk::Key::Escape);
     run.wait_for_chrome_relayout();
 
@@ -784,6 +789,19 @@ impl ViewerRun {
     /// gating; pumping would let unrelated queued input land mid-gesture and
     /// turn a deterministic assertion into a race.
     fn key_gesture(&self, key: gtk::gdk::Key, repeats: usize) -> KeyGesture {
+        let gesture = self.key_gesture_unsettled(key, repeats);
+        self.pump(Duration::from_millis(200));
+        gesture
+    }
+
+    /// The same gesture, but without letting the main loop run again afterwards.
+    ///
+    /// Needed wherever a real pointer event arriving in between would change the
+    /// answer. The stillness watcher anchors on the last accepted movement, and
+    /// this environment delivers real motion events at unpredictable moments, so
+    /// a pump between "establish the baseline" and "assert" makes the assertion a
+    /// coin flip.
+    fn key_gesture_unsettled(&self, key: gtk::gdk::Key, repeats: usize) -> KeyGesture {
         let controller = self.keyboard_router();
         let state = gtk::gdk::ModifierType::empty();
         let mut dispatched = 0usize;
@@ -806,7 +824,6 @@ impl ViewerRun {
         }
         let after_repeats = self.immersive_region_states();
         controller.emit_by_name::<()>("key-released", &[&key, &0_u32, &state]);
-        self.pump(Duration::from_millis(200));
         KeyGesture {
             dispatched,
             after_press,
