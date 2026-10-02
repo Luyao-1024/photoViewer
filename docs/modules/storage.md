@@ -299,6 +299,24 @@ Emission goes through `DbActorHandle::emit`, which publishes without running a D
 
 It is idempotent and runs before the first grid page loads, so added rows land in `list_trashed_media`, not the live grid, and pruned rows disappear from the Trash view. Reconciliation covers every configured media root, scans each trash root once, and includes existing freedesktop per-mount roots (`.Trash/<uid>` and `.Trash-<uid>`).
 
+**The watcher is stoppable, and that is load-bearing.** `start_watching` returns a
+`WatcherHandle`, not a bare `JoinHandle`. The listener runs on `spawn_blocking`,
+which tokio **cannot** cancel, so `JoinHandle::abort` on it is a silent no-op: the
+loop keeps running and any `Runtime` that owns the task blocks forever in
+`BlockingPool::drop` waiting for a task that was never cancelled. The handle owns
+the `RecommendedWatcher` while the loop only receives the event channel, because
+those two are the same cycle seen from both sides: the loop ends when the channel
+closes, and the channel closes when the watcher is dropped. Holding both in one
+scope makes each wait for the other and the blocking task never returns.
+`WatcherHandle::stop` (and its `Drop`) drops the watcher, which closes the
+channel, which lets the loop finish its final trash reconcile and exit. Tests must
+call `stop`, never `abort`.
+
+This is also why a failing assertion in these suites used to be invisible: the
+`assert!` panicked, unwound, and then hung inside `Runtime::drop` instead of
+reporting a red test — the suite could not fail, only stall. `docs/testing.md`
+treats a stall as a result too.
+
 **Trash roots are also watched live (`notify_watcher`).** In addition to media roots, the watcher installs inotify on the system trash roots and app trash root. Events whose path is under a trash root are NOT treated as media upsert/delete — they set a dirty flag, and after the configured quiet period (`notify_trash_debounce_ms`, default ~400ms; gio's "empty trash" bursts many events) the watcher re-runs `reconcile_trash` and emits `DomainEvent::TrashChanged`. The UI consumer (`app.rs`) calls `MainWindow::refresh_visible_trash_page()` on that event, so an open Trash view reflects external restore/empty/delete without a page switch. External restore is also caught by the media-root watcher (file reappears → upsert clears `trashed_at`); the trash watcher's `TrashChanged` then makes the visible Trash view drop it.
 Normal media events use the same quiet burst: changes are coalesced by path,
 file settling happens once, metadata upserts are submitted in one batch, and

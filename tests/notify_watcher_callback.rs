@@ -45,6 +45,11 @@ fn watcher_emits_upserted_after_successful_upsert() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(received, "watcher should have emitted an Upserted event");
-    watcher.abort();
-    rt.shutdown_timeout(Duration::from_millis(100));
+    // `stop`, not `abort`. This is a `spawn_blocking` task, and `abort` is a
+    // no-op for those: the loop would keep running and the `Runtime` shutdown
+    // would block on it forever. That is not a slow test, it is a test that can
+    // never report its own failure — the assert above would panic, unwind, and
+    // then hang inside `Runtime::drop` instead of failing the suite.
+    watcher.stop();
+    rt.shutdown_timeout(Duration::from_millis(1000));
 }

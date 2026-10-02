@@ -12,14 +12,17 @@ use tempfile::tempdir;
 
 struct WatcherHarness {
     rt: Option<tokio::runtime::Runtime>,
-    handle: tokio::task::JoinHandle<()>,
+    handle: photo_viewer::core::notify_watcher::WatcherHandle,
 }
 
 impl Drop for WatcherHarness {
     fn drop(&mut self) {
-        self.handle.abort();
+        // `stop`, not `abort`: the listener is a `spawn_blocking` task, which
+        // `abort` cannot cancel, so the `Runtime` shutdown below would block on
+        // a task that is never going to finish.
+        self.handle.stop();
         if let Some(rt) = self.rt.take() {
-            rt.shutdown_timeout(Duration::from_millis(100));
+            rt.shutdown_timeout(Duration::from_millis(1000));
         }
     }
 }

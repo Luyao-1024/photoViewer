@@ -16,6 +16,7 @@
 use crate::core::backend::local::LocalBackend;
 use crate::core::db_actor::{DbActorHandle, DbCommand};
 use crate::core::events::ChangeSource;
+use crate::core::log_targets;
 use crate::core::media::is_supported_media_path;
 use crate::core::runtime_config;
 use crate::core::telemetry::{log_error, log_warning, OperationTrace, TraceChain};
@@ -23,9 +24,13 @@ use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
+
+/// Bound on the buffered filesystem events. A burst larger than this is treated
+/// as overflow and answered with a full rescan rather than unbounded memory.
+const EVENT_QUEUE_CAPACITY: usize = 4096;
 
 /// 启动后台文件监听，返回一个 `JoinHandle`。
 ///
@@ -40,57 +45,137 @@ pub fn start_watching(
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
     media_roots: Vec<PathBuf>,
-) -> JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
+) -> WatcherHandle {
+    // The watcher — and with it the event callback that owns the only sender of
+    // the event channel — lives in the handle, not in the loop.
+    //
+    // The loop ends when that channel closes, and the channel closes when the
+    // watcher is dropped, so the two must not be owned by the same scope: held
+    // together they wait for each other and the blocking task never returns.
+    // Owning the watcher here is what makes [`WatcherHandle::stop`] able to
+    // break that cycle.
+    let watcher_slot: Arc<Mutex<Option<RecommendedWatcher>>> = Arc::new(Mutex::new(None));
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+
+    let mut watcher = match build_watcher(&tx, &overflowed) {
+        Ok(watcher) => watcher,
+        Err(error) => {
+            tracing::error!(target: log_targets::STORAGE, "watcher 创建失败: {}", error);
+            return WatcherHandle {
+                watcher: watcher_slot,
+                join: None,
+            };
+        }
+    };
+    for path in &watch_paths {
+        if let Err(error) = watcher.watch(path, RecursiveMode::Recursive) {
+            tracing::warn!(target: log_targets::STORAGE, "监听 {} 失败: {}", path.display(), error);
+        } else {
+            tracing::info!(target: log_targets::STORAGE, "notify watcher 已启动: {}", path.display());
+        }
+    }
+
+    let watcher_for_loop = watcher_slot.clone();
+    let join = tokio::task::spawn_blocking(move || {
         run_watcher_loop(
             db_actor,
-            watch_paths,
+            rx,
+            overflowed,
+            watcher_for_loop,
             trash_roots,
             excluded_roots,
             media_roots,
         )
+    });
+    *watcher_slot.lock().expect("watcher slot is not poisoned") = Some(watcher);
+
+    WatcherHandle {
+        watcher: watcher_slot,
+        join: Some(join),
+    }
+}
+
+/// Keeps the watcher alive and lets a caller stop listening.
+///
+/// `JoinHandle::abort` cannot cancel a `spawn_blocking` task, so aborting one of
+/// these handles does nothing at all: the blocking loop keeps running and any
+/// `Runtime` that owns it hangs forever in its shutdown, waiting for a task that
+/// was never cancelled. Call [`WatcherHandle::stop`] instead.
+pub struct WatcherHandle {
+    watcher: Arc<Mutex<Option<RecommendedWatcher>>>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl WatcherHandle {
+    /// Stop listening.
+    ///
+    /// Dropping the watcher closes the event channel, which ends the loop's
+    /// `recv`, so the blocking task returns and an owning `Runtime` can shut
+    /// down normally instead of waiting forever for a task that was never
+    /// cancelled. Idempotent.
+    pub fn stop(&self) {
+        let taken = self
+            .watcher
+            .lock()
+            .expect("watcher slot is not poisoned")
+            .take();
+        if taken.is_some() {
+            tracing::debug!(
+                target: log_targets::STORAGE,
+                "notify watcher 已停止：事件通道关闭，监听循环将退出",
+            );
+        }
+        drop(taken);
+        if let Some(join) = self.join.as_ref() {
+            tracing::trace!(
+                target: log_targets::STORAGE,
+                "notify watcher 任务已结束 = {}",
+                join.is_finished(),
+            );
+        }
+    }
+}
+
+impl Drop for WatcherHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn build_watcher(
+    tx: &mpsc::SyncSender<Result<notify::Event, notify::Error>>,
+    overflowed: &Arc<AtomicBool>,
+) -> notify::Result<RecommendedWatcher> {
+    let tx = tx.clone();
+    let overflowed_for_handler = overflowed.clone();
+    notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_err() {
+            overflowed_for_handler.store(true, Ordering::Release);
+        }
+        if let Err(mpsc::TrySendError::Full(_)) = tx.try_send(event) {
+            overflowed_for_handler.store(true, Ordering::Release);
+        }
     })
 }
 
 fn run_watcher_loop(
     db_actor: DbActorHandle,
-    watch_paths: Vec<PathBuf>,
+    rx: mpsc::Receiver<Result<notify::Event, notify::Error>>,
+    overflowed: Arc<AtomicBool>,
+    _watcher_slot: Arc<Mutex<Option<RecommendedWatcher>>>,
     trash_roots: Vec<PathBuf>,
     excluded_roots: Vec<PathBuf>,
     media_roots: Vec<PathBuf>,
 ) {
-    const EVENT_QUEUE_CAPACITY: usize = 4096;
     const MAX_BURST_EVENTS: usize = 512;
     const MAX_BURST_AGE: Duration = Duration::from_millis(750);
 
-    let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-    let overflowed = Arc::new(AtomicBool::new(false));
-    let overflowed_for_handler = overflowed.clone();
-    let mut watcher: RecommendedWatcher =
-        match notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if event.is_err() {
-                overflowed_for_handler.store(true, Ordering::Release);
-            }
-            if let Err(mpsc::TrySendError::Full(_)) = tx.try_send(event) {
-                overflowed_for_handler.store(true, Ordering::Release);
-            }
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!("watcher 创建失败: {}", e);
-                return;
-            }
-        };
-
-    for path in &watch_paths {
-        if let Err(e) = watcher.watch(path, RecursiveMode::Recursive) {
-            tracing::warn!("监听 {} 失败: {}", path.display(), e);
-        } else {
-            tracing::info!("notify watcher 已启动: {}", path.display());
-        }
-    }
-
-    // 持有 watcher —— 离开作用域时它会被 drop，所有监听自动停止。
+    // The watcher itself is owned by the `WatcherHandle`, not by this loop: the
+    // loop ends when the event channel closes, and the channel closes when the
+    // watcher is dropped, so holding both in one scope would make each wait for
+    // the other forever. `_watcher_slot` is a handle to the same slot purely so
+    // the loop cannot outlive the stop signal being consumed elsewhere.
     let mut trash_dirty = false;
 
     while let Ok(evt) = rx.recv() {
@@ -121,7 +206,6 @@ fn run_watcher_loop(
     }
     // 通道关闭（停监）：把挂起的回收站变化最后冲刷一次再退出。
     flush_trash_reconcile(&db_actor, &media_roots, &mut trash_dirty);
-    drop(watcher);
 }
 
 fn recover_from_event_overflow(

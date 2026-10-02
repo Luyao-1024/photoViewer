@@ -116,6 +116,9 @@ fn watcher_picks_up_new_file() {
         }
     }
     assert!(found, "watcher 应当在 5s 内拾取新文件");
-    watcher.abort();
-    rt.shutdown_timeout(Duration::from_millis(100));
+    // `stop`, not `abort`: this task is a `spawn_blocking` one, which tokio
+    // cannot cancel, so aborting it would leave the loop running and make the
+    // `Runtime` shutdown below wait forever.
+    watcher.stop();
+    rt.shutdown_timeout(Duration::from_millis(1000));
 }
