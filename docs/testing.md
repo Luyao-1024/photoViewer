@@ -222,6 +222,29 @@ and must not set a widget's end state (selection, visibility, a database row) to
 reach the state under test — set it by interacting, then assert what the
 interaction produced.
 
+### CI renders an older GTK than this machine
+
+CI installs `libgtk-4-dev` / `libadwaita-1-dev` from the Ubuntu runner image, which
+is **GTK 4.14.5 + libadwaita 1.5.0**, while a desktop development machine is on
+GTK 4.22.x. The application supports both — that is what
+`grid_css::runtime_compatible_css` is for: GTK only learned `backdrop-filter` in
+4.22, so on an older runtime the sheet actually installed is the authored sheet
+with that one property removed.
+
+Two rules follow, and both were learned from a red CI run rather than invented:
+
+- A test that asserts GTK accepts a stylesheet must parse
+  `runtime_compatible_css(&css_for_tests…())`, not the authored sheet. Asserting
+  the authored one makes the test fail on 4.14 over a property that has nothing
+  to do with what the test is about (`ui::motion::reduce_motion_block_parses_in_gtk_css`
+  did exactly that). Tests that check the *authored* text — "the liquid block
+  contains a blur" — are fine as they are; they never hand the CSS to GTK.
+- A parse-clean or pass-on-this-machine result is not the same as pass-on-CI for
+  anything that touches GTK internals. Gesture ownership and renderer behaviour
+  are measured against the running version, so a GTK-dependent expectation has to
+  be stated in terms of `gtk::check_version`, and the version CI runs belongs in
+  this file because it is not visible from a green local suite.
+
 ### Environment and expected log noise
 
 `tools/with-at-spi.sh` starts an isolated session D-Bus when needed, then

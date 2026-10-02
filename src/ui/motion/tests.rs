@@ -5,6 +5,13 @@ use std::rc::Rc;
 /// The whole strategy rests on GTK accepting a universal-selector override in
 /// its CSS subset - `grid_css.rs` forbids @media, so this is the only lever.
 /// A parsing error here would silently leave every transition in place.
+///
+/// The sheet parsed is the one [`install`] would actually register: on a GTK
+/// older than 4.22 that is the authored CSS minus `backdrop-filter`, which that
+/// runtime cannot parse. Asserting on the authored sheet instead made this fail
+/// on CI's GTK 4.14 for a property that has nothing to do with motion — the
+/// assertion is about the reduce-motion tail, so it has to be made about the
+/// text this runtime is handed.
 #[gtk::test]
 fn reduce_motion_block_parses_in_gtk_css() {
     let errors = Rc::new(RefCell::new(Vec::new()));
@@ -12,7 +19,9 @@ fn reduce_motion_block_parses_in_gtk_css() {
     let recorded = errors.clone();
     provider
         .connect_parsing_error(move |_, _, error| recorded.borrow_mut().push(error.to_string()));
-    provider.load_from_data(&crate::ui::grid_css::css_for_tests_with_reduced_motion());
+    provider.load_from_data(&crate::ui::grid_css::runtime_compatible_css(
+        &crate::ui::grid_css::css_for_tests_with_reduced_motion(),
+    ));
     assert!(
         errors.borrow().is_empty(),
         "GTK rejected the reduce-motion sheet: {:?}",
