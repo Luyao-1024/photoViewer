@@ -25,73 +25,73 @@ template $ViewerPage : Adw.NavigationPage {
         // asserted by tests.
         css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
-      // Capture date pinned to the start (left) side of the header, day
-      // precision only (no time). 今天 / 昨天 replace the last two days.
-      // Every item shows a date: follows the sort date (taken_at, else
-      // file_mtime), so it is always populated once an item is loaded.
-      [start]
-      Gtk.Box {
-        spacing: 8;
+        // Capture date pinned to the start (left) side of the header, day
+        // precision only (no time). 今天 / 昨天 replace the last two days.
+        // Every item shows a date: follows the sort date (taken_at, else
+        // file_mtime), so it is always populated once an item is loaded.
+        [start]
+        Gtk.Box {
+          spacing: 8;
 
-        Gtk.Label date_label {
-          label: "";
-          xalign: 0;
-          visible: false;
-          css-classes: ["title", "viewer-date-label"];
+          Gtk.Label date_label {
+            label: "";
+            xalign: 0;
+            visible: false;
+            css-classes: ["title", "viewer-date-label"];
+          }
+
+          Gtk.Image sync_badge {
+            tooltip-text: "";
+            visible: false;
+            css-classes: ["viewer-sync-badge"];
+          }
+
+          // Where this item sits inside the query the grid came from, so
+          // arriving from a 300-tile grid does not lose your place, and so
+          // 「到底了」 is a number instead of a guess. Last in the start box on
+          // purpose: it is the only child that grows with digit count, and
+          // growing rightward into free space keeps the date and badge still.
+          // Shown only once the rank resolves, so an unverified number is
+          // never displayed.
+          Gtk.Label position_label {
+            label: "";
+            xalign: 0;
+            visible: false;
+            css-classes: ["dim-label", "viewer-position-label"];
+          }
         }
 
-        Gtk.Image sync_badge {
+        // Header actions render left-to-right as favorite, edit, delete,
+        // details. Adw.HeaderBar packs `[end]` children edge-first (first
+        // declared = rightmost), so declare them in reverse.
+        [end]
+        Gtk.Button details_btn {
+          icon-name: "info-symbolic";
           tooltip-text: "";
-          visible: false;
-          css-classes: ["viewer-sync-badge"];
+          css-classes: ["glass-toolbar-button"];
         }
 
-        // Where this item sits inside the query the grid came from, so
-        // arriving from a 300-tile grid does not lose your place, and so
-        // 「到底了」 is a number instead of a guess. Last in the start box on
-        // purpose: it is the only child that grows with digit count, and
-        // growing rightward into free space keeps the date and badge still.
-        // Shown only once the rank resolves, so an unverified number is
-        // never displayed.
-        Gtk.Label position_label {
-          label: "";
-          xalign: 0;
-          visible: false;
-          css-classes: ["dim-label", "viewer-position-label"];
+        [end]
+        Gtk.Button delete_btn {
+          icon-name: "user-trash-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+        }
+
+        [end]
+        Gtk.Button edit_btn {
+          tooltip-text: "";
+          icon-name: "document-edit-symbolic";
+          css-classes: ["glass-toolbar-button"];
+        }
+
+        [end]
+        Gtk.Button favorite_btn {
+          icon-name: "emblem-favorite-symbolic";
+          tooltip-text: "";
+          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
         }
       }
-
-      // Header actions render left-to-right as favorite, edit, delete,
-      // details. Adw.HeaderBar packs `[end]` children edge-first (first
-      // declared = rightmost), so declare them in reverse.
-      [end]
-      Gtk.Button details_btn {
-        icon-name: "info-symbolic";
-        tooltip-text: "";
-        css-classes: ["glass-toolbar-button"];
-      }
-
-      [end]
-      Gtk.Button delete_btn {
-        icon-name: "user-trash-symbolic";
-        tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
-      }
-
-      [end]
-      Gtk.Button edit_btn {
-        tooltip-text: "";
-        icon-name: "document-edit-symbolic";
-        css-classes: ["glass-toolbar-button"];
-      }
-
-      [end]
-      Gtk.Button favorite_btn {
-        icon-name: "emblem-favorite-symbolic";
-        tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
-      }
-    }
     }
 
     Adw.OverlaySplitView editor_split_view {
@@ -251,32 +251,32 @@ template $ViewerPage : Adw.NavigationPage {
                 transition-duration: 220;
                 reveal-child: true;
 
-              // Previous/next float as a compact bare pair in the bottom-right
-              // corner over the photo: no capsule background (just the symbolic
-              // arrows), lifted just above GtkVideo's built-in control strip,
-              // and each button lights up its own glass surface on hover. See
-              // the viewer-chrome hover rules in grid_css.
-              Gtk.Box viewer_nav_buttons {
-                orientation: horizontal;
-                spacing: 6;
-                halign: end;
-                valign: end;
-                margin-bottom: 34;
-                margin-end: 10;
-                css-classes: ["viewer-overlay-nav"];
+                // Previous/next float as a compact bare pair in the bottom-right
+                // corner over the photo: no capsule background (just the symbolic
+                // arrows), lifted just above GtkVideo's built-in control strip,
+                // and each button lights up its own glass surface on hover. See
+                // the viewer-chrome hover rules in grid_css.
+                Gtk.Box viewer_nav_buttons {
+                  orientation: horizontal;
+                  spacing: 6;
+                  halign: end;
+                  valign: end;
+                  margin-bottom: 34;
+                  margin-end: 10;
+                  css-classes: ["viewer-overlay-nav"];
 
-                Gtk.Button prev_btn {
-                  icon-name: "go-previous-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button prev_btn {
+                    icon-name: "go-previous-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Button next_btn {
-                  icon-name: "go-next-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
+                  Gtk.Button next_btn {
+                    icon-name: "go-next-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
                 }
-              }
               }
 
               [overlay]
@@ -285,65 +285,65 @@ template $ViewerPage : Adw.NavigationPage {
                 transition-duration: 220;
                 reveal-child: true;
 
-              // Zoom controls live at the top-right of the image stage so they
-              // do not compete with the bottom-right previous/next controls.
-              // Declaration order is visual order here (a plain Gtk.Box, not a
-              // HeaderBar with reversed [end] packing), so the grouping below
-              // is the contract: zoom out/in, then transform, then view state.
-              Gtk.Box viewer_zoom_controls {
-                orientation: horizontal;
-                spacing: 6;
-                halign: end;
-                valign: start;
-                margin-top: 10;
-                margin-end: 10;
-                css-classes: ["viewer-zoom-controls"];
+                // Zoom controls live at the top-right of the image stage so they
+                // do not compete with the bottom-right previous/next controls.
+                // Declaration order is visual order here (a plain Gtk.Box, not a
+                // HeaderBar with reversed [end] packing), so the grouping below
+                // is the contract: zoom out/in, then transform, then view state.
+                Gtk.Box viewer_zoom_controls {
+                  orientation: horizontal;
+                  spacing: 6;
+                  halign: end;
+                  valign: start;
+                  margin-top: 10;
+                  margin-end: 10;
+                  css-classes: ["viewer-zoom-controls"];
 
-                Gtk.Button zoom_out_btn {
-                  icon-name: "zoom-out-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button zoom_out_btn {
+                    icon-name: "zoom-out-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Button zoom_in_btn {
-                  icon-name: "zoom-in-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button zoom_in_btn {
+                    icon-name: "zoom-in-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Separator zoom_transform_sep {
-                  orientation: vertical;
-                  visible: false;
-                }
+                  Gtk.Separator zoom_transform_sep {
+                    orientation: vertical;
+                    visible: false;
+                  }
 
-                Gtk.Button rotate_left_btn {
-                  icon-name: "object-rotate-left-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button rotate_left_btn {
+                    icon-name: "object-rotate-left-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Button rotate_right_btn {
-                  icon-name: "object-rotate-right-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button rotate_right_btn {
+                    icon-name: "object-rotate-right-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Separator zoom_state_sep {
-                  orientation: vertical;
-                }
+                  Gtk.Separator zoom_state_sep {
+                    orientation: vertical;
+                  }
 
-                Gtk.Button zoom_reset_btn {
-                  icon-name: "zoom-fit-best-symbolic";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
-                  tooltip-text: "";
-                }
+                  Gtk.Button zoom_reset_btn {
+                    icon-name: "zoom-fit-best-symbolic";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                    tooltip-text: "";
+                  }
 
-                Gtk.Button fullscreen_btn {
-                  icon-name: "view-fullscreen-symbolic";
-                  tooltip-text: "";
-                  css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  Gtk.Button fullscreen_btn {
+                    icon-name: "view-fullscreen-symbolic";
+                    tooltip-text: "";
+                    css-classes: ["glass-toolbar-button", "viewer-overlay-nav-btn"];
+                  }
                 }
-              }
               }
             };
           }
@@ -353,40 +353,40 @@ template $ViewerPage : Adw.NavigationPage {
             transition-duration: 220;
             reveal-child: true;
 
-          Gtk.Box viewer_bottom_stack {
-            orientation: vertical;
-            margin-start: 24;
-            margin-end: 24;
-            margin-top: 8;
-            margin-bottom: 12;
-            spacing: 6;
+            Gtk.Box viewer_bottom_stack {
+              orientation: vertical;
+              margin-start: 24;
+              margin-end: 24;
+              margin-top: 8;
+              margin-bottom: 12;
+              spacing: 6;
 
-            Gtk.Box viewer_bottom_bar {
-              orientation: horizontal;
-              halign: fill;
-              spacing: 8;
-              css-classes: ["glass-raised", "viewer-thumb-bar", "viewer-thumb-carousel"];
+              Gtk.Box viewer_bottom_bar {
+                orientation: horizontal;
+                halign: fill;
+                spacing: 8;
+                css-classes: ["glass-raised", "viewer-thumb-bar", "viewer-thumb-carousel"];
 
-              Gtk.ScrolledWindow thumb_scrolled {
-                hexpand: true;
-                propagate-natural-width: false;
-                // Keep a horizontal adjustment for programmatic filmstrip
-                // positioning without showing a scrollbar. `never` disables
-                // scrolling and lets the loaded thumbnail row feed its minimum
-                // width into the viewer window.
-                hscrollbar-policy: external;
-                vscrollbar-policy: never;
-                min-content-height: 64;
+                Gtk.ScrolledWindow thumb_scrolled {
+                  hexpand: true;
+                  propagate-natural-width: false;
+                  // Keep a horizontal adjustment for programmatic filmstrip
+                  // positioning without showing a scrollbar. `never` disables
+                  // scrolling and lets the loaded thumbnail row feed its minimum
+                  // width into the viewer window.
+                  hscrollbar-policy: external;
+                  vscrollbar-policy: never;
+                  min-content-height: 64;
 
-                child: Gtk.Box thumb_strip {
-                  orientation: horizontal;
-                  spacing: 6;
-                  css-classes: ["viewer-thumb-strip"];
-                };
+                  child: Gtk.Box thumb_strip {
+                    orientation: horizontal;
+                    spacing: 6;
+                    css-classes: ["viewer-thumb-strip"];
+                  };
+                }
+
               }
-
             }
-          }
           }
         };
 
