@@ -17,6 +17,7 @@ use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+use photo_viewer::core::i18n::tr;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::ui::{ModeSelector, PhotosPage};
 use std::time::Duration;
@@ -63,15 +64,24 @@ fn mode_selector_integration_suite() {
     win.set_child(Some(&holder));
     win.present();
     let ui = Ui::for_widget(&win);
+    // Aim at the cell by the text the capsule actually paints, which is
+    // `tr("photo.mode.day")` — not by a literal. The labels come from the
+    // catalogue at runtime, so a hard-coded 日 only exists in a zh-CN process,
+    // and on CI (no LANG, so the catalogue's English fallback) this assertion
+    // failed for a reason that had nothing to do with the click under test.
+    let day_name = tr("photo.mode.day");
+    let month_name = tr("photo.mode.month");
     assert!(
         ui.wait_until(Duration::from_secs(5), || {
-            common::interaction::find_label_containing(&sel3, "日")
+            common::interaction::find_label_containing(&sel3, day_name.as_str())
                 .is_some_and(|l| ui.pointer_at_center_of(&l).is_some())
         }),
-        "the mode capsule should be laid out with a hittable Day cell"
+        "the mode capsule should be laid out with a hittable {} cell",
+        day_name
     );
 
-    let day_label = common::interaction::find_label_containing(&sel3, "日").expect("Day cell");
+    let day_label =
+        common::interaction::find_label_containing(&sel3, day_name.as_str()).expect("Day cell");
     ui.click(&day_label, "the Day cell");
     assert_eq!(
         stack3.visible_child_name().as_deref(),
@@ -79,7 +89,8 @@ fn mode_selector_integration_suite() {
         "pressing the Day cell should switch the bound stack"
     );
 
-    let month_label = common::interaction::find_label_containing(&sel3, "月").expect("Month cell");
+    let month_label =
+        common::interaction::find_label_containing(&sel3, month_name.as_str()).expect("Month cell");
     ui.click(&month_label, "the Month cell");
     assert_eq!(
         stack3.visible_child_name().as_deref(),
