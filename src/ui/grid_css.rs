@@ -329,7 +329,11 @@ fn register(css: &str) {
 /// older runtime sees it, even though the rest of the material CSS remains a
 /// valid translucent fallback. Keep the source CSS (and newer runtimes' glass
 /// effect) intact, but omit that optional property on older GTK versions.
-fn runtime_compatible_css(css: &str) -> String {
+///
+/// `pub(crate)` because a CSS-parsing test has to assert on the sheet this
+/// runtime actually installs, not on the authored one: they differ here, and a
+/// test that parses the authored sheet fails on a supported older runtime.
+pub(crate) fn runtime_compatible_css(css: &str) -> String {
     if gtk::check_version(4, 22, 0).is_none() {
         return css.to_string();
     }
