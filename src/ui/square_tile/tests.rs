@@ -295,6 +295,14 @@ fn cloud_icons_render_with_transparent_centers() {
             "{state:?} outline should match the surface color"
         );
     }
+
+    // A renderer that is still realized when it is finalized trips
+    // `Gsk:ERROR:gskrenderer.c:gsk_renderer_dispose: assertion failed:
+    // (!priv->is_realized)`, which is a `g_abort()` on the runner's GTK 4.14.5 —
+    // it killed the entire lib test binary, so nothing after this test ever
+    // reported. GTK 4.22 lets it pass, which is why a green local suite hid it.
+    // Unrealizing is what the API asks for, on every version.
+    renderer.unrealize();
 }
 
 #[gtk::test]
