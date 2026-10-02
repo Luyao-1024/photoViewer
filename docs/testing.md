@@ -165,6 +165,15 @@ tile paints (`grid.tile_for_media(id)`). That is why an `Album` is aimed at by
 `display_name()` — the sidebar row shows the folder's basename while `name` holds
 the raw path.
 
+Because those aims are *rendered strings*, they must come from `tr()`, never from a
+literal. The process locale decides what a control says, and CI has no `LANG`, so
+it gets the catalogue's English fallback while a developer's shell gets zh-CN. A
+test that searched for a literal `日` on the mode capsule passed locally and failed
+on CI with "no hittable Day cell" — the widget was laid out fine, the string it
+paints is just `"Day"` there. `Photo mode` labels, dialog responses and page titles
+all go through the catalogue; when a scenario needs one, it asks for
+`tr("photo.mode.day")` and aims at whatever that returns.
+
 ### Text input
 
 GTK 4.22 emits `GtkSearchEntry`'s `search-changed` only from its key-handler path:
