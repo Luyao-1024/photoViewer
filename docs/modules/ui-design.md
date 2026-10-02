@@ -161,13 +161,27 @@ Design intent:
   favorite/unfavorite, add to album, move to trash — rendered into the search
   page's own overlay, so a preview never becomes a corner of the app where a
   photo cannot be acted on.
+- The overview disclosure (`overview_toggle_btn`) is the second `[start]` header
+  child, declared immediately after search so the selection revealers sliding in
+  never move it. It borrows search's material exactly —
+  `.glass-toolbar-button .round-search-button`, no new glass class — and only its
+  glyph changes (`pan-down-symbolic` / `pan-up-symbolic`) with the tooltip and
+  accessible name from `photos.overview.show` / `photos.overview.hide`. It is
+  Photos-only: the album detail page keeps search alone at `[start]`, which is why
+  search stays *first* in both templates.
 - The date range remains the first upper-left row below the header. The library
-  overview starts hidden even when the grid is at its first image; an additional
-  upward scroll at that edge (or a touch pull-down) reveals it below the date,
-  while scrolling down into media hides it. A pull-down at the top also runs
-  saved WebDAV tasks once; there are no task-level Sync Now buttons or background
-  sync timers. There is no disclosure button. The overview is a centered,
-  backgroundless two-line surface: a compact
+  overview starts folded even when the grid is at its first image. It has two
+  entry points: a circular chevron in the header's start group
+  (`pan-down-symbolic` folded, `pan-up-symbolic` open, `.glass-toolbar-button
+  .round-search-button` — the same material as search, no new surface), and, once
+  already at the top edge, an additional upward scroll (or a touch pull-down).
+  Scrolling down into media folds it again. The chevron mirrors the revealer
+  instead of holding its own state, so any path that opens or closes the panel
+  keeps the glyph honest. A pull-down at the top also runs saved WebDAV tasks
+  once; there are still no per-task Sync Now buttons and no background sync
+  timers — the only extra action is the retry that appears *inside* the sync line
+  when synchronization has failed, which re-runs that same saved-task pull. The
+  overview is a centered, backgroundless two-line surface: a compact
   full-library photo/video count and a quieter icon-led sync status line. Counts
   come from the database, not the current virtual-grid window. While sync is
   actively running, the status line uses a deliberately slow activity spinner

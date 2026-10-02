@@ -175,7 +175,7 @@
     "photos.overview.sync.running": "正在同步…",
     "photos.overview.sync.running_download": "正在同步，已同步 {done}/{total}",
     "photos.overview.sync.running_upload": "正在上传 {done}/{total} 个图片/视频",
-    "photos.overview.sync.failed": "同步失败；打开设置查看详情或下拉重试",
+    "photos.overview.sync.failed": "同步失败；可点「重试」，或在设置中查看详情",
     "photos.overview.sync.ready": "首页下拉开始同步",
     "photos.overview.sync.completed": "同步完成，已同步 {count} 项",
     "photos.overview.sync.completed_conflicts": "同步完成，已同步 {count} 项、冲突图片 {conflicts} 张",

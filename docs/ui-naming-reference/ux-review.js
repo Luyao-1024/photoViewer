@@ -31,12 +31,14 @@
   //   p2-3  模式选择器无障碍语义（已落盘为常态：prototype.js 恒定写 role/aria-checked，焦点环在胶囊上）
   //   p2-4  宫格/徽标/图标的 accessible name（已落盘为常态：prototype.js applyIconLabels 恒定运行，
   //         落盘前形态走 data-pv-demo=tiles-anonymous）
-  // 另有 4 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
+  // 另有 5 条已落盘的提案没有 .pv-<id> 标记，因为它们的常态就是命名图本身：
   //   p0-4 快捷键发现（SettingsPage shortcut_group + tooltip .p4-key 常态渲染）
   //   p0-5 搜索三态（search_state_stack 常态渲染，落盘前形态走 data-pv-demo=search-blank）
   //   p2-5 选择计数查询线程（顶栏 .header-note 常态可见，条目本身即实现说明）
   //   p2-6 相册选择器四态（picker-state--loading/empty/error 常态存在，由演示按钮选看哪页；
   //        落盘前对照走 data-pv-demo=picker-error-as-empty）
+  //   p2-8 总览 disclosure 与同步重试（header .overview-disclosure 与行内 .overview-retry
+  //        常态渲染；失败态与落盘前对照各走一个演示按钮）
   // 半落盘的条目只给未落盘那一半留标记：
   //   p1-6 的照片/相册计数是常态，.pv-p1-6 仅代表回收站计数。
   //   p1-7 的位置计数和边界反馈是常态，.pv-p1-7 仅代表倍率标签。
@@ -907,7 +909,9 @@
       docs: ["docs/modules/browsing.md"],
       risk: "总览默认隐藏是刻意的，按钮不应变成视觉重心。",
       demo:
-        "开启后照片页顶部概览行右侧出现 chevron 与同步失败重试入口，可点击展开/收起；关闭时只能靠下拉手势发现。"
+        "本项已落盘，所以 header 的 ⌄/⌃ 圆钮与概览行里的「重试」都是常态 chrome：点 chevron 真的开合那一行，glyph、tooltip 与读屏名字一起翻。提案芯片不再改动画面（已落盘的行为不该被开关削弱）。两个演示按钮：「全库总览：展开 + 同步失败重试（P2-8 常态）」把那一行展开并切到 Failed，重试才出现在句子末尾；「落盘前：总览没有 disclosure（P2-8）」摘掉 chevron 与重试，回到只能靠「顶部再往上滚」发现的旧样子。",
+      landed:
+        "B2 已落盘（2026-10-02）。chevron：photos-page.blp:51 overview_toggle_btn，[start] 第二个 child，紧挨 search_btn 声明（选择 chrome slide 进来不会挤走它），材质逐字复用 .glass-toolbar-button + .round-search-button，没有新增玻璃类，也没有 per-segment 底色块——它是一枚普通按钮，不是分段控件。状态是派生的：photos_page.rs apply_overview_disclosure_state 挂在 overview_revealer 的 notify::reveal-child 上，glyph（pan-down/pan-up）、tooltip 与 accessible name（photos.overview.show / photos.overview.hide）都从 revealer 读，所以下拉手势、切换分组时的自动收起、点按钮三条路径不可能各说一套。图标按钮的状态属于名字，因此同一串既 set_tooltip_text 又推 accessible::Property::Label。重试：overview_sync_retry_btn（photos-page.blp:215）走 .flat + base.css .photos-overview-retry（11pt、去掉主题最小按钮框），只在 SyncOverviewStatus::Failed 与总览读取失败（apply_overview_error）两处出现，apply_overview_retry_affordance 是唯一写入者；Completed/Running/Paused/Ready 只有描述，Disabled 连整行收起。点击复用既有 trigger_sync_from_home_pull()，所以没有新增同步路径、也没有 per-task Sync Now（草案担心的那一条）；overview_sync_pull_in_flight 期间置灰而不是吞点击；读取失败那条只在 webdav_sync_enabled() 时才出按钮——被该 pref 挡下的 pull 是死钮。落盘时顺带改掉一处文案：photos.overview.sync.failed 原文是「打开设置查看详情或下拉重试」，「下拉重试」在有两个入口之后不再唯一，改为「可点「重试」，或在设置中查看详情」。偏差一处：草案说「加一个可点 chevron」暗示新样式，实际连 CSS 都没新增选择器（复用现成两枚 class），新增的 .photos-overview-retry 只是把按钮压回行内尺寸。i18n 没有新增键（photos.overview.hide 早已存在但一直是死键，这次才接上）。测试：ui::photos_page::tests::the_overview_disclosure_button_mirrors_the_revealer（两个方向、外加一次没碰按钮的展开）、a_failed_sync_offers_a_retry_and_other_states_do_not（四种非失败态都隐藏、in-flight 置灰、读取失败按 pref 决定出不出钮）；--test ui_photos_toolbar 从 5 枚 glass 按钮变 6 枚并断言两枚圆钮同类；narrow_window_keeps_the_start_header_button_allocated 现在量两枚 [start] 圆钮。--test ui_template_copy 的 tooltip 槽断言已用「删掉 overview_toggle_btn 的 tooltip-text」验证不是空跑。"
     },
     {
       id: "p2-9",
@@ -1248,6 +1252,19 @@
     });
     demoBtn("空相册详情页（P2-6 关联，已是常态）", function () { needScreen("album"); body.dataset.pvDemo = "album-empty"; syncBar(); });
     demoBtn("落盘前：回收站首帧闪空态（P2-7）", function () { jumpToProposal("p2-7"); syncBar(); });
+    demoBtn("全库总览：展开 + 同步失败重试（P2-8 常态）", function () {
+      needScreen("photos");
+      PV.setOverview("failed");
+      syncBar();
+      PV.toast("已落盘的常态：概览展开，同步切到 Failed，句子末尾才出现「重试」。换成别的状态（清除演示态即回到收起 + 已暂停）就不会有这颗按钮。", { kind: "info", ms: 5200 });
+    });
+    demoBtn("落盘前：总览没有 disclosure（P2-8）", function () {
+      needScreen("photos");
+      body.dataset.pvDemo = "overview-no-disclosure";
+      PV.setOverview("closed");
+      syncBar();
+      PV.toast("落盘前对照：header 里没有那枚圆钮，同步失败也只有一句话——总览只能靠「顶部再往上滚」发现。清除演示态即回到已落盘的两个入口与重试。", { kind: "info", ms: 5200 });
+    });
     demoBtn("清除演示态", function () { body.dataset.pvDemo = ""; PV.applyLocale(); PV.setSearchLatency(200); syncBar(); });
     row4.appendChild(gDemo);
 
@@ -1678,7 +1695,19 @@
           PV.toast("P2-7 已落盘：常态停在 loading，读取完成才决定出图还是出空态；刚才那 0.9 秒是修复前的一闪。", { kind: "info", ms: 4200 });
         }, 900);
       },
-      "p2-8": function () { needScreen("photos"); },
+      "p2-8": function () {
+        needScreen("photos");
+        // 已落盘，所以芯片展示常态而不是打开提案开关：展开概览、把同步切到 Failed，
+        // 让「chevron 是真的可点 + 失败才有重试」一次演完，再收起回到常态。
+        PV.setOverview("failed");
+        syncBar();
+        var chevron = PV.q(".overview-disclosure");
+        PV.toast("P2-8 已落盘：概览现在有 header 那枚圆钮（点它开合，glyph 与读屏名字随状态翻），同步失败时句子末尾多出「重试」。演示里 1.6 秒后收回折叠常态。", { kind: "info", ms: 5200 });
+        setTimeout(function () {
+          if (chevron) chevron.click();
+          syncBar();
+        }, 1600);
+      },
       "p2-9": function () { needScreen("photos"); PV.setMulti(true); }
     };
     if (map[id]) map[id]();

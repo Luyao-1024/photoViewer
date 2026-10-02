@@ -613,6 +613,12 @@
       "empty.search_none.title": "没有找到「{query}」",
       "empty.search_none.description": "换一个关键词，或将搜索字段切回「全部」。",
       "empty.search_none.clear": "清除搜索",
+      // P2-8 已落盘：以下四键逐字取自仓库 i18n/zh-CN.json:168-169, 174, 178, 274。
+      "photos.overview.show": "展开图库概览",
+      "photos.overview.hide": "收起图库概览",
+      "photos.overview.sync.paused": "同步已暂停；首页下拉后继续同步",
+      "photos.overview.sync.failed": "同步失败；可点「重试」，或在设置中查看详情",
+      "common.retry": "重试",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/zh.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "键盘快捷键", "keyboard.group.global": "全局", "keyboard.group.browsing": "浏览与选择",
       "keyboard.group.viewer": "图片查看", "keyboard.show_shortcuts": "显示键盘快捷键", "keyboard.cancel_or_close": "取消或关闭",
@@ -658,6 +664,12 @@
       "empty.search_none.title": 'No results for "{query}"',
       "empty.search_none.description": "Try a different term, or switch the search field back to All.",
       "empty.search_none.clear": "Clear Search",
+      // P2-8 已落盘：与仓库 i18n/en.json:168-169, 174, 178, 274 同值。
+      "photos.overview.show": "Show library overview",
+      "photos.overview.hide": "Hide library overview",
+      "photos.overview.sync.paused": "Sync is paused; pull down on Photos to sync",
+      "photos.overview.sync.failed": "Sync failed; use Retry, or open Settings for details",
+      "common.retry": "Retry",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/en.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "Keyboard Shortcuts", "keyboard.group.global": "Global",
       "keyboard.group.browsing": "Browsing & Selection", "keyboard.group.viewer": "Photo Viewer",
@@ -744,6 +756,42 @@
     updateCount();
     // P2-4 的 accessible name 取自 tooltip 文案，语言一变就要重算。
     applyIconLabels();
+    // P2-8 同理：chevron 的名字与 glyph 都随展开状态重算。
+    applyOverview();
+  }
+
+  /* ---------------------------------------------------- 图库概览（P2-8） */
+
+  // P2-8 已落盘，所以这里是常态而不是提案开关。chevron 在真实实现里是
+  // overview_revealer 的镜像（photos_page.rs apply_overview_disclosure_state 挂在
+  // notify::reveal-child 上），所以 glyph、tooltip、aria-expanded 都由那一个状态派生；
+  // 重试只在 Failed 出现（apply_overview_retry_affordance）。运行模式的显隐规则在
+  // styles.css，命名模式两件都恒可见，因为它们是 data-ui 条目。
+  function overviewIsOpen() {
+    return body.dataset.pvOvr === "open" || body.dataset.pvOvr === "failed";
+  }
+  function setOverview(state) {
+    body.dataset.pvOvr = state;
+    applyOverview();
+    emit("overview", state);
+  }
+  function applyOverview() {
+    var open = overviewIsOpen();
+    var btn = q(".overview-disclosure");
+    if (btn) {
+      var name = tr(open ? "photos.overview.hide" : "photos.overview.show");
+      btn.textContent = open ? "⌃" : "⌄";
+      btn.setAttribute("title", name);
+      btn.setAttribute("aria-label", name);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    var retry = q(".overview-retry");
+    if (retry) retry.textContent = tr("common.retry");
+    var sync = q('[data-ovr="sync"]');
+    if (sync) {
+      sync.textContent = tr(body.dataset.pvOvr === "failed"
+        ? "photos.overview.sync.failed" : "photos.overview.sync.paused");
+    }
   }
 
   /* -------------------------------------------------------- 扫描状态 */
@@ -1022,6 +1070,10 @@
         q(".collapsed-workspace").classList.toggle("overlay-open");
         break;
       case "sync-retry": toast("重新触发一次同步任务", { kind: "info" }); break;
+      case "toggle-overview":
+        // P2-8 已落盘：chevron 只是 revealer 的镜像，开合都回到同一个状态位。
+        setOverview(overviewIsOpen() ? "closed" : "open");
+        break;
       case "scan-retry": setScan("scanning"); setTimeout(function () { setScan("ready"); }, 2600); break;
       case "err-retry": toast("重试解码：仍失败（文件不存在）", { kind: "error" }); break;
       case "picker-retry": body.dataset.pvDemo = ""; break;
@@ -1251,6 +1303,9 @@
     body.dataset.pvSearch = "idle";
     body.dataset.pvGridMode = "year";
     body.dataset.multi = "0";
+    // P2-8：真实应用启动时总览是收起的，chevron 因此显示「展开」。
+    body.dataset.pvOvr = "closed";
+    applyOverview();
     body.dataset.pvEditing = "0";
     wireNavigation();
     wireKeyboard();
@@ -1290,6 +1345,7 @@
     go: go, back: back, setMode: setMode, setScan: setScan,
     setTransparency: setTransparency, setMotion: setMotion, setMaterial: setMaterial,
     setWidth: setWidth, setLocale: setLocale, applyLocale: applyLocale,
+    setOverview: setOverview, applyOverview: applyOverview,
     setMulti: setMulti, toggleTile: toggleTile, selectedIds: selectedIds, updateCount: updateCount,
     runSearch: runSearch, setSearchLatency: setSearchLatency,
     selectAll: selectAllInScreen, simulateRebuild: simulateRebuild,

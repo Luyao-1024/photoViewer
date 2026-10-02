@@ -1040,6 +1040,17 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   font-size: 11pt;
 }
 
+/* The retry that a failed sync now carries (P2-8) has to read as part of the
+   sentence, not as a toolbar: keep it at the row's 11pt scale and drop the
+   theme's minimum button box. It stays a plain .flat button — no glass material
+   is introduced here. */
+.photos-overview-retry {
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 10px;
+  font-size: 11pt;
+}
+
 /* thumb-loading — 缩略图生成期间的静态占位。缩略图到位后 SquareTile
    在 set_paintable 里移除该 class。 */
 .thumb-loading {

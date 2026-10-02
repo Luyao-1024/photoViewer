@@ -1376,9 +1376,17 @@ body[data-pv-demo="album-empty"] .section-title { display: none; }
 body[data-pv-demo="trash-flash"] .legacy-trash-flash { display: flex; }
 body[data-pv-demo="trash-flash"] .tile-grid.compact { display: none; }
 
-/* P2-8 概览 disclosure / P2-9 收藏下拉指示 */
-body[data-pv~="p2-8"] .pref-row .caret.pv-p2-8,
-body[data-pv~="p2-8"] .pref-row button.pv-p2-8 { display: inline-flex; }
+/* P2-8 已落盘为常态：header 里的 .overview-disclosure 与概览行内的 .overview-retry
+   都是真实 chrome，不再由提案 token 门控。命名模式两件都恒可见（它们是 data-ui 条目）；
+   运行模式按真实状态显示——概览默认收起，只有 Failed 才出重试，与 photos_page.rs
+   apply_overview_retry_affordance 一致。落盘前对照走 data-pv-demo=overview-no-disclosure：
+   那时既没有可点的 disclosure，也没有重试入口，只能靠「顶部再往上滚」发现。 */
+body[data-pv-mode="run"]:not([data-pv-ovr="open"]):not([data-pv-ovr="failed"]) .photos-overview-row { display: none; }
+body[data-pv-mode="run"]:not([data-pv-ovr="failed"]) .overview-retry { display: none; }
+body[data-pv-demo="overview-no-disclosure"] .overview-disclosure,
+body[data-pv-demo="overview-no-disclosure"] .overview-retry { display: none !important; }
+
+/* P2-9 收藏下拉指示（尚未落盘，仍由提案 token 控制） */
 body[data-pv~="p2-9"] .caret.pv-p2-9 { display: inline; }
 
 /* P2-2 已落盘为常态：宿主只覆盖舞台，libadwaita 把提示贴在宿主下边缘，于是它
@@ -1700,7 +1708,9 @@ body[data-pv-dirty="1"] .dirty-label { visibility: visible; }
 .stats-line,
 .section-title { color: #e4e8ef; }
 .pref-row > span:last-child,
-.pref-row > span:first-child { color: #e4e8ef; }
+.pref-row > span:first-child,
+/* 概览行的最后一个 child 现在是 P2-8 的重试按钮，所以那一行不能只靠位置选择器。 */
+.photos-overview-row > span { color: #e4e8ef; }
 .status-page small { color: #cfd6e0; }
 .status-page { color: #e4e8ef; }
 .more-tile {
@@ -1725,6 +1735,7 @@ body[data-pv-demo="low-contrast"] .stats-line,
 body[data-pv-demo="low-contrast"] .section-title,
 body[data-pv-demo="low-contrast"] .pref-row > span:last-child,
 body[data-pv-demo="low-contrast"] .pref-row > span:first-child,
+body[data-pv-demo="low-contrast"] .photos-overview-row > span,
 body[data-pv-demo="low-contrast"] .status-page { color: var(--text-dim); }
 body[data-pv-demo="low-contrast"] .status-page small,
 body[data-pv-demo="low-contrast"] .footer { color: var(--text-muted); }

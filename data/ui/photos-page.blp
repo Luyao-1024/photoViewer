@@ -41,6 +41,19 @@ template $PhotosPage : Adw.NavigationPage {
         css-classes: ["glass-toolbar-button", "round-search-button"];
       }
 
+      // Library-overview disclosure. The panel below used to be reachable only
+      // by overscrolling past the first row, which nothing announces (P2-8).
+      // Same round glass button as search — no new material — and its glyph and
+      // tooltip follow the revealer's own state, so a click and a pull can
+      // never disagree. Declared right after search so selection chrome sliding
+      // in never moves it.
+      [start]
+      Gtk.Button overview_toggle_btn {
+        icon-name: "pan-down-symbolic";
+        tooltip-text: "";
+        css-classes: ["glass-toolbar-button", "round-search-button"];
+      }
+
       // Multi-select has no persistent header entry (removed by owner
       // decision): it is entered from the tile context menu (right-click /
       // long-press) or with Space / Ctrl+A, and left via the exit revealer.
@@ -193,6 +206,15 @@ template $PhotosPage : Adw.NavigationPage {
             halign: center;
             xalign: 0.5;
             wrap: true;
+          }
+
+          // A failed sync used to be a sentence with no way out (P2-8). Rust
+          // shows this only for the failed states, and labels it from
+          // common.retry; it is a plain flat button so the row stays one line of
+          // information instead of a control bar.
+          Gtk.Button overview_sync_retry_btn {
+            visible: false;
+            css-classes: ["flat", "photos-overview-retry"];
           }
         }
       }

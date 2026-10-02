@@ -3,7 +3,7 @@
 检视日期：2026-10-01
 检视基线：`250671a`（工作区干净）
 检视范围：浏览（Photos / 虚拟网格 / 模式选择器 / 搜索 / 相册 / 回收站）、查看器与编辑器、窗口与设置、共享玻璃材质与可访问性
-状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路）。P1 已开始：**P1-6 已实施**（header 选择计数器），并且实测证明其「选中集被后台重建清空」的前半前提只对无多选 UI 的旧网格成立，`VirtualMediaGrid` 由新单测守住，详见该节「证据更正」；**P1-7 已落盘其前两项**（位置计数器 + 到底反馈），第三项「倍率可见」留在草案里交给后续工作。其余 P1/P2 条目仍为**草案**。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
+状态：检视结论已归档，方案按批次落盘中。**P0 五条已全部实施**并本地提交——P0-1（扫描三态）、P0-2（主网格焦点环）、P0-3（多选入口，照片页 + 虚拟网格 + 相册详情页两半都已落地）、P0-4（快捷键应用内可发现）、P0-5（搜索三态 + 模板去硬编码中文）。落盘过程中发现的新问题已升级为独立条目：P1-15（搜索结果分区没有任何批量动作通路），它也已落地。**P1 全条已落盘**（P1-6 header 选择计数器、P1-7 前两项＝位置计数器 + 到底反馈、P1-8 查看器桌面输入、P1-9 编辑器退出保护、P1-10 图片错误可见化、P1-11 选择态区分、P1-12 查看器控件簇、P1-13 对比度地板、P1-14 减少动画、P1-15 搜索批量通路）。**P2 除 P2-9 外已落盘**（P2-1 toast 撤销、P2-2 toast 让位胶片条、P2-3 模式选择器语义、P2-4 无障碍名称、P2-5 选择查询移出主线程、P2-6 相册选择器四态、P2-7 回收站首帧、P2-8 总览 disclosure + 同步重试）。仍在 backlog 的只剩三项：P1-7 的「倍率可见」、P2-9 收藏按钮混合态下拉指示、以及下面的结构性沉浸浏览议题（需产品决策）。落盘过程中与原方案的偏差记录在各节末尾的「实施结果」里——实测证据优先于草案。
 
 ## 总体判断
 
@@ -719,7 +719,7 @@ i18n：`viewer.position.count = "{current} / {total}"` 加进两族 zh-CN（`zh-
 | **P2-5（已落盘）** | 选择相关的 DB 查询在主线程同步执行 | `photos_page.rs:1155`（每次选择变化 `favorite_state`）、`:1337`（同步取 2000 条）、`:1360`（同步 count） | 见「P2-5 实施结果」：三处都不在选择节拍上了，另加数据层一条被漏掉的 N+1 |
 | **P2-6（已落盘）** | 相册选择器加载中是空网格；DB 报错显示成「暂无相册」 | `src/ui/album_picker.rs:174-220`（`:214-218` 把错误渲染为空态标题） | 见「P2-6 实施结果」：四页 Gtk.Stack（loading/empty/albums/error）＋可重试的错误页；顺带纠正草案对相册详情页的一处误判 |
 | **P2-7（已落盘）** | 回收站每次打开先闪一下「回收站为空」 | `src/ui/trash_page.rs:122-132` 空态 child 常驻直到数据落地 | 见「P2-7 实施结果」：四页 stack ＋ `first_load_done` 闸门；真正挡住闪烁的是 `refresh()` 里的判断，不是 `constructed` 的初始页 |
-| P2-8 | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 加一个可点 chevron（不改材质）；同步状态失败需显示可操作的重试提示。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
+| **P2-8（已落盘）** | 全库总览只能靠「顶部再往上滚」发现，明确无 disclosure 按钮 | `photos_page.rs:1243-1257`、`docs/modules/browsing.md:133-141` | 见「P2-8 实施结果」：chevron 逐字复用搜索的材质、状态从 revealer 派生；重试只在 Failed 与读取失败两处出现，且走既有 pull。原「`:1279` 错误仅日志」已不准确：`photos_page.rs:1294-1303` 会将失败写入总览文案。 |
 | P2-9 | 收藏按钮在「直接切换」与「弹层」间隐形变化 | `photos_page.rs:754-770`、契约见 `docs/modules/ui-design.md:140-147` | 混合态给按钮加下拉指示，让「会弹菜单」可预判 |
 
 ### P2-1 实施结果（2026-10-02 已落盘，草案前提需要更正）
@@ -962,6 +962,43 @@ git 历史可查。那条「现状对照」条目已从命名图删除，提案�
 
 ---
 
+### P2-8 实施结果（2026-10-02 已落盘，risk 那一条决定了实现方式）
+
+两个入口、一个动作：`overview_toggle_btn`（photos-page.blp:51）与
+`overview_sync_retry_btn`（:215）。草案的 risk 写「按钮不应变成视觉重心」，所以 chevron
+不新增任何材质——逐字复用搜索那枚的 `.glass-toolbar-button` + `.round-search-button`，
+静止时 bare、hover/聚焦才出胶囊；本轮唯一新增的 CSS 是 `.photos-overview-retry`，它只是把
+按钮压回行内 11pt 尺寸，不是新皮肤。
+
+**状态是派生的，不是自存的。** `apply_overview_disclosure_state` 挂在 `overview_revealer` 的
+`notify::reveal-child` 上，glyph（pan-down/pan-up）、tooltip 与 accessible name
+（`photos.overview.show` / `photos.overview.hide`）全部从 revealer 读。如果按钮自己记一份
+「我点过没有」，第一次用下拉手势展开就会说谎——测试里正是这一条最难：
+`the_overview_disclosure_button_mirrors_the_revealer` 额外做了一次**没碰按钮**的展开。
+图标按钮的状态属于名字，所以同一个串既 `set_tooltip_text` 又推
+`gtk::accessible::Property::Label`；`photos.overview.hide` 是仓库里早就存在、一直没人用的死键，
+这次才接上，i18n 因此零新增（parity 仍 456/456）。
+
+**重试只在失败出现，且只在它能做事时出现。** `apply_overview_retry_affordance(failed)` 是唯一
+写入者：`SyncOverviewStatus::Failed` 与总览读取失败（`apply_overview_error`）两处为真，
+Completed/Running/Paused/Ready 只有描述，`Disabled` 连整行都收起。动作复用既有
+`trigger_sync_from_home_pull()`，所以草案担心的「per-task Sync Now」没有发生，也没有新增同步
+路径。`overview_sync_pull_in_flight` 期间按钮**置灰**而不是吞掉第二次点击；读取失败那条只在
+`webdav_sync_enabled()` 时才出按钮——被该 pref 挡下的 pull 是死钮，这条是草案没写的。
+
+顺带改掉一处文案：`photos.overview.sync.failed` 原文「打开设置查看详情或下拉重试」，在有了两个
+入口之后「下拉」不再唯一，改为「可点「重试」，或在设置中查看详情」（中英同步）。
+
+**测试**：`--lib ui::photos_page::tests`（20 项，新增 2 项；`the_overview_disclosure_button_mirrors_the_revealer`
+与 `a_failed_sync_offers_a_retry_and_other_states_do_not`）＋ `--test ui_photos_toolbar`（5→6 枚
+glass 按钮，并断言两枚圆钮同类）＋ `--test ui_template_copy`（新按钮的 tooltip 槽由该测试守住，
+删掉 `tooltip-text` 后确认它会红）＋ `--test ux_click_flows`、`--test e2e_browsing`。
+`narrow_window_keeps_the_start_header_button_allocated` 从量一枚改成量两枚 `[start]` 圆钮。
+两处负向验证各自变红：摘掉 `connect_reveal_child_notify` → disclosure 测试红；把
+`apply_overview_retry_affordance` 掏空 → 重试测试红。
+
+---
+
 ## 结构性议题：沉浸浏览与「F 是另一个窗口」
 
 **观察**：查看器 header 常驻（`data/ui/viewer-page.blp:11-69`，全项目 viewer 侧无 `Revealer`/autohide），沉浸态靠 `F` 打开一个**独立无边框顶层窗口**（`src/ui/keyboard/binding.rs:183` → `viewer_page.rs:583` → `src/ui/viewer/fullscreen_window.rs:52-58` `decorated(false).fullscreened(true)`，`Escape` 关闭 `:256-267`）。用户很难预期「F 之后 Esc 回到的是另一个窗口实例」。同时 header + 右上 6 按钮 + 右下 2 按钮 + 胶片条，与 `docs/modules/ui-design.md:40`「内容占据最大连续区域」存在张力。
@@ -1014,12 +1051,13 @@ git 历史可查。那条「现状对照」条目已从命名图删除，提案�
 |---|---|---|
 | `docs/modules/ui-design.md:105-109` | 多选进入由网格右键/长按、Space 与 Ctrl+A 完成；仅修正选择动作的出现时机描述，不增加 header 常驻入口 | B3 |
 | `docs/modules/ui-design.md:151-152` | 空态/loading 需为三态且带下一步动作 | B2 |
+| `docs/modules/ui-design.md`（Photos 一节，已改） | 「There is no disclosure button」这条契约已被 P2-8 推翻并改写：概览有两个入口（header 圆钮 + 顶部再滚一格），失败态多一个走既有 pull 的重试；同时新增 `overview_toggle_btn` 的材质说明（逐字复用 `.round-search-button`，不是新玻璃） | B2 |
 | `docs/modules/ui-design.md:175-184` | focus 态可见性落地；hover 与 selected 的强度差决策 | B1、B9 |
 | `docs/modules/viewer.md:98-113, 204` | 重新表述控制器禁令（区分 touch-only 与桌面滚轮）；新增位置/倍率契约 | B6、B7 |
 | `docs/modules/keyboard.md:60-69` | 声明应用内发现路径与「binding ↔ shortcuts」防漂移断言 | B4 |
 | `docs/modules/editor.md` | 退出确认与前后对比契约 | B8 |
 | `docs/modules/ui-liquid-glass.md` | 焦点环属 a11y 层且与透明度无关；新增「动效与 reduce-motion」一节 | B1、B9 |
-| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示；B9 已补「Accessible Names For Tiles And Badges」（tile 类级 `Img` 角色、绑定者推名字、装饰图标 presentation、选中尚非 accessible state 的限制） | B2、B3、B5、B9 |
+| `docs/modules/browsing.md` | 多选入口、总览披露、空态三态、搜索三态与慢查询指示；B9 已补「Accessible Names For Tiles And Badges」（tile 类级 `Img` 角色、绑定者推名字、装饰图标 presentation、选中尚非 accessible state 的限制）；B2 已补「Overview Disclosure And Sync Retry」（状态从 revealer 派生、重试只属于失败、`photos.overview.hide` 死键接上） | B2、B3、B5、B9 |
 | `docs/modules/storage.md` | `DomainEvent::ScanPhase` 契约、缩略图失败语义 | B2、B8 |
 | `docs/testing.md` | `--a11y-smoke` 的搜索字段期望值改为按 locale 从 `i18n/<locale>.json` 取，中文标签不再是常量 | B5 |
 | `AGENTS.md`（B5 已加） | UI 不变量已落地：「`data/ui/*.blp` 不得出现硬编码可见文案，一律 `tr()`/`trf()`」，由 `tests/ui_template_copy.rs` 全仓扫描把关 | B5 |

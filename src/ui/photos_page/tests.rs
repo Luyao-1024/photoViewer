@@ -242,6 +242,156 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
     assert!(!page.imp().overview_sync_row.get().is_visible());
     assert!(page.imp().overview_sync_label.get().label().is_empty());
     assert!(!page.imp().overview_sync_running.get());
+    assert!(
+        !page.imp().overview_sync_retry_btn.get().is_visible(),
+        "the retry belongs to a failed sync, not to a hidden sync row"
+    );
+}
+
+/// P2-8: the overview was only reachable by overscrolling past the first row,
+/// which nothing announces. The header chevron has to be a real control *and* a
+/// mirror of the revealer — if it kept its own flag, a pull would reveal the
+/// panel while the glyph still invited another pull.
+#[gtk::test]
+fn the_overview_disclosure_button_mirrors_the_revealer() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("disclosure.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    let toggle = page.imp().overview_toggle_btn.get();
+    assert_eq!(
+        toggle.accessible_role(),
+        gtk::AccessibleRole::Button,
+        "a disclosure that a screen reader cannot reach is not a disclosure"
+    );
+    assert_eq!(
+        toggle.icon_name().as_deref(),
+        Some("pan-down-symbolic"),
+        "the collapsed overview should invite a downward reveal"
+    );
+    assert_eq!(
+        toggle.tooltip_text().as_deref(),
+        Some(tr("photos.overview.show").as_str()),
+        "an icon-only header button needs its name from i18n, not nothing"
+    );
+
+    toggle.emit_clicked();
+    assert!(
+        page.imp().overview_revealer.reveals_child(),
+        "clicking the chevron should reveal the library overview"
+    );
+    assert_eq!(
+        toggle.icon_name().as_deref(),
+        Some("pan-up-symbolic"),
+        "an open overview should show the collapse glyph"
+    );
+    assert_eq!(
+        toggle.tooltip_text().as_deref(),
+        Some(tr("photos.overview.hide").as_str()),
+        "the announced name should change with the state it toggles"
+    );
+
+    toggle.emit_clicked();
+    assert!(
+        !page.imp().overview_revealer.reveals_child(),
+        "a second click should collapse the overview again"
+    );
+    assert_eq!(
+        toggle.icon_name().as_deref(),
+        Some("pan-down-symbolic"),
+        "collapsing should return the invite glyph"
+    );
+
+    // The other ways the panel opens and close never touch the button, yet the
+    // glyph still follows: this is what the revealer notification buys.
+    page.imp().overview_revealer.set_reveal_child(true);
+    assert_eq!(
+        toggle.icon_name().as_deref(),
+        Some("pan-up-symbolic"),
+        "revealing the overview by scrolling must update the header chevron"
+    );
+}
+
+/// P2-8: a failed sync used to be one sentence with no way out. The retry
+/// belongs to the failure alone — a row that always carried a button would read
+/// as if synchronization were permanently broken.
+#[gtk::test]
+fn a_failed_sync_offers_a_retry_and_other_states_do_not() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("retry.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(
+        pool.clone(),
+        tmp.path().join("thumbs"),
+    ));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+    page.set_db_pool(pool);
+
+    let retry = page.imp().overview_sync_retry_btn.get();
+    let snapshot = |status| PhotosOverviewSnapshot {
+        photos: 2,
+        videos: 1,
+        live_total: 3,
+        sync: SyncOverview {
+            status,
+            job_count: 1,
+            synced_items: 0,
+            conflict_images: 0,
+        },
+        sync_progress: None,
+    };
+
+    for status in [
+        SyncOverviewStatus::Completed,
+        SyncOverviewStatus::Running,
+        SyncOverviewStatus::Paused,
+        SyncOverviewStatus::Ready,
+    ] {
+        page.apply_overview_snapshot(snapshot(status));
+        assert!(
+            !retry.is_visible(),
+            "{status:?} is a description of state, not a failure that needs a retry"
+        );
+    }
+
+    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
+    assert!(
+        retry.is_visible(),
+        "a failed sync has to be actionable, not just described"
+    );
+    assert_eq!(
+        retry.label().as_deref(),
+        Some(tr("common.retry").as_str()),
+        "the retry label comes from the catalogues like every other string"
+    );
+
+    // No db actor is wired in this page, so the pull is refused before it can
+    // spawn anything; the button must survive that without going dead.
+    retry.emit_clicked();
+    assert!(
+        retry.is_sensitive(),
+        "a retry that was refused before starting has to stay pressable"
+    );
+
+    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
+    page.imp().overview_sync_pull_in_flight.set(true);
+    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
+    assert!(
+        !retry.is_sensitive(),
+        "while a pull is already running the retry should say so instead of stacking a second one"
+    );
+
+    // The read path failing is the other failure the row can show. The retry is
+    // offered only when it can act: the pull it triggers is a no-op while WebDAV
+    // sync is switched off, and a dead button would be worse than none.
+    page.apply_overview_error();
+    assert_eq!(
+        retry.is_visible(),
+        crate::core::prefs::webdav_sync_enabled(),
+        "a failed overview read retries only when a retry can reach the sync service"
+    );
 }
 
 /// The three reasons an empty Photos grid can be empty have to stay separate on
@@ -833,16 +983,24 @@ fn narrow_window_keeps_the_start_header_button_allocated() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let search = page.imp().search_btn.get().width();
-        if search >= 24 || deadline.elapsed() > std::time::Duration::from_secs(3) {
+        let toggle = page.imp().overview_toggle_btn.get().width();
+        if (search >= 24 && toggle >= 24) || deadline.elapsed() > std::time::Duration::from_secs(3)
+        {
             break;
         }
         context.iteration(true);
     }
 
     let search = page.imp().search_btn.get().width();
+    let toggle = page.imp().overview_toggle_btn.get().width();
     assert!(
         search >= 24,
         "the start header button must keep a tappable allocation at 800x600, got search={search}"
+    );
+    assert!(
+        toggle >= 24,
+        "the overview disclosure added by P2-8 shares the header's start group, so it \
+         must keep a tappable allocation too, got toggle={toggle}"
     );
 }
 

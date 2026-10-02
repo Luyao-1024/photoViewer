@@ -175,7 +175,7 @@
     "photos.overview.sync.running": "Synchronizing…",
     "photos.overview.sync.running_download": "Synchronizing: {done}/{total} downloaded",
     "photos.overview.sync.running_upload": "Uploading {done}/{total} photos/videos",
-    "photos.overview.sync.failed": "Sync failed; open Settings or pull down to retry",
+    "photos.overview.sync.failed": "Sync failed; use Retry, or open Settings for details",
     "photos.overview.sync.ready": "Pull down on Photos to sync",
     "photos.overview.sync.completed": "Sync complete: {count} items",
     "photos.overview.sync.completed_conflicts": "Sync complete: {count} items, {conflicts} conflicts",

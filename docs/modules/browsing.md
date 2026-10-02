@@ -130,19 +130,22 @@ entry lets the user restrict matching to file names only, dates only, or both
 (the default). The selected field is stored as `SearchField` (`All`, `Name`,
 `Date`) and passed through `MediaQuery` to the DB layer.
 
-Below the fixed upper-left date range, a compact pull-down overview shows
-authoritative full-library photo and video counts from `MediaRepository`, never
-the bounded GTK seed length, plus the persisted provider-neutral
-synchronization state. It is hidden on initial Photos load even though the grid
-starts at its first row. Once already at that row, an additional upward scroll
-(or touch pull-down) reveals it; scrolling down into media hides it again. It
-uses no disclosure button. The centered, backgroundless count uses compact
-13pt semibold type and the icon-led sync line uses quieter 11pt type. Data keeps
-refreshing on a short timer so the surface is current when revealed. The
-`Running` state replaces the static status glyph with a rotating 18 px activity
-indicator whose full rotation takes two seconds; leaving `Running` stops it and
-restores the appropriate paused, completed, failed, ready, or unconfigured
-icon.
+Below the fixed upper-left date range, a compact overview shows authoritative
+full-library photo and video counts from `MediaRepository`, never the bounded
+GTK seed length, plus the persisted provider-neutral synchronization state. It
+starts folded on the initial Photos load even though the grid starts at its
+first row. Two paths open it: the circular header chevron
+(`overview_toggle_btn`) and, once already at that row, an additional upward
+scroll (or touch pull-down); scrolling down into media hides it again. The
+chevron is a *mirror* of `overview_revealer`, driven by its `notify::reveal-child`
+rather than by its own flag, so a pull, a click and the mode-switch hide all keep
+the glyph and the announced name truthful. The centered, backgroundless count
+uses compact 13pt semibold type and the icon-led sync line uses quieter 11pt
+type. Data keeps refreshing on a short timer so the surface is current when
+revealed. The `Running` state replaces the static status glyph with a rotating
+18 px activity indicator whose full rotation takes two seconds; leaving `Running`
+stops it and restores the appropriate paused, completed, failed, ready, or
+unconfigured icon.
 
 When the **Date** field is selected, the search entry provides automatic date
 formatting: typing digits auto-inserts "/" separators (e.g., typing "20251001"
@@ -451,7 +454,7 @@ Year/Month/Day selector. Keep button-triggered popovers separate from this
 right-click menu path.
 
 The Photos grid's visible date-range label is anchored 12 px from the Photos
-page's upper-left, above the pull-down overview and grid. It is refreshed as
+page's upper-left, above the overview and grid. It is refreshed as
 soon as authoritative metadata lands (without
 waiting for a scroll), when the active Year/Month/Day grid changes, and on
 viewport resize or scroll. It remains visible and does not fade after scrolling
@@ -522,6 +525,47 @@ replacing the three grid-side `add_css_class`/`remove_css_class` sites and
 `clear_for_rebind`, verified against the live tree (the role may well reject
 `selected` — that is the part to measure first) — see the probe in
 [`docs/testing.md`](../testing.md).
+
+## Overview Disclosure And Sync Retry
+
+The overview used to have exactly one entry point and no exit from a bad state:
+it opened only when the grid was already at its first row and the user scrolled
+one notch further, and a failed synchronization was one sentence with nothing to
+click. Both were invisible omissions — nothing on screen suggested a hidden
+panel existed, and nothing suggested the failure could be retried.
+
+- `overview_toggle_btn` is the disclosure. It is a second `[start]` header button
+  placed immediately after search, and it reuses search's classes
+  (`.glass-toolbar-button .round-search-button`) rather than inventing a surface;
+  the Liquid Glass invariant "one capsule, no per-segment active block" is
+  untouched because this is a normal button, not a segmented control.
+- Its glyph and name are *derived*, not stored: `apply_overview_disclosure_state`
+  is called from `notify::reveal-child` on the revealer, so the pull gesture, the
+  mode-switch hide (`photos_page.rs`, the `view_stack` handler) and the click all
+  keep `pan-down-symbolic` ↔ `pan-up-symbolic` and
+  `photos.overview.show` ↔ `photos.overview.hide` truthful. A second boolean here
+  would drift the first time someone revealed the panel by scrolling.
+- Because the button is icon-only, the state is part of its name: the same i18n
+  string is pushed as both the tooltip (mouse) and
+  `gtk::accessible::Property::Label` (screen reader). `photos.overview.hide` had
+  to exist before the button did — an expand-only label cannot describe a
+  collapse.
+- `overview_sync_retry_btn` appears inside `overview_sync_row` for exactly two
+  situations: `SyncOverviewStatus::Failed`, and the overview read itself failing
+  (`apply_overview_error`). Completed, running, paused, ready and unconfigured
+  stay description-only, and a `Disabled` row hides the button with the row.
+  `apply_overview_retry_affordance(failed)` is the single writer.
+- The retry calls `trigger_sync_from_home_pull()` — the same saved-task pull the
+  header gesture uses, so it adds no new sync path and no per-task Sync Now
+  button. It reports `overview_sync_pull_in_flight` as *insensitivity* instead of
+  swallowing the second click, and on the read-failure path it only appears when
+  `webdav_sync_enabled()`, because a pull refused by that pref is a dead button.
+- Tests: `the_overview_disclosure_button_mirrors_the_revealer` (both directions of
+  the mirror, including a reveal that never touches the button) and
+  `a_failed_sync_offers_a_retry_and_other_states_do_not` (each non-failed state
+  hides it; an in-flight pull desensitizes it; the label comes from `common.retry`).
+  `narrow_window_keeps_the_start_header_button_allocated` now measures both start
+  buttons, since the disclosure consumes header width.
 
 ## Mode Selector
 

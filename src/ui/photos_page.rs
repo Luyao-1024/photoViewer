@@ -237,6 +237,8 @@ mod imp {
         #[template_child]
         pub overview_sync_label: TemplateChild<gtk::Label>,
         #[template_child]
+        pub overview_sync_retry_btn: TemplateChild<gtk::Button>,
+        #[template_child]
         pub scroll_date_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub scroll_date_label: TemplateChild<gtk::Label>,
@@ -244,6 +246,8 @@ mod imp {
         pub header_bar: TemplateChild<adw::HeaderBar>,
         #[template_child]
         pub search_btn: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub overview_toggle_btn: TemplateChild<gtk::Button>,
         #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
@@ -323,10 +327,12 @@ mod imp {
                 overview_sync_icon: TemplateChild::default(),
                 overview_sync_spinner: TemplateChild::default(),
                 overview_sync_label: TemplateChild::default(),
+                overview_sync_retry_btn: TemplateChild::default(),
                 scroll_date_revealer: TemplateChild::default(),
                 scroll_date_label: TemplateChild::default(),
                 header_bar: TemplateChild::default(),
                 search_btn: TemplateChild::default(),
+                overview_toggle_btn: TemplateChild::default(),
                 grid_overlay: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
@@ -438,6 +444,11 @@ impl PhotosPage {
             .search_btn
             .get()
             .set_tooltip_text(Some(&tr("photos.search.tooltip")));
+        obj.imp()
+            .overview_sync_retry_btn
+            .get()
+            .set_label(&tr("common.retry"));
+        obj.apply_overview_disclosure_state();
         obj.imp()
             .overview_count_label
             .get()
@@ -755,6 +766,45 @@ impl PhotosPage {
                 this.open_search_page();
             }
         });
+
+        // P2-8: the overview used to be reachable only by overscrolling past the
+        // first row, which nothing announces. The header chevron gives it a
+        // visible affordance, and its glyph is a *mirror* of the revealer (not a
+        // second state machine), so a pull, a click and a programmatic hide all
+        // agree.
+        let weak = obj.downgrade();
+        obj.imp()
+            .overview_toggle_btn
+            .get()
+            .connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let revealer = this.imp().overview_revealer.get();
+                revealer.set_reveal_child(!revealer.reveals_child());
+            });
+
+        let weak = obj.downgrade();
+        obj.imp()
+            .overview_revealer
+            .get()
+            .connect_reveal_child_notify(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.apply_overview_disclosure_state();
+                }
+            });
+
+        let weak = obj.downgrade();
+        obj.imp()
+            .overview_sync_retry_btn
+            .get()
+            .connect_clicked(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                this.trigger_sync_from_home_pull();
+                this.apply_overview_retry_affordance(true);
+            });
 
         // Exit multi-select: clears selection across every grid and hides the
         // batch toolbar. Same effect as the right-click "Exit Multi-select".
@@ -1117,6 +1167,9 @@ impl PhotosPage {
             .set_label(&sync_overview_text(sync, sync_progress));
         let sync_visible = sync.status != SyncOverviewStatus::Disabled;
         self.imp().overview_sync_row.get().set_visible(sync_visible);
+        self.apply_overview_retry_affordance(
+            sync_visible && sync.status == SyncOverviewStatus::Failed,
+        );
         if !sync_visible {
             self.set_overview_sync_running(false);
             return;
@@ -1215,6 +1268,38 @@ impl PhotosPage {
             });
     }
 
+    /// The header chevron mirrors `overview_revealer` rather than owning a second
+    /// disclosure flag, so a pull, a click and the mode-switch hide all keep the
+    /// glyph and the announced name truthful (P2-8).
+    fn apply_overview_disclosure_state(&self) {
+        let revealed = self.imp().overview_revealer.reveals_child();
+        let name = tr(if revealed {
+            "photos.overview.hide"
+        } else {
+            "photos.overview.show"
+        });
+        let button = self.imp().overview_toggle_btn.get();
+        button.set_icon_name(if revealed {
+            "pan-up-symbolic"
+        } else {
+            "pan-down-symbolic"
+        });
+        button.set_tooltip_text(Some(&name));
+        // An icon-only button has no child label to read, and its state is part
+        // of its meaning, so the name itself carries show/hide.
+        button.update_property(&[gtk::accessible::Property::Label(&name)]);
+    }
+
+    /// A failed sync is the one overview state with an action attached (P2-8);
+    /// every other state leaves the row as plain information. The pull is already
+    /// coalesced by `overview_sync_pull_in_flight`, and the button reports that
+    /// rather than swallowing a second click.
+    fn apply_overview_retry_affordance(&self, failed: bool) {
+        let in_flight = self.imp().overview_sync_pull_in_flight.get();
+        self.imp().overview_sync_retry_btn.set_visible(failed);
+        self.imp().overview_sync_retry_btn.set_sensitive(!in_flight);
+    }
+
     fn apply_overview_error(&self) {
         let unavailable = tr("photos.overview.unavailable");
         self.imp()
@@ -1230,6 +1315,9 @@ impl PhotosPage {
             .get()
             .set_icon_name(Some("dialog-warning-symbolic"));
         imp.overview_sync_icon.get().set_visible(true);
+        // The retry re-enters the same pull the header gesture uses, and that
+        // pull is a no-op while sync is off — so only offer it when it can act.
+        self.apply_overview_retry_affordance(crate::core::prefs::webdav_sync_enabled());
     }
 
     pub(crate) fn open_search_page(&self) {
