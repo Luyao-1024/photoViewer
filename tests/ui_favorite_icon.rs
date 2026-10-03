@@ -124,76 +124,51 @@ fn every_favorite_control_draws_the_same_mark() {
 }
 
 /// The mark has to stay a ring, and that has to be checked through GTK's own
-/// recolouring pipeline rather than by rendering the file with librsvg.
+/// recolouring path rather than by rendering the file with librsvg.
 ///
 /// This is the reason the inner contour is wound against the outer one. GTK
 /// tints a symbolic SVG by handing librsvg a colour callback that replaces the
-/// file's first paint, and that rewrite drops the `fill-rule` attribute: an
-/// even-odd hole was filled in and the mark came back as a solid blob. The hole
-/// surviving in a browser, or in a plain librsvg render, is not evidence —
-/// only what GTK itself draws is. Opposite winding gives the same ring under
-/// nonzero and under even-odd, and this is what keeps it that way.
+/// file's first paint, and that rewrite drops `fill-rule`: an even-odd hole
+/// came back as a solid blob. Opposite winding gives the same ring under either
+/// rule, and this is what keeps it that way.
 ///
-/// The colour matters as much as the shape. A paintable taken straight from
-/// `IconTheme` carries no style context, so GTK never recolours it and the
-/// render comes back in the file's own `#bebebe`; drawing the widget instead is
-/// what puts a foreground colour into the callback, and the assertions below
-/// are worthless unless that replacement actually happened.
-///
-/// "A foreground colour", not "the red this test asked for". The CSS below
-/// only reaches the icon on some GTK versions — on CI's older one the mark
-/// renders in the theme's light foreground and ignores the injected colour —
-/// and what this function has to prove is that GTK replaced the paint at all,
-/// because that replacement is the rewrite that used to eat the hole. Which
-/// colour it replaced it with is a CSS question, pinned separately and in
-/// colour-aware form by `css_color_recolors_the_mark`.
+/// The measurement goes through `gtk_symbolic_paintable_snapshot_symbolic`,
+/// not through a window. That call *is* the recolouring path — it is what GTK
+/// runs when a widget draws a symbolic icon — and it renders the icon alone.
+/// Going through a widget looked more faithful and was not: on CI the image
+/// was never laid out, `WidgetPaintable` fell back to the window's own
+/// background, and the test measured a 64x56 box filled to 0.96 in the
+/// theme's light grey. That is neither a ring nor a solid heart, and it would
+/// have been read as "the hole is gone on older GTK" — a conclusion about this
+/// artwork drawn from a picture of a background. Nothing here depends on a
+/// display, a window, a stylesheet or a widget allocation, so the numbers mean
+/// the same thing on every GTK.
 fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
-    const RENDER: i32 = 64;
-    /// The colour the file itself declares. GTK replaces a symbolic icon's
-    /// paint with the foreground, so ink still arriving in this colour would
-    /// mean the rewrite never ran.
-    const FILE_FILL: u8 = 0xbe;
+    const RENDER: f64 = 64.0;
     /// A ring covers roughly a sixth of the box its outline traces; a filled
     /// heart reaches about two thirds. Anything over a third is a blob.
     const MAX_FILL: f64 = 0.35;
 
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data("image { color: #ff0000; }");
-    gtk::style_context_add_provider_for_display(
-        display,
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    let paintable = gtk::IconTheme::for_display(display).lookup_icon(
+        SHARED_MARK,
+        &[],
+        RENDER as i32,
+        1,
+        gtk::TextDirection::Ltr,
+        gtk::IconLookupFlags::empty(),
     );
 
-    let image = gtk::Image::from_icon_name(SHARED_MARK);
-    image.set_pixel_size(RENDER);
-    let window = gtk::Window::new();
-    window.set_default_size(96, 96);
-    window.set_child(Some(&image));
-    window.present();
-    // The window has to be mapped and laid out before the image has an
-    // allocation to draw into. `iteration(false)` is the non-blocking form and
-    // is what lets the display server's replies land; `iteration(true)` blocks
-    // forever once the queue drains. The deadline keeps a display that never
-    // lays out from hanging the suite.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while (image.width() == 0 || image.height() == 0) && std::time::Instant::now() < deadline {
-        gtk::glib::MainContext::default().iteration(false);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        image.width() > 0 && image.height() > 0,
-        "the icon host window was never laid out, so there is nothing to measure",
-    );
-
-    // `WidgetPaintable` draws the widget through its own style context, which
-    // is the only place the symbolic recolouring colour comes from.
-    let widget_paintable = gtk::WidgetPaintable::new(Some(&image));
-    let (width, height) = (image.width() as f64, image.height() as f64);
     let renderer = gtk::gsk::CairoRenderer::new();
     renderer.realize(None).expect("a cairo renderer");
     let snapshot = gtk::Snapshot::new();
-    widget_paintable.snapshot(&snapshot, width, height);
+    // Any colour will do: what is under test is that the paint gets replaced
+    // and the hole survives that replacement, not which colour was asked for.
+    paintable.snapshot_symbolic(
+        &snapshot,
+        RENDER,
+        RENDER,
+        &[gdk::RGBA::new(1.0, 0.0, 0.0, 1.0)],
+    );
     let node = snapshot.to_node().expect("a render node");
     let texture = renderer.render_texture(&node, None);
     let stride = texture.width() as usize * 4;
@@ -203,15 +178,13 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
     // assertion and aborts the test binary, so release it here.
     renderer.unrealize();
 
-    // Measure against the mark's own ink box rather than the requested size:
-    // the texture that comes back is whatever the paintable chose, and an
-    // assertion hard-coded to it would be a trap.
+    let (tw, th) = (texture.width() as usize, texture.height() as usize);
     let (mut min_x, mut min_y) = (usize::MAX, usize::MAX);
     let (mut max_x, mut max_y) = (0usize, 0usize);
     let mut ink = 0usize;
     let mut strongest = [0u8; 4];
-    for y in 0..texture.height() as usize {
-        for x in 0..texture.width() as usize {
+    for y in 0..th {
+        for x in 0..tw {
             let p = &pixels[y * stride + x * 4..y * stride + x * 4 + 4];
             if p[3] > strongest[3] {
                 strongest.copy_from_slice(p);
@@ -229,32 +202,30 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
         ink > 0,
         "the mark rendered no ink at all, so the checks below would pass for the wrong reason",
     );
-
-    // Cairo hands back BGRA, so the channels arrive blue, green, red, alpha.
+    // Cairo hands back BGRA. GTK replacing the paint with the requested red
+    // proves the rewrite ran; ink still in the file's own #bebebe would mean
+    // this measured the file rather than what GTK draws.
     let [b, g, r, _] = strongest;
     assert!(
-        r != FILE_FILL || g != FILE_FILL || b != FILE_FILL,
-        "the mark's strongest pixel is rgba({strongest:?}), the colour the file declares; GTK \
-         did not replace the paint, so this test is not exercising the rewrite that destroyed \
-         the even-odd hole",
+        r > 200 && (r as i32 - g as i32) > 60 && (r as i32 - b as i32) > 60,
+        "the mark's strongest pixel is rgba({strongest:?}); GTK did not replace the file's \
+         #bebebe fill with the requested colour, so this is not exercising the rewrite that \
+         can destroy the even-odd hole",
     );
 
-    let (tw, th) = (texture.width(), texture.height());
     let box_width = max_x - min_x + 1;
     let box_height = max_y - min_y + 1;
     let fill = ink as f64 / (box_width * box_height) as f64;
     let centre = (min_y + max_y) / 2 * stride + (min_x + max_x) / 2 * 4;
     eprintln!(
-        "PROBE heart: texture {}x{}, ink {ink} px in a {box_width}x{box_height} box, \
+        "PROBE heart: texture {tw}x{th}, ink {ink} px in a {box_width}x{box_height} box, \
          fill {fill:.3}, centre alpha {}, strongest {strongest:?}",
-        texture.width(),
-        texture.height(),
         pixels[centre + 3],
     );
     assert!(
         pixels[centre + 3] < 24,
         "the mark is solid at its centre (alpha {}), so the hole was filled in; it fills {fill:.2} \
-         of a {box_width}x{box_height} box in a {tw}x{th} texture, strongest {strongest:?}; the \
+         of a {box_width}x{box_height} box in a {tw}x{th} render, strongest {strongest:?}; the \
          glyph is a blob next to the hairline cloud badge",
         pixels[centre + 3],
     );
