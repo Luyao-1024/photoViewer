@@ -239,14 +239,23 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
          the even-odd hole",
     );
 
+    let (tw, th) = (texture.width(), texture.height());
     let box_width = max_x - min_x + 1;
     let box_height = max_y - min_y + 1;
     let fill = ink as f64 / (box_width * box_height) as f64;
     let centre = (min_y + max_y) / 2 * stride + (min_x + max_x) / 2 * 4;
+    eprintln!(
+        "PROBE heart: texture {}x{}, ink {ink} px in a {box_width}x{box_height} box, \
+         fill {fill:.3}, centre alpha {}, strongest {strongest:?}",
+        texture.width(),
+        texture.height(),
+        pixels[centre + 3],
+    );
     assert!(
         pixels[centre + 3] < 24,
-        "the mark is solid at its centre (alpha {}), so the hole was filled in; the glyph is a \
-         blob next to the hairline cloud badge",
+        "the mark is solid at its centre (alpha {}), so the hole was filled in; it fills {fill:.2} \
+         of a {box_width}x{box_height} box in a {tw}x{th} texture, strongest {strongest:?}; the \
+         glyph is a blob next to the hairline cloud badge",
         pixels[centre + 3],
     );
     assert!(
