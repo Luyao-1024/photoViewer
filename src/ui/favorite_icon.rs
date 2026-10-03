@@ -161,23 +161,22 @@ fn apply(button: &gtk::Button) {
             image
         }
     };
-    image.set_pixel_size(button_pixel_size(button));
-    image.set_from_paintable(Some(&tinted(colour)));
-}
-
-/// A button draws its icon at the size the header resolves, which varies by
-/// theme and libadwaita version. Ask the button rather than pinning a number,
-/// for the same reason the cloud badge copies the header's size.
-fn button_pixel_size(button: &gtk::Button) -> i32 {
-    let (min_w, nat_w, _, _) = button.measure(gtk::Orientation::Horizontal, -1);
-    let (min_h, nat_h, _, _) = button.measure(gtk::Orientation::Vertical, -1);
-    let (min_w, min_h) = (min_w.max(0), min_h.max(0));
-    let (nat_w, nat_h) = (nat_w.max(0), nat_h.max(0));
-    if nat_w > 0 && nat_h > 0 && (nat_w, nat_h) != (min_w, min_h) {
-        nat_w.min(nat_h)
-    } else {
-        min_w.min(min_h).max(1)
+    // The header decides how big one of its icons is; ask the image node for the
+    // box it was given, which is `-gtk-icon-size` resolved.
+    //
+    // Deliberately the image's *minimum*, not the button's natural size. The
+    // button's natural size grows with this image, and
+    // `ViewerPage::sync_badge_to_toolbar_icon_size` copies that natural size off
+    // this very widget onto the cloud badge beside it — so reading it back here
+    // is a feedback loop, and the two badges ratchet each other upwards. The
+    // minimum comes from CSS and does not move when `pixel_size` is set, so it
+    // settles on the size the header actually asked for.
+    let (min_w, _, _, _) = image.measure(gtk::Orientation::Horizontal, -1);
+    let size = min_w.max(1);
+    if image.pixel_size() != size {
+        image.set_pixel_size(size);
     }
+    image.set_from_paintable(Some(&tinted(colour)));
 }
 
 #[cfg(test)]
