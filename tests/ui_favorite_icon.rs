@@ -87,8 +87,20 @@ fn every_favorite_control_draws_the_same_mark() {
     // And the name has to mean something: an unresolvable name leaves the
     // controls drawing nothing at all, which is what the themed emblem did on
     // a stock GNOME system.
+    //
+    // Deliberately no `is_symbolic()` here either. That call is deprecated as of
+    // GTK 4.20 and reports differently across versions — false for this
+    // resource-loaded SVG on CI's older GTK, on a build where the mark still
+    // resolves and still takes a CSS `color`. Whether it recolours is not a
+    // question for a flag: `assert_ring_survives_recolouring` below proves it by
+    // rendering the widget and reading the pixels.
     let display = gtk::gdk::Display::default().expect("a display");
-    let paintable = gtk::IconTheme::for_display(&display).lookup_icon(
+    let theme = gtk::IconTheme::for_display(&display);
+    assert!(
+        theme.has_icon(SHARED_MARK),
+        "{SHARED_MARK} is not in the icon theme, so the favorite controls would draw nothing",
+    );
+    let paintable = theme.lookup_icon(
         SHARED_MARK,
         &[],
         16,
@@ -96,10 +108,14 @@ fn every_favorite_control_draws_the_same_mark() {
         gtk::TextDirection::Ltr,
         gtk::IconLookupFlags::empty(),
     );
-    assert!(
-        paintable.is_symbolic() && paintable.intrinsic_width() == 16,
-        "{SHARED_MARK} must resolve from the bundled resources as a symbolic 16 px icon, \
-         or the favorited state cannot recolor it",
+    assert_eq!(
+        paintable.intrinsic_width(),
+        16,
+        "{SHARED_MARK} must resolve from the bundled resources as a 16 px icon, resolved to {:?}",
+        paintable
+            .file()
+            .and_then(|f| f.path())
+            .map(|p| p.to_string_lossy().into_owned()),
     );
 
     assert_ring_survives_recolouring(&display);

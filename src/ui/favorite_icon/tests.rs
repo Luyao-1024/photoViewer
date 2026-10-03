@@ -2,17 +2,19 @@ use super::*;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 
-/// The mark has to resolve from the app's own GResource, and GTK has to
-/// treat it as symbolic. Both are silent failures otherwise: a missing
-/// resource path leaves the buttons with no icon at all, and a non-symbolic
-/// asset would ignore the CSS that makes the favorited state red.
+/// The mark has to resolve from the app's own GResource. A missing resource
+/// path is a silent failure: the buttons simply draw nothing, which is exactly
+/// what `emblem-favorite-symbolic` did on a stock GNOME system.
 ///
-/// The report deliberately separates the two ways this can go wrong. A theme
-/// that cannot find the name at all and a theme that finds it but does not
-/// consider it symbolic need different fixes, and an assertion that folds
-/// them into one message sends the next person looking in the wrong place —
-/// which is what happened when this first failed on CI's older GTK while
-/// passing locally.
+/// This deliberately does not assert `gtk_icon_paintable_is_symbolic()`. That
+/// call is deprecated as of GTK 4.20 and its own documentation says it judges
+/// by file name only, "this behaviour may change in the future" — and it does
+/// differ: it reports false for this resource-loaded SVG on CI's older GTK
+/// while the icon still resolves and still takes a CSS `color`. The property
+/// that actually matters is pinned by `css_color_recolors_the_mark` below,
+/// which renders the mark through a widget and checks the requested colour
+/// reaches the pixels. Asserting the flag here tested a deprecated flag's
+/// version-dependent reporting, not the contract.
 #[gtk::test]
 fn bundled_mark_resolves_from_the_icon_theme() {
     let _ = gtk::init();
@@ -34,21 +36,14 @@ fn bundled_mark_resolves_from_the_icon_theme() {
         gtk::TextDirection::Ltr,
         gtk::IconLookupFlags::empty(),
     );
-    assert!(
-        paintable.is_symbolic(),
-        "{NAME} resolved to {:?} (symbolic: false, {}x{}); GTK found it but will not recolor \
-         it, so `.viewer-favorite-btn.favorite-active` would leave the heart grey",
+    assert_eq!(
+        (paintable.intrinsic_width(), paintable.intrinsic_height()),
+        (16, 16),
+        "{NAME} should render at the requested icon size, resolved to {:?}",
         paintable
             .file()
             .and_then(|f| f.path())
             .map(|p| p.to_string_lossy().into_owned()),
-        paintable.intrinsic_width(),
-        paintable.intrinsic_height(),
-    );
-    assert_eq!(
-        (paintable.intrinsic_width(), paintable.intrinsic_height()),
-        (16, 16),
-        "{NAME} should render at the requested icon size",
     );
 }
 
