@@ -6,13 +6,27 @@ use gtk4::prelude::*;
 /// treat it as symbolic. Both are silent failures otherwise: a missing
 /// resource path leaves the buttons with no icon at all, and a non-symbolic
 /// asset would ignore the CSS that makes the favorited state red.
+///
+/// The report deliberately separates the two ways this can go wrong. A theme
+/// that cannot find the name at all and a theme that finds it but does not
+/// consider it symbolic need different fixes, and an assertion that folds
+/// them into one message sends the next person looking in the wrong place —
+/// which is what happened when this first failed on CI's older GTK while
+/// passing locally.
 #[gtk::test]
 fn bundled_mark_resolves_from_the_icon_theme() {
     let _ = gtk::init();
     crate::ensure_resources_registered();
 
     let display = gtk::gdk::Display::default().expect("a display");
-    let paintable = gtk::IconTheme::for_display(&display).lookup_icon(
+    let theme = gtk::IconTheme::for_display(&display);
+    let resource_path = crate::ICON_RESOURCE_PATH;
+    assert!(
+        theme.has_icon(NAME),
+        "{NAME} is not in the icon theme, so the favorite controls would draw nothing at all; \
+         the theme's resource path is {resource_path:?} and the asset has to sit under it",
+    );
+    let paintable = theme.lookup_icon(
         NAME,
         &[],
         16,
@@ -22,7 +36,14 @@ fn bundled_mark_resolves_from_the_icon_theme() {
     );
     assert!(
         paintable.is_symbolic(),
-        "{NAME} must resolve as a symbolic icon so CSS `color` can recolor it",
+        "{NAME} resolved to {:?} (symbolic: false, {}x{}); GTK found it but will not recolor \
+         it, so `.viewer-favorite-btn.favorite-active` would leave the heart grey",
+        paintable
+            .file()
+            .and_then(|f| f.path())
+            .map(|p| p.to_string_lossy().into_owned()),
+        paintable.intrinsic_width(),
+        paintable.intrinsic_height(),
     );
     assert_eq!(
         (paintable.intrinsic_width(), paintable.intrinsic_height()),
