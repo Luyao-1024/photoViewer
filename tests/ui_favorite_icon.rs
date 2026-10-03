@@ -145,6 +145,9 @@ fn every_favorite_control_draws_the_same_mark() {
 /// the same thing on every GTK.
 fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
     const RENDER: f64 = 64.0;
+    /// The colour the file itself declares. A symbolic icon comes back in a
+    /// foreground, so ink still arriving here would mean the rewrite never ran.
+    const FILE_FILL: u8 = 0xbe;
     /// A ring covers roughly a sixth of the box its outline traces; a filled
     /// heart reaches about two thirds. Anything over a third is a blob.
     const MAX_FILL: f64 = 0.35;
@@ -202,15 +205,22 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
         ink > 0,
         "the mark rendered no ink at all, so the checks below would pass for the wrong reason",
     );
-    // Cairo hands back BGRA. GTK replacing the paint with the requested red
-    // proves the rewrite ran; ink still in the file's own #bebebe would mean
-    // this measured the file rather than what GTK draws.
+    // Cairo hands back BGRA.
+    //
+    // "Not the file's own fill", and not "the colour I asked for". Asking for a
+    // specific colour and getting it is not portable: on GTK 4.22 this returns
+    // the requested red, on GTK 4.14 it returns the theme's foreground
+    // (228, 229, 230) instead, and both are GTK having replaced the paint. What
+    // this guard has to catch is the opposite case — a render that hands back
+    // the file's `#bebebe` never went through the rewrite at all, so the hole
+    // it shows is the file's, not the one GTK is trying to destroy, and the
+    // measurement below would be measuring the wrong thing.
     let [b, g, r, _] = strongest;
     assert!(
-        r > 200 && (r as i32 - g as i32) > 60 && (r as i32 - b as i32) > 60,
-        "the mark's strongest pixel is rgba({strongest:?}); GTK did not replace the file's \
-         #bebebe fill with the requested colour, so this is not exercising the rewrite that \
-         can destroy the even-odd hole",
+        r != FILE_FILL || g != FILE_FILL || b != FILE_FILL,
+        "the mark's strongest pixel is rgba({strongest:?}), the colour the file declares; GTK \
+         never replaced the paint, so this measured the file rather than what GTK draws, and the \
+         hole below would be the file's rather than the one the rewrite can fill in",
     );
 
     let box_width = max_x - min_x + 1;
