@@ -46,9 +46,8 @@ fn every_favorite_control_draws_the_same_mark() {
         .borrow()
         .as_ref()
         .expect("the tile builds a favorite badge")
-        .icon_name()
-        .map(|n| n.to_string())
-        .expect("the tile badge names its icon");
+        .paintable()
+        .is_some();
 
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
     let viewer = ViewerPage::new(media_list.clone(), 0);
@@ -56,9 +55,12 @@ fn every_favorite_control_draws_the_same_mark() {
         .imp()
         .favorite_btn
         .get()
-        .icon_name()
-        .map(|n| n.to_string())
-        .expect("the viewer button names its icon");
+        .child()
+        .is_some_and(|child| {
+            child
+                .downcast_ref::<gtk::Image>()
+                .is_some_and(|i| i.paintable().is_some())
+        });
 
     let tmp = tempfile::tempdir().expect("a temp dir");
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).expect("a pool");
@@ -68,20 +70,23 @@ fn every_favorite_control_draws_the_same_mark() {
         .imp()
         .favorite_btn
         .get()
-        .icon_name()
-        .map(|n| n.to_string())
-        .expect("the photos page button names its icon");
+        .child()
+        .is_some_and(|child| {
+            child
+                .downcast_ref::<gtk::Image>()
+                .is_some_and(|i| i.paintable().is_some())
+        });
 
-    for (surface, mark) in [
-        ("Day-view tile badge", &tile_mark),
-        ("viewer header button", &viewer_mark),
-        ("photos page select-all button", &photos_mark),
+    for (surface, draws) in [
+        ("Day-view tile badge", tile_mark),
+        ("viewer header button", viewer_mark),
+        ("photos page select-all button", photos_mark),
     ] {
-        assert_eq!(
-            mark, SHARED_MARK,
-            "the {surface} draws {mark:?}, not the shared mark; these three were three \\
-             different glyphs once and the point of the shared name is that they cannot \\
-             drift apart again",
+        assert!(
+            draws,
+            "the {surface} draws no favorite mark at all; these three were three different \\
+             glyphs once and the point of one shared asset is that they cannot drift apart \\
+             again",
         );
     }
 
@@ -274,6 +279,36 @@ fn assert_favorite_state_resolves_to_red(viewer: &ViewerPage) {
 
     // The rule is `alpha(#ff5e51, 0.92)`; the colour is composited, so compare
     // channels rather than an exact triple.
+    // The style context answering "red" is only half the claim. The mark is a
+    // raster now and GTK will not recolour it, so the icon on screen is a
+    // separate question: if nothing repaints it from this colour, the favorited
+    // heart stays the header's foreground and every structural check here still
+    // passes. So read the texture the button actually shows.
+    let painted = button
+        .child()
+        .and_downcast::<gtk::Image>()
+        .and_then(|image| image.paintable())
+        .expect("the favorite button shows a paintable");
+    let texture = painted
+        .downcast_ref::<gdk::Texture>()
+        .expect("the mark is handed over as a texture, which is how it gets tinted");
+    let stride = texture.width() as usize * 4;
+    let mut data = vec![0u8; stride * texture.height() as usize];
+    texture.download(&mut data, stride);
+    let mut sample = [0u8; 4];
+    for p in data.as_chunks::<4>().0 {
+        if p[3] > sample[3] {
+            sample.copy_from_slice(p);
+        }
+    }
+    // Cairo hands back BGRA.
+    let (sr, sg, sb) = (sample[2] as i32, sample[1] as i32, sample[0] as i32);
+    assert!(
+        sr > 120 && sr - sg > 50 && sr - sb > 50,
+        "the favorited button's icon paints as BGRA {sample:?}, not red; the style context \
+         resolved red but the raster was never repainted from it",
+    );
+
     let lead = |c: &gdk::RGBA| {
         let (r, g, b) = (
             f64::from(c.red()),

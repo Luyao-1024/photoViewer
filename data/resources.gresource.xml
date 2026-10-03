@@ -11,7 +11,7 @@
     <file>ui/viewer-page.ui</file>
     <file>ui/trash-page.ui</file>
     <file>ui/editor-panel.ui</file>
-    <file alias="icons/photoviewer-heart-symbolic.svg">data/icons/photoviewer-heart-symbolic.svg</file>
+    <file alias="icons/photoviewer-heart-symbolic.png">data/icons/photoviewer-heart-symbolic.png</file>
     <file alias="icons/gnome-cloud-white.png">data/icons/gnome-cloud-white.png</file>
     <file alias="icons/gnome-cloud-off-white.png">data/icons/gnome-cloud-off-white.png</file>
     <file alias="icons/gnome-cloud-dark.png">data/icons/gnome-cloud-dark.png</file>

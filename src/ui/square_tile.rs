@@ -195,7 +195,7 @@ mod imp {
             // system font, which is how the grid badge ended up looking like a
             // different icon family than the toolbar next to it.
             let favorite_badge = gtk::Image::builder()
-                .icon_name(favorite_icon::NAME)
+                .paintable(&favorite_icon::tinted(gtk::gdk::RGBA::WHITE))
                 .pixel_size(favorite_icon::TILE_PIXEL_SIZE)
                 .visible(false)
                 .build();

@@ -1,6 +1,5 @@
 use super::*;
 use gtk4 as gtk;
-use gtk4::prelude::*;
 
 /// The mark has to resolve from the app's own GResource. A missing resource
 /// path is a silent failure: the buttons simply draw nothing, which is exactly

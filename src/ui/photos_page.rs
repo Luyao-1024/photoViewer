@@ -442,10 +442,7 @@ impl PhotosPage {
         // The mark itself comes from the shared name, so this button, the
         // viewer's, and the Day-view tile badge cannot end up on different
         // glyphs.
-        obj.imp()
-            .favorite_btn
-            .get()
-            .set_icon_name(crate::ui::favorite_icon::NAME);
+        crate::ui::favorite_icon::follow(&obj.imp().favorite_btn.get());
         obj.imp()
             .delete_to_trash_btn
             .get()

@@ -59,6 +59,7 @@ fn main() {
         Path::new("data/resources.gresource.xml").display()
     );
     println!("cargo:rerun-if-changed=data/icons/photoviewer-heart-symbolic.svg");
+    println!("cargo:rerun-if-changed=data/icons/photoviewer-heart-symbolic.png");
     println!("cargo:rerun-if-changed=data/icons/gnome-cloud-white.png");
     println!("cargo:rerun-if-changed=data/icons/gnome-cloud-off-white.png");
     println!("cargo:rerun-if-changed=data/icons/gnome-cloud-dark.png");

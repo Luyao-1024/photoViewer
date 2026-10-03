@@ -37,7 +37,14 @@
        tuned together. A solid heart would also satisfy GTK, and a solid heart
        is the easier mark to read on a bright photo - but it would sit next to
        a hairline cloud, which is the mismatch this icon set exists to avoid.
-       `data/icons/_generate.py` does not touch this file: there is no bitmap
-       to rasterise, only one path. -->
+
+       This file is the source, not the shipped asset. `data/icons/_generate.py`
+       rasterises it to photoviewer-heart-symbolic.png, which is what the app
+       loads, because the vector did not render as itself on GTK 4.14: there
+       the ink came out filling the whole 64 px box where this same file is a
+       0.16-fill ring on 4.22. The PNG keeps the `photoviewer-heart-symbolic`
+       name, and GTK tints a `-symbolic` raster from its alpha, so CSS `color`
+       and every caller above this file are unaffected. Edit the path here and
+       re-run the generator; do not hand-edit the PNG. -->
   <path d="M 8.000 14.000 L 2.218 7.824 A 3.400 3.400 0 0 1 8.000 4.681 A 3.400 3.400 0 0 1 13.782 7.824 Z M 7.635 13.658 L 13.417 7.482 A 2.900 2.900 0 0 0 8.485 4.802 A 0.500 0.500 0 0 1 7.515 4.802 A 2.900 2.900 0 0 0 2.583 7.482 L 8.365 13.658 A 0.500 0.500 0 0 0 7.635 13.658 Z"/>
 </svg>

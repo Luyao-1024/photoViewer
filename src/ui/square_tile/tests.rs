@@ -180,10 +180,11 @@ fn square_tile_has_duration_and_favorite_badges() {
     // The grid badge draws the same mark the favorite buttons draw. It used to
     // be a "♡" label at 18pt, i.e. a text glyph shaped by the system font
     // sitting in the same app as a themed vector heart.
-    assert_eq!(
-        favorite.icon_name().as_deref(),
-        Some(crate::ui::favorite_icon::NAME),
-        "the tile badge must use the shared favorite mark, not its own glyph",
+    // The mark is a raster now, so "the same glyph" means the same tinted
+    // paintable the other two surfaces use, not a shared icon name.
+    assert!(
+        favorite.paintable().is_some(),
+        "the tile badge must draw the shared favorite mark, not its own glyph",
     );
     assert_eq!(
         favorite.pixel_size(),

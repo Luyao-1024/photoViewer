@@ -241,10 +241,8 @@ impl ViewerPage {
         crate::ui::grid_css::assert_installed();
 
         let imp = self.imp();
-        imp.favorite_btn
-            .get()
-            .set_icon_name(crate::ui::favorite_icon::NAME);
         imp.favorite_btn.get().add_css_class("viewer-favorite-btn");
+        crate::ui::favorite_icon::follow(&imp.favorite_btn.get());
         imp.favorite_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.favorite")));

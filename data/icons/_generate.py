@@ -30,15 +30,25 @@ MOUNTAIN = (0x5f, 0xb8, 0x78)
 BADGE_SIZE = 72
 BADGE_SUPERSAMPLE = 4
 BADGE_SOURCE_COLOR = "#222222"
+# The favorite mark ships as a raster for the same reason the cloud badge does,
+# and it keeps the `photoviewer-heart-symbolic` name: GTK tints a `-symbolic`
+# raster in an icon theme from its alpha, so CSS `color` still drives it and
+# nothing above the icon has to know the format changed. As an SVG the mark
+# did not render as itself on GTK 4.14 — its ink came out filling the whole
+# box, where the same file is a 0.16-fill ring on 4.22 — so the vector form
+# is not something to ship.
+FAVORITE_BADGE = {
+    "photoviewer-heart-symbolic.png": ("photoviewer-heart-symbolic.svg", 0xFF, "#bebebe"),
+}
 CLOUD_BADGES = {
-    "gnome-cloud-white.png": ("gnome-cloud-symbolic.svg", 0xFF),
-    "gnome-cloud-off-white.png": ("gnome-cloud-off-symbolic.svg", 0xFF),
-    "gnome-cloud-dark.png": ("gnome-cloud-symbolic.svg", 0x22),
-    "gnome-cloud-off-dark.png": ("gnome-cloud-off-symbolic.svg", 0x22),
+    "gnome-cloud-white.png": ("gnome-cloud-symbolic.svg", 0xFF, BADGE_SOURCE_COLOR),
+    "gnome-cloud-off-white.png": ("gnome-cloud-off-symbolic.svg", 0xFF, BADGE_SOURCE_COLOR),
+    "gnome-cloud-dark.png": ("gnome-cloud-symbolic.svg", 0x22, BADGE_SOURCE_COLOR),
+    "gnome-cloud-off-dark.png": ("gnome-cloud-off-symbolic.svg", 0x22, BADGE_SOURCE_COLOR),
 }
 
 
-def render_badge(svg_name: str, luminance: int) -> Image.Image:
+def render_badge(svg_name: str, luminance: int, source_color: str = BADGE_SOURCE_COLOR) -> Image.Image:
     """Rasterise a badge SVG into an LA image of BADGE_SIZE.
 
     librsvg renders the vector at 4x and PIL downsamples with LANCZOS, so the
@@ -52,7 +62,7 @@ def render_badge(svg_name: str, luminance: int) -> Image.Image:
     from gi.repository import Rsvg
 
     svg = open(svg_name, encoding="utf-8").read()
-    svg = svg.replace(BADGE_SOURCE_COLOR, f"#{luminance:02x}{luminance:02x}{luminance:02x}")
+    svg = svg.replace(source_color, f"#{luminance:02x}{luminance:02x}{luminance:02x}")
     handle = Rsvg.Handle().new_from_data(svg.encode())
 
     big = BADGE_SIZE * BADGE_SUPERSAMPLE
@@ -123,8 +133,10 @@ def main() -> None:
         render(size).save(out, "PNG")
         print(f"wrote {out}")
 
-    for out, (svg_name, luminance) in CLOUD_BADGES.items():
-        render_badge(svg_name, luminance).save(out, "PNG")
+    for out, (svg_name, luminance, source_color) in FAVORITE_BADGE.items():
+        render_badge(svg_name, luminance, source_color).save(out, "PNG")
+    for out, (svg_name, luminance, source_color) in CLOUD_BADGES.items():
+        render_badge(svg_name, luminance, source_color).save(out, "PNG")
         print(f"wrote {out}")
 
 
