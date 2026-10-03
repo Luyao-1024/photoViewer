@@ -47,12 +47,25 @@ fn bundled_mark_resolves_from_the_icon_theme() {
     );
 }
 
-/// Pins the property the favorited state depends on: rendering the mark
-/// under a CSS `color` must produce that color's pixels. A switch to a
-/// baked-tone bitmap would still pass every structural check and silently
-/// leave the heart stuck at one color.
+/// Pins the property everything else leans on: GTK has to replace the mark's
+/// own paint, because a baked-tone bitmap or an unresolved paintable would pass
+/// every structural check here and still leave the favorited state grey.
+///
+/// The assertion is deliberately "the paint was replaced", not "the paint is
+/// the red this test injected". On CI's older GTK the injected colour does not
+/// reach a bare `GtkImage` — the mark comes back in the theme's light
+/// foreground instead — and that is a question about how a synthetic
+/// stylesheet interacts with that GTK, not about whether the recolouring
+/// pipeline ran. Which colour the favorited state actually uses is pinned
+/// against the app's own `.viewer-favorite-btn.favorite-active` rule in
+/// tests/ui_favorite_icon.rs, where the real button and the real CSS are
+/// involved.
+///
+/// An earlier version of this test counted any pixel with a high red channel,
+/// which a grey icon scored perfectly well: it passed on CI while reporting
+/// that recolouring worked when the rendered colour was not red at all.
 #[gtk::test]
-fn css_color_recolors_the_mark() {
+fn gtk_replaces_the_own_paint_of_the_mark() {
     let _ = gtk::init();
     crate::ensure_resources_registered();
 
@@ -67,25 +80,25 @@ fn css_color_recolors_the_mark() {
 
     let pixels = render_through_a_widget(NAME, 40);
 
-    // Cairo hands back BGRA, so the red channel is the third byte.
-    let mut strongest = 0u8;
-    let mut red = 0usize;
-    for [_, _, channel_b, alpha] in pixels.as_chunks::<4>().0 {
-        if *alpha > strongest {
-            strongest = *alpha;
-        }
-        if *alpha > 200 && *channel_b > 200 {
-            red += 1;
+    // Cairo hands back BGRA, so the channels arrive blue, green, red, alpha.
+    let mut strongest = [0u8; 4];
+    for [b, g, r, a] in pixels.as_chunks::<4>().0 {
+        if *a > strongest[3] {
+            strongest = [*b, *g, *r, *a];
         }
     }
+    // The colour the file itself declares. A symbolic icon comes back in the
+    // foreground, so ink still arriving here would mean the rewrite never ran.
+    const FILE_FILL: u8 = 0xbe;
     assert!(
-        strongest > 200,
+        strongest[3] > 200,
         "{NAME} rendered no opaque pixels; it did not draw at all",
     );
     assert!(
-        red > 20,
-        "{NAME} should be recolored by CSS `color`, but only {red} pixels came out \
-         of the requested red",
+        strongest[0] != FILE_FILL || strongest[1] != FILE_FILL || strongest[2] != FILE_FILL,
+        "the mark's strongest pixel is rgba({strongest:?}), the colour the file declares; GTK \
+         did not replace the paint, so the mark is not being treated as recolourable and the \
+         favorited state would leave it stuck at one colour",
     );
 }
 

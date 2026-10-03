@@ -14,6 +14,7 @@
 //! `tests/ui_viewer_toolbar.rs`.
 
 use gtk4 as gtk;
+use gtk4::gdk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
@@ -119,6 +120,7 @@ fn every_favorite_control_draws_the_same_mark() {
     );
 
     assert_ring_survives_recolouring(&display);
+    assert_favorite_state_resolves_to_red(&viewer);
 }
 
 /// The mark has to stay a ring, and that has to be checked through GTK's own
@@ -134,9 +136,17 @@ fn every_favorite_control_draws_the_same_mark() {
 ///
 /// The colour matters as much as the shape. A paintable taken straight from
 /// `IconTheme` carries no style context, so GTK never recolours it and the
-/// render comes back in the file's own `#bebebe`; drawing the widget instead
-/// is what puts the CSS colour into the callback, and the assertions below are
-/// worthless unless that replacement actually happened.
+/// render comes back in the file's own `#bebebe`; drawing the widget instead is
+/// what puts a foreground colour into the callback, and the assertions below
+/// are worthless unless that replacement actually happened.
+///
+/// "A foreground colour", not "the red this test asked for". The CSS below
+/// only reaches the icon on some GTK versions — on CI's older one the mark
+/// renders in the theme's light foreground and ignores the injected colour —
+/// and what this function has to prove is that GTK replaced the paint at all,
+/// because that replacement is the rewrite that used to eat the hole. Which
+/// colour it replaced it with is a CSS question, pinned separately and in
+/// colour-aware form by `css_color_recolors_the_mark`.
 fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
     const RENDER: i32 = 64;
     /// The colour the file itself declares. GTK replaces a symbolic icon's
@@ -146,9 +156,6 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
     /// A ring covers roughly a sixth of the box its outline traces; a filled
     /// heart reaches about two thirds. Anything over a third is a blob.
     const MAX_FILL: f64 = 0.35;
-    /// What the CSS below asks for, so "did the rewrite run" is a comparison
-    /// and not a guess.
-    const CSS_RED: u8 = 0xff;
 
     let provider = gtk::CssProvider::new();
     provider.load_from_data("image { color: #ff0000; }");
@@ -223,17 +230,13 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
         "the mark rendered no ink at all, so the checks below would pass for the wrong reason",
     );
 
-    // Cairo hands back BGRA, so the red channel is the third byte.
-    let red = strongest[2];
-    assert_eq!(
-        red, CSS_RED,
-        "the mark's strongest pixel is rgba({strongest:?}) — GTK did not replace the file's \
-         #bebebe fill with the CSS red, so this test is not exercising the pipeline that \
-         destroyed the even-odd hole",
-    );
+    // Cairo hands back BGRA, so the channels arrive blue, green, red, alpha.
+    let [b, g, r, _] = strongest;
     assert!(
-        red != FILE_FILL,
-        "the mark came back in the colour the file declares, so the symbolic rewrite never ran",
+        r != FILE_FILL || g != FILE_FILL || b != FILE_FILL,
+        "the mark's strongest pixel is rgba({strongest:?}), the colour the file declares; GTK \
+         did not replace the paint, so this test is not exercising the rewrite that destroyed \
+         the even-odd hole",
     );
 
     let box_width = max_x - min_x + 1;
@@ -250,5 +253,58 @@ fn assert_ring_survives_recolouring(display: &gtk::gdk::Display) {
         fill <= MAX_FILL,
         "the mark fills {fill:.2} of its {box_width}x{box_height} ink box; above {MAX_FILL} it is \
          a filled shape, not the 1 unit wall the cloud badge is drawn with",
+    );
+}
+
+/// The favourited state has to actually recolour the heart, checked against the
+/// app's own CSS rather than an injected stylesheet.
+///
+/// The lib test proves GTK replaces the mark's paint; it cannot say *which*
+/// colour, because a synthetic `image { color: … }` does not reach the icon on
+/// every GTK version. The real rule lives in `data/css/base.css` as
+/// `.viewer-favorite-btn.favorite-active`, production toggles that class from
+/// `refresh_favorite_button`, and this exercises the real button against the
+/// real stylesheet that `grid_css::install()` loaded.
+///
+/// The foreground the button resolves is the colour GTK hands its symbolic
+/// paint, so this is the whole chain: this class sets it, and the lib test
+/// proves the mark is drawn in it. Reading the resolved colour instead of
+/// rendering pixels also keeps the assertion off the widget-layout path, which
+/// a bare button parented into an already-built `ViewerPage` will not satisfy.
+fn assert_favorite_state_resolves_to_red(viewer: &ViewerPage) {
+    let button = viewer.imp().favorite_btn.get();
+    let context = button.style_context();
+
+    // What `refresh_favorite_button(false)` does.
+    button.remove_css_class("favorite-active");
+    let unfavorited = context.color();
+    // What `refresh_favorite_button(true)` does.
+    button.add_css_class("favorite-active");
+    let favorited = context.color();
+
+    // The rule is `alpha(#ff5e51, 0.92)`; the colour is composited, so compare
+    // channels rather than an exact triple.
+    let lead = |c: &gdk::RGBA| {
+        let (r, g, b) = (
+            f64::from(c.red()),
+            f64::from(c.green()),
+            f64::from(c.blue()),
+        );
+        r - g.max(b)
+    };
+    assert!(
+        lead(&favorited) > 0.2,
+        "with .favorite-active the button's foreground is ({}, {}, {}) — not red; the favorited \
+         state would leave the heart at the inherited foreground",
+        favorited.red(),
+        favorited.green(),
+        favorited.blue(),
+    );
+    assert!(
+        lead(&favorited) > lead(&unfavorited) + 0.1,
+        "adding .favorite-active barely moved the foreground ({} then {}); \
+         `.viewer-favorite-btn.favorite-active` is not reaching the button",
+        unfavorited.red(),
+        favorited.red(),
     );
 }
