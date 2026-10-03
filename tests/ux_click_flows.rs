@@ -664,31 +664,44 @@ fn journey_filmstrip_shows_every_photo_and_centres_the_current_one() {
     );
     assert_filmstrip_centers_current(ui, &shell, &viewer, "back on the first photo");
 
-    // Resize the window. This is the case that is easy to miss: the strip centres
-    // from the viewport's `page_size`, so a window that gets narrower leaves the
-    // old transform in place unless something recomputes it. Maximizing and then
-    // un-maximizing is how a user meets it — the invariant has to hold at every
-    // size, not only the one the fixture happens to open at.
-    for (label, width, height) in [("narrowed", 1_180u32, 820u32), ("restored", 1_440, 900)] {
-        shell.window.set_default_size(
-            i32::try_from(width).unwrap(),
-            i32::try_from(height).unwrap(),
-        );
-        shell.window.unmaximize();
-        shell.window.set_default_size(
-            i32::try_from(width).unwrap(),
-            i32::try_from(height).unwrap(),
-        );
+    // Resize the strip's viewport. This is the case that is easy to miss: the
+    // strip centres from the viewport's `page_size`, so a viewport that gets
+    // narrower leaves the old transform in place unless something recomputes it.
+    // The invariant has to hold at every size, not only the one the fixture
+    // happens to open at.
+    //
+    // The width comes off the filmstrip rather than off the window. A window
+    // size is a hint the window manager applies, and a headless Xvfb has no
+    // window manager: the running window never took the new size, sat at
+    // 1430 px, and the failure read as though the strip had stopped re-centring.
+    // `set_size_request` is not the answer on its own either — it is a floor GTK
+    // enforces, so it grows a small widget and leaves a large one alone — which
+    // is why the strip also stops expanding and takes its requested width. That
+    // is the size the product actually centres from, so what is under test is
+    // unchanged: the viewport width changes and the strip has to follow.
+    let strip = viewer.imp().thumb_scrolled.get();
+    for (label, width) in [("narrowed", 1_180i32), ("restored", i32::MAX)] {
+        if width == i32::MAX {
+            strip.set_hexpand(true);
+            strip.set_size_request(-1, -1);
+        } else {
+            strip.set_hexpand(false);
+            strip.set_size_request(width, -1);
+        }
         assert!(
-            ui.wait_until(Duration::from_secs(8), || shell
-                .window
-                .width()
-                .eq(&i32::try_from(width).unwrap())),
-            "the window should be {width}px wide once {label}, got {}",
-            shell.window.width()
+            ui.wait_until(Duration::from_secs(8), || {
+                width == i32::MAX || strip.width() == width
+            }),
+            "the filmstrip viewport should be {label} to {width}, got {}",
+            strip.width()
         );
         ui.pump(Duration::from_millis(600));
-        assert_filmstrip_centers_current(ui, &shell, &viewer, &format!("with the window {label}"));
+        assert_filmstrip_centers_current(
+            ui,
+            &shell,
+            &viewer,
+            &format!("with the viewport {label}"),
+        );
     }
 
     // The strip must be showing real pictures, not blank cells. Geometry alone
