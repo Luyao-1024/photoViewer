@@ -415,12 +415,17 @@ h1 {
   white-space: nowrap;
 }
 
-/* 详情页同步角标对应真实代码里的 Gtk.Image sync_badge：按图标自然尺寸排在日期右侧。
-   不要复用 .header-title 给它定位——那是 flex: 1 1 auto，会把 18x18 的 PNG 拉成大方块。 */
+/* 详情页同步角标对应真实代码里的 Gtk.Image sync_badge，跟日期同一组排在标题左侧。
+   不要复用 .header-title 给它定位——那是 flex: 1 1 auto，会把图标拉成大方块。
+   尺寸 16px 对齐真实实现：主题 header 默认解析出的图标尺寸。真实代码里角标的
+   盒子不是写死的——它是裸 Gtk.Image，default 是 16px，而收藏按钮里的心形取的是
+   header 解析出的那一档，两者不一定相等，所以 ViewerPage 在 header 映射时把心形
+   那一档抄给角标（src/ui/viewer/actions.rs 的 sync_badge_to_toolbar_icon_size）。
+   心形和云是这排仅有的两个字形，各用各的大小就是这一屏看着不搭的根因。 */
 .viewer-sync-badge {
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
 }
 
@@ -639,6 +644,37 @@ h1 {
   background: transparent;
   color: white;
   text-shadow: 0 1px 4px rgba(0,0,0,0.85);
+}
+
+/* 收藏心形：与 app 里同一份画稿 data/icons/photoviewer-heart-symbolic.svg。
+   以前这里是文本「♡」，viewer 顶栏那边问主题要 emblem-favorite-symbolic，
+   两处两种字形（Adwaita 根本不提供那个名）。用 mask 而不是 <img>，是为了
+   和真控件一样由 color 着色：宫格角标是白色压在照片上，viewer 顶栏走
+   .viewer-favorite-btn.favorite-active 的红。 */
+.fav-mark {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+  background-color: currentColor;
+  -webkit-mask-image: url("../../data/icons/photoviewer-heart-symbolic.svg");
+  mask-image: url("../../data/icons/photoviewer-heart-symbolic.svg");
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+.badge.favorite.fav-mark {
+  width: 18px;
+  height: 18px;
+  min-width: 0;
+  padding: 0;
+  vertical-align: 0;
+  /* 与 base.css .thumb-favorite-badge 同一款软投影，细线字形需要它才不糊在亮部。 */
+  filter: drop-shadow(0 1px 1px rgba(0,0,0,0.7)) drop-shadow(0 0 3px rgba(0,0,0,0.45));
 }
 
 .badge.synced {

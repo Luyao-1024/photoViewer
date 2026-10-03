@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="#bebebe">
+  <!-- Favorite mark, used by every surface that shows one: the viewer header
+       button, the photos page select-all button, and the Day-view grid tile
+       badge. One name in Rust (src/ui/favorite_icon.rs) points all three here,
+       because they were three different glyphs:
+
+         * the two toolbar buttons asked the icon theme for
+           `emblem-favorite-symbolic`, which adwaita-icon-theme does not ship
+           at all (still missing in GNOME 50) - so on a stock GNOME system they
+           drew no icon, and on the themes that do carry one, each drew its own
+           shape.
+         * the Day-view tile badge was a `Gtk.Label` holding the "♡"
+           character at 18pt, so its outline and weight came from whatever font
+           the system resolved. A text glyph in a photo grid next to a themed
+           vector heart in a toolbar is the same mismatch the cloud badge had
+           with its neighbours.
+
+       Filled with a hole, not stroked. GTK tints symbolic icons by replacing
+       the first paint it finds, so `fill:none` + `stroke` is not recolorable:
+       it comes back solid, which is also why the cloud badge is a bitmap. This
+       mark has to be tintable - the favorited state is a CSS `color`, and the
+       grid badge is white over a photo - so the same 1 unit hairline the cloud
+       badge has is expressed as a ring: an outer contour of two tangent lobes
+       and a tip, and an inner contour inset by half a unit everywhere
+       (shrunk lobes, inward-offset sides, a round join at the tip and a round
+       fillet in the top valley).
+
+       The inner contour is wound against the outer one on purpose, so no
+       `fill-rule` is named here. GTK tints a symbolic SVG by rewriting its
+       paint, and that rewrite can drop the `fill-rule` attribute - an even-odd
+       hole is then filled in and the mark comes back as a blob. Opposite
+       winding gives the same ring under nonzero and under even-odd, so the
+       hole survives either way.
+
+       Ink covers 13.4 x 10.3 of the 16 unit box, against the cloud badge's
+       13.4 x 11.0, so the two status glyphs carry the same weight. Keep them
+       tuned together. A solid heart would also satisfy GTK, and a solid heart
+       is the easier mark to read on a bright photo - but it would sit next to
+       a hairline cloud, which is the mismatch this icon set exists to avoid.
+       `data/icons/_generate.py` does not touch this file: there is no bitmap
+       to rasterise, only one path. -->
+  <path d="M 8.000 14.000 L 2.218 7.824 A 3.400 3.400 0 0 1 8.000 4.681 A 3.400 3.400 0 0 1 13.782 7.824 Z M 7.635 13.658 L 13.417 7.482 A 2.900 2.900 0 0 0 8.485 4.802 A 0.500 0.500 0 0 1 7.515 4.802 A 2.900 2.900 0 0 0 2.583 7.482 L 8.365 13.658 A 0.500 0.500 0 0 0 7.635 13.658 Z"/>
+</svg>

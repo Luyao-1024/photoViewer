@@ -58,6 +58,21 @@ so transfer events do not flash a blank badge. Media outside selected albums
 have no cloud glyph. The WebDAV Day-view cloud-icon switch does not affect this
 header indicator.
 
+Neither glyph in this row comes from the icon theme — the heart from
+`src/ui/favorite_icon.rs`, the cloud from the app's own bitmaps — so neither
+inherits a size the way a theme icon would. A bare `GtkImage` takes GTK's
+16 px default, while `favorite_btn`'s icon takes whatever the header resolves,
+and those are not the same number in every theme or libadwaita version. When that happened the badge rendered a third smaller
+than the heart on the other side of the same bar. `setup_favorite_button`
+therefore reads the resolved icon size off the favorite button's image and
+copies it onto the badge on every map (`sync_badge_to_toolbar_icon_size`).
+Neither the template nor `.viewer-sync-badge` may pin a size, or it overrides
+the copy; `tests/ui_viewer_badge_size.rs` pins the behaviour by rendering the
+header against a toolbar that resolves 20 px. The artwork half of the same
+contract (hairline stroke, a silhouette that fills its box, identical geometry
+across states and themes) lives with the badge in `src/ui/cloud_badge.rs` and is
+documented in [docs/modules/sync.md](sync.md).
+
 Overlay controls should have stable dimensions. Hidden panels should not leave child content measured in a collapsed allocation path, because that can produce warnings such as negative width or height in `gtk_widget_size_allocate`.
 
 Original image decode must apply orientation metadata before creating the display texture. Rotate from the editor changes metadata only, so the viewer must not rely on pixel dimensions from `image::open` to infer display direction.
@@ -528,7 +543,9 @@ the backlog asked for immersion in place.
 The image-stage top-right control group also includes a fullscreen preview
 action, placed between rotate-right and zoom-in. It opens a separate independent top-level `GtkWindow`,
 
-The favorite button uses the `emblem-favorite-symbolic` heart (same glyph as the Favorites album). Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
+The favorite button draws `photoviewer-heart-symbolic`, the app's own heart from `data/icons/photoviewer-heart-symbolic.svg`. It used to ask the icon theme for `emblem-favorite-symbolic`, which adwaita-icon-theme does not ship at all (still missing in GNOME 50), so on a stock GNOME system the button drew no icon at all, and the themes that do carry one each drew a different shape. The same mark is now used by the photos page select-all button and the Day-view tile badge; the name lives once in `src/ui/favorite_icon.rs` and is set from Rust rather than written into any `.blp`, so a surface cannot drift back onto a different glyph. Favoriting does not change the button surface — it only recolors the heart icon to a translucent red (`.viewer-favorite-btn.favorite-active` color rule). The button itself never turns red.
+
+The heart's hairline is a filled ring, not a `stroke`: GTK recolours a symbolic icon by rewriting the first paint it finds, and a stroked path comes back solid. Its inner contour is wound against the outer one so the hole survives that rewrite whichever way the rewrite handles `fill-rule`. `tests/ui_favorite_icon.rs` renders the mark through GTK under a CSS color and fails if it comes back filled, so "it looks right in a browser" is not the evidence.
 
 The image-stage top-right control group also includes a fullscreen preview
 action, placed between rotate-right and zoom-in. It opens a separate independent top-level `GtkWindow`,

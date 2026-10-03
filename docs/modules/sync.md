@@ -29,7 +29,7 @@ metadata sync needs a versioned sidecar protocol.
 | `src/core/sync/service.rs` | Job/connection service, scheduling, live progress |
 | `src/platform/credentials.rs` | Secret Service-backed credential storage |
 | `src/ui/window/settings.rs` | Connections, jobs, upload scope, conflict UI |
-| `src/ui/cloud_badge.rs` | Per-media cloud badge resources |
+| `src/ui/cloud_badge.rs` | Per-media cloud badge resources, and the rendered-ink contract for them |
 | `src/core/schema.sql` | `sync_connections`, `sync_jobs`, `sync_job_upload_albums`, `sync_entries`, `sync_tasks`, `sync_conflicts` |
 
 Test bodies live in child modules: `local/tests.rs`, `planner/tests.rs`,
@@ -356,6 +356,31 @@ Sync writes that change badge state emit `DomainEvent::SyncStateDirty` through
 the DB actor's normal event channel. The UI refresh hub then updates visible
 Photos/album tiles and an open viewer, including during transfers and after
 upload-album selection changes. There is no badge-specific sync timer.
+
+### Badge artwork contract
+
+The badge is one silhouette rendered four ways (`Synced`/`Off` x light/dark
+surface), mapped to GResource paths by `src/ui/cloud_badge.rs` and drawn from
+`data/icons/gnome-cloud{,-off}-symbolic.svg` by `data/icons/_generate.py`.
+Regenerate with `cd data/icons && python3 _generate.py`; the script rasterises
+via librsvg at 4x and downsamples, so the checked-in PNGs stay 72x72.
+
+Three properties are load-bearing, because the badge shares a row with the
+viewer's vector toolbar icons and used to read as a different set than them:
+
+- **Hairline weight.** One stroke unit in a 16 unit box, so the stroke is 1 px
+  at 16 px. The original GNOME path used `stroke-width 2`, which rendered at
+  2.25 px next to a 1 px outline glyph.
+- **The silhouette fills its box.** The ink spans 13.4 x 11.0 of the 16 units.
+  A cloud cannot be square, but when it also leaves the vertical margins empty
+  it reads as a smaller icon than its neighbour.
+- **The four variants share one ink box.** Switching sync state or light/dark
+  must not move or resize the glyph, and all four PNGs carry 4x headroom so
+  they stay crisp at 2x.
+
+`src/ui/cloud_badge.rs` asserts all three from the rendered pixels, including
+the hairline weight (ink coverage) and the variant parity, so a re-export that
+regresses any of them fails the lib tests.
 
 `SyncStore::overview()` is the provider-neutral read projection for compact UI
 status. It derives disabled, not-configured, paused, running, failed, ready, or

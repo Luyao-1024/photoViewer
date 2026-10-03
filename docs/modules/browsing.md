@@ -219,7 +219,7 @@ built, so a scan that finished before the Photos page existed must not show a
 spinner. Keep the phase out of `media_list`: the list holds media rows only
 (`apply_to_media_list.rs` treats `ScanPhase` as a no-op).
 
-Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
+Dynamic photos are still image items (`media_kind=image`, `media_subkind=motion_photo`). Grids display the still JPEG thumbnail exactly like a normal photo. In Day view, dynamic photos show a playback glyph at the thumbnail's bottom-left; ordinary videos show their persisted duration at the bottom-left instead; favorited media shows a white heart at the top-right. That badge is a `GtkImage` drawing `photoviewer-heart-symbolic` at `TILE_PIXEL_SIZE` (18), the same mark the viewer header and the photos page select-all button use, and the same pixel size as the cloud badge in the same corner; it was a `Gtk.Label` holding the "♡" character at 18pt, so its outline and weight came from whatever font the system resolved and it never matched the toolbar. `tests/ui_favorite_icon.rs` checks all three surfaces against the real widgets. Do not decode or extract embedded video from grid code; use persisted `MediaItem` fields only.
 
 Day-view image and video tiles in an enabled sync job's selected physical
 albums show a top-left GNOME cloud icon when the completed baseline matches

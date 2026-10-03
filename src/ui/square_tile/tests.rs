@@ -177,6 +177,21 @@ fn square_tile_has_duration_and_favorite_badges() {
     assert!(favorite.has_css_class("thumb-favorite-badge"));
     assert!(!favorite.is_visible());
 
+    // The grid badge draws the same mark the favorite buttons draw. It used to
+    // be a "♡" label at 18pt, i.e. a text glyph shaped by the system font
+    // sitting in the same app as a themed vector heart.
+    assert_eq!(
+        favorite.icon_name().as_deref(),
+        Some(crate::ui::favorite_icon::NAME),
+        "the tile badge must use the shared favorite mark, not its own glyph",
+    );
+    assert_eq!(
+        favorite.pixel_size(),
+        crate::ui::favorite_icon::TILE_PIXEL_SIZE,
+        "the tile badge box is the shared one, so the two overlays in that \
+         corner keep the same weight",
+    );
+
     tile.set_favorite_badge_visible(true);
     assert!(favorite.is_visible());
 }
@@ -264,11 +279,11 @@ fn cloud_icons_render_with_transparent_centers() {
     let renderer = gtk::gsk::CairoRenderer::new();
     renderer.realize(None).unwrap();
 
-    for (state, dark, x, y) in [
-        (CloudState::Synced, true, 9, 9),
-        (CloudState::Off, true, 12, 8),
-        (CloudState::Synced, false, 9, 9),
-        (CloudState::Off, false, 12, 8),
+    for (state, dark) in [
+        (CloudState::Synced, true),
+        (CloudState::Off, true),
+        (CloudState::Synced, false),
+        (CloudState::Off, false),
     ] {
         let image = gtk::Image::from_resource(cloud_badge::resource(state, dark));
         let paintable = image.paintable().unwrap();
@@ -279,19 +294,72 @@ fn cloud_icons_render_with_transparent_centers() {
         let stride = texture.width() as usize * 4;
         let mut pixels = vec![0; stride * texture.height() as usize];
         texture.download(&mut pixels, stride);
-        let alpha = pixels[y * stride + x * 4 + 3];
-        let outline = &pixels[3 * stride + 9 * 4..3 * stride + 9 * 4 + 4];
+
+        // Sample from the rendered ink instead of hardcoded coordinates: this
+        // test owns "the badge is an outline", not the artwork's exact curves.
+        let alpha = |x: usize, y: usize| pixels[y * stride + x * 4 + 3];
+        let (mut min_x, mut min_y) = (usize::MAX, usize::MAX);
+        let (mut max_x, mut max_y) = (0usize, 0usize);
+        for y in 0..texture.height() as usize {
+            for x in 0..texture.width() as usize {
+                if alpha(x, y) > 24 {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
         assert!(
-            alpha < 32,
-            "{state:?} center should be transparent; alpha={alpha}"
+            min_x < max_x && min_y < max_y,
+            "{state:?} should render a visible outline"
         );
-        assert!(outline[3] > 128, "{state:?} outline should remain visible");
+
+        // The badge has to stay an outline rather than a filled blob, and the
+        // same rule has to hold for both states: `cloud-off` draws a diagonal
+        // across the body, so sampling the exact center would only work for one
+        // of them. Measure the whole interior instead — the stroke alone keeps
+        // a few opaque pixels inside a 3 px inset, a filled cloud would fill
+        // all of it.
+        const INSET: usize = 3;
+        let mut interior = 0usize;
+        let mut opaque = 0usize;
+        for y in (min_y + INSET)..(max_y + 1 - INSET) {
+            for x in (min_x + INSET)..(max_x + 1 - INSET) {
+                interior += 1;
+                if alpha(x, y) > 200 {
+                    opaque += 1;
+                }
+            }
+        }
+        let filled_fraction = opaque as f64 / interior.max(1) as f64;
         assert!(
-            if dark {
-                outline[0] > 200
-            } else {
-                outline[0] < 100
-            },
+            filled_fraction < 0.25,
+            "{state:?} interior is {filled_fraction:.2} opaque; the badge should be an \
+             outline, not a filled shape",
+        );
+
+        // The stroke crossing the top of the silhouette is its opaque core.
+        // Sample the strongest pixel in the top rows rather than the first one:
+        // the topmost row of a downscaled bitmap is partial coverage by
+        // definition.
+        let mut edge_base = 0usize;
+        let mut edge_alpha = 0u8;
+        for y in min_y..(min_y + 3).min(texture.height() as usize) {
+            for x in min_x..=max_x {
+                if alpha(x, y) > edge_alpha {
+                    edge_alpha = alpha(x, y);
+                    edge_base = y * stride + x * 4;
+                }
+            }
+        }
+        let edge_red = pixels[edge_base];
+        assert!(
+            edge_alpha > 128,
+            "{state:?} top edge should remain visible; alpha={edge_alpha}"
+        );
+        assert!(
+            if dark { edge_red > 200 } else { edge_red < 100 },
             "{state:?} outline should match the surface color"
         );
     }

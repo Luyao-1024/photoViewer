@@ -1,4 +1,23 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#222222" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <!-- GNOME Icon Development Kit cloud, CC0: https://icons.design.gnome.org/ -->
-  <path style="fill:none;stroke:#222222" d="M 7.5 3 C 5.19039631 3.00029039, 3.25600171 4.74901009, 3.0234375 7.046875 C 1.84880233 7.27497244, 1.00049412 8.30342293, 1 9.5 C 1 10.8807116, 2.11928821 12, 3.5 12 C 4.12006569 12.0000229, 11.2639608 12.0001869, 12 12 C 13.6568537 12, 15 10.6568537, 15 9 C 15 7.34314585, 13.6568537 6, 12 6 Q 11.8728905 5.99950218, 11.7460938 6.00976992 C 11.1132984 4.20675802, 9.41082859 2.99999452, 7.5 3 Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#222222" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Cloud badge ("synced"), re-parameterised from the GNOME Icon Development
+       Kit cloud, CC0: https://icons.design.gnome.org/
+
+       The badge has to sit in the same header row as the theme's favorite
+       button, which is a 16 px hairline outline glyph, so this artwork is
+       tuned to that contract rather than to the GNOME original:
+
+         * stroke-width 1 at a 16 viewBox = a 1 px hairline at 16 px, the same
+           weight as an outline symbolic icon. The old stroke-width 2 rendered
+           at 2.25 px, twice the weight of its neighbour.
+         * the outline is built from two lobes tangent to the flat base
+           (left r=2.5 at (4.3, 12.1), right r=5.0 at (9.2, 9.6), base y=14.6)
+           so the ink spans 13.4 x 11.0 of the 16 unit box. The GNOME path left
+           its ink at 14 x 9, mostly in the lower half, so at a 16 px box it drew
+           a shorter, wider shape than the glyph beside it.
+         * margins are 1.8 units, leaving room for the stroke's own half width.
+
+       Keep the ink box this way: the viewer badge and the grid-tile badge
+       share this artwork, and a silhouette that shrinks inside its box is what
+       made the two icons look like different families. -->
+  <path style="fill:none;stroke:#222222" d="M 4.300 14.600 A 2.500 2.500 0 1 1 4.200 9.602 A 5.000 5.000 0 1 1 9.200 14.600 Z"/>
 </svg>

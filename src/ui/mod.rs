@@ -6,6 +6,7 @@ pub mod apply_to_media_list;
 mod cloud_badge;
 pub mod editor_panel;
 pub mod empty_states;
+pub(crate) mod favorite_icon;
 pub mod glass_context_menu;
 pub mod grid_css;
 pub mod keyboard;

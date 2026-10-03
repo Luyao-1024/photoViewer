@@ -377,9 +377,13 @@ Design intent:
   header bar centers in the window. The date label carries libadwaita's `title`
   style class so its font size and weight match the centered name exactly.
 - The local cloud status badge (`Gtk.Image sync_badge`) sits immediately right
-  of the date inside the same start box (`spacing: 8`), at the icon's natural
-  size. It belongs to the date group, so it must never read as a prefix of the
-  file name.
+  of the date inside the same start box (`spacing: 8`). It is the only glyph in
+  this row that is not a themed icon, so it cannot inherit the header's icon
+  size: the page copies the resolved size of the favorite button's icon onto it
+  when the header is mapped. A badge at a different size, or artwork that
+  leaves its box empty, is what makes the two ends of this row look like two
+  different families. See [viewer.md](viewer.md) for the size contract and
+  [sync.md](sync.md) for the artwork.
 - Beside the cloud badge sits the position counter `position_label`
   (`{current} / {total}` via `viewer.position.count`, identical string in both
   locales). It carries libadwaita's `.dim-label` plus `.viewer-position-label`

@@ -1005,18 +1005,32 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
   text-shadow: 0 1px 2px alpha(black, 0.75);
 }
 
+/* Grid-tile favorite badge: the same bundled mark the favorite buttons draw,
+   over an arbitrary photo. `color` is what recolors it (symbolic), and the
+   shadow is the same contrast scaffolding the cloud badge uses beside it — the
+   badge is a hairline, so a wide blur would read as a halo instead. */
 .thumb-favorite-badge {
   color: white;
-  font-size: 18pt;
+  -gtk-icon-shadow: 0 1px 1px alpha(black, 0.7), 0 0 3px alpha(black, 0.45);
 }
 
+/* Grid-tile sync badge, sitting on an arbitrary photo. The cloud artwork is a
+   hairline outline, so the shadow is contrast scaffolding only: the wider
+   2px/4px pair it used to carry (tuned when the badge was a stroke-width 2
+   cloud) bloomed into a halo around the thinner line and read as blur. */
 .thumb-sync-badge {
   color: white;
-  -gtk-icon-shadow: 0 1px 2px alpha(black, 0.85), 0 0 4px alpha(black, 0.65);
+  -gtk-icon-shadow: 0 1px 1px alpha(black, 0.7), 0 0 3px alpha(black, 0.45);
 }
 
-/* Status text on a glass surface — functional, so it sits at the 0.78 floor
-   above rather than the 0.68/0.72 it started at (P1-13). */
+/* Viewer header sync badge. The tone is the 0.78 status floor a P1-13 audit
+   settled on rather than the 0.68/0.72 it started at, matching the header text
+   beside it; the badge itself is a bundled bitmap whose light/dark variant is
+   picked in Rust from the Adw style manager, so the color has no effect on it
+   today and is kept only so a future symbolic badge inherits the dimmed status
+   tone for free. Size is deliberately NOT set here either: the badge's size is
+   copied from the toolbar's resolved icon size in Rust (see viewer-page.blp),
+   and a rule here would override that. */
 .viewer-sync-badge {
   color: alpha(@window_fg_color, 0.78);
 }

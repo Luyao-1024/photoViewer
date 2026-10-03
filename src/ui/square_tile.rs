@@ -3,6 +3,7 @@
 use crate::core::i18n::{tr, trf};
 use crate::core::sync::CloudState;
 use crate::ui::cloud_badge;
+use crate::ui::favorite_icon;
 use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -27,7 +28,7 @@ mod imp {
         pub checkmark: RefCell<Option<gtk::Image>>,
         pub motion_badge: RefCell<Option<gtk::Label>>,
         pub duration_badge: RefCell<Option<gtk::Label>>,
-        pub favorite_badge: RefCell<Option<gtk::Label>>,
+        pub favorite_badge: RefCell<Option<gtk::Image>>,
         pub sync_badge: RefCell<Option<gtk::Image>>,
         pub target: Cell<i32>,
         /// Only virtual GridView cells participate in height-for-width
@@ -189,7 +190,15 @@ mod imp {
             content.add_overlay(&duration_badge);
             *self.duration_badge.borrow_mut() = Some(duration_badge);
 
-            let favorite_badge = gtk::Label::builder().label("♡").visible(false).build();
+            // The same mark the viewer's favorite button draws, not a "♡"
+            // character: a text glyph takes its outline and weight from the
+            // system font, which is how the grid badge ended up looking like a
+            // different icon family than the toolbar next to it.
+            let favorite_badge = gtk::Image::builder()
+                .icon_name(favorite_icon::NAME)
+                .pixel_size(favorite_icon::TILE_PIXEL_SIZE)
+                .visible(false)
+                .build();
             favorite_badge.add_css_class("thumb-favorite-badge");
             favorite_badge
                 .update_property(&[gtk::accessible::Property::Label(&tr("tile.badge.favorite"))]);

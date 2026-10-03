@@ -40,6 +40,15 @@ template $ViewerPage : Adw.NavigationPage {
             css-classes: ["title", "viewer-date-label"];
           }
 
+          // Cloud/cloud-off badge for the current media. It shares the header
+          // row with `favorite_btn` on the other side, so the two glyphs have to
+          // read as one pair. The artwork (data/icons/gnome-cloud-symbolic.svg)
+          // is a hairline outline whose ink fills the icon box, and the size is
+          // deliberately left out of the template: a bare Gtk.Image otherwise
+          // takes GTK's 16 px default while the button's icon takes whatever
+          // the header resolves, which is how the badge ended up a third
+          // smaller than the heart beside it. `setup_favorite_button` copies
+          // the resolved toolbar icon size onto this image on every map.
           Gtk.Image sync_badge {
             tooltip-text: "";
             visible: false;
@@ -85,9 +94,12 @@ template $ViewerPage : Adw.NavigationPage {
           css-classes: ["glass-toolbar-button"];
         }
 
+        // The icon is set from `favorite_icon::NAME` in
+        // `setup_favorite_button`, not written here: the Day-view tile badge
+        // and the photos page button draw the same mark, and one name in Rust is
+        // what keeps the three from drifting onto different glyphs.
         [end]
         Gtk.Button favorite_btn {
-          icon-name: "emblem-favorite-symbolic";
           tooltip-text: "";
           css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
         }

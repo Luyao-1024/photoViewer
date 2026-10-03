@@ -439,6 +439,13 @@ impl PhotosPage {
         // opens a popover with 收藏/取消收藏. Its tooltip, accessible name and
         // mixed-state caret are painted once below by
         // apply_selection_favorite_state, which is the single writer.
+        // The mark itself comes from the shared name, so this button, the
+        // viewer's, and the Day-view tile badge cannot end up on different
+        // glyphs.
+        obj.imp()
+            .favorite_btn
+            .get()
+            .set_icon_name(crate::ui::favorite_icon::NAME);
         obj.imp()
             .delete_to_trash_btn
             .get()

@@ -106,7 +106,8 @@ template $PhotosPage : Adw.NavigationPage {
             // 收藏智能切换：全选已收藏→红心(复用 viewer 的 viewer-favorite-btn
             // + favorite-active)，点击全部取消收藏；全未收藏→点击全部收藏；
             // 混合→点击弹出 glass-menu 菜单。见 photos_page.rs。
-            icon-name: "emblem-favorite-symbolic";
+            // 图标名由 favorite_icon::NAME 统一设置，和 viewer 顶栏、Day 视图
+            // 宫格角标同源，三处不会各画各的字形。
             tooltip-text: "";
             css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
           };

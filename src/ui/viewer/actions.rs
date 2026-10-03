@@ -4,6 +4,7 @@ use crate::core::i18n::tr;
 use crate::core::identity::MediaId;
 use crate::core::repository::MediaRepository;
 use crate::ui::toasts;
+use gtk4 as gtk;
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -240,11 +241,15 @@ impl ViewerPage {
         crate::ui::grid_css::assert_installed();
 
         let imp = self.imp();
+        imp.favorite_btn
+            .get()
+            .set_icon_name(crate::ui::favorite_icon::NAME);
         imp.favorite_btn.get().add_css_class("viewer-favorite-btn");
         imp.favorite_btn
             .get()
             .set_tooltip_text(Some(&tr("viewer.tooltip.favorite")));
         self.refresh_favorite_button(false);
+        self.watch_toolbar_icon_size();
 
         let weak = self.downgrade();
         imp.favorite_btn.get().connect_clicked(move |_| {
@@ -259,6 +264,45 @@ impl ViewerPage {
             let next_state = !this.imp().is_favorite.get();
             this.apply_favorite_state(item_id, next_state, true);
         });
+    }
+
+    /// Keep the cloud badge the same size as the toolbar icon beside it.
+    ///
+    /// `sync_badge` is a bare `GtkImage`, so it takes GTK's default icon size
+    /// (16 px) while a button's icon follows whatever the header resolves — and
+    /// that is not always 16: themes and libadwaita versions ship their own
+    /// header icon size. The badge then renders a third smaller than the heart
+    /// on the other side of the same bar. Pinning a number in CSS or the
+    /// template would only move the disagreement to the next theme, so read the
+    /// resolved size off the favourite button's icon and copy it across.
+    ///
+    /// Re-run on every map rather than once at construction: the icon size is
+    /// a resolved style property, and a header that has never been mapped has
+    /// not resolved it yet. Mapping is also what re-runs after the viewer is
+    /// popped and pushed again.
+    fn watch_toolbar_icon_size(&self) {
+        let weak = self.downgrade();
+        self.imp().header_bar.get().connect_map(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            this.sync_badge_to_toolbar_icon_size();
+        });
+    }
+
+    fn sync_badge_to_toolbar_icon_size(&self) {
+        let imp = self.imp();
+        let Some(toolbar_icon) = imp
+            .favorite_btn
+            .get()
+            .child()
+            .and_then(|child| child.downcast::<gtk::Image>().ok())
+        else {
+            return;
+        };
+        let (_, natural, _, _) = toolbar_icon.measure(gtk::Orientation::Horizontal, -1);
+        let badge = imp.sync_badge.get();
+        if natural > 0 && badge.pixel_size() != natural {
+            badge.set_pixel_size(natural);
+        }
     }
 
     /// Write a favorite state and announce it.

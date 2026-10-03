@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Generate photo-viewer PNG icons from the same artwork as the symbolic SVG.
+"""Generate the PNG icons from the same artwork as the symbolic SVGs.
 
-Renders directly with PIL to avoid relying on rsvg-convert / ImageMagick SVG
-parsing (which is finicky for small hand-written SVGs). The artwork mirrors
-data/icons/photo-viewer-symbolic.svg at a 16x16 base; we scale up with
-high-quality resampling for 64 and 128 px outputs.
+Two independent jobs live here, each rendering the artwork its way:
+
+* The app icon is drawn directly with PIL, to avoid relying on rsvg-convert /
+  ImageMagick SVG parsing (which is finicky for small hand-written SVGs). The
+  artwork mirrors data/icons/photo-viewer-symbolic.svg at a 16x16 base; we
+  scale up with high-quality resampling for 64 and 128 px outputs.
+* The cloud sync badges are real SVG artwork, so they are rasterised with
+  librsvg (through GObject introspection) and downsampled from a 4x render.
+  They ship at BADGE_SIZE, not at the 18 px they are displayed at: the badge
+  sits next to vector toolbar icons, and an 18 px bitmap was visibly soft on a
+  HiDPI display. 72 px lets GTK filter it down for either scale factor.
+
+Run from this directory: `cd data/icons && python3 _generate.py`.
 """
 from PIL import Image, ImageDraw
 
@@ -14,6 +23,53 @@ FRAME_OUTER = (0x3a, 0x3a, 0x3a)
 FRAME_INNER = (0xf0, 0xf0, 0xf0)
 SUN = (0xff, 0xd7, 0x00)
 MOUNTAIN = (0x5f, 0xb8, 0x78)
+
+# Cloud sync badge: source SVG -> (luminance written into the LA PNG). The
+# viewer picks the light or dark variant from the Adw style manager, so both
+# have to exist and they must stay pixel-identical apart from that luminance.
+BADGE_SIZE = 72
+BADGE_SUPERSAMPLE = 4
+BADGE_SOURCE_COLOR = "#222222"
+CLOUD_BADGES = {
+    "gnome-cloud-white.png": ("gnome-cloud-symbolic.svg", 0xFF),
+    "gnome-cloud-off-white.png": ("gnome-cloud-off-symbolic.svg", 0xFF),
+    "gnome-cloud-dark.png": ("gnome-cloud-symbolic.svg", 0x22),
+    "gnome-cloud-off-dark.png": ("gnome-cloud-off-symbolic.svg", 0x22),
+}
+
+
+def render_badge(svg_name: str, luminance: int) -> Image.Image:
+    """Rasterise a badge SVG into an LA image of BADGE_SIZE.
+
+    librsvg renders the vector at 4x and PIL downsamples with LANCZOS, so the
+    hairline stroke keeps a clean edge instead of the stepped one a direct
+    small-size render gives.
+    """
+    import cairo
+    import gi
+
+    gi.require_version("Rsvg", "2.0")
+    from gi.repository import Rsvg
+
+    svg = open(svg_name, encoding="utf-8").read()
+    svg = svg.replace(BADGE_SOURCE_COLOR, f"#{luminance:02x}{luminance:02x}{luminance:02x}")
+    handle = Rsvg.Handle().new_from_data(svg.encode())
+
+    big = BADGE_SIZE * BADGE_SUPERSAMPLE
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, big, big)
+    ctx = cairo.Context(surface)
+    viewport = Rsvg.Rectangle()
+    viewport.x, viewport.y = 0.0, 0.0
+    viewport.width, viewport.height = float(big), float(big)
+    handle.render_document(ctx, viewport)
+    surface.flush()
+    big_img = Image.frombuffer(
+        "RGBA", (big, big), surface.get_data(), "raw", "BGRA", 0, 1
+    ).copy()
+    img = big_img.resize((BADGE_SIZE, BADGE_SIZE), Image.LANCZOS)
+    # LA keeps the shape in alpha and the tone in luminance, which is how the
+    # existing badges are stored.
+    return img.convert("LA")
 
 
 def render(size: int) -> Image.Image:
@@ -65,6 +121,10 @@ def main() -> None:
     for size in (64, 128):
         out = f"photo-viewer-{size}.png"
         render(size).save(out, "PNG")
+        print(f"wrote {out}")
+
+    for out, (svg_name, luminance) in CLOUD_BADGES.items():
+        render_badge(svg_name, luminance).save(out, "PNG")
         print(f"wrote {out}")
 
 

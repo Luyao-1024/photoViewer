@@ -16,3 +16,6 @@ pub(crate) fn resource(state: CloudState, dark_background: bool) -> &'static str
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
