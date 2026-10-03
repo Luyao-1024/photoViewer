@@ -101,16 +101,36 @@ handler accepts it). The error surface lives in `base.css` only — it is a flat
 themed wash, not a glass material — so it needs no liquid/plain mirror.
 
 Both buttons are the only way off a photo that will not decode, so both are
-driven end to end by
-`journey_corrupt_photo_offers_retry_and_reveal`, against a file that really is
-corrupt (`Shell::seed_broken_photo` writes JPEG magic bytes and no image). That
-fixture choice matters: the failure has to be in the *file* for this path to be
-the thing under test — a missing row never reaches the viewer, and
-`show_original_decode_error`'s "only when there is nothing to paint" guard means
-a file that decoded at thumbnail size would correctly suppress the surface. The
-scenario presses Show in File Manager for real but asserts only what a headless
-run can observe (the press is reachable, the viewer survives it), because
-`gtk::show_uri_full` hands the folder to a desktop that is not there to answer.
+covered end to end by `journey_corrupt_photo_offers_retry_and_reveal`, against a
+file that really is corrupt (`Shell::seed_broken_photo` writes JPEG magic bytes
+and no image). That fixture choice matters: the failure has to be in the *file*
+for this path to be the thing under test — a missing row never reaches the
+viewer, and `show_original_decode_error`'s "only when there is nothing to paint"
+guard means a file that decoded at thumbnail size would correctly suppress the
+surface.
+
+Retry is pressed, and the error surface is asserted to come *back*: the file is
+still corrupt, so the honest outcome is the same error again. That is exactly
+what used not to happen. `thumbnails::decode` answers a failed decode with a
+generated "unavailable" stand-in rather than an error, so the picture had a
+paintable, and `show_original_decode_error` — which reads *any* paintable as
+"the picture is showing" — declined to raise the surface. The user was left on a
+grey box with neither Retry nor Reveal on it, and no number of presses could get
+them back. The stand-in is now flagged (`LoadedThumb::unavailable`, set from
+`DecodeOrigin::Unavailable`) and the stage raises the error surface instead of
+painting it, so an image that cannot be decoded behaves like a video that cannot
+be played. Grid and album tiles still draw the stand-in: a grey cell is a fair
+signal there, and they have no error surface to offer.
+
+"Show in File Manager" is pressed too, and what it hands over is captured by
+`set_reveal_folder_observer_for_tests`. That seam **replaces** the platform call
+rather than watching it: `gtk::show_uri_full` launches the desktop's file manager
+at the fixture directory, which the shell deletes moments later, so a run that let
+the real handoff through leaves a window behind that outlives it and reports the
+folder as missing. A test must not reach into someone's session to do that. What
+the application decides — the containing folder, or the file's own URI when it has
+no parent — is asserted against a fixed fixture directory, and the desktop stays
+out of it. Without an observer installed the real handoff is unchanged.
 
 ## Feedback Toasts And Undo
 
@@ -150,6 +170,56 @@ and those pages have no toast host.
 ## Thumbnail Strip
 
 The thumbnail strip is a low raised-glass carousel surface and should initialize centered on the active image. If centering only happens after user interaction, the adjustment is being applied before the widget has a final allocation; schedule the centering after layout or after the thumbnail model is populated.
+
+**The invariant, and how it is checked.** The current photo's thumbnail is in
+the middle of the filmstrip in every scenario — on open, on Next, on the arrow
+keys, on a jump to the last photo, and on a jump back to the first. That is what
+makes "keep going" and "go back" legible in a long run, and it is easy to lose at
+both ends of the list, where there is nothing to scroll *toward*.
+
+Measuring it needs the transform. The strip sizes its content to the viewport
+and centres with `apply_thumb_strip_transform`, so `upper == page_size` and the
+horizontal adjustment never moves at all; reading the adjustment reports a
+perfectly centred strip as "no scroll happened". `journey_filmstrip_shows_every_photo_and_centres_the_current_one`
+measures `compute_bounds` in the window's coordinate space instead, which carries
+the transform and therefore reports what is on screen. Several guards in
+`update_thumb_scroll_position` return `false` quietly — no page size, current
+before the window, a missing offset, an unallocated button, unstable widths — so
+a regression shows up as a silently off-centre strip rather than a failure, which
+is why this needs an end-to-end scenario rather than the geometry unit tests.
+
+**Centring settles by convergence, not by a fixed frame count.** Centring reads
+each thumbnail's `allocation().width()` and re-adds them up, so it is only
+correct once those allocations are final — and a filmstrip re-measures itself
+every time one of its thumbnails decodes. Two things had to change for that to
+hold:
+
+- The tick loop stops when a pass both applied a transform *and* left it where
+  the previous pass did (`should_retry_thumb_centering`). Stopping at the first
+  pass that merely *applied* something freezes the strip against a layout that
+  was about to move: a thumbnail whose `width-request` was already correct still
+  grew from 39px to 55px when its texture landed, and the strip never revisited
+  it, leaving the current photo 8px off centre for as long as the viewer stayed
+  open.
+- A centring request that arrives *while* a burst is running is recorded, not
+  dropped (`thumb_scroll_requested`). The old duplicate-suppression threw it
+  away, so a thumbnail that finished loading mid-burst lost its re-centring
+  entirely. `THUMB_CENTER_RETRY_FRAMES` stays a ceiling on a pathological run
+  and has to be comfortably larger than the frames a filmstrip needs to finish
+  loading, or a burst can expire with a request still waiting on it.
+
+`clamp_thumb_residual` bounds the residual by the scroll range, but the residual
+is a pure visual nudge on top of wherever the scroll landed, so it is also bounded
+by half a page. Bounding it by the scroll range alone made centring impossible
+in the case that matters most: a strip whose content overflows the viewport by a
+little reaches the end of its scroll while the current photo is still far from
+centre, and no legal residual can make up the difference.
+
+A filmstrip of mixed aspect ratios is what exposed most of this, and it is the
+fixture set to keep. Equal shapes make several of these conditions unreachable:
+"the current thumbnail is the widest" only holds when every thumbnail has the
+same shape, and centring errors that accumulate with the offset of the current
+item are invisible when every item lays out identically.
 
 Filmstrip thumbnails crop with `ContentFit::Cover` inside a bounded aspect-ratio frame. Displayed thumbnails must not be more extreme than 21:9 horizontally or 9:21 vertically, and the minimum width still preserves a usable click target.
 

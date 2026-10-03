@@ -91,6 +91,7 @@ pub(in crate::core::thumbnails) fn worker_loop(
                 let loaded = LoadedThumb {
                     texture: texture.clone(),
                     is_light,
+                    unavailable: origin.is_unavailable(),
                 };
                 let waiters = {
                     let mut st = match state.lock() {

@@ -21,11 +21,40 @@ pub(super) const THUMB_EDGE_INSET: f64 = 24.0;
 pub(super) const THUMB_MIN_STABLE_ALLOC_WIDTH: f64 = (THUMB_MIN_WIDTH as f64) * 0.75;
 pub(super) const THUMB_LAZY_HALF: u32 = 4;
 pub(super) const THUMB_WINDOW_MAX: u32 = 40;
-pub(super) const THUMB_CENTER_RETRY_FRAMES: u8 = 8;
+/// How many frames one centring burst may spend before giving up.
+///
+/// The loop normally stops as soon as a pass both applies a transform and leaves
+/// it where the previous pass did, so this is a ceiling on a *pathological* run,
+/// not a settling time. It still has to be comfortably larger than the number of
+/// frames a filmstrip needs to finish loading though: a window of eleven
+/// thumbnails re-measures itself every time one of them decodes, and at eight
+/// frames the budget could run out mid-burst — leaving the last thumbnail's
+/// re-centring request coalesced into a burst that then expired, which is the
+/// same staleness the convergence rule exists to prevent, just later.
+pub(super) const THUMB_CENTER_RETRY_FRAMES: u8 = 60;
 pub(super) const THUMB_SCROLL_ANIMATION_MS: f64 = 140.0;
 
-pub(super) fn should_retry_thumb_centering(applied: bool, attempts_remaining: u8) -> bool {
-    !applied && attempts_remaining > 0
+/// Whether the centring tick callback should run another frame.
+///
+/// "Applied a transform" is not the same thing as "settled". Centring is a
+/// function of the thumbnails' allocations, and those keep moving while textures
+/// are still arriving: each one re-measures its button. Stopping at the first
+/// pass that managed to apply *some* transform therefore freezes the strip
+/// against a layout that was about to change under it — observed leaving the
+/// current photo 8px off centre, with the strip that had just been moved to
+/// compensate for a 39px thumbnail never revisited once that thumbnail grew to
+/// 55px.
+///
+/// So the loop runs until a pass both applied a transform and left it where the
+/// previous pass left it, and no further request is waiting. The attempt budget
+/// remains as a hard stop.
+pub(super) fn should_retry_thumb_centering(
+    applied: bool,
+    transform_moved: bool,
+    request_pending: bool,
+    attempts_remaining: u8,
+) -> bool {
+    attempts_remaining > 0 && (!applied || transform_moved || request_pending)
 }
 
 pub(super) fn compute_thumb_scroll_and_residual(
@@ -126,7 +155,21 @@ pub(super) fn clamp_thumb_residual(residual: f64, upper: f64, page_size: f64) ->
     if scrollable <= 0.0 {
         0.0
     } else {
-        residual.clamp(-scrollable, scrollable)
+        // The residual is a pure visual nudge on top of wherever the scroll
+        // landed, so it is bounded by how far the current thumbnail can be from
+        // the middle of the viewport — at most half a page. Bounding it by the
+        // scroll range instead is what made centring impossible in the case it
+        // matters most: a strip whose content overflows the viewport by a little.
+        // There the scroll reaches its end while the current photo is still a
+        // long way off centre, and a residual clamped to that same small
+        // scrollable range could never make up the difference — observed leaving
+        // the first photo 172px left of centre in a window narrowed to 858px.
+        //
+        // `max` keeps the scroll range as the floor, so a strip far wider than
+        // the viewport is still bounded by its own scroll range and a residual
+        // that should not have been produced in the first place is still caught.
+        let limit = scrollable.max(page_size / 2.0);
+        residual.clamp(-limit, limit)
     }
 }
 
@@ -685,9 +728,24 @@ impl ViewerPage {
                     this.imp().thumb_window_start.get(),
                     this.imp().thumb_window_end.get()
                 );
-                if old_width_request != new_width {
-                    this.schedule_scroll_thumb_to_current();
-                }
+                // Every texture that lands re-checks the centring, not just the
+                // ones that change `width-request`.
+                //
+                // `width-request` unchanged does NOT mean the layout is unchanged.
+                // A filmstrip button is sized by the *picture* inside it, and
+                // painting a texture into that picture replaces its paintable —
+                // which can re-measure the button to a different width even when
+                // the explicit request stayed put. Observed on a 2:3 thumbnail:
+                // the request was already 37, the texture still grew the button
+                // from 39px to 55px, and because the width-change check was the
+                // only thing that re-ran the centring, the transform stayed
+                // computed for the 39px layout and left the current photo 8px off
+                // centre for as long as the viewer stayed open.
+                //
+                // The cost is bounded: `apply_thumb_strip_transform` bails out when
+                // the offset has not moved, so a texture that changes nothing costs
+                // one no-op tick callback.
+                this.schedule_scroll_thumb_to_current();
             }
         });
 
@@ -783,7 +841,7 @@ impl ViewerPage {
         }
 
         let item_widths = thumb_item_widths(&items);
-        let Some((button_x, button_w, content_width)) =
+        let Some((reconstructed_x, reconstructed_w, content_width)) =
             thumb_item_content_geometry(&item_widths, offset, THUMB_STRIP_SPACING)
         else {
             tracing::debug!(
@@ -801,8 +859,14 @@ impl ViewerPage {
             );
             return false;
         };
-        let (target, residual, visual_transform) =
-            compute_thumb_positioning(button_x, button_w, page_size, upper, content_width);
+
+        let (target, residual, visual_transform) = compute_thumb_positioning(
+            reconstructed_x,
+            reconstructed_w,
+            page_size,
+            upper,
+            content_width,
+        );
         let imp = self.imp();
         let old_value = hadj.value();
         let old_transform = imp.thumb_last_transform.get();
@@ -816,8 +880,8 @@ impl ViewerPage {
             offset,
             items.len(),
             alloc.x(),
-            button_x,
-            button_w,
+            reconstructed_x,
+            reconstructed_w,
             page_size,
             upper,
             content_width,
@@ -918,6 +982,20 @@ impl ViewerPage {
 
     fn apply_thumb_strip_transform(&self, offset: f64) {
         let imp = self.imp();
+        // Nothing to do when the strip is already exactly here.
+        //
+        // This makes the extra centring passes that arrive with every thumbnail
+        // texture free, and it is safe because the transform lives in a
+        // display-wide CSS provider: whatever was loaded last still applies to
+        // the strip that is on screen, rebuilt or not.
+        //
+        // A half-pixel dead zone matches the CSS the offset is rendered through —
+        // anything under 0.5px becomes `transform: none` anyway, so re-loading
+        // it would restart the 220ms transition over a sub-pixel move and leave
+        // the strip visibly twitching for no reason.
+        if (offset - imp.thumb_last_transform.get()).abs() < 0.5 {
+            return;
+        }
         if imp.thumb_transform_provider.borrow().is_none() {
             let provider = gtk::CssProvider::new();
             if let Some(display) = gdk::Display::default() {
@@ -958,17 +1036,32 @@ impl ViewerPage {
     }
 
     fn schedule_scroll_thumb_to_current(&self) {
-        if self.imp().thumb_scroll_scheduled.get() {
+        let imp = self.imp();
+        // Always record the request, even when a burst is already in flight.
+        //
+        // A "put the current photo back in the middle" request that arrives
+        // mid-burst has to survive it. Dropping it on the floor was how a
+        // thumbnail that finished loading after the burst started lost its
+        // re-centring for good: the in-flight loop had not yet cleared its own
+        // flag, so the request bounced, the loop then applied a transform built
+        // from the pre-texture layout, and nothing ever asked again.
+        imp.thumb_scroll_requested.set(true);
+        if imp.thumb_scroll_scheduled.get() {
             tracing::debug!(
                 target: crate::core::log_targets::VIEWER,
                 "VIEWER_JITTER thumb_scroll_schedule_skip reason=already_scheduled current={} window=[{}, {}) last_transform={}",
-                self.imp().current_index.get(),
-                self.imp().thumb_window_start.get(),
-                self.imp().thumb_window_end.get(),
-                self.imp().thumb_last_transform.get()
+                imp.current_index.get(),
+                imp.thumb_window_start.get(),
+                imp.thumb_window_end.get(),
+                imp.thumb_last_transform.get()
             );
             return;
         }
+        // Starting the burst spends this request. Anything set from here on
+        // arrived while the burst was running, and is what `request_pending`
+        // reports on — leaving the flag set would make every burst believe it
+        // had an unanswered request and burn the whole attempt budget.
+        imp.thumb_scroll_requested.set(false);
 
         let weak = self.downgrade();
         let attempts_remaining = Rc::new(Cell::new(THUMB_CENTER_RETRY_FRAMES));
@@ -994,6 +1087,10 @@ impl ViewerPage {
             .get()
             .add_tick_callback(move |_, _| {
                 let before = attempts_remaining.get();
+                let previous_transform = weak
+                    .upgrade()
+                    .map(|this| this.imp().thumb_last_transform.get())
+                    .unwrap_or(f64::NAN);
                 let applied = weak
                     .upgrade()
                     .map(|this| {
@@ -1011,9 +1108,24 @@ impl ViewerPage {
                     })
                     .unwrap_or(true);
 
+                let (transform_moved, request_pending) = weak
+                    .upgrade()
+                    .map(|this| {
+                        (
+                            (this.imp().thumb_last_transform.get() - previous_transform).abs()
+                                >= 0.5,
+                            this.imp().thumb_scroll_requested.get(),
+                        )
+                    })
+                    .unwrap_or((false, false));
                 let remaining = attempts_remaining.get().saturating_sub(1);
                 attempts_remaining.set(remaining);
-                let continue_retry = should_retry_thumb_centering(applied, remaining);
+                let continue_retry = should_retry_thumb_centering(
+                    applied,
+                    transform_moved,
+                    request_pending,
+                    remaining,
+                );
                 tracing::debug!(
                     target: crate::core::log_targets::VIEWER,
                     "VIEWER_JITTER thumb_scroll_tick_result id={} applied={} remaining={} continue={}",
@@ -1027,6 +1139,11 @@ impl ViewerPage {
                 } else {
                     if let Some(this) = weak.upgrade() {
                         this.imp().thumb_scroll_scheduled.set(false);
+                        // The burst is answered, so the pending request is
+                        // spent. A request that arrives from here on starts a
+                        // fresh burst rather than being answered by a loop that
+                        // has already stopped.
+                        this.imp().thumb_scroll_requested.set(false);
                     }
                     glib::ControlFlow::Break
                 }
@@ -1043,6 +1160,49 @@ impl ViewerPage {
         hadj.connect_value_changed(move |_| {
             if let Some(this) = weak.upgrade() {
                 this.on_thumb_adj_changed();
+            }
+        });
+
+        // Centring is computed from `page_size`, so a viewport that changes width
+        // invalidates the transform that centred the current thumbnail — and
+        // nothing else recomputed it. `schedule_scroll_thumb_to_current` fires
+        // only on a strip refresh, a window rebuild, or a texture widening an
+        // item; resizing the *window* triggered none of them, so un-maximizing
+        // left the current thumbnail sitting wherever the old geometry put it.
+        //
+        // `page-size` is the right signal rather than a widget size-allocate
+        // hook: it is the exact input `update_thumb_scroll_position` reads, it
+        // fires only when the viewport actually changes, and GTK4 exposes no
+        // size-allocate signal to connect to. Setting a value does not change
+        // it, so this cannot re-enter the centring it triggers.
+        let weak = self.downgrade();
+        hadj.connect_notify_local(Some("page-size"), move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.schedule_scroll_thumb_to_current();
+            }
+        });
+
+        // The other half of the same problem, and the one that actually left the
+        // current photo visibly off-centre.
+        //
+        // Centring reads each thumbnail's `allocation().width()` and re-adds them
+        // up, so it is only correct once those allocations are final. A filmstrip
+        // thumbnail is sized by `width-request`, which is set from the decoded
+        // texture — so a strip is still growing its geometry while the
+        // thumbnails arrive, and the last centring pass can easily land between
+        // one thumbnail's `width-request` changing and GTK re-measuring the box.
+        // The centring retry loop does not rescue that: it stops at the first
+        // pass that *applied* a transform, and applying a transform computed from
+        // stale allocations counts as success.
+        //
+        // `upper` is the adjustment's own measure of the content extent, so it
+        // changes exactly when the strip re-lays out to a new size — that is, one
+        // step after the allocations the maths reads have settled. It is the
+        // signal for "the geometry you centred against is no longer current".
+        let weak = self.downgrade();
+        hadj.connect_notify_local(Some("upper"), move |_, _| {
+            if let Some(this) = weak.upgrade() {
+                this.schedule_scroll_thumb_to_current();
             }
         });
     }

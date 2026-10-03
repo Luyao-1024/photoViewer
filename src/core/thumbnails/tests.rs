@@ -1523,6 +1523,7 @@ fn exif_thumb_cache_round_trips_and_clears() {
         texture: gtk4::gdk::MemoryTexture::new(1, 1, gtk4::gdk::MemoryFormat::R8g8b8a8, &bytes, 4)
             .upcast(),
         is_light: Some(false),
+        unavailable: false,
     };
 
     assert!(

@@ -381,15 +381,24 @@ fn residual_centres_last_thumbnail_without_layout_padding() {
 #[test]
 fn thumb_centering_retries_until_allocation_is_ready() {
     assert!(
-        should_retry_thumb_centering(false, 3),
+        should_retry_thumb_centering(false, false, false, 3),
         "initial viewer entry can run before thumbnail allocation; it must retry"
     );
     assert!(
-        !should_retry_thumb_centering(true, 3),
-        "successful centering should stop the tick callback"
+        should_retry_thumb_centering(true, true, false, 3),
+        "a pass that moved the strip has not settled: the allocations it read can \
+         still change under it, which is how the current photo was left off centre"
     );
     assert!(
-        !should_retry_thumb_centering(false, 0),
+        should_retry_thumb_centering(true, false, true, 3),
+        "a request that arrived mid-burst must be answered, not swallowed"
+    );
+    assert!(
+        !should_retry_thumb_centering(true, false, false, 3),
+        "an applied pass that moved nothing and has no pending request has settled"
+    );
+    assert!(
+        !should_retry_thumb_centering(false, true, true, 0),
         "retry loop must have a hard stop"
     );
 }

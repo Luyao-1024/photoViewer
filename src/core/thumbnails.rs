@@ -86,6 +86,13 @@ impl ThumbnailSize {
 pub struct LoadedThumb {
     pub texture: Texture,
     pub is_light: Option<bool>,
+    /// The texture is the "unavailable" stand-in, not a picture of the media.
+    ///
+    /// Grid and album tiles draw it as-is — a grey cell is a fair signal there.
+    /// The full-screen viewer must not: it has a whole error surface with Retry
+    /// and Reveal, and painting the stand-in into the stage is what hid that
+    /// surface from users whose photo genuinely could not be decoded.
+    pub unavailable: bool,
 }
 
 /// Build a `LoadedThumb` (texture + lightness) from a decoded pixbuf.
@@ -97,6 +104,7 @@ pub fn loaded_thumb_from_pixbuf(pb: &gdk_pixbuf::Pixbuf) -> LoadedThumb {
     LoadedThumb {
         texture: Texture::for_pixbuf(pb),
         is_light: pixbuf_is_light(pb),
+        unavailable: false,
     }
 }
 
@@ -598,6 +606,7 @@ impl ThumbnailLoader {
         let loaded = LoadedThumb {
             texture: Texture::for_pixbuf(&pb),
             is_light: pixbuf_is_light(&pb),
+            unavailable: false,
         };
         if let Ok(mut st) = self.state.lock() {
             st.mem_cache.put(cache_key.clone(), loaded.clone());

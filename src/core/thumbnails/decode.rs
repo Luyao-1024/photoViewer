@@ -17,6 +17,19 @@ use tracing::{debug, warn};
 pub(in crate::core::thumbnails) enum DecodeOrigin {
     DiskCache,
     Cold,
+    /// 解码失败，返回的是占位图而不是媒体的真实画面。
+    ///
+    /// 这一档是给 UI 用的，不是给缓存策略用的。占位图和"一张缩略图长得不好看"
+    /// 在像素上无法区分，所以调用方只能靠这一个标记才知道自己拿到的根本不是
+    /// 图片——而把它当成图片画出来，会让 viewer 在解码失败时显示一张灰色方块
+    /// 而不是错误提示页。
+    Unavailable,
+}
+
+impl DecodeOrigin {
+    pub(in crate::core::thumbnails) fn is_unavailable(&self) -> bool {
+        matches!(self, DecodeOrigin::Unavailable)
+    }
 }
 
 #[tracing::instrument(name = "thumb:generate", skip(cache_dir), level = "debug")]
@@ -100,7 +113,7 @@ pub(in crate::core::thumbnails) fn generate(
                     src_path.display(),
                     size
                 );
-                return Ok((placeholder, DecodeOrigin::Cold));
+                return Ok((placeholder, DecodeOrigin::Unavailable));
             }
         }
     }
@@ -132,7 +145,7 @@ pub(in crate::core::thumbnails) fn generate(
             );
             Ok((
                 generate_unavailable_placeholder(size.max_dim(), false),
-                DecodeOrigin::Cold,
+                DecodeOrigin::Unavailable,
             ))
         }
     }

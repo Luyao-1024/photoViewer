@@ -630,6 +630,16 @@ impl ViewerPage {
                     .parent()
                     .map(|parent| parent.uri().to_string())
                     .unwrap_or_else(|| item.uri.clone());
+                // A test observer replaces the platform handoff rather than
+                // merely watching it. Letting the real `show_uri_full` run would
+                // launch the developer's file manager at a directory the fixture
+                // is about to delete, which on a real desktop is a window that
+                // outlives the test and reports the folder as missing. See
+                // `ViewerPage::set_reveal_folder_observer_for_tests`.
+                if let Some(observer) = this.imp().reveal_folder_observer.borrow().as_ref() {
+                    observer(&folder);
+                    return;
+                }
                 let reveal_weak = weak.clone();
                 let reveal_folder = folder.clone();
                 gtk::show_uri_full(
@@ -722,6 +732,22 @@ impl ViewerPage {
                 return;
             }
             if original_has_landed(this.imp().original_painted_token.get(), token) {
+                return;
+            }
+            if loaded.unavailable {
+                // The source could not be decoded, so the loader handed back the
+                // "unavailable" stand-in. Painting it would fill the stage with a
+                // grey box and, worse, leave `picture.paintable()` set — which is
+                // the exact test `show_original_decode_error` uses to decide that
+                // a picture is already on screen. The stand-in would then suppress
+                // the error surface permanently: Retry re-ran the decode, failed
+                // again, painted another stand-in, and the user was left holding a
+                // grey rectangle with no way to reach Retry or Reveal.
+                //
+                // Raising the error surface here is what makes an undecodable
+                // image behave like an unplayable video.
+                this.set_spinner_visible(false);
+                this.show_media_error_background();
                 return;
             }
             this.imp().picture.get().set_paintable(Some(&texture));

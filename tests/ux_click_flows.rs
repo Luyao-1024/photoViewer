@@ -17,6 +17,11 @@
 //! concurrently, so the scenarios run serially from the single `#[test]` below,
 //! each tearing its window down on drop.
 //!
+//! The Tokio runtime the single `#[test]` enters is load-bearing, not ceremony:
+//! the shell starts thumbnail workers, and those need a reactor. A test binary
+//! that builds a `Shell` without entering one panics inside the loader with
+//! "there is no reactor running".
+//!
 //! Journeys own cross-page behaviour. A contract stays isolated only when putting
 //! it into a journey would make the journey branch unnaturally or hide the thing
 //! being diagnosed.
@@ -45,7 +50,9 @@ use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
 use photo_viewer::ui::{
     album_picker, AlbumDetailPage, ModeSelector, SearchPage, TrashPage, ViewerPage,
 };
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -71,6 +78,13 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     journey_corrupt_photo_offers_retry_and_reveal();
     journey_album_context_menu_deletes_and_ignores_real_albums();
     journey_viewer_shortcuts_reach_the_same_handlers_as_the_buttons();
+    journey_filmstrip_shows_every_photo_and_centres_the_current_one();
+
+    // The library's own lifecycle: what the scanner finds on disk, and what it
+    // gives up when a file disappears. Both drive the production scan, because
+    // the scan *is* the behaviour under test.
+    runtime.block_on(journey_photos_imported_into_the_folder_are_scanned_and_shown());
+    runtime.block_on(journey_photos_deleted_outside_the_app_are_reconciled());
 
     // Interaction contracts for variants a journey would have to contort to reach.
     mode_selector_click_switches_photos_view();
@@ -95,21 +109,26 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
 ///
 /// The file is genuinely corrupt — it scans, it gets a row, it gets a tile a
 /// pointer lands on — so the error surface is reached by the same path a user
-/// takes, not by setting the surface visible. Both buttons on that surface are
-/// the only things standing between a user and a dead viewer, and neither had
-/// any scenario behind it: `ui_viewer_toolbar.rs` only asserts the chrome's CSS
-/// classes and never once opens a viewer.
+/// takes, not by setting the surface visible. Neither button on that surface
+/// had any scenario behind it: `ui_viewer_toolbar.rs` only asserts the chrome's
+/// CSS classes and never once opens a viewer.
 ///
-/// "Show in File Manager" hands the folder to the desktop, which a headless run
-/// cannot observe, so what is asserted is the part that *is* observable and
-/// matters: the button is on screen, it takes a real click through the same
-/// hit-test every other control passes, and the viewer survives it.
+/// Retry is pressed, because its whole effect is inside the app. "Show in File
+/// Manager" is only reached, never pressed: it hands the folder to the desktop
+/// through `gtk::show_uri_full`, so a press would spawn a real file manager
+/// that outlives the test, or fail on a machine with no default handler, and
+/// which one happens says nothing about this code.
 fn journey_corrupt_photo_offers_retry_and_reveal() {
     let shell = Shell::new();
     let ui = &shell.ui;
     let nav = shell.window.nav_view();
     let broken_item = shell.seed_broken_photo("broken");
     let broken = broken_item.path.clone();
+    let broken_album_dir = broken_item
+        .path
+        .parent()
+        .expect("the corrupt fixture lives in a directory")
+        .to_path_buf();
     let grid = shell.visible_photos_grid();
 
     // The corrupt photo is a real, hittable tile: the failure is in the bytes,
@@ -151,23 +170,24 @@ fn journey_corrupt_photo_offers_retry_and_reveal() {
         "the error surface should name the file the user has to find, got {subtitle:?}"
     );
 
-    // Retry re-runs the load. The file is still corrupt, so the honest outcome
-    // is the same error again — the point is that the button is live and the
-    // viewer does not wedge or panic behind it.
-    let retry = viewer.imp().media_error_retry_btn.get();
-    assert_eq!(retry.label().unwrap().as_str(), tr("viewer.error.retry"));
-    ui.click(&retry, "Retry");
-    assert!(
-        ui.wait_until(Duration::from_secs(10), || viewer
-            .imp()
-            .media_error_box
-            .get()
-            .is_visible()),
-        "retrying a still-corrupt file should land back on the error surface, not a blank stage"
-    );
+    // Reveal runs first, while the error surface is still up: the retry below
+    // is what loses it, so anything that needs the surface has to come before.
 
-    // Reveal is the other way out. It shells out to the desktop, so the durable
-    // assertion is that a real pointer reached it and the viewer is still alive.
+    // Reveal is the other way out, and it is pressed for real. What it hands
+    // over is captured by the project's `*_for_tests` seam, which *replaces* the
+    // platform call rather than merely watching it: `gtk::show_uri_full` would
+    // launch the developer's file manager at a directory this fixture is about to
+    // delete, leaving a window that outlives the test and complains that the
+    // folder is missing. The desktop has no business inside a test run.
+    //
+    // What is asserted is the part this application actually decides: which
+    // folder, named against a fixed fixture directory.
+    let revealed: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let sink = revealed.clone();
+    viewer.set_reveal_folder_observer_for_tests(move |folder| {
+        *sink.borrow_mut() = Some(folder.to_string());
+    });
+
     let reveal = viewer.imp().media_error_reveal_btn.get();
     assert_eq!(
         reveal.label().unwrap().as_str(),
@@ -175,14 +195,89 @@ fn journey_corrupt_photo_offers_retry_and_reveal() {
         "the second way out should be labelled from the catalogue"
     );
     ui.click(&reveal, "Show in File Manager");
+
+    let folder = ui.wait_until(Duration::from_secs(5), || revealed.borrow().is_some());
     assert!(
-        ui.wait_until(Duration::from_secs(3), || viewer
-            .imp()
-            .spinner
-            .get()
-            .is_visible()
-            || viewer.imp().media_error_box.get().is_visible()),
-        "pressing Reveal should leave the viewer in a real state rather than tear it down"
+        folder,
+        "Show in File Manager should hand a folder to the desktop"
+    );
+    let handed_over = revealed.borrow().clone().expect("captured above");
+    // The fixture is installed in a fixed directory, so "the folder the photo is
+    // in" is a name the test can state rather than a path it has to guess at.
+    let handed_path = PathBuf::from(
+        handed_over
+            .strip_prefix("file://")
+            .expect("GIO hands out file:// URIs"),
+    );
+    assert_eq!(
+        handed_path,
+        broken_item
+            .path
+            .parent()
+            .expect("the fixture has a parent directory"),
+        "Reveal should hand over the folder that actually contains the photo"
+    );
+    assert_eq!(
+        handed_path.file_name().and_then(|n| n.to_str()),
+        Some("broken-album"),
+        "that folder is the fixed `broken-album` fixture directory, not a generated one"
+    );
+    assert!(
+        broken_album_dir.is_dir(),
+        "the revealed folder is a real directory"
+    );
+
+    // Retry re-runs the load. The file is still corrupt, so the honest outcome
+    // is the same error again — the point is that the button is live and the
+    // viewer does not wedge behind it. Asserting the error surface is still up
+    // would be vacuous, since it never went away; what proves the press did
+    // something is the load token advancing, because that is `show_at` re-
+    // entering for the current index.
+    let token_before_retry = viewer.imp().current_token.get();
+    let retry = viewer.imp().media_error_retry_btn.get();
+    assert_eq!(retry.label().unwrap().as_str(), tr("viewer.error.retry"));
+    ui.click(&retry, "Retry");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.imp().current_token.get()
+            != token_before_retry),
+        "Retry should start a fresh load, but the load token never moved off {token_before_retry}"
+    );
+
+    // The honest outcome of a retry on a still-corrupt file is the *same error
+    // again* — and that is exactly what has to happen. It used not to:
+    // `thumbnails::decode` answers a failed decode with a generated "unavailable"
+    // placeholder rather than an error, so `picture.paintable()` became
+    // `Some(placeholder)` and `show_original_decode_error` — which reads *any*
+    // paintable as "the picture is showing" — declined to raise the surface. The
+    // user was left on a grey box with neither Retry nor Reveal on it, and no
+    // number of presses could get them back. An image that cannot be decoded now
+    // behaves like a video that cannot be played.
+    //
+    // The stand-in is now flagged (`LoadedThumb::unavailable`), so the stage
+    // raises the error surface instead of painting it.
+    let error_back = ui.wait_until(Duration::from_secs(10), || {
+        let token = viewer.imp().current_token.get();
+        token != token_before_retry
+            && viewer.imp().media_error_box.get().is_visible()
+            && !viewer.imp().picture.get().is_visible()
+    });
+    assert!(
+        error_back,
+        "Retry on a still-undecodable photo should bring the error surface back, not leave a \
+         grey stand-in: error box visible={} picture visible={} token {} -> {}",
+        viewer.imp().media_error_box.get().is_visible(),
+        viewer.imp().picture.get().is_visible(),
+        token_before_retry,
+        viewer.imp().current_token.get()
+    );
+
+    // And the surface is genuinely live again, not merely redrawn: its own two
+    // buttons are back on it and can be pressed. `assert_reachable` panics with
+    // the hit-test result if either has not come back.
+    ui.assert_reachable(&retry, "Retry after the error surface came back");
+    ui.assert_reachable(
+        &reveal,
+        "Show in File Manager after the error surface came back",
     );
 
     // And the user can still leave: the error surface is a dead end for the
@@ -206,6 +301,464 @@ fn journey_corrupt_photo_offers_retry_and_reveal() {
         broken.is_file(),
         "nothing about a failed decode should touch the file on disk"
     );
+}
+
+/// Copy photographs into the library the way a user does — files appear in a
+/// watched folder — and check the application really finds, indexes, and shows
+/// every one of them.
+///
+/// The scan is the product code under test here, so nothing here hand-builds a
+/// row: the files are written to disk, the production scanner runs, and every
+/// claim is made against what it produced. Each imported photo is a different
+/// shape, because a scanner that only ever gets 4:3 files is not evidence about
+/// the rest — a width and height that disagree with the bytes is exactly the
+/// class of bug that a hand-written fixture hides.
+///
+/// Scope: this covers what the filesystem and the database do. It deliberately
+/// stops short of "the running grid gains a tile", which needs the window's
+/// domain-event consumer — see `docs/testing.md` for why the shell does not wire
+/// that up today.
+async fn journey_photos_imported_into_the_folder_are_scanned_and_shown() {
+    let shell = Shell::with_photos(2);
+
+    let before = db::list_all_media(&shell.pool).unwrap();
+    assert_eq!(
+        before.len(),
+        2,
+        "the library starts with the two photos the shell was built with"
+    );
+
+    // Four new photographs in the watched folder, spanning the extremes: a
+    // 1:1 square, a 9:16 phone shot, a 21:9 panorama, and a 3:2 frame.
+    let imports = [
+        ("imported-square.jpg", "ridge-square", 40, (420u32, 420u32)),
+        ("imported-tall.jpg", "night-916", 41, (360, 640)),
+        ("imported-pano.jpg", "pano-219", 42, (840, 360)),
+        ("imported-wide.jpg", "mesa-32", 43, (540, 360)),
+    ];
+    for (name, fixture, day, _) in imports {
+        let path = shell.import_fixture(name, fixture, day);
+        assert!(path.is_file(), "{name} should be on disk before the scan");
+    }
+
+    shell.rescan().await;
+
+    // The scan is only "successful" if every row agrees with the bytes it
+    // describes, so the declared shape is checked against the real file.
+    let mut imported_rows = Vec::new();
+    for (name, _, _, (width, height)) in imports {
+        let path = shell.photos_dir().join(name);
+        let row = db::list_all_media(&shell.pool)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.path == path)
+            .unwrap_or_else(|| panic!("the scan should have indexed {name} at {}", path.display()));
+        assert_eq!(
+            (row.width, row.height),
+            (Some(width), Some(height)),
+            "the row for {name} must describe the file that is actually there"
+        );
+        assert!(
+            row.file_size == std::fs::metadata(&path).unwrap().len() as u64,
+            "the row for {name} must record the real byte count"
+        );
+        imported_rows.push(row);
+    }
+
+    assert_eq!(
+        db::list_all_media(&shell.pool).unwrap().len(),
+        2 + imports.len(),
+        "the library should hold the two originals plus every import"
+    );
+
+    // "Indexed" is not "loadable". Each import has to come back out of the
+    // production thumbnail workers as an actual picture, which is the part of
+    // "the app loaded my photos" that a database row cannot stand in for — a
+    // scanner that happily indexed a file nothing can decode would pass every
+    // assertion above and show the user a grid of grey cells.
+    for row in &imported_rows {
+        assert!(
+            shell.loads_thumbnail_for(row).await,
+            "the thumbnail workers should render {} — it is on disk, indexed, and \
+             still not loadable",
+            row.display_name()
+        );
+    }
+
+    // The originals are still loadable too: a rescan must not have disturbed the
+    // photographs that were already in the library.
+    for row in db::list_all_media(&shell.pool).unwrap() {
+        if imported_rows.iter().any(|new| new.id == row.id) {
+            continue;
+        }
+        assert!(
+            shell.loads_thumbnail_for(&row).await,
+            "the rescan should have left {} renderable",
+            row.display_name()
+        );
+    }
+}
+
+/// Delete photographs from outside the application — the way a sync client, a
+/// file manager, or a cleanup script would — and check the library notices.
+///
+/// This is the mirror of the import journey, and it is the one half that used to
+/// be untested. Nothing in the suite removed a file behind the app's back, so the
+/// reconcile that a user hits when they tidy up a folder by hand was entirely
+/// unguarded: a library that keeps offering a photo whose file is gone is a user
+/// clicking through to a broken viewer with no way to tell why.
+///
+/// Scope matches the import journey: the reconcile and the storage, not the
+/// running grid's tile list.
+async fn journey_photos_deleted_outside_the_app_are_reconciled() {
+    let shell = Shell::with_photos(4);
+    let ui = &shell.ui;
+    let grid = shell.visible_photos_grid();
+
+    let before = db::list_all_media(&shell.pool).unwrap();
+    assert_eq!(before.len(), 4, "the library starts with four photos");
+
+    // Remove two of them from the filesystem, directly, with the application
+    // unaware. The first is the photo the user is looking at, so the journey
+    // also covers the viewer losing its subject.
+    let doomed: Vec<MediaItem> = before.iter().take(2).cloned().collect();
+    let surviving: Vec<MediaItem> = before.iter().skip(2).cloned().collect();
+    for item in &doomed {
+        std::fs::remove_file(&item.path)
+            .unwrap_or_else(|e| panic!("remove {}: {e}", item.path.display()));
+        assert!(!item.path.exists(), "the file is really gone from disk");
+    }
+
+    shell.rescan().await;
+
+    // The rows must be gone, not merely hidden.
+    let after = db::list_all_media(&shell.pool).unwrap();
+    for item in &doomed {
+        assert!(
+            after.iter().all(|row| row.id != item.id),
+            "the row for {} should have been pruned; the file no longer exists",
+            item.path.display()
+        );
+        assert!(
+            db::get_media_item(&shell.pool, item.id).is_err(),
+            "the pruned row should be gone from the database, not just unlisted"
+        );
+    }
+    assert_eq!(
+        after.len(),
+        surviving.len(),
+        "every photo still on disk should keep its row"
+    );
+    for item in &surviving {
+        assert!(
+            after.iter().any(|row| row.id == item.id),
+            "{} is still on disk and must survive the reconcile",
+            item.path.display()
+        );
+    }
+
+    // What survives still works, which is the part a prune that over-reached
+    // would break.
+    for row in &surviving {
+        assert!(
+            shell.loads_thumbnail_for(row).await,
+            "{} is still on disk and must still be renderable",
+            row.display_name()
+        );
+    }
+    let kept = shell.tile_for(&grid, MediaId::from(surviving[0].id), "the surviving photo");
+    ui.click(&kept, "a photo that is still on disk");
+    let viewer = expect_page::<ViewerPage>(ui, &shell.window.nav_view(), "opening a survivor");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "a photo that survived the reconcile should still open normally"
+    );
+}
+
+/// How far the current film's thumbnail may sit from the middle of the filmstrip.
+///
+/// The strip centres through a CSS transform rather than by scrolling, so there
+/// is no integer pixel to land on exactly; a couple of pixels is rounding in the
+/// transform and the button's own width, not a centring failure.
+const FILMSTRIP_CENTER_TOLERANCE_PX: f64 = 3.0;
+
+/// Where the current photo's filmstrip thumbnail actually sits, measured the way
+/// a user sees it.
+///
+/// This deliberately measures `compute_bounds` in the window's coordinate space
+/// rather than the scroll adjustment: the strip sizes its content to the
+/// viewport and centres by transform, so `upper == page_size` and the
+/// adjustment never moves at all. Reading the adjustment would report a
+/// perfectly centred filmstrip as "no scroll happened" — or the reverse.
+/// `compute_bounds` carries the transform, so it reports what is on screen.
+///
+/// Returns `(current_center_x, strip_center_x, thumb_width)`, or `None` while the
+/// filmstrip has not been built yet.
+fn filmstrip_centering(
+    viewer: &ViewerPage,
+    root: &impl IsA<gtk::Widget>,
+) -> Option<(f64, f64, f64)> {
+    let imp = viewer.imp();
+    let strip = imp.thumb_scrolled.get();
+    let strip_bounds = strip.compute_bounds(root)?;
+    let strip_center = f64::from(strip_bounds.x()) + f64::from(strip_bounds.width()) / 2.0;
+    let offset = imp
+        .current_index
+        .get()
+        .checked_sub(imp.thumb_window_start.get())? as usize;
+    let items = imp.thumb_items.borrow();
+    let current = items.get(offset)?;
+    let bounds = current.compute_bounds(root)?;
+    let center = f64::from(bounds.x()) + f64::from(bounds.width()) / 2.0;
+    Some((center, strip_center, f64::from(bounds.width())))
+}
+
+/// Assert the filmstrip is on screen and showing the current photo, and that the
+/// current photo's thumbnail is in the middle of it.
+fn assert_filmstrip_centers_current(ui: &Ui, shell: &Shell, viewer: &ViewerPage, where_: &str) {
+    // Let the strip finish settling before measuring it. The result itself is
+    // not the assertion — the checks below report *how* it is wrong, which is
+    // more use than a bare timeout.
+    let _settled = ui.wait_until(Duration::from_secs(10), || {
+        filmstrip_centering(viewer, &shell.window)
+            .is_some_and(|(c, s, w)| w > 0.0 && (c - s).abs() <= FILMSTRIP_CENTER_TOLERANCE_PX)
+    });
+    let imp = viewer.imp();
+    let strip = imp.thumb_scrolled.get();
+    assert!(
+        strip.is_visible() && strip.is_mapped() && strip.height() > 0,
+        "{where_}: the filmstrip should be on screen, got visible={} mapped={} {}x{}",
+        strip.is_visible(),
+        strip.is_mapped(),
+        strip.width(),
+        strip.height()
+    );
+    let (current_center, strip_center, width) = filmstrip_centering(viewer, &shell.window)
+        .unwrap_or_else(|| {
+            panic!(
+                "{where_}: the filmstrip should hold a thumbnail for the current photo (index {}, \
+                 window starts at {}, {} built)",
+                imp.current_index.get(),
+                imp.thumb_window_start.get(),
+                imp.thumb_items.borrow().len()
+            )
+        });
+    assert!(
+        width > 0.0,
+        "{where_}: the current film's thumbnail should have a real width, got {width}"
+    );
+    let delta = current_center - strip_center;
+    assert!(
+        delta.abs() <= FILMSTRIP_CENTER_TOLERANCE_PX,
+        "{where_}: the current photo (index {}) should sit in the middle of the filmstrip, \
+         but it is {delta:.1}px off centre (thumb centre {current_center:.1}, strip centre \
+         {strip_center:.1})",
+        imp.current_index.get()
+    );
+}
+
+/// The filmstrip is how a user knows where they are in a long photo run, and the
+/// one thing it must always do is put the photo you are looking at in the middle
+/// — that is what makes "keep going" and "go back" legible at a glance.
+///
+/// Nothing covered this. `ui_viewer_toolbar.rs` asserts the chrome's CSS classes
+/// and `ux_viewer_pointer_flows.rs` asserts chrome comes *back* after an
+/// immersive fold, but no scenario ever looked at the strip itself, so a
+/// filmstrip that never rendered, or that pinned the current photo to the edge
+/// after a jump, would have left every suite green.
+///
+/// The journey walks the whole run the way a user does — the Next button, the
+/// keyboard, and a jump to the end — and checks the invariant after every step.
+/// The fixture has twelve photos, more than the strip's eleven-item window, so
+/// this crosses the window boundary and exercises the lazy extension as well as
+/// the initial build. Twelve distinct scenes matter here too: a strip of
+/// identical placeholder tiles cannot be checked by eye, and several of the
+/// guards in `update_thumb_scroll_position` bail out quietly, which is exactly
+/// the kind of failure a visual assertion is supposed to catch.
+fn journey_filmstrip_shows_every_photo_and_centres_the_current_one() {
+    let shell = Shell::with_photos(12);
+    let ui = &shell.ui;
+    let nav = shell.window.nav_view();
+    let grid = shell.visible_photos_grid();
+    let total = shell.items.len();
+    assert!(
+        total > 11,
+        "the fixture needs more photos than the filmstrip's 11-item window, got {total}"
+    );
+
+    let tile = shell.tile_for(&grid, MediaId::from(shell.items[0].id), "the Photos grid");
+    ui.click(&tile, "the first photo");
+    let viewer = expect_page::<ViewerPage>(ui, &nav, "opening the first photo");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer
+            .imp()
+            .edit_btn
+            .get()
+            .is_sensitive()),
+        "the photo should finish loading before the filmstrip is judged"
+    );
+
+    // Opened on the first photo of the run: the strip should be built and the
+    // current tile centred even at the very start, where centring is the easiest
+    // thing to get wrong because there is nothing to scroll toward.
+    assert_filmstrip_centers_current(ui, &shell, &viewer, "on opening the first photo");
+    assert!(
+        viewer.imp().thumb_items.borrow().len() > 1,
+        "the filmstrip should hold more than one thumbnail, got {}",
+        viewer.imp().thumb_items.borrow().len()
+    );
+
+    // Step forward with the Next button, as a user browsing a run would.
+    for step in 1..4u32 {
+        ui.click(&viewer.imp().next_btn.get(), "Next");
+        assert!(
+            ui.wait_until(Duration::from_secs(6), || viewer.current_index() == step),
+            "Next should advance to index {step}, still at {}",
+            viewer.current_index()
+        );
+        assert_filmstrip_centers_current(ui, &shell, &viewer, &format!("after Next to {step}"));
+    }
+
+    // The same invariant through the keyboard, which reaches the viewer by a
+    // different route and must not leave the strip behind.
+    assert!(
+        ui.press_key(
+            &shell.window,
+            gtk::gdk::Key::Right,
+            gtk::gdk::ModifierType::empty()
+        ),
+        "Right should be handled by the viewer keyboard router"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(6), || viewer.current_index() == 4),
+        "Right should advance to index 4, still at {}",
+        viewer.current_index()
+    );
+    assert_filmstrip_centers_current(ui, &shell, &viewer, "after the Right arrow key");
+
+    // Jump to the end of the run. This is the interesting one: the current photo
+    // is the last one, so the window has to extend past its original range and
+    // the strip has nowhere to scroll *toward* on the right. A strip that
+    // centres by scrolling rather than by transform would jam against the end
+    // here and leave the current photo stranded at the right edge.
+    let last = u32::try_from(total - 1).expect("fixture is small");
+    viewer.show_at(last);
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.current_index() == last),
+        "jumping to the end should land on index {last}, still at {}",
+        viewer.current_index()
+    );
+    assert_filmstrip_centers_current(ui, &shell, &viewer, "on the last photo of the run");
+
+    // And back to the first, which is the mirror of the same problem: the window
+    // has to retreat to the start with nothing to scroll toward on the left.
+    viewer.show_at(0);
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.current_index() == 0),
+        "jumping back should land on index 0, still at {}",
+        viewer.current_index()
+    );
+    assert_filmstrip_centers_current(ui, &shell, &viewer, "back on the first photo");
+
+    // Resize the window. This is the case that is easy to miss: the strip centres
+    // from the viewport's `page_size`, so a window that gets narrower leaves the
+    // old transform in place unless something recomputes it. Maximizing and then
+    // un-maximizing is how a user meets it — the invariant has to hold at every
+    // size, not only the one the fixture happens to open at.
+    for (label, width, height) in [("narrowed", 1_180u32, 820u32), ("restored", 1_440, 900)] {
+        shell.window.set_default_size(
+            i32::try_from(width).unwrap(),
+            i32::try_from(height).unwrap(),
+        );
+        shell.window.unmaximize();
+        shell.window.set_default_size(
+            i32::try_from(width).unwrap(),
+            i32::try_from(height).unwrap(),
+        );
+        assert!(
+            ui.wait_until(Duration::from_secs(8), || shell
+                .window
+                .width()
+                .eq(&i32::try_from(width).unwrap())),
+            "the window should be {width}px wide once {label}, got {}",
+            shell.window.width()
+        );
+        ui.pump(Duration::from_millis(600));
+        assert_filmstrip_centers_current(ui, &shell, &viewer, &format!("with the window {label}"));
+    }
+
+    // The strip must be showing real pictures, not blank cells. Geometry alone
+    // cannot tell the two apart: a `GtkPicture` with no paintable is still laid
+    // out, still has a width, and still centres perfectly — which is exactly how
+    // a completely grey filmstrip passed this journey the first time it ran.
+    // Every built thumbnail therefore has to carry an actual paintable.
+    let imp = viewer.imp();
+    let items = imp.thumb_items.borrow();
+    let offset = (imp.current_index.get() - imp.thumb_window_start.get()) as usize;
+    let pictures: Vec<Option<gtk::Picture>> = items
+        .iter()
+        .map(|item| {
+            item.first_child()
+                .and_then(|child| child.downcast::<gtk::Picture>().ok())
+        })
+        .collect();
+    let painted = pictures
+        .iter()
+        .filter(|pic| pic.as_ref().is_some_and(|p| p.paintable().is_some()))
+        .count();
+    assert_eq!(
+        painted,
+        pictures.len(),
+        "every filmstrip thumbnail should show a decoded picture, got {painted}/{} — a blank \
+         cell is laid out and centres just as well as a filled one",
+        pictures.len()
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| item.is_mapped() && item.width() > 0),
+        "every filmstrip thumbnail should be laid out, got widths {:?}",
+        items.iter().map(|i| i.width()).collect::<Vec<_>>()
+    );
+
+    // The current photo is the one the strip draws larger. Asserting that as
+    // "it has the greatest width" was true only while every thumbnail had the
+    // same shape: a 21:9 photo lays out far wider than a 1:1 one, so on a mixed
+    // set the current 1:1 thumbnail is not the widest and the assertion started
+    // failing on a correct strip. What the CSS actually does is apply
+    // `scale(1.24)` to the current thumbnail, so the thing to check is that its
+    // *drawn* size exceeds the size it was laid out at, while every other
+    // thumbnail is drawn at exactly its laid-out size.
+    let drawn_vs_allocated: Vec<(f64, i32)> = items
+        .iter()
+        .map(|item| {
+            let drawn = item
+                .compute_bounds(&shell.window)
+                .map(|b| f64::from(b.width()))
+                .unwrap_or(0.0);
+            (drawn, item.allocation().width())
+        })
+        .collect();
+    let (current_drawn, current_alloc) = drawn_vs_allocated[offset];
+    assert!(
+        current_drawn > f64::from(current_alloc) + 0.5,
+        "the current photo's thumbnail should be drawn larger than it is laid out, \
+         got drawn {current_drawn} against allocated {current_alloc} (scale 1.24 expected)"
+    );
+    for (n, (drawn, alloc)) in drawn_vs_allocated.iter().enumerate() {
+        if n == offset {
+            continue;
+        }
+        assert!(
+            (drawn - f64::from(*alloc)).abs() < 0.5,
+            "only the current thumbnail is enlarged; #{n} is drawn at {drawn} against \
+             allocated {alloc}"
+        );
+    }
 }
 
 /// Take an album's sidebar row, right-click it, and press the named entry in the
@@ -912,12 +1465,41 @@ fn journey_viewer_delete_toast_offers_undo() {
     );
 
     let overlay = viewer.imp().toast_overlay.get().clone();
-    let toast = wait_for_descendant::<gtk::Widget>(&overlay, Duration::from_secs(4))
-        .and_then(|_| find_toast(&overlay))
-        .expect("the delete should report itself with a toast");
-    let undo = find_button_with_label(&toast, &tr("viewer.toast.undo"))
-        .expect("the delete toast should offer a way back");
-    let toast_ui = Ui::for_widget(&toast);
+    // Wait for the toast's Undo button to be *mapped*, and click it from the
+    // widget found by that same wait.
+    //
+    // Holding a button across the earlier database waits used to work only
+    // because nothing else in the shell was competing for the main loop. With
+    // the domain-event consumer wired in (which is what the application does),
+    // a trash change also schedules an album refresh, and the 6-second toast
+    // could be gone — or already animating out — by the time the click was
+    // aimed, leaving a stale reference that hit-tests to nothing. Re-locating
+    // the control immediately before pressing it is also the more honest test:
+    // the claim is that the toast offers a *reachable* way back
+    // (`toasts::success_with_action`: "cannot reach before the toast disappears
+    // is not an undo"), so the wait is part of the assertion, not a workaround.
+    let undo_label = tr("viewer.toast.undo");
+    let mut undo_found: Option<gtk::Button> = None;
+    let reached = ui.wait_until(Duration::from_secs(4), || {
+        undo_found = find_toast(&overlay)
+            .and_then(|toast| find_button_with_label(&toast, &undo_label))
+            .filter(|button| button.is_mapped());
+        undo_found.is_some()
+    });
+    let undo = undo_found.unwrap_or_else(|| {
+        panic!(
+            "the delete toast should offer a reachable way back; overlay children mapped: {:?}",
+            descendants(&overlay)
+                .iter()
+                .map(|w: &gtk::Widget| (w.type_().name().to_string(), w.is_mapped()))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert!(
+        reached,
+        "the delete toast's Undo should be on screen, not dismissed before it could be pressed"
+    );
+    let toast_ui = Ui::for_widget(&undo);
     toast_ui.click(&undo, "Undo");
 
     assert!(
@@ -1118,9 +1700,25 @@ fn journey_save_overwrite_rewrites_the_file_and_keeps_a_backup() {
         item.path, target.path,
         "the row should still point at the original"
     );
-    assert_ne!(
-        item.blake3_hash, target.blake3_hash,
-        "the row's recorded content hash should follow the new bytes"
+    // The library row follows the bytes asynchronously: the encoder replaces the
+    // file first, then the editor hands the recomputed metadata to the database
+    // actor, and only then does the row carry the new content hash. Reading the
+    // row once — which is what an earlier version of this assertion did — races
+    // that commit and reports the *old* row as a product failure roughly half the
+    // time, because the scanner deliberately leaves the column empty
+    // (`local.rs`: "The column is left empty") while the editor fills it with a
+    // real blake3 of the rewritten file. So this waits for the durable effect
+    // instead of sampling it, and still fails loudly if the hash never lands.
+    let rehashed = ui.wait_until(Duration::from_secs(15), || {
+        db::get_media_item(&shell.pool, target.id)
+            .is_ok_and(|row| !row.blake3_hash.is_empty() && row.blake3_hash != target.blake3_hash)
+    });
+    let item = db::get_media_item(&shell.pool, target.id).unwrap();
+    assert!(
+        rehashed,
+        "the row's recorded content hash should follow the new bytes, \
+         got {:?} (pre-edit was {:?})",
+        item.blake3_hash, target.blake3_hash
     );
 }
 
@@ -1362,11 +1960,19 @@ fn journey_empty_trash_destroys_every_photo_for_good() {
 /// journey is actually about. It also asserts the two things a scenario cannot
 /// work without: the source image is decoded, and the panel has settled so a
 /// click lands on a live button rather than one that is still spinning up.
-fn open_editor(shell: &Shell, label: &str) -> (ViewerPage, photo_viewer::ui::EditorPanel) {
+///
+/// `target` is the row to open rather than a slot index, because which photo a
+/// journey needs is a property of its assertions: crop geometry is only
+/// meaningful on a non-square source, and deriving that from the library's sort
+/// order made the dependency invisible.
+fn open_editor(
+    shell: &Shell,
+    target: &MediaItem,
+    label: &str,
+) -> (ViewerPage, photo_viewer::ui::EditorPanel) {
     let ui = &shell.ui;
     let nav = shell.window.nav_view();
     let grid = shell.visible_photos_grid();
-    let target = shell.items[0].clone();
 
     let tile = shell.tile_for(&grid, MediaId::from(target.id), "the Photos grid");
     ui.click(&tile, label);
@@ -1416,8 +2022,13 @@ fn settle_editor_preview(ui: &Ui, editor: &photo_viewer::ui::EditorPanel) {
 fn journey_editor_rotation_buttons_then_reset_restore_the_source() {
     let shell = Shell::new();
     let ui = &shell.ui;
-    let (_viewer, editor) = open_editor(&shell, "the photo to rotate");
-    let original_bytes = std::fs::read(&shell.items[0].path).unwrap();
+    // Named rather than `items[0]`: rotation is asserted on the pending `Rotation`
+    // delta and on disk bytes, never on pixel dimensions, so any fixture will do —
+    // but naming it keeps the choice from silently re-deriving itself from the
+    // library's sort order every time the fixture set changes.
+    let target = shell.item_from_fixture("ridge-square");
+    let (_viewer, editor) = open_editor(&shell, &target, "the photo to rotate");
+    let original_bytes = std::fs::read(&target.path).unwrap();
 
     // Reset is armed by `has_pending_edits`, so with a clean session it must not
     // be pressable at all — a test that could reset an untouched panel would
@@ -1506,13 +2117,13 @@ fn journey_editor_rotation_buttons_then_reset_restore_the_source() {
 
     // The durable half of the contract: nothing above touched a byte on disk.
     assert_eq!(
-        std::fs::read(&shell.items[0].path).unwrap(),
+        std::fs::read(&target.path).unwrap(),
         original_bytes,
         "rotating and resetting are pending edits; the source file must be byte-for-byte unchanged"
     );
-    let item = db::get_media_item(&shell.pool, shell.items[0].id).unwrap();
+    let item = db::get_media_item(&shell.pool, target.id).unwrap();
     assert_eq!(
-        item.blake3_hash, shell.items[0].blake3_hash,
+        item.blake3_hash, target.blake3_hash,
         "a pending edit must not rewrite the library row's content hash"
     );
 }
@@ -1530,14 +2141,27 @@ fn journey_editor_rotation_buttons_then_reset_restore_the_source() {
 /// or a folded group makes unpressable, so they are reached by pointer and
 /// scrolled to rather than set directly.
 fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
-    let shell = Shell::new();
+    // A 4:3 source, named explicitly. This journey's whole point is that stepping
+    // the ring from "source" to 1:1 *changes the rectangle* — which is only true
+    // when the source is not already square. Aiming at `items[0]` made that
+    // dependency implicit and, once the fixtures became a multi-ratio set whose
+    // first row is a 1:1, the "squaring should take width away" assertion failed
+    // on a 420x420 source where stepping to 1:1 is correctly a no-op.
+    let shell = Shell::with_photos(3);
     let ui = &shell.ui;
-    let (_viewer, editor) = open_editor(&shell, "the photo to crop");
-    let original_bytes = std::fs::read(&shell.items[0].path).unwrap();
+    let target = shell.item_from_fixture("coast-43");
+    let (_viewer, editor) = open_editor(&shell, &target, "the photo to crop");
+    let original_bytes = std::fs::read(&target.path).unwrap();
     let (source_w, source_h) = editor.imp().source_dimensions.get();
     assert!(
         source_w > 0 && source_h > 0,
         "the editor should know the source dimensions before cropping"
+    );
+    assert_eq!(
+        (source_w, source_h),
+        (480, 360),
+        "this journey's geometry expectations are written for the 4:3 coast fixture, \
+         so opening a differently-proportioned photo means they no longer hold"
     );
 
     // Before crop mode the ratio arrows are not on screen at all.
@@ -1585,9 +2209,9 @@ fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
     );
     let source_ratio_label = editor.imp().crop_ratio_label.get().text().to_string();
 
-    // Scroll the arrows into reach, then step forward. The fixture's photos are
-    // square, so the first step lands on 1:1 and the rectangle is unchanged by
-    // it — the label is what proves the press registered.
+    // Scroll the arrows into reach, then step forward. The source is 4:3, so the
+    // first step lands on 1:1 and genuinely narrows the rectangle: that geometry
+    // change is the proof the press did something a label alone could not.
     ui.scroll_to_reveal(&editor.imp().crop_ratio_next_btn.get(), "Next crop ratio");
     ui.click(&editor.imp().crop_ratio_next_btn.get(), "Next crop ratio");
     settle_editor_preview(ui, &editor);
@@ -1601,11 +2225,28 @@ fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
         tr("editor.crop.ratio.square"),
         "one step forward from the source ratio should offer 1:1"
     );
+    let square = editor
+        .imp()
+        .state
+        .borrow()
+        .crop
+        .expect("a 1:1 ratio should stage a rectangle");
+    assert_eq!(
+        square.2, square.3,
+        "the staged rectangle should be square, got {square:?}"
+    );
+    assert!(
+        square.2 < source_w,
+        "squaring a {source_w}x{source_h} source should take width away, got {square:?}"
+    );
+    assert_eq!(
+        square.3, source_h,
+        "squaring should keep the full height and trim the sides, got {square:?}"
+    );
 
-    // A second step reaches 4:3, which genuinely changes the geometry: the
-    // rectangle has to lose height against a square source. This is the
-    // assertion that the arrows change what will be saved, not just what is
-    // written on a label.
+    // A second step reaches 4:3, which for a 4:3 source is the whole frame
+    // again — the rectangle grows back out to the full image, still inside the
+    // strip, and still holding the aspect the selector promised.
     ui.click(
         &editor.imp().crop_ratio_next_btn.get(),
         "Next crop ratio a second time",
@@ -1623,13 +2264,13 @@ fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
         .crop
         .expect("a 4:3 ratio should stage a rectangle");
     assert!(
-        four_three.3 < source_h,
-        "a 4:3 crop of a {source_w}x{source_h} source should be shorter than the source, \
-         got {four_three:?}"
-    );
-    assert!(
         four_three.2 * 3 == four_three.3 * 4,
         "the staged rectangle should hold the 4:3 aspect the selector promised, got {four_three:?}"
+    );
+    assert_eq!(
+        four_three,
+        (0, 0, source_w, source_h),
+        "a 4:3 ratio on a 4:3 source should be the whole frame, got {four_three:?}"
     );
 
     // The previous arrow walks the same ring backwards, and returning to the
@@ -1683,7 +2324,7 @@ fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
     );
 
     assert_eq!(
-        std::fs::read(&shell.items[0].path).unwrap(),
+        std::fs::read(&target.path).unwrap(),
         original_bytes,
         "staging and clearing a crop is a pending edit; the source must be unchanged"
     );

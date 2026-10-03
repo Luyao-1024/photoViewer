@@ -173,6 +173,9 @@ mod imp {
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
+        /// Set by [`Self::set_reveal_folder_observer_for_tests`]; see there for
+        /// why the handoff itself is not what a test watches.
+        pub reveal_folder_observer: RefCell<Option<Rc<dyn Fn(&str)>>>,
         pub sync_badge_media_id: Cell<i64>,
         pub sync_badge_request_token: Cell<u64>,
         pub sync_badge_state: Cell<Option<CloudState>>,
@@ -296,6 +299,12 @@ mod imp {
         /// True while a filmstrip centering tick callback is already queued.
         /// Coalesces bursts of thumbnail-loaded events into one layout read.
         pub thumb_scroll_scheduled: Cell<bool>,
+        /// True when a centring request arrived that the current burst has not
+        /// answered yet. Set on *every* request, including one that arrives
+        /// while `thumb_scroll_scheduled` is set: centring is idempotent, so
+        /// the request has to survive the burst that was already running rather
+        /// than be dropped as a duplicate.
+        pub thumb_scroll_requested: Cell<bool>,
         /// Monotonic id for animated adjustment moves. A newer target cancels
         /// any previous filmstrip scroll animation on its next frame.
         pub thumb_scroll_animation_seq: Cell<u64>,
@@ -596,6 +605,23 @@ impl ViewerPage {
     pub fn set_db_actor(&self, db_actor: DbActorHandle) {
         *self.imp().db_actor.borrow_mut() = Some(db_actor.clone());
         self.imp().editor_panel.get().set_db_actor(db_actor);
+    }
+
+    /// Observe the folder URI "Show in File Manager" would hand to the desktop,
+    /// **instead of** handing it over.
+    ///
+    /// The handoff is not something a test can watch, and it is actively harmful
+    /// to trigger: `gtk::show_uri_full` launches the developer's file manager at
+    /// a directory the fixture is about to delete, so the run leaves behind a
+    /// window that outlives it and reports the folder as missing. That is a real
+    /// side effect in someone's session, not an observation.
+    ///
+    /// The *URI* is the part this application decides — a photo's containing
+    /// folder, falling back to the file's own URI when it has no parent — so that
+    /// is what a test asserts, and the desktop never enters the picture. The real
+    /// handoff is unchanged when no observer is installed.
+    pub fn set_reveal_folder_observer_for_tests<F: Fn(&str) + 'static>(&self, observer: F) {
+        *self.imp().reveal_folder_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
     /// Register a callback fired when the user presses ArrowLeft / ArrowRight /

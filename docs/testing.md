@@ -74,7 +74,7 @@ filesystem:
     that album's photos reached the Trash rather than being destroyed, the album
     left the sidebar, and every other album's files are byte-for-byte unchanged.
 14. Open a photo whose bytes cannot be decoded — the surface must name the file,
-    Retry must re-run the load and land back on the same honest error, Show in
+    Retry must bring the surface *back* rather than leave a grey stand-in, Show in
     File Manager must take a real press, and Escape must still get the user out.
 15. Ignore one album and Delete another through the row's right-click menu — the
     contrast is the point: Ignore must leave every file on disk and only drop the
@@ -82,6 +82,18 @@ filesystem:
 16. Drive the Viewer from the keyboard — `R`/`Shift+R` rotate and come back, `+`
     and `0` move the same zoom scale the toolbar does, arrows walk the same list
     the Next button walks, `E` lands in the same editor, and Escape still exits.
+17. Walk the whole run and check the filmstrip after every step: it is on
+    screen, it holds real pictures, and the current photo's thumbnail sits in
+    the middle of it — through the Next button, the keyboard, a jump to the last
+    photo and a jump back to the first, and with the window narrowed and restored.
+18. Drop four new photographs into the library folder in four different aspect
+    ratios and run the production scan: every file must be indexed, every row's
+    recorded size must agree with the bytes on disk, and every import must come
+    back out of the thumbnail workers as an actual picture.
+19. Delete photographs from outside the application, the way a sync client or a
+    file manager would, and run the same scan: the rows for the missing files must
+    be pruned outright, every photo still on disk must keep its row and stay
+    renderable, and one of the survivors must still open normally.
 
 Plus interaction contracts for variants a journey would have to contort to reach:
 double activation pushing exactly one Viewer, the mode capsule, keyboard routing
@@ -89,6 +101,102 @@ double activation pushing exactly one Viewer, the mode capsule, keyboard routing
 chrome and zoom state, sidebar navigation, album multi-select, the album picker's
 copy and move, the album context menu, and the sync badge surviving the jump from a
 grid tile to the Viewer header.
+
+### Controls that hand off to the desktop
+
+A control whose effect is a handoff — "Show in File Manager"
+(`gtk::show_uri_full`), opening a URL, handing a file to another application —
+is pressed, but the handoff itself is intercepted by a `*_for_tests` observer
+(`ViewerPage::set_reveal_folder_observer_for_tests`). Letting the real call
+through is not a harmless side effect: it launches the developer's file manager
+at a fixture directory the test deletes moments later, so the run leaves behind
+a window that outlives it and reports the folder as missing. A test must not
+reach into someone's session to do that.
+
+What such a scenario asserts is the part the application actually decides — here
+*which* folder, matched against a fixed fixture directory — and the desktop
+never enters the picture. The same rule covers any press whose only consequence
+is outside the process: spawning, opening a socket, or writing to the user's
+real home directory. Asserting the resulting toast instead would make the suite
+environment-dependent, because which of the two outcomes happens is a fact about
+the machine rather than about the code.
+
+### Asserting a re-entry is not "still true"
+
+Retrying a load, re-running a refresh, or re-entering a page leaves the previous
+state *up* while it works. Asserting that state after the press is vacuous: it
+passed before the press too, so it would pass if the button were dead. Capture
+the thing that actually changes — a load token, a generation counter, a request
+id — assert it moved, and only then assert the end state.
+
+### Fixed fixtures
+
+UX fixtures are committed under `tests/fixtures/media/ux/` and laid out by
+`tests/common/shell.rs`, so the bytes a scenario runs against are reviewable in
+a diff and identical on every machine. The work tree itself lives in the project
+under the gitignored `target/ux-fixtures/run-<pid>/`, so a failing run leaves
+its layout where it can be inspected instead of scattering directories through
+`$HOME`. Only the run root varies — two concurrent runs must not share a
+library — and the names below it are fixed and asserted by name:
+
+```
+target/ux-fixtures/run-<pid>/
+  photos/          photo-0.jpg … photo-13.jpg   (fourteen scenes, eight aspect ratios)
+  broken-album/    <stem>.jpg                   (the undecodable fixture)
+  second-album/    three.jpg                    (seed_extra_album)
+```
+
+Ask for a fifteenth photo and `Shell::with_photos` fails with a message pointing
+at the fixture directory: add the fixture rather than generating one, so the bytes
+stay reviewable.
+
+The fourteen are distinct landscape *photographs* spanning eight aspect ratios —
+1:1, 4:3, 3:2, 16:9, 21:9, 3:4, 2:3, 9:16 — and all three of those properties
+are load-bearing.
+
+They are distinct scenes because the filmstrip is supposed to be readable at a
+glance and several of the guards in `update_thumb_scroll_position` bail out
+quietly; a strip of identical tiles cannot be checked by eye, so a strip that
+quietly stopped rendering would pass. They number fourteen because the filmstrip
+builds an eleven-item window around the current index, so a scenario that walks
+the whole run crosses that boundary and exercises the lazy extension instead of
+only the initial build. They are **mixed shapes** because uniform shapes make
+whole classes of assertion unreachable: a filmstrip thumbnail's width comes from
+its aspect ratio, so with identical shapes the current photo is trivially the
+widest one, and centring errors that accumulate with the current item's offset
+into the strip are invisible. Mixed shapes found two real defects that a uniform
+set could not — the filmstrip centring staleness described in
+`docs/modules/viewer.md`, and a crop journey whose "squaring the source narrows
+it" assertion had been passing for the wrong reason.
+
+Sizes are read out of the fixture's own bytes (`jpeg_dimensions`) rather than
+declared. A hand-written `width: Some(480)` beside a 512x384 file is a broken
+fixture, not a product bug, but it surfaces as one — a save that rewrites the
+picture then fails to update what the row says about it.
+
+Scenarios that depend on a particular shape name the fixture
+(`Shell::item_from_fixture("coast-43")`) rather than indexing `items[0]`. Which
+photo a journey needs is a property of its assertions, and re-deriving it from
+the library's sort order made the dependency invisible until the fixture set
+changed underneath it.
+
+### What the shell does not reproduce
+
+`Shell` wires the same production actors `src/main.rs` does, but it does **not**
+run the window's domain-event consumer (`app::apply_domain_event_to_legacy_ui`).
+That consumer is the path by which a library change the user did not make in a
+widget — a scan finding new photos, a filesystem-watcher event, a sync landing —
+reaches the grid.
+
+Wiring it was tried and reverted, and the reason is worth keeping: with it
+connected, a search result tile was reproducibly laid out, mapped, and yet
+*unreachable* — a pointer at its centre landed on a `AdwStatusPage` covering the
+results. That is a real defect in the Search page, it reproduces on an unmodified
+checkout, and it is tracked separately; it is not a harness problem, and hiding
+it behind a narrower wiring would have been the wrong trade. The import and
+reconcile journeys therefore assert the scan, the rows, and the loaders, and say
+so in their own doc comments rather than implying they cover the grid's live
+list.
 
 ### Reaching a control that is below the fold
 

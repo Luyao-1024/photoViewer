@@ -56,6 +56,7 @@ fn deferred_thumbnail_paint_waits_for_idle_and_rejects_a_stale_binding() {
         texture: gtk::gdk::MemoryTexture::new(1, 1, gtk::gdk::MemoryFormat::R8g8b8a8, &bytes, 4)
             .upcast(),
         is_light: None,
+        unavailable: false,
     };
 
     defer_thumbnail_paint(
@@ -89,6 +90,7 @@ fn deferred_thumbnail_paint_waits_for_idle_and_rejects_a_stale_binding() {
         )
         .upcast(),
         is_light: None,
+        unavailable: false,
     };
     *binding_state.borrow_mut() = Some(TileBinding::new(
         3,
@@ -123,6 +125,7 @@ fn loaded_with_light(is_light: Option<bool>) -> crate::core::thumbnails::LoadedT
         texture: gtk::gdk::MemoryTexture::new(1, 1, gtk::gdk::MemoryFormat::R8g8b8a8, &bytes, 4)
             .upcast(),
         is_light,
+        unavailable: false,
     }
 }
 
