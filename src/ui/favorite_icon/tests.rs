@@ -54,11 +54,11 @@ fn css_color_recolors_the_mark() {
     // Cairo hands back BGRA, so the red channel is the third byte.
     let mut strongest = 0u8;
     let mut red = 0usize;
-    for px in pixels.chunks_exact(4) {
-        if px[3] > strongest {
-            strongest = px[3];
+    for [_, _, channel_b, alpha] in pixels.as_chunks::<4>().0 {
+        if *alpha > strongest {
+            strongest = *alpha;
         }
-        if px[3] > 200 && px[2] > 200 {
+        if *alpha > 200 && *channel_b > 200 {
             red += 1;
         }
     }
