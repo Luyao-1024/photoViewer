@@ -35,11 +35,39 @@
 //!
 //! [`favorite_icon::tinted`]: tinted
 //! [`data/icons/photoviewer-heart-symbolic.svg`]: ../../data/icons/photoviewer-heart-symbolic.svg
+//!
+//! # Following the colour, not sampling it
+//!
+//! `GtkStyleContext::color()` is not a CSS property lookup. It is the colour
+//! the context last resolved, and this app *transitions* that property:
+//! `.glass-toolbar-button` — which both favorite buttons carry — declares
+//! `transition: … color 120ms ease`, and the app's longest colour transition is
+//! 350ms. Two consequences, both measured against a mapped window:
+//!
+//! * At the instant `notify::css-classes` fires, the context still holds the
+//!   colour from *before* the class landed. Reading there returns the old
+//!   colour, so an icon painted on that read keeps the previous state's colour
+//!   forever — which is how the heart came out inverted: white while
+//!   favorited, red while not.
+//! * Even a read a few milliseconds later returns a *blend* (at 16ms into the
+//!   120ms fade the context answers `(255, 230, 227, 252)`), so one read can
+//!   never be the answer: the value is still moving.
+//!
+//! So the tint follows: [`follow`] watches the things that can move the colour
+//! — a CSS class, a widget state flag (hover), the widget being mapped, a
+//! theme switch — and then a frame-clock tick re-reads and repaints until the
+//! colour stops changing. The heart then fades in step with the chrome around
+//! it instead of lagging one state behind it.
 
 use gtk4 as gtk;
 use gtk4::gdk;
+use gtk4::glib;
+use gtk4::glib::ControlFlow;
 use gtk4::prelude::*;
-use std::collections::HashMap;
+use libadwaita as adw;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use std::sync::Mutex;
 
 /// Icon name for the favorite mark — the asset's one name, and the word the
@@ -65,39 +93,75 @@ const RESOURCE: &str = "/io/github/luyao_1024/photoviewer/icons/photoviewer-hear
 /// for a raster, and a caller that just sets a paintable would silently get a
 /// white heart that ignores `.viewer-favorite-btn.favorite-active` — the
 /// favorited state would stop being red with nothing failing. Feed this the
-/// colour the widget's style context resolved and the CSS rule keeps working,
-/// including on a theme switch.
+/// colour the widget's style context resolved, and the CSS rule keeps working:
+/// see the module docs for why that colour has to be *followed* rather than
+/// read once.
 ///
-/// Results are cached per colour: a theme and a favourited state are the only
-/// two things that move it, and each is a handful of pixels to composite once.
+/// Results are cached per colour, and the cache is bounded. Following a
+/// transition means one fade contributes a handful of intermediate colours, so
+/// a cache that only grows would turn a session of toggles into tens of
+/// megabytes of textures; [`TINT_CACHE_ENTRIES`] keeps it to about a megabyte
+/// and a miss costs one composite of a handful of pixels.
 pub(crate) fn tinted(colour: gdk::RGBA) -> gdk::Texture {
-    static CACHE: Mutex<Option<HashMap<[u8; 4], gdk::Texture>>> = Mutex::new(None);
+    tinted_key(key_of(colour))
+}
 
-    let key = [
+/// The mark painted in an already-quantised colour, which is what the follow
+/// tick has: it compares colours to decide whether they are still moving, and
+/// it must not compare floats to do it.
+fn tinted_key(key: [u8; 4]) -> gdk::Texture {
+    static CACHE: Mutex<Option<TintCache>> = Mutex::new(None);
+
+    let mut cache = CACHE.lock().expect("the tint cache is not poisoned");
+    let cache = cache.get_or_insert_with(TintCache::default);
+    if let Some(found) = cache.get(&key) {
+        return found;
+    }
+    let texture = paint(key);
+    cache.insert(key, texture.clone());
+    texture
+}
+
+/// How many tinted variants to keep before dropping the oldest. A 120ms fade at
+/// 60Hz is about seven steps, and a heart is on at most a few buttons at once,
+/// so this is roughly two orders of magnitude of headroom over a real fade.
+const TINT_CACHE_ENTRIES: usize = 64;
+
+/// The colour of a tint, quantised to the 8 bits a texture carries — so
+/// comparing two of them is a comparison of what would actually be painted.
+fn key_of(colour: gdk::RGBA) -> [u8; 4] {
+    [
         (colour.red() * 255.0).round() as u8,
         (colour.green() * 255.0).round() as u8,
         (colour.blue() * 255.0).round() as u8,
         (colour.alpha() * 255.0).round() as u8,
-    ];
-    if let Some(found) = CACHE
-        .lock()
-        .expect("the tint cache is not poisoned")
-        .as_ref()
-        .and_then(|cache| cache.get(&key))
-    {
-        return found.clone();
-    }
-
-    let texture = paint(colour, key);
-    CACHE
-        .lock()
-        .expect("the tint cache is not poisoned")
-        .get_or_insert_with(HashMap::new)
-        .insert(key, texture.clone());
-    texture
+    ]
 }
 
-fn paint(_colour: gdk::RGBA, key: [u8; 4]) -> gdk::Texture {
+/// Insertion-ordered so eviction is a pop off the front rather than a scan.
+#[derive(Default)]
+struct TintCache {
+    textures: HashMap<[u8; 4], gdk::Texture>,
+    order: VecDeque<[u8; 4]>,
+}
+
+impl TintCache {
+    fn get(&self, key: &[u8; 4]) -> Option<gdk::Texture> {
+        self.textures.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: [u8; 4], texture: gdk::Texture) {
+        self.textures.insert(key, texture);
+        self.order.push_back(key);
+        while self.order.len() > TINT_CACHE_ENTRIES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.textures.remove(&oldest);
+            }
+        }
+    }
+}
+
+fn paint(key: [u8; 4]) -> gdk::Texture {
     // `from_resource` reads the asset straight out of the GResource, so there is
     // no path to get wrong and no file handle to leak.
     let mask = gdk_pixbuf::Pixbuf::from_resource(RESOURCE)
@@ -131,6 +195,24 @@ fn paint(_colour: gdk::RGBA, key: [u8; 4]) -> gdk::Texture {
     gdk::Texture::for_pixbuf(&out)
 }
 
+/// Frames the follow-tick repaints for before it gives up waiting for the
+/// colour to settle. The app's longest colour transition is 350ms
+/// (`box.mode-selector`), about 21 frames at 60Hz, so this is roughly twice the
+/// longest fade with room for a slower compositor.
+///
+/// It is a bound, not a schedule: a colour that settles sooner stops sooner.
+const FOLLOW_FRAMES: u32 = 45;
+
+/// Consecutive frames of an unchanged colour that end the follow early.
+///
+/// Not 1. The first frames after a class change can report the *same* colour
+/// twice while the fade is still getting under way — measured: frames 1 and 2
+/// both answered `(255, 247, 246)` and the fade only started moving on frame 3
+/// — so "unchanged since last frame" is not "finished", and reading it that way
+/// leaves the heart parked a few percent into the transition, which looks
+/// exactly like the wrong colour it was meant to replace.
+const SETTLED_FRAMES: u32 = 3;
+
 /// Show the mark on `button`, painted in whatever colour the button's own
 /// style context resolves, and keep it that way.
 ///
@@ -140,19 +222,143 @@ fn paint(_colour: gdk::RGBA, key: [u8; 4]) -> gdk::Texture {
 /// nothing with nothing failing. Reading the colour back out of the style
 /// context keeps CSS the one place a colour is written down.
 ///
-/// Following it is a `notify::css-classes` watch rather than a call at each
-/// site that toggles `favorite-active`. That is the difference between "this
-/// one path repaints" and "the icon follows the class": a class added
-/// anywhere — production, a test, a future caller — repaints, and the resolved
-/// colour is re-read each time so a theme switch lands too.
+/// This is wired to what can *move* that colour rather than to each call site
+/// that toggles `favorite-active`, which is the difference between "this one
+/// path repaints" and "the icon follows the colour":
+///
+/// * a CSS class — production, a test, or a future caller;
+/// * a widget state flag, because the hover red
+///   (`.viewer-favorite-btn.favorite-active:hover`) is a state, not a class;
+/// * being mapped, for a button that resolves its icon size then;
+/// * a theme switch, through the shared [`retint_on_theme_change`] watch.
 pub(crate) fn follow(button: &gtk::Button) {
-    button.connect_css_classes_notify(apply);
-    button.connect_map(apply);
+    button.connect_css_classes_notify(refresh);
+    // GTK4 has no `state-flags` property to watch, only the signal that says
+    // it moved; hover and active live there.
+    button.connect_state_flags_changed(|button, _flags| refresh(button));
+    button.connect_map(refresh);
+    register(button);
+    refresh(button);
+}
+
+/// Re-read the resolved colour now, and keep following it while it moves.
+///
+/// Safe to call as often as anything changes: a theme switch, a hover, a class
+/// toggle, a remap. The tick it starts stops on its own, and a second call
+/// while one is running only adds a follower that converges on the same colour
+/// and then stops too.
+pub(crate) fn refresh(button: &gtk::Button) {
     apply(button);
+    follow_colour(button);
+}
+
+/// Repaint once per frame until the colour stops changing.
+///
+/// A frame-clock tick is the only clock that is already in step with the CSS
+/// transition: `style_context().color()` hands back whatever the fade has
+/// reached *now*, so reading it per frame walks the fade, and the first frame
+/// on which the quantised colour repeats for [`SETTLED_FRAMES`] frames running
+/// is the frame the fade is over. That is also why the follow cannot be a fixed
+/// delay: at 120ms the colour is a different value at every frame, and a read at
+/// 16ms is a blend rather than an answer.
+fn follow_colour(button: &gtk::Button) {
+    // A separate binding, so the closure can own the button while the call
+    // below still borrows the one it was handed.
+    let target = button.clone();
+    let state = Rc::new(RefCell::new(FollowState {
+        painted: None,
+        stable: 0,
+        frames: 0,
+    }));
+    button.add_tick_callback(move |_, _| {
+        let colour = key_of(target.style_context().color());
+        // Repaint before deciding to stop, so the frame the follow ends on is
+        // also the frame the icon lands on the final colour.
+        repaint_in(&target, colour);
+        let done = {
+            let mut state = state.borrow_mut();
+            state.frames += 1;
+            state.stable = if state.painted == Some(colour) {
+                state.stable + 1
+            } else {
+                0
+            };
+            state.painted = Some(colour);
+            state.frames >= FOLLOW_FRAMES || state.stable >= SETTLED_FRAMES
+        };
+        if done {
+            ControlFlow::Break
+        } else {
+            ControlFlow::Continue
+        }
+    });
+}
+
+struct FollowState {
+    /// The colour on the icon as of the previous frame, quantised the same way
+    /// the cache key is — comparing the texture's own key is what makes "still
+    /// moving" a comparison of what would actually be painted.
+    painted: Option<[u8; 4]>,
+    /// How many frames in a row that colour has held.
+    stable: u32,
+    frames: u32,
+}
+
+/// The buttons being followed, so one theme watch can re-tint all of them.
+///
+/// A theme switch moves `@window_fg_color` and therefore the colour of a
+/// button that is not in the favourited state, and it does it without a class
+/// or a state change — nothing on the widget fires. libadwaita says so out
+/// loud, and the module owns the mark, so the watch lives here rather than
+/// being asked of every surface.
+///
+/// Thread-local rather than a `static Mutex`: a `WeakRef` is a raw pointer and
+/// so not `Send`, and a GTK widget only ever lives on the thread that made it.
+struct Followed {
+    buttons: Vec<glib::WeakRef<gtk::Button>>,
+    theme_watch_installed: bool,
+}
+
+thread_local! {
+    static FOLLOWED: RefCell<Followed> = const {
+        RefCell::new(Followed {
+            buttons: Vec::new(),
+            theme_watch_installed: false,
+        })
+    };
+}
+
+fn register(button: &gtk::Button) {
+    FOLLOWED.with(|followed| {
+        let mut followed = followed.borrow_mut();
+        followed.buttons.push(button.downgrade());
+        if followed.theme_watch_installed {
+            return;
+        }
+        followed.theme_watch_installed = true;
+        let manager = adw::StyleManager::default();
+        manager.connect_dark_notify(|_| retint_on_theme_change());
+        manager.connect_color_scheme_notify(|_| retint_on_theme_change());
+    });
+}
+
+fn retint_on_theme_change() {
+    FOLLOWED.with(|followed| {
+        followed
+            .borrow_mut()
+            .buttons
+            .retain(|weak| match weak.upgrade() {
+                Some(button) => {
+                    refresh(&button);
+                    true
+                }
+                // The surface went away; drop it so the list does not outlive the app.
+                None => false,
+            });
+    });
 }
 
 fn apply(button: &gtk::Button) {
-    let colour = button.style_context().color();
     let image = match button.child().and_downcast::<gtk::Image>() {
         Some(image) => image,
         None => {
@@ -176,7 +382,21 @@ fn apply(button: &gtk::Button) {
     if image.pixel_size() != size {
         image.set_pixel_size(size);
     }
-    image.set_from_paintable(Some(&tinted(colour)));
+    repaint(button);
+}
+
+/// Paint the mark in the colour the button's style context resolves right now.
+fn repaint(button: &gtk::Button) {
+    let colour = key_of(button.style_context().color());
+    repaint_in(button, colour);
+}
+
+/// Paint the mark in a colour that has already been read, so the follow tick
+/// asks the style context once per frame rather than twice.
+fn repaint_in(button: &gtk::Button, colour: [u8; 4]) {
+    if let Some(image) = button.child().and_downcast::<gtk::Image>() {
+        image.set_from_paintable(Some(&tinted_key(colour)));
+    }
 }
 
 #[cfg(test)]

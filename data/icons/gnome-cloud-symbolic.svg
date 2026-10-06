@@ -2,13 +2,17 @@
   <!-- Cloud badge ("synced"), re-parameterised from the GNOME Icon Development
        Kit cloud, CC0: https://icons.design.gnome.org/
 
-       The badge has to sit in the same header row as the theme's favorite
-       button, which is a 16 px hairline outline glyph, so this artwork is
-       tuned to that contract rather than to the GNOME original:
+       The badge has to sit in the same header row as the app's own favorite
+       heart, so this artwork is tuned to that contract rather than to the GNOME
+       original:
 
-         * stroke-width 1 at a 16 viewBox = a 1 px hairline at 16 px, the same
-           weight as an outline symbolic icon. The old stroke-width 2 rendered
-           at 2.25 px, twice the weight of its neighbour.
+         * stroke-width 1 at a 16 viewBox = a 1 px hairline at 16 px, which is
+           the weight of an outline symbolic icon. The old stroke-width 2
+           rendered at 2.25 px, twice that. One unit is this badge's floor, not
+           a target to match the heart against: that heart's wall is 1.4 units
+           (see photoviewer-heart-symbolic.svg for why a half-unit one is
+           invisible at 18 px), and the two are tuned for legibility at the
+           sizes they are drawn at rather than for equality.
          * the outline is built from two lobes tangent to the flat base
            (left r=2.5 at (4.3, 12.1), right r=5.0 at (9.2, 9.6), base y=14.6)
            so the ink spans 13.4 x 11.0 of the 16 unit box. The GNOME path left

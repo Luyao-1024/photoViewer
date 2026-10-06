@@ -370,7 +370,11 @@ viewer's vector toolbar icons and used to read as a different set than them:
 
 - **Hairline weight.** One stroke unit in a 16 unit box, so the stroke is 1 px
   at 16 px. The original GNOME path used `stroke-width 2`, which rendered at
-  2.25 px next to a 1 px outline glyph.
+  2.25 px next to a 1 px outline glyph. One unit is the floor here, not a shared
+  target: the favorite heart beside it is a 1.4 unit wall, because a half-unit
+  wall did not survive being scaled to 18 px and read as a pale smear (see
+  [viewer.md](viewer.md)). The two are tuned for legibility at the sizes they
+  are drawn at, not for equality, and each has its own test.
 - **The silhouette fills its box.** The ink spans 13.4 x 11.0 of the 16 units.
   A cloud cannot be square, but when it also leaves the vertical margins empty
   it reads as a smaller icon than its neighbour.

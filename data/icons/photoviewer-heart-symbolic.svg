@@ -9,7 +9,7 @@
            at all (still missing in GNOME 50) - so on a stock GNOME system they
            drew no icon, and on the themes that do carry one, each drew its own
            shape.
-         * the Day-view tile badge was a `Gtk.Label` holding the "♡"
+         * the Day-view tile badge was a `GtkLabel` holding the "♡"
            character at 18pt, so its outline and weight came from whatever font
            the system resolved. A text glyph in a photo grid next to a themed
            vector heart in a toolbar is the same mismatch the cloud badge had
@@ -19,11 +19,9 @@
        the first paint it finds, so `fill:none` + `stroke` is not recolorable:
        it comes back solid, which is also why the cloud badge is a bitmap. This
        mark has to be tintable - the favorited state is a CSS `color`, and the
-       grid badge is white over a photo - so the same 1 unit hairline the cloud
-       badge has is expressed as a ring: an outer contour of two tangent lobes
-       and a tip, and an inner contour inset by half a unit everywhere
-       (shrunk lobes, inward-offset sides, a round join at the tip and a round
-       fillet in the top valley).
+       grid badge is white over a photo - so the wall is expressed as a ring:
+       an outer contour of two tangent lobes and a tip, and an inner contour
+       inset from it.
 
        The inner contour is wound against the outer one on purpose, so no
        `fill-rule` is named here. GTK tints a symbolic SVG by rewriting its
@@ -32,19 +30,40 @@
        winding gives the same ring under nonzero and under even-odd, so the
        hole survives either way.
 
-       Ink covers 13.4 x 10.3 of the 16 unit box, against the cloud badge's
-       13.4 x 11.0, so the two status glyphs carry the same weight. Keep them
-       tuned together. A solid heart would also satisfy GTK, and a solid heart
-       is the easier mark to read on a bright photo - but it would sit next to
-       a hairline cloud, which is the mismatch this icon set exists to avoid.
+       THE WALL IS 1.4 UNITS, and it was 0.5, which was too thin to read. The
+       mark is drawn at 16, 18 and 20 px (tile badge, then the two headers), and
+       a 0.5 unit wall is 0.56 px there: measured through the shipped
+       rasterisation, the old artwork reached a peak alpha of 131 / 164 / 180
+       out of 255 at those three sizes and not one of its pixels cleared 200.
+       It was a pale grey smear at every size it is actually used, and the
+       cloud badge beside it - a full 1 unit stroke - measured 238 / 255 / 255.
+       At 1.4 the wall is 1.4 / 1.6 / 1.75 px and every one of those sizes
+       reaches full opacity, with 26 / 36 / 38 solid pixels, so the heart now
+       out-reads its neighbour instead of trailing it. Keep the two tuned
+       together, but read "in tune" as both being legible, not as both being
+       hairlines: an outline this small is only visible if its wall survives
+       the downscale.
+
+       The inner contour is a true inward offset of the outer one by 1.4 units,
+       not an eyeballed inner heart: the two sides are offset along their own
+       inward normal and closed on the miter where each meets the offset lobe
+       circle (which is concentric, radius 3.4 - 1.4 = 2.0), and the two
+       concave corners are rounded by a 1.4 radius arc centred on the outer
+       vertex - the tip (8, 14) and the valley (8, 4.681). A uniform wall is
+       what makes the weight above a number rather than an impression; the
+       previous inner contour drifted between 0.3 and 0.8 units, which is why
+       it could not be compared with anything.
+
+       Ink covers 11.6 x 10.4 of the 16 unit box, so the mark keeps the
+       silhouette it was drawn with, next to the cloud badge's 13.4 x 11.0.
 
        This file is the source, not the shipped asset. `data/icons/_generate.py`
        rasterises it to photoviewer-heart-symbolic.png, which is what the app
        loads, because the vector did not render as itself on GTK 4.14: there
-       the ink came out filling the whole 64 px box where this same file is a
-       0.16-fill ring on 4.22. The PNG keeps the `photoviewer-heart-symbolic`
+       its ink came out filling the whole 64 px box where this same file is a
+       0.37-fill ring on 4.22. The PNG keeps the `photoviewer-heart-symbolic`
        name, and GTK tints a `-symbolic` raster from its alpha, so CSS `color`
        and every caller above this file are unaffected. Edit the path here and
        re-run the generator; do not hand-edit the PNG. -->
-  <path d="M 8.000 14.000 L 2.218 7.824 A 3.400 3.400 0 0 1 8.000 4.681 A 3.400 3.400 0 0 1 13.782 7.824 Z M 7.635 13.658 L 13.417 7.482 A 2.900 2.900 0 0 0 8.485 4.802 A 0.500 0.500 0 0 1 7.515 4.802 A 2.900 2.900 0 0 0 2.583 7.482 L 8.365 13.658 A 0.500 0.500 0 0 0 7.635 13.658 Z"/>
+  <path d="M 8.000 14.000 L 2.218 7.824 A 3.400 3.400 0 0 1 8.000 4.681 A 3.400 3.400 0 0 1 13.782 7.824 Z M 6.978 13.043 L 12.760 6.867 A 2.000 2.000 0 0 1 12.475 7.171 A 2.000 2.000 0 0 0 9.022 5.638 A 1.400 1.400 0 0 1 6.978 5.638 A 2.000 2.000 0 0 0 3.525 7.171 A 2.000 2.000 0 0 1 3.240 6.867 L 9.022 13.043 A 1.400 1.400 0 0 0 6.978 13.043 Z"/>
 </svg>
