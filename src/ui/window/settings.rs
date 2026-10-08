@@ -20,6 +20,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod sync_upload;
+use sync_upload::SyncUploadAlbumSelection;
+
 impl MainWindow {
     pub(super) fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
         let scroller = gtk::ScrolledWindow::builder()
@@ -674,6 +677,8 @@ impl MainWindow {
             _ => Vec::new(),
         };
         let creating_task = std::rc::Rc::new(std::cell::Cell::new(saved_jobs.is_empty()));
+        let selected_form_job =
+            std::rc::Rc::new(std::cell::Cell::new(saved_jobs.first().map(|job| job.id)));
 
         let sync_switch = gtk::Switch::builder()
             .active(sync_enabled.get())
@@ -817,6 +822,7 @@ impl MainWindow {
 
         if let Some(picker) = task_picker {
             let saved_jobs_for_picker = saved_jobs.clone();
+            let selected_form_job_for_picker = selected_form_job.clone();
             let creating_task_for_picker = creating_task.clone();
             let sync_enabled_for_picker = sync_enabled.clone();
             let connect_row_for_picker = connect_row.clone();
@@ -828,6 +834,8 @@ impl MainWindow {
             let remote_root_for_picker = remote_root.clone();
             picker.connect_selected_notify(move |picker| {
                 let selected = picker.selected() as usize;
+                selected_form_job_for_picker
+                    .set(saved_jobs_for_picker.get(selected).map(|job| job.id));
                 let selected_job = saved_jobs_for_picker.get(selected);
                 let adding_task = selected_job.is_none();
                 creating_task_for_picker.set(adding_task);
@@ -951,7 +959,7 @@ impl MainWindow {
                     ))
                 })??;
                 let service = crate::core::sync::SyncService::with_actor(pool, actor);
-                service.store().create_job(&new_job)?;
+                service.create_job(&new_job)?;
                 Ok::<_, crate::core::error::AppError>(())
             });
             glib::spawn_future_local(async move {
@@ -962,9 +970,8 @@ impl MainWindow {
                 match result {
                     Ok(Ok(())) => {
                         if let Some(window) = window.upgrade() {
-                            if let Some(dialog) =
-                                window.imp().settings_dialog.borrow().as_ref().cloned()
-                            {
+                            let dialog = window.imp().settings_dialog.borrow().as_ref().cloned();
+                            if let Some(dialog) = dialog {
                                 window.close_settings_dialog(dialog);
                             }
                         }
@@ -990,7 +997,12 @@ impl MainWindow {
             self.imp().db_actor.borrow().clone(),
         ) {
             if let Ok(jobs) = SyncStore::with_actor(pool.clone(), actor.clone()).list_jobs() {
-                for job in jobs {
+                for active_job in jobs {
+                    let job = SyncStore::with_actor(pool.clone(), actor.clone())
+                        .desired_job(active_job.id)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(active_job);
                     let row = adw::ActionRow::new();
                     row.add_css_class("settings-action-row");
                     row.set_title(&format!(
@@ -1042,7 +1054,7 @@ impl MainWindow {
                             tr("setting.sync.upload_albums_all")
                         } else {
                             let count = SyncStore::with_actor(pool.clone(), actor.clone())
-                                .upload_albums(job.id)
+                                .desired_upload_albums(job.id)
                                 .map_or(0, |albums| albums.len());
                             trf(
                                 "setting.sync.upload_albums_selected",
@@ -1054,66 +1066,12 @@ impl MainWindow {
                     upload_albums_row.add_css_class("settings-action-row");
                     upload_albums_row.set_sensitive(true);
 
-                    let selected_albums = SyncStore::with_actor(pool.clone(), actor.clone())
-                        .upload_albums(job.id)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<std::collections::BTreeSet<_>>();
-                    let album_controls =
-                        std::rc::Rc::new(std::cell::RefCell::new(
-                            Vec::<(String, gtk::CheckButton)>::new(),
-                        ));
-                    let album_options = sync_upload_album_options(&pool, &job.local_root);
-                    if album_options.is_empty() {
-                        let empty = adw::ActionRow::new();
-                        empty.add_css_class("settings-action-row");
-                        empty.set_title(&tr("setting.sync.upload_albums_empty"));
-                        empty.set_activatable(false);
-                        upload_albums_row.add_row(&empty);
-                    } else {
-                        for (relative_album, title, subtitle) in album_options {
-                            let album_row = adw::ActionRow::new();
-                            album_row.add_css_class("settings-action-row");
-                            album_row.set_title(&title);
-                            album_row.set_subtitle(&subtitle);
-                            album_row.set_activatable(false);
-                            let check = gtk::CheckButton::builder()
-                                .valign(gtk::Align::Center)
-                                .active(
-                                    job.upload_scope == UploadScope::All
-                                        || selected_albums.contains(&relative_album),
-                                )
-                                .sensitive(job.paused)
-                                .build();
-                            album_row.add_suffix(&check);
-                            upload_albums_row.add_row(&album_row);
-                            album_controls.borrow_mut().push((relative_album, check));
-                        }
-                        for (_, check) in album_controls.borrow().iter() {
-                            let controls = album_controls.clone();
-                            let store = SyncStore::with_actor(pool.clone(), actor.clone());
-                            let upload_albums_row = upload_albums_row.clone();
-                            let job_id = job.id;
-                            check.connect_toggled(move |_| {
-                                let selected = controls
-                                    .borrow()
-                                    .iter()
-                                    .filter(|(_, check)| check.is_active())
-                                    .map(|(relative, _)| relative.clone())
-                                    .collect::<Vec<_>>();
-                                match store.set_upload_albums(job_id, &selected) {
-                                    Ok(()) => upload_albums_row.set_subtitle(&trf(
-                                        "setting.sync.upload_albums_selected",
-                                        &[("count", &selected.len().to_string())],
-                                    )),
-                                    Err(error) => upload_albums_row.set_subtitle(&trf(
-                                        "setting.sync.upload_albums_failed",
-                                        &[("error", &error.to_string())],
-                                    )),
-                                }
-                            });
-                        }
-                    }
+                    let upload_selection = SyncUploadAlbumSelection::new(
+                        &upload_albums_row,
+                        sync_upload_album_options(&pool, &job.local_root),
+                        &job,
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone()),
+                    );
                     connection.add_row(&upload_albums_row);
 
                     let job_id = job.id;
@@ -1126,56 +1084,51 @@ impl MainWindow {
                         browse_button: browse_cloud_folder.clone(),
                         delete_button: delete_relation.clone(),
                         upload_albums: upload_albums_row.clone(),
-                        upload_checks: album_controls
-                            .borrow()
-                            .iter()
-                            .map(|(_, check)| check.clone())
-                            .collect(),
+                        upload_selection,
                         paused: paused.clone(),
                         state_description,
                         sync_enabled: sync_enabled.clone(),
                         busy: std::rc::Rc::new(std::cell::Cell::new(false)),
+                        browsing: std::rc::Rc::new(std::cell::Cell::new(false)),
+                        deleting: std::rc::Rc::new(std::cell::Cell::new(false)),
                     };
                     job_controls.borrow_mut().push(controls.clone());
-                    let service_for_album_edit =
+                    let weak_row = row.downgrade();
+                    let weak_folder = cloud_folder_row.downgrade();
+                    let status_store = SyncStore::with_actor(pool.clone(), actor.clone());
+                    let status_service =
                         crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone());
-                    let parent_for_album_edit = parent.clone();
-                    let controls_for_album_edit = controls.clone();
-                    upload_albums_row.connect_expanded_notify(move |row| {
-                        if !row.is_expanded()
-                            || controls_for_album_edit.paused.get()
-                            || controls_for_album_edit.busy.get()
-                        {
-                            return;
+                    glib::timeout_add_local(Duration::from_millis(300), move || {
+                        let Some(row) = weak_row.upgrade() else {
+                            return glib::ControlFlow::Break;
+                        };
+                        if row.root().is_none() {
+                            return glib::ControlFlow::Break;
                         }
-                        controls_for_album_edit.busy.set(true);
-                        update_sync_job_controls(&controls_for_album_edit);
-                        let service = service_for_album_edit.clone();
-                        let controls = controls_for_album_edit.clone();
-                        let parent = parent_for_album_edit.clone();
-                        let task =
-                            tokio::spawn(
-                                async move { service.pause_job_for_editing(job_id).await },
-                            );
-                        glib::spawn_future_local(async move {
-                            match task.await {
-                                Ok(Ok(())) => {
-                                    controls.paused.set(true);
-                                    *controls.state_description.borrow_mut() =
-                                        tr("setting.sync.status.paused");
-                                }
-                                Ok(Err(error)) => show_settings_error_dialog(
-                                    &parent,
-                                    &trf("setting.sync.failed", &[("error", &error.to_string())]),
-                                ),
-                                Err(error) => show_settings_error_dialog(
-                                    &parent,
-                                    &trf("setting.sync.failed", &[("error", &error.to_string())]),
-                                ),
-                            }
-                            controls.busy.set(false);
-                            update_sync_job_controls(&controls);
+                        let Ok(Some(current)) = status_store.desired_job(job_id) else {
+                            return glib::ControlFlow::Break;
+                        };
+                        row.set_title(&format!(
+                            "{} ↔ {}",
+                            current.local_root.display(),
+                            current.remote_root
+                        ));
+                        if let Some(folder) = weak_folder.upgrade() {
+                            folder.set_subtitle(&current.remote_root);
+                        }
+                        let pending = status_store.pending_change(job_id).ok().flatten().is_some();
+                        row.set_subtitle(&if let Some(error) = current.last_error {
+                            trf("setting.sync.failed", &[("error", &error)])
+                        } else if pending {
+                            tr("setting.sync.applying_changes")
+                        } else if !prefs::webdav_sync_enabled() {
+                            tr("setting.sync.status.globally_disabled")
+                        } else if status_service.is_job_running(job_id).unwrap_or(false) {
+                            tr("setting.sync.running")
+                        } else {
+                            tr("setting.sync.status.ready")
                         });
+                        glib::ControlFlow::Continue
                     });
 
                     let service_for_folder =
@@ -1185,15 +1138,14 @@ impl MainWindow {
                     let folder_row_for_folder = cloud_folder_row.clone();
                     let local_root_for_folder = job.local_root.display().to_string();
                     let root_entry_for_folder =
-                        (saved_jobs.first().is_some_and(|first| first.id == job.id))
-                            .then(|| remote_root.clone());
+                        Some((remote_root.clone(), selected_form_job.clone()));
                     let controls_for_folder = controls.clone();
                     browse_cloud_folder.connect_clicked(move |_| {
                         let controls = controls_for_folder.clone();
-                        controls.busy.set(true);
+                        controls.browsing.set(true);
                         controls
                             .browse_button
-                            .set_label(&tr("setting.sync.pausing_for_edit"));
+                            .set_label(&tr("setting.sync.loading_cloud_folders"));
                         update_sync_job_controls(&controls);
                         let parent = parent_for_folder.clone();
                         let job_row = job_row_for_folder.clone();
@@ -1222,7 +1174,7 @@ impl MainWindow {
                                     tr("setting.sync.status.ready")
                                 };
                             }
-                            controls.busy.set(false);
+                            controls.browsing.set(false);
                             controls
                                 .browse_button
                                 .set_label(&tr("setting.sync.browse_cloud_folder"));
@@ -1361,6 +1313,15 @@ impl MainWindow {
         let parent_for_toggle = parent.clone();
         let reverting_switch = std::rc::Rc::new(std::cell::Cell::new(false));
         let reverting_switch_for_toggle = reverting_switch.clone();
+        let service_for_global = match (
+            self.imp().pool.borrow().clone(),
+            self.imp().db_actor.borrow().clone(),
+        ) {
+            (Some(pool), Some(actor)) => {
+                Some(crate::core::sync::SyncService::with_actor(pool, actor))
+            }
+            _ => None,
+        };
         sync_switch.connect_active_notify(move |switch| {
             if reverting_switch_for_toggle.get() {
                 return;
@@ -1377,7 +1338,12 @@ impl MainWindow {
                 );
                 return;
             }
-            sync_enabled_for_toggle.set(enabled);
+            let changed = sync_enabled_for_toggle.replace(enabled) != enabled;
+            if changed {
+                if let Some(service) = &service_for_global {
+                    service.sync_enabled_changed();
+                }
+            }
             connection_for_toggle.set_subtitle(&sync_settings_subtitle(enabled, sync_task_count));
             let editable = enabled && creating_task_for_toggle.get();
             endpoint_for_toggle.set_editable(editable);
@@ -1405,25 +1371,28 @@ struct SyncJobUiControls {
     browse_button: gtk::Button,
     delete_button: gtk::Button,
     upload_albums: adw::ExpanderRow,
-    upload_checks: Vec<gtk::CheckButton>,
+    upload_selection: std::rc::Rc<SyncUploadAlbumSelection>,
     paused: std::rc::Rc<std::cell::Cell<bool>>,
     state_description: std::rc::Rc<std::cell::RefCell<String>>,
     sync_enabled: std::rc::Rc<std::cell::Cell<bool>>,
     busy: std::rc::Rc<std::cell::Cell<bool>>,
+    browsing: std::rc::Rc<std::cell::Cell<bool>>,
+    deleting: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 fn update_sync_job_controls(controls: &SyncJobUiControls) {
-    let paused = controls.paused.get();
     let busy = controls.busy.get();
     let enabled = controls.sync_enabled.get();
-    controls.browse_button.set_sensitive(!busy);
-    controls.delete_button.set_sensitive(!busy);
-    controls.upload_albums.set_sensitive(!busy);
-    for check in &controls.upload_checks {
-        check.set_sensitive(!busy && paused);
-    }
+    controls
+        .browse_button
+        .set_sensitive(!controls.browsing.get() && !controls.deleting.get());
+    controls
+        .delete_button
+        .set_sensitive(!controls.deleting.get());
+    controls.upload_albums.set_sensitive(true);
+    controls.upload_selection.set_editable(true);
     controls.row.set_subtitle(&if busy {
-        tr("setting.sync.waiting_current_operation")
+        tr("setting.sync.applying_changes")
     } else if enabled {
         controls.state_description.borrow().clone()
     } else {
@@ -1455,7 +1424,7 @@ fn present_sync_remote_folder_picker(
     controls: SyncJobUiControls,
     job_row: &adw::ActionRow,
     folder_row: &adw::ActionRow,
-    root_entry: Option<&adw::EntryRow>,
+    root_entry: Option<&(adw::EntryRow, std::rc::Rc<std::cell::Cell<Option<i64>>>)>,
 ) {
     let options = collections.iter().map(String::as_str).collect::<Vec<_>>();
     let folders = gtk::DropDown::from_strings(&options);
@@ -1476,7 +1445,10 @@ fn present_sync_remote_folder_picker(
     folder_row_picker.add_css_class("settings-action-row");
     folder_row_picker.set_title(&tr("setting.sync.cloud_folder"));
     folder_row_picker.add_suffix(&folders);
-    content.append(&folder_row_picker);
+    let folder_group = adw::PreferencesGroup::new();
+    folder_group.add_css_class("settings-preferences-group");
+    folder_group.add(&folder_row_picker);
+    content.append(&folder_group);
 
     let note = gtk::Label::builder()
         .label(tr("setting.sync.cloud_folder_change_warning"))
@@ -1526,7 +1498,13 @@ fn present_sync_remote_folder_picker(
             return;
         };
         dialog_for_select.close();
-        if selected_root == current_root {
+        if service
+            .store()
+            .desired_job(job_id)
+            .ok()
+            .flatten()
+            .is_some_and(|job| job.remote_root == selected_root.trim_matches('/'))
+        {
             return;
         }
 
@@ -1554,12 +1532,12 @@ fn present_sync_remote_folder_picker(
         confirmation.connect_response(Some("switch"), move |_, _| {
             controls.busy.set(true);
             update_sync_job_controls(&controls);
-            folder_row.set_subtitle(&tr("setting.sync.pausing_for_edit"));
+            folder_row.set_subtitle(&tr("setting.sync.applying_changes"));
             let service = service.clone();
             let selected_root = selected_root.clone();
             let task_root = selected_root.clone();
-            let task =
-                tokio::spawn(async move { service.set_remote_root(job_id, &task_root).await });
+            let accepted = service.accept_remote_root(job_id, &task_root);
+            let task = std::future::ready(Ok::<_, std::io::Error>(accepted));
             let parent = parent_for_error.clone();
             let current_root = current_root.clone();
             let local_root = local_root.clone();
@@ -1572,23 +1550,36 @@ fn present_sync_remote_folder_picker(
                     Ok(Ok(())) => {
                         controls.busy.set(false);
                         update_sync_job_controls(&controls);
-                        job_row.set_title(&format!("{local_root} ↔ {selected_root}"));
-                        folder_row.set_subtitle(&selected_root);
-                        if let Some(entry) = &root_entry {
-                            entry.set_text(&selected_root);
+                        let latest_root = service
+                            .store()
+                            .desired_job(job_id)
+                            .ok()
+                            .flatten()
+                            .map(|job| job.remote_root)
+                            .unwrap_or(selected_root);
+                        job_row.set_title(&format!("{local_root} ↔ {latest_root}"));
+                        folder_row.set_subtitle(&latest_root);
+                        if let Some((entry, selected_job)) = &root_entry {
+                            if selected_job.get() == Some(job_id) && !entry.is_editable() {
+                                entry.set_text(&latest_root);
+                            }
                         }
-                        show_settings_info_dialog(
-                            &parent,
-                            &trf(
-                                "setting.sync.cloud_folder_changed",
-                                &[("from", &current_root), ("to", &selected_root)],
-                            ),
-                        );
+                        *controls.state_description.borrow_mut() =
+                            tr("setting.sync.applying_changes");
+                        update_sync_job_controls(&controls);
                     }
                     Ok(Err(error)) => {
                         controls.busy.set(false);
                         update_sync_job_controls(&controls);
-                        folder_row.set_subtitle(&current_root);
+                        folder_row.set_subtitle(
+                            &service
+                                .store()
+                                .desired_job(job_id)
+                                .ok()
+                                .flatten()
+                                .map(|job| job.remote_root)
+                                .unwrap_or_else(|| current_root.clone()),
+                        );
                         show_settings_error_dialog(
                             &parent,
                             &trf(
@@ -1600,7 +1591,15 @@ fn present_sync_remote_folder_picker(
                     Err(error) => {
                         controls.busy.set(false);
                         update_sync_job_controls(&controls);
-                        folder_row.set_subtitle(&current_root);
+                        folder_row.set_subtitle(
+                            &service
+                                .store()
+                                .desired_job(job_id)
+                                .ok()
+                                .flatten()
+                                .map(|job| job.remote_root)
+                                .unwrap_or_else(|| current_root.clone()),
+                        );
                         show_settings_error_dialog(
                             &parent,
                             &trf(
@@ -1629,7 +1628,7 @@ fn connect_sync_delete_button(
     let delete_button = controls.delete_button.clone();
     delete_button.connect_clicked(move |_| {
         let controls = controls.clone();
-        if controls.busy.get() {
+        if controls.deleting.get() {
             return;
         }
         let confirmation = adw::AlertDialog::builder()
@@ -1650,9 +1649,10 @@ fn connect_sync_delete_button(
         let service = service.clone();
         let controls = controls.clone();
         confirmation.connect_response(Some("delete"), move |_, _| {
+            controls.deleting.set(true);
             controls.busy.set(true);
-            controls.paused.set(true);
-            *controls.state_description.borrow_mut() = tr("setting.sync.status.paused");
+
+            *controls.state_description.borrow_mut() = tr("setting.sync.applying_changes");
             update_sync_job_controls(&controls);
             let service = service.clone();
             let service_for_result = service.clone();
@@ -1664,9 +1664,8 @@ fn connect_sync_delete_button(
                 match task.await {
                     Ok(Ok(credential_removed)) => {
                         if let Some(window) = window.upgrade() {
-                            if let Some(dialog) =
-                                window.imp().settings_dialog.borrow().as_ref().cloned()
-                            {
+                            let dialog = window.imp().settings_dialog.borrow().as_ref().cloned();
+                            if let Some(dialog) = dialog {
                                 window.close_settings_dialog(dialog);
                             }
                             let parent = window.clone().upcast::<gtk::Widget>();
@@ -1691,6 +1690,7 @@ fn connect_sync_delete_button(
                                 tr("setting.sync.status.ready")
                             };
                         }
+                        controls.deleting.set(false);
                         controls.busy.set(false);
                         update_sync_job_controls(&controls);
                         show_settings_error_dialog(
@@ -1705,6 +1705,7 @@ fn connect_sync_delete_button(
                         if let Ok(Some(job)) = service_for_result.store().get_job(job_id) {
                             controls.paused.set(job.paused);
                         }
+                        controls.deleting.set(false);
                         controls.busy.set(false);
                         update_sync_job_controls(&controls);
                         show_settings_error_dialog(

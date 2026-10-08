@@ -31,6 +31,7 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"sync_entries".to_string()));
     assert!(tables.contains(&"sync_tasks".to_string()));
     assert!(tables.contains(&"sync_conflicts".to_string()));
+    assert!(tables.contains(&"sync_job_changes".to_string()));
 }
 
 #[test]
@@ -333,7 +334,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     assert_eq!(
         connection
             .query_row(
@@ -412,7 +413,7 @@ fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        4
+        5
     );
 }
 
@@ -473,5 +474,41 @@ fn version_one_migration_normalizes_legacy_raw_file_uris() {
     assert_eq!(
         photo_viewer::core::file_uri::to_path(&item.uri).unwrap(),
         media_path
+    );
+}
+
+#[test]
+fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("photos.db");
+    let pool = db::init_pool(&path).unwrap();
+    drop(pool);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("DROP TABLE sync_job_changes; PRAGMA user_version=4;
+        INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref) VALUES(1,'webdav','https://dav.example.test/','alice','ref');
+        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,upload_scope) VALUES(1,1,'/photos','Photos','selected_albums');
+        INSERT INTO sync_job_upload_albums(job_id,relative_album) VALUES(1,'camera');").unwrap();
+    drop(conn);
+    let pool = db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM sync_job_changes", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT relative_album FROM sync_job_upload_albums WHERE job_id=1",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "camera"
     );
 }

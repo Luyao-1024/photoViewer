@@ -42,6 +42,7 @@ fn relative_remote_key_rejects_sibling_roots() {
 #[derive(Default)]
 struct FakeProvider {
     objects: Mutex<BTreeMap<String, Vec<u8>>>,
+    upload_calls: AtomicU64,
 }
 
 impl FakeProvider {
@@ -153,6 +154,7 @@ impl SyncProvider for FakeProvider {
         source: &Path,
         condition: WriteCondition,
     ) -> ProviderResult<RemoteEntry> {
+        self.upload_calls.fetch_add(1, Ordering::Relaxed);
         let bytes = tokio::fs::read(source).await?;
         let mut objects = self.objects.lock().unwrap();
         match condition {
@@ -351,17 +353,24 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
 }
 
 #[tokio::test]
-async fn remote_albums_enable_local_upload_while_local_only_albums_stay_unselected() {
+async fn remote_albums_download_without_changing_local_upload_selection() {
     let temp = tempfile::tempdir().unwrap();
     let local_root = temp.path().join("photos");
-    let selected = local_root.join("Selected");
-    let unselected = local_root.join("Unselected");
-    std::fs::create_dir_all(&selected).unwrap();
-    std::fs::create_dir_all(&unselected).unwrap();
+    for album in ["Selected", "Unselected", "camera/nested"] {
+        std::fs::create_dir_all(local_root.join(album)).unwrap();
+    }
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif");
-    std::fs::copy(&fixture, selected.join("upload.gif")).unwrap();
-    std::fs::copy(&fixture, unselected.join("local-only.gif")).unwrap();
+    let original = std::fs::read(&fixture).unwrap();
+    for path in [
+        "Selected/upload.gif",
+        "Unselected/local-only.gif",
+        "camera/local-only.gif",
+        "camera/nested/local-only.gif",
+        "local-only.gif",
+    ] {
+        std::fs::write(local_root.join(path), &original).unwrap();
+    }
 
     let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
     let service = SyncService {
@@ -384,56 +393,28 @@ async fn remote_albums_enable_local_upload_while_local_only_albums_stay_unselect
         })
         .unwrap();
     let provider = Arc::new(FakeProvider::default());
-    let mut cloud_bytes = std::fs::read(&fixture).unwrap();
+    let mut cloud_bytes = original.clone();
     cloud_bytes.extend_from_slice(b"cloud");
-    provider.insert("PhotoViewer/Cloud/download.gif", cloud_bytes.clone());
+    let cloud_paths = [
+        "camera/download.gif",
+        "camera/nested/download.gif",
+        "download.gif",
+    ];
+    for path in cloud_paths {
+        provider.insert(&format!("PhotoViewer/{path}"), cloud_bytes.clone());
+    }
 
     let first = service
         .run_with_provider(&job, provider.clone())
         .await
         .unwrap();
     assert_eq!(first.uploaded, 1);
-    assert_eq!(first.downloaded, 1);
+    assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(first.downloaded, 3);
     assert_eq!(
         service.store().upload_albums(job.id).unwrap(),
-        vec!["Cloud".to_string(), "Selected".to_string()]
+        vec!["Selected".to_string()]
     );
-    let generation_after_discovery = service
-        .store()
-        .get_job(job.id)
-        .unwrap()
-        .unwrap()
-        .config_generation;
-    assert_eq!(
-        std::fs::read(local_root.join("Cloud/download.gif")).unwrap(),
-        cloud_bytes
-    );
-    {
-        let objects = provider.objects.lock().unwrap();
-        assert!(objects.contains_key("PhotoViewer/Selected/upload.gif"));
-        assert!(!objects.contains_key("PhotoViewer/Unselected/local-only.gif"));
-    }
-    assert!(
-        service
-            .store()
-            .entries(job.id)
-            .unwrap()
-            .iter()
-            .all(|entry| entry.relative_path != "Unselected/local-only.gif"),
-        "an unchecked local-only album should not be hashed into sync state"
-    );
-
-    let mut local_edit = cloud_bytes;
-    local_edit.extend_from_slice(b"local edit that should upload");
-    std::fs::write(local_root.join("Cloud/download.gif"), &local_edit).unwrap();
-
-    let second = service
-        .run_with_provider(&job, provider.clone())
-        .await
-        .unwrap();
-    assert_eq!(second.uploaded, 1);
-    assert_eq!(second.downloaded, 0);
-    assert_eq!(second.conflicts, 0);
     assert_eq!(
         service
             .store()
@@ -441,17 +422,120 @@ async fn remote_albums_enable_local_upload_while_local_only_albums_stay_unselect
             .unwrap()
             .unwrap()
             .config_generation,
-        generation_after_discovery
+        job.config_generation,
+        "cloud discovery must not change the user's upload configuration"
+    );
+    for path in cloud_paths {
+        assert_eq!(std::fs::read(local_root.join(path)).unwrap(), cloud_bytes);
+    }
+    let remote_after_first_run = provider.objects.lock().unwrap().clone();
+    assert_eq!(remote_after_first_run.len(), 4);
+    assert!(remote_after_first_run.contains_key("PhotoViewer/Selected/upload.gif"));
+    assert!(
+        service
+            .store()
+            .entries(job.id)
+            .unwrap()
+            .iter()
+            .all(|entry| !entry.relative_path.ends_with("local-only.gif")),
+        "unchecked local-only files must not be hashed into sync state"
+    );
+
+    // Local edits in unchecked cloud-backed albums (including nested/root
+    // albums) never upload. The existing remote-authoritative policy downloads
+    // the cloud version instead, while unrelated local-only files stay intact.
+    let mut local_edit = cloud_bytes.clone();
+    local_edit.extend_from_slice(b"local edit that must not upload");
+    for path in cloud_paths {
+        std::fs::write(local_root.join(path), &local_edit).unwrap();
+    }
+    let second = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(second.uploaded, 0);
+    assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(second.downloaded, 3);
+    assert_eq!(second.conflicts, 0);
+    assert_eq!(*provider.objects.lock().unwrap(), remote_after_first_run);
+    for path in cloud_paths {
+        assert_eq!(std::fs::read(local_root.join(path)).unwrap(), cloud_bytes);
+    }
+    for path in [
+        "camera/local-only.gif",
+        "camera/nested/local-only.gif",
+        "local-only.gif",
+    ] {
+        assert_eq!(std::fs::read(local_root.join(path)).unwrap(), original);
+    }
+    assert_eq!(
+        service.store().upload_albums(job.id).unwrap(),
+        vec!["Selected"]
     );
     assert_eq!(
-        provider
-            .objects
-            .lock()
+        service
+            .store()
+            .get_job(job.id)
             .unwrap()
-            .get("PhotoViewer/Cloud/download.gif")
-            .cloned()
-            .unwrap(),
-        local_edit
+            .unwrap()
+            .config_generation,
+        job.config_generation
+    );
+
+    // Explicitly opting camera into uploads enables both its new files and
+    // edits, but does not opt in its nested album or the root album.
+    service
+        .store()
+        .set_upload_albums(job.id, &["Selected".into(), "camera".into()])
+        .unwrap();
+    let selected_job = service.store().get_job(job.id).unwrap().unwrap();
+    std::fs::write(local_root.join("camera/download.gif"), &local_edit).unwrap();
+    let third = service
+        .run_with_provider(&selected_job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(third.uploaded, 2);
+    assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 3);
+    assert_eq!(third.conflicts, 0);
+    {
+        let objects = provider.objects.lock().unwrap();
+        assert_eq!(objects["PhotoViewer/camera/download.gif"], local_edit);
+        assert_eq!(objects["PhotoViewer/camera/local-only.gif"], original);
+        assert!(!objects.contains_key("PhotoViewer/camera/nested/local-only.gif"));
+        assert!(!objects.contains_key("PhotoViewer/local-only.gif"));
+    }
+
+    // Unchecking a previously synced album stays effective on later runs;
+    // new remote changes still download without re-enabling uploads.
+    service.store().set_upload_albums(job.id, &[]).unwrap();
+    let unchecked_job = service.store().get_job(job.id).unwrap().unwrap();
+    std::fs::write(local_root.join("camera/new-local.gif"), &original).unwrap();
+    let mut cloud_update = cloud_bytes;
+    cloud_update.extend_from_slice(b"remote update");
+    provider.insert("PhotoViewer/camera/download.gif", cloud_update.clone());
+    let remote_before_fourth_run = provider.objects.lock().unwrap().clone();
+    let fourth = service
+        .run_with_provider(&unchecked_job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(fourth.uploaded, 0);
+    assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 3);
+    assert_eq!(fourth.downloaded, 1);
+    assert_eq!(fourth.conflicts, 0);
+    assert_eq!(*provider.objects.lock().unwrap(), remote_before_fourth_run);
+    assert_eq!(
+        std::fs::read(local_root.join("camera/download.gif")).unwrap(),
+        cloud_update
+    );
+    assert!(service.store().upload_albums(job.id).unwrap().is_empty());
+    assert_eq!(
+        service
+            .store()
+            .get_job(job.id)
+            .unwrap()
+            .unwrap()
+            .config_generation,
+        unchecked_job.config_generation
     );
 }
 
@@ -533,7 +617,16 @@ async fn recovers_upload_that_reached_remote_before_result_commit() {
         .unwrap();
     provider.insert("PhotoViewer/photo.gif", changed);
 
-    let summary = service.run_with_provider(&job, provider).await.unwrap();
+    // A completed old-generation write remains verifiable after explicit opt-out;
+    // recovery must not re-upload it merely because the configuration changed.
+    service.store().set_upload_albums(job.id, &[]).unwrap();
+    let opted_out = service.store().get_job(job.id).unwrap().unwrap();
+    let upload_calls = provider.upload_calls.load(Ordering::Acquire);
+    let summary = service
+        .run_with_provider(&opted_out, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(provider.upload_calls.load(Ordering::Acquire), upload_calls);
     assert_eq!(summary.conflicts, 0);
     assert!(!artifact.exists());
     let connection = service.pool.get().unwrap();
@@ -548,95 +641,137 @@ async fn recovers_upload_that_reached_remote_before_result_commit() {
 }
 
 #[tokio::test]
-async fn repairs_truncated_upload_after_album_selection_changes() {
-    let temp = tempfile::tempdir().unwrap();
-    let local_root = temp.path().join("photos");
-    std::fs::create_dir_all(local_root.join("OldAlbum")).unwrap();
+async fn upload_recovery_waits_for_explicit_album_selection() {
     let full = b"complete image bytes from the original upload";
     let partial = &full[..17];
-    let local_path = local_root.join("OldAlbum/photo.jpg");
-    std::fs::write(&local_path, &full[..10]).unwrap();
-    let artifact = temp.path().join("original.upload");
-    std::fs::write(&artifact, full).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let service = SyncService {
-        store: SyncStore::new(pool.clone()),
-        pool,
-        actor: None,
-        staging_root: temp.path().join("staging"),
-    };
-    let job = service
-        .store()
-        .create_job(&crate::core::sync::NewSyncJob {
-            endpoint: "https://dav.example.test/".into(),
-            username: "alice".into(),
-            credential_ref: "recovery-test".into(),
-            local_root: local_root.clone(),
-            remote_root: "PhotoViewer".into(),
-            direction: crate::core::sync::SyncDirection::Bidirectional,
-            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
-            upload_albums: vec!["OldAlbum".into()],
-        })
-        .unwrap();
-    let fingerprint = local::fingerprint(&artifact).unwrap();
-    let entry_id = service
-        .store()
-        .upsert_observation(
-            job.id,
-            "OldAlbum/photo.jpg",
-            Some(&fingerprint),
-            None,
-            None,
-            None,
-            false,
-            "pending",
-        )
-        .unwrap();
-    service
-        .store()
-        .prepare_task(
-            "partial-upload",
-            job.id,
-            entry_id,
-            "upload_new",
-            None,
-            &artifact,
-            &fingerprint.blake3,
-            job.config_generation,
-            1,
-        )
-        .unwrap();
-    service
-        .store()
-        .set_task_state("partial-upload", "blocked", Some("locked"))
-        .unwrap();
-    service
-        .store()
-        .set_upload_albums(job.id, &["OtherAlbum".into()])
-        .unwrap();
-    let job = service.store().get_job(job.id).unwrap().unwrap();
-    let provider = Arc::new(FakeProvider::default());
-    provider.insert("PhotoViewer/OldAlbum/photo.jpg", partial.to_vec());
+    for remote_content in [Some(partial.to_vec()), None] {
+        let temp = tempfile::tempdir().unwrap();
+        let local_root = temp.path().join("photos");
+        std::fs::create_dir_all(local_root.join("OldAlbum")).unwrap();
+        let local_path = local_root.join("OldAlbum/photo.jpg");
+        std::fs::write(&local_path, &full[..10]).unwrap();
+        let artifact = temp.path().join("original.upload");
+        std::fs::write(&artifact, full).unwrap();
+        let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+        let service = SyncService {
+            store: SyncStore::new(pool.clone()),
+            pool,
+            actor: None,
+            staging_root: temp.path().join("staging"),
+        };
+        let job = service
+            .store()
+            .create_job(&crate::core::sync::NewSyncJob {
+                endpoint: "https://dav.example.test/".into(),
+                username: "alice".into(),
+                credential_ref: "recovery-test".into(),
+                local_root: local_root.clone(),
+                remote_root: "PhotoViewer".into(),
+                direction: crate::core::sync::SyncDirection::Bidirectional,
+                upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
+                upload_albums: vec!["OldAlbum".into()],
+            })
+            .unwrap();
+        let fingerprint = local::fingerprint(&artifact).unwrap();
+        let entry_id = service
+            .store()
+            .upsert_observation(
+                job.id,
+                "OldAlbum/photo.jpg",
+                Some(&fingerprint),
+                None,
+                None,
+                None,
+                false,
+                "pending",
+            )
+            .unwrap();
+        service
+            .store()
+            .prepare_task(
+                "partial-upload",
+                job.id,
+                entry_id,
+                "upload_new",
+                None,
+                &artifact,
+                &fingerprint.blake3,
+                job.config_generation,
+                1,
+            )
+            .unwrap();
+        service
+            .store()
+            .set_task_state("partial-upload", "blocked", Some("locked"))
+            .unwrap();
+        service
+            .store()
+            .set_upload_albums(job.id, &["OtherAlbum".into()])
+            .unwrap();
+        let job = service.store().get_job(job.id).unwrap().unwrap();
+        let provider = Arc::new(FakeProvider::default());
+        if let Some(bytes) = remote_content {
+            provider.insert("PhotoViewer/OldAlbum/photo.jpg", bytes);
+        }
+        let remote_before_recovery = provider.objects.lock().unwrap().clone();
 
-    service
-        .run_with_provider(&job, provider.clone())
-        .await
-        .unwrap();
+        service
+            .run_with_provider(&job, provider.clone())
+            .await
+            .unwrap();
 
-    assert_eq!(std::fs::read(&local_path).unwrap(), full);
-    assert_eq!(
-        provider.objects.lock().unwrap()["PhotoViewer/OldAlbum/photo.jpg"],
-        full
-    );
-    let conn = service.pool.get().unwrap();
-    let state: String = conn
-        .query_row(
-            "SELECT state FROM sync_tasks WHERE operation_id = 'partial-upload'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(state, "succeeded");
+        assert_eq!(std::fs::read(&local_path).unwrap(), full);
+        assert_eq!(
+            *provider.objects.lock().unwrap(),
+            remote_before_recovery,
+            "recovery must not write to an unchecked cloud album"
+        );
+        assert!(
+            artifact.exists(),
+            "the only complete snapshot must be retained"
+        );
+        assert_eq!(
+            service.store().upload_albums(job.id).unwrap(),
+            vec!["OtherAlbum"]
+        );
+        let conn = service.pool.get().unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM sync_tasks WHERE operation_id = 'partial-upload'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "blocked");
+        assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 0);
+        drop(conn);
+
+        service
+            .store()
+            .set_upload_albums(job.id, &["OldAlbum".into()])
+            .unwrap();
+        let selected_job = service.store().get_job(job.id).unwrap().unwrap();
+        service
+            .run_with_provider(&selected_job, provider.clone())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&local_path).unwrap(), full);
+        assert_eq!(
+            provider.objects.lock().unwrap()["PhotoViewer/OldAlbum/photo.jpg"],
+            full
+        );
+        assert!(!artifact.exists());
+        let conn = service.pool.get().unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM sync_tasks WHERE operation_id = 'partial-upload'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "succeeded");
+        assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[tokio::test]
@@ -865,49 +1000,19 @@ async fn run_with_provider_reports_live_transfer_progress() {
 }
 
 #[tokio::test]
-async fn duplicate_trigger_during_active_run_is_remembered() {
-    let temp = tempfile::tempdir().unwrap();
-    let local_root = temp.path().join("photos");
-    std::fs::create_dir(&local_root).unwrap();
-
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let service = SyncService {
-        store: SyncStore::new(pool.clone()),
-        pool,
-        actor: None,
-        staging_root: temp.path().join("staging"),
-    };
-    let job = service
-        .store()
-        .create_job(&crate::core::sync::NewSyncJob {
-            endpoint: "https://dav.example.test/".into(),
-            username: "alice".into(),
-            credential_ref: "duplicate-trigger-credential".into(),
-            local_root: local_root.clone(),
-            remote_root: "PhotoViewer".into(),
-            direction: crate::core::sync::SyncDirection::Bidirectional,
-            upload_scope: crate::core::sync::UploadScope::All,
-            upload_albums: Vec::new(),
-        })
-        .unwrap();
-
-    // Simulate the first trigger's run holding the job's activation slot.
-    let active = ActiveJobGuard::acquire(job.id).unwrap();
-    assert!(job_is_active(job.id));
-    assert!(!PENDING_TRIGGER.load(Ordering::Relaxed));
-
-    // The duplicate trigger skips the running job and remembers itself.
-    service
-        .run_saved_jobs_sequentially(vec![job.clone()])
-        .await
-        .unwrap();
+async fn edit_first_activity_is_scoped_to_database_not_numeric_job_id() {
+    let left = tempfile::tempdir().unwrap();
+    let right = tempfile::tempdir().unwrap();
+    let a = SyncService::new(crate::core::db::init_pool(&left.path().join("photos.db")).unwrap());
+    let b = SyncService::new(crate::core::db::init_pool(&right.path().join("photos.db")).unwrap());
+    let active = ActiveJobGuard::acquire(a.job_key(1).unwrap()).unwrap();
+    assert!(a.is_job_running(1).unwrap());
     assert!(
-        PENDING_TRIGGER.load(Ordering::Relaxed),
-        "a trigger arriving during an active run is remembered"
+        !b.is_job_running(1).unwrap(),
+        "a second library must not be stopped by another library's edit"
     );
-    PENDING_TRIGGER.store(false, Ordering::Relaxed);
     drop(active);
-    assert!(!job_is_active(job.id));
+    assert!(!a.is_job_running(1).unwrap());
 }
 
 #[test]
@@ -917,7 +1022,7 @@ fn live_progress_session_survives_a_concurrent_trigger_close() {
 
     // While a run holds its job's activation slot, another trigger closing
     // its own cycle must not tear down the session that run reports through.
-    let active = ActiveJobGuard::acquire(987_654).unwrap();
+    let active = ActiveJobGuard::acquire((PathBuf::from("progress-contract"), 987_654)).unwrap();
     live_progress_end_session();
     assert!(
         live_progress().is_some(),
@@ -928,4 +1033,40 @@ fn live_progress_session_survives_a_concurrent_trigger_close() {
     drop(active);
     live_progress_end_session();
     assert_eq!(live_progress(), None);
+}
+
+#[tokio::test]
+async fn edit_first_noop_and_invalid_root_do_not_pause() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let service = SyncService {
+        store: SyncStore::new(pool.clone()),
+        pool,
+        actor: None,
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "edit-first".into(),
+            local_root,
+            remote_root: "Photos".into(),
+            direction: super::super::SyncDirection::Bidirectional,
+            upload_scope: UploadScope::SelectedAlbums,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    service.set_remote_root(job.id, "/Photos/").await.unwrap();
+    let unchanged = service.store.get_job(job.id).unwrap().unwrap();
+    assert!(
+        !unchanged.paused,
+        "a no-op must not stop the job before comparison"
+    );
+    assert_eq!(unchanged.config_generation, job.config_generation);
+    assert!(service.set_remote_root(job.id, "../invalid").await.is_err());
+    assert!(!service.store.get_job(job.id).unwrap().unwrap().paused);
 }

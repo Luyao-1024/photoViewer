@@ -1169,3 +1169,21 @@ fn the_selection_counter_does_not_squeeze_the_batch_actions_out() {
          got counter={counter} add={add} trash={trash}"
     );
 }
+
+#[test]
+fn edit_first_overview_text_describes_automatic_reconfiguration() {
+    let overview = SyncOverview {
+        status: SyncOverviewStatus::Applying,
+        job_count: 1,
+        synced_items: 0,
+        conflict_images: 0,
+    };
+    assert_eq!(
+        sync_overview_text(overview, None),
+        tr("photos.overview.sync.applying")
+    );
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Applying),
+        "emblem-synchronizing-symbolic"
+    );
+}

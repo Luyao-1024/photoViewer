@@ -45,6 +45,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## UI Invariants
 
+- Cloud sync follows **edit first, reconfigure afterwards**: running or internally quiescing jobs must remain editable. Opening/expanding/browsing, drafts, cancellation, invalid input and no-op saves must not pause or restart sync. Only an accepted effective change may stop obsolete work; safely apply the latest configuration and automatically retrigger affected surviving jobs when sync is enabled. Never require a prior pause or a later manual resume/Photos pull. Coalesce rapid edits, guard stale results, and preserve explicit upload scope. See [`docs/modules/sync-configuration-ux.md`](docs/modules/sync-configuration-ux.md) for the binding contract, opt-out/deletion exceptions and acceptance criteria.
 - The year/month/day mode selector is the canonical Liquid Glass segmented control. Preserve its visual model: one raised glass capsule, lightweight internal state, no per-segment active background block.
 - Reuse the shared `.glass-*` and `.glass-segment*` CSS classes before adding selectors.
 - Any new glass surface must work in both Liquid Glass and plain translucent modes.

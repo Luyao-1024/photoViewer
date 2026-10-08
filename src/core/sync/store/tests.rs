@@ -391,3 +391,165 @@ fn overview_does_not_report_completion_with_blocked_uploads() {
         SyncOverviewStatus::Failed
     );
 }
+
+#[test]
+fn edit_first_pending_edits_merge_and_survive_reopening_without_mutating_active_roots() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("photos");
+    std::fs::create_dir(&root).unwrap();
+    let path = temp.path().join("photos.db");
+    let pool = crate::core::db::init_pool(&path).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let mut requested = new_job(root);
+    requested.upload_scope = UploadScope::SelectedAlbums;
+    let job = store.create_job(&requested).unwrap();
+    assert!(!store
+        .queue_edit(job.id, JobEdit::UploadAlbums(Vec::new()))
+        .unwrap());
+    assert!(!store
+        .queue_edit(job.id, JobEdit::RemoteRoot("/PhotoViewer/".into()))
+        .unwrap());
+    assert!(store.pending_change(job.id).unwrap().is_none());
+    assert!(store
+        .queue_edit(job.id, JobEdit::RemoteRoot("NewRoot".into()))
+        .unwrap());
+    assert!(store
+        .queue_edit(
+            job.id,
+            JobEdit::UploadAlbums(vec!["camera".into(), "camera".into()])
+        )
+        .unwrap());
+    let pending = store.pending_change(job.id).unwrap().unwrap();
+    assert_eq!(pending.remote_root.as_deref(), Some("NewRoot"));
+    assert_eq!(pending.upload_albums, Some(vec!["camera".into()]));
+    assert_eq!(pending.revision, job.config_generation + 2);
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().remote_root,
+        "PhotoViewer"
+    );
+    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
+    assert_eq!(
+        store.desired_job(job.id).unwrap().unwrap().remote_root,
+        "NewRoot"
+    );
+    assert!(!store
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["camera".into()]))
+        .unwrap());
+    assert!(store
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["../invalid".into()]))
+        .is_err());
+    drop(store);
+    drop(pool);
+    let store = SyncStore::new(crate::core::db::init_pool(&path).unwrap());
+    assert_eq!(store.pending_change(job.id).unwrap().unwrap(), pending);
+    store.set_job_paused(job.id, true).unwrap();
+    assert!(matches!(
+        store.apply_change(job.id, pending.revision - 1).unwrap(),
+        SyncWriteResult::Changed(false)
+    ));
+    assert!(matches!(
+        store.apply_change(job.id, pending.revision).unwrap(),
+        SyncWriteResult::Changed(true)
+    ));
+    assert!(store.pending_change(job.id).unwrap().is_none());
+    assert_eq!(store.upload_albums(job.id).unwrap(), vec!["camera"]);
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().remote_root,
+        "NewRoot"
+    );
+    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
+}
+
+#[test]
+fn edit_first_pending_roots_reserve_their_namespace_and_recovery_is_not_discarded() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("one");
+    let other = temp.path().join("two");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let store = SyncStore::new(crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap());
+    let job = store.create_job(&new_job(root)).unwrap();
+    let mut requested = new_job(other);
+    requested.remote_root = "Other".into();
+    let second = store.create_job(&requested).unwrap();
+    store
+        .queue_edit(second.id, JobEdit::RemoteRoot("Reserved/Album".into()))
+        .unwrap();
+    assert!(store
+        .queue_edit(job.id, JobEdit::RemoteRoot("Reserved".into()))
+        .is_err());
+    assert!(store.pending_change(job.id).unwrap().is_none());
+    let artifact = temp.path().join("only-copy.upload");
+    std::fs::write(&artifact, b"only complete copy").unwrap();
+    let fp = super::super::local::fingerprint(&artifact).unwrap();
+    let entry = store
+        .upsert_observation(
+            job.id,
+            "photo.jpg",
+            Some(&fp),
+            None,
+            None,
+            None,
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .prepare_task(
+            "uncertain",
+            job.id,
+            entry,
+            "upload_new",
+            None,
+            &artifact,
+            &fp.blake3,
+            job.config_generation,
+            1,
+        )
+        .unwrap();
+    store
+        .queue_edit(job.id, JobEdit::RemoteRoot("NewRoot".into()))
+        .unwrap();
+    let pending = store.pending_change(job.id).unwrap().unwrap();
+    store.set_job_paused(job.id, true).unwrap();
+    assert!(store.apply_change(job.id, pending.revision).is_err());
+    assert!(artifact.exists());
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().remote_root,
+        "PhotoViewer"
+    );
+    assert_eq!(store.unfinished_tasks(job.id).unwrap().len(), 1);
+    assert!(store.pending_change(job.id).unwrap().is_some());
+}
+
+#[test]
+fn edit_first_overview_distinguishes_applying_from_paused_and_failed() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("photos");
+    std::fs::create_dir(&root).unwrap();
+    let store = SyncStore::new(crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap());
+    let job = store.create_job(&new_job(root)).unwrap();
+    store
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["camera".into()]))
+        .unwrap();
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Applying
+    );
+    store.set_job_paused(job.id, true).unwrap();
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Applying
+    );
+    store
+        .mark_job_failed(job.id, "old write cannot be verified")
+        .unwrap();
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Failed
+    );
+    assert_eq!(
+        store.overview_with_sync_enabled(false).unwrap().status,
+        SyncOverviewStatus::Disabled
+    );
+}

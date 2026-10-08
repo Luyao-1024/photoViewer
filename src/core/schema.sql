@@ -217,3 +217,9 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_open
     ON sync_conflicts(job_id, state) WHERE state = 'open';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_conflicts_one_open_per_entry
     ON sync_conflicts(entry_id) WHERE state = 'open';
+
+-- Accepted configuration edits must survive exit without mutating in-flight roots.
+CREATE TABLE IF NOT EXISTS sync_job_changes (
+    job_id INTEGER PRIMARY KEY REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL CHECK(json_valid(payload))
+);

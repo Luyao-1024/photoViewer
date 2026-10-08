@@ -356,6 +356,11 @@ fn webdav_settings_share_one_collapsed_master_row() {
 #[gtk::test]
 fn webdav_job_uploads_only_checked_albums_and_keeps_cloud_download_copy() {
     let _ = gtk::init();
+    // Unchecking an album routes through accept_upload_albums, which spawns
+    // the configuration worker; the toggle callback needs the runtime entered
+    // on this thread, mirroring what the app installs on its main thread.
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
     let app = adw::Application::builder()
         .application_id("io.github.luyao_1024.photoviewer.WindowWebDavAlbumScope")
         .build();
@@ -411,6 +416,21 @@ fn webdav_job_uploads_only_checked_albums_and_keeps_cloud_download_copy() {
     assert_eq!(checks.len(), 1);
     assert!(checks[0].is_active());
     checks[0].set_active(false);
+    // Edit acceptance is durable first; the worker lands it in the store a
+    // beat later, so the assertion cannot ride the statement that triggered it.
+    let context = gtk::glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline
+        && !crate::core::sync::SyncStore::new(pool.clone())
+            .upload_albums(job.id)
+            .unwrap()
+            .is_empty()
+    {
+        while context.pending() {
+            context.iteration(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(
         crate::core::sync::SyncStore::new(pool)
             .upload_albums(job.id)

@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+mod configuration;
+use configuration::{JobKey, GLOBAL_RUN_EPOCH};
 
 use crate::config;
 use crate::core::backend::local::LocalBackend;
@@ -20,11 +24,8 @@ use super::webdav::WebDavProvider;
 
 static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
-static ACTIVE_JOBS: OnceLock<Mutex<HashSet<i64>>> = OnceLock::new();
+static ACTIVE_JOBS: OnceLock<Mutex<HashSet<JobKey>>> = OnceLock::new();
 static LIVE_PROGRESS: Mutex<Option<LiveProgressSession>> = Mutex::new(None);
-/// Set when a trigger arrives while its job is already running: the run is
-/// remembered and one supplementary run fires after the active run settles.
-static PENDING_TRIGGER: AtomicBool = AtomicBool::new(false);
 
 /// What the live progress label should describe right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,9 @@ pub fn live_progress() -> Option<SyncLiveProgress> {
 
 fn live_progress_begin_session() {
     if let Ok(mut slot) = LIVE_PROGRESS.lock() {
+        if slot.is_some() && any_job_active() {
+            return;
+        }
         *slot = Some(LiveProgressSession {
             state: SyncLiveProgress::preparing(),
             transfer: None,
@@ -153,11 +157,11 @@ fn any_job_active() -> bool {
         .unwrap_or(true)
 }
 
-fn job_is_active(job_id: i64) -> bool {
+fn job_is_active(job_id: &JobKey) -> bool {
     ACTIVE_JOBS
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
-        .map(|active| active.contains(&job_id))
+        .map(|active| active.contains(job_id))
         .unwrap_or(false)
 }
 
@@ -194,15 +198,15 @@ fn live_progress_complete_upload() {
     }
 }
 
-struct ActiveJobGuard(i64);
+struct ActiveJobGuard(JobKey);
 
 impl ActiveJobGuard {
-    fn acquire(job_id: i64) -> Result<Self> {
+    fn acquire(job_id: JobKey) -> Result<Self> {
         let active = ACTIVE_JOBS.get_or_init(|| Mutex::new(HashSet::new()));
         let mut active = active
             .lock()
             .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?;
-        if !active.insert(job_id) {
+        if !active.insert(job_id.clone()) {
             return Err(AppError::Backend(
                 "synchronization job is already running".into(),
             ));
@@ -287,52 +291,12 @@ impl SyncService {
         &self.store
     }
 
-    pub async fn set_remote_root(&self, job_id: i64, remote_root: &str) -> Result<()> {
-        let job = self.pause_and_wait(job_id).await?;
-        if job.remote_root == remote_root.trim_matches('/') {
-            return Ok(());
-        }
-        let artifacts = self.store.artifact_paths(job_id)?;
-        self.store.set_remote_root(job_id, remote_root)?;
-        self.cleanup_staging_artifacts(artifacts);
-        Ok(())
-    }
-
-    pub async fn delete_job(&self, job_id: i64) -> Result<bool> {
-        self.pause_and_wait(job_id).await?;
-        let artifacts = self.store.artifact_paths(job_id)?;
-        let Some(reference) = self.store.delete_job(job_id)? else {
-            self.cleanup_staging_artifacts(artifacts);
-            return Ok(true);
-        };
-        self.cleanup_staging_artifacts(artifacts);
-        match tokio::task::spawn_blocking(move || crate::platform::credentials::delete(&reference))
-            .await
-        {
-            Ok(Ok(())) => Ok(true),
-            Ok(Err(error)) => {
-                tracing::warn!(job_id, "sync relation was deleted but its keyring credential could not be removed: {error}");
-                Ok(false)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    job_id,
-                    "sync relation was deleted but keyring cleanup task failed: {error}"
-                );
-                Ok(false)
-            }
-        }
-    }
-
     pub async fn list_remote_collections(&self, job_id: i64) -> Result<Vec<String>> {
-        let job = self.pause_and_wait(job_id).await?;
-        let reference = job.credential_ref;
-        let password =
-            tokio::task::spawn_blocking(move || crate::platform::credentials::load(&reference))
-                .await
-                .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
-        let provider =
-            WebDavProvider::new(&job.endpoint, job.username, password).map_err(provider_error)?;
+        let job = self
+            .store
+            .get_job(job_id)?
+            .ok_or_else(|| AppError::Backend("synchronization job no longer exists".into()))?;
+        let provider = self.provider_for_configuration(&job).await?;
         provider.probe().await.map_err(provider_error)?;
 
         let mut pending = VecDeque::from([String::new()]);
@@ -370,34 +334,6 @@ impl SyncService {
         Ok(collections.into_iter().collect())
     }
 
-    pub async fn pause_job_for_editing(&self, job_id: i64) -> Result<()> {
-        self.pause_and_wait(job_id).await.map(|_| ())
-    }
-
-    async fn pause_and_wait(&self, job_id: i64) -> Result<super::store::SyncJob> {
-        let job = self
-            .store
-            .get_job(job_id)?
-            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} does not exist")))?;
-        if !job.paused {
-            self.store.set_job_paused(job_id, true)?;
-        }
-        loop {
-            let active = ACTIVE_JOBS
-                .get_or_init(|| Mutex::new(HashSet::new()))
-                .lock()
-                .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?
-                .contains(&job_id);
-            if !active {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        self.store
-            .get_job(job_id)?
-            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} no longer exists")))
-    }
-
     fn cleanup_staging_artifacts(&self, artifacts: Vec<PathBuf>) {
         let Ok(staging_root) = self.staging_root.canonicalize() else {
             return;
@@ -421,33 +357,61 @@ impl SyncService {
     }
 
     pub async fn run_job(&self, job_id: i64, credentials: SyncCredentials) -> Result<RunSummary> {
-        ensure_webdav_sync_enabled()?;
-        let _active = ActiveJobGuard::acquire(job_id)?;
         let job = self
             .store
             .get_job(job_id)?
-            .ok_or_else(|| AppError::Backend(format!("sync job {job_id} does not exist")))?;
-        if job.paused {
-            return Err(AppError::Backend("synchronization job is paused".into()));
-        }
-        self.store.mark_job_started(job_id)?;
-        let transfer_progress = Arc::new(TransferProgress::default());
+            .ok_or_else(|| AppError::Backend("synchronization job no longer exists".into()))?;
+        let progress = Arc::new(TransferProgress::default());
         let provider = Arc::new(
             WebDavProvider::new(&job.endpoint, job.username.clone(), credentials.password)
                 .map_err(provider_error)?
-                .with_transfer_progress(Arc::clone(&transfer_progress)),
+                .with_transfer_progress(progress.clone()),
         );
+        self.run_job_with_provider(job_id, provider, Some(progress))
+            .await
+    }
+
+    async fn run_job_with_provider(
+        &self,
+        job_id: i64,
+        provider: Arc<dyn SyncProvider>,
+        progress: Option<Arc<TransferProgress>>,
+    ) -> Result<RunSummary> {
+        ensure_webdav_sync_enabled()?;
+        let _active = self.acquire_run_slot(job_id).await?;
+        let job = self
+            .store
+            .get_job(job_id)?
+            .ok_or_else(|| AppError::Backend("synchronization job no longer exists".into()))?;
+        if job.paused || self.store.pending_change(job_id)?.is_some() {
+            return Err(AppError::Backend(
+                "synchronization configuration is applying".into(),
+            ));
+        }
+        self.store.mark_job_started(job_id)?;
         let result = self
-            .run_with_provider_inner(&job, provider, true, Some(transfer_progress))
+            .run_with_provider_inner(&job, provider, true, progress)
             .await;
         match &result {
-            Ok(_) => self.store.mark_job_completed(job_id)?,
-            Err(error) => self.store.mark_job_failed(job_id, &error.to_string())?,
+            Ok(_)
+                if self.store.pending_change(job_id)?.is_none()
+                    && crate::core::prefs::webdav_sync_enabled() =>
+            {
+                self.store.finish_run(job_id, job.config_generation, None)?
+            }
+            Err(error) if self.store.pending_change(job_id)?.is_none() => {
+                self.store
+                    .finish_run(job_id, job.config_generation, Some(&error.to_string()))?
+            }
+            _ => {}
         }
         result
     }
 
     pub async fn run_saved_job(&self, job_id: i64) -> Result<RunSummary> {
+        if let Some(provider) = self.registered_provider(job_id)? {
+            return self.run_job_with_provider(job_id, provider, None).await;
+        }
         ensure_webdav_sync_enabled()?;
         let job = self
             .store
@@ -463,99 +427,10 @@ impl SyncService {
 
     pub async fn trigger_saved_jobs_once(&self) -> Result<()> {
         ensure_webdav_sync_enabled()?;
-        let jobs = self.store.list_jobs()?;
-        tracing::info!(
-            target: crate::core::log_targets::STORAGE,
-            job_count = jobs.len(),
-            "synchronization run triggered"
-        );
-        if jobs.is_empty() {
-            return Ok(());
-        }
-        // A trigger arriving while every requested job is already running is
-        // intercepted: remember it and fire one supplementary run once the
-        // active run settles, instead of churning the progress session.
-        if jobs.iter().all(|job| job_is_active(job.id)) {
-            PENDING_TRIGGER.store(true, Ordering::Relaxed);
-            tracing::info!(
-                target: crate::core::log_targets::STORAGE,
-                "synchronization already running; run remembered for after it finishes"
-            );
-            return Ok(());
-        }
-        loop {
-            live_progress_begin_session();
-            let result = self.run_saved_jobs_sequentially(jobs.clone()).await;
-            live_progress_end_session();
-            result?;
-            if !PENDING_TRIGGER.swap(false, Ordering::Relaxed) {
-                break;
-            }
-            tracing::info!(
-                target: crate::core::log_targets::STORAGE,
-                "supplementary synchronization run after the previous one finished"
-            );
+        for job in self.store.list_jobs()? {
+            self.request_job_sync(job.id)?;
         }
         Ok(())
-    }
-
-    async fn run_saved_jobs_sequentially(&self, jobs: Vec<super::store::SyncJob>) -> Result<()> {
-        for job in jobs {
-            let already_running = ACTIVE_JOBS
-                .get_or_init(|| Mutex::new(HashSet::new()))
-                .lock()
-                .map_err(|_| AppError::Backend("synchronization job lock is poisoned".into()))?
-                .contains(&job.id);
-            if already_running {
-                PENDING_TRIGGER.store(true, Ordering::Relaxed);
-                continue;
-            }
-            if job.paused {
-                self.store.set_job_paused(job.id, false)?;
-            }
-            match self.run_saved_job(job.id).await {
-                Ok(summary) => tracing::info!(
-                    target: crate::core::log_targets::STORAGE,
-                    job_id = job.id,
-                    uploaded = summary.uploaded,
-                    downloaded = summary.downloaded,
-                    verified = summary.verified,
-                    unchanged = summary.unchanged,
-                    conflicts = summary.conflicts,
-                    "synchronization job finished"
-                ),
-                Err(error) => {
-                    tracing::warn!(job_id = job.id, "synchronization job failed: {error}")
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn resolve_saved_conflict(
-        &self,
-        conflict_id: i64,
-        resolution: ConflictResolution,
-    ) -> Result<()> {
-        ensure_webdav_sync_enabled()?;
-        let conflict = self.store.get_open_conflict(conflict_id)?.ok_or_else(|| {
-            AppError::Backend("synchronization conflict is no longer open".into())
-        })?;
-        let job = self
-            .store
-            .get_job(conflict.job_id)?
-            .ok_or_else(|| AppError::Backend("synchronization job no longer exists".into()))?;
-        let reference = job.credential_ref.clone();
-        let password =
-            tokio::task::spawn_blocking(move || crate::platform::credentials::load(&reference))
-                .await
-                .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
-        let provider = Arc::new(
-            WebDavProvider::new(&job.endpoint, job.username.clone(), password)
-                .map_err(provider_error)?,
-        );
-        self.resolve_with_provider(&job, conflict, resolution, provider)
-            .await
     }
 
     async fn resolve_with_provider(
@@ -565,7 +440,7 @@ impl SyncService {
         resolution: ConflictResolution,
         provider: Arc<dyn SyncProvider>,
     ) -> Result<()> {
-        let _active = ActiveJobGuard::acquire(job.id)?;
+        let _active = ActiveJobGuard::acquire(self.job_key(job.id)?)?;
         provider.probe().await.map_err(provider_error)?;
         let current_conflict = self
             .store
@@ -578,7 +453,7 @@ impl SyncService {
             })?;
         let upload_albums = self
             .store
-            .upload_albums(job.id)?
+            .desired_upload_albums(job.id)?
             .into_iter()
             .collect::<BTreeSet<_>>();
         if !upload_allowed(
@@ -612,6 +487,20 @@ impl SyncService {
             return Err(conflict_changed());
         }
 
+        if let Some(pending) = self.store.pending_change(job.id)? {
+            if pending
+                .remote_root
+                .as_ref()
+                .is_some_and(|root| root != &job.remote_root)
+                || pending.conflict.as_ref().is_none_or(|(choice, action)| {
+                    choice != &current_conflict || action != resolution.as_str()
+                })
+            {
+                return Err(AppError::Backend(
+                    "conflict choice was superseded by a newer edit".into(),
+                ));
+            }
+        }
         match resolution {
             ConflictResolution::UseLocal => {
                 self.resolve_use_local(
@@ -668,20 +557,44 @@ impl SyncService {
         monitor_global_switch: bool,
         transfer_progress: Option<Arc<TransferProgress>>,
     ) -> Result<RunSummary> {
+        let run_epoch = GLOBAL_RUN_EPOCH.load(Ordering::Acquire);
+        if self.sync_should_stop(
+            job.id,
+            job.config_generation,
+            monitor_global_switch,
+            run_epoch,
+        )? {
+            return Ok(RunSummary::default());
+        }
         provider.probe().await.map_err(provider_error)?;
-        if self.sync_should_stop(job.id, monitor_global_switch)? {
+        if self.sync_should_stop(
+            job.id,
+            job.config_generation,
+            monitor_global_switch,
+            run_epoch,
+        )? {
             return Ok(RunSummary::default());
         }
         provider
             .ensure_collection(job.remote_root.trim_matches('/'))
             .await
             .map_err(provider_error)?;
-        if self.sync_should_stop(job.id, monitor_global_switch)? {
+        if self.sync_should_stop(
+            job.id,
+            job.config_generation,
+            monitor_global_switch,
+            run_epoch,
+        )? {
             return Ok(RunSummary::default());
         }
-        self.recover_unfinished_tasks(job, provider.as_ref(), monitor_global_switch)
+        self.recover_unfinished_tasks(job, provider.as_ref(), monitor_global_switch, run_epoch)
             .await?;
-        if self.sync_should_stop(job.id, monitor_global_switch)? {
+        if self.sync_should_stop(
+            job.id,
+            job.config_generation,
+            monitor_global_switch,
+            run_epoch,
+        )? {
             return Ok(RunSummary::default());
         }
         let protected_uploads = self
@@ -692,29 +605,27 @@ impl SyncService {
             .map(|task| task.relative_path)
             .collect::<BTreeSet<_>>();
         let remote_entries = discover_remote(provider.as_ref(), &job.remote_root).await?;
-        if self.sync_should_stop(job.id, monitor_global_switch)? {
+        if self.sync_should_stop(
+            job.id,
+            job.config_generation,
+            monitor_global_switch,
+            run_epoch,
+        )? {
             return Ok(RunSummary::default());
         }
-        if job.upload_scope == UploadScope::SelectedAlbums {
-            let remote_albums = remote_entries
-                .keys()
-                .map(|path| {
-                    path.rsplit_once('/')
-                        .map_or("", |(album, _)| album)
-                        .to_string()
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            self.store.enable_remote_albums(job.id, &remote_albums)?;
-        }
-        let job = self
+        // Cloud discovery determines download scope only. Upload permissions
+        // remain the user's persisted choice, even for cloud-backed albums.
+        let current_job = self
             .store
             .get_job(job.id)?
             .ok_or_else(|| AppError::Backend(format!("sync job {} no longer exists", job.id)))?;
+        if current_job.config_generation != job.config_generation {
+            return Ok(RunSummary::default());
+        }
+        let job = current_job;
         let upload_albums = self
             .store
-            .upload_albums(job.id)?
+            .desired_upload_albums(job.id)?
             .into_iter()
             .collect::<BTreeSet<_>>();
         let local_entries = local::scan_matching(&job.local_root, |relative_path| {
@@ -767,7 +678,12 @@ impl SyncService {
 
         let mut summary = RunSummary::default();
         for relative_path in paths {
-            if self.sync_should_stop(job.id, monitor_global_switch)? {
+            if self.sync_should_stop(
+                job.id,
+                job.config_generation,
+                monitor_global_switch,
+                run_epoch,
+            )? {
                 break;
             }
             if protected_uploads.contains(&relative_path) {
@@ -791,15 +707,26 @@ impl SyncService {
         Ok(summary)
     }
 
-    fn sync_should_stop(&self, job_id: i64, monitor_global_switch: bool) -> Result<bool> {
-        if monitor_global_switch && !crate::core::prefs::webdav_sync_enabled() {
+    fn sync_should_stop(
+        &self,
+        job_id: i64,
+        expected_generation: i64,
+        monitor_global_switch: bool,
+        run_epoch: u64,
+    ) -> Result<bool> {
+        if monitor_global_switch
+            && (!crate::core::prefs::webdav_sync_enabled()
+                || GLOBAL_RUN_EPOCH.load(Ordering::Acquire) != run_epoch)
+        {
             return Ok(true);
         }
         let job = self
             .store
             .get_job(job_id)?
             .ok_or_else(|| AppError::Backend(format!("sync job {job_id} no longer exists")))?;
-        Ok(job.paused)
+        Ok(job.paused
+            || job.config_generation != expected_generation
+            || self.store.pending_change(job_id)?.is_some())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1224,12 +1151,18 @@ impl SyncService {
         job: &SyncJob,
         provider: &dyn SyncProvider,
         monitor_global_switch: bool,
+        run_epoch: u64,
     ) -> Result<()> {
         for task in self.store.unfinished_tasks(job.id)? {
-            if self.sync_should_stop(job.id, monitor_global_switch)? {
+            if self.sync_should_stop(
+                job.id,
+                job.config_generation,
+                monitor_global_switch,
+                run_epoch,
+            )? {
                 break;
             }
-            if task.config_generation != job.config_generation && task.action != "upload_new" {
+            if task.config_generation > job.config_generation {
                 self.store.set_task_state(
                     &task.operation_id,
                     "blocked",
@@ -1308,6 +1241,34 @@ impl SyncService {
                 return Ok(());
             }
             remove_file_if_exists(&downloaded)?;
+        }
+
+        let upload_albums = self
+            .store
+            .desired_upload_albums(job.id)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let scope = if self
+            .store
+            .pending_change(job.id)?
+            .is_some_and(|change| change.upload_albums.is_some())
+        {
+            UploadScope::SelectedAlbums
+        } else {
+            job.upload_scope
+        };
+        if !upload_allowed(scope, &upload_albums, &task.relative_path) {
+            // A proven completed write above may be committed, but recovery
+            // cannot bypass a subsequent opt-out. Keep the snapshot and protect
+            // this path from downloading a partial remote file over the original.
+            if self.restore_recovered_local(job, task, &artifact, partial_fingerprint.as_ref())? {
+                self.store.set_task_state(
+                    &task.operation_id,
+                    "blocked",
+                    Some("album is not selected for upload; preserved snapshot awaits explicit selection"),
+                )?;
+            }
+            return Ok(());
         }
 
         let condition = if task.action == "upload_new" {

@@ -137,7 +137,11 @@ impl DbCommand {
             Self::RefreshAlbums { .. } => DbWritePriority::DerivedRefresh,
             Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
-            Self::Sync(crate::core::sync::store::SyncWrite::CreateJob(_))
+            Self::Sync(
+                crate::core::sync::store::SyncWrite::CreateJob(_)
+                | crate::core::sync::store::SyncWrite::QueueEdit { .. }
+                | crate::core::sync::store::SyncWrite::ApplyChange { .. },
+            )
             | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. })
             | Self::Sync(crate::core::sync::store::SyncWrite::SetRemoteRoot { .. })
             | Self::Sync(crate::core::sync::store::SyncWrite::DeleteJob { .. })
@@ -778,7 +782,6 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::SetRemoteRoot { .. }
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
-                    | crate::core::sync::store::SyncWrite::EnableRemoteAlbums { .. }
                     | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
                     | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
                     | crate::core::sync::store::SyncWrite::RecordConflict { .. }

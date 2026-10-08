@@ -65,6 +65,7 @@ fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>
         SyncOverviewStatus::Disabled => String::new(),
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
+        SyncOverviewStatus::Applying => tr("photos.overview.sync.applying"),
         SyncOverviewStatus::Running => sync_running_text(progress),
         SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
@@ -114,7 +115,9 @@ fn sync_overview_icon(status: SyncOverviewStatus) -> &'static str {
     match status {
         SyncOverviewStatus::Disabled => "",
         SyncOverviewStatus::Paused => "media-playback-pause-symbolic",
-        SyncOverviewStatus::Running => "emblem-synchronizing-symbolic",
+        SyncOverviewStatus::Running | SyncOverviewStatus::Applying => {
+            "emblem-synchronizing-symbolic"
+        }
         SyncOverviewStatus::Failed => "dialog-warning-symbolic",
         SyncOverviewStatus::Completed => "emblem-ok-symbolic",
         SyncOverviewStatus::NotConfigured | SyncOverviewStatus::Ready => "folder-remote-symbolic",
@@ -1197,7 +1200,10 @@ impl PhotosPage {
         let imp = self.imp();
         let spinner = imp.overview_sync_spinner.get();
         let icon = imp.overview_sync_icon.get();
-        let running = status == SyncOverviewStatus::Running;
+        let running = matches!(
+            status,
+            SyncOverviewStatus::Running | SyncOverviewStatus::Applying
+        );
 
         spinner.set_visible(running);
         icon.set_visible(!running);

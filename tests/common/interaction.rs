@@ -316,7 +316,13 @@ impl Ui {
     /// so a control that scrolling genuinely cannot reveal still fails here.
     pub fn scroll_to_reveal(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         let widget = widget.as_ref();
-        if self.pointer_at_center_of(widget).is_some() {
+        let reachable = || {
+            self.target_of(widget)
+                .is_some_and(|target| self.covers(widget, &target))
+        };
+        // Mapped widgets keep their allocation even while clipped outside the
+        // viewport. A coordinate alone is not evidence that a press reaches it.
+        if reachable() {
             return;
         }
         let mut viewport = None;
@@ -329,36 +335,30 @@ impl Ui {
             ancestor = node.parent();
         }
         let Some(viewport) = viewport else {
-            panic!(
-                "{label} has no pointer position and no scrollable ancestor to scroll it into \
-                 view: it is hidden, folded, or torn down"
-            );
+            panic!("{label} is unreachable and has no scrollable ancestor");
         };
         let adjustment = viewport.vadjustment();
-        let top = adjustment.value();
         let bottom = (adjustment.upper() - adjustment.page_size()).max(0.0);
         assert!(
-            bottom > top,
-            "{label} has no pointer position but its scroll container cannot scroll \
-             (content {top:.0}..{:.0} fits the viewport), so it is hidden, not off-screen",
-            top + adjustment.page_size()
+            bottom > 0.0,
+            "{label} is unreachable but its container cannot scroll"
         );
 
-        // Sweep downward the way a user scrolls looking for the control, settling
-        // between steps so the layout reallocates the clipped children.
+        // Search in both directions, as a user would after a selected row moves
+        // to the front. Each wheel-sized adjustment settles before hit-testing.
         const STEPS: u32 = 24;
-        let span = (bottom - top) / f64::from(STEPS);
-        for step in 1..=STEPS {
-            adjustment.set_value((top + span * f64::from(step)).min(bottom));
-            self.pump(Duration::from_millis(20));
-            if self.pointer_at_center_of(widget).is_some() {
-                return;
+        for destination in [0.0, bottom] {
+            let start = adjustment.value();
+            for step in 1..=STEPS {
+                adjustment
+                    .set_value(start + (destination - start) * f64::from(step) / f64::from(STEPS));
+                self.pump(Duration::from_millis(20));
+                if reachable() {
+                    return;
+                }
             }
         }
-        panic!(
-            "scrolling {label}'s container to its end never gave the control a pointer position: \
-             it is hidden, folded, or covered rather than below the fold"
-        );
+        panic!("scrolling never made {label} hit-testable; it is hidden, folded, or covered");
     }
 
     // ---------------------------------------------------------------------
@@ -371,6 +371,60 @@ impl Ui {
     pub fn click(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         self.assert_reachable(widget, label);
         self.deliver(widget.as_ref(), label, 1);
+    }
+
+    /// Native X11 input for switches and drop-downs that inspect the current
+    /// GdkEvent. Restrict the target to this test process, then hit-test before
+    /// pressing; never approximate the result by setting widget state.
+    pub fn click_native(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
+        self.assert_reachable(widget, label);
+        assert!(
+            self.root.display().type_().name().contains("X11"),
+            "native input needs the private Xvfb display"
+        );
+        let result = std::process::Command::new("xdotool")
+            .args([
+                "search",
+                "--onlyvisible",
+                "--pid",
+                &std::process::id().to_string(),
+            ])
+            .output()
+            .expect("xdotool is required for native GTK input");
+        assert!(
+            result.status.success(),
+            "the fixture window must be visible on X11"
+        );
+        let windows = String::from_utf8(result.stdout).unwrap();
+        let window = windows.lines().next().expect("the fixture's X11 window");
+        let (x, y) = self.pointer_at_center_of(widget).unwrap();
+        let status = std::process::Command::new("xdotool")
+            .args([
+                "mousemove",
+                "--sync",
+                "--window",
+                window,
+                &format!("{:.0}", x),
+                &format!("{:.0}", y),
+                "click",
+                "--clearmodifiers",
+                "1",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "native press failed for {label}");
+        self.pump(Duration::from_millis(150));
+    }
+
+    /// Follow a native press on this process's drop-down with a real key event.
+    pub fn native_key(&self, key: &str) {
+        assert!(self.root.display().type_().name().contains("X11"));
+        assert!(std::process::Command::new("xdotool")
+            .args(["key", "--clearmodifiers", key])
+            .status()
+            .unwrap()
+            .success());
+        self.pump(Duration::from_millis(150));
     }
 
     /// Two real primary clicks with the main loop not running between them — what a

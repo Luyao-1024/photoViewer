@@ -524,22 +524,31 @@ Design intent:
   default, and gates home-pull sync and conflict resolution for every task.
   The “Add WebDAV Sync Task” form stays unavailable until that switch is on and
   saves the task after complete server configuration is validated. Saved jobs
-  run once when the user pulls down at the top of Photos; they do not start on
-  application launch or run on a timer.
-- Browsing a task's cloud folder, changing it, or deleting the task is available
-  while it is syncing. These actions pause that task, let its current file
-  operation finish, then apply the requested edit; the task stays paused until
-  the next Photos pull. The cloud-folder row combines browsing and relationship
-  deletion. Expanding upload-album settings also pauses the task. The Photos
-  pull resumes paused jobs and runs each saved task once.
+  run on a Photos pull or application launch, without periodic polling. Under
+  the binding edit-first contract, validated new tasks and effective config
+  changes must also automatically schedule the latest eligible configuration.
+- Cloud-sync configuration follows **edit first, reconfigure afterwards**.
+  Running or internally applying changes must not disable configuration input.
+  Opening/expanding a checklist or browsing cloud folders has no pause/restart
+  side effect. Only a validated, accepted effective edit requests safe stopping
+  of obsolete work and automatic synchronization using the latest configuration;
+  never require a prior pause or a subsequent manual Photos pull. Continuous
+  edits remain available and are coalesced. Deletion and global opt-out never
+  restart their target. The cloud-folder row combines browsing and relationship
+  deletion. The binding specification and current migration gaps are in
+  [`sync-configuration-ux.md`](sync-configuration-ux.md) and
+  [`sync.md`](sync.md#edit-first-configuration-contract).
 - Each sync job row shows its local ↔ remote mapping with its paused/error
   state. The task selector reuses the
   connection form fields to show saved server URL, username, local root, and
   remote root; saved passwords remain in the system keyring and are never read
   back or exposed through a reveal control. Expanding the album checklist
-  automatically pauses the job until the selection is saved; checking a
-  physical folder album enables uploads for that album while every remote album
-  stays in download scope.
+  must not pause the job. Checkbox and Select All edits apply immediately after
+  an effective change is accepted; show an applying/latest-configuration status
+  without locking input. Checking a physical folder album enables uploads for
+  that album while every remote album stays in download scope. Cloud discovery
+  never changes local upload permission. Select All covers the current list,
+  and checked albums sort first without losing keyboard focus.
 - Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
   Both. Executing a choice re-checks both recorded versions; if either side
   changed, the stale selection is rejected and a fresh reconciliation is

@@ -23,6 +23,11 @@ harness, so "real input" means the same thing everywhere:
   press and release to the gesture controllers that control's click path runs
   through. `type_search` / `type_entry` / `activate_entry` for text, `press_key` /
   `key_gesture` for the production router, and `pump` / `wait_until` for the loop.
+  `scroll_to_reveal` checks the actual picked target, not just a mapped widget's
+  stale coordinates, and searches upward and downward so sorted rows remain
+  reachable after moving ahead of the viewport. The focused saved-task journey
+  is `tests/ux_sync_album_selection.rs` (Select All, partial selection, checked-first
+  ordering, atomic persistence and reopening Settings).
 - **`tests/common/shell.rs`** — `Shell`, a presented `MainWindow` over a real
   SQLite library of real distinct JPEGs on a real filesystem, wired with the same
   pool, `ThumbnailLoader`, `media_list` and `DbActor` the app uses. `Shell::new()`
@@ -101,6 +106,48 @@ double activation pushing exactly one Viewer, the mode capsule, keyboard routing
 chrome and zoom state, sidebar navigation, album multi-select, the album picker's
 copy and move, the album context menu, and the sync badge surviving the jump from a
 grid tile to the Viewer header.
+
+### Cloud Sync Edit-First Acceptance
+
+The binding contract is
+[`modules/sync-configuration-ux.md`](modules/sync-configuration-ux.md). The
+existing `ux_sync_album_selection` journey covers idle selection, Select All,
+sorting and persistence; it is **not** evidence that editing during sync works.
+The following coverage is required before declaring the migration complete:
+
+1. Start a real sync run against a controllable test provider that holds a file
+   operation in flight. Open Settings and expand the checklist by hit-tested
+   presses. Checkboxes and Select All must already be editable, and inspection
+   alone must not pause the job, change its generation or enqueue a restart.
+2. Edit an album while the transfer is held. Observe the accepted selection and
+   reconfiguration intent **before** releasing the old operation. Safely settle
+   old work and verify a new run uses the latest scope, without pressing Pause,
+   Resume or pulling Photos. Also cover Select All and clearing uploads while
+   cloud downloads remain allowed.
+3. Make successive edits while the first edit is applying. Input must remain
+   available; verify the final generation/selection drives the next run and an
+   older completion or failure cannot revert newer input. Count bulk writes and
+   restart requests, not just final checkbox appearance.
+4. Browse a cloud folder, cancel its picker/confirmation, submit the same root,
+   and submit invalid input. Each must leave the existing run and generation
+   untouched. Confirm a genuinely changed root and verify safe transition plus
+   automatic restart, with old-root evidence/results isolated from the new root.
+5. Cover task creation, confirmed deletion, global off/on and confirmed conflict
+   choices. No remembered trigger may restart a deleted/disabled target; saving
+   eligible changes must not require a later manual refresh. Display-only badge
+   changes must never interrupt transfers.
+6. Exercise validation/save/application failures and restart recovery of an
+   accepted pending edit. Preserve the latest desired state and sole recovery
+   copies; report actual errors rather than claiming the new run completed.
+
+Use `tests/common/interaction.rs` + `tests/common/shell.rs` for the real input
+path and a 1920x1080 display. Provider barriers and generations may be observed
+as evidence; never pre-pause the fixture, emit `clicked`, set selection or
+visibility, or alter database rows to reach the editable/reconfigured state
+under test. An idle-only test, direct setter test or successful manual refresh
+cannot substitute for these in-flight acceptance checks. Run only new/directly
+modified focused tests during development; reserve the full suite for the push
+gate as documented above.
 
 ### Controls that hand off to the desktop
 

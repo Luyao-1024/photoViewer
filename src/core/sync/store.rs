@@ -9,6 +9,9 @@ use crate::core::error::{AppError, Result};
 
 use super::model::{Fingerprint, Revision, RevisionStrength, SyncDirection, UploadScope};
 
+mod configuration;
+pub use configuration::{JobEdit, PendingChange};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSyncJob {
     pub endpoint: String,
@@ -43,6 +46,7 @@ pub enum SyncOverviewStatus {
     Disabled,
     NotConfigured,
     Paused,
+    Applying,
     Running,
     Failed,
     Ready,
@@ -78,7 +82,7 @@ pub struct StoredEntry {
     pub generation: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyncConflict {
     pub id: i64,
     pub job_id: i64,
@@ -114,6 +118,24 @@ pub struct SyncStore {
 
 #[derive(Debug)]
 pub enum SyncWrite {
+    FinishRun {
+        id: i64,
+        generation: i64,
+        error: Option<String>,
+    },
+    FailPendingEdit {
+        id: i64,
+        revision: i64,
+        error: String,
+    },
+    QueueEdit {
+        id: i64,
+        edit: JobEdit,
+    },
+    ApplyChange {
+        id: i64,
+        revision: i64,
+    },
     CreateJob(NewSyncJob),
     SetJobPaused {
         id: i64,
@@ -127,10 +149,6 @@ pub enum SyncWrite {
         id: i64,
     },
     SetUploadAlbums {
-        id: i64,
-        relative_albums: Vec<String>,
-    },
-    EnableRemoteAlbums {
         id: i64,
         relative_albums: Vec<String>,
     },
@@ -195,6 +213,7 @@ pub enum SyncWrite {
 
 #[derive(Debug)]
 pub enum SyncWriteResult {
+    Changed(bool),
     None,
     Id(i64),
     DeletedJob(Option<String>),
@@ -264,7 +283,7 @@ impl SyncStore {
         job.upload_albums = normalize_relative_albums(&job.upload_albums)?;
         let job_id = match self.write(SyncWrite::CreateJob(job))? {
             SyncWriteResult::Id(id) => id,
-            SyncWriteResult::None => {
+            SyncWriteResult::None | SyncWriteResult::Changed(_) => {
                 return Err(AppError::Backend(
                     "create synchronization job returned no identity".into(),
                 ))
@@ -419,6 +438,19 @@ impl SyncStore {
                 conflict_images,
             });
         }
+        let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_changes p JOIN sync_jobs j ON j.id=p.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE c.enabled=1)",[],|row|row.get(0))?;
+        if pending {
+            return Ok(SyncOverview {
+                status: if jobs.iter().any(|(_, _, _, error)| error.is_some()) {
+                    SyncOverviewStatus::Failed
+                } else {
+                    SyncOverviewStatus::Applying
+                },
+                job_count,
+                synced_items,
+                conflict_images,
+            });
+        }
         if jobs.iter().all(|(paused, _, _, _)| *paused) {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Paused,
@@ -495,17 +527,26 @@ impl SyncStore {
         Ok(())
     }
 
-    pub fn enable_remote_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {
-        let relative_albums = normalize_relative_albums(relative_albums)?;
-        self.write(SyncWrite::EnableRemoteAlbums {
+    pub fn mark_job_started(&self, id: i64) -> Result<()> {
+        self.write(SyncWrite::MarkJobStarted { id })?;
+        Ok(())
+    }
+
+    pub(crate) fn finish_run(&self, id: i64, generation: i64, error: Option<&str>) -> Result<()> {
+        self.write(SyncWrite::FinishRun {
             id,
-            relative_albums,
+            generation,
+            error: error.map(str::to_owned),
         })?;
         Ok(())
     }
 
-    pub fn mark_job_started(&self, id: i64) -> Result<()> {
-        self.write(SyncWrite::MarkJobStarted { id })?;
+    pub(crate) fn fail_pending_edit(&self, id: i64, revision: i64, error: &str) -> Result<()> {
+        self.write(SyncWrite::FailPendingEdit {
+            id,
+            revision,
+            error: error.into(),
+        })?;
         Ok(())
     }
 
@@ -658,7 +699,7 @@ impl SyncStore {
             state: state.into(),
         })? {
             SyncWriteResult::Id(id) => Ok(id),
-            SyncWriteResult::None => Err(AppError::Backend(
+            SyncWriteResult::None | SyncWriteResult::Changed(_) => Err(AppError::Backend(
                 "upsert synchronization observation returned no identity".into(),
             )),
             SyncWriteResult::DeletedJob(_) => Err(AppError::Backend(
@@ -777,6 +818,29 @@ impl SyncStore {
 
 pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWriteResult> {
     match command {
+        SyncWrite::FinishRun {
+            id,
+            generation,
+            error,
+        } => {
+            let conn = pool.get()?;
+            if let Some(error) = error {
+                conn.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND config_generation=?3 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2)",params![error,id,generation])?;
+            } else {
+                conn.execute("UPDATE sync_jobs SET last_completed_at=unixepoch(),last_error=NULL WHERE id=?1 AND config_generation=?2 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?1)",params![id,generation])?;
+            }
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::FailPendingEdit {
+            id,
+            revision,
+            error,
+        } => {
+            pool.get()?.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2 AND json_extract(payload,'$.revision')=?3)",params![error,id,revision])?;
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::QueueEdit { id, edit } => configuration::queue(pool, id, edit),
+        SyncWrite::ApplyChange { id, revision } => configuration::apply(pool, id, revision),
         SyncWrite::CreateJob(job) => {
             let mut conn = pool.get()?;
             let tx = conn.transaction()?;
@@ -831,6 +895,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                     )));
                 }
             }
+            configuration::validate_other_roots(&tx, connection_id, 0, &job.remote_root)?;
             tx.execute(
                 "INSERT INTO sync_jobs
                  (connection_id, local_root, remote_root, direction, upload_scope)
@@ -985,30 +1050,6 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                     "INSERT INTO sync_job_upload_albums (job_id, relative_album)
                      VALUES (?1, ?2)",
                     params![id, relative_album],
-                )?;
-            }
-            tx.commit()?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::EnableRemoteAlbums {
-            id,
-            relative_albums,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            let mut added = 0;
-            for relative_album in relative_albums {
-                added += tx.execute(
-                    "INSERT OR IGNORE INTO sync_job_upload_albums (job_id, relative_album)
-                     VALUES (?1, ?2)",
-                    params![id, relative_album],
-                )?;
-            }
-            if added > 0 {
-                tx.execute(
-                    "UPDATE sync_jobs SET config_generation = config_generation + 1
-                     WHERE id = ?1",
-                    [id],
                 )?;
             }
             tx.commit()?;

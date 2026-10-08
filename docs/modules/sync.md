@@ -29,6 +29,7 @@ metadata sync needs a versioned sidecar protocol.
 | `src/core/sync/service.rs` | Job/connection service, scheduling, live progress |
 | `src/platform/credentials.rs` | Secret Service-backed credential storage |
 | `src/ui/window/settings.rs` | Connections, jobs, upload scope, conflict UI |
+| `src/ui/window/settings/sync_upload.rs` | Select All, atomic upload selection, checked-first list sorting |
 | `src/ui/cloud_badge.rs` | Per-media cloud badge resources, and the rendered-ink contract for them |
 | `src/core/schema.sql` | `sync_connections`, `sync_jobs`, `sync_job_upload_albums`, `sync_entries`, `sync_tasks`, `sync_conflicts` |
 
@@ -152,9 +153,9 @@ protected.
 Editing inside the app produces a sync intent only after a successful save;
 dragging the edit preview does not. External modifications arrive through the
 watcher and are compensated by periodic and startup scans, because an in-memory
-event can be lost. Deleting a task, browsing to a different cloud folder, or
-changing the upload-album checklist all pause the job and wait for its current
-file operation to finish.
+event can be lost. Cloud configuration follows the edit-first contract below:
+viewing or drafting never pauses a job; an accepted effective change requests
+internal quiescence and automatic reconciliation with the latest configuration.
 
 If the app saves v3 while v2 is still uploading, v2 may complete, but local v3
 must stay dirty with a follow-up task. A stale result must never mark a newer
@@ -194,22 +195,60 @@ committed sync result. "Ignore this path for N seconds" is not acceptable, and
 an event's sync origin does not excuse a real local edit that happened in the
 meantime.
 
+## Edit-First Configuration Contract
+
+**Binding requirement; implementation migration pending.** The canonical
+interaction and state-transition specification is
+[`sync-configuration-ux.md`](sync-configuration-ux.md). Running sync must not be
+an editing prerequisite: accept validated effective edits first, then internally
+stop obsolete work, apply the latest desired configuration safely, and
+retrigger affected surviving jobs automatically when sync is enabled. Opening,
+expanding, browsing, drafts, cancellation, invalid input and no-op saves must
+leave the existing run untouched. Global opt-out, confirmed deletion and
+safety/validation failures have the explicit exceptions in that specification.
+
+Current gaps, verified in the implementation:
+
+- `settings.rs` pauses a job when its album expander opens, and
+  `SyncUploadAlbumSelection::set_editable` is still gated by paused state.
+- `SyncService::list_remote_collections` pauses before read-only browsing;
+  `set_remote_root` pauses before checking whether the root is unchanged.
+- Root changes stay paused awaiting a Photos pull, and album-scope writes do not
+  consistently drive a stop/apply/restart lifecycle with latest-edit protection.
+
+These are **migration work**, not approved UX patterns. The contracts below
+supersede the old pause-before-edit/manual-restart behavior; documenting them
+alone does not close these implementation gaps.
+
 ## Scheduling And Triggers
 
-There is no timer-based sync. A run is triggered by pulling down at the top of
-Photos, or once per application launch in parallel with the startup scan.
+There is no timer-based periodic sync. Existing triggers are pulling down at
+the top of Photos and once per application launch in parallel with the startup
+scan. The edit-first contract additionally requires automatic runs after
+accepted effective configuration changes and enabling sync.
 A trigger arriving while its job is already running is intercepted and
 remembered: a job never runs concurrently, and after the active run settles
 exactly one supplementary run fires, so repeated pulls during a long run
-coalesce into a single catch-up. Saved jobs are never started merely by being
-created.
+coalesce into a single catch-up. Creating a validated saved job while sync is
+enabled must schedule that job automatically; an unchanged/invalid draft must
+not schedule work. This additional trigger remains part of the implementation
+migration identified above.
 
-Before planning, the service adds every discovered remote media album to the
-persisted local upload selection, including the root album for files directly
-under the configured root. This makes cloud-backed albums bidirectional on both
-sides; only local-only albums remain manually selectable. The updated
-configuration generation is used for the same run, and an unchanged selection
-is not rewritten.
+Discovering a remote media album never changes the persisted local upload
+selection or configuration generation. Cloud-backed albums, nested albums, and
+files directly under the configured root remain download-only unless their
+local physical album is explicitly selected for upload. Selection matches the
+immediate relative parent: selecting `camera` does not select `camera/nested`.
+Unchecking a previously synced album remains effective on subsequent runs even
+when that album still exists in the cloud.
+
+Older versions automatically added cloud-backed albums to the same upload
+selection table used for manual choices. Those rows have no provenance and
+cannot safely be distinguished from explicit user selections. Existing
+selections are retained rather than silently clearing deliberate choices; users
+must uncheck any previously auto-selected albums they want to make download-only.
+Legacy `All` jobs retain their documented compatibility behavior until their
+upload scope is explicitly changed to selected albums.
 
 WebDAV has a persisted global opt-in switch, **off by default**. When off,
 home-pull sync and conflict resolution are disabled and the new-connection form
@@ -220,13 +259,36 @@ remote-authoritative download policy: remote additions and updates publish
 locally, local-only content is neither hashed nor uploaded, and remote absence
 never deletes local content.
 
+The upload checklist starts with a **Select All** switch. It is on only when
+all currently listed local albums are selected; a partial selection leaves it
+off and shows the selected/total count. Turning it on selects the current list,
+not every future album (`UploadScope::All`); turning it off clears upload
+permissions while retaining cloud downloads. Bulk changes use one atomic
+`SetUploadAlbums` write and one configuration-generation increment. Individual
+album rows can also be pressed to toggle their checkbox. The master switch and
+checkboxes must remain editable while syncing or internally applying changes;
+opening the checklist must not pause the task. Only an accepted changed scope
+may request internal quiescence and automatic restart. An empty list disables
+Select All; a running job does not.
+
+Checked albums sort before unchecked albums, then by case-insensitive display
+name and relative path for a stable tie-break. Sorting updates after each
+successful selection change and when Settings is reopened, using the GTK
+ListBox sort function without reparenting focused controls. A failed save
+reports the error and may restore the last accepted selection, master state and
+ordering only if no newer accepted edit exists; an older completion must never
+roll back newer input. Applying changes does not freeze the checklist.
+
 Creating a job requires non-overlapping local and remote roots, and roots
 overlapping another job on the same connection are rejected. Saved tasks expose
 a cloud-folder browser populated by recursively listing WebDAV collections.
-Applying a new root clears that job's old entries, conflicts, operation records,
-and staging artifacts so observations from the previous collection cannot be
-reused; the job stays paused until the next Photos pull, and changing roots
-never deletes cloud content. Changing a remote root warns that cloud files may
+Browsing alone must not pause the task. After a changed root is validated and
+confirmed, quiesce old operations before safely retiring that job's old entries,
+conflicts, operation records and unreferenced staging artifacts, so observations
+from the previous collection cannot be reused. Automatically run the latest
+mapping when sync is enabled; never leave the task awaiting a manual Photos
+pull. Changing roots never deletes cloud content, and evidence needed for an
+uncertain in-flight result must survive until reconciliation proves its outcome. Changing a remote root warns that cloud files may
 replace same-name local files in albums not selected for upload.
 
 Removing a job cascades its entries, conflicts, unfinished operations, and
@@ -299,14 +361,18 @@ is not unique across restarts. Existing task IDs and their staging artifacts
 remain valid for recovery after an upgrade.
 
 Blocked upload tasks stay eligible for reconciliation. For an interrupted new
-upload, recovery replaces the remote object only when its downloaded bytes are
-a strict prefix of the preserved upload snapshot *and* the server supplies a
-strong ETag; the replacement is conditional and downloaded again for hash
-verification. If the local file is itself a strict prefix of the snapshot,
-recovery restores it even when the truncation point differs from the current
-remote prefix. Unresolved upload paths are excluded from normal download
-planning, including when the album was subsequently unchecked, and the
-snapshot is retained until both copies are proven complete.
+upload, recovery replaces the remote object only when the local album is still
+selected for upload, its downloaded bytes are a strict prefix of the preserved
+upload snapshot, and the server supplies a strong ETag; the replacement is
+conditional and downloaded again for hash verification. If the local file is
+itself a strict prefix of the snapshot, recovery restores it even when the
+truncation point differs from the current remote prefix. An unchecked album may
+verify and commit a write that already completed, or restore the preserved local
+copy, but must not issue another upload. Incomplete remote writes remain blocked
+until the album is explicitly selected again. Unresolved upload paths are
+excluded from normal download planning, including when the album was
+subsequently unchecked, and the snapshot is retained until both copies are
+proven complete.
 
 Startup order: migrate the database → load jobs and logs → recover unresolved
 publications and writes → reconcile both sides → schedule new work. Local
@@ -472,6 +538,9 @@ These are binding. Violating one is a bug even when the current tests pass.
 | C14 | All automatic cleanup is based on persistent references and recovery state; no simple TTL may delete the only copy of data |
 | C15 | With deletion off, a one-sided absence that has a baseline is not auto-restored; first-time additions and deletion candidates use different rules |
 | C16 | Logs correlate discovery, execution, and recovery by `JobId` / `EntryId` / `OperationId`, recording error classification and retry reasons |
+| C17 | Running/quiescing jobs remain editable; viewing, drafting, cancellation, invalid input and no-ops have no pause/restart side effects |
+| C18 | An accepted effective edit drives durable desired state, safe quiescence and automatic latest-configuration reconciliation; never require manual pause/resume or a Photos pull, and never restart opted-out/deleted jobs |
+| C19 | Serialize/coalesce edits per job; obsolete runs and callbacks cannot overwrite newer desired state, claim new old-generation work, or mark the latest generation complete |
 
 ## Acceptance Matrix
 
@@ -487,6 +556,14 @@ These are binding. Violating one is a bug even when the current tests pass.
 | `207` partial failure, directory over budget, network drop | State is unknown/incomplete; no mass delete or reverse re-add | C03, C12 |
 | One side deletes a synced file, deletion off | Show a pending difference; the other side stays; no auto-resurrection | C15 |
 | Same path and mtime, changed content | Thumbnails and viewer show the new content; the cache never lags permanently | C06, C13 |
+| Discover a remote album, including nested/root albums | Download cloud media without changing local upload selection or configuration generation | C06 |
+| Uncheck an album that exists in the cloud | Continue downloads, never auto-reselect it or upload local-only files/edits | C06 |
+| Uncheck an album with an interrupted upload | Verify completed writes without re-uploading; retain incomplete-write artifacts until explicitly selected again | C04, C08, C14 |
+| Open Settings, expand upload scope, browse a cloud folder, cancel or submit a no-op | Existing run continues; no configuration-generation bump or restart | C17 |
+| Change upload scope while a real file is transferring | Edit accepted without a prior pause; safely settle old work and automatically run the latest scope | C04, C06, C18 |
+| Make rapid edits while an earlier edit is applying | Keep controls editable; coalesce latest desired state; stale callbacks never restore older choices | C06, C19 |
+| Apply a changed root or enable/save a task | Validate/accept first; automatically run the latest surviving eligible configuration without a Photos pull | C04, C18 |
+| Disable global sync or confirm task deletion during reconfiguration | Keep opt-out/deletion authoritative; no pending trigger resurrects network work or a deleted job | C18, C19 |
 | Change filter, clear cache, or rebuild the library | Old tasks invalidated or paused; baselines and unfinished artifacts retained | C06, C08, C14 |
 | Unicode paths, encoding, symlinks, name collisions | Valid names sync exactly; out-of-root and collisions block execution | C09, C10 |
 | Real DAV and Flatpak | Network, certificates, credentials, conditional write, and recovery all work | C01, C11 |
