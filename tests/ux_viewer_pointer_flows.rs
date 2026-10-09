@@ -581,12 +581,14 @@ fn chrome_returns_and_stays_clickable_after_immersive_fold(run: &ViewerRun) {
     // movement, and a real pointer event landing between "set the baseline" and
     // "assert" would move that anchor and make this a coin flip under load.
     run.press_key_and_sample(gtk::gdk::Key::Escape, 0);
-    ui.pointer_motion(viewer, 300.0, 300.0);
+    ui.resting_motion(viewer, 300.0, 300.0, 1);
     let (_, refold) = run.press_key_and_sample(gtk::gdk::Key::f, 0);
     assert_eq!(refold, [false; 4], "F should fold all four chrome regions");
-    for _ in 0..12 {
-        ui.pointer_motion(viewer, 300.0, 300.0);
-    }
+    // A real pointer cannot produce this case: warping it to the spot it already
+    // occupies emits nothing, so the events are synthesised. That is the whole
+    // point of the assertion — the watcher must ignore motion that carries no
+    // movement, and only motion carries none.
+    ui.resting_motion(viewer, 300.0, 300.0, 12);
     assert_eq!(
         run.chrome_regions(),
         [false; 4],
@@ -594,7 +596,9 @@ fn chrome_returns_and_stays_clickable_after_immersive_fold(run: &ViewerRun) {
          resting pointer is not activity, and treating it as such re-arms the stillness timer \
          forever so the chrome can never actually fold"
     );
-    ui.pointer_motion(viewer, 340.0, 300.0);
+    // Genuine movement is a real pointer, by contrast: the whole contract is the
+    // difference between the two cases above and this one.
+    ui.pointer_motion(340.0, 300.0, "moving the pointer back over the picture");
     assert_eq!(
         run.chrome_regions(),
         [true; 4],

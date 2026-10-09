@@ -1195,7 +1195,13 @@ fn journey_search_view_edit_and_save_copy() {
             && editor.imp().source_image.borrow().is_some()),
         "Edit should open the side panel on the real file"
     );
-    editor.imp().brightness_scale.get().set_value(18.0);
+    // Dragged to 18 on the -100..100 scale, not assigned: what is under test
+    // starts at the user's hand reaching for the handle.
+    ui.drag_scale_to(
+        &editor.imp().brightness_scale.get(),
+        (18.0 + 100.0) / 200.0,
+        "the brightness slider",
+    );
     assert!(
         ui.wait_until(Duration::from_secs(5), || !editor
             .imp()
@@ -1655,7 +1661,11 @@ fn journey_save_overwrite_rewrites_the_file_and_keeps_a_backup() {
             && editor.imp().source_image.borrow().is_some()),
         "Edit should load the source image"
     );
-    editor.imp().contrast_scale.get().set_value(-30.0);
+    ui.drag_scale_to(
+        &editor.imp().contrast_scale.get(),
+        (-30.0 + 100.0) / 200.0,
+        "the contrast slider",
+    );
     assert!(
         ui.wait_until(Duration::from_secs(5), || !editor
             .imp()
@@ -1774,8 +1784,13 @@ fn journey_editor_close_guard_keeps_or_discards_pending_edits() {
         "Edit should load the source image"
     );
 
-    // Make a real, uncommitted change.
-    editor.imp().brightness_scale.get().set_value(35.0);
+    // A real, uncommitted change, made by dragging rather than assigned: the
+    // assertion below is about what moving the slider does, so the slider moves.
+    ui.drag_scale_to(
+        &editor.imp().brightness_scale.get(),
+        (35.0 + 100.0) / 200.0,
+        "the brightness slider",
+    );
     assert!(
         ui.wait_until(Duration::from_secs(5), || editor
             .imp()

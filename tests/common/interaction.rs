@@ -437,6 +437,27 @@ impl Ui {
     /// clicks, loudly.
     pub fn click_native(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         self.assert_reachable(widget, label);
+        let (x, y) = self.pointer_at_center_of(widget).unwrap();
+        self.move_pointer_to(x, y, label);
+        let status = std::process::Command::new("xdotool")
+            .args(["click", "--clearmodifiers", "1"])
+            .status()
+            .expect("xdotool is required for native GTK input");
+        assert!(status.success(), "native press failed for {label}");
+        self.pump(Duration::from_millis(150));
+    }
+
+    /// Put the real pointer at `(x, y)` in this surface's coordinates and prove
+    /// GDK sees it there, correcting against the surface until it does.
+    ///
+    /// The correction is the point. xdotool aims relative to an X window found
+    /// by pid, and neither which window that search returns first nor where the
+    /// surface's client origin sits inside the X window is guaranteed, so a
+    /// motion that looks right in window coordinates can land anywhere on the
+    /// screen. Reading the position back through GDK — the pointer as GTK sees
+    /// it — is what makes "the pointer really is on this control" a fact rather
+    /// than an assumption.
+    fn move_pointer_to(&self, x: f64, y: f64, label: &str) {
         assert!(
             self.root.display().type_().name().contains("X11"),
             "native input needs the private Xvfb display"
@@ -467,16 +488,15 @@ impl Ui {
             .default_seat()
             .and_then(|seat| seat.pointer())
             .expect("the display must expose a pointer device");
-        let (target_x, target_y) = self.pointer_at_center_of(widget).unwrap();
         // Aim relative to each candidate X window, then ask GDK where the
         // pointer actually is in this surface's coordinates. Off by a constant
         // means the client origin is inset inside the window (CSD shadows):
         // re-aim by the observed delta. Not over this surface at all means the
         // candidate is some other window: move on to the next.
-        let mut verified = None;
+        let mut verified = false;
         let mut attempts = Vec::new();
         'window: for window in windows.lines() {
-            let (mut x, mut y) = (target_x, target_y);
+            let (mut ax, mut ay) = (x, y);
             for _ in 0..3 {
                 let status = std::process::Command::new("xdotool")
                     .args([
@@ -484,23 +504,21 @@ impl Ui {
                         "--sync",
                         "--window",
                         window,
-                        &format!("{x:.0}"),
-                        &format!("{y:.0}"),
+                        &format!("{ax:.0}"),
+                        &format!("{ay:.0}"),
                     ])
                     .status()
                     .expect("xdotool is required for native GTK input");
                 assert!(status.success(), "native motion failed for {label}");
                 match surface.device_position(&pointer) {
-                    Some((px, py, _))
-                        if (px - target_x).abs() <= 1.0 && (py - target_y).abs() <= 1.0 =>
-                    {
-                        verified = Some(window);
+                    Some((px, py, _)) if (px - x).abs() <= 1.0 && (py - y).abs() <= 1.0 => {
+                        verified = true;
                         break 'window;
                     }
                     Some((px, py, _)) => {
                         attempts.push(format!("window {window}: pointer at ({px:.0}, {py:.0})"));
-                        x -= px - target_x;
-                        y -= py - target_y;
+                        ax -= px - x;
+                        ay -= py - y;
                     }
                     None => {
                         attempts.push(format!("window {window}: pointer not over this surface"));
@@ -510,19 +528,60 @@ impl Ui {
             }
         }
         assert!(
-            verified.is_some(),
-            "no X window of pid {} put the real pointer at the centre of {label} \
+            verified,
+            "no X window of pid {} put the real pointer at ({x:.0}, {y:.0}) for {label} \
              (candidates: {}): {}",
             std::process::id(),
             windows.lines().collect::<Vec<_>>().join(", "),
             attempts.join("; ")
         );
-        let status = std::process::Command::new("xdotool")
-            .args(["click", "--clearmodifiers", "1"])
-            .status()
-            .expect("xdotool is required for native GTK input");
-        assert!(status.success(), "native press failed for {label}");
-        self.pump(Duration::from_millis(150));
+    }
+
+    /// Drag a horizontal `GtkScale` to `fraction` of its range, the way a user
+    /// moves it: press on the handle where it currently sits, move to the
+    /// requested position, release.
+    ///
+    /// `set_value` would reach the same end state without exercising anything
+    /// between them — no handle, no trough, no pointer capture, and none of the
+    /// motion events a scale needs before it believes it is being dragged. A
+    /// test that sets the value and then asserts "moving the slider did X" is
+    /// asserting about a slider nobody moved.
+    pub fn drag_scale_to(&self, scale: &gtk::Scale, fraction: f64, label: &str) {
+        self.assert_reachable(scale, label);
+        let bounds = scale
+            .compute_bounds(&self.root)
+            .unwrap_or_else(|| panic!("{label} should have bounds to be dragged"));
+        let adjustment = scale.adjustment();
+        let span = adjustment.upper() - adjustment.lower();
+        assert!(span > f64::EPSILON, "{label} has no range to drag across");
+        let at = |fraction: f64| {
+            let clamped = fraction.clamp(0.0, 1.0);
+            (
+                f64::from(bounds.x()) + f64::from(bounds.width()) * clamped,
+                f64::from(bounds.y()) + f64::from(bounds.height()) / 2.0,
+            )
+        };
+        let current = (adjustment.value() - adjustment.lower()) / span;
+        let (from_x, y) = at(current);
+        let (to_x, _) = at(fraction);
+        self.move_pointer_to(from_x, y, label);
+        let button = |what: &str| {
+            let status = std::process::Command::new("xdotool")
+                .args([what, "1"])
+                .status()
+                .expect("xdotool is required for native GTK input");
+            assert!(status.success(), "native {what} failed for {label}");
+        };
+        button("mousedown");
+        // Several steps, not one leap: a scale tracks the pointer through motion
+        // events, and a single jump is not the path a drag takes.
+        for step in 1..=8 {
+            let progress = f64::from(step) / 8.0;
+            self.move_pointer_to(from_x + (to_x - from_x) * progress, y, label);
+            self.pump(Duration::from_millis(16));
+        }
+        button("mouseup");
+        self.pump(Duration::from_millis(60));
     }
 
     /// Follow a native press on this process's drop-down with a real key event.
@@ -911,9 +970,32 @@ impl Ui {
         }
     }
 
-    /// Deliver one pointer motion event at surface coordinates, the way a real
-    /// pointer position reaches a page-level motion watcher.
-    pub fn pointer_motion(&self, watched: &impl IsA<gtk::Widget>, x: f64, y: f64) {
+    /// Move the real pointer to `(x, y)` in this surface's coordinates, the way a
+    /// hand on the mouse reaches a spot, and let the page's motion watchers see it.
+    ///
+    /// The obvious shortcut — find the widget's `EventControllerMotion` and emit
+    /// `motion` on it — skips the half that matters. Whether a real pointer move
+    /// reaches the controller at all, and in what order relative to the picks
+    /// around it, is exactly what a page that reacts to hover is relying on, and
+    /// a synthesised event asserts the handler works while proving nothing about
+    /// the event getting there. The pointer is real here for the same reason
+    /// `click_native` makes it real.
+    pub fn pointer_motion(&self, x: f64, y: f64, label: &str) {
+        self.move_pointer_to(x, y, label);
+        self.pump(Duration::from_millis(60));
+    }
+
+    /// Deliver `count` motion events at coordinates that never change, to a
+    /// page-level motion watcher.
+    ///
+    /// This is the one input the real pointer cannot express, and that is why it
+    /// is still here. GDK keeps delivering motion for a pointer that has not
+    /// gone anywhere — folding or re-targeting the surface under it is enough —
+    /// but warping a real pointer to the spot it is already at produces no event
+    /// at all. A test for "a resting pointer is not activity" therefore has
+    /// nothing to aim at, and the synthetic event is the only way to state the
+    /// case. Everything that *can* be real is real: see [`Self::pointer_motion`].
+    pub fn resting_motion(&self, watched: &impl IsA<gtk::Widget>, x: f64, y: f64, count: usize) {
         let motion = watched
             .as_ref()
             .observe_controllers()
@@ -921,7 +1003,9 @@ impl Ui {
             .into_iter()
             .find_map(|c| c.downcast::<gtk::EventControllerMotion>().ok())
             .expect("the widget should watch pointer motion");
-        motion.emit_by_name::<()>("motion", &[&x, &y]);
+        for _ in 0..count {
+            motion.emit_by_name::<()>("motion", &[&x, &y]);
+        }
     }
 
     // ---------------------------------------------------------------------
