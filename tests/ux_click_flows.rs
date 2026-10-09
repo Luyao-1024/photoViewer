@@ -144,6 +144,11 @@ fn journey_corrupt_photo_offers_retry_and_reveal() {
         "a corrupt photo should still get a tile the user can click"
     );
     let tile = found.expect("the tile was captured above");
+    // `Shell::tile_for` would do this for a normal photo, but it insists on a
+    // painted thumbnail, which is the one thing this file can never have. The
+    // scroll still applies: the corrupt photo is indexed like any other and
+    // lands in its own day section like any other.
+    ui.scroll_to_reveal(&tile, "the corrupt photo");
     ui.click(&tile, "the corrupt photo");
 
     let viewer = expect_page::<ViewerPage>(ui, &nav, "opening the corrupt photo");

@@ -233,11 +233,21 @@ impl Shell {
         build(2)
     }
 
-    /// The tile currently showing `media_id`, waiting for the grid to realize it.
+    /// The tile currently showing `media_id`, waiting for the grid to realize it,
+    /// painted, and scrolled into reach.
     ///
     /// A pointer has to be aimed at a widget, not at a slot number: virtualization
     /// recycles item widgets, so "the photo called one.jpg" is the only stable
     /// thing a scenario can aim at.
+    ///
+    /// Realized, painted and *reachable* are three different things, and this
+    /// returns the third. Photos groups by day and each UX fixture carries its own
+    /// date, so a three-photo library is three stacked sections rather than one
+    /// row of three — the last tile's centre sits below the window, where a
+    /// pointer has nothing to hit. Rolling it into view here is what a user does,
+    /// and it belongs to "hand me this tile" rather than to each journey: leaving
+    /// it to the caller meant every scenario silently covered only the tiles that
+    /// happened to start on screen.
     pub fn tile_for(
         &self,
         grid: &VirtualMediaGrid,
@@ -270,6 +280,8 @@ impl Shell {
             "the tile for media {} should paint a thumbnail before it is clicked",
             media_id.get()
         );
+        // See the contract above: realized is not reachable.
+        self.ui.scroll_to_reveal(&tile, label);
         tile
     }
 

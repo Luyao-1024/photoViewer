@@ -535,7 +535,17 @@ fn journey_disable_and_enable_while_changes_apply() {
         .unwrap();
     ui.scroll_to_reveal(&switch, "global sync switch");
     ui.click_native(&switch, "disable sync while the edit is applying");
-    assert!(!prefs::webdav_sync_enabled());
+    // A real pointer event reaches GTK on the main loop's own clock:
+    // click_native has returned by the time the handler has necessarily run.
+    // Reading the pref on the very next line made this journey a coin flip —
+    // on a slow frame the switch had plainly been pressed while the pref had
+    // not been written yet. Waiting for the effect keeps the assertion exactly
+    // as strong: a press that never turns the switch off still fails, just
+    // with a timeout rather than a race.
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !prefs::webdav_sync_enabled()),
+        "pressing the global sync switch should turn sync off"
+    );
     provider.release_download();
     wait_finished(&shell, &service, job.id);
     assert_eq!(
@@ -550,7 +560,10 @@ fn journey_disable_and_enable_while_changes_apply() {
     );
     ui.scroll_to_reveal(&switch, "enable sync again");
     ui.click_native(&switch, "enable sync using the saved latest scope");
-    assert!(prefs::webdav_sync_enabled());
+    assert!(
+        ui.wait_until(Duration::from_secs(5), prefs::webdav_sync_enabled),
+        "pressing the global sync switch again should turn sync back on"
+    );
     wait_finished(&shell, &service, job.id);
     assert_eq!(provider.probes.load(Ordering::Acquire), 2);
     assert!(provider

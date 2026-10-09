@@ -346,6 +346,19 @@ impl Ui {
         if reachable() {
             return;
         }
+        // Not reachable yet is not the same as not reachable. Until the app has
+        // shown the page, allocated the grid and mapped the row, GTK has nothing
+        // to pick and every measurement here answers "no" — so a shell that is
+        // merely early used to be reported as a control with no scrollable
+        // ancestor, or one whose container cannot scroll. Let the surface settle
+        // before deciding that either of those is true.
+        let settle = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < settle {
+            self.pump(Duration::from_millis(60));
+            if reachable() {
+                return;
+            }
+        }
         let mut viewport = None;
         let mut ancestor = widget.parent();
         while let Some(node) = ancestor {
@@ -532,8 +545,26 @@ impl Ui {
     /// single clicks and pass for the wrong reason.
     pub fn double_click(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         self.assert_reachable(widget, label);
-        self.press_release(widget.as_ref(), label, 1);
-        self.press_release(widget.as_ref(), label, 1);
+        // A double click is two presses on one place, close enough together to be
+        // a single gesture. Re-resolving the pointer between them does not model
+        // that: the first press on a photo is already enough to push the Viewer,
+        // which unmaps the grid the tile lives in, so the second press would be
+        // aimed at a control the user can no longer see. The journey this exists
+        // for — "a double click opens exactly one Viewer" — would then be decided
+        // by the harness losing its target rather than by the app's own guard,
+        // which is the thing actually under test.
+        //
+        // So: resolve once, strike twice down the same chain, with no pump in
+        // between for the page transition to complete.
+        let intended = widget.as_ref();
+        let target = self
+            .target_of(intended)
+            .unwrap_or_else(|| panic!("{label} has no pointer position to press at"));
+        let (root_x, root_y) = self
+            .pointer_at_center_of(intended)
+            .expect("the control has a pointer position by this point");
+        self.emit_click_chain(&target, intended, 1, root_x, root_y);
+        self.emit_click_chain(&target, intended, 1, root_x, root_y);
         self.pump(Duration::from_millis(200));
     }
 
@@ -586,36 +617,64 @@ impl Ui {
         // window and nothing toggles. A user who aims again gets the settled
         // control, so re-pick until the pointer actually lands on {label} or
         // inside it, and fail honestly if it never does.
+        //
+        // "No position at all" is the same settling story, not a verdict: a scroll
+        // makes the virtualizing grid unmap and rebuild the item widgets around
+        // the new offset, so a control that was mapped a frame ago can have no
+        // bounds for the next few. This loop already waits out a wrong pick, so
+        // waiting out a missing one keeps the two transient states treated alike
+        // instead of letting whichever came first decide.
         let deadline = Instant::now() + Duration::from_secs(2);
         let target = loop {
-            let picked = self
-                .target_of(intended)
-                .unwrap_or_else(|| panic!("{label} has no pointer position to press at"));
-            // `picked.is_ancestor(intended)` reads "picked is somewhere inside
-            // intended" — GTK names the argument the ancestor, not the relation.
-            if &picked == intended || picked.is_ancestor(intended) {
-                break picked;
+            if let Some(picked) = self.target_of(intended) {
+                // `picked.is_ancestor(intended)` reads "picked is somewhere inside
+                // intended" — GTK names the argument the ancestor, not the relation.
+                if &picked == intended || picked.is_ancestor(intended) {
+                    break picked;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the pointer at the centre of {label} keeps landing on {} instead of {label}: \
+                     the control is animated, covered, or gone",
+                    Self::describe(Some(&picked))
+                );
+            } else {
+                assert!(
+                    Instant::now() < deadline,
+                    "{label} never took a pointer position: it is unmapped, collapsed, or the \
+                     surface around it went away"
+                );
             }
-            assert!(
-                Instant::now() < deadline,
-                "the pointer at the centre of {label} keeps landing on {} instead of {label}: \
-                 the control is animated, covered, or gone",
-                Self::describe(Some(&picked))
-            );
             self.pump(Duration::from_millis(60));
         };
-        let (exact, catch_all) = self.gesture_chain(&target, intended, button);
+        let (root_x, root_y) = self
+            .pointer_at_center_of(intended)
+            .expect("the control has a pointer position by this point");
+        self.emit_click_chain(&target, intended, button, root_x, root_y);
+    }
+
+    /// Run one press-release down the gesture chain that leads to `intended`.
+    ///
+    /// Split out from `press_release` so a double click can aim twice at the same
+    /// place without resolving the pointer again in between.
+    fn emit_click_chain(
+        &self,
+        target: &gtk::Widget,
+        intended: &gtk::Widget,
+        button: u32,
+        root_x: f64,
+        root_y: f64,
+    ) {
+        let label = Self::describe(Some(intended));
+        let (exact, catch_all) = self.gesture_chain(target, intended, button);
         let chain = if exact.is_empty() { catch_all } else { exact };
         assert!(
             !chain.is_empty(),
             "no {:?}-button gesture controller owns the click path from {} up to {label} or its \
              surface",
             button,
-            Self::describe_widget(&target)
+            Self::describe_widget(target)
         );
-        let (root_x, root_y) = self
-            .pointer_at_center_of(intended)
-            .expect("the control has a pointer position by this point");
         for (index, (owner, gesture)) in chain.iter().enumerate() {
             let origin = owner
                 .compute_bounds(&self.root)
