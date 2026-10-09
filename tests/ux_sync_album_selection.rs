@@ -242,6 +242,7 @@ fn journey_idle_selection() {
         .find(|row| row.title() == tr("setting.sync.upload_albums") && album_rows(row).is_empty())
         .expect("the empty task's upload selector");
     click(&reopened_ui, &empty_albums, "expand the empty album list");
+    assert!(empty_albums.is_expanded());
     let empty_all_row = descendants::<adw::ActionRow>(&empty_albums)
         .into_iter()
         .find(|row| row.title() == tr("setting.sync.upload_albums_select_all"))
@@ -249,10 +250,27 @@ fn journey_idle_selection() {
     let empty_all = find_descendant::<gtk::Switch>(&empty_all_row).unwrap();
     assert!(!empty_all.is_sensitive());
     assert!(!empty_all.is_active());
+    assert_eq!(
+        empty_all.ancestor(adw::Dialog::static_type()).as_ref(),
+        Some(reopened.upcast_ref()),
+        "the empty-list switch belongs to the reopened dialog"
+    );
     reopened_ui.scroll_to_reveal(&empty_all, "the disabled empty-list switch");
+    // Visibility and event targeting are different for an insensitive control:
+    // it must really be on screen, but GTK must not dispatch a press to it.
+    let (x, y) = reopened_ui.pointer_at_center_of(&empty_all).unwrap();
+    let visible_target = reopened_ui
+        .root()
+        .pick(x, y, gtk::PickFlags::INSENSITIVE)
+        .expect("the disabled switch must be visible after scrolling");
+    assert!(visible_target == empty_all || visible_target.is_ancestor(&empty_all));
+    assert!(!reopened_ui
+        .target_of(&empty_all)
+        .is_some_and(|target| target == empty_all || target.is_ancestor(&empty_all)));
     assert!(!reopened_ui
         .try_click_even_if_inert(&empty_all, "the disabled empty-list switch")
         .unwrap());
+    assert!(!empty_all.is_active());
     assert!(store.upload_albums(empty_job.id).unwrap().is_empty());
     assert_eq!(
         store

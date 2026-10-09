@@ -327,10 +327,20 @@ impl Ui {
     /// so a control that scrolling genuinely cannot reveal still fails here.
     pub fn scroll_to_reveal(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         let widget = widget.as_ref();
-        let reachable = || {
-            self.target_of(widget)
-                .is_some_and(|target| self.aims_at(widget, &target))
+        // A disabled control can be visible without being an event target. GTK's
+        // default pick skips it and hits its parent, so use INSENSITIVE only to
+        // prove visibility here. Click delivery still uses the default pick and
+        // sensitivity guard; clipping and covering widgets still reject the aim.
+        let pick = || {
+            let (x, y) = self.pointer_at_center_of(widget)?;
+            let flags = if widget.is_sensitive() {
+                gtk::PickFlags::empty()
+            } else {
+                gtk::PickFlags::INSENSITIVE
+            };
+            self.root.pick(x, y, flags)
         };
+        let reachable = || pick().is_some_and(|target| self.aims_at(widget, &target));
         // Mapped widgets keep their allocation even while clipped outside the
         // viewport. A coordinate alone is not evidence that a press reaches it.
         if reachable() {
@@ -374,7 +384,7 @@ impl Ui {
             }
             value = (value + page / 2.0).min(bottom);
         }
-        let last_pick = self.target_of(widget);
+        let last_pick = pick();
         let pick_report = |pick: Option<gtk::Widget>| match pick {
             Some(covered_by) => format!(
                 "the pointer at its centre lands on {} — chain: {}",

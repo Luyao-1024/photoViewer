@@ -260,6 +260,15 @@ scroll lands on the adjustment rather than through a synthesized event. A contro
 that scrolling genuinely cannot reveal still fails, with a message that says
 "hidden or folded" rather than "off-screen".
 
+For a disabled control, scrolling proves **visibility**, not event reachability:
+GTK's default pick skips insensitive widgets, so `scroll_to_reveal` uses
+`PickFlags::INSENSITIVE` only for that visibility check. The pick must still be
+the control or a descendant; clipping, folding and covering surfaces must still
+fail. Normal click targeting and sensitivity guards remain unchanged. The empty
+upload-album journey asserts both sides: the disabled Select All switch is
+visible after scrolling, but the default event pick excludes it and an inert
+press leaves its state, saved selection and configuration generation unchanged.
+
 Keep a contract only when putting the assertion into a journey would make the
 journey branch unnaturally or hide the behavior being diagnosed. New UX
 regressions should first extend the nearest journey; add an isolated widget test
