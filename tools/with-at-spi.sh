@@ -121,4 +121,11 @@ if (( CHECK_ONLY )); then
 fi
 
 export PHOTO_VIEWER_AT_SPI_SESSION_READY=1
+# The private session's display is the only one tests may see, and it is X11
+# (Xvfb). A desktop session's backend selection leaks through otherwise:
+# WAYLAND_DISPLAY, a wayland socket under XDG_RUNTIME_DIR, GDK_BACKEND or
+# EGL_PLATFORM all steer GTK onto the host compositor, and every UI test
+# silently measures the wrong display.
+unset WAYLAND_DISPLAY EGL_PLATFORM
+export GDK_BACKEND=x11
 exec "$@"

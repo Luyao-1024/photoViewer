@@ -214,15 +214,26 @@ impl Ui {
         *target == *intended || intended.is_ancestor(target) || target.is_ancestor(intended)
     }
 
+    /// The strict relation reachability demands: the pointer hit the control itself
+    /// or something drawn inside it. An ancestor pick — the window, when a control
+    /// is clipped out of its viewport — means the press would land on whatever is
+    /// really visible at that point, never on this control.
+    ///
+    /// Mind the GTK naming: `target.is_ancestor(intended)` reads "target is
+    /// somewhere inside intended".
+    fn aims_at(&self, intended: &gtk::Widget, target: &gtk::Widget) -> bool {
+        *target == *intended || target.is_ancestor(intended)
+    }
+
     // ---------------------------------------------------------------------
     // Reachability
     // ---------------------------------------------------------------------
 
     /// The reachability contract: a sensitive control that is on screen must be the
-    /// widget GTK hands a pointer at its own centre to — directly, through one of
-    /// its descendants, or through a container that owns its click. A control that
-    /// is visible but shadowed by an invisible container fails here, and that is
-    /// the class of bug this harness exists to catch.
+    /// widget GTK hands a pointer at its own centre to — the control itself or
+    /// something drawn inside it. A control that is visible but clipped out of its
+    /// viewport or shadowed by an invisible container fails here, and that is the
+    /// class of bug this harness exists to catch.
     ///
     /// A short settle window is allowed first, because stack and revealer
     /// transitions really do hand the pointer to the outgoing page for a few
@@ -251,7 +262,7 @@ impl Ui {
         loop {
             let target = self.target_of(widget);
             if let Some(found) = &target {
-                if self.covers(widget, found) {
+                if self.aims_at(widget, found) {
                     return;
                 }
             }
@@ -293,7 +304,7 @@ impl Ui {
             return;
         };
         assert!(
-            !self.covers(widget.as_ref(), &target) || !widget.as_ref().is_sensitive(),
+            !self.aims_at(widget.as_ref(), &target) || !widget.as_ref().is_sensitive(),
             "{label} should not take a pointer right now, but GTK picked {} and it reports itself \
              sensitive",
             Self::describe(Some(&target))
@@ -318,7 +329,7 @@ impl Ui {
         let widget = widget.as_ref();
         let reachable = || {
             self.target_of(widget)
-                .is_some_and(|target| self.covers(widget, &target))
+                .is_some_and(|target| self.aims_at(widget, &target))
         };
         // Mapped widgets keep their allocation even while clipped outside the
         // viewport. A coordinate alone is not evidence that a press reaches it.
@@ -344,21 +355,38 @@ impl Ui {
             "{label} is unreachable but its container cannot scroll"
         );
 
-        // Search in both directions, as a user would after a selected row moves
-        // to the front. Each wheel-sized adjustment settles before hit-testing.
-        const STEPS: u32 = 24;
-        for destination in [0.0, bottom] {
-            let start = adjustment.value();
-            for step in 1..=STEPS {
-                adjustment
-                    .set_value(start + (destination - start) * f64::from(step) / f64::from(STEPS));
-                self.pump(Duration::from_millis(20));
-                if reachable() {
-                    return;
-                }
+        // Sweep the whole range half a viewport at a time. A control that sits
+        // mid-page — an expander row opened over other settings — is out of reach
+        // of both ends, and a user finds it by rolling through, not by jumping to
+        // the extremes. The top of the range is re-read each step, because the
+        // revealed content of a row grows over a few frames while it opens.
+        let page = adjustment.page_size().max(1.0);
+        let mut value = adjustment.lower();
+        loop {
+            adjustment.set_value(value);
+            self.pump(Duration::from_millis(20));
+            if reachable() {
+                return;
             }
+            let bottom = adjustment.upper() - adjustment.page_size();
+            if value >= bottom {
+                break;
+            }
+            value = (value + page / 2.0).min(bottom);
         }
-        panic!("scrolling never made {label} hit-testable; it is hidden, folded, or covered");
+        let last_pick = self.target_of(widget);
+        let pick_report = |pick: Option<gtk::Widget>| match pick {
+            Some(covered_by) => format!(
+                "the pointer at its centre lands on {} — chain: {}",
+                Self::describe(Some(&covered_by)),
+                Self::chain(&covered_by)
+            ),
+            None => "the pointer at its centre picks nothing".to_string(),
+        };
+        panic!(
+            "scrolling never made {label} hit-testable; it is hidden, folded, or covered: {}",
+            pick_report(last_pick)
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -376,6 +404,14 @@ impl Ui {
     /// Native X11 input for switches and drop-downs that inspect the current
     /// GdkEvent. Restrict the target to this test process, then hit-test before
     /// pressing; never approximate the result by setting widget state.
+    ///
+    /// The motion closes the loop over the real pointer. xdotool aims relative
+    /// to an X window found by pid, and neither which window that search
+    /// returns first nor where the surface's client origin sits inside the X
+    /// window is guaranteed, so every motion is read back through GDK — the
+    /// pointer as this surface sees it — and corrected until it sits at the
+    /// widget's centre. A pointer that GTK cannot see at the centre never
+    /// clicks, loudly.
     pub fn click_native(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         self.assert_reachable(widget, label);
         assert!(
@@ -396,22 +432,72 @@ impl Ui {
             "the fixture window must be visible on X11"
         );
         let windows = String::from_utf8(result.stdout).unwrap();
-        let window = windows.lines().next().expect("the fixture's X11 window");
-        let (x, y) = self.pointer_at_center_of(widget).unwrap();
+        let surface = self
+            .root
+            .native()
+            .expect("the pick root must be presented")
+            .surface()
+            .expect("the pick root must be on screen");
+        let pointer = self
+            .root
+            .display()
+            .default_seat()
+            .and_then(|seat| seat.pointer())
+            .expect("the display must expose a pointer device");
+        let (target_x, target_y) = self.pointer_at_center_of(widget).unwrap();
+        // Aim relative to each candidate X window, then ask GDK where the
+        // pointer actually is in this surface's coordinates. Off by a constant
+        // means the client origin is inset inside the window (CSD shadows):
+        // re-aim by the observed delta. Not over this surface at all means the
+        // candidate is some other window: move on to the next.
+        let mut verified = None;
+        let mut attempts = Vec::new();
+        'window: for window in windows.lines() {
+            let (mut x, mut y) = (target_x, target_y);
+            for _ in 0..3 {
+                let status = std::process::Command::new("xdotool")
+                    .args([
+                        "mousemove",
+                        "--sync",
+                        "--window",
+                        window,
+                        &format!("{x:.0}"),
+                        &format!("{y:.0}"),
+                    ])
+                    .status()
+                    .expect("xdotool is required for native GTK input");
+                assert!(status.success(), "native motion failed for {label}");
+                match surface.device_position(&pointer) {
+                    Some((px, py, _))
+                        if (px - target_x).abs() <= 1.0 && (py - target_y).abs() <= 1.0 =>
+                    {
+                        verified = Some(window);
+                        break 'window;
+                    }
+                    Some((px, py, _)) => {
+                        attempts.push(format!("window {window}: pointer at ({px:.0}, {py:.0})"));
+                        x -= px - target_x;
+                        y -= py - target_y;
+                    }
+                    None => {
+                        attempts.push(format!("window {window}: pointer not over this surface"));
+                        continue 'window;
+                    }
+                }
+            }
+        }
+        assert!(
+            verified.is_some(),
+            "no X window of pid {} put the real pointer at the centre of {label} \
+             (candidates: {}): {}",
+            std::process::id(),
+            windows.lines().collect::<Vec<_>>().join(", "),
+            attempts.join("; ")
+        );
         let status = std::process::Command::new("xdotool")
-            .args([
-                "mousemove",
-                "--sync",
-                "--window",
-                window,
-                &format!("{:.0}", x),
-                &format!("{:.0}", y),
-                "click",
-                "--clearmodifiers",
-                "1",
-            ])
+            .args(["click", "--clearmodifiers", "1"])
             .status()
-            .unwrap();
+            .expect("xdotool is required for native GTK input");
         assert!(status.success(), "native press failed for {label}");
         self.pump(Duration::from_millis(150));
     }
@@ -484,9 +570,30 @@ impl Ui {
     /// click path for `intended`, at the pointer position in each owner's own
     /// coordinate space.
     fn press_release(&self, intended: &gtk::Widget, label: &str, button: u32) {
-        let target = self
-            .target_of(intended)
-            .unwrap_or_else(|| panic!("{label} has no pointer position to press at"));
+        // An aim made while a revealer or scroll is still settling can pick one
+        // transient frame's layout, and the chain then walks above {label} to a
+        // container that owns no part of its click — the press lands on the
+        // window and nothing toggles. A user who aims again gets the settled
+        // control, so re-pick until the pointer actually lands on {label} or
+        // inside it, and fail honestly if it never does.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let target = loop {
+            let picked = self
+                .target_of(intended)
+                .unwrap_or_else(|| panic!("{label} has no pointer position to press at"));
+            // `picked.is_ancestor(intended)` reads "picked is somewhere inside
+            // intended" — GTK names the argument the ancestor, not the relation.
+            if &picked == intended || picked.is_ancestor(intended) {
+                break picked;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the pointer at the centre of {label} keeps landing on {} instead of {label}: \
+                 the control is animated, covered, or gone",
+                Self::describe(Some(&picked))
+            );
+            self.pump(Duration::from_millis(60));
+        };
         let (exact, catch_all) = self.gesture_chain(&target, intended, button);
         let chain = if exact.is_empty() { catch_all } else { exact };
         assert!(
