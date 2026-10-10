@@ -284,15 +284,9 @@ fn bind_ready_cell(
     cell.tile.set_favorite_badge_visible(
         spec.mode() == crate::core::section_model::GroupBy::Day && item.is_favorite,
     );
-    // Cloud state is not part of the media row: the grid resolves it from the
-    // sync tables in a background query over whatever cells are bound at the
-    // time. A cell that binds after that query has run therefore has no badge
-    // at all, and nothing would ask again until an unrelated refresh came
-    // along — which is how freshly written photos sat at the top of the Photos
-    // home page without a cloud mark while the rest of the library kept theirs.
-    // Asking here, on an idle turn so a burst of binds costs one query, makes
-    // the badge a function of "this tile is bound" rather than of whatever the
-    // last refresh happened to cover.
+    // A recycled tile starts with no cloud badge, and the badge query only
+    // covers the cells bound when it ran. Idle so a burst of binds costs one
+    // query rather than one per cell.
     grid.schedule_sync_badge_refresh();
     if grid.is_selected(MediaId::from(item.id)) {
         cell.tile.add_css_class("media-selected");

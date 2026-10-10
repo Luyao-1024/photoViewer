@@ -103,16 +103,9 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     cloud_badges_survive_leaving_and_returning_to_the_day_view();
 }
 
-/// A sync run that settles while the Day view is not on screen still has to be
-/// visible when the user comes back to it.
-///
-/// The Day grid drops every sync event that arrives while it is inactive —
-/// there is no visible tile to repaint — and a range the grid has already
-/// loaded is not re-queried just because the user returned to it, so without a
-/// repaint on the way back the photos a run just finished uploading keep the
-/// state they had when it started. The same photos open correctly from an
-/// album, because that page builds a fresh grid whose first range resolves the
-/// current state; the gap only ever shows on a page whose cells outlive the run.
+/// A run that settles while the Day view is off screen still has to be visible
+/// when the user comes back to it: the grid drops those events, and a loaded
+/// range is not re-queried just because the user returned.
 fn cloud_badges_survive_leaving_and_returning_to_the_day_view() {
     let shell = Shell::new();
     let ui = &shell.ui;
