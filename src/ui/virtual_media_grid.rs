@@ -601,6 +601,11 @@ impl VirtualMediaGrid {
         if self.imp().metadata_dirty.replace(false) || !self.imp().metadata_ready.get() {
             self.reload_metadata_now();
         }
+        // Sync events that arrived while this grid was inactive were dropped —
+        // there is no visible tile to repaint — so coming back is the moment the
+        // badges have to be read again. The resident range is usually already
+        // loaded, which means no landing will run to ask on our behalf.
+        self.refresh_sync_badges();
         self.schedule_visible_range_after_layout();
     }
 
@@ -947,6 +952,25 @@ impl VirtualMediaGrid {
             .get()
             .expect("VirtualMediaGrid loader initialized in new")
             .clone()
+    }
+
+    /// Ask for the cloud badges to be resolved once the current batch of cell
+    /// bindings has settled.
+    ///
+    /// `refresh_sync_badges` only ever covers the cells that are bound when its
+    /// background query is issued, so a cell that binds afterwards keeps the
+    /// badge-less state `clear_for_rebind` left it in. Calling it directly from
+    /// the bind path would run inside the factory's own borrows and once per
+    /// cell; an idle turn does neither — every bind in the same frame collapses
+    /// into the one refresh, and the existing in-flight/pending coalescing turns
+    /// any overlap into a single follow-up pass.
+    pub(super) fn schedule_sync_badge_refresh(&self) {
+        let weak = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(grid) = weak.upgrade() {
+                grid.refresh_sync_badges();
+            }
+        });
     }
 
     pub fn refresh_sync_badges(&self) {

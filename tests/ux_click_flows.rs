@@ -45,7 +45,9 @@ use photo_viewer::core::edit::Rotation;
 use photo_viewer::core::i18n::tr;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::MediaItem;
-use photo_viewer::core::sync::{Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope};
+use photo_viewer::core::sync::{
+    CloudState, Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope,
+};
 use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
 use photo_viewer::ui::{
     album_picker, AlbumDetailPage, ModeSelector, SearchPage, TrashPage, ViewerPage,
@@ -98,6 +100,100 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     album_picker_clicks_album_row_and_copy_move();
     album_detail_context_menu_moves_to_album();
     synced_image_badge_survives_the_jump_from_day_grid_to_viewer();
+    cloud_badges_survive_leaving_and_returning_to_the_day_view();
+}
+
+/// A sync run that settles while the Day view is not on screen still has to be
+/// visible when the user comes back to it.
+///
+/// The Day grid drops every sync event that arrives while it is inactive —
+/// there is no visible tile to repaint — and a range the grid has already
+/// loaded is not re-queried just because the user returned to it, so without a
+/// repaint on the way back the photos a run just finished uploading keep the
+/// state they had when it started. The same photos open correctly from an
+/// album, because that page builds a fresh grid whose first range resolves the
+/// current state; the gap only ever shows on a page whose cells outlive the run.
+fn cloud_badges_survive_leaving_and_returning_to_the_day_view() {
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let day_grid = shell.visible_photos_grid();
+    let target = &shell.items[0];
+    let tile = shell.tile_for(&day_grid, MediaId::from(target.id), "the newest photo");
+
+    let selector = shell
+        .photos
+        .imp()
+        .mode_selector
+        .get()
+        .clone()
+        .downcast::<ModeSelector>()
+        .expect("PhotosPage should contain a ModeSelector");
+    let year_label = find_label_containing(&selector, &tr("photo.mode.year"))
+        .unwrap_or_else(|| panic!("the capsule should show a year cell"));
+    ui.click(&year_label, &tr("photo.mode.year"));
+
+    // The run finishes while the Day view is inactive. Its writes land as plain
+    // store writes here, the way a run's do — no event has anywhere to go,
+    // because the page that would repaint is not the one on screen.
+    let store = SyncStore::new(shell.pool.clone());
+    let job = store
+        .create_job(&NewSyncJob {
+            endpoint: "https://dav.example.test/root/".into(),
+            username: "alice".into(),
+            credential_ref: "ux-settled-badge".into(),
+            local_root: target.folder_path.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: SyncDirection::Bidirectional,
+            upload_scope: UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    let fingerprint = Fingerprint {
+        size: target.file_size,
+        blake3: "verified-settled-content".into(),
+    };
+    let conn = shell.pool.get().unwrap();
+    conn.execute(
+        "UPDATE media_items SET blake3_hash = '' WHERE id = ?1",
+        [target.id],
+    )
+    .unwrap();
+    let mtime_ns: i64 = conn
+        .query_row(
+            "SELECT file_mtime_ns FROM media_items WHERE id = ?1",
+            [target.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let entry = store
+        .upsert_observation(
+            job.id,
+            target.display_name(),
+            Some(&fingerprint),
+            Some(mtime_ns),
+            Some(&fingerprint),
+            Some("etag"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(entry, &fingerprint, Some("etag"))
+        .unwrap();
+
+    let day_label = find_label_containing(&selector, &tr("photo.mode.day"))
+        .unwrap_or_else(|| panic!("the capsule should show a day cell"));
+    ui.click(&day_label, &tr("photo.mode.day"));
+
+    assert!(
+        ui.wait_until(Duration::from_secs(6), || {
+            tile.cloud_state() == Some(CloudState::Synced)
+        }),
+        "returning to Day should repaint the badge the finished run settled, \
+         not leave the tile on the state the run started from \
+         (got {:?}, want Synced)",
+        tile.cloud_state()
+    );
 }
 
 // ---------------------------------------------------------------------------

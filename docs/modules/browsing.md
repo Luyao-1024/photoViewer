@@ -249,6 +249,24 @@ and a repeat `set_cloud_state` with the same value leaves every badge widget
 untouched, so a single sync write settling into an already-displayed state
 cannot repaint the viewport (the per-file flicker was this regression).
 
+A query only ever answers for the cells that are bound when it is issued, so
+the badge is resolved from two more places, both of which used to be missing
+and left tiles blank rather than wrong:
+
+- **On bind.** A cell recycled onto another photo — scrolling, a re-sort, a
+  fresh range — starts from `clear_for_rebind`, which drops the badge. The
+  factory asks for a refresh on an idle turn, so a burst of binds in one frame
+  costs a single query and the in-flight/pending coalescing absorbs the rest.
+- **On becoming active.** `refresh_sync_badges` returns immediately for an
+  inactive grid, so every sync event that arrives while another Photos mode is
+  showing is dropped. `set_active(true)` re-reads, because the resident range
+  is usually already loaded and no landing will run to ask on its behalf.
+
+Without these, only the photos whose cells happened to be bound before a run
+finished kept their marks; the ones written most recently showed none, stayed
+that way through further scrolling, and looked correct in an album — a page
+that builds a fresh grid and resolves on its first range.
+
 The sidebar Media Types group contains only non-empty attribute virtual albums.
 Motion photos are backed by `media_subkind='motion_photo'`; Animated and HDR are
 backed by top-level `media_attributes` JSON booleans. If no media type album has
