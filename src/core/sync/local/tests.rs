@@ -58,3 +58,51 @@ fn replacing_file_keeps_backup_and_recovery_artifact() {
     assert_eq!(std::fs::read(&backup).unwrap(), b"old version");
     assert_eq!(std::fs::read(&staged).unwrap(), b"new version");
 }
+#[test]
+fn scan_reuses_a_stored_fingerprint_only_while_size_and_mtime_hold() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("photos");
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("a.jpg");
+    std::fs::write(&file, b"photo").unwrap();
+    let mtime = std::fs::metadata(&file)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as i64;
+    let real = fingerprint(&file).unwrap();
+    let sentinel = Fingerprint {
+        size: 5,
+        blake3: "sentinel".into(),
+    };
+
+    let hit = scan_matching_cached(
+        &root,
+        |_| true,
+        |path| (path == "a.jpg").then(|| (sentinel.clone(), mtime)),
+    )
+    .unwrap();
+    assert_eq!(hit.get("a.jpg").unwrap().fingerprint, sentinel);
+
+    let stale_mtime =
+        scan_matching_cached(&root, |_| true, |_| Some((sentinel.clone(), mtime - 1))).unwrap();
+    assert_eq!(stale_mtime.get("a.jpg").unwrap().fingerprint, real);
+
+    let stale_size = scan_matching_cached(
+        &root,
+        |_| true,
+        |_| {
+            Some((
+                Fingerprint {
+                    size: 6,
+                    ..sentinel.clone()
+                },
+                mtime,
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(stale_size.get("a.jpg").unwrap().fingerprint, real);
+}

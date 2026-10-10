@@ -1316,3 +1316,77 @@ async fn verification_stops_at_the_cap_and_records_insufficient_evidence() {
     assert_eq!(conflict.kind, "InsufficientEvidence");
     assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 0);
 }
+
+#[tokio::test]
+async fn untouched_files_keep_their_stored_fingerprint_across_runs() {
+    // The incremental trust boundary: while a file's size and nanosecond mtime
+    // are exactly what the last observation hashed, the run reuses the stored
+    // fingerprint and transfers nothing. A rewrite that moves either field must
+    // still be re-hashed and planned (covered by the conflict test above).
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    std::fs::write(local_root.join("a.jpg"), b"AAAA").unwrap();
+
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+    let service = SyncService {
+        store: SyncStore::with_actor(pool.clone(), actor.clone()),
+        pool,
+        actor: Some(actor),
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "fake-credential".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    let provider = Arc::new(FakeProvider::default());
+
+    let first = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.uploaded, 1);
+
+    // Same length, restored mtime: the fingerprint cache must be consulted
+    // through the database values, so the stale bytes stay on the remote.
+    let mtime = std::fs::metadata(local_root.join("a.jpg"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::write(local_root.join("a.jpg"), b"BBBB").unwrap();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(local_root.join("a.jpg"))
+        .unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(mtime))
+        .unwrap();
+
+    let second = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(second.uploaded, 0);
+    assert_eq!(second.conflicts, 0);
+    assert_eq!(second.unchanged, 1);
+    assert_eq!(
+        provider
+            .objects
+            .lock()
+            .unwrap()
+            .get("PhotoViewer/a.jpg")
+            .unwrap(),
+        &b"AAAA".to_vec(),
+        "a file whose size and mtime match the last hash must not be re-hashed or re-uploaded"
+    );
+}

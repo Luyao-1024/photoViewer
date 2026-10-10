@@ -137,6 +137,16 @@ conflict-copy name containing the persistent `OperationId`, reusing the same
 name on retry. Neither original path is replaced until both copies are
 protected.
 
+Local observation is incremental: every run walks the tree but only
+re-hashes a file whose byte length or nanosecond mtime differs from the
+values stored with its last fingerprint. When both match, the stored
+fingerprint is reused, so a no-change run transfers nothing and hashes
+nothing. That is the trust boundary: a rewrite that preserves the exact
+size and restores the exact mtime is not observed until one of them moves.
+WebDAV itself offers no cheaper discovery — the server advertises `dav: 1, 2`
+with no RFC 6578 sync-collection REPORT — so the remote side remains one
+recursive listing, which is cheap next to hashing the library.
+
 WebDAV listings carry no content hash, so proving two same-named objects are
 identical costs a full remote download. That proof is bounded twice, and both
 bounds exist to prevent non-termination rather than slowness:

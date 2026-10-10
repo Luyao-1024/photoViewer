@@ -27,6 +27,23 @@ pub fn scan_matching(
     root: &Path,
     include: impl Fn(&str) -> bool,
 ) -> Result<BTreeMap<String, LocalEntry>> {
+    scan_matching_cached(root, include, |_| None)
+}
+
+/// Scan the local tree, reusing stored fingerprints for files whose size and
+/// nanosecond mtime still match the observation they were hashed under.
+///
+/// Content hashing is the dominant cost of a run that changes nothing. The
+/// cache is only trusted as a pair: a hit requires the byte length and the
+/// exact mtime to both equal the values stored alongside the hash, so any
+/// write that moves either falls back to a full re-hash. `cached` receives
+/// the normalized relative path and returns the previously hashed
+/// `(Fingerprint, modified_ns)` when one exists.
+pub fn scan_matching_cached(
+    root: &Path,
+    include: impl Fn(&str) -> bool,
+    cached: impl Fn(&str) -> Option<(Fingerprint, i64)>,
+) -> Result<BTreeMap<String, LocalEntry>> {
     if !root.is_absolute() || !root.is_dir() {
         return Err(AppError::Backend(format!(
             "synchronization root is not an available absolute directory: {}",
@@ -59,9 +76,23 @@ pub fn scan_matching(
             continue;
         }
         let metadata_before = std::fs::metadata(path)?;
+        let before_time = modified_ns(&metadata_before)?;
+        if let Some((fingerprint, cached_mtime)) = cached(&relative_path) {
+            if fingerprint.size == metadata_before.len() && cached_mtime == before_time {
+                result.insert(
+                    relative_path.clone(),
+                    LocalEntry {
+                        relative_path,
+                        absolute_path: path.to_path_buf(),
+                        fingerprint,
+                        modified_ns: before_time,
+                    },
+                );
+                continue;
+            }
+        }
         let fingerprint = fingerprint(path)?;
         let metadata_after = std::fs::metadata(path)?;
-        let before_time = modified_ns(&metadata_before)?;
         let after_time = modified_ns(&metadata_after)?;
         if metadata_before.len() != metadata_after.len() || before_time != after_time {
             return Err(AppError::Backend(format!(

@@ -661,16 +661,27 @@ impl SyncService {
             .desired_upload_albums(job.id)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let local_entries = local::scan_matching(&job.local_root, |relative_path| {
-            remote_entries.contains_key(relative_path)
-                || upload_allowed(job.upload_scope, &upload_albums, relative_path)
-        })?;
         let stored_entries = self
             .store
             .entries(job.id)?
             .into_iter()
             .map(|entry| (entry.relative_path.clone(), entry))
             .collect::<BTreeMap<_, _>>();
+        // Reuse the fingerprint stored with the last observation whenever the
+        // file's size and nanosecond mtime are untouched: a no-change run then
+        // hashes only what may have changed instead of the whole library.
+        let local_entries = local::scan_matching_cached(
+            &job.local_root,
+            |relative_path| {
+                remote_entries.contains_key(relative_path)
+                    || upload_allowed(job.upload_scope, &upload_albums, relative_path)
+            },
+            |relative_path| {
+                stored_entries
+                    .get(relative_path)
+                    .and_then(|entry| entry.local.clone().zip(entry.local_mtime_ns))
+            },
+        )?;
 
         let mut paths = BTreeSet::new();
         paths.extend(local_entries.keys().cloned());
