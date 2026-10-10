@@ -415,6 +415,17 @@ async fn initialize(
         let sync_actor = db_actor.clone();
         tokio::spawn(async move {
             let service = crate::core::sync::SyncService::with_actor(sync_pool, sync_actor);
+            // 先对账再触发：概览的“正在同步”完全由 last_started_at/last_completed_at
+            // 推导，进程被杀时留下的运行记录没有任何东西能回收，会让每次启动都显示
+            // 正在同步。运行不可能比它的进程活得更久，所以这里清掉的一定是陈旧状态。
+            match service.reconcile_interrupted_runs() {
+                Ok(0) => {}
+                Ok(reconciled) => tracing::warn!(
+                    reconciled,
+                    "closed synchronization runs left open by a previous session"
+                ),
+                Err(error) => tracing::warn!("could not reconcile interrupted sync runs: {error}"),
+            }
             if let Err(error) = service.trigger_saved_jobs_once().await {
                 tracing::warn!("startup synchronization failed: {error}");
             }

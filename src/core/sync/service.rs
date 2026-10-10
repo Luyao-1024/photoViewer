@@ -392,18 +392,23 @@ impl SyncService {
         let result = self
             .run_with_provider_inner(&job, provider, true, progress)
             .await;
-        match &result {
-            Ok(_)
-                if self.store.pending_change(job_id)?.is_none()
-                    && crate::core::prefs::webdav_sync_enabled() =>
-            {
-                self.store.finish_run(job_id, job.config_generation, None)?
-            }
-            Err(error) if self.store.pending_change(job_id)?.is_none() => {
-                self.store
-                    .finish_run(job_id, job.config_generation, Some(&error.to_string()))?
-            }
-            _ => {}
+        // Close the lifecycle on *every* outcome. The old code deliberately
+        // skipped the completion whenever a configuration edit was pending or
+        // sync had been switched off mid-run, which left `last_started_at`
+        // ahead of `last_completed_at` with nothing able to close it: the
+        // overview then reported "syncing" on every later launch, forever.
+        // `finish_run` still decides what remains attributable to write (the
+        // error is generation-guarded); only the fact that the run ended is
+        // unconditional.
+        let failure = result.as_ref().err().map(ToString::to_string);
+        if let Err(error) = self
+            .store
+            .finish_run(job_id, job.config_generation, failure.as_deref())
+        {
+            tracing::warn!(
+                job_id,
+                "could not record that the synchronization run ended: {error}"
+            );
         }
         result
     }
@@ -423,6 +428,20 @@ impl SyncService {
                 .await
                 .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
         self.run_job(job_id, SyncCredentials { password }).await
+    }
+
+    /// Close runs that a previous process left open.
+    ///
+    /// A run cannot outlive the process that started it, so any job whose
+    /// `last_started_at` is still ahead of `last_completed_at` at launch is
+    /// describing a run this process never began. Without this the overview's
+    /// derived `Running` status is unrecoverable: it is recomputed from those
+    /// two persisted columns on every launch, so a single interrupted run
+    /// pins the compact status to "syncing" for every later launch, with no
+    /// failure recorded and therefore no retry offered. Call this once per
+    /// launch, before starting any run.
+    pub fn reconcile_interrupted_runs(&self) -> Result<usize> {
+        self.store.reconcile_interrupted_runs()
     }
 
     pub async fn trigger_saved_jobs_once(&self) -> Result<()> {

@@ -41,6 +41,13 @@ pub struct SyncJob {
     pub last_error: Option<String>,
 }
 
+/// Recorded when a launch finds a run the previous process left open. It is
+/// shown as the per-task error in Settings; the overview renders its own
+/// localized failure sentence, so this string is diagnostic detail rather than
+/// UI copy and is deliberately not translated.
+pub(crate) const INTERRUPTED_RUN_ERROR: &str =
+    "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncOverviewStatus {
     Disabled,
@@ -123,6 +130,7 @@ pub enum SyncWrite {
         generation: i64,
         error: Option<String>,
     },
+    ReconcileInterruptedRuns,
     FailPendingEdit {
         id: i64,
         revision: i64,
@@ -216,6 +224,8 @@ pub enum SyncWriteResult {
     Changed(bool),
     None,
     Id(i64),
+    /// Rows closed by a startup reconciliation of runs a previous process left open.
+    ReconciledRuns(usize),
     DeletedJob(Option<String>),
 }
 
@@ -291,6 +301,11 @@ impl SyncStore {
             SyncWriteResult::DeletedJob(_) => {
                 return Err(AppError::Backend(
                     "create synchronization job returned a delete result".into(),
+                ))
+            }
+            SyncWriteResult::ReconciledRuns(_) => {
+                return Err(AppError::Backend(
+                    "create synchronization job returned a reconciliation result".into(),
                 ))
             }
         };
@@ -541,6 +556,16 @@ impl SyncStore {
         Ok(())
     }
 
+    /// Close runs a previous process left open. Call once per launch, before any
+    /// run is started, so the derived overview status cannot keep reporting a
+    /// run that died with an earlier process.
+    pub(crate) fn reconcile_interrupted_runs(&self) -> Result<usize> {
+        match self.write(SyncWrite::ReconcileInterruptedRuns)? {
+            SyncWriteResult::ReconciledRuns(updated) => Ok(updated),
+            _ => Ok(0),
+        }
+    }
+
     pub(crate) fn fail_pending_edit(&self, id: i64, revision: i64, error: &str) -> Result<()> {
         self.write(SyncWrite::FailPendingEdit {
             id,
@@ -705,6 +730,9 @@ impl SyncStore {
             SyncWriteResult::DeletedJob(_) => Err(AppError::Backend(
                 "upsert synchronization observation returned a delete result".into(),
             )),
+            SyncWriteResult::ReconciledRuns(_) => Err(AppError::Backend(
+                "upsert synchronization observation returned a reconciliation result".into(),
+            )),
         }
     }
 
@@ -823,13 +851,63 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             generation,
             error,
         } => {
-            let conn = pool.get()?;
-            if let Some(error) = error {
-                conn.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND config_generation=?3 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2)",params![error,id,generation])?;
-            } else {
-                conn.execute("UPDATE sync_jobs SET last_completed_at=unixepoch(),last_error=NULL WHERE id=?1 AND config_generation=?2 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?1)",params![id,generation])?;
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            // A run that has ended must never keep reading as running, whatever
+            // became true while it ran. The timestamp records "no run is in
+            // flight", which is true unconditionally, so it is written
+            // unconditionally: guarding it on `config_generation` let an edit
+            // applied mid-run bump the generation, turn this UPDATE into a
+            // silent zero-row no-op, and pin the overview to "syncing" forever.
+            tx.execute(
+                "UPDATE sync_jobs SET last_completed_at=unixepoch() WHERE id=?1",
+                [id],
+            )?;
+            // The error, by contrast, describes one specific configuration. It is
+            // only attributable while that configuration is still current and no
+            // edit is queued to replace it; otherwise it would blame settings that
+            // did not cause it, or report a verdict that is about to be superseded.
+            let attributable: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_jobs WHERE id=?1 AND config_generation=?2) \
+                        AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?1)",
+                params![id, generation],
+                |row| row.get(0),
+            )?;
+            if attributable {
+                match error {
+                    Some(error) => {
+                        tx.execute(
+                            "UPDATE sync_jobs SET last_error=?1 WHERE id=?2",
+                            params![error, id],
+                        )?;
+                    }
+                    None => {
+                        tx.execute("UPDATE sync_jobs SET last_error=NULL WHERE id=?1", [id])?;
+                    }
+                }
             }
+            tx.commit()?;
             Ok(SyncWriteResult::None)
+        }
+        SyncWrite::ReconcileInterruptedRuns => {
+            // A run cannot outlive the process that started it, so at launch any
+            // `last_started_at > last_completed_at` is a run this process never
+            // began — the previous one was killed, or ended on a path that could
+            // not record its completion. Without this, the derived overview status
+            // stays "running" across every subsequent launch and nothing ever
+            // recovers it. Report it as failed rather than completed: it did not
+            // finish, and the retry the failure state carries is the honest way
+            // back.
+            let conn = pool.get()?;
+            let updated = conn.execute(
+                "UPDATE sync_jobs \
+                    SET last_completed_at=last_started_at, \
+                        last_error=?1 \
+                  WHERE last_started_at IS NOT NULL \
+                    AND (last_completed_at IS NULL OR last_started_at > last_completed_at)",
+                [INTERRUPTED_RUN_ERROR],
+            )?;
+            Ok(SyncWriteResult::ReconciledRuns(updated))
         }
         SyncWrite::FailPendingEdit {
             id,

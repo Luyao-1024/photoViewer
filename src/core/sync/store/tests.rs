@@ -553,3 +553,120 @@ fn edit_first_overview_distinguishes_applying_from_paused_and_failed() {
         SyncOverviewStatus::Disabled
     );
 }
+
+/// A run cannot outlive the process that started it, so a job whose start is
+/// still ahead of its completion at launch is describing a run this process never
+/// began. Without an explicit reconciliation the derived overview status keeps
+/// reporting `Running` on every later launch — no failure recorded, so not even
+/// the retry is offered, and nothing else can clear it.
+#[test]
+fn startup_reconciliation_closes_runs_left_open_by_an_earlier_process() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+
+    let job = store.create_job(&new_job(local)).unwrap();
+    store.mark_job_started(job.id).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE sync_jobs SET last_started_at = 20, last_completed_at = 10 WHERE id = ?1",
+            [job.id],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Running,
+        "precondition: an open run reads as running"
+    );
+
+    assert_eq!(store.reconcile_interrupted_runs().unwrap(), 1);
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Failed,
+        "an interrupted run did not finish; reporting it as failed is honest and offers the retry"
+    );
+
+    // A settled job is left alone, and the reconciliation is idempotent.
+    store.mark_job_failed(job.id, "boom").unwrap();
+    store.mark_job_completed(job.id).unwrap();
+    assert_eq!(store.reconcile_interrupted_runs().unwrap(), 0);
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Completed,
+        "a run that already ended must not be rewritten by a later launch"
+    );
+}
+
+/// The completion timestamp records "no run is in flight", which is true however
+/// the run ended. Only the *error* is attributable to one configuration. Guarding
+/// both on `config_generation` meant an edit applied mid-run turned the update
+/// into a silent zero-row no-op and pinned the overview to "syncing" forever.
+#[test]
+fn finishing_a_run_records_the_end_even_when_an_edit_superseded_its_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+
+    let job = store.create_job(&new_job(local)).unwrap();
+    let stale_generation = job.config_generation;
+    store.mark_job_started(job.id).unwrap();
+
+    // An edit is accepted and applied while the run is in flight, so the
+    // generation moves on and the pending row is consumed.
+    store
+        .set_upload_albums(job.id, &[String::from("Trips")])
+        .unwrap();
+    assert_ne!(
+        store.get_job(job.id).unwrap().unwrap().config_generation,
+        stale_generation,
+        "precondition: the applied edit advanced the generation"
+    );
+
+    store.finish_run(job.id, stale_generation, None).unwrap();
+
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Completed,
+        "the run ended, so it must not keep reading as running just because its \
+         configuration was superseded"
+    );
+}
+
+/// The same split applies to a failing run: the error belongs to a configuration,
+/// but the run still ended.
+#[test]
+fn finishing_a_failed_run_records_the_end_without_blaming_a_superseded_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+
+    let job = store.create_job(&new_job(local)).unwrap();
+    let stale_generation = job.config_generation;
+    store.mark_job_started(job.id).unwrap();
+    store
+        .set_upload_albums(job.id, &[String::from("Trips")])
+        .unwrap();
+
+    store
+        .finish_run(job.id, stale_generation, Some("network unavailable"))
+        .unwrap();
+
+    assert_eq!(
+        store.overview_with_sync_enabled(true).unwrap().status,
+        SyncOverviewStatus::Completed,
+        "the stale error is not attributable to the current configuration, and the run \
+         must not stay stuck reading as running"
+    );
+    assert!(
+        store.get_job(job.id).unwrap().unwrap().last_error.is_none(),
+        "settings that did not cause the failure must not inherit its error"
+    );
+}

@@ -220,6 +220,40 @@ These are **migration work**, not approved UX patterns. The contracts below
 supersede the old pause-before-edit/manual-restart behavior; documenting them
 alone does not close these implementation gaps.
 
+## Run Lifecycle And Startup Reconciliation
+
+`Running` is **derived**, not stored: `overview()` reports it for any active job
+whose `last_started_at` is ahead of `last_completed_at`. That derivation is only
+sound if every run that started also ends by recording its end, so the lifecycle
+has two halves.
+
+**Ending a run.** A run that has ended must record that fact unconditionally.
+`mark_job_started` already persisted, and only `finish_run` can close it, so
+skipping the completion is unrecoverable: nothing else writes
+`last_completed_at`. Every outcome therefore closes the run, including the cases
+that used to fall through — a configuration edit pending at the end of the run,
+or sync being switched off while it was running. The *error*, by contrast, is
+attributable to one specific configuration and stays guarded: it is written only
+while `config_generation` still matches and no edit is queued to replace it.
+Guarding the timestamp the same way was the bug: an edit applied mid-run bumps
+the generation, which turned the completion into a silent zero-row `UPDATE`, and
+the compact status reported "syncing" on every later launch with no failure
+recorded and therefore no retry offered.
+
+**Reconciling at launch.** A run cannot outlive the process that started it. So
+at startup, before any run starts, `SyncService::reconcile_interrupted_runs`
+closes every job whose `last_started_at` is ahead of its completion: those
+describe runs *this* process never began. Each is closed with
+`INTERRUPTED_RUN_ERROR` rather than as a success, because it did not finish, and
+the failure state is what carries the retry. The reconciliation is idempotent
+and leaves settled jobs untouched, so it is safe on every launch.
+
+Without this, a single killed process was enough to pin the overview to
+"syncing" permanently — and, because the Photos overview reveals itself on the
+`not-running → running` edge, that stale state then surfaced as an overview that
+popped itself open on every launch. Fixing the lifecycle, not the reveal, is
+what makes that symptom go away.
+
 ## Scheduling And Triggers
 
 There is no timer-based periodic sync. Existing triggers are pulling down at
