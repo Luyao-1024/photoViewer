@@ -165,8 +165,6 @@
     "empty.search_none.clear": "清除搜索",
     "photos.search.tooltip": "按文件名搜索",
     "photos.search.placeholder": "搜索名称或拍摄时间",
-    "photos.overview.show": "展开图库概览",
-    "photos.overview.hide": "收起图库概览",
     "photos.overview.loading": "正在读取图库状态…",
     "photos.overview.unavailable": "暂时无法读取图库状态",
     "photos.overview.counts": "{photos} 张照片 · {videos} 个视频",

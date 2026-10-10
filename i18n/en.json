@@ -165,8 +165,6 @@
     "empty.search_none.clear": "Clear Search",
     "photos.search.tooltip": "Search by file name",
     "photos.search.placeholder": "Search names or shooting dates",
-    "photos.overview.show": "Show library overview",
-    "photos.overview.hide": "Hide library overview",
     "photos.overview.loading": "Loading library status…",
     "photos.overview.unavailable": "Library status is temporarily unavailable",
     "photos.overview.counts": "{photos} photos · {videos} videos",

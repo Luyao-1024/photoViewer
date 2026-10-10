@@ -619,9 +619,7 @@
       "photos.batch.favorite": "收藏",
       "photos.batch.favorite.mixed": "收藏（所选内容已有混合状态，点击后请选择）",
       "photos.batch.unfavorite": "取消收藏",
-      // P2-8 已落盘：以下四键逐字取自仓库 i18n/zh-CN.json:168-169, 174, 178, 274。
-      "photos.overview.show": "展开图库概览",
-      "photos.overview.hide": "收起图库概览",
+      // 逐字取自仓库 i18n/zh-CN.json 的对应行。
       "photos.overview.sync.paused": "同步已暂停；首页下拉后继续同步",
       "photos.overview.sync.failed": "同步失败；可点「重试」，或在设置中查看详情",
       "common.retry": "重试",
@@ -674,9 +672,7 @@
       "photos.batch.favorite": "Favorite",
       "photos.batch.favorite.mixed": "Favorite (the selection is mixed; choose after clicking)",
       "photos.batch.unfavorite": "Unfavorite",
-      // P2-8 已落盘：与仓库 i18n/en.json:168-169, 174, 178, 274 同值。
-      "photos.overview.show": "Show library overview",
-      "photos.overview.hide": "Hide library overview",
+      // 与仓库 i18n/en.json 的对应行同值。
       "photos.overview.sync.paused": "Sync is paused; pull down on Photos to sync",
       "photos.overview.sync.failed": "Sync failed; use Retry, or open Settings for details",
       "common.retry": "Retry",
@@ -774,11 +770,11 @@
 
   /* ---------------------------------------------------- 图库概览（P2-8） */
 
-  // P2-8 已落盘，所以这里是常态而不是提案开关。chevron 在真实实现里是
-  // overview_revealer 的镜像（photos_page.rs apply_overview_disclosure_state 挂在
-  // notify::reveal-child 上），所以 glyph、tooltip、aria-expanded 都由那一个状态派生；
-  // 重试只在 Failed 出现（apply_overview_retry_affordance）。运行模式的显隐规则在
-  // styles.css，命名模式两件都恒可见，因为它们是 data-ui 条目。
+  // 概览没有 header disclosure 按钮了（已移除：与下拉手势重复，且占 header 宽度）。
+  // 真实实现里面板由两件事打开——顶部再往上拉，以及一轮同步开始的自动揭示；
+  // 这里的 setOverview 只驱动这两条路径的结果状态。重试只在 Failed 出现
+  // （apply_overview_retry_affordance）。运行模式的显隐规则在 styles.css，
+  // 命名模式恒可见，因为它是 data-ui 条目。
   function overviewIsOpen() {
     return body.dataset.pvOvr === "open" || body.dataset.pvOvr === "failed";
   }
@@ -788,15 +784,6 @@
     emit("overview", state);
   }
   function applyOverview() {
-    var open = overviewIsOpen();
-    var btn = q(".overview-disclosure");
-    if (btn) {
-      var name = tr(open ? "photos.overview.hide" : "photos.overview.show");
-      btn.textContent = open ? "⌃" : "⌄";
-      btn.setAttribute("title", name);
-      btn.setAttribute("aria-label", name);
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-    }
     var retry = q(".overview-retry");
     if (retry) retry.textContent = tr("common.retry");
     var sync = q('[data-ovr="sync"]');

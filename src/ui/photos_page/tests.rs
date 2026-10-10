@@ -218,6 +218,137 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
     );
 }
 
+fn overview_snapshot(status: SyncOverviewStatus) -> PhotosOverviewSnapshot {
+    PhotosOverviewSnapshot {
+        photos: 2,
+        videos: 1,
+        live_total: 3,
+        sync: SyncOverview {
+            status,
+            job_count: 1,
+            synced_items: 0,
+            conflict_images: 0,
+        },
+        sync_progress: None,
+    }
+}
+
+/// Startup and configuration triggers run saved tasks without a pull, and the
+/// overview is folded by default — so a launch-time run used to be invisible
+/// until the user performed the very gesture that also *starts* a run. The
+/// panel has to open itself for the transition into running, at the top, so the
+/// syncing sentence is readable without any interaction.
+#[gtk::test]
+fn a_sync_run_started_at_the_grid_top_reveals_the_overview_without_a_pull() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-auto-reveal.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Ready));
+    assert!(
+        !page.imp().overview_revealer.get().reveals_child(),
+        "an idle library keeps the overview folded; the panel opens on activity, not on load"
+    );
+    assert!(
+        !page.imp().overview_sync_pull_in_flight.get(),
+        "revealing the panel must not start a run — the pull stays the only trigger"
+    );
+
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(
+        page.imp().overview_revealer.get().reveals_child(),
+        "a run that starts at the first row must surface its own progress without a pull"
+    );
+    assert_eq!(
+        page.imp().overview_sync_label.get().label(),
+        tr("photos.overview.sync.running"),
+        "the revealed panel has to carry the running sentence, not just the spinner"
+    );
+
+    // Settling keeps the result readable instead of folding itself away.
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Completed));
+    assert!(
+        page.imp().overview_revealer.get().reveals_child(),
+        "the finished result should stay on screen after the panel opened itself"
+    );
+}
+
+/// Two ways the auto-reveal must not take the panel away from the user: a fold
+/// performed during a run, and a grid that has scrolled away from the first row.
+#[gtk::test]
+fn the_run_start_reveal_defers_to_a_folded_panel_and_a_scrolled_grid() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-auto-defer.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    // A populated list so the stack shows a real grid rather than the empty
+    // placeholder — the scrolled-away rule is about grid geometry.
+    let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
+    media_list.append(&glib::BoxedAnyObject::new(sample_item(1, "visible.png")));
+    let page = PhotosPage::new(media_list, loader);
+    let grid = page
+        .current_grid()
+        .expect("a populated Photos list shows a grid, not a placeholder");
+
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(page.imp().overview_revealer.get().reveals_child());
+
+    // Folding mid-run is a decision, not a transient state to undo.
+    page.imp().overview_revealer.get().set_reveal_child(false);
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(
+        !page.imp().overview_revealer.get().reveals_child(),
+        "a run that is already running must not reopen a panel the user folded"
+    );
+
+    // A later run reveals again, because that is a new edge, not a repeat.
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Completed));
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(
+        page.imp().overview_revealer.get().reveals_child(),
+        "the next run is a fresh edge and may announce itself again"
+    );
+
+    // Away from the first row the panel keeps whatever state the user had.
+    let adjustment = grid.imp().scroller.get().vadjustment();
+    adjustment.set_upper(1000.0);
+    adjustment.set_page_size(100.0);
+    adjustment.set_value(500.0);
+    assert!(!grid.is_scrolled_to_top());
+
+    page.imp().overview_revealer.get().set_reveal_child(false);
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Completed));
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(
+        !page.imp().overview_revealer.get().reveals_child(),
+        "a run that starts mid-library must not pull the panel open under the user"
+    );
+}
+
+/// A first launch shows the indexing/empty placeholder, which has no scroll
+/// offset. That is the state where a startup run would otherwise be invisible,
+/// so it counts as the top rather than as "position unknown".
+#[gtk::test]
+fn a_run_started_over_a_placeholder_reveals_the_overview() {
+    let _ = gtk::init();
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-placeholder.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+    assert!(
+        page.current_grid().is_none(),
+        "an empty list shows a placeholder, which is the state under test"
+    );
+
+    page.apply_overview_snapshot(overview_snapshot(SyncOverviewStatus::Running));
+    assert!(
+        page.imp().overview_revealer.get().reveals_child(),
+        "a startup run on an indexing library still has to be visible"
+    );
+}
+
 #[gtk::test]
 fn globally_disabled_sync_has_no_home_overview_hint() {
     let _ = gtk::init();
@@ -245,72 +376,6 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
     assert!(
         !page.imp().overview_sync_retry_btn.get().is_visible(),
         "the retry belongs to a failed sync, not to a hidden sync row"
-    );
-}
-
-/// P2-8: the overview was only reachable by overscrolling past the first row,
-/// which nothing announces. The header chevron has to be a real control *and* a
-/// mirror of the revealer — if it kept its own flag, a pull would reveal the
-/// panel while the glyph still invited another pull.
-#[gtk::test]
-fn the_overview_disclosure_button_mirrors_the_revealer() {
-    let _ = gtk::init();
-    let tmp = tempfile::tempdir().unwrap();
-    let pool = crate::core::db::init_pool(&tmp.path().join("disclosure.db")).unwrap();
-    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
-    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
-
-    let toggle = page.imp().overview_toggle_btn.get();
-    assert_eq!(
-        toggle.accessible_role(),
-        gtk::AccessibleRole::Button,
-        "a disclosure that a screen reader cannot reach is not a disclosure"
-    );
-    assert_eq!(
-        toggle.icon_name().as_deref(),
-        Some("pan-down-symbolic"),
-        "the collapsed overview should invite a downward reveal"
-    );
-    assert_eq!(
-        toggle.tooltip_text().as_deref(),
-        Some(tr("photos.overview.show").as_str()),
-        "an icon-only header button needs its name from i18n, not nothing"
-    );
-
-    toggle.emit_clicked();
-    assert!(
-        page.imp().overview_revealer.reveals_child(),
-        "clicking the chevron should reveal the library overview"
-    );
-    assert_eq!(
-        toggle.icon_name().as_deref(),
-        Some("pan-up-symbolic"),
-        "an open overview should show the collapse glyph"
-    );
-    assert_eq!(
-        toggle.tooltip_text().as_deref(),
-        Some(tr("photos.overview.hide").as_str()),
-        "the announced name should change with the state it toggles"
-    );
-
-    toggle.emit_clicked();
-    assert!(
-        !page.imp().overview_revealer.reveals_child(),
-        "a second click should collapse the overview again"
-    );
-    assert_eq!(
-        toggle.icon_name().as_deref(),
-        Some("pan-down-symbolic"),
-        "collapsing should return the invite glyph"
-    );
-
-    // The other ways the panel opens and close never touch the button, yet the
-    // glyph still follows: this is what the revealer notification buys.
-    page.imp().overview_revealer.set_reveal_child(true);
-    assert_eq!(
-        toggle.icon_name().as_deref(),
-        Some("pan-up-symbolic"),
-        "revealing the overview by scrolling must update the header chevron"
     );
 }
 
@@ -1059,24 +1124,16 @@ fn narrow_window_keeps_the_start_header_button_allocated() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let search = page.imp().search_btn.get().width();
-        let toggle = page.imp().overview_toggle_btn.get().width();
-        if (search >= 24 && toggle >= 24) || deadline.elapsed() > std::time::Duration::from_secs(3)
-        {
+        if search >= 24 || deadline.elapsed() > std::time::Duration::from_secs(3) {
             break;
         }
         context.iteration(true);
     }
 
     let search = page.imp().search_btn.get().width();
-    let toggle = page.imp().overview_toggle_btn.get().width();
     assert!(
         search >= 24,
         "the start header button must keep a tappable allocation at 800x600, got search={search}"
-    );
-    assert!(
-        toggle >= 24,
-        "the overview disclosure added by P2-8 shares the header's start group, so it \
-         must keep a tappable allocation too, got toggle={toggle}"
     );
 }
 

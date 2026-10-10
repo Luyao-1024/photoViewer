@@ -134,12 +134,20 @@ Below the fixed upper-left date range, a compact overview shows authoritative
 full-library photo and video counts from `MediaRepository`, never the bounded
 GTK seed length, plus the persisted provider-neutral synchronization state. It
 starts folded on the initial Photos load even though the grid starts at its
-first row. Two paths open it: the circular header chevron
-(`overview_toggle_btn`) and, once already at that row, an additional upward
-scroll (or touch pull-down); scrolling down into media hides it again. The
-chevron is a *mirror* of `overview_revealer`, driven by its `notify::reveal-child`
-rather than by its own flag, so a pull, a click and the mode-switch hide all keep
-the glyph and the announced name truthful. The centered, backgroundless count
+first row. Two paths open it: once already at that row, an additional upward
+scroll (or touch pull-down), with scrolling down into media hiding it again;
+and the start of a synchronization run, which opens it by itself so a run
+triggered by application launch or by an accepted configuration change is
+visible without the pull. That last reveal is edge-triggered on the
+not-running → running transition and only *reveals* — it never starts a run, so
+the pull remains the only gesture that does. It is deliberately not reversed:
+folding the panel during a run is never undone by a later poll, and a settled
+result stays readable instead of folding itself away. A grid scrolled away from
+the first row keeps its own disclosure state, while a placeholder stack
+(indexing, empty library, scan failure) has no scroll offset and therefore
+counts as the top — that is precisely the first-launch state where a startup run
+would otherwise be silent. There is no header disclosure button: `search_btn`
+is the Photos header's only persistent `[start]` child, matching AlbumDetailPage. The centered, backgroundless count
 uses compact 13pt semibold type and the icon-led sync line uses quieter 11pt
 type. Data keeps refreshing on a short timer so the surface is current when
 revealed. The `Running` state replaces the static status glyph with a rotating
@@ -557,30 +565,21 @@ replacing the three grid-side `add_css_class`/`remove_css_class` sites and
 `selected` — that is the part to measure first) — see the probe in
 [`docs/testing.md`](../testing.md).
 
-### Overview Disclosure And Sync Retry
+### Overview Sync Retry
 
 The overview used to have exactly one entry point and no exit from a bad state:
 it opened only when the grid was already at its first row and the user scrolled
 one notch further, and a failed synchronization was one sentence with nothing to
-click. Both were invisible omissions — nothing on screen suggested a hidden
-panel existed, and nothing suggested the failure could be retried.
+click.
 
-- `overview_toggle_btn` is the disclosure. It is a second `[start]` header button
-  placed immediately after search, and it reuses search's classes
-  (`.glass-toolbar-button .round-search-button`) rather than inventing a surface;
-  the Liquid Glass invariant "one capsule, no per-segment active block" is
-  untouched because this is a normal button, not a segmented control.
-- Its glyph and name are *derived*, not stored: `apply_overview_disclosure_state`
-  is called from `notify::reveal-child` on the revealer, so the pull gesture, the
-  mode-switch hide (`photos_page.rs`, the `view_stack` handler) and the click all
-  keep `pan-down-symbolic` ↔ `pan-up-symbolic` and
-  `photos.overview.show` ↔ `photos.overview.hide` truthful. A second boolean here
-  would drift the first time someone revealed the panel by scrolling.
-- Because the button is icon-only, the state is part of its name: the same i18n
-  string is pushed as both the tooltip (mouse) and
-  `gtk::accessible::Property::Label` (screen reader). `photos.overview.hide` had
-  to exist before the button did — an expand-only label cannot describe a
-  collapse.
+A header disclosure (`overview_toggle_btn`) was briefly added for the first
+omission and has since been removed: it duplicated the pull gesture, spent
+header width, and needed a glyph/name mirror kept in step with a revealer that
+three other paths already move. The run-start reveal above answers it instead,
+by surfacing the panel exactly when there is something to read. `search_btn` is
+now the Photos header's only persistent `[start]` child, matching
+AlbumDetailPage.
+
 - `overview_sync_retry_btn` appears inside `overview_sync_row` for exactly two
   situations: `SyncOverviewStatus::Failed`, and the overview read itself failing
   (`apply_overview_error`). Completed, running, paused, ready and unconfigured

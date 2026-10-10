@@ -50,9 +50,8 @@ fn photos_header_uses_glass_toolbar_classes() {
     // (icon-only); its two actions live in a popover built in PhotosPage::new.
     // There is no persistent multi-select entry button: multi-select is
     // entered from the tile context menu or with Space / Ctrl+A.
-    let buttons: [(&str, gtk::Button); 6] = [
+    let buttons: [(&str, gtk::Button); 5] = [
         ("search_btn", imp.search_btn.get()),
-        ("overview_toggle_btn", imp.overview_toggle_btn.get()),
         ("select_all_btn", imp.select_all_btn.get()),
         ("add_to_album_btn", imp.add_to_album_btn.get()),
         ("favorite_btn", imp.favorite_btn.get()),
@@ -66,17 +65,12 @@ fn photos_header_uses_glass_toolbar_classes() {
         );
     }
 
-    for (name, btn) in [
-        ("search_btn", imp.search_btn.get()),
-        ("overview_toggle_btn", imp.overview_toggle_btn.get()),
-    ] {
-        assert!(
-            btn.has_css_class("round-search-button"),
-            "{name} should use the dedicated circular search-button class rather than a new \
-             material, got {:?}",
-            css_classes_vec(&btn)
-        );
-    }
+    assert!(
+        imp.search_btn.get().has_css_class("round-search-button"),
+        "search_btn should use the dedicated circular search-button class rather than a new \
+         material, got {:?}",
+        css_classes_vec(&imp.search_btn.get())
+    );
     assert!(
         !imp.overview_revealer.get().reveals_child(),
         "the library overview should start folded: it is reachable by the header chevron or by \

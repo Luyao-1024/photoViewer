@@ -456,12 +456,16 @@ regresses any of them fails the lib tests.
 status. It derives disabled, not-configured, paused, running, failed, ready, or
 completed from the global opt-in and enabled jobs' persisted lifecycle
 timestamps and errors. The Photos overview hides the sync row while globally
-disabled and polls this projection only while its disclosure is open. The
-completed label counts distinct image and video paths with a proven common
-baseline across enabled jobs, and separately counts distinct unresolved image
-conflict paths. A conflict does not erase an earlier proven baseline. Blocked
-upload recovery keeps the overview in failed status even when the last run
-finished, so a protected unresolved upload is never labeled complete.
+disabled. This projection is polled continuously from `set_db_pool`, not only
+while the disclosure is open: the panel reveals itself on the not-running →
+running edge, so a run started by application launch or by an accepted
+configuration change becomes visible without a pull, and a poll that stopped at
+the folded panel would make exactly that case silent. The completed label counts
+distinct image and video paths with a proven common baseline across enabled
+jobs, and separately counts distinct unresolved image conflict paths. A conflict
+does not erase an earlier proven baseline. Blocked upload recovery keeps the
+overview in failed status even when the last run finished, so a protected
+unresolved upload is never labeled complete.
 
 While a run is active, the overview label shows live transfer progress from an
 in-memory, process-wide session in `SyncService` that is never persisted. The

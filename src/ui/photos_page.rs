@@ -250,8 +250,6 @@ mod imp {
         #[template_child]
         pub search_btn: TemplateChild<gtk::Button>,
         #[template_child]
-        pub overview_toggle_btn: TemplateChild<gtk::Button>,
-        #[template_child]
         pub grid_overlay: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub view_stack: TemplateChild<gtk::Stack>,
@@ -339,7 +337,6 @@ mod imp {
                 scroll_date_label: TemplateChild::default(),
                 header_bar: TemplateChild::default(),
                 search_btn: TemplateChild::default(),
-                overview_toggle_btn: TemplateChild::default(),
                 grid_overlay: TemplateChild::default(),
                 view_stack: TemplateChild::default(),
                 mode_selector: TemplateChild::default(),
@@ -458,7 +455,6 @@ impl PhotosPage {
             .overview_sync_retry_btn
             .get()
             .set_label(&tr("common.retry"));
-        obj.apply_overview_disclosure_state();
         obj.imp()
             .overview_count_label
             .get()
@@ -776,33 +772,6 @@ impl PhotosPage {
                 this.open_search_page();
             }
         });
-
-        // P2-8: the overview used to be reachable only by overscrolling past the
-        // first row, which nothing announces. The header chevron gives it a
-        // visible affordance, and its glyph is a *mirror* of the revealer (not a
-        // second state machine), so a pull, a click and a programmatic hide all
-        // agree.
-        let weak = obj.downgrade();
-        obj.imp()
-            .overview_toggle_btn
-            .get()
-            .connect_clicked(move |_| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                let revealer = this.imp().overview_revealer.get();
-                revealer.set_reveal_child(!revealer.reveals_child());
-            });
-
-        let weak = obj.downgrade();
-        obj.imp()
-            .overview_revealer
-            .get()
-            .connect_reveal_child_notify(move |_| {
-                if let Some(this) = weak.upgrade() {
-                    this.apply_overview_disclosure_state();
-                }
-            });
 
         let weak = obj.downgrade();
         obj.imp()
@@ -1207,7 +1176,8 @@ impl PhotosPage {
 
         spinner.set_visible(running);
         icon.set_visible(!running);
-        self.set_overview_sync_running(running);
+        let was_running = self.set_overview_sync_running(running);
+        self.reveal_overview_for_started_sync_run(running, was_running);
         if !running {
             icon.set_icon_name(Some(sync_overview_icon(status)));
         }
@@ -1251,20 +1221,22 @@ impl PhotosPage {
         );
     }
 
-    fn set_overview_sync_running(&self, running: bool) {
+    /// Returns whether synchronization was already running, so the caller can
+    /// act on the not-running → running edge instead of on the polled level.
+    fn set_overview_sync_running(&self, running: bool) -> bool {
         let imp = self.imp();
         let was_running = imp.overview_sync_running.replace(running);
         if !running {
             imp.overview_sync_started_at.set(None);
             imp.overview_sync_spinner.get().queue_draw();
-            return;
+            return was_running;
         }
         if !was_running {
             imp.overview_sync_started_at
                 .set(Some(std::time::Instant::now()));
         }
         if imp.overview_sync_tick_active.replace(true) {
-            return;
+            return was_running;
         }
 
         let weak = self.downgrade();
@@ -1282,28 +1254,39 @@ impl PhotosPage {
                 area.queue_draw();
                 glib::ControlFlow::Continue
             });
+        was_running
     }
 
-    /// The header chevron mirrors `overview_revealer` rather than owning a second
-    /// disclosure flag, so a pull, a click and the mode-switch hide all keep the
-    /// glyph and the announced name truthful (P2-8).
-    fn apply_overview_disclosure_state(&self) {
-        let revealed = self.imp().overview_revealer.reveals_child();
-        let name = tr(if revealed {
-            "photos.overview.hide"
-        } else {
-            "photos.overview.show"
-        });
-        let button = self.imp().overview_toggle_btn.get();
-        button.set_icon_name(if revealed {
-            "pan-up-symbolic"
-        } else {
-            "pan-down-symbolic"
-        });
-        button.set_tooltip_text(Some(&name));
-        // An icon-only button has no child label to read, and its state is part
-        // of its meaning, so the name itself carries show/hide.
-        button.update_property(&[gtk::accessible::Property::Label(&name)]);
+    /// A run that begins while Photos is already at its first row announces
+    /// itself. Startup and configuration triggers fire without any pull, and
+    /// the folded panel would otherwise keep "正在同步" hidden behind the very
+    /// gesture that also *starts* a run — so the one moment a run is most worth
+    /// reporting is the one moment the user learns nothing happened. This only
+    /// *reveals*; it never triggers a run, so the pull remains the sole gesture
+    /// that starts work.
+    ///
+    /// The reveal is deliberately edge-triggered on not-running → running and
+    /// never force-closed afterwards: folding the panel during a run is the
+    /// user's decision and must not be undone by the next poll, and a settled
+    /// result stays readable instead of vanishing on its own.
+    ///
+    /// A grid that has scrolled away from the first row keeps its own
+    /// disclosure state — opening the panel there would move the library under
+    /// the user mid-browse. A placeholder stack (indexing, empty library, scan
+    /// failure) has no scroll offset at all, so it counts as the top: that is
+    /// exactly the state a first launch is in, and it is where a startup run
+    /// would otherwise stay silent.
+    fn reveal_overview_for_started_sync_run(&self, running: bool, was_running: bool) {
+        if !running || was_running || self.imp().overview_revealer.reveals_child() {
+            return;
+        }
+        if self
+            .current_grid()
+            .is_some_and(|grid| !grid.is_scrolled_to_top())
+        {
+            return;
+        }
+        self.imp().overview_revealer.set_reveal_child(true);
     }
 
     /// A failed sync is the one overview state with an action attached (P2-8);

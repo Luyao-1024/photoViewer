@@ -1412,15 +1412,12 @@ body[data-pv-demo="album-empty"] .section-title { display: none; }
 body[data-pv-demo="trash-flash"] .legacy-trash-flash { display: flex; }
 body[data-pv-demo="trash-flash"] .tile-grid.compact { display: none; }
 
-/* P2-8 已落盘为常态：header 里的 .overview-disclosure 与概览行内的 .overview-retry
-   都是真实 chrome，不再由提案 token 门控。命名模式两件都恒可见（它们是 data-ui 条目）；
-   运行模式按真实状态显示——概览默认收起，只有 Failed 才出重试，与 photos_page.rs
-   apply_overview_retry_affordance 一致。落盘前对照走 data-pv-demo=overview-no-disclosure：
-   那时既没有可点的 disclosure，也没有重试入口，只能靠「顶部再往上滚」发现。 */
+/* P2-8：概览行内的 .overview-retry 是真实 chrome，不再由提案 token 门控。命名模式恒可见
+   （它是 data-ui 条目）；运行模式按真实状态显示——概览默认收起，只有 Failed 才出重试，
+   与 photos_page.rs apply_overview_retry_affordance 一致。header 里曾有一枚
+   .overview-disclosure 圆钮，现已移除，样式与命名条目一并删掉。 */
 body[data-pv-mode="run"]:not([data-pv-ovr="open"]):not([data-pv-ovr="failed"]) .photos-overview-row { display: none; }
 body[data-pv-mode="run"]:not([data-pv-ovr="failed"]) .overview-retry { display: none; }
-body[data-pv-demo="overview-no-disclosure"] .overview-disclosure,
-body[data-pv-demo="overview-no-disclosure"] .overview-retry { display: none !important; }
 
 /* P2-9 收藏下拉指示（尚未落盘，仍由提案 token 控制） */
 /* 沉浸浏览（结构性议题）已落盘为常态：F 收起的是查看器自己的四块界面——顶栏、
