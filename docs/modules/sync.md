@@ -147,6 +147,14 @@ WebDAV itself offers no cheaper discovery — the server advertises `dav: 1, 2`
 with no RFC 6578 sync-collection REPORT — so the remote side remains one
 recursive listing, which is cheap next to hashing the library.
 
+Writes are conditional in the same spirit: `reconcile_one` only upserts an
+observation (or advances a baseline) when the computed values differ from
+the stored row. A steady-state run therefore leaves `sync_entries` — and
+with it the per-file `SyncStateDirty` stream — untouched, which is what
+keeps a 100k-item library from turning every round into 100k UPDATEs and
+100k UI events. `tests/a_no_change_run_does_not_rewrite_entries` pins the
+generation-frozen behaviour.
+
 WebDAV listings carry no content hash, so proving two same-named objects are
 identical costs a full remote download. That proof is bounded twice, and both
 bounds exist to prevent non-termination rather than slowness:

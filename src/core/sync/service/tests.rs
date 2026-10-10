@@ -1390,3 +1390,93 @@ async fn untouched_files_keep_their_stored_fingerprint_across_runs() {
         "a file whose size and mtime match the last hash must not be re-hashed or re-uploaded"
     );
 }
+
+#[tokio::test]
+async fn a_no_change_run_does_not_rewrite_entries() {
+    // Scale guard: at library size the steady-state run must be pure reads.
+    // Any unconditional upsert or baseline commit would bump `entry_generation`
+    // for every row and flood the event bus, so an unchanged round has to
+    // leave the rows exactly where they are — while a real change is still
+    // written and counted.
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    std::fs::write(local_root.join("a.jpg"), b"AAAA").unwrap();
+
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
+    let actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+    let service = SyncService {
+        store: SyncStore::with_actor(pool.clone(), actor.clone()),
+        pool: pool.clone(),
+        actor: Some(actor),
+        staging_root: temp.path().join("staging"),
+    };
+    let job = service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "fake-credential".into(),
+            local_root: local_root.clone(),
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+    let provider = Arc::new(FakeProvider::default());
+
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    let generation_after_first = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT entry_generation FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+
+    let second = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(second.unchanged, 1);
+    let generation_after_second = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT entry_generation FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        generation_after_second, generation_after_first,
+        "a no-change run must not rewrite synced entries"
+    );
+
+    std::fs::write(local_root.join("a.jpg"), b"BBBBBBBB").unwrap();
+    let third = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(third.uploaded, 1);
+    let generation_after_third = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT entry_generation FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        generation_after_third > generation_after_second,
+        "a real change must still be written"
+    );
+}

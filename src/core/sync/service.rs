@@ -1590,18 +1590,39 @@ impl SyncService {
             upload_allowed,
         );
 
-        let entry_id = self.store.upsert_observation(
-            job.id,
-            relative_path,
-            local_entry.map(|entry| &entry.fingerprint),
-            local_entry.map(|entry| entry.modified_ns),
-            remote_observation.fingerprint(),
-            remote_entry.and_then(|entry| entry.revision.as_ref().map(|r| r.value.as_str())),
-            remote_entry
-                .and_then(|entry| entry.revision.as_ref())
-                .is_some_and(|revision| revision.strength == RevisionStrength::Weak),
-            action_state(&action),
-        )?;
+        let remote_revision = remote_entry
+            .and_then(|entry| entry.revision.as_ref())
+            .map(|revision| revision.value.as_str());
+        let remote_revision_weak = remote_entry
+            .and_then(|entry| entry.revision.as_ref())
+            .is_some_and(|revision| revision.strength == RevisionStrength::Weak);
+        let observed_state = action_state(&action);
+        // The hot path of a no-change run: skip the write entirely when the
+        // computed observation equals what the row already holds. At library
+        // scale an unconditional upsert per path would rewrite every row and
+        // emit every dirty event each round, even when nothing moved.
+        let entry_id = match stored {
+            Some(stored)
+                if stored.local.as_ref() == local_entry.map(|entry| &entry.fingerprint)
+                    && stored.local_mtime_ns == local_entry.map(|entry| entry.modified_ns)
+                    && stored.remote.as_ref() == remote_observation.fingerprint()
+                    && stored.remote_revision.as_deref() == remote_revision
+                    && stored.remote_revision_weak == remote_revision_weak
+                    && stored.state == observed_state =>
+            {
+                stored.id
+            }
+            _ => self.store.upsert_observation(
+                job.id,
+                relative_path,
+                local_entry.map(|entry| &entry.fingerprint),
+                local_entry.map(|entry| entry.modified_ns),
+                remote_observation.fingerprint(),
+                remote_revision,
+                remote_revision_weak,
+                observed_state,
+            )?,
+        };
 
         if action == PlanAction::VerifyContent {
             let remote = remote_entry
@@ -1693,14 +1714,26 @@ impl SyncService {
                         .fingerprint()
                         .is_some_and(|fingerprint| fingerprint == &local.fingerprint)
                     {
-                        self.store.commit_baseline(
-                            entry_id,
-                            &local.fingerprint,
-                            remote
-                                .revision
-                                .as_ref()
-                                .map(|revision| revision.value.as_str()),
-                        )?;
+                        let revision = remote
+                            .revision
+                            .as_ref()
+                            .map(|revision| revision.value.as_str());
+                        // Same idea as the observation guard above: advancing
+                        // a baseline that already names this exact fingerprint
+                        // and revision is a write with no effect.
+                        let committed = stored.is_some_and(|stored| {
+                            let fingerprint = &local.fingerprint;
+                            stored.local.as_ref() == Some(fingerprint)
+                                && stored.remote.as_ref() == Some(fingerprint)
+                                && stored.baseline.as_ref() == Some(fingerprint)
+                                && stored.remote_revision.as_deref() == revision
+                                && stored.baseline_remote_revision.as_deref() == revision
+                                && stored.state == "synced"
+                        });
+                        if !committed {
+                            self.store
+                                .commit_baseline(entry_id, &local.fingerprint, revision)?;
+                        }
                     }
                 }
                 summary.unchanged += 1;
