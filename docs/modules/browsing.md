@@ -243,7 +243,11 @@ Tiles outside selected albums have no cloud icon. One background query covers
 currently bound tiles after a range lands and when a sync-state domain event
 arrives, including while transfers are running.
 Overlapping requests coalesce into one pending refresh, and recycled tiles
-clear the badge before rebinding. Year/Month tiles do not show it.
+clear pending icon updates. Year/Month tiles do not show it. Applying a badge
+is idempotent: `SquareTileImp` remembers the last `CloudState` it rendered
+and a repeat `set_cloud_state` with the same value leaves every badge widget
+untouched, so a single sync write settling into an already-displayed state
+cannot repaint the viewport (the per-file flicker was this regression).
 
 The sidebar Media Types group contains only non-empty attribute virtual albums.
 Motion photos are backed by `media_subkind='motion_photo'`; Animated and HDR are

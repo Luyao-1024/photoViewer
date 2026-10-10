@@ -30,6 +30,14 @@ mod imp {
         pub duration_badge: RefCell<Option<gtk::Label>>,
         pub favorite_badge: RefCell<Option<gtk::Image>>,
         pub sync_badge: RefCell<Option<gtk::Image>>,
+        /// Last cloud state applied to `sync_badge`. Every badge attribute
+        /// (icon, tooltip, accessible name, visibility) is a function of this
+        /// state alone, so re-applying the same state is wasted repaint: a
+        /// sync run emits one `SyncStateDirty` per observed file, and the
+        /// badge refresh re-applies to *every* visible tile — without this
+        /// memory the whole viewport flashes once per data update even when
+        /// nothing about it changed.
+        pub cloud_state: Cell<Option<CloudState>>,
         pub target: Cell<i32>,
         /// Only virtual GridView cells participate in height-for-width
         /// measurement. Fixed-size covers must not turn a parent row width
@@ -65,6 +73,7 @@ mod imp {
                 duration_badge: RefCell::new(None),
                 favorite_badge: RefCell::new(None),
                 sync_badge: RefCell::new(None),
+                cloud_state: Cell::new(None),
                 target: Cell::new(90),
                 height_for_width: Cell::new(false),
                 allow_width_shrink: Cell::new(false),
@@ -474,6 +483,15 @@ impl SquareTile {
     }
 
     pub fn set_cloud_state(&self, state: Option<CloudState>) {
+        // Badge icon, tooltip, accessible name and visibility are all a pure
+        // function of the state, so an unchanged state must not touch the
+        // widgets: a sync run re-reports every visible tile on each observed
+        // file, and re-setting a resource-backed image repaints the whole
+        // viewport even when the cloud state did not move.
+        if self.imp().cloud_state.get() == state {
+            return;
+        }
+        self.imp().cloud_state.set(state);
         if let Some(badge) = self.imp().sync_badge.borrow().as_ref() {
             match state {
                 Some(CloudState::Synced) => {
@@ -492,6 +510,12 @@ impl SquareTile {
             }
             badge.set_visible(state.is_some());
         }
+    }
+
+    /// The cloud state currently painted on this tile, as applied through
+    /// [`SquareTile::set_cloud_state`].
+    pub fn cloud_state(&self) -> Option<CloudState> {
+        self.imp().cloud_state.get()
     }
 }
 

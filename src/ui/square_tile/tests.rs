@@ -494,3 +494,46 @@ fn the_tile_and_its_state_badges_are_named() {
          \"selected\" on every tile"
     );
 }
+
+/// A sync run re-reports cloud state for every visible tile once per observed
+/// file. Re-applying the state a tile already shows must be a no-op: the badge
+/// icon, tooltip and accessibility name are a pure function of the state, so
+/// touching the widget again only repaints the whole viewport and reads as a
+/// page-long flash on every single data update.
+#[gtk::test]
+fn cloud_state_reapplication_does_not_touch_the_badge() {
+    let _ = gtk::init();
+    let tile = SquareTile::new();
+    let badge = tile
+        .imp()
+        .sync_badge
+        .borrow()
+        .clone()
+        .expect("tiles build a sync badge");
+    assert!(!badge.is_visible(), "a fresh tile shows no badge");
+
+    tile.set_cloud_state(Some(CloudState::Synced));
+    assert_eq!(tile.cloud_state(), Some(CloudState::Synced));
+    assert!(badge.is_visible());
+    assert!(badge.tooltip_text().is_some());
+
+    // Repeat applications of the same state are the flash being prevented:
+    // nothing on the widget may change.
+    badge.set_tooltip_text(Some("sentinel"));
+    tile.set_cloud_state(Some(CloudState::Synced));
+    assert_eq!(
+        badge.tooltip_text().as_deref(),
+        Some("sentinel"),
+        "re-applying the current cloud state must not touch the badge"
+    );
+    assert_eq!(tile.cloud_state(), Some(CloudState::Synced));
+
+    tile.set_cloud_state(None);
+    assert_eq!(tile.cloud_state(), None);
+    assert!(!badge.is_visible());
+    tile.set_cloud_state(None);
+    assert!(
+        !badge.is_visible(),
+        "state absence must stay stable across repeats"
+    );
+}

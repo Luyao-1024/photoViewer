@@ -1063,6 +1063,14 @@ impl ViewerPage {
     }
 
     fn set_cloud_badge_state(&self, state: Option<CloudState>) {
+        // A sync run re-reports state on every observed file. The badge is a
+        // pure function of this state, so repeating it must not touch the
+        // widget — otherwise the viewer chrome flashes once per data update.
+        // Theme switches refresh the resource through
+        // `update_cloud_badge_resource` directly, bypassing this guard.
+        if self.imp().sync_badge_state.get() == state {
+            return;
+        }
         self.imp().sync_badge_state.set(state);
         self.update_cloud_badge_resource();
     }
