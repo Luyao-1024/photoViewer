@@ -26,6 +26,7 @@ use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
+use libadwaita::prelude::NavigationPageExt;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::{db, MediaQuery};
 use photo_viewer::ui::ViewerPage;
@@ -133,6 +134,18 @@ impl ViewerRun {
             imp.nav_buttons_revealer.get().reveals_child(),
             imp.zoom_controls_revealer.get().reveals_child(),
         ]
+    }
+
+    /// What the window's `AdwNavigationView` is actually showing right now.
+    fn visible_page(&self) -> Option<adw::NavigationPage> {
+        self.shell.window.nav_view().visible_page()
+    }
+
+    /// Whether the window is still showing *this* viewer page. Instance identity,
+    /// not "some viewer": the question is whether this page survived on the stack,
+    /// so anything that is merely another `ViewerPage` must not pass for it.
+    fn viewer_is_pushed(&self) -> bool {
+        self.visible_page().is_some_and(|page| page == self.viewer)
     }
 
     fn position_label_text(&self) -> String {
@@ -504,18 +517,123 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
             && imp.editor_panel.get().imp().source_image.borrow().is_some()),
         "pressing Edit should open the editor side panel on the real file"
     );
-
-    // The editor locks viewer navigation, and the visible chrome has to match: a
-    // press aimed at the pair must not move the photo.
     let locked_id = imp.current_media_id.get();
-    ui.try_click_even_if_inert(&imp.next_btn.get(), "Next while the editor is open")
-        .ok();
-    ui.try_click_even_if_inert(&imp.prev_btn.get(), "Previous while the editor is open")
-        .ok();
+
+    // The editor takes the navigation lock. Read where the lock actually lives
+    // before asserting it, because the two halves are enforced in different
+    // places and only one of them is a guard:
+    //
+    //   * Pointer. `start_editing` calls `set_overlay_navigation_visible(false)`,
+    //     which hides the container the pair sits in, so the buttons leave the
+    //     screen and no press can be aimed at them. That is the whole mechanism:
+    //     the pair's `clicked` handlers call `navigate_by_delta` with no editing
+    //     check of their own, so nothing *inside* the handler refuses — measured
+    //     on this scenario, putting the pair back on screen with the editor still
+    //     open turns the very same press into a move to the next photo. The
+    //     assertions below therefore claim exactly the real contract,
+    //     reachability, and not a refusal that is not there.
+    //   * Keyboard. The window's scope becomes `Editor` while editing
+    //     (`is_editing_keyboard_scope`), and the Editor binding table answers ←/→
+    //     with nothing. Here a real press does reach the guard, so a real press
+    //     is what it takes.
+    assert!(
+        imp.is_editing.get(),
+        "pressing Edit should have taken the navigation lock"
+    );
+    // Rule out the cheap explanation before the press: the photo is still on
+    // screen behind the editor, so "the pair has no pointer position" is a fact
+    // about the pair rather than about a viewer that was never shown.
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || imp.picture.get().is_visible()
+            && imp.picture.get().is_mapped()),
+        "the photo should still be on screen behind the editor panel"
+    );
+    let nav_container = imp
+        .next_btn
+        .get()
+        .parent()
+        .expect("the navigation pair should live in a container");
+    assert!(
+        !nav_container.is_visible(),
+        "the editor must take the navigation pair off the screen by hiding its container, but \
+         that container still reports itself visible"
+    );
+    for (label, button) in [
+        ("Next", &imp.next_btn.get()),
+        ("Previous", &imp.prev_btn.get()),
+    ] {
+        let delivered = ui
+            .try_click_even_if_inert(button, &format!("{label} while the editor is open"))
+            .expect("a press aimed at the hidden navigation pair should be answerable");
+        assert!(
+            !delivered,
+            "the navigation pair must be unreachable while the editor is open, but a press aimed \
+             at {label} was delivered: the editor's lock is not holding"
+        );
+    }
     assert_eq!(
         imp.current_media_id.get(),
         locked_id,
         "the navigation pair must be inert while the editor is open"
+    );
+
+    // The keyboard half is a real guard, so it takes a real press: ←/→ through
+    // the production capture-phase router, which is what a user's fingers reach.
+    for (key, name) in [
+        (gtk::gdk::Key::Right, "Right"),
+        (gtk::gdk::Key::Left, "Left"),
+    ] {
+        let gesture = ui.key_gesture(&run.shell.window, key, gtk::gdk::ModifierType::empty(), 0);
+        assert_eq!(
+            gesture.dispatched, 0,
+            "{name} must reach the router while the editor is open and come back unhandled, but \
+             the router dispatched it: the editing scope no longer keeps the navigation bindings \
+             out of reach"
+        );
+        assert_eq!(
+            imp.current_media_id.get(),
+            locked_id,
+            "{name} must not move the photo while the editor is open"
+        );
+    }
+
+    // And the lock belongs to the editing state, not to this viewer: close the
+    // editor the way a user does and the very same press navigates again. Without
+    // this the "the photo did not move" assertions above would also pass in a run
+    // where nothing can move it at all.
+    let editor_panel = imp.editor_panel.get();
+    let editor_imp = editor_panel.imp();
+    ui.scroll_to_reveal(&editor_imp.editor_close_btn.get(), "Close editor");
+    ui.click(&editor_imp.editor_close_btn.get(), "Close editor");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !imp
+            .editor_split_view
+            .get()
+            .shows_sidebar()
+            && !imp.is_editing.get()),
+        "closing the editor should hide the panel and release the navigation lock"
+    );
+    run.wait_for_chrome_relayout();
+    let released = ui.key_gesture(
+        &run.shell.window,
+        gtk::gdk::Key::Right,
+        gtk::gdk::ModifierType::empty(),
+        0,
+    );
+    assert_eq!(
+        released.dispatched, 1,
+        "with the editor closed, Right must be handled by the Viewer scope again"
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.current_index() == 1),
+        "the press that was inert while editing must navigate once the editor is closed, stuck \
+         at rank {}",
+        viewer.current_index() + 1
+    );
+    assert_eq!(
+        imp.current_media_id.get(),
+        run.shell.items[1].id,
+        "the photo after the lock lifts should be the second one"
     );
 }
 
@@ -561,11 +679,19 @@ fn chrome_returns_and_stays_clickable_after_immersive_fold(run: &ViewerRun) {
         ui.wait_until(Duration::from_secs(5), || run.chrome_regions() == [true; 4]),
         "Escape should leave immersion and hand all four regions back"
     );
+    // The viewer must still be the page on top of the navigation stack. Read the
+    // nav view's own answer rather than the widget's ancestry: the obvious form,
+    // `viewer.ancestor(NavigationPage::static_type()).is_some()`, is dead weight
+    // — `ViewerPage` *is* an `AdwNavigationPage` subclass, and
+    // `gtk_widget_get_ancestor` hands back the widget itself when it already
+    // matches the type, so it is permanently true and would still pass for a
+    // viewer that had been popped the moment before.
     assert!(
-        viewer
-            .ancestor(adw::NavigationPage::static_type())
-            .is_some(),
-        "leaving immersion must not also pop the viewer"
+        ui.wait_until(Duration::from_secs(5), || run.viewer_is_pushed()),
+        "leaving immersion must not also pop the viewer, but the nav view is showing {}",
+        run.visible_page()
+            .map(|page| format!("{} titled {:?}", page.type_().name(), page.title()))
+            .unwrap_or_else(|| "nothing".to_string())
     );
     run.wait_for_chrome_relayout();
 

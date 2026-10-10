@@ -299,6 +299,15 @@ impl Ui {
     /// Assert the opposite of reachability: this control cannot take a pointer right
     /// now, because it is hidden, folded, dimmed, or covered. Proves chrome that is
     /// meant to be inert really is.
+    ///
+    /// A control with no pointer position passes, and that is not a loophole: an
+    /// unmapped or unallocated control genuinely cannot take a pointer, which is
+    /// the claim being made. But it also passes for the wrong reasons — a control
+    /// that is unmapped because the test is on the wrong page, or before the page
+    /// was ever shown, says nothing about the control being deliberately inert.
+    /// Callers that mean "this control is on screen and still refuses the pointer"
+    /// must therefore assert their own visibility first, so that the pass is
+    /// evidence about the control rather than about the shell being early.
     pub fn assert_not_reachable(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
         let Some(target) = self.target_of(widget) else {
             return;

@@ -491,9 +491,20 @@ fn build(photo_count: usize) -> Shell {
     let (event_sender, _event_rx) = photo_viewer::core::DomainEventSender::new();
     let db_actor = photo_viewer::core::start_db_actor(pool.clone(), event_sender);
 
+    // The id has to be unique across *processes*, not just across shells in this
+    // one. A per-process counter restarts at 0 in every test binary, so two
+    // binaries sharing a D-Bus session both claimed
+    // `…photoviewer.Shell0`; the second registration came back as a remote
+    // application and GTK faulted inside `MainWindow::new` before the first
+    // assertion of the journey — a crash that looked like a product bug and was
+    // not. `cargo test` runs binaries serially, so CI never saw it, but any
+    // concurrent run did.
     let seq = SHELL_SEQ.fetch_add(1, Ordering::Relaxed);
     let app = adw::Application::builder()
-        .application_id(format!("io.github.luyao_1024.photoviewer.Shell{seq}"))
+        .application_id(format!(
+            "io.github.luyao_1024.photoviewer.Shell{}_{seq}",
+            std::process::id()
+        ))
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("the test application should register");
