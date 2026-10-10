@@ -127,13 +127,14 @@ impl MainWindow {
 
         album_selection.connect_selection_changed(
             glib::clone!(@weak self as window, @weak nav_view => move |_model, position, changed| {
+                if window.imp().selecting_programmatically.get() {
+                    return;
+                }
                 if window.imp().album_selection_mode.get() {
                     window.sync_selected_album_paths();
                     return;
                 }
-                if window.imp().selecting_programmatically.get()
-                    || window.imp().focus_traversal_active.get()
-                {
+                if window.imp().focus_traversal_active.get() {
                     return;
                 }
                 let selected_position = (position..position.saturating_add(changed))

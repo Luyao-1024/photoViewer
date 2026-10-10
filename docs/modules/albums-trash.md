@@ -95,7 +95,12 @@ worker after the Photos page is usable.
 Folder and virtual album entries are held in a `Gio.ListStore` and displayed by
 the `GtkListView album_list` factory. GTK realizes only the rows in or near the
 sidebar viewport; snapshot refreshes replace model items while preserving the
-active album selection. Do not reintroduce a `GtkListBox` that creates every
+active album selection. During album batch mode, preserve selected real folders
+by `folder_path`, then restore their positions against the new projection and
+synchronize `selected_album_paths` once. Ignore intermediate selection signals
+while updating the model; a removed folder drops out of the pending deletion.
+The active browsing album must not replace the batch selection during either
+folder or media-type snapshot refreshes. Do not reintroduce a `GtkListBox` that creates every
 album widget during a snapshot delivery. Media Types stays a small `GtkListBox`
 because its bounded row count does not justify virtualization.
 `album_scroll` must keep a finite expanding viewport (`vexpand: true`) and
@@ -161,6 +166,21 @@ album list.
 Virtual albums such as Favorites, Photos, and Videos are navigable but not
 ignorable or deletable. Album multi-select is limited to deleting multiple real
 folder albums through the same configured trash-backed operation.
+
+Entering batch mode from a real album's context menu preselects that folder;
+a virtual album's menu starts with no folder selected. The virtualized sidebar
+keeps GTK's selection semantics: plain click selects one row, Ctrl+click toggles
+a row while retaining other selected folders. Virtual rows cannot enter the
+pending deletion. Tests must check folder identities in both the current GTK
+selection model and the pending-deletion cache, rather than counts alone.
+
+`MainWindow::sidebar_album_row_for_tests` is a read-only observation of the
+factory ListItems' current Album bindings. It uses weak references, creates no
+additional rows, and changes neither selection nor scroll. The pointer harness
+resolves rows by `folder_path` after scrolling and rebinding, so duplicate
+basenames do not identify a row. Missing or misdirected presses fail; selecting
+all real folders skips the context menu's already selected folder and requires
+the exact full path set.
 
 Ignore and Delete sit one menu apart and promise opposite things, so
 `journey_album_context_menu_deletes_and_ignores_real_albums` drives both through

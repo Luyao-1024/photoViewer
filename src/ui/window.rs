@@ -262,7 +262,7 @@ mod imp {
         pub targets: RefCell<Vec<SidebarTarget>>,
         /// Index→target mirror of the bottom Trash ListBox.
         pub trash_targets: RefCell<Vec<SidebarTarget>>,
-        /// Index→album mirror of the dedicated album ListBox.
+        /// Index→album mirror of the virtualized album ListView.
         pub album_targets: RefCell<Vec<Album>>,
         /// Index→virtual media type mirror of the dedicated media type ListBox.
         pub media_type_targets: RefCell<Vec<Album>>,
@@ -270,6 +270,9 @@ mod imp {
         /// The `GtkListView` only realizes rows in or near its viewport.
         pub album_model: RefCell<Option<gtk::gio::ListStore>>,
         pub album_selection: RefCell<Option<gtk::MultiSelection>>,
+        /// Weak observations of factory items. Their current `item` identifies
+        /// a recycled row without treating its display label as a stable id.
+        pub album_list_items: RefCell<Vec<glib::WeakRef<gtk::ListItem>>>,
         /// Rows nested under the "Media Types" group header.
         pub media_type_rows: RefCell<Vec<gtk::ListBoxRow>>,
         /// Right-aligned total live-media count on the Photos sidebar row.

@@ -34,6 +34,15 @@ The pipeline order is rotation, brightness, contrast, saturation, then crop. Pre
 
 Entering the editor loads the source image into memory with orientation applied for display. Rotate, brightness, contrast, saturation, crop, and reset controls update only `EditState` plus the preview texture. They must not mutate the source file, source metadata, database row, thumbnail cache, or create source backups before the user chooses a save action.
 
+The session is anchored to the viewer's displayed media identity. A rapid
+navigation followed by Edit cancels the pending switch and edits the photo
+already committed by `show_at`; an optimistic neighbour id must never become
+the save target while the old photo is still displayed. While editing, the
+filmstrip is insensitive and the common navigation entry point refuses all
+photo switches. Cancellation invalidates asynchronous navigation results even
+after the editor closes. Closing restores thumbnail navigation without
+reviving old requests; pending edits still go through the normal discard gate.
+
 The reset button is a circular icon button in the editor header. It is enabled only when `EditState::has_pending_edits()` is true, and it restores rotation, adjustments, and crop to defaults without closing the editor.
 
 Crop coordinates are stored in oriented source-image pixel coordinates so Save Copy and Save Overwrite apply the same crop to the original file. If the preview image is downsampled for rendering, `EditorPanel` scales the crop rectangle only for preview rendering. Crop controls stay inside the editor panel: Start Crop toggles crop mode, and the graphical ratio selector uses previous/next arrow buttons to switch original/1:1/4:3/3:2/16:9/free. The ratio preview is intentionally larger than a toolbar icon, while the previous/next buttons are narrow vertical controls. The crop completion button is a compact centered action, not a full-width row. The header reset button clears pending crop along with other unsaved edits.

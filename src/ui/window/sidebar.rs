@@ -465,6 +465,10 @@ impl MainWindow {
                 let Some(window) = weak.upgrade() else {
                     return;
                 };
+                let mut observed = window.imp().album_list_items.borrow_mut();
+                observed.retain(|item| item.upgrade().is_some());
+                observed.push(list_item.downgrade());
+                drop(observed);
                 let cell = build_virtual_album_cell();
                 window.attach_album_dnd(cell.content.upcast_ref(), cell.binding.clone());
                 window.attach_album_context_menu(cell.content.upcast_ref(), cell.binding.clone());
@@ -507,6 +511,27 @@ impl MainWindow {
         *self.imp().album_selection.borrow_mut() = Some(selection);
     }
 
+    /// Read-only observation for pointer UX tests: resolve a realized row from
+    /// the factory item's current Album binding, even after widget recycling.
+    /// This neither realizes an offscreen row nor changes selection or scroll.
+    pub fn sidebar_album_row_for_tests(
+        &self,
+        folder_path: &std::path::Path,
+    ) -> Option<gtk::Widget> {
+        self.imp()
+            .album_list_items
+            .borrow()
+            .iter()
+            .find_map(|weak| {
+                let item = weak.upgrade()?;
+                let album = item.item()?.downcast::<glib::BoxedAnyObject>().ok()?;
+                if album.borrow::<Album>().folder_path != folder_path {
+                    return None;
+                }
+                item.child()
+            })
+    }
+
     pub(super) fn clear_album_selection(&self) {
         if let Some(selection) = self.imp().album_selection.borrow().as_ref() {
             selection.unselect_all();
@@ -532,6 +557,9 @@ impl MainWindow {
             self.imp().selecting_programmatically.set(true);
             selection.select_item(position, true);
             self.imp().selecting_programmatically.set(false);
+        }
+        if self.imp().album_selection_mode.get() {
+            self.sync_selected_album_paths();
         }
     }
 
@@ -567,6 +595,11 @@ impl MainWindow {
     fn apply_album_rows(&self, albums: Vec<Album>) {
         self.ensure_virtual_album_list();
         let current_targets = self.imp().album_targets.borrow().clone();
+        let batch_selection = self
+            .imp()
+            .album_selection_mode
+            .get()
+            .then(|| self.imp().selected_album_paths.borrow().clone());
         let same_identities = same_sidebar_album_identities(&current_targets, &albums);
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
@@ -616,9 +649,24 @@ impl MainWindow {
             }
         }
         *self.imp().album_targets.borrow_mut() = albums;
-        self.imp().selecting_programmatically.set(false);
-
-        self.reselect_active_album_row();
+        if let Some(selected) = batch_selection {
+            // Splicing a selected row drops GTK's position-based selection.
+            // Restore surviving real folders against the new identities while
+            // selection callbacks are guarded from the intermediate model.
+            if let Some(selection) = self.imp().album_selection.borrow().as_ref() {
+                selection.unselect_all();
+                for (position, album) in self.imp().album_targets.borrow().iter().enumerate() {
+                    if !album.is_virtual && selected.contains(&album.folder_path) {
+                        selection.select_item(position as u32, false);
+                    }
+                }
+            }
+            self.imp().selecting_programmatically.set(false);
+            self.sync_selected_album_paths();
+        } else {
+            self.imp().selecting_programmatically.set(false);
+            self.reselect_active_album_row();
+        }
         tracing::debug!(
             target: crate::core::log_targets::BROWSING,
             "SIDEBAR_ALBUM_MODEL_APPLIED rows={} same_identities={}",
@@ -900,6 +948,11 @@ impl MainWindow {
     }
 
     fn reselect_active_album_row(&self) {
+        // The open album is not the batch selection. A media-type/sidebar
+        // refresh must not replace several selected folders with this one.
+        if self.imp().album_selection_mode.get() {
+            return;
+        }
         let active = match self.imp().active_album.borrow().clone() {
             Some(path) => path,
             None => return,

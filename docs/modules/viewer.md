@@ -584,4 +584,20 @@ Videos are view-only. Keep the Edit button disabled for `video/*` items and guar
 
 The editor crop selector is drawn as a `GtkDrawingArea` overlay above the viewer `GtkPicture`. It must stay in the image overlay so users can drag the crop rectangle directly over the photo. Coordinate conversion maps the displayed contain-fitted image rectangle back to oriented source-image pixels before updating `EditorPanel`. A hit crop rectangle remains visually selected after click/drag begin so the movable/resizable affordance is obvious.
 
-When the editor sidebar is open, the viewer overlay previous/next navigation buttons are hidden. Keyboard navigation is blocked by the `Editor` keyboard scope; the visible chrome must match that locked state so editing controls are not mixed with viewer navigation.
+When the editor sidebar is open, the viewer overlay previous/next navigation
+buttons are hidden and the filmstrip stays visible with its thumbnail buttons
+insensitive. Keyboard navigation is blocked by the `Editor` keyboard scope.
+`navigate_by_delta` also rejects navigation while editing, including filmstrip,
+fullscreen-preview and legacy callback entry points; visibility alone is not
+an editing lock.
+
+Editor entry uses `displayed_media_id`, the stable identity committed by
+`show_at`, rather than the optimistic `current_media_id` that a pending
+navigation may already have advanced. Entering editing invalidates the nav
+token, restores the displayed identity and render cursor, and clears the
+neighbour cache. DB replies, thumbnail-ready replies and timeout fallbacks
+cannot switch the photo during editing or revive the cancelled switch after
+closing. Closing the editor restores filmstrip interaction and prefetches the
+surviving photo's neighbours again. The same thumbnail press must work after
+editing ends, and refused navigation must retain pending edits and the save
+target.

@@ -59,6 +59,16 @@ fn viewer_ux_runs_by_real_pointer() {
     run.finish();
 
     let run = ViewerRun::build();
+    editing_keeps_the_filmstrip_on_the_same_photo(&run);
+    run.finish();
+
+    for target in [1, 3] {
+        let run = ViewerRun::build();
+        entering_editing_cancels_a_pending_navigation(&run, target);
+        run.finish();
+    }
+
+    let run = ViewerRun::build();
     chrome_returns_and_stays_clickable_after_immersive_fold(&run);
     run.finish();
 }
@@ -519,23 +529,11 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
     );
     let locked_id = imp.current_media_id.get();
 
-    // The editor takes the navigation lock. Read where the lock actually lives
-    // before asserting it, because the two halves are enforced in different
-    // places and only one of them is a guard:
-    //
-    //   * Pointer. `start_editing` calls `set_overlay_navigation_visible(false)`,
-    //     which hides the container the pair sits in, so the buttons leave the
-    //     screen and no press can be aimed at them. That is the whole mechanism:
-    //     the pair's `clicked` handlers call `navigate_by_delta` with no editing
-    //     check of their own, so nothing *inside* the handler refuses — measured
-    //     on this scenario, putting the pair back on screen with the editor still
-    //     open turns the very same press into a move to the next photo. The
-    //     assertions below therefore claim exactly the real contract,
-    //     reachability, and not a refusal that is not there.
-    //   * Keyboard. The window's scope becomes `Editor` while editing
-    //     (`is_editing_keyboard_scope`), and the Editor binding table answers ←/→
-    //     with nothing. Here a real press does reach the guard, so a real press
-    //     is what it takes.
+    // Editing hides the overlay pair and disables the filmstrip. The shared
+    // navigation entry point also rejects editing, independently of visibility;
+    // the dedicated filmstrip and pending-navigation journeys cover that lock.
+    // Keyboard presses take the production Editor scope, whose binding table
+    // leaves the arrows to the editor's focused controls.
     assert!(
         imp.is_editing.get(),
         "pressing Edit should have taken the navigation lock"
@@ -634,6 +632,192 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
         imp.current_media_id.get(),
         run.shell.items[1].id,
         "the photo after the lock lifts should be the second one"
+    );
+}
+
+/// Editing has to keep both the displayed photo and the save target fixed,
+/// including when a user aims at a non-adjacent filmstrip thumbnail.
+fn editing_keeps_the_filmstrip_on_the_same_photo(run: &ViewerRun) {
+    let viewer = &run.viewer;
+    let imp = viewer.imp();
+    let ui = run.ui();
+    let locked_id = run.shell.items[0].id;
+    let bytes_before: Vec<_> = run
+        .shell
+        .items
+        .iter()
+        .map(|item| std::fs::read(&item.path).expect("read the original photo"))
+        .collect();
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || imp.thumb_items.borrow().len()
+            == PHOTO_COUNT)
+    );
+    let target = imp.thumb_items.borrow()[3].clone();
+    ui.assert_reachable(&target, "fourth thumbnail before editing");
+
+    ui.click(&imp.edit_btn.get(), "Edit");
+    let panel = imp.editor_panel.get();
+    let editor = panel.imp();
+    assert!(ui.wait_until(Duration::from_secs(10), || editor
+        .source_image
+        .borrow()
+        .is_some()));
+    ui.scroll_to_reveal(&editor.rotate_90_cw.get(), "Rotate clockwise in editor");
+    ui.click(&editor.rotate_90_cw.get(), "Rotate clockwise in editor");
+    let rotation = editor.state.borrow().rotation;
+    assert_eq!(
+        rotation.as_degrees(),
+        90,
+        "the session must contain a real pending edit"
+    );
+
+    for index in [1, 3] {
+        let thumb = imp.thumb_items.borrow()[index].clone();
+        ui.try_click_even_if_inert(&thumb, "another thumbnail while editing")
+            .expect("the thumbnail press must be answerable");
+        ui.pump(Duration::from_millis(500));
+        assert_eq!(
+            imp.current_media_id.get(),
+            locked_id,
+            "a thumbnail must not change the editing photo"
+        );
+        assert_eq!(
+            viewer.current_index(),
+            0,
+            "the filmstrip must stay on the editing photo"
+        );
+        assert_eq!(
+            editor.media_item.borrow().as_ref().unwrap().id,
+            locked_id,
+            "the editor's save target must remain the displayed photo"
+        );
+        assert_eq!(
+            editor.state.borrow().rotation,
+            rotation,
+            "a refused navigation must retain pending edits"
+        );
+        assert!(imp.is_editing.get() && imp.editor_split_view.get().shows_sidebar());
+    }
+    assert!(
+        !imp.thumb_strip.get().is_sensitive(),
+        "the visible filmstrip must communicate that navigation is disabled during editing"
+    );
+    for (item, bytes) in run.shell.items.iter().zip(&bytes_before) {
+        assert_eq!(
+            &std::fs::read(&item.path).unwrap(),
+            bytes,
+            "attempting navigation while editing must not write a source file"
+        );
+    }
+
+    // Close still uses the unsaved-changes gate, and answering it is a real
+    // press. The same thumbnail must then work, ruling out a dead filmstrip.
+    ui.scroll_to_reveal(&editor.editor_close_btn.get(), "Close editor");
+    ui.click(&editor.editor_close_btn.get(), "Close editor");
+    assert!(ui.wait_until(Duration::from_secs(5), || editor
+        .close_guard
+        .borrow()
+        .is_some()));
+    let guard = editor.close_guard.borrow().as_ref().unwrap().clone();
+    let discard = common::interaction::find_button_with_label(
+        &guard,
+        &photo_viewer::core::i18n::tr("editor.unsaved.discard"),
+    )
+    .expect("the close guard must offer Discard changes");
+    ui.click(&discard, "Discard changes");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !imp.is_editing.get()
+            && !imp.editor_split_view.get().shows_sidebar())
+    );
+    let target = imp.thumb_items.borrow()[3].clone();
+    ui.click(&target, "fourth thumbnail after closing editor");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.current_index() == 3
+            && imp.current_media_id.get() == run.shell.items[3].id),
+        "the filmstrip must navigate again after editing ends"
+    );
+}
+
+/// A rapid Next/Edit (cached neighbour) or thumbnail/Edit (DB lookup) must edit
+/// the photo the viewer was displaying, and discard both the late reply and its
+/// timeout. No main-loop pump separates the two physical presses.
+fn entering_editing_cancels_a_pending_navigation(run: &ViewerRun, target: usize) {
+    let viewer = &run.viewer;
+    let imp = viewer.imp();
+    let ui = run.ui();
+    assert!(ui.wait_until(Duration::from_secs(10), || imp
+        .cached_next_item
+        .borrow()
+        .is_some()
+        && imp.original_painted_token.get() == imp.current_token.get()
+        && imp.thumb_items.borrow().len() == PHOTO_COUNT));
+    let original_id = run.shell.items[0].id;
+    let target_button = if target == 1 {
+        imp.next_btn.get()
+    } else {
+        imp.thumb_items.borrow()[target].clone()
+    };
+    ui.assert_reachable(&target_button, "navigation before Edit");
+    ui.assert_reachable(&imp.edit_btn.get(), "Edit before rapid navigation");
+    ui.click_unsettled(&target_button, "navigate immediately before Edit");
+    let pending_token = imp.nav_token.get();
+    assert_eq!(
+        viewer.current_index(),
+        0,
+        "the deferred navigation must not have displayed its target yet"
+    );
+    if target == 1 {
+        assert_eq!(
+            imp.current_media_id.get(),
+            run.shell.items[target].id,
+            "the cached path must have advanced its optimistic identity before Edit"
+        );
+    }
+    ui.click_unsettled(&imp.edit_btn.get(), "Edit before navigation finishes");
+    assert!(imp.is_editing.get());
+    assert_ne!(
+        imp.nav_token.get(),
+        pending_token,
+        "entering editing must invalidate the pending navigation"
+    );
+    let panel = imp.editor_panel.get();
+    let editor = panel.imp();
+    assert_eq!(
+        editor.media_item.borrow().as_ref().unwrap().id,
+        original_id,
+        "Edit must configure the displayed photo rather than the pending target"
+    );
+    assert_eq!(
+        imp.current_media_id.get(),
+        original_id,
+        "the optimistic navigation identity must return to the displayed photo"
+    );
+    assert!(ui.wait_until(Duration::from_secs(10), || editor
+        .source_image
+        .borrow()
+        .is_some()));
+    ui.pump(Duration::from_millis(700));
+    assert_eq!(
+        viewer.current_index(),
+        0,
+        "neither a late navigation reply nor its timeout may switch the editor's photo"
+    );
+    assert_eq!(imp.current_media_id.get(), original_id);
+    assert_eq!(editor.media_item.borrow().as_ref().unwrap().id, original_id);
+
+    ui.scroll_to_reveal(&editor.editor_close_btn.get(), "Close clean editor");
+    ui.click(&editor.editor_close_btn.get(), "Close clean editor");
+    assert!(ui.wait_until(Duration::from_secs(5), || !imp.is_editing.get()));
+    let target_button = imp.thumb_items.borrow()[target].clone();
+    ui.click(
+        &target_button,
+        "navigate after pending navigation was cancelled",
+    );
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || viewer.current_index()
+            == target as u32
+            && imp.current_media_id.get() == run.shell.items[target].id),
+        "a fresh navigation must work after editing closes"
     );
 }
 

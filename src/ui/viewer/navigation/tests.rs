@@ -179,3 +179,73 @@ fn a_video_at_the_query_start_dims_the_previous_arrow_without_a_first_navigation
         std::mem::forget(stream);
     }
 }
+
+/// The common entry point must refuse navigation even for callers that bypass
+/// the hidden overlay pair, including the legacy external-navigation callback.
+#[gtk::test]
+fn editing_navigation_blocks_the_common_entry_point() {
+    init_viewer_test();
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    list.append(&glib::BoxedAnyObject::new(sample_media_item()));
+    let viewer = ViewerPage::new(list, 0);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    viewer.connect_navigation(move |delta| observed.borrow_mut().push(delta));
+    viewer.start_editing();
+    let token = viewer.imp().nav_token.get();
+    for delta in [-1, 1, 3] {
+        viewer.navigate_by_delta(delta);
+    }
+    assert!(
+        events.borrow().is_empty(),
+        "editing must not dispatch navigation to an external callback"
+    );
+    assert_eq!(
+        viewer.imp().nav_token.get(),
+        token,
+        "refused navigation must not create pending work"
+    );
+    viewer.stop_editing();
+    viewer.navigate_by_delta(1);
+    assert_eq!(
+        events.borrow().as_slice(),
+        &[1],
+        "the same entry point must work after editing closes"
+    );
+}
+
+/// Replies already in flight must stay invalid after the editor closes, when
+/// an editing-state check alone would no longer reject them.
+#[gtk::test]
+fn editing_navigation_discards_a_late_switch_after_close() {
+    init_viewer_test();
+    let list = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let first = sample_media_item();
+    let mut second = first.clone();
+    second.id = 2;
+    second.uri = "file:///tmp/second.jpg".into();
+    second.path = PathBuf::from("/tmp/second.jpg");
+    list.append(&glib::BoxedAnyObject::new(first));
+    list.append(&glib::BoxedAnyObject::new(second));
+    let viewer = ViewerPage::new(list, 0);
+    let token = viewer.imp().nav_token.get() + 1;
+    viewer.imp().nav_token.set(token);
+    viewer.imp().current_media_id.set(2);
+    // Other chrome can resolve the optimistic id and move the index before
+    // Edit arrives; cancellation still needs to find the displayed photo.
+    assert_eq!(viewer.current_media_item().unwrap().id, 2);
+    viewer.start_editing();
+    assert_ne!(viewer.imp().nav_token.get(), token);
+    assert_eq!(viewer.imp().current_media_id.get(), 1);
+    assert_eq!(viewer.current_index(), 0);
+    viewer.settle_nav_switch(1, token, "late reply while editing");
+    assert_eq!(viewer.current_index(), 0);
+    viewer.stop_editing();
+    viewer.settle_nav_switch(1, token, "late timeout after editing");
+    assert_eq!(
+        viewer.current_index(),
+        0,
+        "closing the editor must not revive cancelled navigation"
+    );
+    assert_eq!(viewer.imp().current_media_id.get(), 1);
+}

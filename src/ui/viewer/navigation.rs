@@ -74,6 +74,14 @@ impl ViewerPage {
     pub(super) fn navigate_by_delta(&self, delta: NavDelta) {
         tracing::Span::current().record("delta", delta);
         tracing::Span::current().record("current_media_id", self.imp().current_media_id.get());
+        if self.is_editing_keyboard_scope() {
+            tracing::debug!(
+                target: crate::core::log_targets::VIEWER,
+                "VIEWER_SWITCH refused while editing delta={}",
+                delta
+            );
+            return;
+        }
         if delta == NAV_POP {
             self.fire_nav(delta);
             return;
@@ -144,8 +152,8 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else {
                 return;
             };
-            if this.imp().nav_token.get() != token {
-                return; // a newer press superseded this one
+            if this.imp().nav_token.get() != token || this.is_editing_keyboard_scope() {
+                return; // superseded by a newer press or editor entry
             }
             match result {
                 Ok(Some(item)) => {
@@ -274,8 +282,8 @@ impl ViewerPage {
     /// the first settles, later callers for the same token (or a stale token)
     /// are no-ops.
     fn settle_nav_switch(&self, index: u32, token: u64, reason: &str) {
-        if self.imp().nav_token.get() != token {
-            return; // superseded by a newer press
+        if self.imp().nav_token.get() != token || self.is_editing_keyboard_scope() {
+            return; // superseded by a newer press or editor entry
         }
         if self.imp().nav_settled_token.get() == token {
             return; // already settled
@@ -569,6 +577,30 @@ impl ViewerPage {
         });
         action_group.add_action(&pop_action);
         self.insert_action_group("navigation", Some(&action_group));
+    }
+
+    /// Read the item committed by `show_at`, without following an optimistic
+    /// neighbour id or changing the render cursor while navigation is pending.
+    pub(super) fn displayed_media_item(&self) -> Option<MediaItem> {
+        let list = self.imp().media_list.borrow();
+        let list = list.as_ref()?;
+        let index = find_media_index_by_id(list, self.imp().displayed_media_id.get())?;
+        crate::ui::media_list::media_item_at(list, index)
+    }
+
+    /// Editor entry cancels DB replies, thumbnail waits and timeout fallbacks,
+    /// even if they only arrive after the editor closes. Undo the optimistic
+    /// identity advance as well; chrome may already have resolved its index.
+    pub(super) fn cancel_pending_navigation(&self) {
+        let imp = self.imp();
+        imp.nav_token.set(imp.nav_token.get() + 1);
+        if let Some(item) = self.displayed_media_item() {
+            imp.current_media_id.set(item.id);
+            self.sync_current_index_to_media_id();
+        }
+        imp.cached_neighbor_for_id.set(0);
+        imp.cached_next_item.borrow_mut().take();
+        imp.cached_prev_item.borrow_mut().take();
     }
 
     /// Resolve the `MediaItem` at the current index out of the

@@ -170,6 +170,9 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub current_index: Cell<u32>,
         pub current_media_id: Cell<i64>,
+        /// The item committed by `show_at`, independent of an optimistic
+        /// navigation target. Editor entry must stay anchored to this identity.
+        pub displayed_media_id: Cell<i64>,
         pub media_query: RefCell<Option<MediaQuery>>,
         /// Per-`show_at` token: any older response is dropped on arrival.
         pub current_token: Cell<u64>,
@@ -479,6 +482,7 @@ impl ViewerPage {
             index,
         ) {
             obj.imp().current_media_id.set(item.id);
+            obj.imp().displayed_media_id.set(item.id);
         }
         obj.imp().zoom_scale.set(MIN_VIEWER_ZOOM);
         obj.apply_i18n();
@@ -517,6 +521,7 @@ impl ViewerPage {
         let index = index_for_media_id(&initial_items, current_id).unwrap_or(0);
         let obj = Self::new(initial_items, index);
         obj.imp().current_media_id.set(current_id.get());
+        obj.imp().displayed_media_id.set(current_id.get());
         *obj.imp().media_query.borrow_mut() = Some(query);
         obj
     }
@@ -936,6 +941,7 @@ impl ViewerPage {
             item
         };
         tracing::Span::current().record("item_id", item.id);
+        self.imp().displayed_media_id.set(item.id);
         if self.imp().current_index.get() != index {
             self.imp().current_index.set(index);
         }

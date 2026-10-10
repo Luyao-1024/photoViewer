@@ -27,7 +27,7 @@ impl ViewerPage {
                     return;
                 }
             };
-            let item = match this.current_media_item() {
+            let item = match this.displayed_media_item() {
                 Some(i) => i,
                 None => return,
             };
@@ -61,6 +61,8 @@ impl ViewerPage {
         self.exit_immersive_for_chrome();
         self.reset_viewer_transform();
         self.imp().is_editing.set(true);
+        self.cancel_pending_navigation();
+        self.imp().thumb_strip.get().set_sensitive(false);
         self.set_overlay_navigation_visible(false);
         self.set_zoom_controls_visible(false);
         self.imp().motion_play_btn.get().set_visible(false);
@@ -81,12 +83,16 @@ impl ViewerPage {
         let imp = self.imp();
         imp.editor_panel.get().cancel_preview();
         imp.is_editing.set(false);
+        imp.thumb_strip.get().set_sensitive(true);
         self.set_overlay_navigation_visible(true);
         self.set_zoom_controls_visible(imp.picture.get().is_visible());
         if let Some(item) = self.current_media_item() {
             self.set_motion_play_button_for_item(&item);
         }
         imp.editor_split_view.get().set_show_sidebar(false);
+        // Entry invalidated the old neighbour cache and any pending switch.
+        // Resolve bounds and warm neighbours for the photo editing stayed on.
+        self.prefetch_neighbors();
         self.set_crop_overlay(CropOverlayUpdate {
             active: false,
             rect: None,

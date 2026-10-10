@@ -412,13 +412,40 @@ journey must not use `set_text`.
 
 `tests/ux_viewer_pointer_flows.rs` applies the harness to the Viewer: a real
 `MainWindow`, a real `ViewerPage` pushed through `new_for_query` with a live
-`MediaQuery`, and a library of real distinct JPEGs, across five cases — the
-navigation pair walking the whole library to both ends, the stage centre never being
-claimed by chrome, the zoom cluster, the header actions and the navigation lock, and
-the chrome coming back clickable after an immersive fold.
+`MediaQuery`, and a library of real distinct JPEGs. The cases cover the
+navigation pair walking the whole library to both ends, the stage centre never
+being claimed by chrome, the zoom cluster, the header actions and the navigation
+lock, and the chrome coming back clickable after an immersive fold. Editing
+journeys also aim at adjacent and non-adjacent thumbnails with pending edits,
+close through the discard dialog and require the same thumbnail to work again.
+Rapid navigation/Edit journeys cover both the cached-neighbour path and a
+non-adjacent DB lookup: `Ui::click_unsettled` hit-tests and presses without
+pumping afterwards, so editor entry precedes the asynchronous reply. They check
+the displayed identity, editor save target, cancellation token and timeout, then
+close and navigate again. Focused navigation unit tests also deliver an obsolete
+switch after closing, proving that an editing-state check alone is insufficient.
 
 ```bash
 tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --test ux_viewer_pointer_flows
+```
+
+`tests/common/sidebar.rs` drives sidebar albums by stable folder identity.
+It observes the factory ListItem's current Album binding, scrolls and resolves
+again, then hit-tests and presses. Ctrl+click uses native X11 input because GTK
+selection reads modifiers from a real GdkEvent; a gesture signal without that
+event cannot prove additive selection. Every press checks the exact path set
+against both the GTK model and `selected_album_paths`. Opening batch mode from
+a real album preselects that folder, so selecting all skips it rather than
+clicking it off again. A missing row must fail, never silently skip.
+
+`tests/ux_album_selection.rs` covers preselection, additive selection and
+cancellation, duplicate names across different folders, scrolling a virtual
+list, and selection surviving content updates and model replacement after a
+real filesystem scan. It also rejects virtual albums from deletion and checks
+that Cancel leaves every source file and database row unchanged.
+
+```bash
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_album_selection
 ```
 
 Because these suites need a display, keep a display-free source gate next to the
@@ -476,20 +503,15 @@ the bus can't be made` while the temporary session is shutting down. This is
 post-test service cleanup, not an application startup connection failure; the
 helper's readiness check remains the pass/fail signal.
 
-A real-pointer run also prints `Gdk-CRITICAL: gdk_event_get_modifier_state:
-assertion 'GDK_IS_EVENT (event)' failed` a handful of times (five in the current
-`ux_click_flows`). It is the cost of the harness: Rust emits `pressed`/`released`
-on a `GtkGestureClick` without a `GdkEvent`, because GTK 4 exposes no public API
-for fabricating one, and some handler partway up the press path then asks the
-absent current event for its modifier state. Measured: no single harness
-primitive produces it on its own — a left/right/double click, a key press, a hold
-gesture, `type_search`, `type_entry` and a dialog response button are all silent
-in isolation — and it appears only inside the scenarios that drive presses into
-album lists and the album picker. The press still lands (the surrounding
-expectations pass), so treat the line as noise, not as evidence of a skipped
-click; if it ever becomes loud, that is a hint a new gesture owner is reading
-the event. MESA `DRI3`/`vulkan` lines are the same story under `xvfb-run` —
-software rendering, not a failure.
+Gesture-driven input can print `Gdk-CRITICAL: gdk_event_get_modifier_state:
+assertion 'GDK_IS_EVENT (event)' failed` because a `GtkGestureClick` signal has
+no current GdkEvent. For modifier-dependent selection that absence changes the
+operation: an unmodified press replaces a GtkMultiSelection rather than
+performing an additive Ctrl+click. Use native click / Ctrl+click for sidebar
+selection, and prove the folder set; a plausible count does not make that
+critical harmless. Other gesture-based controls must still assert their actual
+result. MESA `DRI3`/`vulkan` lines under `xvfb-run` indicate software rendering,
+not a test failure.
 
 For a Flatpak-runtime check of the non-destructive keyboard entry path, run `tools/visual-check-x11.sh --keyboard-smoke`. It sends `Ctrl+F` through XTEST on X11 and saves startup and Search-page screenshots; it complements the deterministic GTK suite rather than replacing it. Run `tools/visual-check-x11.sh --a11y-smoke` to additionally use `python3-pyatspi` against the live AT-SPI tree: it requires the localized application frame, a focused Search entry, and the three Search field toggle buttons exposed under their accessible names. Those names are resolved from `i18n/<locale>.json` for the locale the probe predicts the app picked (its own `--locale {zh-CN,en}` flag overrides, mirroring the app's config → `PHOTO_VIEWER_LOCALE` → `LC_ALL`/`LANG`/`LANGUAGE` precedence), so under zh-CN the expectation is `全部`、`文件名`、`日期` and under en it is `All`、`File name`、`Date`; `tests/visual_check_script.rs` pins the probe's zh-CN fallback list to the catalogue. This verifies the key Search navigation semantics available to assistive technology; it does not replace manual screen-reader usability testing.
 

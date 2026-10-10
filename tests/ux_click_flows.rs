@@ -30,10 +30,10 @@ mod common;
 
 use common::interaction::{
     contains_focus, descendants, find_button_with_css, find_button_with_label, find_descendant,
-    find_label_containing, wait_for_button_with_label, wait_for_descendant,
-    wait_for_label_containing, Ui,
+    find_label_containing, wait_for_button_with_label, wait_for_descendant, Ui,
 };
 use common::shell::Shell;
+use common::sidebar;
 use gtk4 as gtk;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -804,15 +804,10 @@ fn journey_filmstrip_shows_every_photo_and_centres_the_current_one() {
 /// Take an album's sidebar row, right-click it, and press the named entry in the
 /// menu that appears — the whole route a user takes to reach a destructive album
 /// action.
-fn press_album_context_action(shell: &Shell, album_name: &str, action_label: &str) {
+fn press_album_context_action(shell: &Shell, album_path: &Path, action_label: &str) {
     let ui = &shell.ui;
-    let row_label = wait_for_label_containing(
-        &shell.window.imp().album_list.get(),
-        album_name,
-        Duration::from_secs(5),
-    )
-    .unwrap_or_else(|| panic!("the sidebar should list {album_name:?}"));
-    ui.right_click(&row_label, &format!("{album_name:?} album row"));
+    let row = sidebar::album_row(ui, &shell.window, album_path);
+    ui.right_click(&row, &format!("{album_path:?} album row"));
     let entry = wait_for_button_with_label(&shell.window, action_label, Duration::from_secs(4))
         .unwrap_or_else(|| panic!("the album menu should offer {action_label:?}"));
     ui.click(&entry, action_label);
@@ -853,14 +848,13 @@ fn journey_album_context_menu_deletes_and_ignores_real_albums() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    let ignored_name = ignored.file_name().unwrap().to_string_lossy().into_owned();
     assert!(
         ignored_photo.is_file(),
         "the album to ignore should hold a real photo at {}",
         ignored_photo.display()
     );
 
-    press_album_context_action(&shell, &ignored_name, &tr("album.context.ignore"));
+    press_album_context_action(&shell, &ignored, &tr("album.context.ignore"));
     respond_to_alert(ui, window, &tr("album.ignore.confirm_action"));
 
     assert!(
@@ -900,9 +894,8 @@ fn journey_album_context_menu_deletes_and_ignores_real_albums() {
     let deleted = shell.seed_extra_album();
     window.populate_album_rows();
     let deleted_photo = deleted.join("three.jpg");
-    let deleted_name = deleted.file_name().unwrap().to_string_lossy().into_owned();
 
-    press_album_context_action(&shell, &deleted_name, &tr("album.context.delete"));
+    press_album_context_action(&shell, &deleted, &tr("album.context.delete"));
     respond_to_alert(ui, window, &tr("album.delete.confirm_action"));
 
     assert!(
@@ -1417,14 +1410,7 @@ fn journey_select_copy_to_album_then_open_it() {
     // Reopen the album from the sidebar by clicking the row that reads its name,
     // then open one copied photo.
     shell.window.populate_album_rows();
-    let album_name = real_album_name_in_sidebar(&shell);
-    let row_label = wait_for_label_containing(
-        &shell.window.imp().album_list.get(),
-        &album_name,
-        Duration::from_secs(5),
-    )
-    .unwrap_or_else(|| panic!("the sidebar should show an album row reading {album_name:?}"));
-    ui.click(&row_label, &format!("the {album_name:?} sidebar row"));
+    sidebar::open_album(&shell, &target_dir);
     assert!(
         ui.wait_until(Duration::from_secs(5), || shell
             .window
@@ -2493,45 +2479,19 @@ fn journey_editor_crop_ratio_arrows_drive_a_pending_crop() {
 fn tick_real_albums_in_multi_select(shell: &Shell) -> Vec<PathBuf> {
     let ui = &shell.ui;
     let window = &shell.window;
-    let album_name = real_album_name_in_sidebar(shell);
-    let row_label = wait_for_label_containing(
-        &window.imp().album_list.get(),
-        &album_name,
-        Duration::from_secs(5),
-    )
-    .expect("the sidebar should list a real album");
-    ui.right_click(&row_label, &format!("{album_name:?} album row"));
-    let multi = wait_for_button_with_label(
-        window,
-        &tr("album.context.multi_select"),
-        Duration::from_secs(4),
-    )
-    .expect("the album row menu should offer multi-select");
-    ui.click(&multi, "Multi select albums");
+    let album_path = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .find(|album| !album.is_virtual)
+        .expect("the sidebar must offer a real folder album")
+        .folder_path
+        .clone();
+    sidebar::enter_album_multi_select(shell, &album_path);
 
-    assert!(
-        ui.wait_until(Duration::from_secs(4), || window
-            .imp()
-            .album_selection_bar
-            .get()
-            .is_revealed()),
-        "album multi-select should reveal the batch bar"
-    );
-
-    // Tick every real album and then check the count is *exactly* that many.
-    // `>= 1` passed when only one row registered out of all of them, which is
-    // what a half-wired selection looks like from inside the assertion.
-    //
-    // The album that opened this mode is already ticked: choosing "Multi select"
-    // from its own context menu selects it (window/albums.rs, `enter_album_
-    // selection_mode` followed by `select_album_by_identity`). Clicking that row
-    // again would toggle it back off, so it is left alone and only the remaining
-    // rows are clicked — which is what a user does too.
-    // The album whose menu opened this mode is already ticked when it is a real
-    // one — `enter_album_selection_mode` selects it — so clicking that row again
-    // would turn it back off. When the entry was a virtual album nothing is
-    // pre-selected and every real row still needs a click. Either way, tick every
-    // real album that is not already in the selection.
+    // The context menu already selected its folder. Only unselected folders
+    // need a Ctrl+click; verify each change and the complete set by identity.
     let ticked = tick_real_album_rows(ui, window);
     assert_eq!(
         ticked,
@@ -2671,37 +2631,8 @@ fn journey_album_multi_select_delete_moves_that_album_to_the_trash() {
         .map(|p| std::fs::read(p).unwrap())
         .collect();
 
-    // Tick only the extra album, so the deletion has to be selective to pass.
-    let album_name = extra.file_name().unwrap().to_string_lossy().into_owned();
-    let row_label = wait_for_label_containing(
-        &window.imp().album_list.get(),
-        &album_name,
-        Duration::from_secs(5),
-    )
-    .unwrap_or_else(|| panic!("the sidebar should list {album_name:?}"));
-    ui.right_click(&row_label, &format!("{album_name:?} album row"));
-    let multi = wait_for_button_with_label(
-        window,
-        &tr("album.context.multi_select"),
-        Duration::from_secs(4),
-    )
-    .expect("the album row menu should offer multi-select");
-    ui.click(&multi, "Multi select albums");
-    assert!(
-        ui.wait_until(Duration::from_secs(4), || window
-            .imp()
-            .album_selection_bar
-            .get()
-            .is_revealed()),
-        "album multi-select should reveal the batch bar"
-    );
-    ui.click(&row_label, &format!("{album_name:?} album row"));
-    assert!(
-        ui.wait_until(Duration::from_secs(4), || window
-            .selected_album_delete_count()
-            == 1),
-        "ticking one album should put exactly one album in the selection"
-    );
+    // This real album's context menu preselects exactly that folder.
+    sidebar::enter_album_multi_select(&shell, &extra);
 
     ui.click(
         &window.imp().album_selection_delete_btn.get(),
@@ -3441,31 +3372,17 @@ fn album_sidebar_multi_select_deletes_real_albums() {
     shell.seed_extra_album();
     window.populate_album_rows();
 
-    // Enter album selection by right-clicking an album row and choosing the menu.
-    let album_name = real_album_name_in_sidebar(&shell);
-    let row_label = wait_for_label_containing(
-        &window.imp().album_list.get(),
-        &album_name,
-        Duration::from_secs(5),
-    )
-    .expect("the sidebar should list a real album");
-    ui.right_click(&row_label, &format!("{album_name:?} album row"));
-    let multi = wait_for_button_with_label(
-        window,
-        &tr("album.context.multi_select"),
-        Duration::from_secs(4),
-    )
-    .expect("the album row menu should offer multi-select");
-    ui.click(&multi, "Multi select albums");
-
-    assert!(
-        ui.wait_until(Duration::from_secs(4), || window
-            .imp()
-            .album_selection_bar
-            .get()
-            .is_revealed()),
-        "album multi-select should reveal the batch bar"
-    );
+    // Virtual albums can open batch mode but cannot arm deletion.
+    let virtual_path = window
+        .imp()
+        .album_targets
+        .borrow()
+        .iter()
+        .find(|album| album.is_virtual)
+        .expect("the sidebar should have a virtual album")
+        .folder_path
+        .clone();
+    sidebar::enter_album_multi_select(&shell, &virtual_path);
     assert!(
         !window.imp().album_selection_delete_btn.get().is_sensitive(),
         "delete should stay disabled until a real album is ticked"
@@ -3486,21 +3403,21 @@ fn album_sidebar_multi_select_deletes_real_albums() {
     // Press the button. The journey is named for deleting real albums, and until
     // this press it deleted nothing: it proved the rows were clickable and the
     // button went sensitive, which is the setup for a deletion, not the deletion.
-    // Delete whatever is armed, and check those albums are really gone. Naming
-    // one album up front would be guessing: see `tick_real_album_rows` for why
-    // the harness cannot say which row a press landed on, so the armed set is
-    // read from the app instead — which is also the stronger claim, since it is
-    // about every album the user had pending, not one the test hoped for.
+    // The helper has proved the exact intended folder set, rather than
+    // accepting whichever folder happened to be selected by a bad press.
     let armed: Vec<PathBuf> = window
         .imp()
-        .selected_album_paths
+        .album_targets
         .borrow()
         .iter()
-        .cloned()
+        .filter(|album| !album.is_virtual)
+        .map(|album| album.folder_path.clone())
         .collect();
-    assert!(
-        !armed.is_empty(),
-        "ticking the real album rows should leave something armed to delete"
+    sidebar::assert_selected_albums(
+        ui,
+        window,
+        &armed.iter().cloned().collect(),
+        "folders about to be deleted",
     );
     let photos_before: usize = db::list_all_media(&shell.pool).unwrap().len();
     let real_photos_in: Vec<(PathBuf, PathBuf, Vec<u8>)> = armed
@@ -3669,24 +3586,23 @@ fn album_detail_context_menu_moves_to_album() {
         let target = shell.seed_extra_album();
         shell.window.populate_album_rows();
 
-        // Open a source album by clicking its sidebar row.
-        let name = sidebar_album_names(&shell)
-            .into_iter()
-            .find(|name| {
-                if source_is_virtual {
-                    name.is_empty() || !name.starts_with("second-album")
-                } else {
-                    *name != target.file_name().unwrap().to_string_lossy() && !name.is_empty()
-                }
-            })
-            .unwrap_or_else(|| panic!("the fixture should offer a source album"));
-        let row_label = wait_for_label_containing(
-            &shell.window.imp().album_list.get(),
-            &name,
-            Duration::from_secs(5),
-        )
-        .unwrap_or_else(|| panic!("the sidebar should list the {name:?} album"));
-        ui.click(&row_label, &format!("{name:?} album row"));
+        // Use the specified virtual or folder identity; display names are
+        // neither unique nor evidence of the album kind being exercised.
+        let source_path = if source_is_virtual {
+            shell
+                .window
+                .imp()
+                .album_targets
+                .borrow()
+                .iter()
+                .find(|album| album.is_images_album())
+                .expect("the Images virtual album")
+                .folder_path
+                .clone()
+        } else {
+            shell.photos_dir()
+        };
+        sidebar::open_album(&shell, &source_path);
         assert!(
             ui.wait_until(Duration::from_secs(5), || shell
                 .window
@@ -3987,81 +3903,10 @@ fn wait_action_bar(ui: &Ui, trash: &TrashPage, revealed: bool) {
     );
 }
 
-/// The name of a real (folder-backed) album currently in the sidebar.
-fn real_album_name_in_sidebar(shell: &Shell) -> String {
-    sidebar_album_names(shell)
-        .into_iter()
-        .find(|name| !name.is_empty())
-        .expect("the library should give at least one folder album")
-}
-
-/// Only the folder-backed albums, which are the ones the delete action accepts.
-/// Tick the real album rows the way a user does, and hand back how many took.
-///
-/// A deliberate limit, and worth being explicit about. The obvious tightening —
-/// assert the count equals the number of real albums — was tried and is wrong to
-/// assert: the sidebar is a `GtkListView` whose rows get rebound on every
-/// refresh, and a row located by the album's *name* can be a widget that now
-/// belongs to a different album. Pressing it then ticks the wrong one, and the
-/// count still comes out plausible. Verified rather than assumed: with rows
-/// located by name, the selection after "ticking photos" was
-/// `{…/second-album}` — the right count, the wrong album.
-///
-/// So this asserts what it can actually know: that pressing the rows put real,
-/// non-virtual albums into the pending-deletion selection. *Which* albums is not
-/// claimed here, because the harness cannot presently aim at a named row and
-/// check it landed. The claim that matters — that a ticked album really is
-/// deleted, and that an unticked one is left alone — is carried by the byte-level
-/// and row-level assertions in the journeys that call this.
+/// Select every real folder by its current ListItem binding and require the
+/// complete expected path set. Missing rows and wrong presses must fail.
 fn tick_real_album_rows(ui: &Ui, window: &photo_viewer::ui::MainWindow) -> usize {
-    let real_paths: Vec<PathBuf> = window
-        .imp()
-        .album_targets
-        .borrow()
-        .iter()
-        .filter(|album| !album.is_virtual)
-        .map(|album| album.folder_path.clone())
-        .collect();
-    assert!(
-        !real_paths.is_empty(),
-        "the fixture should have at least one real album row to tick"
-    );
-    // The sidebar row reads the album's display name, not its path.
-    let real_names: Vec<String> = window
-        .imp()
-        .album_targets
-        .borrow()
-        .iter()
-        .filter(|album| !album.is_virtual)
-        .map(|album| album.display_name())
-        .collect();
-    for name in &real_names {
-        let Some(label) = find_label_containing(&window.imp().album_list.get(), name) else {
-            continue;
-        };
-        ui.click(&label, &format!("{name:?} album row"));
-    }
-    assert!(
-        ui.wait_until(Duration::from_secs(4), || {
-            !window.imp().selected_album_paths.borrow().is_empty()
-        }),
-        "pressing real album rows should put at least one real album into the pending deletion"
-    );
-    let selected: Vec<PathBuf> = window
-        .imp()
-        .selected_album_paths
-        .borrow()
-        .iter()
-        .cloned()
-        .collect();
-    // A virtual album has no folder to delete, so it must never end up armed.
-    for path in &selected {
-        assert!(
-            real_paths.contains(path),
-            "the pending deletion should hold only real albums, but {path:?} is in it"
-        );
-    }
-    selected.len()
+    sidebar::select_all_real_albums(ui, window).len()
 }
 
 fn sidebar_real_album_names(shell: &Shell) -> Vec<String> {
@@ -4072,19 +3917,6 @@ fn sidebar_real_album_names(shell: &Shell) -> Vec<String> {
         .borrow()
         .iter()
         .filter(|album| !album.is_virtual)
-        // The sidebar row reads `display_name()` — the folder's basename — while
-        // `name` is the raw path for a folder album, so aim at what the user reads.
-        .map(|album| album.display_name())
-        .collect()
-}
-
-fn sidebar_album_names(shell: &Shell) -> Vec<String> {
-    shell
-        .window
-        .imp()
-        .album_targets
-        .borrow()
-        .iter()
         // The sidebar row reads `display_name()` — the folder's basename — while
         // `name` is the raw path for a folder album, so aim at what the user reads.
         .map(|album| album.display_name())

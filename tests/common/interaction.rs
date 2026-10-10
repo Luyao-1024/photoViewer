@@ -68,9 +68,10 @@
 //!   the key path would have emitted. GTK 4.22 emits `search-changed` only from
 //!   that path, so the keystroke itself is the one measurable departure.
 //! - Because a gesture signal is emitted directly, the controller has no current
-//!   `GdkEvent`, so GTK prints `gdk_event_get_modifier_state` criticals. That is
-//!   noise, not a wrong answer: it does not change which widget the coordinates
-//!   resolve to.
+//!   `GdkEvent`, so GTK can print `gdk_event_get_modifier_state` criticals. For
+//!   widgets whose behaviour depends on those modifiers (notably list-item
+//!   selection), use native input; an unmodified gesture cannot prove additive
+//!   selection or Ctrl+click deselection.
 
 use gtk4 as gtk;
 use gtk4::glib;
@@ -433,6 +434,13 @@ impl Ui {
         self.deliver(widget.as_ref(), label, 1);
     }
 
+    /// Hit-test and press without pumping afterwards, so a second user action can
+    /// run before the first action's asynchronous result lands.
+    pub fn click_unsettled(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
+        self.assert_reachable_within(widget, label, Duration::ZERO);
+        self.press_release(widget.as_ref(), label, 1);
+    }
+
     /// Native X11 input for switches and drop-downs that inspect the current
     /// GdkEvent. Restrict the target to this test process, then hit-test before
     /// pressing; never approximate the result by setting widget state.
@@ -453,6 +461,26 @@ impl Ui {
             .status()
             .expect("xdotool is required for native GTK input");
         assert!(status.success(), "native press failed for {label}");
+        self.pump(Duration::from_millis(150));
+    }
+
+    /// Native Ctrl+click for GTK selection widgets, which read modifiers from
+    /// the current GdkEvent. Gesture signals alone cannot express that input.
+    pub fn ctrl_click_native(&self, widget: &impl IsA<gtk::Widget>, label: &str) {
+        self.assert_reachable(widget, label);
+        let (x, y) = self.pointer_at_center_of(widget).unwrap();
+        self.move_pointer_to(x, y, label);
+        let status = std::process::Command::new("xdotool")
+            .args(["keydown", "Control_L", "click", "1", "keyup", "Control_L"])
+            .status()
+            .expect("xdotool is required for native GTK input");
+        if !status.success() {
+            // A failed command must not leave the modifier held in this display.
+            let _ = std::process::Command::new("xdotool")
+                .args(["keyup", "Control_L"])
+                .status();
+        }
+        assert!(status.success(), "native Ctrl+click failed for {label}");
         self.pump(Duration::from_millis(150));
     }
 

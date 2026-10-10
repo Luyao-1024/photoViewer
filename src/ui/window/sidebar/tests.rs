@@ -213,3 +213,67 @@ fn sidebar_album_content_comparison_detects_only_visible_data_changes() {
     assert!(!same_sidebar_album_content(&original, &changed_count));
     assert!(!same_sidebar_album_content(&original, &changed_name));
 }
+
+#[gtk::test]
+fn batch_album_selection_survives_rebind_reorder_and_removal_by_identity() {
+    let app = adw::Application::builder()
+        .application_id(format!(
+            "io.github.luyao_1024.photoviewer.SidebarBatchSnapshot{}",
+            std::process::id()
+        ))
+        .build();
+    app.register(None::<&gtk::gio::Cancellable>).unwrap();
+    let window = MainWindow::new(&app);
+    let first = sidebar_album("/tmp/left/photos", "photos", 2);
+    let second = sidebar_album("/tmp/other", "other", 1);
+    let third = sidebar_album("/tmp/right/photos", "photos", 1);
+    window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+        albums: vec![first.clone(), second.clone(), third.clone()],
+        media_type_albums: Vec::new(),
+        live_count: Some(4),
+    });
+    window.connect_sidebar(&window.nav_view());
+    window.enter_album_selection_mode();
+    let selection = window
+        .imp()
+        .album_selection
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .clone();
+    selection.select_item(0, false);
+    selection.select_item(2, false);
+    let expected =
+        std::collections::HashSet::from([first.folder_path.clone(), third.folder_path.clone()]);
+    assert_eq!(*window.imp().selected_album_paths.borrow(), expected);
+
+    let mut changed = first.clone();
+    changed.photo_count = 3;
+    // Same identities, changed content: replacing one selected item must keep it selected.
+    window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+        albums: vec![changed.clone(), second.clone(), third.clone()],
+        media_type_albums: Vec::new(),
+        live_count: Some(5),
+    });
+    assert!(
+        selection.is_selected(0) && selection.is_selected(2),
+        "a selected row's rebind must retain its identity"
+    );
+    assert_eq!(*window.imp().selected_album_paths.borrow(), expected);
+
+    // A full replacement reorders both duplicate labels and removes one folder.
+    window.apply_sidebar_album_snapshot(SidebarAlbumSnapshot {
+        albums: vec![second, third],
+        media_type_albums: Vec::new(),
+        live_count: Some(2),
+    });
+    assert!(
+        !selection.is_selected(0) && selection.is_selected(1),
+        "only the surviving selected folder may remain selected after replacement"
+    );
+    assert_eq!(
+        *window.imp().selected_album_paths.borrow(),
+        std::collections::HashSet::from([PathBuf::from("/tmp/right/photos")])
+    );
+    assert_eq!(window.selected_album_delete_count(), 1);
+}
