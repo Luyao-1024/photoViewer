@@ -137,6 +137,26 @@ conflict-copy name containing the persistent `OperationId`, reusing the same
 name on retry. Neither original path is replaced until both copies are
 protected.
 
+WebDAV listings carry no content hash, so proving two same-named objects are
+identical costs a full remote download. That proof is bounded twice, and both
+bounds exist to prevent non-termination rather than slowness:
+
+- Different lengths already prove the contents differ. The client records
+  `InitialContentMismatch` (or resolves to `DownloadReplace` when the remote
+  is authoritative) and fetches nothing; the cheap answer must not be paid
+  for with the expensive one.
+- Past `MAX_VERIFY_DOWNLOAD_BYTES` (256 MiB) the download cannot finish
+  inside the provider's 15-minute request timeout, and every run refetches
+  from zero — a livelock on one path that no amount of waiting resolves.
+  The client records an `InsufficientEvidence` conflict instead of
+  transferring, so the gap surfaces in Settings with a retry.
+
+Upload recovery shares the cap. A `prepared` upload whose remote object is
+past it cannot be proven landed by `stat` alone, so the task is recorded
+`blocked` with a task-level English reason naming the
+`upload-recovery verification limit`; recovery must not invent a conflict for
+it and must not re-fetch the object every run.
+
 ## Upload
 
 1. Wait for local writes to settle, then create an immutable snapshot. The
@@ -376,9 +396,9 @@ an edit made during it.
 ## Recovery
 
 `sync_tasks` is the crash evidence log. Startup reconciliation proves a
-completed upload by downloading and hashing the current remote object, and a
-completed download from the published local fingerprint plus the remote
-version, before committing.
+completed upload by downloading and hashing the current remote object — within
+the verification cap — and a completed download from the published local
+fingerprint plus the remote version, before committing.
 
 | Crash scene | Handling |
 |---|---|
@@ -406,7 +426,12 @@ copy, but must not issue another upload. Incomplete remote writes remain blocked
 until the album is explicitly selected again. Unresolved upload paths are
 excluded from normal download planning, including when the album was
 subsequently unchecked, and the snapshot is retained until both copies are
-proven complete.
+proven complete. Recovery of a `prepared` upload stats the remote object
+first; when that object is past the verification cap, whether the
+interrupted upload landed is recorded as `blocked` with the reason on the
+task instead of streaming the oversized object to prove it. Blocked tasks are
+excluded from recovery sweeps, so the path settles through normal planning —
+typically the capped verification conflict — rather than refetching forever.
 
 Startup order: migrate the database → load jobs and logs → recover unresolved
 publications and writes → reconcile both sides → schedule new work. Local

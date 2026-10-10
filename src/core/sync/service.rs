@@ -27,6 +27,20 @@ static OPERATION_SESSION: OnceLock<uuid::Uuid> = OnceLock::new();
 static ACTIVE_JOBS: OnceLock<Mutex<HashSet<JobKey>>> = OnceLock::new();
 static LIVE_PROGRESS: Mutex<Option<LiveProgressSession>> = Mutex::new(None);
 
+/// Largest remote object the run will download purely to hash it and decide
+/// whether a cloud copy is identical to the local one.
+///
+/// WebDAV listings expose size, mtime and ETag but no content hash, so
+/// "identical" can only be proven by fetching the bytes. The HTTP client gives
+/// each request 15 minutes total, which caps how much can ever be proven in one
+/// attempt — and a path that cannot finish fails on *every* run, transferring
+/// the same partial gigabytes each time without ever resolving. This bound sits
+/// well inside what 15 minutes can carry, so an attempted verification is one
+/// that can actually succeed; anything larger is recorded as insufficient
+/// evidence, which is a visible conflict in Settings rather than a silent
+/// livelock.
+const MAX_VERIFY_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
 /// What the live progress label should describe right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncLivePhase {
@@ -1227,6 +1241,25 @@ impl SyncService {
         let mut partial_fingerprint = None;
         let mut partial_revision = None;
         if let Some(remote) = provider.stat(&key).await.map_err(provider_error)? {
+            // Deciding whether an interrupted upload actually landed means
+            // fetching the remote object and hashing it. On a large object that
+            // can exceed the per-request timeout, in which case the run fails
+            // at this recovery step *before* planning starts and retries the
+            // same transfer forever — one path that no amount of waiting
+            // resolves. Past the cap, record the outcome as unproven instead of
+            // transferring gigabytes every run to learn nothing; the reason
+            // surfaces in Settings with the retry.
+            if remote.size > MAX_VERIFY_DOWNLOAD_BYTES {
+                self.store.set_task_state(
+                    &task.operation_id,
+                    "blocked",
+                    Some(
+                        "remote object exceeds the upload-recovery verification limit; \
+                         the interrupted upload was not proven and must be retried explicitly",
+                    ),
+                )?;
+                return Ok(());
+            }
             let downloaded = self
                 .download_to_staging(job, provider, &task.relative_path, remote.revision.as_ref())
                 .await?;
@@ -1562,42 +1595,84 @@ impl SyncService {
         if action == PlanAction::VerifyContent {
             let remote = remote_entry
                 .ok_or_else(|| AppError::Backend("verification requires a remote object".into()))?;
-            live_progress_begin(SyncLivePhase::Downloading, remote.size);
-            let verified = self
-                .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
-                .await?;
-            let remote_fingerprint = local::fingerprint(&verified)?;
-            if local_entry.is_some_and(|entry| entry.fingerprint == remote_fingerprint) {
-                self.store.commit_baseline(
-                    entry_id,
-                    &remote_fingerprint,
-                    remote
-                        .revision
-                        .as_ref()
-                        .map(|revision| revision.value.as_str()),
-                )?;
-                remove_file_if_exists(&verified)?;
-                summary.verified += 1;
-                live_progress_complete_download();
+
+            // Proving two sides are *identical* costs a full remote download,
+            // because WebDAV listings carry no content hash — only size, mtime
+            // and ETag. Two guards keep that cost bounded:
+            //
+            // 1. A length mismatch already proves the contents differ. The
+            //    cheap answer must not be paid for with the expensive one.
+            // 2. Above the cap, the download cannot finish inside the single
+            //    request timeout, so attempting it burns the whole budget and
+            //    fails every round. That is not "slow"; it is a livelock on one
+            //    path that no amount of waiting resolves, so report the
+            //    evidence gap instead of transferring gigabytes to learn
+            //    nothing. The conflict surfaces in Settings with a retry.
+            let local_size = local_entry.map(|entry| entry.fingerprint.size);
+            if local_size.is_some_and(|size| size != remote.size) {
                 tracing::info!(
                     target: crate::core::log_targets::STORAGE,
                     job_id = job.id,
                     path = %relative_path,
-                    bytes = remote.size,
-                    "verified cloud copy matches local"
+                    local_bytes = ?local_size,
+                    remote_bytes = remote.size,
+                    "content differs by length; skipping remote hash"
                 );
-                return Ok(());
-            }
-            remove_file_if_exists(&verified)?;
-            action = if upload_allowed {
-                // Verification consumed this path's planned download and
-                // resolved it as a conflict; count it so the label advances.
-                live_progress_complete_download();
-                PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch)
+                action = if upload_allowed {
+                    // No transfer happened, but this path still resolved to a
+                    // conflict; count it so the planned download total advances.
+                    live_progress_complete_download();
+                    PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch)
+                } else {
+                    PlanAction::DownloadReplace
+                };
+            } else if remote.size > MAX_VERIFY_DOWNLOAD_BYTES {
+                tracing::warn!(
+                    target: crate::core::log_targets::STORAGE,
+                    job_id = job.id,
+                    path = %relative_path,
+                    bytes = remote.size,
+                    "remote object exceeds the content-verification cap; recording insufficient evidence"
+                );
+                action = PlanAction::Conflict(super::model::ConflictKind::InsufficientEvidence);
             } else {
-                // The replacement below re-downloads and counts on publish.
-                PlanAction::DownloadReplace
-            };
+                live_progress_begin(SyncLivePhase::Downloading, remote.size);
+                let verified = self
+                    .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
+                    .await?;
+                let remote_fingerprint = local::fingerprint(&verified)?;
+                if local_entry.is_some_and(|entry| entry.fingerprint == remote_fingerprint) {
+                    self.store.commit_baseline(
+                        entry_id,
+                        &remote_fingerprint,
+                        remote
+                            .revision
+                            .as_ref()
+                            .map(|revision| revision.value.as_str()),
+                    )?;
+                    remove_file_if_exists(&verified)?;
+                    summary.verified += 1;
+                    live_progress_complete_download();
+                    tracing::info!(
+                        target: crate::core::log_targets::STORAGE,
+                        job_id = job.id,
+                        path = %relative_path,
+                        bytes = remote.size,
+                        "verified cloud copy matches local"
+                    );
+                    return Ok(());
+                }
+                remove_file_if_exists(&verified)?;
+                action = if upload_allowed {
+                    // Verification consumed this path's planned download and
+                    // resolved it as a conflict; count it so the label advances.
+                    live_progress_complete_download();
+                    PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch)
+                } else {
+                    // The replacement below re-downloads and counts on publish.
+                    PlanAction::DownloadReplace
+                };
+            }
         }
 
         match action {

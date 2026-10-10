@@ -43,11 +43,28 @@ fn relative_remote_key_rejects_sibling_roots() {
 struct FakeProvider {
     objects: Mutex<BTreeMap<String, Vec<u8>>>,
     upload_calls: AtomicU64,
+    download_calls: AtomicU64,
+    /// Declared lengths that override the stored byte count. Lets a test place
+    /// an object beyond a size threshold without allocating gigabytes for it.
+    reported_sizes: Mutex<BTreeMap<String, u64>>,
 }
 
 impl FakeProvider {
     fn insert(&self, key: &str, bytes: Vec<u8>) {
         self.objects.lock().unwrap().insert(key.into(), bytes);
+    }
+
+    fn report_size(&self, key: &str, size: u64) {
+        self.reported_sizes.lock().unwrap().insert(key.into(), size);
+    }
+
+    fn declared_size(&self, key: &str, actual: u64) -> u64 {
+        self.reported_sizes
+            .lock()
+            .unwrap()
+            .get(key)
+            .copied()
+            .unwrap_or(actual)
     }
 
     fn revision(bytes: &[u8]) -> Revision {
@@ -92,7 +109,7 @@ impl SyncProvider for FakeProvider {
                     RemoteEntry {
                         key: key.clone(),
                         is_collection: false,
-                        size: bytes.len() as u64,
+                        size: self.declared_size(key, bytes.len() as u64),
                         modified_unix: None,
                         revision: Some(Self::revision(bytes)),
                     },
@@ -111,7 +128,7 @@ impl SyncProvider for FakeProvider {
             .map(|bytes| RemoteEntry {
                 key: key.into(),
                 is_collection: false,
-                size: bytes.len() as u64,
+                size: self.declared_size(key, bytes.len() as u64),
                 modified_unix: None,
                 revision: Some(Self::revision(bytes)),
             }))
@@ -127,6 +144,7 @@ impl SyncProvider for FakeProvider {
         expected: Option<&Revision>,
         destination: &Path,
     ) -> ProviderResult<RemoteEntry> {
+        self.download_calls.fetch_add(1, Ordering::Relaxed);
         let bytes = self
             .objects
             .lock()
@@ -1069,4 +1087,232 @@ async fn edit_first_noop_and_invalid_root_do_not_pause() {
     assert_eq!(unchanged.config_generation, job.config_generation);
     assert!(service.set_remote_root(job.id, "../invalid").await.is_err());
     assert!(!service.store.get_job(job.id).unwrap().unwrap().paused);
+}
+
+fn recovery_service(root: &Path) -> SyncService {
+    let pool = crate::core::db::init_pool(&root.join("photos.db")).unwrap();
+    SyncService::new(pool)
+}
+
+fn recovery_job(service: &SyncService, local_root: PathBuf) -> crate::core::sync::SyncJob {
+    service
+        .store()
+        .create_job(&crate::core::sync::NewSyncJob {
+            endpoint: "https://dav.example.test/".into(),
+            username: "alice".into(),
+            credential_ref: "recovery-cap".into(),
+            local_root,
+            remote_root: "PhotoViewer".into(),
+            direction: crate::core::sync::SyncDirection::UploadOnly,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap()
+}
+
+/// Recovery of a `prepared` upload stats the remote object before planning
+/// starts, and past the verification cap it records the outcome instead of
+/// transferring it. The failure this prevents is not slowness but
+/// non-termination — the same gigabytes refetched every round, each attempt
+/// killed by the per-request timeout before it can ever resolve.
+#[tokio::test]
+async fn upload_recovery_records_rather_than_fetches_an_oversized_remote_object() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job(&service, local_root.clone());
+
+    let artifact = temp.path().join("staged.upload");
+    std::fs::write(&artifact, vec![7u8; 4096]).unwrap();
+    let fingerprint = crate::core::sync::local::fingerprint(&artifact).unwrap();
+
+    let entry_id = service
+        .store()
+        .upsert_observation(
+            job.id,
+            "big.mp4",
+            Some(&fingerprint),
+            None,
+            None,
+            None,
+            false,
+            "pending",
+        )
+        .unwrap();
+    service
+        .store()
+        .prepare_task(
+            "oversized-recovery",
+            job.id,
+            entry_id,
+            "upload_new",
+            None,
+            &artifact,
+            &fingerprint.blake3,
+            job.config_generation,
+            1,
+        )
+        .unwrap();
+    let task = service
+        .store()
+        .unfinished_tasks(job.id)
+        .unwrap()
+        .into_iter()
+        .find(|task| task.relative_path == "big.mp4")
+        .expect("the prepared upload is pending");
+
+    let provider = FakeProvider::default();
+    provider.insert("PhotoViewer/big.mp4", vec![7u8; 4096]);
+    provider.report_size("PhotoViewer/big.mp4", MAX_VERIFY_DOWNLOAD_BYTES + 1);
+
+    service
+        .recover_upload_task(&job, &provider, &task)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        provider.upload_calls.load(Ordering::Relaxed),
+        0,
+        "an oversized remote object must not be re-uploaded either"
+    );
+    let conn = service.pool.get().unwrap();
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM sync_tasks WHERE operation_id = 'oversized-recovery'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        state, "blocked",
+        "an object past the cap must be recorded as unproven, not fetched and retried forever"
+    );
+    let reason: String = conn
+        .query_row(
+            "SELECT last_error FROM sync_tasks WHERE operation_id = 'oversized-recovery'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        reason.contains("upload-recovery verification limit"),
+        "the recorded reason must say why: {reason}"
+    );
+    assert!(
+        service.store().open_conflicts(job.id).unwrap().is_empty(),
+        "recovery must not invent a conflict; the reason belongs to the task"
+    );
+}
+
+/// The planner emits `VerifyContent` when WebDAV cannot supply a content hash
+/// for the remote side; the *client* then decides whether proving the pair is
+/// worth a full download. A length difference already proves the contents
+/// differ, so the run must conclude it without transferring a single byte.
+#[tokio::test]
+async fn verification_resolves_a_length_mismatch_without_fetching() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job(&service, local_root.clone());
+
+    let provider = FakeProvider::default();
+    provider.insert("PhotoViewer/clip.mp4", vec![9u8; 2048]);
+    let remote = provider
+        .stat("PhotoViewer/clip.mp4")
+        .await
+        .unwrap()
+        .expect("the object is listed");
+
+    let local = crate::core::sync::local::LocalEntry {
+        relative_path: "clip.mp4".into(),
+        absolute_path: local_root.join("clip.mp4"),
+        fingerprint: crate::core::sync::Fingerprint {
+            size: 4096,
+            blake3: "a".repeat(64),
+        },
+        modified_ns: 1,
+    };
+    let mut summary = RunSummary::default();
+    service
+        .reconcile_one(
+            &job,
+            &provider,
+            "clip.mp4",
+            Some(&local),
+            Some(&remote),
+            None,
+            true,
+            &mut summary,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        provider.download_calls.load(Ordering::Relaxed),
+        0,
+        "different lengths already prove the contents differ; fetching cannot add evidence"
+    );
+    assert_eq!(summary.conflicts, 1);
+    let conflict = service.store().open_conflicts(job.id).unwrap().remove(0);
+    assert_eq!(conflict.kind, "InitialContentMismatch");
+}
+
+/// When the two sides claim the same length and the object is past the cap,
+/// proving identity would require the download the timeout forbids. The run
+/// records the evidence gap as a conflict — visible with a retry in Settings —
+/// instead of refetching the giant every round until the per-request timeout
+/// kills it, which is how a synchronization gets stuck on `Running` forever.
+#[tokio::test]
+async fn verification_stops_at_the_cap_and_records_insufficient_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job(&service, local_root.clone());
+
+    let oversized = MAX_VERIFY_DOWNLOAD_BYTES + 1;
+    let provider = FakeProvider::default();
+    provider.insert("PhotoViewer/huge.mp4", vec![7u8; 4096]);
+    provider.report_size("PhotoViewer/huge.mp4", oversized);
+    let remote = provider
+        .stat("PhotoViewer/huge.mp4")
+        .await
+        .unwrap()
+        .expect("the object is listed");
+
+    let local = crate::core::sync::local::LocalEntry {
+        relative_path: "huge.mp4".into(),
+        absolute_path: local_root.join("huge.mp4"),
+        fingerprint: crate::core::sync::Fingerprint {
+            size: oversized,
+            blake3: "b".repeat(64),
+        },
+        modified_ns: 1,
+    };
+    let mut summary = RunSummary::default();
+    service
+        .reconcile_one(
+            &job,
+            &provider,
+            "huge.mp4",
+            Some(&local),
+            Some(&remote),
+            None,
+            true,
+            &mut summary,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        provider.download_calls.load(Ordering::Relaxed),
+        0,
+        "a past-cap verification download cannot finish inside the request timeout"
+    );
+    assert_eq!(summary.conflicts, 1);
+    let conflict = service.store().open_conflicts(job.id).unwrap().remove(0);
+    assert_eq!(conflict.kind, "InsufficientEvidence");
+    assert_eq!(provider.upload_calls.load(Ordering::Relaxed), 0);
 }
