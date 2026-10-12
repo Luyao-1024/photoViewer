@@ -137,6 +137,7 @@ fn media_grid_production_sources() -> String {
     let mut production_source = include_str!("../media_grid.rs").to_string();
     production_source.push_str(include_str!("selection.rs"));
     production_source.push_str(include_str!("updates.rs"));
+    production_source.push_str(include_str!("rebuild.rs"));
     production_source.push_str(include_str!("viewport.rs"));
     production_source.push_str(include_str!("loading.rs"));
     production_source.push_str(include_str!("render.rs"));
