@@ -264,7 +264,21 @@ pub enum SyncWriteResult {
 impl SyncStore {
     /// Cloud state for media in enabled jobs' selected physical albums.
     pub fn media_cloud_states(&self, media_ids: &[i64]) -> Result<HashMap<i64, CloudState>> {
-        if media_ids.is_empty() {
+        self.media_cloud_states_with_sync_enabled(
+            media_ids,
+            crate::core::prefs::webdav_sync_enabled(),
+        )
+    }
+
+    /// A global opt-out has no cloud relationship left to report. Connections
+    /// stay enabled so saved configuration survives, so the connection-level
+    /// filter alone would keep drawing badges for a feature the user turned off.
+    fn media_cloud_states_with_sync_enabled(
+        &self,
+        media_ids: &[i64],
+        sync_enabled: bool,
+    ) -> Result<HashMap<i64, CloudState>> {
+        if !sync_enabled || media_ids.is_empty() {
             return Ok(HashMap::new());
         }
         let placeholders = vec!["?"; media_ids.len()].join(",");

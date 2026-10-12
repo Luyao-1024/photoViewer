@@ -628,11 +628,21 @@ handoff, so observers cannot mistake the gap before scheduling for an idle task.
 
 `SyncStore::media_cloud_states()` checks a bounded set of image/video IDs
 against enabled jobs and their selected physical albums. It returns no state
-outside those albums, `cloud-off` when a local item lacks a current completed
-baseline, and `cloud` when `state='synced'`, the entry's local fingerprint and
-size match the baseline, and the indexed file size and nanosecond mtime match
-the observation. The media scanner intentionally leaves `blake3_hash` empty, so
-badge reads must not rely on that column or hash files on the GTK path.
+while the global opt-out is set, no state outside those albums, `cloud-off` when
+a local item lacks a current completed baseline, and `cloud` when
+`state='synced'`, the entry's local fingerprint and size match the baseline, and
+the indexed file size and nanosecond mtime match the observation. The media
+scanner intentionally leaves `blake3_hash` empty, so badge reads must not rely on
+that column or hash files on the GTK path.
+
+The global opt-out gate is load-bearing, not a shortcut. Global Off keeps saved
+configuration, so `sync_connections.enabled` stays `1` and its baselines survive
+until the asynchronous reset transaction finishes. Filtering on the connection
+alone would keep drawing a cloud for a feature the user just turned off, and a
+reset that is still draining jobs — or one that failed and kept its history —
+would leave the icon up indefinitely. Badges therefore read the same
+authoritative `webdav_sync_enabled` preference as `SyncStore::overview()` rather
+than waiting for the database to catch up.
 
 `settings.json` stores `day_cloud_badges_visible` (default `true`); it gates
 only Day-grid badges, independently of the WebDAV master switch and the viewer.

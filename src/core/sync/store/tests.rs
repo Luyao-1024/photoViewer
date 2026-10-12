@@ -91,7 +91,9 @@ fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
     ).unwrap();
     let id = conn.last_insert_rowid();
     assert_eq!(
-        store.media_cloud_states(&[id]).unwrap(),
+        store
+            .media_cloud_states_with_sync_enabled(&[id], true)
+            .unwrap(),
         HashMap::from([(id, CloudState::Synced)])
     );
     conn.execute(
@@ -100,7 +102,9 @@ fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
     )
     .unwrap();
     assert_eq!(
-        store.media_cloud_states(&[id]).unwrap()[&id],
+        store
+            .media_cloud_states_with_sync_enabled(&[id], true)
+            .unwrap()[&id],
         CloudState::Off
     );
     conn.execute(
@@ -114,14 +118,21 @@ fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
     )
     .unwrap();
     assert_eq!(
-        store.media_cloud_states(&[id]).unwrap()[&id],
+        store
+            .media_cloud_states_with_sync_enabled(&[id], true)
+            .unwrap()[&id],
         CloudState::Off
     );
     store.set_upload_albums(job.id, &["Other".into()]).unwrap();
-    assert!(store.media_cloud_states(&[id]).unwrap().is_empty());
+    assert!(store
+        .media_cloud_states_with_sync_enabled(&[id], true)
+        .unwrap()
+        .is_empty());
     store.set_upload_albums(job.id, &["".into()]).unwrap();
     assert_eq!(
-        store.media_cloud_states(&[id]).unwrap()[&id],
+        store
+            .media_cloud_states_with_sync_enabled(&[id], true)
+            .unwrap()[&id],
         CloudState::Off
     );
 
@@ -133,7 +144,9 @@ fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
     ).unwrap();
     let video_id = conn.last_insert_rowid();
     assert_eq!(
-        store.media_cloud_states(&[video_id]).unwrap()[&video_id],
+        store
+            .media_cloud_states_with_sync_enabled(&[video_id], true)
+            .unwrap()[&video_id],
         CloudState::Off
     );
     let video_entry = store
@@ -152,9 +165,66 @@ fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
         .commit_baseline(video_entry, &fingerprint, Some("etag"))
         .unwrap();
     assert_eq!(
-        store.media_cloud_states(&[video_id]).unwrap()[&video_id],
+        store
+            .media_cloud_states_with_sync_enabled(&[video_id], true)
+            .unwrap()[&video_id],
         CloudState::Synced
     );
+}
+
+/// Turning the global switch off keeps saved configuration, so the connection
+/// stays enabled and its baselines survive. Nothing about the rows changed, so
+/// the projection must be the thing that honours the opt-out.
+#[test]
+fn cloud_state_is_empty_while_sync_is_globally_disabled() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let job = store.create_job(&new_job(local.clone())).unwrap();
+    let fingerprint = Fingerprint {
+        size: 5,
+        blake3: "abc".into(),
+    };
+    let entry = store
+        .upsert_observation(
+            job.id,
+            "a.jpg",
+            Some(&fingerprint),
+            Some(123),
+            Some(&fingerprint),
+            Some("etag"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(entry, &fingerprint, Some("etag"))
+        .unwrap();
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO media_items
+         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, ?3, 'image/jpeg', 'image', 1, 123, 5, '', 1)",
+        params!["file:///a.jpg", local.join("a.jpg").to_string_lossy(), local.to_string_lossy()],
+    ).unwrap();
+    let id = conn.last_insert_rowid();
+
+    assert_eq!(
+        store
+            .media_cloud_states_with_sync_enabled(&[id], true)
+            .unwrap()[&id],
+        CloudState::Synced
+    );
+    assert!(store
+        .media_cloud_states_with_sync_enabled(&[id], false)
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .media_cloud_states_with_sync_enabled(&[], true)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

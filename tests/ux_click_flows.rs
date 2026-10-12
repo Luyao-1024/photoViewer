@@ -59,6 +59,25 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn ux_full_shell_user_journeys_and_interaction_contracts() {
+    // This binary owns its process and isolates preferences from the real user.
+    // A journey must not inherit whatever the developer happens to have set:
+    // `webdav_sync_enabled` gates the cloud badges, so a personal setting — or
+    // simply its `false` default — decides which marks a journey can see. The
+    // same run would otherwise rewrite the real `settings.json` with excluded
+    // scan roots every time it trashed a photo.
+    // Safe because this file has exactly one #[test]: each `tests/*.rs` is its
+    // own binary, so nothing else observes these variables. Adding a second
+    // #[test] here would make them race — follow `locale_pictures_dir.rs` and
+    // guard with its `ENV_LOCK` instead.
+    let config = tempfile::tempdir().expect("the UX preference sandbox should be creatable");
+    // Only the config home is sandboxed. `XDG_DATA_HOME` is left alone on
+    // purpose: the trash journeys move real files through GIO, whose trash
+    // directory has to sit on the same filesystem as the library for the move to
+    // be a rename. Pointing it at a tempdir on another device turns those
+    // journeys into cross-device copies that fail here, long after the setting
+    // under test stopped mattering. Nothing these journeys assert reads from
+    // the config home other than `settings.json`.
+    std::env::set_var("XDG_CONFIG_HOME", config.path());
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for UX journeys");
     let _runtime_guard = runtime.enter();
@@ -2834,6 +2853,13 @@ fn sync_badges(grid: &VirtualMediaGrid, class: &str) -> Vec<gtk::Image> {
 }
 
 fn synced_image_badge_survives_the_jump_from_day_grid_to_viewer() {
+    // A cloud badge is a claim about a live cloud relationship, so the journey
+    // has to turn synchronization on before it can assert one. With the master
+    // switch off there is no relationship to report and no badge to draw, which
+    // is exactly what the grid shows — this journey is about the mark surviving
+    // the jump, so it states the precondition rather than inheriting the default.
+    photo_viewer::core::prefs::set_webdav_sync_enabled(true)
+        .expect("the cloud badge journey needs synchronization enabled");
     let shell = Shell::new();
     let ui = &shell.ui;
     let grid = shell.visible_photos_grid();
