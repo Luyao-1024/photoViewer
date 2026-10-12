@@ -7,17 +7,13 @@ use photo_viewer::core::media::NewMediaItem;
 use photo_viewer::core::trash;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tempfile::{Builder, TempDir};
+use tempfile::TempDir;
 
 fn scratch_dir() -> TempDir {
-    let base = std::env::var_os("TMPDIR_REAL")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/var/tmp"));
-    Builder::new()
-        .prefix("photo-viewer-album-delete-")
-        .tempdir_in(base)
-        .expect("create scratch dir")
+    // `move_to_trash` renames, so the file and its trash have to share a
+    // filesystem; tmpfs cannot be trashed at all. The sandbox is that
+    // filesystem, and it is disposed of with the process.
+    photo_viewer::testing::Sandbox::install().scratch("photo-viewer-album-delete-")
 }
 
 fn media_item(path: &Path) -> NewMediaItem {

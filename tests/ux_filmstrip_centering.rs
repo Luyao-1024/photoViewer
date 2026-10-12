@@ -17,6 +17,9 @@ const PHOTO_COUNT: u32 = 44;
 
 #[test]
 fn current_thumbnail_is_centered_on_every_navigation_frame() {
+    // GLib reads $HOME and the XDG directories once per process, on the
+    // first GTK call, so the sandbox has to be in place before `gtk::init()`.
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init");
     let runtime = tokio::runtime::Runtime::new().expect("viewer runtime");
     let _guard = runtime.enter();

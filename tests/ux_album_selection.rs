@@ -10,6 +10,9 @@ use std::time::Duration;
 
 #[test]
 fn album_selection_tracks_the_pressed_folder_identities() {
+    // GLib reads $HOME and the XDG directories once per process, on the
+    // first GTK call, so the sandbox has to be in place before `gtk::init()`.
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for album UX");
     let _guard = runtime.enter();

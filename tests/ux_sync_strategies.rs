@@ -121,15 +121,7 @@ fn press(ui: &Ui, button: &gtk::ToggleButton, label: &str) {
 
 #[test]
 fn webdav_strategy_buttons_default_to_backup_and_reconfigure_an_active_task() {
-    let config = tempfile::tempdir().unwrap();
-    // This binary owns its process and isolates preferences from the real user.
-    // Safe because this file has exactly one #[test]: each `tests/*.rs` is its own
-    // binary, so nothing else observes these variables. Adding a second #[test]
-    // here would make them race — follow `locale_pictures_dir.rs` and guard with
-    // its `ENV_LOCK` instead.
-    std::env::set_var("XDG_CONFIG_HOME", config.path());
-    std::env::set_var("XDG_DATA_HOME", config.path().join("data"));
-    std::env::set_var("XDG_CACHE_HOME", config.path().join("cache"));
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();

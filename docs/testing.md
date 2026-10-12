@@ -206,6 +206,39 @@ target/ux-fixtures/run-<pid>/
   second-album/    three.jpg                    (seed_extra_album)
 ```
 
+### The sandbox
+
+`src/testing.rs` redirects `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+`XDG_CACHE_HOME` and `TMPDIR` at `target/ux-fixtures/sandbox-<pid>/`, so a test
+run neither reads the developer's preferences nor rewrites them. Without it a
+single journey is enough to append a dead `excluded_scan_roots` entry to a real
+`settings.json`, or to push a fixture photo into a real trash directory.
+
+```
+target/ux-fixtures/sandbox-<pid>/
+  home/ config/ data/ cache/ tmp/ scratch/
+```
+
+Two rules make it work, and both are load-bearing:
+
+- **Install it before `gtk::init()`.** GLib reads `HOME` and the XDG directories
+  once per process, on the first call that needs them. `Sandbox::install()` is
+  idempotent through a `OnceLock`, so a binary with several `#[test]`s installs
+  it once and shares it — per-test sandboxes would set variables nothing reads
+  again, and GIO would still be pointing at the first test's deleted directory.
+- **Keep it on one filesystem.** GIO trashes by renaming and only uses
+  `$XDG_DATA_HOME/Trash` for files on `$HOME`'s filesystem; otherwise it ignores
+  `XDG_DATA_HOME` entirely and writes to `$topdir/.Trash-$uid`, outside the
+  sandbox, recording a relative path the app cannot resolve back.
+  `Sandbox::install()` asserts this rather than assuming it.
+
+Fixtures needing a real filesystem (the trash journeys — `tempfile::tempdir()`
+hands out tmpfs, which cannot be trashed at all) ask for
+`Sandbox::install().scratch("photo-viewer-…")` instead of building a directory
+in `$HOME`. The tree is deleted by an `atexit` handler, with a sweep of
+`…/sandbox-<pid>` directories whose process is gone for the kills `atexit` never
+sees.
+
 Ask for a fifteenth photo and `Shell::with_photos` fails with a message pointing
 at the fixture directory: add the fixture rather than generating one, so the bytes
 stay reviewable.
@@ -468,8 +501,8 @@ parses the Revealer's own property lines (not the whole block — the wrapped ch
 has an alignment of its own and would otherwise satisfy the check) and runs under
 plain `cargo test`.
 
-The full-shell fixtures use valid media files and a normal filesystem under the
-current user's home directory. This lets the journeys exercise image decode,
+The full-shell fixtures use valid media files and a normal filesystem inside the
+[project sandbox](#the-sandbox). This lets the journeys exercise image decode,
 editor save, and GIO trash/restore behavior rather than pre-seeding their final
 database states. Every fixture is isolated and cleaned up after the scenario.
 A UX scenario must not call a page-level action handler, must not emit `clicked`,

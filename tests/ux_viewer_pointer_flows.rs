@@ -38,6 +38,9 @@ const PHOTO_COUNT: usize = 4;
 
 #[test]
 fn viewer_ux_runs_by_real_pointer() {
+    // GLib reads $HOME and the XDG directories once per process, on the
+    // first GTK call, so the sandbox has to be in place before `gtk::init()`.
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for viewer UX runs");
     let _runtime_guard = runtime.enter();

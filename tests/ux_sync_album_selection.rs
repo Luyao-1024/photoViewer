@@ -60,11 +60,7 @@ fn open_albums(shell: &Shell) -> (adw::Dialog, adw::ExpanderRow, Ui) {
 
 #[test]
 fn saved_task_album_selection_selects_all_sorts_and_persists() {
-    // This binary owns its process and isolates preferences from the real user.
-    let config = tempfile::tempdir().unwrap();
-    std::env::set_var("XDG_CONFIG_HOME", config.path());
-    std::env::set_var("XDG_DATA_HOME", config.path().join("data"));
-    std::env::set_var("XDG_CACHE_HOME", config.path().join("cache"));
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();

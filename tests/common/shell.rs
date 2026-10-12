@@ -10,10 +10,11 @@
 //! Two constraints shape this fixture and are worth keeping in mind when copying
 //! it:
 //!
-//! - **On a trash-capable filesystem.** `gio` refuses to trash files on some
-//!   tmpfs mounts, so the library lives under `$HOME`. Pre-seeding database state
-//!   to dodge that would skip the real GIO trash/restore behaviour, which is part
-//!   of what the journeys assert.
+//! - **On a trash-capable filesystem.** `gio` trashes by renaming, so a tmpfs
+//!   fixture could not be trashed at all. The library lives under the project,
+//!   which shares a filesystem with `$HOME`. Pre-seeding database state to dodge
+//!   that would skip the real GIO trash/restore behaviour, which is part of what
+//!   the journeys assert.
 //! - **A unique application id per shell.** `GApplication` is single-instance per
 //!   id per process and every scenario builds its own shell, so ids come from a
 //!   monotonic counter.

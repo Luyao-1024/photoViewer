@@ -103,11 +103,14 @@ fn files_dir_derived_from_matched_trashinfo_root() {
 }
 
 /// 选取 gio 可支持的真实文件系统路径（拒绝 tmpfs）。
+///
+/// 落在测试沙箱里而不是 `$HOME`：gio 的回收站按**同一文件系统**重命名，而
+/// `$HOME/.local/share/Trash` 是用户的真实回收站。这里要的是"真实文件系统"，
+/// 不是"用户的家目录"——沙箱同样满足前者，且随进程一起消失。
 fn real_scratch_base() -> PathBuf {
-    std::env::var_os("TMPDIR_REAL")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/var/tmp"))
+    crate::testing::Sandbox::install()
+        .scratch("pv-trash-flow-")
+        .keep()
 }
 
 /// 回收站流程必须让被删项在文件监听器的 Remove 事件下存活——这是

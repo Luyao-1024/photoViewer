@@ -166,6 +166,9 @@ fn navigation_view_has_no_touch_swipe_controller() {
 
 #[test]
 fn sidebar_navigation_suite() {
+    // GLib reads $HOME and the XDG directories once per process, on the
+    // first GTK call, so the sandbox has to be in place before `gtk::init()`.
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init failed");
 
     photos_count_uses_loaded_model_before_background_refresh();

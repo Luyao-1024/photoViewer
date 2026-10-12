@@ -9,7 +9,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 3. Inspect implementation with `rg`/targeted file reads; follow existing GTK/Rust patterns.
 4. For behavior changes, add or update focused tests before implementation when practical.
 5. While changes are uncommitted, run only the new or directly modified focused tests. Reserve the full CI suite for the remote-push gate.
-6. For UX behaviour, drive the real input path through `tests/common/interaction.rs` + `tests/common/shell.rs` — hit-test, then press. Never emit `clicked`, and never set a widget's end state (selection, visibility, a DB row) to reach the state under test. UX commands need a desktop-sized display: `xvfb-run -a -s "-screen 0 1920x1080x24"`.
+6. For UX behaviour, drive the real input path through `tests/common/interaction.rs` + `tests/common/shell.rs` — hit-test, then press. Never emit `clicked`, and never set a widget's end state (selection, visibility, a DB row) to reach the state under test. UX commands need a desktop-sized display: `xvfb-run -a -s "-screen 0 1920x1080x24"`. Any test that touches preferences, GIO trash or the app's data directory starts with `photo_viewer::testing::Sandbox::install()` — before `gtk::init()`, because GLib reads `HOME` and the XDG directories once per process. Never build a fixture directory in the real `$HOME`; ask `Sandbox::install().scratch(…)` for one. See [`docs/testing.md`](docs/testing.md#the-sandbox).
 7. Update the relevant module docs when changing contracts, UI invariants, or development workflow.
 
 ## Module Map

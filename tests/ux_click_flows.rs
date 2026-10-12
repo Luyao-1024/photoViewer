@@ -59,25 +59,12 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn ux_full_shell_user_journeys_and_interaction_contracts() {
-    // This binary owns its process and isolates preferences from the real user.
-    // A journey must not inherit whatever the developer happens to have set:
+    // The sandbox goes in before `gtk::init()` because GLib reads `HOME` and the
+    // XDG directories once per process, on the first call that needs them. A
+    // journey must also not inherit whatever the developer happens to have set:
     // `webdav_sync_enabled` gates the cloud badges, so a personal setting — or
-    // simply its `false` default — decides which marks a journey can see. The
-    // same run would otherwise rewrite the real `settings.json` with excluded
-    // scan roots every time it trashed a photo.
-    // Safe because this file has exactly one #[test]: each `tests/*.rs` is its
-    // own binary, so nothing else observes these variables. Adding a second
-    // #[test] here would make them race — follow `locale_pictures_dir.rs` and
-    // guard with its `ENV_LOCK` instead.
-    let config = tempfile::tempdir().expect("the UX preference sandbox should be creatable");
-    // Only the config home is sandboxed. `XDG_DATA_HOME` is left alone on
-    // purpose: the trash journeys move real files through GIO, whose trash
-    // directory has to sit on the same filesystem as the library for the move to
-    // be a rename. Pointing it at a tempdir on another device turns those
-    // journeys into cross-device copies that fail here, long after the setting
-    // under test stopped mattering. Nothing these journeys assert reads from
-    // the config home other than `settings.json`.
-    std::env::set_var("XDG_CONFIG_HOME", config.path());
+    // simply its `false` default — decides which marks a journey can see.
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for UX journeys");
     let _runtime_guard = runtime.enter();

@@ -48,15 +48,7 @@ fn press(ui: &Ui, switch: &gtk::Switch) {
 
 #[test]
 fn sha256_etag_settings_default_on_and_reconfigure_without_manual_resume() {
-    let config = tempfile::tempdir().unwrap();
-    // This binary owns its process and isolates preferences from the real user.
-    // Safe because this file has exactly one #[test]: each `tests/*.rs` is its own
-    // binary, so nothing else observes these variables. Adding a second #[test]
-    // here would make them race — follow `locale_pictures_dir.rs` and guard with
-    // its `ENV_LOCK` instead.
-    std::env::set_var("XDG_CONFIG_HOME", config.path());
-    std::env::set_var("XDG_DATA_HOME", config.path().join("data"));
-    std::env::set_var("XDG_CACHE_HOME", config.path().join("cache"));
+    let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();

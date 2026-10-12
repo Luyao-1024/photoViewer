@@ -13,20 +13,14 @@ use photo_viewer::core::backend::local::LocalBackend;
 use photo_viewer::core::db;
 use photo_viewer::core::media::MediaItem;
 use photo_viewer::core::trash;
-use tempfile::{Builder, TempDir};
+use tempfile::TempDir;
 
-/// `move_to_trash` goes through gio, which refuses to operate on tmpfs.
-/// Returns a `TempDir` on a real filesystem; the caller holds it so the
-/// directory is cleaned up automatically when the guard is dropped.
+/// `move_to_trash` goes through gio, which renames and so refuses to operate
+/// across filesystems — tmpfs cannot be trashed at all. Returns a `TempDir` on
+/// the sandbox's filesystem; the caller holds it so the directory is cleaned up
+/// automatically when the guard is dropped.
 fn real_fs_scratch() -> TempDir {
-    let base = std::env::var_os("TMPDIR_REAL")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
-        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"));
-    Builder::new()
-        .prefix("photo-viewer-e2e-")
-        .tempdir_in(base)
-        .expect("create scratch dir")
+    photo_viewer::testing::Sandbox::install().scratch("photo-viewer-e2e-")
 }
 
 #[test]

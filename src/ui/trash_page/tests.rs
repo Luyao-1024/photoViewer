@@ -3,7 +3,11 @@ use chrono::Utc;
 use std::path::PathBuf;
 
 fn loader_for(pool: DbPool) -> Arc<ThumbnailLoader> {
-    let dir = tempfile::tempdir().unwrap().keep();
+    // `keep()` on purpose: the cache outlives this call, and it belongs in the
+    // sandbox rather than `/tmp` so a killed run leaves nothing behind there.
+    let dir = crate::testing::Sandbox::install()
+        .scratch("pv-thumbs-")
+        .keep();
     Arc::new(ThumbnailLoader::new(pool, dir.join("cache")))
 }
 
@@ -117,11 +121,13 @@ fn trash_virtual_grid_keeps_multi_select_enabled() {
 }
 
 /// 选取 gio 可支持的真实文件系统路径（拒绝 tmpfs）。
+///
+/// 真实文件系统 ≠ 用户的家目录：gio 的回收站是按**同一文件系统**重命名，
+/// 沙箱目录同样满足，而 `$HOME/.local/share/Trash` 里装的是用户自己的东西。
 fn real_scratch() -> std::path::PathBuf {
-    std::env::var_os("TMPDIR_REAL")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
-        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp"))
+    crate::testing::Sandbox::install()
+        .scratch("pv-trash-page-")
+        .keep()
 }
 
 fn pump_until<F: Fn() -> bool>(ctx: &glib::MainContext, max_iters: usize, done: F) {
