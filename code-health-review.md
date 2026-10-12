@@ -21,6 +21,10 @@
 | **M7** 缩放按钮逻辑双份 | ✅ 已修复 | 抽出 `apply_transform_control_visibility`，两处调用点改用同一规则 |
 | **m2** trash 吞错 | ✅ 已修复 | 回滚失败改为 `tracing::error!`，不再静默 |
 | **m6** 时序魔数 | ✅ 已修复 | 提取 `EDITOR_SLIDE_OUT_GUARD_MS` / `DETAILS_SLIDE_OUT_GUARD_MS` 并注明与蓝图 220ms 过渡的约束关系 |
+| **M1** 两个巨型函数 | ✅ 已重构（`62c4654`） | `service/reconcile.rs` 按验证/不变/上传/下载拆分；`media_grid/rebuild.rs` 按渐进种子/分组/瓦片/输入/滚动拆分；主函数分别为 163 / 321 行 |
+| **M4** viewer-open 脚手架 | ✅ 已重构（`62c4654`） | 三页面相同的导航回调、pending/源页保护、定时器与 push 收到 `viewer_launch::push_viewer`；领域准备与回调保留在各页 |
+| **M6** 远程路径校验分散 | ✅ 已重构（`62c4654`） | `remote_path.rs` 共享段谓词与 key 映射；保留各调用点原有约束、错误类型与文案 |
+| **M8** 中文中断错误 | ✅ 已修复（`62c4654`） | 保存 `SyncFailureReason::InterruptedRun` 标识，Settings 统一翻译；兼容历史中文记录，保留未知错误详情 |
 
 **验证结果**（均为实跑）：
 ```
@@ -32,16 +36,58 @@ tools/with-at-spi.sh xvfb-run -a -s "…" cargo test --locked --lib
 > 按 `AGENTS.md` 约定，改动未提交期间只跑聚焦测试；
 > **完整 CI 套件（`cargo test --locked --all`，含集成测试）留待推送闸门**。
 
-### 仍待处理（本轮有意遗留）
+### 第二轮：仅重构（2026-10-12，代码提交 `62c4654`）
 
-以下条目**均非低风险**，需要单独决策，故一并留存：
+用户将本轮范围明确为「重构，不修复缺陷」，并要求不编译。先对照当前
+`fdd364a` 实现确认 M1/M4/M6 的结构问题，再拆分职责、合并逐行重复的流程。
+不修改翻译、错误显示、写入优先级或路径接受范围；已有测试文件未改动。
+
+静态核对：逐段对照抽取前后的源码，核对控制流、数据库写入、临时文件处理、
+进度更新、GTK 回调及弱引用的顺序。上传/下载/验证分支与网格输入回调另做了
+源码 token 对照（忽略格式和注释，适配必要的 helper 返回值）。这不是编译
+或运行验证，不能据此宣称类型检查、测试或 CI 通过。
+
+- `rustfmt --edition 2021 --config skip_children=true <本轮改动的 Rust 文件>`：已执行。
+- 编译、Clippy、Cargo 测试、完整 CI：**NOT RUN（用户要求）**。
+- 第二轮重构已随第三轮修复一并提交为 `62c4654`。
+
+### 第三轮：M8 修复与相关验证（2026-10-12，代码提交 `62c4654`）
+
+本轮按用户新要求允许编译，并只执行新增/直接增强的聚焦用例。M8 修复同时
+补上上一轮 M1/M4/M6 的验证：同步执行与验证分支、各入口路径边界、重复网格
+重建、Photos/Search 连续打开与退出后再次打开。编译发现的重构残余无用 import
+已移除。新增暂存清理断言最初误把保留的任务子目录计为残留，改为检查任务目录
+内容后通过；没有改变生产暂存清理行为。
+
+实际运行结果如下（GUI 命令临时设置
+`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`，复用已检查可用的桌面
+AT-SPI 会话；私有会话启动 AT-SPI 的尝试因 Permission denied 未能执行测试）：
+
+| 命令 | 最终结果 |
+|---|---|
+| `cargo build --locked` | PASS，应用编译完成，无 warning |
+| `cargo test --locked --lib interrupted_run` | PASS，6 个原因解析/界面格式化单测 |
+| `cargo test --locked --lib core::sync::store::tests::startup_reconciliation_closes_runs_left_open_by_an_earlier_process -- --exact` | PASS，1 个启动恢复单测；修复前预期 FAIL，明确复现中文持久化 |
+| `cargo test --locked --lib remote_key_is_root_scoped` | PASS，1 个 |
+| `cargo test --locked --lib relative_remote_key_rejects_sibling_roots` | PASS，1 个 |
+| `cargo test --locked --lib remote_root_segment_policy` | PASS，1 个 |
+| `cargo test --locked --lib remote_key_segment_policy` | PASS，1 个 |
+| `cargo test --locked --lib synchronizes_new_files_both_directions_and_detects_later_conflict` | PASS，1 个；增强任务收尾、暂存清理和不变路径断言 |
+| `cargo test --locked --lib reconcile_verifies_then_suppresses_and_reuses_a_changed_remote_download` | PASS，1 个；验证/删除抑制/暂存复用/发布 |
+| `tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --lib rebuild_reuses_loaded_tiles_when_a_new_section_is_added` | PASS，1 个；增强重复重建与显示索引断言 |
+| `tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_interrupted` | PASS，中英文各一个独立进程完成真实 Settings 旅程 |
+| `tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_click_flows ux_full_shell_user_journeys_and_interaction_contracts -- --exact` | PASS，1 个串行界面流程用例（82.26 秒） |
+
+合计 14 个聚焦单测通过；两个界面测试入口通过。工具链、Cargo 配置、依赖和
+锁文件保持原样，未清理编译缓存。全量 CI / Clippy / 推送：NOT RUN（本轮未要求
+远程推送，保留完整 CI 给推送闸门）。代码、测试及模块文档已提交为 `62c4654`；本检视清单另以文档提交记录进度。
+
+### 仍待处理
+
+以下条目仍未处理：优先级调整需进一步确认影响，翻译引用闭合性检查需补测试。
 
 | 条目 | 风险性质 |
 |---|---|
-| **M1** | 拆分 `reconcile_one`(511 行) 与 `MediaGrid::rebuild`(669 行)——大重构 |
-| **M4** | 三页面 viewer-open 脚手架（实测各含 6 个相同标记、顺序一致，各约 85 行）——动的是核心"打开照片"路径 |
-| **M6** | 4 处远程路径校验——**它们并非等价复制**，规则与错误类型各异；抽取共享原语前应先补测试锁住边界行为 |
-| **M8** | 中文错误常量改类型化 reason——i18n 行为变更 |
 | **M2 残余** | 15 个同步写入变体的**优先级值**是否合理（`MarkJobStarted` 等排在 `FilesystemWatcher` 之下）——行为变更 |
 | **C2 残余** | 补一条测试，断言所有 `tr("字面量")` 在 en 与 zh-CN 中均存在（本次漏键的根因） |
 
@@ -177,7 +223,7 @@ comm -23 /tmp/lock.txt /tmp/src.txt | grep -v '^photo-viewer'
 | `setting.sync.loading_cloud_folders` | `Loading cloud folders…` | `正在加载云端文件夹…` |
 | `setting.video_volume` | `Volume` | `音量` |
 
-**现状**：两份目录各 474 键、完全对齐、代码引用闭合（0 缺失）。
+**首轮完成时**：两份目录各 474 键、完全对齐、代码引用闭合（0 缺失）。第三轮 M8 各新增 1 键，现各 475 键。
 
 **`setting.video_volume` 的额外收益**：它原本只用于一个**否定断言**（断言设置页"不应出现音量控件"）。补键之前，该断言搜索的是字面串 `setting.video_volume`——永远不可能出现在标签里，因此**恒真**。补键后它搜索真实的 `"Volume"` / `"音量"`，**首次真正守住这条回归**。
 ```bash
@@ -235,6 +281,12 @@ cargo test --locked --lib core::edit     # 28 passed
 - `MediaGrid::rebuild` 内实测 **8 处 `OnceCell.expect()`** 重复；最深缩进达 **12 级**（48 空格），且有 31 行处于 36 空格以上缩进——分段构建 + 事件接线的循环体嵌在多层分支中。
 
 **修复方向**：各自按职责切分为 4–5 个具名函数。
+
+**第二轮已重构（`62c4654`）**：`reconcile_one` 迁入 `service/reconcile.rs`，主函数
+163 行，另有抑制删除验证、内容验证、不变基线、上传、下载五个具名 helper。
+`rebuild` 迁入 `media_grid/rebuild.rs`，主函数 321 行，渐进种子、分组、瓦片
+附加、激活、右键菜单、滚动恢复分别独立。原有 I/O 和 GTK 时序保留；未编译、
+未运行测试。
 
 ---
 
@@ -307,6 +359,11 @@ src/ui/search_page.rs:800, 855, 873, 876
 
 **修复方向**：抽为 `crate::ui::viewer_launch::open(...)` 自由函数，页面只保留各自领域逻辑。
 
+**第二轮已重构（`62c4654`）**：共同生命周期抽为 `viewer_launch::push_viewer`。
+三页面保留入口守卫、查询/种子、依赖注入、初始显示及收藏/回收站回调；共享
+导航回调、pending 设置、源页面禁用、定时释放与 push。逐页源码对照确认共同
+流程相同；未编译、未运行测试。
+
 ---
 
 ### M5 — `index_for_media_id` 四处重复实现 ✅ **已修复**
@@ -348,6 +405,15 @@ src/core/sync/service.rs:2476 fn relative_remote_key
 
 **修复方向**：抽一个共享的段校验原语，各调用点只保留各自的额外约束。
 
+**第二轮复核修正**：原文「四处都做 `.` / `..` 检查」不准确。
+`relative_remote_key` 只做根前缀和 `/` 边界映射，不包含段校验；它不能因本轮
+重构而被悄悄加强。WebDAV 允许空 key/空段，与 store/相对上传路径也不同。
+
+**第二轮已重构（`62c4654`）**：`remote_path.rs` 收纳 `remote_key`、
+`relative_remote_key` 和两个纯段谓词。store 的远程根/相册校验与 WebDAV key
+校验复用谓词，但保留各自的裁剪、空段、NUL、前导 `/` 规则和错误类型/文案。
+本轮没有增加或移除可接受路径；未编译、未运行测试。
+
 ---
 
 ### M7 — 缩放/旋转按钮可见性逻辑双份，会漂移 ✅ **已修复**
@@ -371,7 +437,7 @@ cargo test --locked --lib ui::viewer   # 97 passed
 
 ---
 
-### M8 — 中文错误字符串作为公开常量
+### M8 — 中文错误字符串作为公开常量 ✅ **已修复（`62c4654`）**
 
 **证据**：
 ```rust
@@ -383,6 +449,18 @@ pub(crate) const INTERRUPTED_RUN_ERROR: &str =
 注释声明"deliberately not translated"，理由是设置页概览会自行渲染本地化句子、此串仅为诊断细节。但它仍会进入 per-task error、错误对话框与日志——**英文环境下会出现中文**。
 
 **修复方向**：改为类型化 reason tag，由渲染处本地化。
+
+**第三轮已修复（`62c4654`）**：移除 `INTERRUPTED_RUN_ERROR` 公开常量；新记录
+保存 `SyncFailureReason::InterruptedRun.as_str()`（`sync.interrupted_run`）。
+`SyncFailureReason::parse` 同时识别旧版本持久化的精确中文句子，不迁移或重写
+历史失败记录。Settings 的任务状态、上传选择状态、定时刷新与同步错误对话框
+统一经过 `sync_failure_text`，已知原因按当前语言显示，未知服务端/系统错误保持
+原文；已知原因经 `AppError::Backend` 包装后也能翻译。
+
+新增 6 个原因解析/界面格式化单测，增强启动恢复用例；新增中英文真实 Settings
+旅程，通过阻塞并取消一次真实同步制造未完成运行，再执行正式启动恢复逻辑。
+初始回归用例按预期 FAIL，确认数据库保存的是中文句子；修复后该用例 PASS。
+
 
 ---
 
@@ -436,6 +514,8 @@ tests/ui_editor_panel.rs
 ---
 
 ## 六、建议处理顺序
+
+> 以下为最初检视时的建议顺序，已被上方进度表取代。C3 已撤销，M3 非当前缺陷，不应按本节旧建议继续实施。
 
 ### 立即（阻塞发布）
 1. **C1** — 重新生成 `cargo-sources.json`（一条命令，恢复 Flatpak 构建）
