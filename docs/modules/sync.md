@@ -112,8 +112,12 @@ same response across multiple `propstat` elements.
 ## Backup And Sync Strategies
 
 Every task has **Backup** (`direction=upload_only`) or **Sync**
-(`direction=bidirectional`) buttons inside Settings → WebDAV. New tasks default
-to Backup; existing jobs retain their saved direction and upload scope. Merely
+(`direction=bidirectional`) buttons inside Settings → WebDAV. The compact,
+equal-width segments read **备份 / 同步** in Chinese. Accent text
+and a short underline identify the selected mode in both light/dark themes and
+Liquid Glass/plain materials; the inactive underline retains its layout space. Native
+grouped toggles expose the selected state to accessibility and keyboard focus.
+New tasks default to Backup; existing jobs retain their saved direction and upload scope. Merely
 opening Settings changes nothing. An accepted effective switch uses the durable
 edit-first transition, coalesces rapid switches, completes uncertain old work in
 its original context, and automatically runs the latest strategy when enabled.

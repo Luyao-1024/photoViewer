@@ -1097,6 +1097,43 @@ h1 {
   border-left: 1px solid var(--border);
 }
 
+.sync-strategy-preview {
+  display: flex;
+  flex: none;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.sync-strategy-preview button {
+  position: relative;
+  width: 66px;
+  height: 28px;
+  padding: 0 0 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sync-strategy-preview button.selected {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sync-strategy-preview button.selected::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  left: calc(50% - 10px);
+  width: 20px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
 .pref-row span:first-child {
   flex: 1;
 }

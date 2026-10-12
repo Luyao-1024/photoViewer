@@ -29,6 +29,12 @@ Keep `grid_css` behavior tests in `src/ui/grid_css/tests.rs`; integration
 coverage under `tests/ui_grid_css_*` should stay focused on provider
 installation and source-file wiring.
 
+The WebDAV strategy control reuses `.glass-raised`, `.glass-segmented` and
+`.glass-segment-indicator` with the compact `.sync-strategy-selector` geometry.
+It keeps one raised capsule and uses accent-colored text and a short
+underline for selection, with stable, equal hit targets. Its state and
+size rules live in `base.css` and apply to both material modes.
+
 ## Appearance Preferences
 
 The Settings dialog's Appearance section owns two separate concerns:

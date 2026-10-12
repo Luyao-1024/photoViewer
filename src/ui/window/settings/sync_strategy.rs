@@ -11,6 +11,29 @@ fn description(direction: SyncDirection) -> String {
     })
 }
 
+/// Keep the underline allocated, so switching never moves hit targets.
+fn strategy_button(label_key: &str, name: &str) -> gtk::ToggleButton {
+    let button = gtk::ToggleButton::new();
+    button.set_widget_name(name);
+    button.add_css_class("glass-segment");
+    button.update_property(&[gtk::accessible::Property::Label(&tr(label_key))]);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let caption = gtk::Label::new(Some(&tr(label_key)));
+    caption.set_halign(gtk::Align::Center);
+    content.append(&caption);
+    let indicator = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    indicator.add_css_class("glass-segment-indicator");
+    indicator.set_halign(gtk::Align::Center);
+    indicator.set_opacity(0.0);
+    content.append(&indicator);
+    button.set_child(Some(&content));
+    button.connect_toggled(move |button| {
+        let opacity = if button.is_active() { 1.0 } else { 0.0 };
+        indicator.set_opacity(opacity);
+    });
+    button
+}
+
 /// One glass capsule with native grouped toggles, available while work is active.
 pub(super) fn strategy_row(
     direction: SyncDirection,
@@ -27,11 +50,12 @@ pub(super) fn strategy_row(
     let capsule = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     capsule.add_css_class("glass-raised");
     capsule.add_css_class("glass-segmented");
+    capsule.add_css_class("sync-strategy-selector");
+    capsule.set_homogeneous(true);
     capsule.set_valign(gtk::Align::Center);
-    let backup = gtk::ToggleButton::with_label(&tr("setting.sync.strategy.backup"));
-    let sync = gtk::ToggleButton::with_label(&tr("setting.sync.strategy.sync"));
+    let backup = strategy_button("setting.sync.strategy.backup", "sync-strategy-backup");
+    let sync = strategy_button("setting.sync.strategy.sync", "sync-strategy-sync");
     for button in [&backup, &sync] {
-        button.add_css_class("glass-segment");
         capsule.append(button);
     }
     sync.set_group(Some(&backup));
