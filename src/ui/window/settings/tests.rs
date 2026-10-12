@@ -527,3 +527,49 @@ fn settings_dialog_uses_bounded_scroll_child() {
         "settings dialog should use a ScrolledWindow so tall content does not over-request sheet height"
     );
 }
+
+#[test]
+fn interrupted_run_errors_localize_tag_and_legacy_copy_at_the_ui_boundary() {
+    let message = tr("setting.sync.error.interrupted_run");
+    assert_ne!(message, "setting.sync.error.interrupted_run");
+    for error in [
+        "sync.interrupted_run",
+        "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。",
+    ] {
+        for key in ["setting.sync.failed", "setting.sync.changes_apply_failed"] {
+            assert_eq!(
+                sync_failure_text(key, error),
+                trf(key, &[("error", &message)])
+            );
+        }
+    }
+}
+
+#[test]
+fn interrupted_run_errors_localize_when_surfaced_by_a_backend_error() {
+    let message = tr("setting.sync.error.interrupted_run");
+    for detail in [
+        "sync.interrupted_run",
+        "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。",
+    ] {
+        let error = crate::core::error::AppError::Backend(detail.into()).to_string();
+        assert_eq!(
+            sync_failure_text("setting.sync.failed", &error),
+            trf("setting.sync.failed", &[("error", &message)])
+        );
+    }
+}
+
+#[test]
+fn interrupted_run_localization_preserves_unrecognized_server_diagnostics() {
+    for error in [
+        "HTTP 503 Service Unavailable",
+        "backend unavailable: permission denied",
+        "server returned sync.interrupted_run in its response body",
+    ] {
+        assert_eq!(
+            sync_failure_text("setting.sync.failed", error),
+            trf("setting.sync.failed", &[("error", error)])
+        );
+    }
+}

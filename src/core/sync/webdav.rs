@@ -16,6 +16,7 @@ use super::provider::{
     ProviderCapabilities, ProviderError, ProviderResult, RemoteEntry, SyncProvider,
     TransferProgress, WriteCondition,
 };
+use super::remote_path::has_navigation_segment;
 
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/>
@@ -747,11 +748,7 @@ fn href_to_key(base: &Url, href: &str) -> ProviderResult<String> {
 }
 
 fn validate_key(key: &str) -> ProviderResult<()> {
-    if key.starts_with('/')
-        || key
-            .split('/')
-            .any(|segment| segment == "." || segment == ".." || segment.contains('\0'))
-    {
+    if key.starts_with('/') || has_navigation_segment(key) || key.contains('\0') {
         return Err(ProviderError::Protocol(
             "remote object key escapes the configured root".into(),
         ));

@@ -323,3 +323,20 @@ fn sha256_etag_requires_explicit_opt_in_and_a_strong_digest() {
     entry.is_collection = true;
     assert_eq!(configured.content_sha256(&entry).unwrap(), None);
 }
+
+#[test]
+fn remote_key_segment_policy_preserves_webdav_root_and_empty_segments() {
+    for key in ["", "Photos/", "Photos//Camera/a.jpg", "相册/a b.jpg"] {
+        assert!(validate_key(key).is_ok(), "{key:?}");
+    }
+    for key in [
+        "/Photos",
+        ".",
+        "..",
+        "Photos/../a.jpg",
+        "Photos/./a.jpg",
+        "a\0b.jpg",
+    ] {
+        assert!(validate_key(key).is_err(), "{key:?}");
+    }
+}

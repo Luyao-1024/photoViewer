@@ -3026,6 +3026,32 @@ fn tile_double_click_opens_exactly_one_viewer() {
         nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "the Viewer should be what the user landed on"
     );
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || !shell
+            .photos
+            .imp()
+            .viewer_open_pending
+            .get()
+            && shell.photos.is_sensitive()),
+        "the source guard must release after the push settles"
+    );
+    assert!(ui.press_key(
+        &shell.window,
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || nav.navigation_stack().n_items()
+            == 1)
+    );
+    let tile = shell.tile_for(
+        &grid,
+        MediaId::from(shell.items[0].id),
+        "the same photo after returning",
+    );
+    ui.double_click(&tile, "reopen after the transition guard releases");
+    assert_eq!(nav.navigation_stack().n_items(), 2);
+    assert!(nav.visible_page().and_downcast::<ViewerPage>().is_some());
 }
 
 fn search_result_double_click_opens_exactly_one_viewer_while_pending() {
@@ -3051,6 +3077,27 @@ fn search_result_double_click_opens_exactly_one_viewer_while_pending() {
         nav.visible_page().and_downcast::<ViewerPage>().is_some(),
         "the Viewer should be visible"
     );
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || !search
+            .imp()
+            .viewer_open_pending
+            .get()
+            && search.is_sensitive()),
+        "the source guard must release after the push settles"
+    );
+    assert!(ui.press_key(
+        &shell.window,
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || nav.navigation_stack().n_items()
+            == 2)
+    );
+    let result = wait_for_flowbox_result(ui, &search, "photo-0");
+    ui.double_click(&result, "reopen the search result after returning");
+    assert_eq!(nav.navigation_stack().n_items(), 3);
+    assert!(nav.visible_page().and_downcast::<ViewerPage>().is_some());
 }
 
 /// The production capture-phase router, through a realized window: the binding

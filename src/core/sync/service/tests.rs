@@ -27,7 +27,22 @@ fn remote_key_is_root_scoped() {
         remote_key("Photos/Camera", "2026/a.jpg").unwrap(),
         "Photos/Camera/2026/a.jpg"
     );
-    assert!(remote_key("Photos", "../secret.jpg").is_err());
+    assert_eq!(
+        remote_key("/Photos/", "相册/a b.jpg").unwrap(),
+        "Photos/相册/a b.jpg"
+    );
+    assert_eq!(remote_key("", "a.jpg").unwrap(), "a.jpg");
+    for relative in [
+        "",
+        "/a.jpg",
+        "a.jpg/",
+        "a//b.jpg",
+        "./a.jpg",
+        "a/../b.jpg",
+        "../secret.jpg",
+    ] {
+        assert!(remote_key("Photos", relative).is_err(), "{relative:?}");
+    }
 }
 
 #[test]
@@ -36,7 +51,15 @@ fn relative_remote_key_rejects_sibling_roots() {
         relative_remote_key("Photos", "Photos/2026/a.jpg").unwrap(),
         "2026/a.jpg"
     );
-    assert!(relative_remote_key("Photos", "Photos2/a.jpg").is_err());
+    assert_eq!(
+        relative_remote_key("Photos", "/Photos/相册/a b.jpg/").unwrap(),
+        "相册/a b.jpg"
+    );
+    assert_eq!(relative_remote_key("", "/a.jpg/").unwrap(), "a.jpg");
+    assert_eq!(relative_remote_key("", "").unwrap(), "");
+    for key in ["Photos2/a.jpg", "Photos", "Other/Photos/a.jpg"] {
+        assert!(relative_remote_key("Photos", key).is_err(), "{key:?}");
+    }
 }
 
 #[derive(Default)]
@@ -284,6 +307,25 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
         .unwrap();
     assert_eq!(first.uploaded, 1);
     assert_eq!(first.downloaded, 1);
+    assert!(service.store().unfinished_tasks(job.id).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(service.staging_root.join(job.id.to_string()))
+            .unwrap()
+            .count(),
+        0
+    );
+    let settled = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        (settled.uploaded, settled.downloaded, settled.conflicts),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        settled.unchanged, 2,
+        "both committed transfers must take the unchanged path"
+    );
     assert!(local_root.join("cloud.gif").is_file());
     assert!(provider
         .objects
@@ -1642,3 +1684,70 @@ async fn overview_inventory_respects_upload_selection_and_sync_direction() {
 }
 
 mod hash;
+
+#[tokio::test]
+async fn reconcile_verifies_then_suppresses_and_reuses_a_changed_remote_download() {
+    let temp = tempfile::tempdir().unwrap();
+    let local_root = temp.path().join("photos");
+    std::fs::create_dir(&local_root).unwrap();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif");
+    let original = std::fs::read(fixture).unwrap();
+    let target = local_root.join("shared.gif");
+    std::fs::write(&target, &original).unwrap();
+    let mut service = recovery_service(temp.path());
+    service.staging_root = temp.path().join("staging");
+    let job = recovery_job_in_direction(&service, local_root, SyncDirection::Bidirectional);
+    let provider = Arc::new(FakeProvider::default());
+    let key = format!("{}/shared.gif", job.remote_root);
+    provider.insert(&key, original.clone());
+
+    let verified = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        (verified.verified, verified.uploaded, verified.downloaded),
+        (1, 0, 0)
+    );
+    assert!(service.store().entries(job.id).unwrap()[0]
+        .baseline
+        .is_some());
+    assert_eq!(
+        std::fs::read_dir(service.staging_root.join(job.id.to_string()))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    std::fs::remove_file(&target).unwrap();
+    let suppressed = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!((suppressed.unchanged, suppressed.downloaded), (1, 0));
+    assert!(!target.exists());
+    assert!(service.store().entries(job.id).unwrap()[0]
+        .suppressed
+        .is_some());
+
+    let mut changed = original;
+    changed.extend_from_slice(b"a new cloud version");
+    provider.insert(&key, changed.clone());
+    let downloads_before = provider.download_calls.load(Ordering::Acquire);
+    let restored = service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    assert_eq!(restored.downloaded, 1);
+    assert_eq!(std::fs::read(&target).unwrap(), changed);
+    assert_eq!(provider.download_calls.load(Ordering::Acquire), downloads_before + 1,
+        "suppression verification must hand its staged download to publication, without fetching again");
+    assert!(service.store().unfinished_tasks(job.id).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(service.staging_root.join(job.id.to_string()))
+            .unwrap()
+            .count(),
+        0
+    );
+}

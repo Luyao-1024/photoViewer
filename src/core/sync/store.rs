@@ -7,7 +7,10 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 
-use super::model::{Fingerprint, Revision, RevisionStrength, SyncDirection, UploadScope};
+use super::model::{
+    Fingerprint, Revision, RevisionStrength, SyncDirection, SyncFailureReason, UploadScope,
+};
+use super::remote_path::{has_empty_segment, has_navigation_segment};
 
 mod configuration;
 mod reset;
@@ -45,13 +48,6 @@ pub struct SyncJob {
     pub config_generation: i64,
     pub last_error: Option<String>,
 }
-
-/// Recorded when a launch finds a run the previous process left open. It is
-/// shown as the per-task error in Settings; the overview renders its own
-/// localized failure sentence, so this string is diagnostic detail rather than
-/// UI copy and is deliberately not translated.
-pub(crate) const INTERRUPTED_RUN_ERROR: &str =
-    "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncOverviewStatus {
@@ -1023,7 +1019,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         last_error=?1 \
                   WHERE last_started_at IS NOT NULL \
                     AND (last_completed_at IS NULL OR last_started_at > last_completed_at)",
-                [INTERRUPTED_RUN_ERROR],
+                [SyncFailureReason::InterruptedRun.as_str()],
             )?;
             Ok(SyncWriteResult::ReconciledRuns(updated))
         }
@@ -1559,9 +1555,7 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
 fn validate_remote_root(remote_root: &str) -> Result<String> {
     let remote_root = remote_root.trim_matches('/');
     if remote_root.is_empty()
-        || remote_root
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        || (has_empty_segment(remote_root) || has_navigation_segment(remote_root))
     {
         return Err(AppError::Backend(
             "synchronization remote root is invalid".into(),
@@ -1574,11 +1568,7 @@ fn normalize_relative_albums(albums: &[String]) -> Result<Vec<String>> {
     let mut normalized = BTreeSet::new();
     for album in albums {
         let album = album.trim_matches('/');
-        if !album.is_empty()
-            && album
-                .split('/')
-                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-        {
+        if !album.is_empty() && (has_empty_segment(album) || has_navigation_segment(album)) {
             return Err(AppError::Backend(
                 "synchronization upload album is invalid".into(),
             ));

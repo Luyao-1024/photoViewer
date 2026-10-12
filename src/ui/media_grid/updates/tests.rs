@@ -228,9 +228,24 @@ fn rebuild_reuses_loaded_tiles_when_a_new_section_is_added() {
     inserted.taken_at = Some(Utc.with_ymd_and_hms(2026, 6, 24, 12, 0, 0).unwrap());
     inserted.file_mtime = inserted.taken_at.unwrap();
     media_list.splice(0, 0, &[glib::BoxedAnyObject::new(inserted)]);
+    grid.rebuild(media_list.clone(), GroupBy::Day);
+    let mut indices = grid.displayed_indices();
+    indices.sort_unstable();
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "both sections need a published live item mapping"
+    );
+    // A repeated rebuild must detach and reattach the rescued tile again, rather
+    // than leave it in an old FlowBoxChild or introduce a duplicate tile.
     grid.rebuild(media_list, GroupBy::Day);
 
     let tiles = square_tiles(&grid);
+    assert_eq!(
+        tiles.len(),
+        2,
+        "rebuilding both sections must retain exactly two tiles"
+    );
     assert!(
                 tiles.iter().any(|tile| tile == &existing_tile),
                 "full rebuild fallback should reuse already-loaded tile widgets instead of making them gray again"

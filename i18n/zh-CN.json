@@ -386,6 +386,7 @@
     "setting.sync.applying_changes": "正在应用最新配置…",
     "setting.sync.upload_albums_applying": "已勾选 {count} 个；正在应用修改，仍可继续编辑",
     "setting.sync.saved": "同步任务已保存，将自动开始同步。",
+    "setting.sync.error.interrupted_run": "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。",
     "setting.sync.failed": "同步失败：{error}",
     "setting.sync.invalid": "请填写 WebDAV 地址、用户名、密码、本地绝对路径和远端目录。",
     "setting.sync.status.ready": "同步已就绪",

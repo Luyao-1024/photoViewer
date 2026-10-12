@@ -157,3 +157,33 @@ pub enum PlanAction {
     WaitForCompleteObservation,
     Conflict(ConflictKind),
 }
+
+/// Known synchronization failures persisted independently of the UI locale.
+/// Other provider/system errors continue to be stored as diagnostic text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncFailureReason {
+    InterruptedRun,
+}
+
+impl SyncFailureReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InterruptedRun => "sync.interrupted_run",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sync.interrupted_run" => Some(Self::InterruptedRun),
+            // Older releases persisted this Chinese UI sentence. Recognize it
+            // without rewriting historical failures or their run timestamps.
+            "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。" => {
+                Some(Self::InterruptedRun)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
