@@ -224,6 +224,7 @@ fn overview_reports_persisted_job_lifecycle() {
             status: SyncOverviewStatus::NotConfigured,
             job_count: 0,
             synced_items: 0,
+            total_items: 0,
             conflict_images: 0,
         }
     );
@@ -668,5 +669,165 @@ fn finishing_a_failed_run_records_the_end_without_blaming_a_superseded_configura
     assert!(
         store.get_job(job.id).unwrap().unwrap().last_error.is_none(),
         "settings that did not cause the failure must not inherit its error"
+    );
+}
+
+#[test]
+fn overview_inventory_preserves_history_deduplicates_paths_and_rejects_stale_scans() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let database = temp.path().join("photos.db");
+    let pool = crate::core::db::init_pool(&database).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let job = store.create_job(&new_job(local.clone())).unwrap();
+    let sibling = temp.path().join("sibling-photos");
+    std::fs::create_dir(&sibling).unwrap();
+    let mut other_request = new_job(sibling);
+    other_request.remote_root = "AnotherReplica".into();
+    let other = store.create_job(&other_request).unwrap();
+    let fingerprint = Fingerprint {
+        size: 4,
+        blake3: "history".into(),
+    };
+    let entry = store
+        .upsert_observation(
+            job.id,
+            "done.jpg",
+            Some(&fingerprint),
+            None,
+            Some(&fingerprint),
+            Some("old"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(entry, &fingerprint, Some("old"))
+        .unwrap();
+    assert!(store
+        .replace_inventory(
+            job.id,
+            job.config_generation,
+            &["done.jpg".into(), "pending.mp4".into()]
+        )
+        .unwrap());
+    assert!(store
+        .replace_inventory(
+            other.id,
+            other.config_generation,
+            &["done.jpg".into(), "pending.mp4".into(), "new.jpg".into()]
+        )
+        .unwrap());
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!((counts.synced_items, counts.total_items), (1, 5));
+    assert!(
+        !store
+            .replace_inventory(
+                job.id,
+                job.config_generation,
+                &["pending.mp4".into(), "done.jpg".into(), "done.jpg".into()]
+            )
+            .unwrap(),
+        "an unchanged inventory must not rewrite rows"
+    );
+    // Updating an already synchronized file is still one historical item.
+    store
+        .upsert_observation(
+            job.id,
+            "done.jpg",
+            Some(&fingerprint),
+            None,
+            None,
+            Some("changed"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    let pending = store
+        .upsert_observation(
+            job.id,
+            "pending.mp4",
+            Some(&fingerprint),
+            None,
+            Some(&fingerprint),
+            Some("new"),
+            false,
+            "pending",
+        )
+        .unwrap();
+    store
+        .commit_baseline(pending, &fingerprint, Some("new"))
+        .unwrap();
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!((counts.synced_items, counts.total_items), (2, 5));
+    drop(store);
+    drop(pool);
+    let pool = crate::core::db::init_pool(&database).unwrap();
+    let store = SyncStore::new(pool);
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(
+        (counts.synced_items, counts.total_items),
+        (2, 5),
+        "both sides of the fraction must survive reopening the database"
+    );
+    store
+        .set_upload_albums(other.id, &["selected".into()])
+        .unwrap();
+    assert!(!store
+        .replace_inventory(other.id, other.config_generation, &["stale.jpg".into()])
+        .unwrap());
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(
+        (counts.synced_items, counts.total_items),
+        (2, 2),
+        "an inventory from the old configuration must not remain in the total"
+    );
+    let other_root = temp.path().join("other-photos");
+    std::fs::create_dir(&other_root).unwrap();
+    let mut third_request = new_job(other_root);
+    third_request.remote_root = "ThirdReplica".into();
+    let different_root = store.create_job(&third_request).unwrap();
+    store
+        .replace_inventory(
+            different_root.id,
+            different_root.config_generation,
+            &["done.jpg".into()],
+        )
+        .unwrap();
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(
+        (counts.synced_items, counts.total_items),
+        (2, 3),
+        "identical relative names under different local roots are distinct items"
+    );
+    store
+        .pool
+        .get()
+        .unwrap()
+        .execute("UPDATE sync_connections SET enabled=0", [])
+        .unwrap();
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!((counts.synced_items, counts.total_items), (0, 0));
+    store
+        .pool
+        .get()
+        .unwrap()
+        .execute("UPDATE sync_connections SET enabled=1", [])
+        .unwrap();
+    store.begin_reset().unwrap();
+    let token = store.reset_intent().unwrap().unwrap().token;
+    store.finish_reset(&token).unwrap();
+    let counts = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!((counts.synced_items, counts.total_items), (0, 0));
+    let rows: i64 = store
+        .pool
+        .get()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sync_inventory", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        rows, 0,
+        "global opt-out clears inventory together with history"
     );
 }

@@ -150,6 +150,7 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
                     status: SyncOverviewStatus::Paused,
                     job_count: 1,
                     synced_items: 0,
+                    total_items: 0,
                     conflict_images: 0,
                 },
                 None,
@@ -184,6 +185,7 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
             status: SyncOverviewStatus::Running,
             job_count: 1,
             synced_items: 0,
+            total_items: 0,
             conflict_images: 0,
         },
         sync_progress: None,
@@ -227,6 +229,7 @@ fn overview_snapshot(status: SyncOverviewStatus) -> PhotosOverviewSnapshot {
             status,
             job_count: 1,
             synced_items: 0,
+            total_items: 0,
             conflict_images: 0,
         },
         sync_progress: None,
@@ -263,7 +266,10 @@ fn a_sync_run_started_at_the_grid_top_reveals_the_overview_without_a_pull() {
     );
     assert_eq!(
         page.imp().overview_sync_label.get().label(),
-        tr("photos.overview.sync.running"),
+        trf(
+            "photos.overview.sync.running",
+            &[("done", "0"), ("total", "0")]
+        ),
         "the revealed panel has to carry the running sentence, not just the spinner"
     );
 
@@ -365,6 +371,7 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
             status: SyncOverviewStatus::Disabled,
             job_count: 1,
             synced_items: 8,
+            total_items: 8,
             conflict_images: 1,
         },
         sync_progress: None,
@@ -403,6 +410,7 @@ fn a_failed_sync_offers_a_retry_and_other_states_do_not() {
             status,
             job_count: 1,
             synced_items: 0,
+            total_items: 0,
             conflict_images: 0,
         },
         sync_progress: None,
@@ -561,9 +569,10 @@ fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
         status: SyncOverviewStatus::Completed,
         job_count: 1,
         synced_items: 103,
+        total_items: 105,
         conflict_images: 0,
     };
-    assert!(sync_overview_text(overview, None).contains("103"));
+    assert!(sync_overview_text(overview, None).contains("103/105"));
     let with_conflicts = SyncOverview {
         conflict_images: 2,
         ..overview
@@ -575,93 +584,89 @@ fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
 }
 
 #[test]
-fn running_sync_overview_shows_live_upload_and_download_counts() {
-    let running = SyncOverview {
+fn running_sync_overview_shows_history_over_complete_inventory() {
+    let overview = SyncOverview {
         status: SyncOverviewStatus::Running,
-        job_count: 1,
-        synced_items: 0,
+        job_count: 2,
+        synced_items: 103,
+        total_items: 340,
         conflict_images: 0,
     };
-    assert_eq!(
-        sync_overview_text(running, None),
-        tr("photos.overview.sync.running"),
-        "before the run reports progress the generic running label applies"
+    let expected = trf(
+        "photos.overview.sync.running",
+        &[("done", "103"), ("total", "340")],
     );
-    assert_eq!(
-        sync_overview_text(
-            running,
-            Some(SyncLiveProgress {
-                phase: SyncLivePhase::Preparing,
-                downloaded: 0,
-                download_total: 0,
-                uploaded: 0,
-                upload_total: 0,
-                transfer_active: false,
-                current_bytes: 0,
-                current_total: 0,
-            })
-        ),
-        tr("photos.overview.sync.running")
-    );
-
-    let downloading = SyncLiveProgress {
-        phase: SyncLivePhase::Downloading,
-        downloaded: 12,
-        download_total: 340,
+    assert!(expected.contains("103/340"));
+    assert_eq!(sync_overview_text(overview, None), expected);
+    let preparing = SyncLiveProgress {
+        phase: SyncLivePhase::Preparing,
+        downloaded: 0,
+        download_total: 0,
         uploaded: 0,
         upload_total: 0,
         transfer_active: false,
         current_bytes: 0,
         current_total: 0,
     };
-    assert_eq!(
-        sync_overview_text(running, Some(downloading)),
-        trf(
-            "photos.overview.sync.running_download",
-            &[("done", "12"), ("total", "340")]
-        )
-    );
-
-    let streaming_download = SyncLiveProgress {
+    let downloading = SyncLiveProgress {
+        phase: SyncLivePhase::Downloading,
+        downloaded: 12,
+        download_total: 237,
         transfer_active: true,
-        current_bytes: 13 * 1024 * 1024,
-        current_total: 46 * 1024 * 1024,
-        ..downloading
+        current_bytes: 100,
+        current_total: 4096,
+        ..preparing
     };
-    assert_eq!(
-        sync_overview_text(running, Some(streaming_download)),
-        sync_overview_text(running, Some(downloading)),
-        "byte-level transfer progress stays out of the label text"
-    );
-
+    for progress in [
+        preparing,
+        downloading,
+        SyncLiveProgress {
+            downloaded: 0,
+            ..downloading
+        },
+    ] {
+        assert_eq!(
+            sync_overview_text(overview, Some(progress)),
+            expected,
+            "neither live transfer counts nor a new session may reset the historical fraction"
+        );
+    }
     let uploading = SyncLiveProgress {
         phase: SyncLivePhase::Uploading,
-        downloaded: 340,
-        download_total: 340,
         uploaded: 5,
         upload_total: 9,
-        transfer_active: false,
-        current_bytes: 0,
-        current_total: 0,
+        ..preparing
     };
+    for progress in [
+        uploading,
+        SyncLiveProgress {
+            uploaded: 0,
+            ..uploading
+        },
+    ] {
+        let text = sync_overview_text(overview, Some(progress));
+        assert_eq!(
+            text,
+            trf(
+                "photos.overview.sync.running_upload",
+                &[("done", "103"), ("total", "340")]
+            )
+        );
+        assert!(text.contains("103/340"));
+    }
     assert_eq!(
-        sync_overview_text(running, Some(uploading)),
+        sync_overview_text(
+            SyncOverview {
+                synced_items: 104,
+                ..overview
+            },
+            Some(downloading)
+        ),
         trf(
-            "photos.overview.sync.running_upload",
-            &[("done", "5"), ("total", "9")]
-        )
-    );
-
-    let streaming_upload = SyncLiveProgress {
-        transfer_active: true,
-        current_bytes: 700,
-        current_total: 2048,
-        ..uploading
-    };
-    assert_eq!(
-        sync_overview_text(running, Some(streaming_upload)),
-        sync_overview_text(running, Some(uploading)),
-        "byte-level transfer progress stays out of the label text"
+            "photos.overview.sync.running",
+            &[("done", "104"), ("total", "340")]
+        ),
+        "committing a new baseline advances the numerator without adding to the inventory"
     );
 }
 
@@ -1233,6 +1238,7 @@ fn edit_first_overview_text_describes_automatic_reconfiguration() {
         status: SyncOverviewStatus::Applying,
         job_count: 1,
         synced_items: 0,
+        total_items: 0,
         conflict_images: 0,
     };
     assert_eq!(

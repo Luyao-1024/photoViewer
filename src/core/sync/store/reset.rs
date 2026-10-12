@@ -176,6 +176,7 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
         "DELETE FROM sync_tasks;
         DELETE FROM sync_conflicts;
         DELETE FROM sync_entries;
+        DELETE FROM sync_inventory;
         DELETE FROM sync_job_changes;
         UPDATE sync_jobs SET paused=0,config_generation=config_generation+1,
             last_started_at=NULL,last_completed_at=NULL,last_error=NULL;",

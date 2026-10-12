@@ -732,15 +732,27 @@ impl SyncService {
         paths.extend(remote_entries.keys().cloned());
         paths.extend(stored_entries.keys().cloned());
 
-        // Pre-plan every path once so the live progress label can show real
-        // fractions ("downloaded X of Y") before the first transfer finishes.
+        // Persist the complete upload/download scope before transfers, so
+        // historical progress keeps a stable total even after interruption.
+        let mut inventory = Vec::new();
+        // Keep per-run transfer counters for diagnostics; UI fractions use
+        // the persisted baseline and inventory counts instead.
         let mut planned_downloads = 0usize;
         let mut planned_uploads = 0usize;
         for relative_path in &paths {
+            let upload_ok = upload_allowed(job.upload_scope, &upload_albums, relative_path);
+            if protected_uploads.contains(relative_path)
+                || (job.direction != SyncDirection::UploadOnly
+                    && remote_entries.contains_key(relative_path))
+                || (job.direction != SyncDirection::DownloadOnly
+                    && upload_ok
+                    && local_entries.contains_key(relative_path))
+            {
+                inventory.push(relative_path.clone());
+            }
             if protected_uploads.contains(relative_path) {
                 continue;
             }
-            let upload_ok = upload_allowed(job.upload_scope, &upload_albums, relative_path);
             match plan_entry(
                 &job,
                 relative_path,
@@ -760,6 +772,8 @@ impl SyncService {
                 _ => {}
             }
         }
+        self.store
+            .replace_inventory(job.id, job.config_generation, &inventory)?;
         live_progress_add_totals(planned_downloads, planned_uploads);
         if let Some(transfer) = transfer_progress {
             live_progress_attach_transfer(transfer);

@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -138,6 +138,16 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
                 rusqlite::params![uri, id],
             )?;
         }
+    }
+    if version < 7 {
+        // Preserve known totals on upgrade; the next complete scan replaces
+        // this partial inventory without changing existing proven baselines.
+        tx.execute_batch(
+            "INSERT OR IGNORE INTO sync_inventory(job_id, relative_path, config_generation)
+             SELECT e.job_id, e.relative_path, j.config_generation
+             FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
+             WHERE e.baseline_fingerprint IS NOT NULL OR e.state <> 'synced';",
+        )?;
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;

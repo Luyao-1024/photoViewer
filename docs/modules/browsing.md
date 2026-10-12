@@ -34,10 +34,20 @@ test files such as `src/ui/media_grid/tests.rs`,
 
 ## Behavior
 
-The Photos overview shows the persisted count of synchronized image and video
-items after a completed WebDAV cycle. When unresolved image conflicts exist,
-it also shows their count. These are library-wide sync totals, not the number
-transferred in the most recent cycle.
+The Photos overview shows a persisted `synced_items/total_items` fraction both
+while a WebDAV cycle runs and after it completes. The numerator counts distinct
+local paths with a proven common baseline, including earlier successful runs.
+The denominator is the union of those historical paths and the complete known
+sync inventory: eligible local uploads and remote downloads across enabled
+connections. It excludes local-only files outside selected upload albums and
+cloud-only files in UploadOnly mode. Both sides count paths, not transfer
+operations, so verifying or replacing an already synchronized file does not
+add a second item. Uploading changes only the activity text, never the counting
+scope. New sessions retain the persisted fraction; complete discovery refreshes
+the inventory before any transfer, and new baselines advance the numerator on
+the next overview poll. Before first discovery, only previously known paths can
+be counted. When unresolved image conflicts exist, the completed label also
+shows their count. These are library-wide totals, not current-run progress.
 
 The window keeps Photos and the currently active `AlbumDetailPage` as peer
 children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a

@@ -653,26 +653,42 @@ does not erase an earlier proven baseline. Blocked upload recovery keeps the
 overview in failed status even when the last run finished, so a protected
 unresolved upload is never labeled complete.
 
-While a run is active, the overview label shows live transfer progress from an
-in-memory, process-wide session in `SyncService` that is never persisted. The
-home pull and each application launch open the session
-(`trigger_saved_jobs_once`). Each job pre-plans every path with the same pure
-planner used by `reconcile_one` and adds planned download/upload totals;
-`reconcile_one` marks the active phase when a transfer starts and counts it
-only after the transfer is committed, with a verification that resolves as a
-conflict counting too and completed counters clamped to the planned totals.
-`sync::live_progress()` returns the snapshot (`None` outside a run). While a
-file streams, byte counters advance through the `TransferProgress` sink
-attached to the `WebDavProvider`; those bytes surface only in the STORAGE-target
-logs — one info line per completed transfer plus a per-job summary — never in
-the overview label. The overview renders "正在同步，已同步 X/Y" while
-downloading and "正在上传 X/Y 个图片/视频" while uploading, falling back to the
-generic running label before totals are known. Sessions are bounded to a
-trigger: crash-recovery transfers that run before planning are not counted, and
-totals accumulate across the sequential jobs of one pull instead of resetting
-per job. A duplicate trigger intercepted during an active run never opens or
-closes the session — the closing side keeps it alive while any job is still
-running.
+The Photos overview displays "正在同步，已同步 X/Y" (or "正在上传，已同步 X/Y")
+using persistent, library-wide counts in both phases. X counts distinct local
+paths with a proven common baseline, including previous successful runs. Y is
+the union of those historical paths and `sync_inventory`, the complete known
+upload/download scope across enabled connections. Both count each local path
+once; changed files, repeat verification, and pending conflicts cannot add a
+second denominator slot for a historical path. Completed labels retain X/Y and
+optionally append the unresolved image-conflict count.
+
+After complete remote discovery and a successful local scan, the service saves
+the job's entire inventory in one generation-guarded database transaction,
+before the first transfer. Remote files count in download-capable jobs; local
+files count only in upload-capable jobs and the user's selected upload scope.
+Thus unselected local-only albums and remote-only files in UploadOnly mode are
+excluded. Protected unfinished uploads remain in scope. An unchanged snapshot
+skips rewriting inventory rows. Failed/incomplete discovery never replaces the
+previous inventory, and interrupted transfers leave the full denominator in
+place for restart. New configuration generations invalidate obsolete snapshots
+without removing history; the next complete scan refreshes the scope. Known
+totals may grow when new files or jobs are discovered, including sequential jobs
+in one trigger. Before first discovery, only previously known paths can be
+counted. Schema v7 seeds legacy inventory from proven baselines and unresolved
+sync entries. Media-index rebuilds preserve it; job removal cascades, and an
+explicit global opt-out clears it with the other sync history.
+
+`SyncService` still tracks live transfer progress in an in-memory, process-wide
+session that is never persisted. The home pull and each application launch open
+the session (`trigger_saved_jobs_once`). Each job pre-plans every path with the
+same pure planner used by `reconcile_one` and adds planned download/upload
+totals. Those per-run counters remain for diagnostics; the overview uses only
+the live phase to distinguish upload activity. While a file streams, byte
+counters advance through the `TransferProgress` sink attached to the
+`WebDavProvider`; bytes surface only in STORAGE-target logs, never in the
+overview label. Sessions are bounded to a trigger: crash-recovery transfers
+before planning are not counted, totals accumulate across sequential jobs, and
+a duplicate trigger never opens or closes the active session.
 
 ## Credentials And Secrets
 

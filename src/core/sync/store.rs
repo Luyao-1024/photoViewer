@@ -66,6 +66,8 @@ pub struct SyncOverview {
     pub status: SyncOverviewStatus,
     pub job_count: usize,
     pub synced_items: usize,
+    /// Historical paths plus the complete discovered scope, deduplicated across jobs.
+    pub total_items: usize,
     pub conflict_images: usize,
 }
 
@@ -186,6 +188,11 @@ pub enum SyncWrite {
     MarkJobFailed {
         id: i64,
         error: String,
+    },
+    ReplaceInventory {
+        job_id: i64,
+        generation: i64,
+        relative_paths: Vec<String>,
     },
     UpsertObservation {
         job_id: i64,
@@ -417,14 +424,28 @@ impl SyncStore {
 
     fn overview_with_sync_enabled(&self, sync_enabled: bool) -> Result<SyncOverview> {
         let conn = self.pool.get()?;
-        let synced_items = conn.query_row(
-            "SELECT COUNT(DISTINCT j.local_root || '/' || e.relative_path)
-             FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
-             JOIN sync_connections c ON c.id = j.connection_id
-             WHERE c.enabled = 1 AND e.baseline_fingerprint IS NOT NULL",
+        let (synced_items, total_items) = conn.query_row(
+            "WITH paths(path, synced) AS (
+                 SELECT j.local_root || '/' || e.relative_path, 1
+                 FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
+                 JOIN sync_connections c ON c.id = j.connection_id
+                 WHERE c.enabled = 1 AND e.baseline_fingerprint IS NOT NULL
+                 UNION ALL
+                 SELECT j.local_root || '/' || i.relative_path, 0
+                 FROM sync_inventory i JOIN sync_jobs j ON j.id = i.job_id
+                 JOIN sync_connections c ON c.id = j.connection_id
+                 WHERE c.enabled = 1 AND i.config_generation = j.config_generation
+             )
+             SELECT COUNT(DISTINCT CASE WHEN synced = 1 THEN path END),
+                    COUNT(DISTINCT path) FROM paths",
             [],
-            |row| row.get::<_, i64>(0),
-        )? as usize;
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as usize,
+                    row.get::<_, i64>(1)? as usize,
+                ))
+            },
+        )?;
         let conflict_images = conn.query_row(
             "SELECT COUNT(DISTINCT j.local_root || '/' || e.relative_path)
              FROM sync_conflicts f JOIN sync_entries e ON e.id = f.entry_id
@@ -463,6 +484,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Disabled,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -471,6 +493,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::NotConfigured,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -486,6 +509,7 @@ impl SyncStore {
                 },
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -494,6 +518,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Paused,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -507,6 +532,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Failed,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -517,6 +543,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Running,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -534,6 +561,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Failed,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -545,6 +573,7 @@ impl SyncStore {
                 status: SyncOverviewStatus::Completed,
                 job_count,
                 synced_items,
+                total_items,
                 conflict_images,
             });
         }
@@ -552,6 +581,7 @@ impl SyncStore {
             status: SyncOverviewStatus::Ready,
             job_count,
             synced_items,
+            total_items,
             conflict_images,
         })
     }
@@ -735,6 +765,32 @@ impl SyncStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
+    }
+
+    /// Persist a complete discovered scope before transferring any path.
+    /// An obsolete worker cannot replace the inventory of a newer configuration.
+    pub(crate) fn replace_inventory(
+        &self,
+        job_id: i64,
+        generation: i64,
+        relative_paths: &[String],
+    ) -> Result<bool> {
+        let relative_paths = relative_paths
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        match self.write(SyncWrite::ReplaceInventory {
+            job_id,
+            generation,
+            relative_paths,
+        })? {
+            SyncWriteResult::Changed(changed) => Ok(changed),
+            _ => Err(AppError::Backend(
+                "sync inventory returned an unexpected result".into(),
+            )),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1200,6 +1256,48 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                 params![error, id],
             )?;
             Ok(SyncWriteResult::None)
+        }
+        SyncWrite::ReplaceInventory {
+            job_id,
+            generation,
+            relative_paths,
+        } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_jobs j
+                 JOIN sync_connections c ON c.id = j.connection_id
+                 WHERE j.id = ?1 AND j.config_generation = ?2 AND c.enabled = 1)",
+                params![job_id, generation],
+                |row| row.get(0),
+            )?;
+            if !current {
+                return Ok(SyncWriteResult::Changed(false));
+            }
+            let existing = {
+                let mut statement = tx.prepare(
+                    "SELECT relative_path FROM sync_inventory
+                     WHERE job_id = ?1 AND config_generation = ?2 ORDER BY relative_path",
+                )?;
+                let rows = statement
+                    .query_map(params![job_id, generation], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if existing == relative_paths {
+                return Ok(SyncWriteResult::Changed(false));
+            }
+            tx.execute("DELETE FROM sync_inventory WHERE job_id = ?1", [job_id])?;
+            {
+                let mut statement = tx.prepare(
+                    "INSERT INTO sync_inventory(job_id, relative_path, config_generation)
+                     VALUES (?1, ?2, ?3)",
+                )?;
+                for path in relative_paths {
+                    statement.execute(params![job_id, path, generation])?;
+                }
+            }
+            tx.commit()?;
+            Ok(SyncWriteResult::Changed(true))
         }
         SyncWrite::UpsertObservation {
             job_id,

@@ -66,49 +66,41 @@ fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
         SyncOverviewStatus::Applying => tr("photos.overview.sync.applying"),
-        SyncOverviewStatus::Running => sync_running_text(progress),
+        SyncOverviewStatus::Running => sync_running_text(overview, progress),
         SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
         SyncOverviewStatus::Completed if overview.conflict_images > 0 => trf(
             "photos.overview.sync.completed_conflicts",
             &[
-                ("count", &overview.synced_items.to_string()),
+                ("done", &overview.synced_items.to_string()),
+                ("total", &overview.total_items.to_string()),
                 ("conflicts", &overview.conflict_images.to_string()),
             ],
         ),
         SyncOverviewStatus::Completed => trf(
             "photos.overview.sync.completed",
-            &[("count", &overview.synced_items.to_string())],
+            &[
+                ("done", &overview.synced_items.to_string()),
+                ("total", &overview.total_items.to_string()),
+            ],
         ),
     }
 }
 
-/// While a run is active, describe the current transfer activity with live
-/// file counts: downloads show "synced X of Y", uploads show "uploading X of
-/// Y photos/videos". Byte-level movement is logged per transfer instead of
-/// shown here. Before planning has produced totals (and between phases) fall
-/// back to the generic running label.
-fn sync_running_text(progress: Option<SyncLiveProgress>) -> String {
-    let Some(progress) = progress else {
-        return tr("photos.overview.sync.running");
+/// The fraction combines historical proven baselines and all known sync paths.
+/// Live counters reset per run and must never supply either side of this ratio.
+fn sync_running_text(overview: SyncOverview, progress: Option<SyncLiveProgress>) -> String {
+    let key = match progress.map(|progress| progress.phase) {
+        Some(SyncLivePhase::Uploading) => "photos.overview.sync.running_upload",
+        _ => "photos.overview.sync.running",
     };
-    match progress.phase {
-        SyncLivePhase::Uploading if progress.upload_total > 0 => trf(
-            "photos.overview.sync.running_upload",
-            &[
-                ("done", &progress.uploaded.to_string()),
-                ("total", &progress.upload_total.to_string()),
-            ],
-        ),
-        SyncLivePhase::Downloading if progress.download_total > 0 => trf(
-            "photos.overview.sync.running_download",
-            &[
-                ("done", &progress.downloaded.to_string()),
-                ("total", &progress.download_total.to_string()),
-            ],
-        ),
-        _ => tr("photos.overview.sync.running"),
-    }
+    trf(
+        key,
+        &[
+            ("done", &overview.synced_items.to_string()),
+            ("total", &overview.total_items.to_string()),
+        ],
+    )
 }
 
 fn sync_overview_icon(status: SyncOverviewStatus) -> &'static str {

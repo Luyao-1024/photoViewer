@@ -154,6 +154,14 @@ CREATE TABLE IF NOT EXISTS sync_job_upload_albums (
     PRIMARY KEY(job_id, relative_album)
 );
 
+-- Complete discovered sync scope, independent from transfer/baseline state.
+CREATE TABLE IF NOT EXISTS sync_inventory (
+    job_id               INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    relative_path        TEXT NOT NULL,
+    config_generation    INTEGER NOT NULL,
+    PRIMARY KEY(job_id, relative_path)
+);
+
 CREATE TABLE IF NOT EXISTS sync_entries (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id               INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,

@@ -754,6 +754,9 @@ async fn upload_recovery_waits_for_explicit_album_selection() {
             .await
             .unwrap();
 
+        let overview = service.store().overview().unwrap();
+        assert_eq!((overview.synced_items, overview.total_items), (0, 1),
+            "a protected upload remains in the total even when no cloud object exists and its album is unchecked");
         assert_eq!(std::fs::read(&local_path).unwrap(), full);
         assert_eq!(
             *provider.objects.lock().unwrap(),
@@ -1512,3 +1515,105 @@ async fn a_no_change_run_does_not_rewrite_entries() {
 mod strategies;
 
 mod reset;
+
+#[tokio::test]
+async fn overview_inventory_includes_history_and_unfinished_downloads_after_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job_in_direction(&service, local.clone(), SyncDirection::DownloadOnly);
+    let provider = Arc::new(FakeProvider::default());
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif"),
+    )
+    .unwrap();
+    provider.insert("PhotoViewer/done.gif", bytes.clone());
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    // A local-only file cannot upload in DownloadOnly mode and is outside the total.
+    std::fs::write(local.join("outside.gif"), &bytes).unwrap();
+    provider.insert("PhotoViewer/new-a.gif", bytes.clone());
+    provider.insert("PhotoViewer/new-b.gif", bytes.clone());
+    let mut changed = bytes;
+    changed.push(0);
+    provider.insert("PhotoViewer/done.gif", changed);
+    provider.fail_download.store(true, Ordering::Release);
+    assert!(service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .is_err());
+    let overview = service.store().overview().unwrap();
+    assert_eq!((overview.synced_items, overview.total_items), (1, 3),
+        "all discovered paths must count before the first pending transfer, including the historical path only once");
+    drop(service);
+    let service = recovery_service(temp.path());
+    let overview = service.store().overview().unwrap();
+    assert_eq!((overview.synced_items, overview.total_items), (1, 3));
+    provider.fail_listing.store(true, Ordering::Release);
+    assert!(service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .is_err());
+    let overview = service.store().overview().unwrap();
+    assert_eq!(
+        (overview.synced_items, overview.total_items),
+        (1, 3),
+        "failed discovery must preserve the last complete inventory"
+    );
+    provider.fail_listing.store(false, Ordering::Release);
+    provider.fail_download.store(false, Ordering::Release);
+    service.run_with_provider(&job, provider).await.unwrap();
+    let overview = service.store().overview().unwrap();
+    assert_eq!((overview.synced_items, overview.total_items), (3, 3));
+}
+
+#[tokio::test]
+async fn overview_inventory_respects_upload_selection_and_sync_direction() {
+    for direction in [SyncDirection::Bidirectional, SyncDirection::UploadOnly] {
+        let temp = tempfile::tempdir().unwrap();
+        let local = temp.path().join("photos");
+        std::fs::create_dir_all(local.join("selected/nested")).unwrap();
+        std::fs::create_dir(local.join("unselected")).unwrap();
+        let bytes = std::fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/media/animated_source.gif"),
+        )
+        .unwrap();
+        for relative in [
+            "selected/upload.gif",
+            "selected/nested/outside.gif",
+            "unselected/outside.gif",
+        ] {
+            std::fs::write(local.join(relative), &bytes).unwrap();
+        }
+        let service = recovery_service(temp.path());
+        let job = service
+            .store()
+            .create_job(&crate::core::sync::NewSyncJob {
+                endpoint: "https://dav.example.test/".into(),
+                username: "alice".into(),
+                credential_ref: "inventory-selected".into(),
+                local_root: local,
+                remote_root: "PhotoViewer".into(),
+                direction,
+                upload_scope: UploadScope::SelectedAlbums,
+                upload_albums: vec!["selected".into()],
+            })
+            .unwrap();
+        let provider = Arc::new(FakeProvider::default());
+        provider.insert("PhotoViewer/cloud-only/cloud.gif", bytes);
+        let summary = service.run_with_provider(&job, provider).await.unwrap();
+        assert_eq!(summary.uploaded, 1);
+        let expected = if direction == SyncDirection::UploadOnly {
+            1
+        } else {
+            2
+        };
+        let overview = service.store().overview().unwrap();
+        assert_eq!((overview.synced_items, overview.total_items), (expected, expected),
+            "exclude unselected local-only files, nested albums and cloud-only files in UploadOnly mode");
+    }
+}

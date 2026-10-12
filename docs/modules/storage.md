@@ -60,6 +60,13 @@ as `selected_albums` with no checked album: cloud content can download, but no
 local album uploads until the user explicitly checks it. The semantics of those
 tables belong to [`sync.md`](sync.md).
 
+Schema version 7 adds `sync_inventory`, a per-job complete discovery snapshot
+with configuration generations. The migration seeds known historical and
+unfinished paths without changing baselines or transfer recovery records.
+Media-index rebuilds preserve inventory; task deletion cascades and explicit
+WebDAV Off clears it. The Photos overview uses it with proven baselines for a
+persisted historical-completed/all-known-items fraction; see [`sync.md`](sync.md).
+
 Schema version 6 adds per-entry suppressed content fingerprints and sizes for
 local deletions. They live in sync state, so media-index rebuilds preserve them.
 An explicit WebDAV Off clears those records and other synchronization history

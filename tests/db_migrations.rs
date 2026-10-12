@@ -29,6 +29,7 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"sync_jobs".to_string()));
     assert!(tables.contains(&"sync_job_upload_albums".to_string()));
     assert!(tables.contains(&"sync_entries".to_string()));
+    assert!(tables.contains(&"sync_inventory".to_string()));
     assert!(tables.contains(&"sync_tasks".to_string()));
     assert!(tables.contains(&"sync_conflicts".to_string()));
     assert!(tables.contains(&"sync_job_changes".to_string()));
@@ -334,7 +335,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     assert_eq!(
         connection
             .query_row(
@@ -413,7 +414,7 @@ fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
 }
 
@@ -494,7 +495,7 @@ fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        6
+        7
     );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM sync_job_changes", [], |r| r
@@ -538,4 +539,57 @@ fn schema_v5_sync_state_migrates_without_changing_existing_strategy() {
     assert_eq!(entries[0].baseline.as_ref().unwrap().blake3, "hash");
     assert!(entries[0].suppressed.is_none());
     assert_eq!(store.desired_upload_albums(1).unwrap(), vec!["camera"]);
+}
+
+#[test]
+fn schema_v6_preserves_sync_history_and_seeds_known_inventory() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("photos.db");
+    let pool = db::init_pool(&path).unwrap();
+    drop(pool);
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        r#"
+        DROP TABLE sync_inventory;
+        INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref)
+            VALUES(1,'webdav','https://dav.example.test','alice','inventory-migration');
+        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,config_generation)
+            VALUES(1,1,'/photos','Photos',9);
+        INSERT INTO sync_entries(job_id,relative_path,baseline_fingerprint,baseline_size,state)
+            VALUES(1,'done.jpg','hash',42,'synced');
+        INSERT INTO sync_entries(job_id,relative_path,state) VALUES
+            (1,'pending.mp4','pending'),(1,'conflict.gif','conflict'),(1,'ignored.gif','synced');
+        PRAGMA user_version=6;
+    "#,
+    )
+    .unwrap();
+    drop(conn);
+    for _ in 0..2 {
+        let pool = db::init_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 7);
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_inventory WHERE config_generation=9",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 3);
+        let fingerprint: String = conn
+            .query_row(
+                "SELECT baseline_fingerprint FROM sync_entries WHERE relative_path='done.jpg'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fingerprint, "hash");
+        drop(conn);
+        let store = photo_viewer::core::sync::SyncStore::new(pool);
+        let overview = store.overview().unwrap();
+        assert_eq!((overview.synced_items, overview.total_items), (1, 3));
+    }
 }
