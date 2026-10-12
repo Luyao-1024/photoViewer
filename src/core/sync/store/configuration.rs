@@ -8,6 +8,8 @@ pub struct PendingChange {
     pub upload_albums: Option<Vec<String>>,
     #[serde(default)]
     pub direction: Option<SyncDirection>,
+    #[serde(default)]
+    pub etag_is_sha256: Option<bool>,
     pub remote_root: Option<String>,
     pub delete: bool,
     pub conflict: Option<(SyncConflict, String)>,
@@ -16,6 +18,7 @@ pub struct PendingChange {
 #[derive(Debug, Clone)]
 pub enum JobEdit {
     Direction(SyncDirection),
+    EtagIsSha256(bool),
     UploadAlbums(Vec<String>),
     RemoteRoot(String),
     Delete,
@@ -61,6 +64,9 @@ impl SyncStore {
             return Ok(None);
         };
         if let Some(change) = self.pending_change(id)? {
+            if let Some(enabled) = change.etag_is_sha256 {
+                job.etag_is_sha256 = enabled;
+            }
             if let Some(direction) = change.direction {
                 job.direction = direction;
             }
@@ -114,6 +120,17 @@ pub(super) fn queue(pool: &DbPool, id: i64, edit: JobEdit) -> Result<SyncWriteRe
         };
     }
     match edit {
+        JobEdit::EtagIsSha256(enabled) => {
+            let current: bool = tx.query_row(
+                "SELECT etag_is_sha256 FROM sync_jobs WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            if pending.etag_is_sha256.unwrap_or(current) == enabled {
+                return Ok(SyncWriteResult::Changed(false));
+            }
+            pending.etag_is_sha256 = Some(enabled);
+        }
         JobEdit::Direction(direction) => {
             if direction == SyncDirection::DownloadOnly {
                 return Err(AppError::Backend(
@@ -296,6 +313,12 @@ pub(super) fn apply(pool: &DbPool, id: i64, revision: i64) -> Result<SyncWriteRe
         tx.execute(
             "UPDATE sync_jobs SET direction=?1 WHERE id=?2",
             params![direction.as_str(), id],
+        )?;
+    }
+    if let Some(enabled) = pending.etag_is_sha256 {
+        tx.execute(
+            "UPDATE sync_jobs SET etag_is_sha256=?1 WHERE id=?2",
+            params![enabled, id],
         )?;
     }
     tx.execute("UPDATE sync_jobs SET config_generation=?1,paused=0,last_error=NULL,last_started_at=NULL,last_completed_at=NULL WHERE id=?2",params![revision,id])?;

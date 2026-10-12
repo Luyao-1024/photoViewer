@@ -186,6 +186,7 @@ fn webdav_strategy_buttons_default_to_backup_and_reconfigure_an_active_task() {
             endpoint: "https://dav.example.test/".into(),
             username: "ux".into(),
             credential_ref: "ux-strategy".into(),
+            etag_is_sha256: false,
             local_root: shell.tmp.path().to_path_buf(),
             remote_root: "Photos".into(),
             direction: SyncDirection::Bidirectional,

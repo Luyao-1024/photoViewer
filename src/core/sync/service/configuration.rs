@@ -99,7 +99,8 @@ impl SyncService {
                 .map_err(|e| AppError::Backend(format!("credential task failed: {e}")))??;
         Ok(Arc::new(
             WebDavProvider::new(&job.endpoint, job.username.clone(), password)
-                .map_err(provider_error)?,
+                .map_err(provider_error)?
+                .with_sha256_etags(job.etag_is_sha256),
         ))
     }
 
@@ -118,6 +119,14 @@ impl SyncService {
         let changed = self
             .store
             .queue_edit(id, super::super::store::JobEdit::Direction(direction))?;
+        if changed {
+            self.request_job_sync(id)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn accept_etag_is_sha256(&self, id: i64, enabled: bool) -> Result<bool> {
+        let changed = self.store.queue_edit(id, JobEdit::EtagIsSha256(enabled))?;
         if changed {
             self.request_job_sync(id)?;
         }

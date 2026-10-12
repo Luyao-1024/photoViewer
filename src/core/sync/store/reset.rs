@@ -147,6 +147,12 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
                 params![root, id],
             )?;
         }
+        if let Some(enabled) = change.etag_is_sha256 {
+            tx.execute(
+                "UPDATE sync_jobs SET etag_is_sha256=?1 WHERE id=?2",
+                params![enabled, id],
+            )?;
+        }
         if let Some(direction) = change.direction {
             tx.execute(
                 "UPDATE sync_jobs SET direction=?1 WHERE id=?2",

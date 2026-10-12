@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -148,6 +148,15 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
              FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
              WHERE e.baseline_fingerprint IS NOT NULL OR e.state <> 'synced';",
         )?;
+    }
+    if version < 8 {
+        let has_hash_contract: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_jobs') WHERE name='etag_is_sha256')",
+            [], |row| row.get(0),
+        )?;
+        if !has_hash_contract {
+            tx.execute_batch("ALTER TABLE sync_jobs ADD COLUMN etag_is_sha256 INTEGER NOT NULL DEFAULT 0 CHECK (etag_is_sha256 IN (0, 1));")?;
+        }
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;

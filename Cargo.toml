@@ -49,6 +49,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio-util = { version = "0.7", features = ["io"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 
 [build-dependencies]
 glib-build-tools = "0.19"

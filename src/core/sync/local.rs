@@ -132,6 +132,40 @@ pub fn fingerprint(path: &Path) -> Result<Fingerprint> {
     })
 }
 
+/// Read one stable local version and prove it still matches the scan before
+/// comparing its SHA-256 to a trusted server digest. Keep BLAKE3 baselines intact.
+pub fn content_sha256(entry: &LocalEntry) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let before = std::fs::metadata(&entry.absolute_path)?;
+    let mut file = File::open(&entry.absolute_path)?;
+    let mut sha256 = Sha256::new();
+    let mut blake3 = blake3::Hasher::new();
+    let mut bytes = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes += read as u64;
+        sha256.update(&buffer[..read]);
+        blake3.update(&buffer[..read]);
+    }
+    let after = std::fs::metadata(&entry.absolute_path)?;
+    if before.len() != after.len()
+        || modified_ns(&before)? != modified_ns(&after)?
+        || modified_ns(&after)? != entry.modified_ns
+        || bytes != entry.fingerprint.size
+        || blake3.finalize().to_hex().as_str() != entry.fingerprint.blake3
+    {
+        return Err(AppError::Backend(format!(
+            "file changed while its SHA-256 was being verified: {}",
+            entry.absolute_path.display()
+        )));
+    }
+    Ok(format!("{:x}", sha256.finalize()))
+}
+
 pub fn destination(root: &Path, relative_path: &str) -> Result<PathBuf> {
     let relative = Path::new(relative_path);
     let normalized = normalized_relative_path(relative)?;

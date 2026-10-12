@@ -166,7 +166,7 @@ a task cannot infer deletions from its former client state. Remote records remai
 
 Turning WebDAV off is an explicit history reset. Keep `sync_connections`,
 credential references/passwords, surviving `sync_jobs`, local/remote roots,
-strategy, upload scope and selected albums. Preserve the latest accepted static
+strategy, SHA-256 ETag contract, upload scope and selected albums. Preserve the latest accepted static
 fields even if an older transfer still uses their former configuration. Clear
 all `sync_entries` (including deletion suppression and baselines), `sync_tasks`,
 `sync_conflicts`, `sync_job_changes`, run timestamps, errors, transient pause and
@@ -207,6 +207,38 @@ task configuration. Formerly suppressed cloud copies may download again because
 there is no longer a deletion record; Backup remains upload-only. History is
 preserved across index rebuilds and ordinary strategy edits, but not across an
 explicit global Off reset.
+
+## SHA-256 Content ETags
+
+User-facing server setup and verification instructions live in
+[`README.md`](../../README.md#webdav-同步与服务器配置). Configure rclone with
+`--etag-hash sha256` before enabling the task's “Server uses SHA-256 content
+ETags” option. New task forms default to enabled; schema v8 migrates existing
+jobs to `etag_is_sha256=false` without inferring a contract from endpoint names,
+server software, or ETag shape.
+
+The per-task flag explicitly configures `WebDavProvider::with_sha256_etags`.
+Generic providers continue to expose opaque revisions. In SHA-256 mode, file
+listings/stat must carry a quoted strong 64-digit hexadecimal ETag; missing,
+weak or malformed values are configuration errors with the rclone option in
+the diagnostic. Directories need no hash.
+
+`VerifyContent` first rejects unequal lengths, then compares a trusted remote
+SHA-256 to a stable local read. That read calculates SHA-256 and BLAKE3 together,
+checks size/mtime before and after, and verifies the observed BLAKE3 fingerprint
+still matches the scan. Matching digests commit the existing BLAKE3 baseline
+without GET or staging, including files beyond the download verification cap.
+Different digests preserve the existing selected-upload conflict and
+remote-authoritative replacement rules. No hash means the existing full-download
+verification path; size/time never substitutes for content proof. The saved
+strong ETag then supports the existing no-change cache.
+
+Accepted hash-mode edits use `JobEdit::EtagIsSha256`, durable desired state,
+quiescence, generation guards and automatic retriggering. No-op edits do not
+restart work. Global Off retains the latest accepted hash contract together
+with task mappings, including pending edits, while clearing history. Existing
+archive/recovery checks and remote-only downloads can still require bytes.
+Network download savings do not eliminate local or server hashing I/O.
 
 ## Planning And Conflict Rules
 

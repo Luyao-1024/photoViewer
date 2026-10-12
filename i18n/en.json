@@ -370,6 +370,8 @@
     "setting.sync.configured_task_description": "Saved server details are shown below.",
     "setting.sync.select_task": "Configured task",
     "setting.sync.add_new_task": "Add another task",
+    "setting.sync.sha256_etag": "Server uses SHA-256 content ETags",
+    "setting.sync.sha256_etag_description": "Enable SHA-256 hashing on the server first (rclone: --etag-hash sha256). Matching existing files are verified without downloading.",
     "setting.sync.endpoint": "WebDAV URL (HTTPS)",
     "setting.sync.username": "Username",
     "setting.sync.password": "Password",

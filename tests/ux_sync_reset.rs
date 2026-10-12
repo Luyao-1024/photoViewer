@@ -116,6 +116,7 @@ fn global_off_clears_suppression_conflicts_and_staging_and_serializes_rapid_togg
             endpoint: "https://dav.example.test/".into(),
             username: "ux".into(),
             credential_ref: "ux-reset-kept".into(),
+            etag_is_sha256: false,
             local_root: shell.tmp.path().to_path_buf(),
             remote_root: "Photos".into(),
             direction: SyncDirection::Bidirectional,

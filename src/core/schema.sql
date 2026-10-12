@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     local_root        TEXT NOT NULL,
     remote_root       TEXT NOT NULL,
     direction         TEXT NOT NULL DEFAULT 'bidirectional',
+    etag_is_sha256    INTEGER NOT NULL DEFAULT 0 CHECK (etag_is_sha256 IN (0, 1)),
     upload_scope      TEXT NOT NULL DEFAULT 'selected_albums',
     propagate_deletes INTEGER NOT NULL DEFAULT 0,
     paused            INTEGER NOT NULL DEFAULT 0,

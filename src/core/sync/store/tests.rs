@@ -5,6 +5,7 @@ fn new_job(root: PathBuf) -> NewSyncJob {
         endpoint: "https://dav.example.test/root/".into(),
         username: "alice".into(),
         credential_ref: "credential-test".into(),
+        etag_is_sha256: false,
         local_root: root,
         remote_root: "PhotoViewer".into(),
         direction: SyncDirection::Bidirectional,

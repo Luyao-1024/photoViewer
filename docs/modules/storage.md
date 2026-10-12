@@ -35,6 +35,11 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 
 ## Database
 
+Schema version 8 adds `sync_jobs.etag_is_sha256`, defaulting to false for
+existing jobs. This is an explicit server contract, never an inferred content
+hash. The idempotent migration preserves sync history and mappings; see
+[`sync.md`](sync.md#sha-256-content-etags).
+
 SQLite uses an r2d2 connection pool with WAL, foreign-key, and a 10-second
 busy timeout applied through the pool init hook. SQLite still permits only one
 writer at a time even in WAL mode; the timeout lets the filesystem watcher,

@@ -370,6 +370,8 @@
     "setting.sync.configured_task_description": "下方显示已保存的服务器参数。",
     "setting.sync.select_task": "已配置任务",
     "setting.sync.add_new_task": "添加另一个任务",
+    "setting.sync.sha256_etag": "服务器使用 SHA-256 内容 ETag",
+    "setting.sync.sha256_etag_description": "启用前须在服务器开启 SHA-256 哈希（rclone：--etag-hash sha256）。已有相同文件无需下载校验。",
     "setting.sync.endpoint": "WebDAV 地址（HTTPS）",
     "setting.sync.username": "用户名",
     "setting.sync.password": "密码",

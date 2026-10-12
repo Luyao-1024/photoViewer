@@ -83,6 +83,7 @@ async fn sync_state_writes_emit_refresh_events() {
                 endpoint: "https://dav.example.test/root/".into(),
                 username: "alice".into(),
                 credential_ref: "sync-refresh-test".into(),
+                etag_is_sha256: false,
                 local_root: root,
                 remote_root: "PhotoViewer".into(),
                 direction: SyncDirection::Bidirectional,

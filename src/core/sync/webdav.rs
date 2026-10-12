@@ -37,6 +37,7 @@ pub struct WebDavProvider {
     base: Url,
     username: String,
     password: String,
+    etag_is_sha256: bool,
     progress: Option<std::sync::Arc<TransferProgress>>,
 }
 
@@ -70,8 +71,16 @@ impl WebDavProvider {
             base,
             username,
             password,
+            etag_is_sha256: false,
             progress: None,
         })
+    }
+
+    /// Opt in only for servers explicitly configured with SHA-256 content ETags
+    /// (for example rclone serve webdav --etag-hash sha256).
+    pub fn with_sha256_etags(mut self, enabled: bool) -> Self {
+        self.etag_is_sha256 = enabled;
+        self
     }
 
     /// Attach a byte-counting sink so large transfers report sub-file
@@ -240,6 +249,28 @@ impl SyncProvider for WebDavProvider {
         }
     }
 
+    fn content_sha256(&self, entry: &RemoteEntry) -> ProviderResult<Option<String>> {
+        if !self.etag_is_sha256 || entry.is_collection {
+            return Ok(None);
+        }
+        let hash = entry
+            .revision
+            .as_ref()
+            .filter(|revision| revision.strength == RevisionStrength::Strong)
+            .and_then(|revision| {
+                revision
+                    .value
+                    .strip_prefix('"')
+                    .and_then(|value| value.strip_suffix('"'))
+            })
+            .filter(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            });
+        hash.map(|hash| Some(hash.to_ascii_lowercase())).ok_or_else(|| ProviderError::Protocol(
+            "SHA-256 ETag mode requires server-side content hashing: configure rclone serve webdav with --etag-hash sha256 (ordinary or weak ETags cannot verify content)".into()
+        ))
+    }
+
     async fn probe(&self) -> ProviderResult<ProviderCapabilities> {
         let response = self
             .request(Method::OPTIONS, self.base.clone())
@@ -258,15 +289,22 @@ impl SyncProvider for WebDavProvider {
         let collection_key = collection.trim_matches('/');
         let mut entries = self.propfind(collection_key, "1").await?;
         entries.retain(|entry| entry.key.trim_matches('/') != collection_key);
+        for entry in &entries {
+            self.content_sha256(entry)?;
+        }
         Ok(entries)
     }
 
     async fn stat(&self, key: &str) -> ProviderResult<Option<RemoteEntry>> {
         let normalized = key.trim_matches('/');
         let entries = self.propfind(normalized, "0").await?;
-        Ok(entries
+        let entry = entries
             .into_iter()
-            .find(|entry| entry.key.trim_matches('/') == normalized))
+            .find(|entry| entry.key.trim_matches('/') == normalized);
+        if let Some(entry) = &entry {
+            self.content_sha256(entry)?;
+        }
+        Ok(entry)
     }
 
     async fn ensure_collection(&self, collection: &str) -> ProviderResult<()> {

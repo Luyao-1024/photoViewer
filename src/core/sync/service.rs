@@ -390,6 +390,7 @@ impl SyncService {
         let provider = Arc::new(
             WebDavProvider::new(&job.endpoint, job.username.clone(), credentials.password)
                 .map_err(provider_error)?
+                .with_sha256_etags(job.etag_is_sha256)
                 .with_transfer_progress(progress.clone()),
         );
         self.run_job_with_provider(job_id, provider, Some(progress))
@@ -1802,6 +1803,29 @@ impl SyncService {
                 } else {
                     PlanAction::DownloadReplace
                 };
+            } else if let Some(remote_sha256) =
+                provider.content_sha256(remote).map_err(provider_error)?
+            {
+                let local = local_entry.ok_or_else(|| {
+                    AppError::Backend("SHA-256 verification requires a local file".into())
+                })?;
+                if local::content_sha256(local)? == remote_sha256 {
+                    self.store
+                        .commit_baseline(entry_id, &local.fingerprint, remote_revision)?;
+                    summary.verified += 1;
+                    live_progress_complete_download();
+                    tracing::info!(target: crate::core::log_targets::STORAGE, job_id = job.id,
+                        path = %relative_path, bytes = remote.size,
+                        "verified cloud copy matches local using SHA-256; no download needed");
+                    return Ok(());
+                }
+                if upload_allowed {
+                    live_progress_complete_download();
+                    action =
+                        PlanAction::Conflict(super::model::ConflictKind::InitialContentMismatch);
+                } else {
+                    action = PlanAction::DownloadReplace;
+                }
             } else if remote.size > MAX_VERIFY_DOWNLOAD_BYTES {
                 tracing::warn!(
                     target: crate::core::log_targets::STORAGE,

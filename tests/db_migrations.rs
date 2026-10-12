@@ -335,7 +335,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     assert_eq!(
         connection
             .query_row(
@@ -414,7 +414,7 @@ fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
 }
 
@@ -495,7 +495,7 @@ fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        7
+        8
     );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM sync_job_changes", [], |r| r
@@ -570,7 +570,7 @@ fn schema_v6_preserves_sync_history_and_seeds_known_inventory() {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let rows: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sync_inventory WHERE config_generation=9",
@@ -591,5 +591,40 @@ fn schema_v6_preserves_sync_history_and_seeds_known_inventory() {
         let store = photo_viewer::core::sync::SyncStore::new(pool);
         let overview = store.overview().unwrap();
         assert_eq!((overview.synced_items, overview.total_items), (1, 3));
+    }
+}
+
+#[test]
+fn v7_migration_preserves_jobs_and_never_assumes_sha256_etags() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.db");
+    {
+        let pool = db::init_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute_batch("ALTER TABLE sync_jobs DROP COLUMN etag_is_sha256;
+            INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref)
+                VALUES(1,'webdav','https://dav.example.test/','user','ref');
+            INSERT INTO sync_jobs(id,connection_id,local_root,remote_root) VALUES(1,1,'/photos','Photos');
+            INSERT INTO sync_entries(job_id,relative_path,state) VALUES(1,'a.jpg','pending');
+            PRAGMA user_version=7;").unwrap();
+    }
+    for _ in 0..2 {
+        let pool = db::init_pool(&path).unwrap();
+        let conn = pool.get().unwrap();
+        assert!(!conn
+            .query_row("SELECT etag_is_sha256 FROM sync_jobs WHERE id=1", [], |r| r
+                .get::<_, bool>(0))
+            .unwrap());
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM sync_entries", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
     }
 }

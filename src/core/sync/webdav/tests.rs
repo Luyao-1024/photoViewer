@@ -290,3 +290,36 @@ async fn rejects_successful_download_with_a_different_response_etag() {
     let get = String::from_utf8_lossy(&requests.recv().unwrap()).to_ascii_lowercase();
     assert!(get.contains("if-match: \"v1\""));
 }
+
+#[test]
+fn sha256_etag_requires_explicit_opt_in_and_a_strong_digest() {
+    let generic =
+        WebDavProvider::new("https://example.com/", "user".into(), "pass".into()).unwrap();
+    let mut entry = RemoteEntry {
+        key: "photo.jpg".into(),
+        is_collection: false,
+        size: 4,
+        modified_unix: None,
+        revision: Some(Revision::etag(format!("\"{}\"", "A".repeat(64)))),
+    };
+    assert_eq!(generic.content_sha256(&entry).unwrap(), None);
+    let configured = generic.with_sha256_etags(true);
+    assert_eq!(
+        configured.content_sha256(&entry).unwrap(),
+        Some("a".repeat(64))
+    );
+    for etag in [
+        "\"metadata-etag\"".to_string(),
+        format!("W/\"{}\"", "a".repeat(64)),
+        format!("\"{}\"", "g".repeat(64)),
+        "a".repeat(64),
+    ] {
+        entry.revision = Some(Revision::etag(etag));
+        let error = configured.content_sha256(&entry).unwrap_err().to_string();
+        assert!(error.contains("--etag-hash sha256"));
+    }
+    entry.revision = None;
+    assert!(configured.content_sha256(&entry).is_err());
+    entry.is_collection = true;
+    assert_eq!(configured.content_sha256(&entry).unwrap(), None);
+}

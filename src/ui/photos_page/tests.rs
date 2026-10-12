@@ -99,6 +99,7 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
             endpoint: "https://dav.example.test/root/".into(),
             username: "alice".into(),
             credential_ref: "overview-credential".into(),
+            etag_is_sha256: false,
             local_root: local,
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,

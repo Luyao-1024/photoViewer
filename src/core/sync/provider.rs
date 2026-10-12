@@ -98,6 +98,12 @@ pub type ProviderResult<T> = std::result::Result<T, ProviderError>;
 pub trait SyncProvider: Send + Sync {
     fn capabilities(&self) -> ProviderCapabilities;
 
+    /// A content digest supplied under an explicitly configured server contract.
+    /// Generic opaque revisions must never be interpreted as hashes.
+    fn content_sha256(&self, _entry: &RemoteEntry) -> ProviderResult<Option<String>> {
+        Ok(None)
+    }
+
     async fn probe(&self) -> ProviderResult<ProviderCapabilities>;
 
     async fn list_children(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>>;

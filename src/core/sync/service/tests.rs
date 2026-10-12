@@ -47,6 +47,7 @@ struct FakeProvider {
     fail_listing: AtomicBool,
     fail_download: AtomicBool,
     download_calls: AtomicU64,
+    provide_sha256: AtomicBool,
     /// Declared lengths that override the stored byte count. Lets a test place
     /// an object beyond a size threshold without allocating gigabytes for it.
     reported_sizes: Mutex<BTreeMap<String, u64>>,
@@ -77,6 +78,17 @@ impl FakeProvider {
 
 #[async_trait]
 impl SyncProvider for FakeProvider {
+    fn content_sha256(&self, entry: &RemoteEntry) -> ProviderResult<Option<String>> {
+        use sha2::{Digest, Sha256};
+        if !self.provide_sha256.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let objects = self.objects.lock().unwrap();
+        Ok(objects
+            .get(&entry.key)
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes))))
+    }
+
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             read: true,
@@ -254,6 +266,7 @@ async fn synchronizes_new_files_both_directions_and_detects_later_conflict() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "fake-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -419,6 +432,7 @@ async fn remote_albums_download_without_changing_local_upload_selection() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "selective-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -594,6 +608,7 @@ async fn recovers_upload_that_reached_remote_before_result_commit() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "recovery-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -699,6 +714,7 @@ async fn upload_recovery_waits_for_explicit_album_selection() {
                 endpoint: "https://dav.example.test/".into(),
                 username: "alice".into(),
                 credential_ref: "recovery-test".into(),
+                etag_is_sha256: false,
                 local_root: local_root.clone(),
                 remote_root: "PhotoViewer".into(),
                 direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -833,6 +849,7 @@ async fn unrelated_remote_content_does_not_replace_local_or_upload_snapshot() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "recovery-nonprefix".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -1005,6 +1022,7 @@ async fn run_with_provider_reports_live_transfer_progress() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "progress-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -1094,6 +1112,7 @@ async fn edit_first_noop_and_invalid_root_do_not_pause() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "edit-first".into(),
+            etag_is_sha256: false,
             local_root,
             remote_root: "Photos".into(),
             direction: super::super::SyncDirection::Bidirectional,
@@ -1132,6 +1151,7 @@ fn recovery_job_in_direction(
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "recovery-cap".into(),
+            etag_is_sha256: false,
             local_root,
             remote_root: "PhotoViewer".into(),
             direction,
@@ -1374,6 +1394,7 @@ async fn untouched_files_keep_their_stored_fingerprint_across_runs() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "fake-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -1449,6 +1470,7 @@ async fn a_no_change_run_does_not_rewrite_entries() {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "fake-credential".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,
@@ -1596,6 +1618,7 @@ async fn overview_inventory_respects_upload_selection_and_sync_direction() {
                 endpoint: "https://dav.example.test/".into(),
                 username: "alice".into(),
                 credential_ref: "inventory-selected".into(),
+                etag_is_sha256: false,
                 local_root: local,
                 remote_root: "PhotoViewer".into(),
                 direction,
@@ -1617,3 +1640,5 @@ async fn overview_inventory_respects_upload_selection_and_sync_direction() {
             "exclude unselected local-only files, nested albums and cloud-only files in UploadOnly mode");
     }
 }
+
+mod hash;

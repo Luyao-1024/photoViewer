@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod sync_hash;
 mod sync_strategy;
 mod sync_upload;
 use sync_upload::SyncUploadAlbumSelection;
@@ -807,6 +808,9 @@ impl MainWindow {
                 new_strategy_for_toggle.set(direction);
                 Ok(())
             });
+        let (new_hash_row, new_hash_switch) = sync_hash::hash_row(true, parent, |_| Ok(()));
+        new_hash_row.set_visible(creating_task.get());
+        connection.add_row(&new_hash_row);
         new_strategy_row.set_visible(creating_task.get());
         new_strategy_row.set_sensitive(sync_enabled.get());
         connection.add_row(&new_strategy_row);
@@ -837,6 +841,7 @@ impl MainWindow {
             let creating_task_for_picker = creating_task.clone();
             let sync_enabled_for_picker = sync_enabled.clone();
             let new_strategy_row_for_picker = new_strategy_row.clone();
+            let new_hash_row_for_picker = new_hash_row.clone();
             let connect_row_for_picker = connect_row.clone();
             let connect_button_for_picker = connect_button.clone();
             let endpoint_for_picker = endpoint.clone();
@@ -876,6 +881,7 @@ impl MainWindow {
                 local_root_for_picker.set_editable(editable);
                 remote_root_for_picker.set_editable(editable);
                 new_strategy_row_for_picker.set_visible(adding_task);
+                new_hash_row_for_picker.set_visible(adding_task);
                 new_strategy_row_for_picker.set_sensitive(editable);
                 connect_row_for_picker.set_visible(adding_task);
                 connect_button_for_picker.set_sensitive(editable);
@@ -886,6 +892,7 @@ impl MainWindow {
         let window_for_connect = self.downgrade();
         let creating_task_for_connect = creating_task.clone();
         let new_strategy_for_connect = new_strategy.clone();
+        let new_hash_switch_for_connect = new_hash_switch.clone();
         let endpoint_for_connect = endpoint.clone();
         let username_for_connect = username.clone();
         let password_for_connect = password.clone();
@@ -931,6 +938,7 @@ impl MainWindow {
                 endpoint: endpoint_text,
                 username: username_text,
                 credential_ref: credential_ref.clone(),
+                etag_is_sha256: new_hash_switch_for_connect.is_active(),
                 local_root: PathBuf::from(local_text),
                 remote_root: remote_text,
                 direction: new_strategy_for_connect.get(),
@@ -954,7 +962,8 @@ impl MainWindow {
                     new_job.username.clone(),
                     password_text.clone(),
                 )
-                .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?;
+                .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?
+                .with_sha256_etags(new_job.etag_is_sha256);
                 crate::core::sync::SyncProvider::probe(&probe)
                     .await
                     .map_err(|error| crate::core::error::AppError::Backend(error.to_string()))?;
@@ -1047,6 +1056,11 @@ impl MainWindow {
                         parent,
                     );
                     connection.add_row(&strategy_row);
+                    connection.add_row(&sync_hash::saved_hash_row(
+                        &job,
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone()),
+                        parent,
+                    ));
 
                     let cloud_folder_row = adw::ActionRow::new();
                     cloud_folder_row.add_css_class("settings-action-row");

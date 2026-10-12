@@ -120,6 +120,7 @@ completed file changes merely because configuration changed.
 |---|---|---|
 | Backup / Sync strategy buttons | Opening Settings or pressing the active choice | Persist the desired direction, quiesce and recover old work, preserve deletion records, automatically run the latest mode if enabled |
 | Album checkbox / Select All | Expanding or inspecting the list | Persist one logical scope edit; internally stop obsolete work and automatically run the latest explicit scope |
+| Server SHA-256 ETag option | Inspecting the row or redundant assignment | Persist the explicit hash contract, quiesce affected work and automatically run the latest configuration |
 | Cloud folder / root / connection / credentials | Opening a browser or typing an unconfirmed value | Validate and confirm; quiesce affected old work, safely install the new mapping and restart automatically |
 | Add a task | Incomplete/invalid form and cancelled submission | Validate and save; schedule the new task if sync is enabled, without stopping unrelated jobs |
 | Delete a task | Opening or cancelling its confirmation | Stop the confirmed target safely, remove its relationship, preserve local/cloud media; never restart the deleted job |

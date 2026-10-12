@@ -14,6 +14,7 @@ fn fixture(
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "strategies".into(),
+            etag_is_sha256: false,
             local_root: root,
             remote_root: "PhotoViewer".into(),
             direction,

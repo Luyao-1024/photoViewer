@@ -18,6 +18,8 @@ pub struct NewSyncJob {
     pub endpoint: String,
     pub username: String,
     pub credential_ref: String,
+    /// Explicitly trust the server contract that strong ETags are SHA-256 content digests.
+    pub etag_is_sha256: bool,
     pub local_root: PathBuf,
     pub remote_root: String,
     pub direction: SyncDirection,
@@ -32,6 +34,8 @@ pub struct SyncJob {
     pub endpoint: String,
     pub username: String,
     pub credential_ref: String,
+    /// Explicitly trust the server contract that strong ETags are SHA-256 content digests.
+    pub etag_is_sha256: bool,
     pub local_root: PathBuf,
     pub remote_root: String,
     pub direction: SyncDirection,
@@ -347,7 +351,7 @@ impl SyncStore {
         let mut stmt = conn.prepare(
             "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
                     j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.upload_scope, j.last_error
+                    j.paused, j.config_generation, j.upload_scope, j.last_error, j.etag_is_sha256
              FROM sync_jobs j
              JOIN sync_connections c ON c.id = j.connection_id
              WHERE c.enabled = 1
@@ -363,7 +367,7 @@ impl SyncStore {
         conn.query_row(
             "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
                     j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.upload_scope, j.last_error
+                    j.paused, j.config_generation, j.upload_scope, j.last_error, j.etag_is_sha256
              FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id
              WHERE j.id = ?1",
             [id],
@@ -1076,14 +1080,15 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             configuration::validate_other_roots(&tx, connection_id, 0, &job.remote_root)?;
             tx.execute(
                 "INSERT INTO sync_jobs
-                 (connection_id, local_root, remote_root, direction, upload_scope)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                 (connection_id, local_root, remote_root, direction, upload_scope, etag_is_sha256)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     connection_id,
                     job.local_root.to_string_lossy(),
                     job.remote_root,
                     job.direction.as_str(),
                     job.upload_scope.as_str(),
+                    job.etag_is_sha256,
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -1608,6 +1613,7 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncJob> {
         endpoint: row.get(2)?,
         username: row.get(3)?,
         credential_ref: row.get(4)?,
+        etag_is_sha256: row.get(13)?,
         local_root: PathBuf::from(row.get::<_, String>(5)?),
         remote_root: row.get(6)?,
         direction,

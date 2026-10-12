@@ -387,6 +387,7 @@ fn webdav_job_uploads_only_checked_albums_and_keeps_cloud_download_copy() {
             endpoint: "https://dav.example.test".into(),
             username: "alice".into(),
             credential_ref: "ui-album-scope".into(),
+            etag_is_sha256: false,
             local_root: local_root.clone(),
             remote_root: "PhotoViewer".into(),
             direction: crate::core::sync::SyncDirection::Bidirectional,

@@ -12,6 +12,7 @@ fn reset_fixture() -> (tempfile::TempDir, SyncService, SyncJob) {
             endpoint: "https://dav.example.test/".into(),
             username: "alice".into(),
             credential_ref: "retain-this-credential".into(),
+            etag_is_sha256: false,
             local_root: root,
             remote_root: "Photos".into(),
             direction: SyncDirection::Bidirectional,
