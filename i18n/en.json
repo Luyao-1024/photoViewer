@@ -464,5 +464,12 @@
     "keyboard.toggle_details": "Show or hide details",
     "keyboard.toggle_edit": "Show or hide the edit panel",
     "keyboard.toggle_favorite": "Toggle favorite",
-    "dialog.confirm": "Confirm"
+    "dialog.confirm": "Confirm",
+  "setting.sync.strategy": "Sync strategy",
+  "setting.sync.strategy.backup": "Backup",
+  "setting.sync.strategy.sync": "Sync",
+  "setting.sync.strategy.backup_description": "Back up selected local albums and retain previous versions. Local deletion keeps cloud copies without restoring them.",
+  "setting.sync.strategy.sync_description": "Sync additions and edits both ways. Local deletion keeps cloud copies; download them again only when their content changes.",
+  "setting.sync.resetting": "Clearing synchronization history…",
+  "setting.sync.reset_failed": "Could not clear synchronization history: {error}"
 }

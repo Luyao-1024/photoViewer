@@ -10,6 +10,7 @@ use crate::core::error::{AppError, Result};
 use super::model::{Fingerprint, Revision, RevisionStrength, SyncDirection, UploadScope};
 
 mod configuration;
+mod reset;
 pub use configuration::{JobEdit, PendingChange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub struct StoredEntry {
     pub remote_revision: Option<String>,
     pub remote_revision_weak: bool,
     pub baseline: Option<Fingerprint>,
+    pub suppressed: Option<Fingerprint>,
     pub baseline_remote_revision: Option<String>,
     pub state: String,
     pub generation: i64,
@@ -125,6 +127,21 @@ pub struct SyncStore {
 
 #[derive(Debug)]
 pub enum SyncWrite {
+    FailScheduledRun {
+        id: i64,
+        generation: i64,
+        error: String,
+    },
+    BeginReset {
+        token: String,
+    },
+    FinishReset {
+        token: String,
+    },
+    FailReset {
+        token: String,
+        error: String,
+    },
     FinishRun {
         id: i64,
         generation: i64,
@@ -179,6 +196,10 @@ pub enum SyncWrite {
         remote_revision: Option<String>,
         remote_revision_weak: bool,
         state: String,
+    },
+    SuppressLocalDeletion {
+        entry_id: i64,
+        fingerprint: Fingerprint,
     },
     CommitBaseline {
         entry_id: i64,
@@ -453,10 +474,12 @@ impl SyncStore {
                 conflict_images,
             });
         }
-        let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_changes p JOIN sync_jobs j ON j.id=p.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE c.enabled=1)",[],|row|row.get(0))?;
+        let pending = self.reset_pending()? || conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_changes p JOIN sync_jobs j ON j.id=p.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE c.enabled=1)",[],|row|row.get::<_, bool>(0))?;
         if pending {
             return Ok(SyncOverview {
-                status: if jobs.iter().any(|(_, _, _, error)| error.is_some()) {
+                status: if self.reset_error()?.is_some()
+                    || jobs.iter().any(|(_, _, _, error)| error.is_some())
+                {
                     SyncOverviewStatus::Failed
                 } else {
                     SyncOverviewStatus::Applying
@@ -594,7 +617,7 @@ impl SyncStore {
             "SELECT id, relative_path, local_fingerprint, local_size, local_mtime_ns,
                     remote_fingerprint, remote_size, remote_revision, remote_revision_weak,
                     baseline_fingerprint, baseline_size, baseline_remote_revision,
-                    state, entry_generation
+                    state, entry_generation, suppressed_fingerprint, suppressed_size
              FROM sync_entries WHERE job_id = ?1 ORDER BY relative_path",
         )?;
         let rows = stmt.query_map([job_id], |row| {
@@ -610,10 +633,23 @@ impl SyncStore {
                 baseline_remote_revision: row.get(11)?,
                 state: row.get(12)?,
                 generation: row.get(13)?,
+                suppressed: fingerprint(row.get(14)?, row.get(15)?),
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
+    }
+
+    pub(crate) fn suppress_local_deletion(
+        &self,
+        entry_id: i64,
+        fingerprint: &Fingerprint,
+    ) -> Result<()> {
+        self.write(SyncWrite::SuppressLocalDeletion {
+            entry_id,
+            fingerprint: fingerprint.clone(),
+        })?;
+        Ok(())
     }
 
     pub fn open_conflicts(&self, job_id: i64) -> Result<Vec<SyncConflict>> {
@@ -846,6 +882,14 @@ impl SyncStore {
 
 pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWriteResult> {
     match command {
+        SyncWrite::FailScheduledRun {
+            id,
+            generation,
+            error,
+        } => reset::fail_scheduled_run(pool, id, generation, error),
+        SyncWrite::BeginReset { token } => reset::begin(pool, token),
+        SyncWrite::FinishReset { token } => reset::finish(pool, token),
+        SyncWrite::FailReset { token, error } => reset::fail(pool, token, error),
         SyncWrite::FinishRun {
             id,
             generation,
@@ -1204,6 +1248,17 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             )?;
             Ok(SyncWriteResult::Id(id))
         }
+        SyncWrite::SuppressLocalDeletion {
+            entry_id,
+            fingerprint,
+        } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            tx.execute("UPDATE sync_entries SET suppressed_fingerprint=?1,suppressed_size=?2,state='local_deleted',updated_at=unixepoch() WHERE id=?3", params![fingerprint.blake3, fingerprint.size as i64, entry_id])?;
+            tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='retain_remote',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='MissingWithDeletesDisabled'", [entry_id])?;
+            tx.commit()?;
+            Ok(SyncWriteResult::None)
+        }
         SyncWrite::CommitBaseline {
             entry_id,
             fingerprint,
@@ -1217,6 +1272,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         remote_revision = ?3,
                         baseline_fingerprint = ?1, baseline_size = ?2,
                         baseline_remote_revision = ?3, state = 'synced',
+                        suppressed_fingerprint = NULL, suppressed_size = NULL,
                         updated_at = unixepoch() WHERE id = ?4",
                 params![
                     fingerprint.blake3,

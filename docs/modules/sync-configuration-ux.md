@@ -2,17 +2,17 @@
 
 ## Status And Scope
 
-This is a **binding requirement**, not a claim that the current implementation
-already complies. The existing pause-on-expand and pause-before-browse paths
-must be migrated. Implementation status and remaining gaps are recorded in
-[`sync.md`](sync.md#edit-first-configuration-contract).
+This is the **binding requirement** for configuration changes. Durable desired
+edits, safe quiescence, recovery and restart are described in
+[`sync.md`](sync.md#edit-first-configuration-contract); acceptance evidence must
+continue to use actual transfers and real input rather than idle-only fixtures.
 
 The governing rule is:
 
 > 先编辑；只有确认并接受了真正的修改，才停止旧同步，再自动使用最新配置同步。
 
 This applies to every exposed cloud-sync editing flow: individual upload-album
-choices, Select All, local/remote root changes, connection or credential changes
+choices, Select All, Backup/Sync strategy changes, local/remote root changes, connection or credential changes
 where editable, task creation/deletion, and confirmed conflict choices. Future
 sync configuration controls must use the same contract. Display-only preferences
 and explicit opt-out/deletion have the exceptions below.
@@ -118,14 +118,22 @@ completed file changes merely because configuration changed.
 
 | Flow | What is side-effect free? | After an accepted effective change |
 |---|---|---|
+| Backup / Sync strategy buttons | Opening Settings or pressing the active choice | Persist the desired direction, quiesce and recover old work, preserve deletion records, automatically run the latest mode if enabled |
 | Album checkbox / Select All | Expanding or inspecting the list | Persist one logical scope edit; internally stop obsolete work and automatically run the latest explicit scope |
 | Cloud folder / root / connection / credentials | Opening a browser or typing an unconfirmed value | Validate and confirm; quiesce affected old work, safely install the new mapping and restart automatically |
 | Add a task | Incomplete/invalid form and cancelled submission | Validate and save; schedule the new task if sync is enabled, without stopping unrelated jobs |
 | Delete a task | Opening or cancelling its confirmation | Stop the confirmed target safely, remove its relationship, preserve local/cloud media; never restart the deleted job |
 | Conflict choice | Inspecting conflicts or abandoning a choice | Re-check versions, serialize affected operations and apply the valid choice; reconcile the resulting latest state automatically |
-| Global sync off | Merely inspecting the switch | Persist explicit opt-out and stop scheduling; never automatically turn it back on or restart network work |
-| Global sync on | Redundant assignment of the current value | Read the latest saved configurations and automatically schedule eligible jobs |
+| Global sync off | Merely inspecting the switch | Persist opt-out and reset intent; safely settle issued operations, retain accounts/latest task configuration, discard history/deletion records/queued actions and owned temporaries; never turn it back on |
+| Global sync on | Redundant assignment of the current value | Wait for any pending global reset, then read retained configurations and automatically rebuild eligible jobs from fresh baselines |
 | Day-grid cloud badges / display-only settings | Both inspection and changes | Update presentation only; never stop or restart transfers |
+
+An explicit global Off is the deliberate exception to history retention: keep
+accepted root/strategy/scope fields, clear pending conflict/execution actions,
+and use the global reset contract in `sync.md`. Never clear artifacts while a
+file/configuration operation can still use or recreate them. Report cleanup
+failures and resume their durable intent at startup. A rapid newer opt-in cannot
+bypass the reset barrier, and a newer opt-out cannot be undone by its completion.
 
 Explicit disabling, deletion, invalid configuration, loss of credentials/root
 reachability, or a safety block can prevent a new run. Report the actual reason;

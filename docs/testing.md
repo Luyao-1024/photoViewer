@@ -754,3 +754,51 @@ blind spot is worse: a CSS `margin-bottom` "lift" reads as movement in
 `allocation()` while the card never moves. Pixel-level checks in
 `src/ui/grid_css/tests/render.rs` sample the whole window for the same reason -
 a single widget's snapshot omits its parent's background.
+
+## WebDAV backup and sync strategies
+
+Focused backend cases in `src/core/sync/service/tests/strategies.rs` exercise
+upload-only version preservation, initial collisions, failure/recovery before
+overwrite, no local resurrection, content-version deletion suppression, unchanged
+ETag/content verification, mode switching, and persistence across reopening and
+media-index deletion. The schema-v5 migration fixture preserves old direction,
+common baselines, and pending edits.
+
+`tests/ux_sync_strategies.rs` uses the full shell and hit-tested presses. It checks
+new-task Backup defaults, live transfer mode editing, rapid-switch coalescing,
+automatic restart, reopening persistence and editable modes while globally off.
+It does not pre-pause the job or set toggle state to reach the tested behavior.
+
+```bash
+cargo test --locked --lib core::sync::service::tests::strategies -- --nocapture
+cargo test --locked --test db_migrations schema_v5_sync_state_migrates_without_changing_existing_strategy -- --exact
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_strategies -- --nocapture
+```
+
+The desktop-session bus prefix is a local fallback when a newly launched D-Bus
+session cannot execute the host AT-SPI service; CI uses its normal session bus.
+
+## WebDAV global-off history reset
+
+Focused backend cases in `src/core/sync/service/tests/reset.rs` cover preserving
+accounts/task configuration, merging latest accepted fields, discarding conflict
+choices, clearing all runtime rows and owned temporary files, waiting for active
+file/configuration operations, late-write rejection, durable retry and tokens,
+database isolation, disabled accounts, no-task orphans and symlink/source-media
+protection. Stage roots are fixture-owned, never the real user's data directory.
+
+`tests/ux_sync_reset.rs` creates an actual saved job through the service fixture,
+favorites and trashes a synced photo through Viewer input, lets the ordinary
+engine create deletion suppression and a content conflict, then presses the
+global switch with native mouse input. It verifies empty history, retained
+configuration/media/favorites/trash/cloud content, hidden old conflict rows,
+fresh-association download on re-enable, immediate Off → On restart through a
+retiring worker, and Off → On → Off during a held transfer.
+The existing strategy/album-selection journeys also assert the new Off contract.
+
+```bash
+cargo test --locked --lib core::sync::service::tests::reset -- --nocapture
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_reset -- --nocapture
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_strategies -- --nocapture
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_album_selection saved_task_album_selection_selects_all_sorts_and_persists -- --exact --nocapture
+```

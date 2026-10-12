@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod sync_strategy;
 mod sync_upload;
 use sync_upload::SyncUploadAlbumSelection;
 
@@ -799,6 +800,16 @@ impl MainWindow {
             local_root.set_text(&config::pictures_dir().to_string_lossy());
             remote_root.set_text("PhotoViewer");
         }
+        let new_strategy = std::rc::Rc::new(std::cell::Cell::new(SyncDirection::UploadOnly));
+        let new_strategy_for_toggle = new_strategy.clone();
+        let new_strategy_row =
+            sync_strategy::strategy_row(SyncDirection::UploadOnly, parent, move |direction| {
+                new_strategy_for_toggle.set(direction);
+                Ok(())
+            });
+        new_strategy_row.set_visible(creating_task.get());
+        new_strategy_row.set_sensitive(sync_enabled.get());
+        connection.add_row(&new_strategy_row);
         let show_saved_job = !saved_jobs.is_empty();
         endpoint.set_editable(!show_saved_job && sync_enabled.get());
         username.set_editable(!show_saved_job && sync_enabled.get());
@@ -825,6 +836,7 @@ impl MainWindow {
             let selected_form_job_for_picker = selected_form_job.clone();
             let creating_task_for_picker = creating_task.clone();
             let sync_enabled_for_picker = sync_enabled.clone();
+            let new_strategy_row_for_picker = new_strategy_row.clone();
             let connect_row_for_picker = connect_row.clone();
             let connect_button_for_picker = connect_button.clone();
             let endpoint_for_picker = endpoint.clone();
@@ -863,6 +875,8 @@ impl MainWindow {
                 password_for_picker.set_editable(editable);
                 local_root_for_picker.set_editable(editable);
                 remote_root_for_picker.set_editable(editable);
+                new_strategy_row_for_picker.set_visible(adding_task);
+                new_strategy_row_for_picker.set_sensitive(editable);
                 connect_row_for_picker.set_visible(adding_task);
                 connect_button_for_picker.set_sensitive(editable);
             });
@@ -871,6 +885,7 @@ impl MainWindow {
         let parent_for_connect = parent.clone();
         let window_for_connect = self.downgrade();
         let creating_task_for_connect = creating_task.clone();
+        let new_strategy_for_connect = new_strategy.clone();
         let endpoint_for_connect = endpoint.clone();
         let username_for_connect = username.clone();
         let password_for_connect = password.clone();
@@ -918,7 +933,7 @@ impl MainWindow {
                 credential_ref: credential_ref.clone(),
                 local_root: PathBuf::from(local_text),
                 remote_root: remote_text,
-                direction: SyncDirection::Bidirectional,
+                direction: new_strategy_for_connect.get(),
                 upload_scope: UploadScope::SelectedAlbums,
                 upload_albums: Vec::new(),
             };
@@ -992,6 +1007,7 @@ impl MainWindow {
         let job_controls =
             std::rc::Rc::new(std::cell::RefCell::new(Vec::<SyncJobUiControls>::new()));
         let conflict_controls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let conflict_rows = std::rc::Rc::new(std::cell::RefCell::new(Vec::<adw::ActionRow>::new()));
         if let (Some(pool), Some(actor)) = (
             self.imp().pool.borrow().clone(),
             self.imp().db_actor.borrow().clone(),
@@ -1025,6 +1041,12 @@ impl MainWindow {
                     row.set_activatable(false);
 
                     connection.add_row(&row);
+                    let strategy_row = sync_strategy::saved_strategy_row(
+                        &job,
+                        crate::core::sync::SyncService::with_actor(pool.clone(), actor.clone()),
+                        parent,
+                    );
+                    connection.add_row(&strategy_row);
 
                     let cloud_folder_row = adw::ActionRow::new();
                     cloud_folder_row.add_css_class("settings-action-row");
@@ -1117,7 +1139,13 @@ impl MainWindow {
                             folder.set_subtitle(&current.remote_root);
                         }
                         let pending = status_store.pending_change(job_id).ok().flatten().is_some();
-                        row.set_subtitle(&if let Some(error) = current.last_error {
+                        row.set_subtitle(&if let Some(error) =
+                            status_store.reset_error().ok().flatten()
+                        {
+                            trf("setting.sync.reset_failed", &[("error", &error)])
+                        } else if status_store.reset_pending().unwrap_or(false) {
+                            tr("setting.sync.resetting")
+                        } else if let Some(error) = current.last_error {
                             trf("setting.sync.failed", &[("error", &error)])
                         } else if pending {
                             tr("setting.sync.applying_changes")
@@ -1254,6 +1282,7 @@ impl MainWindow {
                                 keep_both.clone(),
                             ]);
                             connection.add_row(&conflict_row);
+                            conflict_rows.borrow_mut().push(conflict_row.clone());
 
                             let buttons =
                                 vec![use_local.clone(), use_remote.clone(), keep_both.clone()];
@@ -1306,8 +1335,10 @@ impl MainWindow {
         let remote_root_for_toggle = remote_root.clone();
         let creating_task_for_toggle = creating_task.clone();
         let sync_enabled_for_toggle = sync_enabled.clone();
+        let new_strategy_row_for_global = new_strategy_row.clone();
         let job_controls_for_toggle = job_controls.clone();
         let conflict_controls_for_toggle = conflict_controls.clone();
+        let conflict_rows_for_toggle = conflict_rows.clone();
         let connection_for_toggle = connection.clone();
         let sync_task_count = saved_jobs.len();
         let parent_for_toggle = parent.clone();
@@ -1322,6 +1353,30 @@ impl MainWindow {
             }
             _ => None,
         };
+        if let Some(service) = service_for_global.clone() {
+            let weak_connection = connection.downgrade();
+            glib::timeout_add_local(Duration::from_millis(300), move || {
+                let Some(connection) = weak_connection.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                if connection.root().is_none() {
+                    return glib::ControlFlow::Break;
+                }
+                connection.set_subtitle(&if let Some(error) =
+                    service.store().reset_error().ok().flatten()
+                {
+                    trf("setting.sync.reset_failed", &[("error", &error)])
+                } else if service.store().reset_pending().unwrap_or(false) {
+                    tr("setting.sync.resetting")
+                } else {
+                    sync_settings_subtitle(
+                        prefs::webdav_sync_enabled(),
+                        service.store().list_jobs().map_or(0, |jobs| jobs.len()),
+                    )
+                });
+                glib::ControlFlow::Continue
+            });
+        }
         sync_switch.connect_active_notify(move |switch| {
             if reverting_switch_for_toggle.get() {
                 return;
@@ -1338,10 +1393,19 @@ impl MainWindow {
                 );
                 return;
             }
+            new_strategy_row_for_global.set_sensitive(enabled);
             let changed = sync_enabled_for_toggle.replace(enabled) != enabled;
             if changed {
                 if let Some(service) = &service_for_global {
-                    service.sync_enabled_changed();
+                    if let Err(error) = service.sync_enabled_changed() {
+                        show_settings_error_dialog(
+                            &parent_for_toggle,
+                            &trf(
+                                "setting.sync.reset_failed",
+                                &[("error", &error.to_string())],
+                            ),
+                        );
+                    }
                 }
             }
             connection_for_toggle.set_subtitle(&sync_settings_subtitle(enabled, sync_task_count));
@@ -1354,7 +1418,17 @@ impl MainWindow {
             connect_row_for_toggle.set_visible(creating_task_for_toggle.get());
             connect_button_for_toggle.set_sensitive(editable);
             for controls in job_controls_for_toggle.borrow().iter() {
+                if !enabled {
+                    *controls.state_description.borrow_mut() = tr("setting.sync.status.ready");
+                    controls.paused.set(false);
+                }
                 update_sync_job_controls(controls);
+            }
+            if !enabled {
+                for row in conflict_rows_for_toggle.borrow_mut().drain(..) {
+                    connection_for_toggle.remove(&row);
+                }
+                conflict_controls_for_toggle.borrow_mut().clear();
             }
             for button in conflict_controls_for_toggle.borrow().iter() {
                 button.set_sensitive(enabled);
@@ -1734,14 +1808,21 @@ fn connect_sync_conflict_button(
     conflict_id: i64,
     resolution: crate::core::sync::ConflictResolution,
 ) {
-    let row = row.clone();
+    let row = row.downgrade();
+    let all_buttons = all_buttons
+        .iter()
+        .map(|button| button.downgrade())
+        .collect::<Vec<_>>();
     let parent = parent.clone();
     let window = window.downgrade();
     button.connect_clicked(move |_| {
-        for button in &all_buttons {
+        let Some(current_row) = row.upgrade() else {
+            return;
+        };
+        for button in all_buttons.iter().filter_map(|button| button.upgrade()) {
             button.set_sensitive(false);
         }
-        row.set_subtitle(&tr("setting.sync.resolving"));
+        current_row.set_subtitle(&tr("setting.sync.resolving"));
         let task = tokio::spawn({
             let service = service.clone();
             async move {
@@ -1755,7 +1836,11 @@ fn connect_sync_conflict_button(
         let parent = parent.clone();
         let window = window.clone();
         glib::spawn_future_local(async move {
-            match task.await {
+            let result = task.await;
+            let Some(row) = row.upgrade().filter(|row| row.root().is_some()) else {
+                return;
+            };
+            match result {
                 Ok(Ok(())) => {
                     row.set_subtitle(&tr("setting.sync.conflict_resolved"));
                     if let Some(window) = window.upgrade() {
@@ -1765,7 +1850,7 @@ fn connect_sync_conflict_button(
                     show_settings_info_dialog(&parent, &tr("setting.sync.conflict_resolved"));
                 }
                 Ok(Err(error)) => {
-                    for button in &all_buttons {
+                    for button in all_buttons.iter().filter_map(|button| button.upgrade()) {
                         button.set_sensitive(prefs::webdav_sync_enabled());
                     }
                     row.set_subtitle(&trf(
@@ -1774,7 +1859,7 @@ fn connect_sync_conflict_button(
                     ));
                 }
                 Err(error) => {
-                    for button in &all_buttons {
+                    for button in all_buttons.iter().filter_map(|button| button.upgrade()) {
                         button.set_sensitive(prefs::webdav_sync_enabled());
                     }
                     row.set_subtitle(&trf(

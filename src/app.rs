@@ -112,6 +112,7 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
                     // 排空 change_rx。Upserted/Removed → 同步到 media_list；
                     // TrashChanged → 刷新当前可见的回收站页面（文件管理器改了回收站
                     // 后无需切换页面即可看到）。
+                    let sync_changes = install_sync_scheduler(&window, pool.clone(), db_actor.clone());
                     let window_for_consumer = window.downgrade();
                     let album_refresh = crate::core::refresh::RefreshCoordinator::new(
                         db_actor.clone(),
@@ -135,7 +136,9 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
                             let media_list = media_list.clone();
                             let window_for_consumer = window_for_consumer.clone();
                             let album_refresh = album_refresh.clone();
+                            let sync_changes = sync_changes.clone();
                             move |event| {
+                                sync_changes(event);
                                 apply_domain_event_to_legacy_ui(
                                     event,
                                     &media_list,
@@ -175,6 +178,85 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
     });
 
     app
+}
+
+/// Keep network work off GTK: local file events debounce for two seconds and
+/// remote changes are polled every thirty seconds while this window exists.
+fn install_sync_scheduler(
+    window: &MainWindow,
+    pool: DbPool,
+    actor: crate::core::db_actor::DbActorHandle,
+) -> Rc<dyn Fn(&DomainEvent)> {
+    let service = crate::core::sync::SyncService::with_actor(pool, actor);
+    let automatic = Rc::new({
+        let service = service.clone();
+        move || {
+            if let Err(error) = service.request_automatic_sync() {
+                tracing::warn!("cannot schedule automatic WebDAV synchronization: {error}");
+            }
+        }
+    });
+    let window_weak = window.downgrade();
+    let polling = automatic.clone();
+    gtk::glib::timeout_add_local(std::time::Duration::from_secs(30), move || {
+        if window_weak.upgrade().is_none() {
+            return gtk::glib::ControlFlow::Break;
+        }
+        polling();
+        gtk::glib::ControlFlow::Continue
+    });
+    let pending = Rc::new(std::cell::RefCell::new(None::<gtk::glib::SourceId>));
+    let window_weak = window.downgrade();
+    Rc::new(move |event| {
+        use crate::core::events::ChangeSource;
+        if !crate::core::prefs::webdav_sync_enabled()
+            || service.store().reset_pending().unwrap_or(true)
+        {
+            if let Some(source) = pending.borrow_mut().take() {
+                source.remove();
+            }
+            return;
+        }
+        let source = match event {
+            DomainEvent::MediaUpserted { source, .. }
+            | DomainEvent::MediaRemoved { source, .. }
+            | DomainEvent::MediaMovedToTrash { source, .. }
+            | DomainEvent::MediaRestored { source, .. } => Some(source),
+            DomainEvent::MediaUpdated { source, fields, .. }
+                if fields.location || fields.metadata || fields.attributes || fields.trash =>
+            {
+                Some(source)
+            }
+            _ => None,
+        };
+        if source.is_none_or(|source| {
+            matches!(
+                source,
+                ChangeSource::Synchronization
+                    | ChangeSource::StartupScan
+                    | ChangeSource::ThumbnailWorker
+            )
+        }) {
+            return;
+        }
+        if let Some(source) = pending.borrow_mut().take() {
+            source.remove();
+        }
+        let pending_for_timeout = pending.clone();
+        let epoch = service.scheduling_epoch();
+        let service = service.clone();
+        let window_weak = window_weak.clone();
+        let source =
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                pending_for_timeout.borrow_mut().take();
+                if window_weak.upgrade().is_some() && epoch == service.scheduling_epoch() {
+                    if let Err(error) = service.request_local_changes() {
+                        tracing::warn!("cannot schedule changed local WebDAV files: {error}");
+                    }
+                }
+            });
+        pending.replace(Some(source));
+    })
 }
 
 fn domain_event_label(event: &DomainEvent) -> String {
@@ -408,13 +490,21 @@ async fn initialize(
     );
 
     // 打开应用即触发一次同步：与首页下拉相同的"一次性运行全部已保存任务"
-    // 行为（无定时器；已在运行的任务会被跳过，暂停的任务在该次运行中恢复）。
+    // 行为；窗口完成初始化后还会安装远端轮询和本地变更触发。
     // 同步规划直接读文件系统与同步条目，不依赖启动扫描结果，因此与扫描并行。
-    if crate::core::prefs::webdav_sync_enabled() {
+    {
         let sync_pool = pool.clone();
         let sync_actor = db_actor.clone();
         tokio::spawn(async move {
             let service = crate::core::sync::SyncService::with_actor(sync_pool, sync_actor);
+            if !crate::core::prefs::webdav_sync_enabled()
+                || service.store().reset_pending().unwrap_or(true)
+            {
+                if let Err(error) = service.sync_enabled_changed() {
+                    tracing::warn!("cannot resume WebDAV state cleanup at startup: {error}");
+                }
+                return;
+            }
             // 先对账再触发：概览的“正在同步”完全由 last_started_at/last_completed_at
             // 推导，进程被杀时留下的运行记录没有任何东西能回收，会让每次启动都显示
             // 正在同步。运行不可能比它的进程活得更久，所以这里清掉的一定是陈旧状态。

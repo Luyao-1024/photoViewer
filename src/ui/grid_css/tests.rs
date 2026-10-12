@@ -613,84 +613,60 @@ fn current_viewer_thumbnail_is_prominently_enlarged() {
     let css = build_css(true);
     assert!(
         css.contains(".viewer-thumb-carousel"),
-        "viewer filmstrip should expose a carousel surface class",
+        "the filmstrip keeps its carousel surface"
     );
-    assert!(
-        css.contains("transition: transform 220ms cubic-bezier(0.2, 0.0, 0.2, 1)"),
-        "viewer filmstrip should animate carousel position changes",
-    );
-    assert!(
-            css.contains(".viewer-thumb-strip {\n  padding: 0 24px;"),
-            "viewer filmstrip should keep internal edge inset so thumbnails do not touch rounded carousel edges",
-        );
+    let start = css
+        .find("button.viewer-thumb-item {")
+        .expect("native thumbnail button styling");
+    let end = css[start..]
+        .find("/* viewer-overlay-nav")
+        .expect("end of filmstrip styles")
+        + start;
+    let filmstrip = &css[start..end];
+    assert!(css.contains(".viewer-thumb-strip {\n  padding: 0 24px;"));
     assert!(
         css.contains("inset 34px 0 24px -30px alpha(@window_bg_color, 0.72)")
-            && css.contains("inset -34px 0 24px -30px alpha(@window_bg_color, 0.72)"),
-        "carousel surface should draw subtle edge fades without extra layout widgets",
+            && css.contains("inset -34px 0 24px -30px alpha(@window_bg_color, 0.72)")
     );
     assert!(
-        css.contains(".viewer-thumb-item.viewer-thumb-current"),
-        "CSS must define the current filmstrip thumbnail state",
+        filmstrip.contains("padding: 1px 8px;"),
+        "reserve transparent side space in every state"
     );
+    assert!(filmstrip.contains("transform: translateY(0px) scale(1)"));
+    assert!(filmstrip.contains("transform: translateY(-3px) scale(1.24)"));
+    assert!(filmstrip.contains("opacity: 0.54") && filmstrip.contains("opacity: 1.0"));
     assert!(
-        css.contains("transform: translateY(-3px) scale(1.24)"),
-        "current filmstrip thumbnail should be prominently enlarged",
+        filmstrip.contains("opacity 240ms cubic-bezier(0.22, 1, 0.36, 1)")
+            && filmstrip.contains("transform 240ms cubic-bezier(0.22, 1, 0.36, 1)"),
+        "scale and opacity share the documented ease-out timing"
     );
-    assert!(
-        css.contains("opacity: 0.54"),
-        "non-current filmstrip thumbnails should be visually de-emphasized",
-    );
-    assert!(
-        css.contains("opacity: 1.0"),
-        "current filmstrip thumbnail should stay fully bright",
-    );
-    assert!(
-        !css.contains("margin 180ms ease"),
-        "viewer thumbnail transitions must not animate layout-affecting margins",
-    );
-    assert!(
-        !css.contains("margin-left: 10px") && !css.contains("margin-right: 10px"),
-        "current filmstrip thumbnail must not change button allocation with margins",
-    );
-    assert!(
-        !css.contains("button.viewer-thumb-item.viewer-thumb-current {\n  margin-left")
-            && !css.contains("button.viewer-thumb-item.viewer-thumb-current {\n  padding: 4px"),
-        "current filmstrip thumbnail must emphasize visually without changing padding",
-    );
-    assert!(
-        css.contains("background: alpha(@window_fg_color, 0.12)"),
-        "current filmstrip thumbnail should use the shared glass selection veil",
-    );
-    assert!(
-        css.contains("button.viewer-thumb-item"),
-        "viewer filmstrip thumbnails are GtkButtons and need a button-node reset",
-    );
-    assert!(
-        css.contains("border: 0"),
-        "non-current viewer thumbnails should not draw a button border",
-    );
-    assert!(
-        css.contains("button.viewer-thumb-item:hover"),
-        "hover state should also suppress the default GTK button frame",
-    );
-    assert!(
-        css.contains("border: 2px solid alpha(@window_fg_color, 0.48)"),
-        "current filmstrip thumbnail image should use the same glass ring as grid selection",
-    );
-    assert!(
-        css.contains("outline: 2px solid alpha(@window_fg_color, 0.55)"),
-        "current filmstrip thumbnail should draw an outer glass emphasis ring",
-    );
-    assert!(
-        !css.contains("#78b8ff"),
-        "viewer filmstrip should not use a separate blue accent family",
-    );
-    assert!(
-            css.contains("button.viewer-thumb-item.viewer-thumb-current picture"),
-            "current filmstrip thumbnail emphasis should be painted on the image node, not the reset button node",
+    let current_start = filmstrip
+        .find("button.viewer-thumb-item.viewer-thumb-current {")
+        .unwrap();
+    let current_end = filmstrip[current_start..].find('}').unwrap() + current_start;
+    let current = &filmstrip[current_start..current_end];
+    for property in [
+        "margin",
+        "padding",
+        "min-width",
+        "min-height",
+        "background",
+        "border",
+        "outline",
+        "box-shadow",
+    ] {
+        assert!(
+            !current.contains(property),
+            "current emphasis must not add {property}"
         );
+    }
+    assert!(filmstrip.contains("button.viewer-thumb-item:hover"));
+    assert!(filmstrip.contains("button.viewer-thumb-item picture {\n  border-radius: 6px;\n  border: none;\n  outline: none;\n  box-shadow: none;"));
+    assert!(
+        !filmstrip.contains("alpha(@window_fg_color") && !filmstrip.contains("#78b8ff"),
+        "thumbnail emphasis has no selection veil, ring or separate accent"
+    );
 }
-
 #[test]
 fn library_stats_text_is_larger_than_auxiliary_tile_text() {
     let css = build_css(true);

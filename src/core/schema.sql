@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     baseline_fingerprint TEXT,
     baseline_size        INTEGER,
     baseline_remote_revision TEXT,
+    suppressed_fingerprint TEXT,
+    suppressed_size      INTEGER,
     state                TEXT NOT NULL DEFAULT 'pending',
     entry_generation     INTEGER NOT NULL DEFAULT 1,
     updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),

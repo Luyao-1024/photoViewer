@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -101,6 +101,22 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
                  UPDATE sync_jobs SET upload_scope = 'all';",
             )?;
         }
+    }
+    if version < 6 {
+        let mut stmt = tx.prepare("PRAGMA table_info(sync_entries)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+        drop(stmt);
+        if !columns.contains("suppressed_fingerprint") {
+            tx.execute_batch(
+                "ALTER TABLE sync_entries ADD COLUMN suppressed_fingerprint TEXT;
+                              ALTER TABLE sync_entries ADD COLUMN suppressed_size INTEGER;",
+            )?;
+        }
+        // Earlier upload-only jobs had no immutable history; the next backup
+        // establishes it even when the ordinary file baseline is current.
+        tx.execute("UPDATE sync_entries SET remote_fingerprint=NULL,remote_size=NULL WHERE job_id IN (SELECT id FROM sync_jobs WHERE direction='upload_only') AND local_fingerprint IS NOT NULL", [])?;
     }
     if version < 2 {
         if version == 1 && !columns.contains("file_mtime_ns") {

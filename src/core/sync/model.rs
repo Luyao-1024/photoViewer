@@ -152,6 +152,8 @@ pub enum PlanAction {
     DeleteLocal,
     DeleteRemote { expected: Revision },
     VerifyContent,
+    SuppressLocalDeletion,
+    VerifySuppressedRemoteContent,
     WaitForCompleteObservation,
     Conflict(ConflictKind),
 }

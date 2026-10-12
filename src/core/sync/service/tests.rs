@@ -43,6 +43,9 @@ fn relative_remote_key_rejects_sibling_roots() {
 struct FakeProvider {
     objects: Mutex<BTreeMap<String, Vec<u8>>>,
     upload_calls: AtomicU64,
+    fail_archive_upload: AtomicBool,
+    fail_listing: AtomicBool,
+    fail_download: AtomicBool,
     download_calls: AtomicU64,
     /// Declared lengths that override the stored byte count. Lets a test place
     /// an object beyond a size threshold without allocating gigabytes for it.
@@ -89,6 +92,9 @@ impl SyncProvider for FakeProvider {
     }
 
     async fn list_children(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>> {
+        if self.fail_listing.swap(false, Ordering::Relaxed) {
+            return Err(ProviderError::Offline("injected incomplete listing".into()));
+        }
         let prefix = format!("{}/", collection.trim_matches('/'));
         let objects = self.objects.lock().unwrap();
         let mut entries = BTreeMap::new();
@@ -145,6 +151,9 @@ impl SyncProvider for FakeProvider {
         destination: &Path,
     ) -> ProviderResult<RemoteEntry> {
         self.download_calls.fetch_add(1, Ordering::Relaxed);
+        if self.fail_download.swap(false, Ordering::Relaxed) {
+            return Err(ProviderError::Offline("injected failed download".into()));
+        }
         let bytes = self
             .objects
             .lock()
@@ -173,6 +182,13 @@ impl SyncProvider for FakeProvider {
         condition: WriteCondition,
     ) -> ProviderResult<RemoteEntry> {
         self.upload_calls.fetch_add(1, Ordering::Relaxed);
+        if key.contains(".photoviewer-backup/")
+            && self.fail_archive_upload.swap(false, Ordering::Relaxed)
+        {
+            return Err(ProviderError::Offline(
+                "injected backup archive failure".into(),
+            ));
+        }
         let bytes = tokio::fs::read(source).await?;
         let mut objects = self.objects.lock().unwrap();
         match condition {
@@ -998,7 +1014,9 @@ async fn run_with_provider_reports_live_transfer_progress() {
     provider.insert("PhotoViewer/cloud.gif", remote_bytes.clone());
     provider.insert("PhotoViewer/another/cloud.gif", remote_bytes);
 
-    live_progress_begin_session();
+    let database = service.job_key(job.id).unwrap().0;
+    let active = service.acquire_run_slot(job.id).await.unwrap();
+    live_progress_begin_session(&database);
     let summary = service.run_with_provider(&job, provider).await.unwrap();
     let progress = live_progress().expect("live progress is reported while a run is active");
     assert_eq!(summary.uploaded, 1);
@@ -1013,7 +1031,8 @@ async fn run_with_provider_reports_live_transfer_progress() {
         progress.phase,
         SyncLivePhase::Downloading | SyncLivePhase::Uploading
     ));
-    live_progress_end_session();
+    drop(active);
+    live_progress_end_session(&database);
     assert_eq!(live_progress(), None);
 }
 
@@ -1036,12 +1055,13 @@ async fn edit_first_activity_is_scoped_to_database_not_numeric_job_id() {
 #[test]
 fn live_progress_session_survives_a_concurrent_trigger_close() {
     let _session_lock = PROGRESS_TEST_LOCK.lock().unwrap();
-    live_progress_begin_session();
+    let database = PathBuf::from("progress-contract");
+    live_progress_begin_session(&database);
 
     // While a run holds its job's activation slot, another trigger closing
     // its own cycle must not tear down the session that run reports through.
     let active = ActiveJobGuard::acquire((PathBuf::from("progress-contract"), 987_654)).unwrap();
-    live_progress_end_session();
+    live_progress_end_session(&database);
     assert!(
         live_progress().is_some(),
         "an active run owns the progress session"
@@ -1049,7 +1069,7 @@ fn live_progress_session_survives_a_concurrent_trigger_close() {
 
     // Once the run finishes (guard dropped), closing the session clears it.
     drop(active);
-    live_progress_end_session();
+    live_progress_end_session(&database);
     assert_eq!(live_progress(), None);
 }
 
@@ -1095,6 +1115,14 @@ fn recovery_service(root: &Path) -> SyncService {
 }
 
 fn recovery_job(service: &SyncService, local_root: PathBuf) -> crate::core::sync::SyncJob {
+    recovery_job_in_direction(service, local_root, SyncDirection::UploadOnly)
+}
+
+fn recovery_job_in_direction(
+    service: &SyncService,
+    local_root: PathBuf,
+    direction: SyncDirection,
+) -> crate::core::sync::SyncJob {
     service
         .store()
         .create_job(&crate::core::sync::NewSyncJob {
@@ -1103,7 +1131,7 @@ fn recovery_job(service: &SyncService, local_root: PathBuf) -> crate::core::sync
             credential_ref: "recovery-cap".into(),
             local_root,
             remote_root: "PhotoViewer".into(),
-            direction: crate::core::sync::SyncDirection::UploadOnly,
+            direction,
             upload_scope: crate::core::sync::UploadScope::All,
             upload_albums: Vec::new(),
         })
@@ -1215,7 +1243,7 @@ async fn verification_resolves_a_length_mismatch_without_fetching() {
     let local_root = temp.path().join("photos");
     std::fs::create_dir(&local_root).unwrap();
     let service = recovery_service(temp.path());
-    let job = recovery_job(&service, local_root.clone());
+    let job = recovery_job_in_direction(&service, local_root.clone(), SyncDirection::Bidirectional);
 
     let provider = FakeProvider::default();
     provider.insert("PhotoViewer/clip.mp4", vec![9u8; 2048]);
@@ -1270,7 +1298,7 @@ async fn verification_stops_at_the_cap_and_records_insufficient_evidence() {
     let local_root = temp.path().join("photos");
     std::fs::create_dir(&local_root).unwrap();
     let service = recovery_service(temp.path());
-    let job = recovery_job(&service, local_root.clone());
+    let job = recovery_job_in_direction(&service, local_root.clone(), SyncDirection::Bidirectional);
 
     let oversized = MAX_VERIFY_DOWNLOAD_BYTES + 1;
     let provider = FakeProvider::default();
@@ -1480,3 +1508,7 @@ async fn a_no_change_run_does_not_rewrite_entries() {
         "a real change must still be written"
     );
 }
+
+mod strategies;
+
+mod reset;

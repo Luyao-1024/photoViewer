@@ -35,6 +35,13 @@ impl SyncService {
     }
 
     pub(super) async fn acquire_run_slot(&self, id: i64) -> Result<ActiveJobGuard> {
+        let reset = self.reset_work()?;
+        let _database_gate = reset.gate.lock().await;
+        if self.store.reset_pending()? {
+            return Err(AppError::Backend(
+                "synchronization history is being cleared".into(),
+            ));
+        }
         let work = self.job_work(id)?;
         let _gate = work.gate.lock().await;
         if self.store.pending_change(id)?.is_some() {
@@ -44,7 +51,9 @@ impl SyncService {
     }
 
     pub fn has_pending_work(&self, id: i64) -> Result<bool> {
-        Ok(self.store.pending_change(id)?.is_some()
+        Ok(self.reset_is_working()?
+            || self.store.reset_pending()?
+            || self.store.pending_change(id)?.is_some()
             || self.job_work(id)?.working.load(Ordering::Acquire))
     }
 
@@ -103,6 +112,16 @@ impl SyncService {
             .map_err(|_| AppError::Backend("deletion lock poisoned".into()))? = None;
         self.request_job_sync(job.id)?;
         Ok(job)
+    }
+
+    pub fn accept_direction(&self, id: i64, direction: SyncDirection) -> Result<bool> {
+        let changed = self
+            .store
+            .queue_edit(id, super::super::store::JobEdit::Direction(direction))?;
+        if changed {
+            self.request_job_sync(id)?;
+        }
+        Ok(changed)
     }
 
     pub async fn set_upload_albums(&self, id: i64, albums: &[String]) -> Result<bool> {
@@ -167,28 +186,48 @@ impl SyncService {
         }
     }
 
-    /// Called only after the global switch has actually changed and persisted.
-    pub fn sync_enabled_changed(&self) {
+    pub(crate) fn scheduling_epoch(&self) -> u64 {
+        GLOBAL_RUN_EPOCH.load(Ordering::Acquire)
+    }
+
+    /// Called after the changed switch has persisted. Off starts a durable
+    /// history reset; enabling during cleanup waits for the same reset barrier.
+    pub fn sync_enabled_changed(&self) -> Result<()> {
         GLOBAL_RUN_EPOCH.fetch_add(1, Ordering::AcqRel);
-        let service = self.clone();
-        tokio::spawn(async move {
-            match service.store.list_jobs() {
-                Ok(jobs) => {
-                    for job in jobs {
-                        if let Err(error) = service.request_job_sync(job.id) {
-                            tracing::warn!(
-                                job_id = job.id,
-                                "cannot refresh sync configuration: {error}"
-                            );
-                        }
-                    }
-                }
-                Err(error) => tracing::warn!("cannot enumerate saved sync tasks: {error}"),
+        if !crate::core::prefs::webdav_sync_enabled() {
+            self.store.begin_reset()?;
+            return self.start_reset_worker();
+        }
+        if self.store.reset_pending()? {
+            return self.start_reset_worker();
+        }
+        for job in self.store.list_jobs()? {
+            self.request_job_sync(job.id)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn discard_queued_work(&self) -> Result<()> {
+        let database = self.job_key(0)?.0;
+        if let Some(work) = WORK.get() {
+            let work = work
+                .lock()
+                .map_err(|_| AppError::Backend("configuration worker lock poisoned".into()))?;
+            for (_, state) in work.iter().filter(|(key, _)| key.0 == database) {
+                state.requested.store(false, Ordering::Release);
+                *state
+                    .deletion
+                    .lock()
+                    .map_err(|_| AppError::Backend("deletion lock poisoned".into()))? = None;
             }
-        });
+        }
+        Ok(())
     }
 
     pub fn request_job_sync(&self, id: i64) -> Result<()> {
+        if self.store.reset_pending()? {
+            return self.start_reset_worker();
+        }
         let work = self.job_work(id)?;
         work.requested.store(true, Ordering::Release);
         if !work.working.swap(true, Ordering::AcqRel) {
@@ -202,6 +241,11 @@ impl SyncService {
 
     async fn configuration_worker(&self, id: i64, work: Arc<JobWork>) {
         loop {
+            if self.store.reset_pending().unwrap_or(true) {
+                work.requested.store(false, Ordering::Release);
+                work.working.store(false, Ordering::Release);
+                return;
+            }
             work.requested.store(false, Ordering::Release);
             tokio::time::sleep(Duration::from_millis(120)).await;
             let revision = self
@@ -239,18 +283,30 @@ impl SyncService {
                     if crate::core::prefs::webdav_sync_enabled()
                         && self.store.get_job(id).ok().flatten().is_some()
                     {
-                        live_progress_begin_session();
+                        let database = self.job_key(id).ok().map(|key| key.0);
+                        if let Some(database) = &database {
+                            live_progress_begin_session(database);
+                        }
+                        let generation = self
+                            .store
+                            .get_job(id)
+                            .ok()
+                            .flatten()
+                            .map(|job| job.config_generation);
                         let result = self.run_saved_job(id).await;
-                        live_progress_end_session();
+                        if let Some(database) = &database {
+                            live_progress_end_session(database);
+                        }
                         if let Err(error) = result {
-                            if self.store.pending_change(id).ok().flatten().is_none()
+                            if !self.store.reset_pending().unwrap_or(true)
+                                && self.store.pending_change(id).ok().flatten().is_none()
                                 && crate::core::prefs::webdav_sync_enabled()
                             {
-                                if let Ok(Some(job)) = self.store.get_job(id) {
-                                    let _ = self.store.finish_run(
+                                if let Some(generation) = generation {
+                                    let _ = self.store.fail_scheduled_run(
                                         id,
-                                        job.config_generation,
-                                        Some(&error.to_string()),
+                                        generation,
+                                        &error.to_string(),
                                     );
                                 }
                             }
@@ -277,10 +333,16 @@ impl SyncService {
     }
 
     pub(super) async fn apply_pending_job(&self, id: i64) -> Result<bool> {
+        let Some(_transition) = self.acquire_configuration_transition().await? else {
+            return Ok(false);
+        };
         let work = self.job_work(id)?;
         let _gate = work.gate.lock().await;
         while self.is_job_running(id)? {
             tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if self.store.reset_pending()? {
+            return Ok(false);
         }
         let Some(job) = self.store.get_job(id)? else {
             return Ok(true);
@@ -302,7 +364,9 @@ impl SyncService {
         } else {
             Vec::new()
         };
-        if (root_changed || pending.delete) && !self.store.unfinished_tasks(id)?.is_empty() {
+        if (root_changed || pending.delete || pending.direction.is_some())
+            && !self.store.unfinished_tasks(id)?.is_empty()
+        {
             if !crate::core::prefs::webdav_sync_enabled() {
                 return Err(AppError::Backend("old file recovery must finish before switching or removing this task; synchronization is disabled".into()));
             }
@@ -312,6 +376,9 @@ impl SyncService {
                 recovery_job.upload_scope = UploadScope::SelectedAlbums;
             }
             for task in self.store.unfinished_tasks(id)? {
+                if self.store.reset_pending()? {
+                    return Ok(false);
+                }
                 if task.action.starts_with("upload_") {
                     self.recover_upload_task(&recovery_job, provider.as_ref(), &task)
                         .await?;

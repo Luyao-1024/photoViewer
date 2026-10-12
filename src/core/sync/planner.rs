@@ -166,5 +166,49 @@ fn side_changed(observation: &Observation, baseline: &Baseline, local: bool) -> 
     }
 }
 
+/// Backup only writes selected local content; cloud copies never publish locally.
+pub fn plan_backup(entry: &EntrySnapshot) -> PlanAction {
+    match (&entry.local, &entry.remote) {
+        (Observation::Unknown, _) | (_, Observation::Unknown) => {
+            PlanAction::WaitForCompleteObservation
+        }
+        (Observation::Absent, _) => PlanAction::Noop,
+        (Observation::Present { .. }, Observation::Absent) => PlanAction::UploadNew,
+        (Observation::Present { .. }, Observation::Present { .. }) => {
+            if observations_have_equal_fingerprints(&entry.local, &entry.remote) {
+                return PlanAction::Noop;
+            }
+            match entry.remote.revision() {
+                Some(revision) if revision.strength == RevisionStrength::Strong => {
+                    PlanAction::UploadReplace {
+                        expected: revision.clone(),
+                    }
+                }
+                _ => PlanAction::Conflict(ConflictKind::InsufficientEvidence),
+            }
+        }
+    }
+}
+
+/// A local deletion suppresses one proven cloud content version, not the path.
+pub fn plan_local_deletion(
+    entry: &EntrySnapshot,
+    deleted: &super::model::Fingerprint,
+) -> PlanAction {
+    match &entry.remote {
+        Observation::Unknown => PlanAction::WaitForCompleteObservation,
+        Observation::Absent => PlanAction::SuppressLocalDeletion,
+        Observation::Present {
+            fingerprint: Some(current),
+            ..
+        } if current == deleted => PlanAction::SuppressLocalDeletion,
+        Observation::Present {
+            fingerprint: Some(_),
+            ..
+        } => PlanAction::DownloadNew,
+        Observation::Present { .. } => PlanAction::VerifySuppressedRemoteContent,
+    }
+}
+
 #[cfg(test)]
 mod tests;

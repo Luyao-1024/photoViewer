@@ -464,5 +464,12 @@
     "keyboard.toggle_details": "显示或隐藏详细信息",
     "keyboard.toggle_edit": "打开或关闭编辑面板",
     "keyboard.toggle_favorite": "标记或取消收藏",
-    "dialog.confirm": "确认"
+    "dialog.confirm": "确认",
+  "setting.sync.strategy": "同步策略",
+  "setting.sync.strategy.backup": "备份模式",
+  "setting.sync.strategy.sync": "同步模式",
+  "setting.sync.strategy.backup_description": "仅备份已勾选的本地相册，保留历史版本；本地删除不删除远端，也不自动恢复。",
+  "setting.sync.strategy.sync_description": "双向同步新增和修改；本地删除保留远端，只有远端内容变化后才重新下载。",
+  "setting.sync.resetting": "正在清理同步记录…",
+  "setting.sync.reset_failed": "清理同步记录失败：{error}"
 }

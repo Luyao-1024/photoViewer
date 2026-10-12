@@ -138,7 +138,10 @@ impl DbCommand {
             Self::RefreshAlbumsInternal => DbWritePriority::DerivedRefresh,
             Self::ReconcileTrash { .. } => DbWritePriority::Trash,
             Self::Sync(
-                crate::core::sync::store::SyncWrite::CreateJob(_)
+                crate::core::sync::store::SyncWrite::BeginReset { .. }
+                | crate::core::sync::store::SyncWrite::FinishReset { .. }
+                | crate::core::sync::store::SyncWrite::FailReset { .. }
+                | crate::core::sync::store::SyncWrite::CreateJob(_)
                 | crate::core::sync::store::SyncWrite::QueueEdit { .. }
                 | crate::core::sync::store::SyncWrite::ApplyChange { .. },
             )
@@ -778,11 +781,15 @@ fn execute_command(
         DbCommand::Sync(command) => {
             let cloud_state_changed = matches!(
                 &command,
-                crate::core::sync::store::SyncWrite::CreateJob(_)
+                crate::core::sync::store::SyncWrite::BeginReset { .. }
+                    | crate::core::sync::store::SyncWrite::FinishReset { .. }
+                    | crate::core::sync::store::SyncWrite::FailReset { .. }
+                    | crate::core::sync::store::SyncWrite::CreateJob(_)
                     | crate::core::sync::store::SyncWrite::SetRemoteRoot { .. }
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
                     | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
+                    | crate::core::sync::store::SyncWrite::SuppressLocalDeletion { .. }
                     | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
                     | crate::core::sync::store::SyncWrite::RecordConflict { .. }
                     | crate::core::sync::store::SyncWrite::ResolveConflict { .. }

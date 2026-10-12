@@ -248,7 +248,7 @@ fn modified_ns(metadata: &std::fs::Metadata) -> Result<i64> {
         .map_err(|_| AppError::Backend("file modification time is out of range".into()))
 }
 
-fn is_internal_sync_name(path: &Path) -> bool {
+pub(crate) fn is_internal_sync_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with(".photoviewer-sync-"))

@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub struct PendingChange {
     pub revision: i64,
     pub upload_albums: Option<Vec<String>>,
+    #[serde(default)]
+    pub direction: Option<SyncDirection>,
     pub remote_root: Option<String>,
     pub delete: bool,
     pub conflict: Option<(SyncConflict, String)>,
@@ -13,6 +15,7 @@ pub struct PendingChange {
 
 #[derive(Debug, Clone)]
 pub enum JobEdit {
+    Direction(SyncDirection),
     UploadAlbums(Vec<String>),
     RemoteRoot(String),
     Delete,
@@ -58,6 +61,9 @@ impl SyncStore {
             return Ok(None);
         };
         if let Some(change) = self.pending_change(id)? {
+            if let Some(direction) = change.direction {
+                job.direction = direction;
+            }
             if let Some(root) = change.remote_root {
                 job.remote_root = root;
             }
@@ -108,6 +114,26 @@ pub(super) fn queue(pool: &DbPool, id: i64, edit: JobEdit) -> Result<SyncWriteRe
         };
     }
     match edit {
+        JobEdit::Direction(direction) => {
+            if direction == SyncDirection::DownloadOnly {
+                return Err(AppError::Backend(
+                    "download-only is not a supported synchronization strategy".into(),
+                ));
+            }
+            let current: String =
+                tx.query_row("SELECT direction FROM sync_jobs WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })?;
+            if pending
+                .direction
+                .map_or(current == direction.as_str(), |value| value == direction)
+            {
+                return Ok(SyncWriteResult::Changed(false));
+            }
+            pending.direction = Some(direction);
+            // A choice made under the other strategy must be reviewed again.
+            pending.conflict = None;
+        }
         JobEdit::UploadAlbums(albums) => {
             let effective = if let Some(albums) = &pending.upload_albums {
                 albums.clone()
@@ -205,6 +231,9 @@ pub(super) fn validate_other_roots(
 pub(super) fn apply(pool: &DbPool, id: i64, revision: i64) -> Result<SyncWriteResult> {
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
+    if super::reset::pending(&tx)? {
+        return Ok(SyncWriteResult::Changed(false));
+    }
     let Some(pending) = read(&tx, id)? else {
         return Ok(SyncWriteResult::Changed(false));
     };
@@ -255,6 +284,18 @@ pub(super) fn apply(pool: &DbPool, id: i64, revision: i64) -> Result<SyncWriteRe
         tx.execute(
             "UPDATE sync_jobs SET upload_scope='selected_albums' WHERE id=?1",
             [id],
+        )?;
+    }
+    if let Some(direction) = pending.direction {
+        if direction == SyncDirection::UploadOnly {
+            // Backup's explicit local-authoritative choice supersedes old
+            // bidirectional choices. Failed archival is reported as a task error.
+            tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='strategy_backup',resolved_at=unixepoch() WHERE job_id=?1 AND state='open'", [id])?;
+            tx.execute("UPDATE sync_entries SET remote_fingerprint=NULL,remote_size=NULL WHERE job_id=?1 AND local_fingerprint IS NOT NULL", [id])?;
+        }
+        tx.execute(
+            "UPDATE sync_jobs SET direction=?1 WHERE id=?2",
+            params![direction.as_str(), id],
         )?;
     }
     tx.execute("UPDATE sync_jobs SET config_generation=?1,paused=0,last_error=NULL,last_started_at=NULL,last_completed_at=NULL WHERE id=?2",params![revision,id])?;

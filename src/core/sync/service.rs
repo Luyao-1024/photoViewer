@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+mod backup;
 mod configuration;
+mod reset;
 use configuration::{JobKey, GLOBAL_RUN_EPOCH};
 
 use crate::config;
@@ -15,7 +17,8 @@ use crate::core::error::{AppError, Result};
 
 use super::local::{self, LocalEntry};
 use super::model::{
-    Baseline, EntrySnapshot, Observation, PlanAction, Revision, RevisionStrength, UploadScope,
+    Baseline, EntrySnapshot, Observation, PlanAction, Revision, RevisionStrength, SyncDirection,
+    UploadScope,
 };
 use super::planner;
 use super::provider::{RemoteEntry, SyncProvider, TransferProgress, WriteCondition};
@@ -68,6 +71,7 @@ pub struct SyncLiveProgress {
 
 /// The progress state plus the transport byte-count sink of the active run.
 struct LiveProgressSession {
+    database: PathBuf,
     state: SyncLiveProgress,
     transfer: Option<Arc<TransferProgress>>,
 }
@@ -139,12 +143,16 @@ pub fn live_progress() -> Option<SyncLiveProgress> {
     Some(snapshot)
 }
 
-fn live_progress_begin_session() {
+fn live_progress_begin_session(database: &Path) {
     if let Ok(mut slot) = LIVE_PROGRESS.lock() {
-        if slot.is_some() && any_job_active() {
+        if slot
+            .as_ref()
+            .is_some_and(|session| any_job_active_in_database(&session.database))
+        {
             return;
         }
         *slot = Some(LiveProgressSession {
+            database: database.to_path_buf(),
             state: SyncLiveProgress::preparing(),
             transfer: None,
         });
@@ -154,21 +162,24 @@ fn live_progress_begin_session() {
 /// Close the progress session only when no job is running. A duplicate
 /// trigger closing its own cycle must not blind the still-running run that
 /// owns the session.
-fn live_progress_end_session() {
-    if any_job_active() {
-        return;
-    }
+fn live_progress_end_session(database: &Path) {
     if let Ok(mut slot) = LIVE_PROGRESS.lock() {
+        if slot
+            .as_ref()
+            .is_none_or(|session| session.database != database)
+            || any_job_active_in_database(database)
+        {
+            return;
+        }
         *slot = None;
     }
 }
 
-fn any_job_active() -> bool {
+fn any_job_active_in_database(database: &Path) -> bool {
     ACTIVE_JOBS
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
-        .map(|active| !active.is_empty())
-        .unwrap_or(true)
+        .is_ok_and(|active| active.iter().any(|key| key.0 == database))
 }
 
 fn job_is_active(job_id: &JobKey) -> bool {
@@ -393,6 +404,7 @@ impl SyncService {
     ) -> Result<RunSummary> {
         ensure_webdav_sync_enabled()?;
         let _active = self.acquire_run_slot(job_id).await?;
+        ensure_webdav_sync_enabled()?;
         let job = self
             .store
             .get_job(job_id)?
@@ -458,6 +470,31 @@ impl SyncService {
         self.store.reconcile_interrupted_runs()
     }
 
+    /// Polling and local file events coalesce; an active or reconfiguring job
+    /// owns its next run and must not acquire an endless backlog of polls.
+    pub fn request_automatic_sync(&self) -> Result<()> {
+        self.request_background_sync(false)
+    }
+
+    pub fn request_local_changes(&self) -> Result<()> {
+        self.request_background_sync(true)
+    }
+
+    fn request_background_sync(&self, catch_up: bool) -> Result<()> {
+        if !crate::core::prefs::webdav_sync_enabled() {
+            return Ok(());
+        }
+        for job in self.store.list_jobs()? {
+            if !job.paused
+                && (catch_up
+                    || (!self.has_pending_work(job.id)? && !self.is_job_running(job.id)?))
+            {
+                self.request_job_sync(job.id)?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn trigger_saved_jobs_once(&self) -> Result<()> {
         ensure_webdav_sync_enabled()?;
         for job in self.store.list_jobs()? {
@@ -473,6 +510,11 @@ impl SyncService {
         resolution: ConflictResolution,
         provider: Arc<dyn SyncProvider>,
     ) -> Result<()> {
+        if self.store.reset_pending()? {
+            return Err(AppError::Backend(
+                "synchronization history is being cleared".into(),
+            ));
+        }
         let _active = ActiveJobGuard::acquire(self.job_key(job.id)?)?;
         provider.probe().await.map_err(provider_error)?;
         let current_conflict = self
@@ -673,8 +715,10 @@ impl SyncService {
         let local_entries = local::scan_matching_cached(
             &job.local_root,
             |relative_path| {
-                remote_entries.contains_key(relative_path)
-                    || upload_allowed(job.upload_scope, &upload_albums, relative_path)
+                relative_path.split('/').next() != Some(backup::BACKUP_DIRECTORY)
+                    && ((job.direction != SyncDirection::UploadOnly
+                        && remote_entries.contains_key(relative_path))
+                        || upload_allowed(job.upload_scope, &upload_albums, relative_path))
             },
             |relative_path| {
                 stored_entries
@@ -711,7 +755,8 @@ impl SyncService {
                 PlanAction::UploadNew | PlanAction::UploadReplace { .. } => planned_uploads += 1,
                 PlanAction::DownloadNew
                 | PlanAction::DownloadReplace
-                | PlanAction::VerifyContent => planned_downloads += 1,
+                | PlanAction::VerifyContent
+                | PlanAction::VerifySuppressedRemoteContent => planned_downloads += 1,
                 _ => {}
             }
         }
@@ -758,6 +803,9 @@ impl SyncService {
         monitor_global_switch: bool,
         run_epoch: u64,
     ) -> Result<bool> {
+        if self.store.reset_pending()? {
+            return Ok(true);
+        }
         if monitor_global_switch
             && (!crate::core::prefs::webdav_sync_enabled()
                 || GLOBAL_RUN_EPOCH.load(Ordering::Acquire) != run_epoch)
@@ -1276,6 +1324,17 @@ impl SyncService {
                 .await?;
             let remote_fingerprint = local::fingerprint(&downloaded)?;
             if remote_fingerprint == artifact {
+                if job.direction == SyncDirection::UploadOnly {
+                    self.archive_backup_version(
+                        job,
+                        provider,
+                        &task.relative_path,
+                        &task.artifact_path,
+                        &artifact,
+                        &task.operation_id,
+                    )
+                    .await?;
+                }
                 remove_file_if_exists(&downloaded)?;
                 if !self.restore_recovered_local(job, task, &artifact, None)? {
                     return Ok(());
@@ -1284,6 +1343,17 @@ impl SyncService {
                 self.resolve_recovered_conflicts(job, task, &artifact, remote.revision.as_ref())?;
                 remove_file_if_exists(&task.artifact_path)?;
                 return Ok(());
+            }
+            if job.direction == SyncDirection::UploadOnly {
+                self.archive_backup_version(
+                    job,
+                    provider,
+                    &task.relative_path,
+                    &downloaded,
+                    &remote_fingerprint,
+                    &task.operation_id,
+                )
+                .await?;
             }
             if task.action == "upload_new"
                 && is_strict_file_prefix(&downloaded, &task.artifact_path)?
@@ -1334,6 +1404,17 @@ impl SyncService {
             return Ok(());
         }
 
+        if job.direction == SyncDirection::UploadOnly {
+            self.archive_backup_version(
+                job,
+                provider,
+                &task.relative_path,
+                &task.artifact_path,
+                &artifact,
+                &task.operation_id,
+            )
+            .await?;
+        }
         let condition = if task.action == "upload_new" {
             partial_revision.map_or(WriteCondition::CreateOnly, WriteCondition::ReplaceIf)
         } else {
@@ -1414,6 +1495,10 @@ impl SyncService {
                 )?;
                 remove_file_if_exists(&backup)?;
                 self.upsert_downloaded_media(&target)?;
+            }
+            None if job.direction == SyncDirection::UploadOnly => {
+                // The complete upload snapshot is already protected remotely.
+                // Backup recovery must not undo a local deletion.
             }
             None => {
                 local::atomic_publish_new(&task.artifact_path, &target)?;
@@ -1579,6 +1664,7 @@ impl SyncService {
         upload_allowed: bool,
         summary: &mut RunSummary,
     ) -> Result<()> {
+        let mut verified_download = None;
         let local_observation = observed_local(local_entry);
         let remote_observation = observed_remote(remote_entry, stored);
         let mut action = plan_entry(
@@ -1623,6 +1709,50 @@ impl SyncService {
                 observed_state,
             )?,
         };
+
+        if matches!(
+            action,
+            PlanAction::SuppressLocalDeletion | PlanAction::VerifySuppressedRemoteContent
+        ) {
+            let deleted = stored
+                .and_then(|entry| entry.suppressed.as_ref().or(entry.baseline.as_ref()))
+                .ok_or_else(|| {
+                    AppError::Backend("local deletion has no proven previous version".into())
+                })?;
+            if stored.is_none_or(|entry| entry.suppressed.as_ref() != Some(deleted)) {
+                self.store.suppress_local_deletion(entry_id, deleted)?;
+            }
+            if action == PlanAction::SuppressLocalDeletion {
+                summary.unchanged += 1;
+                return Ok(());
+            }
+            let remote = remote_entry.ok_or_else(|| {
+                AppError::Backend("deleted version verification has no cloud file".into())
+            })?;
+            live_progress_begin(SyncLivePhase::Downloading, remote.size);
+            let staged = self
+                .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
+                .await?;
+            let fingerprint = local::fingerprint(&staged)?;
+            self.store.upsert_observation(
+                job.id,
+                relative_path,
+                None,
+                None,
+                Some(&fingerprint),
+                remote_revision,
+                remote_revision_weak,
+                "local_deleted",
+            )?;
+            if &fingerprint == deleted {
+                remove_file_if_exists(&staged)?;
+                live_progress_complete_download();
+                summary.unchanged += 1;
+                return Ok(());
+            }
+            verified_download = Some(staged);
+            action = PlanAction::DownloadNew;
+        }
 
         if action == PlanAction::VerifyContent {
             let remote = remote_entry
@@ -1734,6 +1864,16 @@ impl SyncService {
                             self.store
                                 .commit_baseline(entry_id, &local.fingerprint, revision)?;
                         }
+                        if job.direction == SyncDirection::UploadOnly
+                            && stored.is_some_and(|entry| entry.state == "conflict")
+                        {
+                            self.finish_backup_conflicts(
+                                job,
+                                entry_id,
+                                &local.fingerprint,
+                                revision,
+                            )?;
+                        }
                     }
                 }
                 summary.unchanged += 1;
@@ -1771,6 +1911,18 @@ impl SyncService {
                     job.config_generation,
                     stored.map_or(1, |entry| entry.generation.saturating_add(1)),
                 )?;
+                if job.direction == SyncDirection::UploadOnly {
+                    self.archive_backup_upload(
+                        job,
+                        provider,
+                        relative_path,
+                        remote_entry,
+                        &snapshot_path,
+                        &snapshot_fingerprint,
+                        &operation_id,
+                    )
+                    .await?;
+                }
                 let key = remote_key(&job.remote_root, relative_path)?;
                 live_progress_begin(SyncLivePhase::Uploading, snapshot_fingerprint.size);
                 let uploaded = match provider.upload(&key, &snapshot_path, condition).await {
@@ -1799,6 +1951,19 @@ impl SyncService {
                         Some(&error.to_string()),
                     )?;
                     return Err(error);
+                }
+                if job.direction == SyncDirection::UploadOnly
+                    && stored.is_some_and(|entry| entry.state == "conflict")
+                {
+                    self.finish_backup_conflicts(
+                        job,
+                        entry_id,
+                        &snapshot_fingerprint,
+                        uploaded
+                            .revision
+                            .as_ref()
+                            .map(|revision| revision.value.as_str()),
+                    )?;
                 }
                 if current != snapshot_fingerprint {
                     self.store.upsert_observation(
@@ -1836,9 +2001,18 @@ impl SyncService {
                     AppError::Backend("download plan has no remote source".into())
                 })?;
                 live_progress_begin(SyncLivePhase::Downloading, remote.size);
-                let staged = self
-                    .download_to_staging(job, provider, relative_path, remote.revision.as_ref())
-                    .await?;
+                let staged = match verified_download.take() {
+                    Some(staged) => staged,
+                    None => {
+                        self.download_to_staging(
+                            job,
+                            provider,
+                            relative_path,
+                            remote.revision.as_ref(),
+                        )
+                        .await?
+                    }
+                };
                 let fingerprint = local::fingerprint(&staged)?;
                 let operation_id = staged
                     .file_stem()
@@ -1961,7 +2135,9 @@ impl SyncService {
                     "automatic deletion is not enabled in the first synchronization release".into(),
                 ));
             }
-            PlanAction::VerifyContent => unreachable!(),
+            PlanAction::VerifyContent
+            | PlanAction::SuppressLocalDeletion
+            | PlanAction::VerifySuppressedRemoteContent => unreachable!(),
         }
         Ok(())
     }
@@ -2130,6 +2306,10 @@ async fn discover_remote(
             .await
             .map_err(provider_error)?;
         for entry in entries {
+            let relative = relative_remote_key(&root, &entry.key)?;
+            if relative.split('/').next() == Some(backup::BACKUP_DIRECTORY) {
+                continue;
+            }
             if entry.is_collection {
                 relative_remote_key(&root, &entry.key)?;
                 queue.push_back(entry.key.trim_matches('/').to_string());
@@ -2173,11 +2353,19 @@ fn observed_remote(
 ) -> Observation {
     remote_entry.map_or(Observation::Absent, |entry| {
         let known_fingerprint = stored.and_then(|stored| {
-            if stored.remote_revision.as_deref()
-                == entry
-                    .revision
+            if entry
+                .revision
+                .as_ref()
+                .is_some_and(|revision| revision.strength == RevisionStrength::Strong)
+                && stored
+                    .remote
                     .as_ref()
-                    .map(|revision| revision.value.as_str())
+                    .is_some_and(|fingerprint| fingerprint.size == entry.size)
+                && stored.remote_revision.as_deref()
+                    == entry
+                        .revision
+                        .as_ref()
+                        .map(|revision| revision.value.as_str())
             {
                 stored.remote.clone()
             } else {
@@ -2209,6 +2397,20 @@ fn plan_entry(
         direction: job.direction,
         propagate_deletes: job.propagate_deletes,
     };
+    if job.direction == SyncDirection::UploadOnly {
+        return if upload_allowed {
+            planner::plan_backup(&snapshot)
+        } else {
+            PlanAction::Noop
+        };
+    }
+    if matches!(snapshot.local, Observation::Absent) {
+        if let Some(deleted) =
+            stored.and_then(|entry| entry.suppressed.as_ref().or(entry.baseline.as_ref()))
+        {
+            return planner::plan_local_deletion(&snapshot, deleted);
+        }
+    }
     if upload_allowed {
         planner::plan(&snapshot)
     } else {
@@ -2277,7 +2479,8 @@ fn action_state(action: &PlanAction) -> &'static str {
         PlanAction::Noop => "synced",
         PlanAction::Conflict(_) => "conflict",
         PlanAction::WaitForCompleteObservation => "unknown",
-        PlanAction::VerifyContent => "verifying",
+        PlanAction::VerifyContent | PlanAction::VerifySuppressedRemoteContent => "verifying",
+        PlanAction::SuppressLocalDeletion => "local_deleted",
         _ => "pending",
     }
 }

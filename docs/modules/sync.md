@@ -2,7 +2,7 @@
 
 ## Scope
 
-Sync covers provider-neutral, local-first bidirectional file synchronization
+Sync covers provider-neutral, local-first backup and bidirectional file synchronization
 between local media directories and a remote WebDAV collection: the provider
 contract, the pure planner, persistent state, local publication, recovery, and
 the Settings UI that drives it.
@@ -29,6 +29,8 @@ metadata sync needs a versioned sidecar protocol.
 | `src/core/sync/service.rs` | Job/connection service, scheduling, live progress |
 | `src/platform/credentials.rs` | Secret Service-backed credential storage |
 | `src/ui/window/settings.rs` | Connections, jobs, upload scope, conflict UI |
+| `src/core/sync/service/backup.rs` | Immutable remote version objects and path/version records, protected before replacement |
+| `src/ui/window/settings/sync_strategy.rs` | Native Backup / Sync strategy buttons for new and saved tasks |
 | `src/ui/window/settings/sync_upload.rs` | Select All, atomic upload selection, checked-first list sorting |
 | `src/ui/cloud_badge.rs` | Per-media cloud badge resources, and the rendered-ink contract for them |
 | `src/core/schema.sql` | `sync_connections`, `sync_jobs`, `sync_job_upload_albums`, `sync_entries`, `sync_tasks`, `sync_conflicts` |
@@ -107,6 +109,101 @@ inside the lock, writes, then `UNLOCK`. Verified against an Aliyun-hosted
 rclone WebDAV 1.60.1-DEV endpoint, which also returns `200` and `404` in the
 same response across multiple `propstat` elements.
 
+## Backup And Sync Strategies
+
+Every task has **Backup** (`direction=upload_only`) or **Sync**
+(`direction=bidirectional`) buttons inside Settings → WebDAV. New tasks default
+to Backup; existing jobs retain their saved direction and upload scope. Merely
+opening Settings changes nothing. An accepted effective switch uses the durable
+edit-first transition, coalesces rapid switches, completes uncertain old work in
+its original context, and automatically runs the latest strategy when enabled.
+Choosing Backup supersedes old bidirectional conflict choices; both file versions
+are protected before any conditional replacement. A no-op switch does not restart work; modes remain editable while transferring
+or globally disabled. Disabled edits persist without starting network work.
+
+**Backup** uploads only explicitly selected local albums (or legacy `All`
+scope). It never publishes remote-only or remotely edited files to the local
+library. Local deletion leaves the cloud copy and archived versions intact.
+Before conditionally updating a current cloud file, preserve both the incoming
+local version and any existing cloud version under
+`<remote-root>/.photoviewer-backup/objects/<blake3>.<extension>`. Immutable JSON
+records in `records/` associate each relative path/content version with its
+object. These archives are never enumerated as gallery media, even after a
+switch to Sync; no automatic history cleanup is performed. Existing archive
+objects and records are verified on reuse, and differing contents block backup
+instead of being overwritten. A first switch/migration to Backup also archives
+unchanged files with existing ordinary-sync baselines. Interrupted upload
+recovery protects archive versions before retrying and never recreates a missing
+local file in Backup. History currently provides per-file versions, not a
+whole-library point-in-time snapshot or a Settings restore browser.
+
+**Sync** retains the existing explicitly selected upload scope and downloads
+remote media across the mapped root. Unselected local albums remain remote-authoritative when cloud content exists, subject to the deletion rule below and the explicit global Off reset.
+Both-side content modifications in selected albums remain conflicts, with
+version-checked resolution. Neither strategy automatically deletes remote files
+or local files when the opposite side disappears.
+
+A missing local file with a proven common baseline creates a durable
+`sync_entries.suppressed_fingerprint/suppressed_size` record, independent of
+`media_items`. It suppresses the **deleted content version**, not the path. An
+unchanged remote version stays absent locally; a changed ETag triggers a full
+content check and the same bytes remain suppressed. Strong, unchanged ETags and
+matching sizes can reuse a previously verified fingerprint; weak/missing ETags
+cannot. Actual changed content publishes through the normal recoverable
+DownloadNew path; only successful publication/baseline commit clears suppression.
+Deleting that downloaded version suppresses it in turn. Explicit local
+recreation resumes normal planning. First-time remote files without a baseline
+are ordinary additions. An incomplete remote listing or unavailable/incomplete
+local scan never creates deletion records. Switching strategies preserves them;
+removing a task removes its relationship and history from SQLite, so recreating
+a task cannot infer deletions from its former client state. Remote records remain.
+
+## Global Off Clears History, Keeps Configuration
+
+Turning WebDAV off is an explicit history reset. Keep `sync_connections`,
+credential references/passwords, surviving `sync_jobs`, local/remote roots,
+strategy, upload scope and selected albums. Preserve the latest accepted static
+fields even if an older transfer still uses their former configuration. Clear
+all `sync_entries` (including deletion suppression and baselines), `sync_tasks`,
+`sync_conflicts`, `sync_job_changes`, run timestamps, errors, transient pause and
+queued execution/progress state. A confirmed pending task deletion remains a
+deletion; pending conflict actions are discarded rather than executed.
+
+`SyncStore` persists a UUID reset intent in the existing `settings` table before
+cleanup and advances generations. New run/configuration admission uses a
+per-database barrier; cleanup waits for active file operations and configuration
+operations to retire. Operations already issued may finish publishing, but their
+late records are removed by the reset transaction. Old configuration installers
+are rejected atomically while the reset intent exists; scheduler errors use a
+generation-checked write that cannot recreate completion timestamps after reset.
+
+Cleanup removes the owned `sync-staging` tree, including unreferenced files,
+and reserved `.photoviewer-sync-*` publication/rollback temporaries below saved
+local roots. It uses the existing local-replica namespace rule, does not follow
+symlink targets, and refuses to sweep a staging tree containing configured source
+media. This explicit opt-out authorizes discarding pending recovery artifacts;
+it never deletes ordinary local media, favorites, trash contents, thumbnails,
+remote files or `.photoviewer-backup` history. No network recovery is initiated
+to complete a reset. The already issued operation can settle under its original
+context before its artifacts/history are cleared.
+
+A cleanup failure preserves intent/history and reports its error in Settings;
+it is not displayed as completed cleanup. Startup resumes an interrupted reset
+before starting network work, and starts cleanup for an off preference if the
+process exited between persisting the switch and recording the intent. A rapid
+Off → On keeps the newer opt-in but waits for cleanup; only the latest saved
+configurations can restart automatically. A newer Off replaces the reset token,
+so an older completion cannot clear that newer intent. Pending local-change
+notifications are cancelled while off/resetting. Ordinary future polling remains
+idle while disabled. Reset isolation follows the database, including disabled
+accounts and orphan staging files when no task exists.
+
+Once cleanup succeeds, reopening Sync starts a new association using retained
+task configuration. Formerly suppressed cloud copies may download again because
+there is no longer a deletion record; Backup remains upload-only. History is
+preserved across index rebuilds and ordinary strategy edits, but not across an
+explicit global Off reset.
+
 ## Planning And Conflict Rules
 
 `planner.rs` is the pure three-way decision layer: local observation, remote
@@ -119,8 +216,9 @@ timestamp, because device clocks and server clocks are not guaranteed to agree.
 | Remote-only change | Download, re-checking local state before publication |
 | Both sides identical | Advance the baseline, transfer nothing |
 | Both sides changed, content differs | Keep both, record a conflict |
-| One side deleted, other unchanged | Only when the job explicitly enables delete propagation |
-| One side deleted, other modified | Conflict; never auto-delete |
+| Local deleted, remote unchanged | Retain remote; persist suppression of that content version |
+| Local deleted, remote content changed | Download the new content; metadata/ETag changes alone do not restore |
+| Remote deleted, local remains | Retain local; no automatic deletion |
 | First association, same name on both sides | Verify content or require a choice |
 
 No stable remote object ID means an external rename can only be observed as an
@@ -235,7 +333,7 @@ meantime.
 
 ## Edit-First Configuration Contract
 
-**Binding requirement; implementation migration pending.** The canonical
+**Binding requirement.** The canonical
 interaction and state-transition specification is
 [`sync-configuration-ux.md`](sync-configuration-ux.md). Running sync must not be
 an editing prerequisite: accept validated effective edits first, then internally
@@ -245,18 +343,13 @@ expanding, browsing, drafts, cancellation, invalid input and no-op saves must
 leave the existing run untouched. Global opt-out, confirmed deletion and
 safety/validation failures have the explicit exceptions in that specification.
 
-Current gaps, verified in the implementation:
-
-- `settings.rs` pauses a job when its album expander opens, and
-  `SyncUploadAlbumSelection::set_editable` is still gated by paused state.
-- `SyncService::list_remote_collections` pauses before read-only browsing;
-  `set_remote_root` pauses before checking whether the root is unchanged.
-- Root changes stay paused awaiting a Photos pull, and album-scope writes do not
-  consistently drive a stop/apply/restart lifecycle with latest-edit protection.
-
-These are **migration work**, not approved UX patterns. The contracts below
-supersede the old pause-before-edit/manual-restart behavior; documenting them
-alone does not close these implementation gaps.
+The implementation stores desired changes in `sync_job_changes` and serializes
+acceptance, recovery, application, and restart through the configuration worker.
+Strategy edits share that path with upload selection, root changes, task removal,
+and conflict choices. Pending direction changes are merged with newer independent
+fields rather than restoring an older scope/root. Read-only expansion and browsing
+do not enqueue edits. See the real-transfer acceptance journeys in
+`tests/ux_sync_album_selection.rs` and `tests/ux_sync_strategies.rs`.
 
 ## Run Lifecycle And Startup Reconciliation
 
@@ -294,17 +387,20 @@ what makes that symptom go away.
 
 ## Scheduling And Triggers
 
-There is no timer-based periodic sync. Existing triggers are pulling down at
-the top of Photos and once per application launch in parallel with the startup
-scan. The edit-first contract additionally requires automatic runs after
-accepted effective configuration changes and enabling sync.
+While the application window is alive, remote changes are polled every 30
+seconds. Filesystem and user media events debounce for 2 seconds and schedule
+one catch-up if work is already active; synchronization-generated events do not
+loop back into scheduling. Periodic polls skip active/reconfiguring jobs instead
+of creating a permanent backlog. Global disabling suppresses all automatic
+network work. Photos pull, startup, accepted effective edits and enabling sync
+remain triggers. This is automatic eventual convergence, not instantaneous
+server push, and no daemon runs after the application exits.
 A trigger arriving while its job is already running is intercepted and
 remembered: a job never runs concurrently, and after the active run settles
 exactly one supplementary run fires, so repeated pulls during a long run
 coalesce into a single catch-up. Creating a validated saved job while sync is
 enabled must schedule that job automatically; an unchanged/invalid draft must
-not schedule work. This additional trigger remains part of the implementation
-migration identified above.
+not schedule work. Accepted task creation uses the same coalescing configuration worker.
 
 Discovering a remote media album never changes the persisted local upload
 selection or configuration generation. Cloud-backed albums, nested albums, and
@@ -369,7 +465,7 @@ keyring credential are removed only when no other job references it; a
 credential-cleanup error is reported after the relationship is gone.
 
 Recommended starting budgets: at most 4 transfers globally, 2 per connection,
-1 per object; remote polling from 60s with jitter, honoring `Retry-After` and
+1 per object; remote polling at 30s, honoring `Retry-After` and
 exponential backoff. These are tunable initial values to validate against a real
 service, not constants to hard-code into business semantics. Large files
 stream; bandwidth and staging budgets are managed by job/run configuration.
@@ -474,16 +570,25 @@ unresolved publication is held back rather than blocking the whole gallery.
   reference. Crash-leftover unknown files need ownership verification — never
   recursively clean by directory age.
 
-Deletion propagation is **off** in the first release. A one-sided absence with a
-baseline becomes a displayed pending difference; it does not delete the other
-side and does not auto-restore. Absence without a baseline is a normal first
-sync. Ordinary DAV layout has no cross-device shared deletion log, so a local
+Deletion propagation remains **off** in both strategies. A local absence with a
+baseline suppresses that cloud content version without deleting it. Sync can
+restore a changed remote content version; Backup never automatically restores
+remote content. A remote absence never deletes a local file. Absence without a
+baseline is a normal first association. Ordinary DAV layout has no cross-device shared deletion log, so a local
 deletion record can stop *this* client from restoring a file, but cannot stop a
 fresh or reset client from re-uploading a copy. Cross-device global deletion
 convergence would need a shared remote manifest, device identity, deletion
 confirmation, and a garbage-collection protocol — do not promise it.
 
 ## Cloud Badges And Progress
+
+Live progress sessions belong to their database. Closing or resetting one
+library cannot erase another library's preparing/active progress, and unrelated
+activation slots cannot prevent the owning library from closing its session.
+After a reset, a newer opt-in marks a catch-up on a retiring worker rather than
+being skipped until the next periodic poll. Cleanup stays pending through that
+handoff, so observers cannot mistake the gap before scheduling for an idle task.
+
 
 `SyncStore::media_cloud_states()` checks a bounded set of image/video IDs
 against enabled jobs and their selected physical albums. It returns no state
@@ -616,8 +721,8 @@ These are binding. Violating one is a bug even when the current tests pass.
 | C11 | Credentials are injected only through the credential store; logs omit passwords, auth headers, and sensitive full URLs |
 | C12 | Enumeration, queue, memory, and staging are budgeted; over budget pauses or applies backpressure and never marks a truncated directory complete |
 | C13 | Local content hashes come from a stable snapshot; without a strong remote validator, the weak guarantee is stated and mtime/length alone never proves equality |
-| C14 | All automatic cleanup is based on persistent references and recovery state; no simple TTL may delete the only copy of data |
-| C15 | With deletion off, a one-sided absence that has a baseline is not auto-restored; first-time additions and deletion candidates use different rules |
+| C14 | Automatic cleanup uses persistent ownership/recovery evidence; explicit global Off discards owned sync temporaries after quiescence, preserving ordinary media and remote history |
+| C15 | Local deletion suppresses its cloud content version across restarts/index rebuilds; explicit global Off clears that history; otherwise only changed content or local recreation resumes Sync; Backup never downloads automatically |
 | C16 | Logs correlate discovery, execution, and recovery by `JobId` / `EntryId` / `OperationId`, recording error classification and retry reasons |
 | C17 | Running/quiescing jobs remain editable; viewing, drafting, cancellation, invalid input and no-ops have no pause/restart side effects |
 | C18 | An accepted effective edit drives durable desired state, safe quiescence and automatic latest-configuration reconciliation; never require manual pause/resume or a Photos pull, and never restart opted-out/deleted jobs |
@@ -635,7 +740,7 @@ These are binding. Violating one is a bug even when the current tests pass.
 | Upload succeeds, response lost | Verify the remote first; avoid a blind second overwrite | C04 |
 | Crash after publication | Restart recovers media and sync result; a new edit is not clobbered by an old backup | C04, C06, C08 |
 | `207` partial failure, directory over budget, network drop | State is unknown/incomplete; no mass delete or reverse re-add | C03, C12 |
-| One side deletes a synced file, deletion off | Show a pending difference; the other side stays; no auto-resurrection | C15 |
+| Local deletes a synced file, either strategy | Remote stays; unchanged content does not auto-restore; changed content returns only in Sync | C15 |
 | Same path and mtime, changed content | Thumbnails and viewer show the new content; the cache never lags permanently | C06, C13 |
 | Discover a remote album, including nested/root albums | Download cloud media without changing local upload selection or configuration generation | C06 |
 | Uncheck an album that exists in the cloud | Continue downloads, never auto-reselect it or upload local-only files/edits | C06 |
@@ -644,7 +749,8 @@ These are binding. Violating one is a bug even when the current tests pass.
 | Change upload scope while a real file is transferring | Edit accepted without a prior pause; safely settle old work and automatically run the latest scope | C04, C06, C18 |
 | Make rapid edits while an earlier edit is applying | Keep controls editable; coalesce latest desired state; stale callbacks never restore older choices | C06, C19 |
 | Apply a changed root or enable/save a task | Validate/accept first; automatically run the latest surviving eligible configuration without a Photos pull | C04, C18 |
-| Disable global sync or confirm task deletion during reconfiguration | Keep opt-out/deletion authoritative; no pending trigger resurrects network work or a deleted job | C18, C19 |
+| Disable global sync during reconfiguration | Keep latest accepted task configuration, quiesce, clear history and temporaries; a newer opt-in waits for reset and a newer opt-out wins | C18, C19 |
+| Confirm task deletion during reconfiguration | Keep deletion authoritative; no pending trigger resurrects a deleted job | C18, C19 |
 | Change filter, clear cache, or rebuild the library | Old tasks invalidated or paused; baselines and unfinished artifacts retained | C06, C08, C14 |
 | Unicode paths, encoding, symlinks, name collisions | Valid names sync exactly; out-of-root and collisions block execution | C09, C10 |
 | Real DAV and Flatpak | Network, certificates, credentials, conditional write, and recovery all work | C01, C11 |

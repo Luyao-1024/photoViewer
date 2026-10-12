@@ -334,7 +334,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     assert_eq!(
         connection
             .query_row(
@@ -413,7 +413,7 @@ fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
 }
 
@@ -494,7 +494,7 @@ fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        5
+        6
     );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM sync_job_changes", [], |r| r
@@ -511,4 +511,31 @@ fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
         .unwrap(),
         "camera"
     );
+}
+
+#[test]
+fn schema_v5_sync_state_migrates_without_changing_existing_strategy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sync-v5.db");
+    let conn = Connection::open(&path).unwrap();
+    let schema = include_str!("../src/core/schema.sql")
+        .replace("    suppressed_fingerprint TEXT,\n", "")
+        .replace("    suppressed_size      INTEGER,\n", "");
+    conn.execute_batch(&schema).unwrap();
+    conn.execute_batch(r#"INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref) VALUES(1,'webdav','https://dav.example.test','alice','migration');
+        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,direction,upload_scope) VALUES(1,1,'/library','Photos','bidirectional','selected_albums');
+        INSERT INTO sync_entries(job_id,relative_path,baseline_fingerprint,baseline_size,state) VALUES(1,'camera/a.gif','hash',42,'synced');
+        INSERT INTO sync_job_changes(job_id,payload) VALUES(1,'{"revision":2,"upload_albums":["camera"],"remote_root":null,"delete":false,"conflict":null}');
+        PRAGMA user_version=5;"#).unwrap();
+    drop(conn);
+    let pool = db::init_pool(&path).unwrap();
+    let store = photo_viewer::core::sync::SyncStore::new(pool);
+    assert_eq!(
+        store.get_job(1).unwrap().unwrap().direction,
+        photo_viewer::core::sync::SyncDirection::Bidirectional
+    );
+    let entries = store.entries(1).unwrap();
+    assert_eq!(entries[0].baseline.as_ref().unwrap().blake3, "hash");
+    assert!(entries[0].suppressed.is_none());
+    assert_eq!(store.desired_upload_albums(1).unwrap(), vec!["camera"]);
 }

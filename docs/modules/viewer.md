@@ -24,7 +24,7 @@ load the full query result just to move one step in the viewer. The current
 | `src/ui/viewer/transform.rs` | Image-stage zoom/rotation controls, CSS transform updates, and transform math helpers |
 | `src/ui/viewer/fullscreen_window.rs` | Independent fullscreen preview window, preview navigation buttons, and preview-local transforms |
 | `src/ui/viewer/immersive.rs` | In-place immersive browsing: the stillness timer, the four chrome revealers, and the two refusals |
-| `src/ui/viewer/filmstrip.rs` | Filmstrip geometry plus stateful UI wiring, bounded window rebuild/extend, thumbnail buttons, and centering animation |
+| `src/ui/viewer/filmstrip.rs` | Filmstrip geometry plus stateful UI wiring, bounded window rebuild/extend, thumbnail buttons, and centering correction before painting |
 | `src/ui/viewer/details.rs` | Details panel wiring, EXIF/video row population, and metadata formatting helpers |
 | `src/ui/viewer/navigation.rs` | Stable-id lookup, viewer navigation actions, deferred switch, neighbour cache, and prefetch helpers |
 | `src/ui/viewer/stage.rs` | Image/video stage loading, animated/motion playback, video stream lifecycle, and playback helper predicates |

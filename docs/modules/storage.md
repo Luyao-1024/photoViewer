@@ -60,6 +60,17 @@ as `selected_albums` with no checked album: cloud content can download, but no
 local album uploads until the user explicitly checks it. The semantics of those
 tables belong to [`sync.md`](sync.md).
 
+Schema version 6 adds per-entry suppressed content fingerprints and sizes for
+local deletions. They live in sync state, so media-index rebuilds preserve them.
+An explicit WebDAV Off clears those records and other synchronization history
+while retaining connection credentials and task configuration. Its UUID cleanup
+intent/error uses the existing `settings` table, so this needs no schema bump.
+Saved generations remain monotonic to reject obsolete workers. Index rebuilds
+and ordinary task configuration changes continue to preserve deletion records.
+Existing tasks retain their direction and upload scope; older upload-only jobs
+invalidate only cached cloud fingerprints to establish immutable history on the
+next Backup run. Pending direction edits use the existing durable JSON payload.
+
 Filesystem paths and stored URIs must cross through `core::file_uri`; do not
 build or strip `file://` strings by hand. This preserves the identity of `%`,
 `#`, `?`, spaces, and non-ASCII names across scan, edits, albums, thumbnails,

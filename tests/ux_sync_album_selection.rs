@@ -558,6 +558,13 @@ fn journey_disable_and_enable_while_changes_apply() {
         vec!["second-album"],
         "the edit remains saved while disabled"
     );
+    assert!(!store.reset_pending().unwrap());
+    assert!(
+        store.entries(job.id).unwrap().is_empty(),
+        "off forgets baselines and deletion records while keeping the accepted scope"
+    );
+    assert!(store.unfinished_tasks(job.id).unwrap().is_empty());
+    assert!(store.open_conflicts(job.id).unwrap().is_empty());
     ui.scroll_to_reveal(&switch, "enable sync again");
     ui.click_native(&switch, "enable sync using the saved latest scope");
     assert!(
