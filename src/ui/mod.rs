@@ -23,6 +23,7 @@ pub mod theme;
 pub mod toasts;
 pub mod trash_fallback;
 pub mod trash_page;
+mod viewer_launch;
 pub mod viewer_page;
 pub mod virtual_media_grid;
 pub mod window;

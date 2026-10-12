@@ -231,13 +231,13 @@ impl SyncUploadAlbumSelection {
         let job = self.store.get_job(self.job_id).ok().flatten();
         let pending = self.store.pending_change(self.job_id).ok().flatten();
         let subtitle = if let Some(error) = job.and_then(|job| job.last_error) {
-            trf(
+            super::sync_failure_text(
                 if pending.is_some() {
                     "setting.sync.changes_apply_failed"
                 } else {
                     "setting.sync.failed"
                 },
-                &[("error", &error)],
+                &error,
             )
         } else if pending.is_some() {
             trf("setting.sync.upload_albums_applying", &[("count", &count)])

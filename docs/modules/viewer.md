@@ -15,11 +15,20 @@ folder albums, favorites, image/video type albums, and motion photos; do not
 load the full query result just to move one step in the viewer. The current
 `ListStore` index remains an internal render cursor only.
 
+Browsing pages prepare the query, initial item, viewer dependencies and domain
+callbacks before calling `viewer_launch::push_viewer`. The shared helper wires
+pop/index navigation with weak references, sets the page's pending flag,
+disables the visible source page, schedules `VIEWER_OPEN_POP_GUARD_MS` to release
+both guards, and pushes the viewer. Duplicate-activation and visibility checks
+stay at each page's entry point; Photos selection cancellation, album favorite
+refresh and Search trash-result updates remain page responsibilities.
+
 ## Key Files
 
 | File | Role |
 |---|---|
 | `src/ui/viewer_page.rs` | Viewer state, navigation, overlay panel behavior |
+| `src/ui/viewer_launch.rs` | Shared navigation wiring and push-transition lifecycle used by Photos, album detail, and Search |
 | `src/ui/viewer/actions.rs` | Viewer toolbar delete/favorite actions, favorite state sync, undo of the move to trash, and post-delete navigation |
 | `src/ui/viewer/transform.rs` | Image-stage zoom/rotation controls, CSS transform updates, and transform math helpers |
 | `src/ui/viewer/fullscreen_window.rs` | Independent fullscreen preview window, preview navigation buttons, and preview-local transforms |

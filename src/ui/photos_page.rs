@@ -40,7 +40,7 @@ use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
 use crate::ui::media_list::index_for_media_id;
 use crate::ui::mode_selector::ModeSelector;
-use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
+use crate::ui::viewer_page::ViewerPage;
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use crate::ui::window::refresh_albums_sidebar;
 
@@ -2211,50 +2211,17 @@ impl PhotosPage {
             }
         });
 
-        // Wire the viewer's keyboard callback: pops via the host NavigationView
-        // for ESC, or advances/retreats the current index for ←/→.
-        let viewer_weak = viewer.downgrade();
-        let nav_weak = nav.downgrade();
-        viewer.connect_navigation(move |delta: NavDelta| {
-            if delta == NAV_POP {
-                if let Some(n) = nav_weak.upgrade() {
-                    n.pop();
-                }
-                return;
-            }
-            if let Some(v) = viewer_weak.upgrade() {
-                let cur = v.current_index();
-                let next = (cur as i32 + delta).max(0) as u32;
-                if let Some(list) = v.imp().media_list.borrow().as_ref() {
-                    if next < list.n_items() {
-                        v.show_at(next);
-                    }
-                }
-            }
-        });
-
-        self.imp().viewer_open_pending.set(true);
-        let source_page = nav.visible_page();
-        if let Some(page) = source_page.as_ref() {
-            page.set_sensitive(false);
-        }
         let weak = self.downgrade();
-        glib::timeout_add_local_once(
-            std::time::Duration::from_millis(VIEWER_OPEN_POP_GUARD_MS),
+        crate::ui::viewer_launch::push_viewer(
+            &nav,
+            &viewer,
+            &self.imp().viewer_open_pending,
             move || {
                 if let Some(this) = weak.upgrade() {
                     this.imp().viewer_open_pending.set(false);
                 }
-                if let Some(page) = source_page {
-                    page.set_sensitive(true);
-                }
             },
         );
-
-        // Push the new viewer. While the transition settles, duplicate
-        // activations are ignored so rapid double-clicks cannot stack viewer
-        // pages or immediately trip viewer-level navigation.
-        nav.push(&viewer);
     }
 }
 

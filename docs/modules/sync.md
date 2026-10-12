@@ -22,11 +22,13 @@ metadata sync needs a versioned sidecar protocol.
 | `src/core/sync/mod.rs` | Module surface and re-exports |
 | `src/core/sync/provider.rs` | `SyncProvider` trait, capabilities, error taxonomy |
 | `src/core/sync/webdav.rs` | WebDAV adapter: HTTP, DAV XML, auth, capability probing |
-| `src/core/sync/model.rs` | Connections, jobs, entry identity, baselines, conflicts |
+| `src/core/sync/model.rs` | Connections, jobs, entry identity, baselines, conflicts, persisted failure reasons |
 | `src/core/sync/planner.rs` | Pure three-way decision layer (no I/O, no clock) |
 | `src/core/sync/local.rs` | Local snapshot, change detection, safe publication |
 | `src/core/sync/store.rs` | Persistent state and the `DbActor` command boundary |
 | `src/core/sync/service.rs` | Job/connection service, scheduling, live progress |
+| `src/core/sync/service/reconcile.rs` | Per-entry observation/planning coordinator, deletion suppression verification, content verification, unchanged reconciliation, upload and download execution |
+| `src/core/sync/remote_path.rs` | Shared segment predicates and remote-key construction/root-relative mapping |
 | `src/platform/credentials.rs` | Secret Service-backed credential storage |
 | `src/ui/window/settings.rs` | Connections, jobs, upload scope, conflict UI |
 | `src/core/sync/service/backup.rs` | Immutable remote version objects and path/version records, protected before replacement |
@@ -35,7 +37,20 @@ metadata sync needs a versioned sidecar protocol.
 | `src/ui/cloud_badge.rs` | Per-media cloud badge resources, and the rendered-ink contract for them |
 | `src/core/schema.sql` | `sync_connections`, `sync_jobs`, `sync_job_upload_albums`, `sync_entries`, `sync_tasks`, `sync_conflicts` |
 
-Test bodies live in child modules: `local/tests.rs`, `planner/tests.rs`,
+Per-entry reconciliation is implemented in `service/reconcile.rs`. The
+coordinator plans and persists the observation, resolves suppression/content
+verification, then dispatches the resulting action. Transfer helpers keep the
+existing staging, task journal, baseline, progress, backup and rollback order;
+a verified suppressed download is handed to the download executor for reuse.
+
+`remote_path.rs` shares dot-segment and empty-segment predicates without
+unifying caller policies: the store trims root/album edge slashes and rejects
+empty interior segments; relative upload paths reject empty/dot segments;
+WebDAV keys reject leading slashes, dot segments and NUL while allowing empty
+keys/segments. Root-relative mapping retains its slash-boundary prefix check.
+Normalization, error types and error text stay at their existing boundaries.
+
+Test bodies live in child modules: `model/tests.rs`, `local/tests.rs`, `planner/tests.rs`,
 `service/tests.rs`, `store/tests.rs`, `webdav/tests.rs`.
 
 ## Architecture
@@ -410,10 +425,20 @@ recorded and therefore no retry offered.
 **Reconciling at launch.** A run cannot outlive the process that started it. So
 at startup, before any run starts, `SyncService::reconcile_interrupted_runs`
 closes every job whose `last_started_at` is ahead of its completion: those
-describe runs *this* process never began. Each is closed with
-`INTERRUPTED_RUN_ERROR` rather than as a success, because it did not finish, and
-the failure state is what carries the retry. The reconciliation is idempotent
-and leaves settled jobs untouched, so it is safe on every launch.
+describe runs *this* process never began. Each is closed with the stable
+`SyncFailureReason::InterruptedRun` tag (`sync.interrupted_run`) rather than as
+a success, because it did not finish, and the failure state carries the retry.
+The reconciliation is idempotent and leaves settled jobs untouched, so it is
+safe on every launch.
+
+Known failure reasons are persisted independently of the current locale.
+Settings maps the tag to `setting.sync.error.interrupted_run` when rendering task
+status, upload-selection status and sync error dialogs, including periodic
+refreshes. The parser also recognizes the exact Chinese sentence persisted by
+older releases, so old failures display in the current language without a
+schema migration or rewriting settled runs. Unknown provider/system errors keep
+their diagnostic text. A known reason wrapped by `AppError::Backend` follows the
+same translation path; arbitrary backend diagnostics retain their original text.
 
 Without this, a single killed process was enough to pin the overview to
 "syncing" permanently — and, because the Photos overview reveals itself on the

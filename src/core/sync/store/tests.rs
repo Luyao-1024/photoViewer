@@ -586,6 +586,18 @@ fn startup_reconciliation_closes_runs_left_open_by_an_earlier_process() {
     );
 
     assert_eq!(store.reconcile_interrupted_runs().unwrap(), 1);
+    let recovered = store.get_job(job.id).unwrap().unwrap();
+    assert_eq!(
+        recovered.last_error.as_deref(),
+        Some("sync.interrupted_run"),
+        "recovery must persist a locale-independent reason, not user-visible copy"
+    );
+    assert_eq!(store.reconcile_interrupted_runs().unwrap(), 0);
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().last_error,
+        recovered.last_error,
+        "a repeated launch must retain the reason without rewriting it"
+    );
     assert_eq!(
         store.overview_with_sync_enabled(true).unwrap().status,
         SyncOverviewStatus::Failed,
@@ -831,4 +843,31 @@ fn overview_inventory_preserves_history_deduplicates_paths_and_rejects_stale_sca
         rows, 0,
         "global opt-out clears inventory together with history"
     );
+}
+
+#[test]
+fn remote_root_segment_policy_preserves_normalization_and_empty_segment_rejection() {
+    for root in [
+        "Photos",
+        "/Photos/",
+        "//Photos//",
+        "Photos/相册",
+        "Photos/a b",
+    ] {
+        assert_eq!(validate_remote_root(root).unwrap(), root.trim_matches('/'));
+    }
+    for root in [
+        "",
+        "/",
+        "Photos//Camera",
+        "Photos/./Camera",
+        "Photos/../Camera",
+    ] {
+        assert!(validate_remote_root(root).is_err(), "{root:?}");
+    }
+    assert_eq!(
+        normalize_relative_albums(&["".into(), "/相册/".into()]).unwrap(),
+        vec!["", "相册"]
+    );
+    assert!(normalize_relative_albums(&["Photos//Camera".into()]).is_err());
 }

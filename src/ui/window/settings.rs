@@ -1003,11 +1003,11 @@ impl MainWindow {
                     }
                     Ok(Err(error)) => show_settings_error_dialog(
                         &parent,
-                        &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                        &sync_failure_text("setting.sync.failed", &error.to_string()),
                     ),
                     Err(error) => show_settings_error_dialog(
                         &parent,
-                        &trf("setting.sync.failed", &[("error", &error.to_string())]),
+                        &sync_failure_text("setting.sync.failed", &error.to_string()),
                     ),
                 }
             });
@@ -1038,7 +1038,7 @@ impl MainWindow {
                     let state_description = if job.paused {
                         tr("setting.sync.status.paused")
                     } else if let Some(error) = &job.last_error {
-                        trf("setting.sync.failed", &[("error", error)])
+                        sync_failure_text("setting.sync.failed", error)
                     } else {
                         tr("setting.sync.status.ready")
                     };
@@ -1160,7 +1160,7 @@ impl MainWindow {
                         } else if status_store.reset_pending().unwrap_or(false) {
                             tr("setting.sync.resetting")
                         } else if let Some(error) = current.last_error {
-                            trf("setting.sync.failed", &[("error", &error)])
+                            sync_failure_text("setting.sync.failed", &error)
                         } else if pending {
                             tr("setting.sync.applying_changes")
                         } else if !prefs::webdav_sync_enabled() {
@@ -1211,7 +1211,7 @@ impl MainWindow {
                                 *controls.state_description.borrow_mut() = if job.paused {
                                     tr("setting.sync.status.paused")
                                 } else if let Some(error) = &job.last_error {
-                                    trf("setting.sync.failed", &[("error", error)])
+                                    sync_failure_text("setting.sync.failed", error)
                                 } else {
                                     tr("setting.sync.status.ready")
                                 };
@@ -1236,16 +1236,16 @@ impl MainWindow {
                                 ),
                                 Ok(Err(error)) => show_settings_error_dialog(
                                     &parent,
-                                    &trf(
+                                    &sync_failure_text(
                                         "setting.sync.cloud_folder_load_failed",
-                                        &[("error", &error.to_string())],
+                                        &error.to_string(),
                                     ),
                                 ),
                                 Err(error) => show_settings_error_dialog(
                                     &parent,
-                                    &trf(
+                                    &sync_failure_text(
                                         "setting.sync.cloud_folder_load_failed",
-                                        &[("error", &error.to_string())],
+                                        &error.to_string(),
                                     ),
                                 ),
                             }
@@ -1414,10 +1414,7 @@ impl MainWindow {
                     if let Err(error) = service.sync_enabled_changed() {
                         show_settings_error_dialog(
                             &parent_for_toggle,
-                            &trf(
-                                "setting.sync.reset_failed",
-                                &[("error", &error.to_string())],
-                            ),
+                            &sync_failure_text("setting.sync.reset_failed", &error.to_string()),
                         );
                     }
                 }
@@ -1670,9 +1667,9 @@ fn present_sync_remote_folder_picker(
                         );
                         show_settings_error_dialog(
                             &parent,
-                            &trf(
+                            &sync_failure_text(
                                 "setting.sync.cloud_folder_change_failed",
-                                &[("error", &error.to_string())],
+                                &error.to_string(),
                             ),
                         );
                     }
@@ -1690,9 +1687,9 @@ fn present_sync_remote_folder_picker(
                         );
                         show_settings_error_dialog(
                             &parent,
-                            &trf(
+                            &sync_failure_text(
                                 "setting.sync.cloud_folder_change_failed",
-                                &[("error", &error.to_string())],
+                                &error.to_string(),
                             ),
                         );
                     }
@@ -1773,7 +1770,7 @@ fn connect_sync_delete_button(
                             *controls.state_description.borrow_mut() = if job.paused {
                                 tr("setting.sync.status.paused")
                             } else if let Some(error) = &job.last_error {
-                                trf("setting.sync.failed", &[("error", error)])
+                                sync_failure_text("setting.sync.failed", error)
                             } else {
                                 tr("setting.sync.status.ready")
                             };
@@ -1783,9 +1780,9 @@ fn connect_sync_delete_button(
                         update_sync_job_controls(&controls);
                         show_settings_error_dialog(
                             &parent,
-                            &trf(
+                            &sync_failure_text(
                                 "setting.sync.delete_relation_failed",
-                                &[("error", &error.to_string())],
+                                &error.to_string(),
                             ),
                         );
                     }
@@ -1798,9 +1795,9 @@ fn connect_sync_delete_button(
                         update_sync_job_controls(&controls);
                         show_settings_error_dialog(
                             &parent,
-                            &trf(
+                            &sync_failure_text(
                                 "setting.sync.delete_relation_failed",
-                                &[("error", &error.to_string())],
+                                &error.to_string(),
                             ),
                         );
                     }
@@ -1867,18 +1864,18 @@ fn connect_sync_conflict_button(
                     for button in all_buttons.iter().filter_map(|button| button.upgrade()) {
                         button.set_sensitive(prefs::webdav_sync_enabled());
                     }
-                    row.set_subtitle(&trf(
+                    row.set_subtitle(&sync_failure_text(
                         "setting.sync.conflict_resolution_failed",
-                        &[("error", &error.to_string())],
+                        &error.to_string(),
                     ));
                 }
                 Err(error) => {
                     for button in all_buttons.iter().filter_map(|button| button.upgrade()) {
                         button.set_sensitive(prefs::webdav_sync_enabled());
                     }
-                    row.set_subtitle(&trf(
+                    row.set_subtitle(&sync_failure_text(
                         "setting.sync.conflict_resolution_failed",
-                        &[("error", &error.to_string())],
+                        &error.to_string(),
                     ));
                 }
             }
@@ -2129,6 +2126,19 @@ pub(super) fn show_settings_restart_dialog(
     dialog.set_default_response(Some("ok"));
     dialog.set_close_response("ok");
     dialog.present(parent);
+}
+
+fn sync_failure_text(key: &str, error: &str) -> String {
+    use crate::core::sync::SyncFailureReason;
+
+    // Service operations can return a stored reason through AppError::Backend.
+    // Only unwrap that prefix for a known reason; preserve all other diagnostics.
+    let detail = error.strip_prefix("backend unavailable: ").unwrap_or(error);
+    let detail = match SyncFailureReason::parse(detail) {
+        Some(SyncFailureReason::InterruptedRun) => tr("setting.sync.error.interrupted_run"),
+        None => error.to_string(),
+    };
+    trf(key, &[("error", &detail)])
 }
 
 pub(super) fn show_settings_error_dialog(parent: &gtk::Widget, body: &str) {

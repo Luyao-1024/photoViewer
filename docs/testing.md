@@ -51,6 +51,23 @@ Run it alone during filmstrip work:
 tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_filmstrip_centering
 ```
 
+The focused startup-recovery journey is `tests/ux_sync_interrupted.rs`. It runs
+English and Chinese in separate instances of its one-test binary, each with
+private config/data/cache directories. A controlled provider holds a real
+transfer; cancelling the future leaves the persisted run open, and production
+startup reconciliation closes it. The journey opens and expands Settings through
+`Ui`, checks task and upload-selection subtitles across their refresh intervals,
+and verifies browsing did not change the stored reason or rerun synchronization.
+
+```bash
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_interrupted
+```
+
+If a private D-Bus session cannot launch AT-SPI but the existing desktop session
+passes `tools/with-at-spi.sh --check`, reuse that session by setting
+`DBUS_SESSION_BUS_ADDRESS` for the test command only. Do not change system service
+permissions or build configuration to make the journey run.
+
 The primary deterministic gate is `tests/ux_click_flows.rs`. It initializes GTK
 once and runs its scenarios serially, because multiple GTK application shells are
 not safe to drive concurrently in one test process. Its journeys are complete

@@ -4,13 +4,14 @@ pub mod local;
 pub mod model;
 pub mod planner;
 pub mod provider;
+mod remote_path;
 pub mod service;
 pub mod store;
 pub mod webdav;
 
 pub use model::{
     Baseline, ConflictKind, EntrySnapshot, Fingerprint, Observation, PlanAction, Revision,
-    RevisionStrength, SyncDirection, UploadScope,
+    RevisionStrength, SyncDirection, SyncFailureReason, UploadScope,
 };
 pub use provider::{
     ProviderCapabilities, ProviderError, ProviderResult, RemoteEntry, SyncProvider, WriteCondition,

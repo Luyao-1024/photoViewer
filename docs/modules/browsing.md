@@ -9,9 +9,11 @@ Browsing covers the Photos page, Year/Month/Day grouping, mixed media thumbnail 
 | File | Role |
 |---|---|
 | `src/ui/photos_page.rs` | Photos root page, view stack, shared store wiring |
+| `src/ui/viewer_launch.rs` | Shared viewer navigation callback and source-page transition guard for Photos, albums, and Search |
 | `src/ui/media_grid.rs` | Bounded FlowBox grid retained for search preview surfaces |
 | `src/ui/media_grid/selection.rs` | Multi-select state, visible selection sync, context selection, and selection callbacks |
-| `src/ui/media_grid/updates.rs` | Incremental add/remove handling, deferred thumbnail-ready insertions, metadata cache adjustments, and grid rebuild implementation |
+| `src/ui/media_grid/updates.rs` | Incremental add/remove handling, deferred thumbnail-ready insertions, and metadata cache adjustments |
+| `src/ui/media_grid/rebuild.rs` | Full rebuild coordination, progressive seed, section grouping, tile reuse, activation/context-menu wiring, and scroll restoration |
 | `src/ui/media_grid/viewport.rs` | Scroll-position viewport scan, visible thumbnail reprioritization, and scroll-triggered loading hooks |
 | `src/ui/media_grid/loading.rs` | Virtual page loading, progressive render fill, async library metadata/stats refresh, and rebuild scheduling |
 | `src/ui/media_grid/render.rs` | Tile construction, reused-tile preparation, and FlowBox child visibility sync |
@@ -33,6 +35,15 @@ test files such as `src/ui/media_grid/tests.rs`,
 `src/ui/media_grid/updates/tests.rs`.
 
 ## Behavior
+
+Full FlowBox rebuilds are coordinated in `media_grid/rebuild.rs`; incremental
+model changes remain in `updates.rs`. Rebuild helpers separate the progressive
+seed, section grouping, tile attachment, activation/context-menu wiring and
+idle scroll restoration. Their order remains: detach reusable tiles, clear the
+old sections, build spacers/stats/sections, publish the displayed-item mapping,
+sync selection, then schedule scroll restoration and thumbnail reprioritization.
+Existing grid tests in `updates/tests.rs`, `loading/tests.rs` and
+`selection/tests.rs` continue to exercise this path through `MediaGrid`.
 
 The Photos overview shows a persisted `synced_items/total_items` fraction both
 while a WebDAV cycle runs and after it completes. The numerator counts distinct

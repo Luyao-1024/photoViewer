@@ -386,6 +386,7 @@
     "setting.sync.applying_changes": "Applying the latest configuration…",
     "setting.sync.upload_albums_applying": "{count} checked; applying changes, you can keep editing",
     "setting.sync.saved": "Synchronization task saved. Synchronization will start automatically.",
+    "setting.sync.error.interrupted_run": "The previous synchronization was interrupted because the app exited before it finished. It has been marked as failed; you can retry.",
     "setting.sync.failed": "Sync failed: {error}",
     "setting.sync.invalid": "Enter a WebDAV URL, username, password, absolute local path, and remote folder.",
     "setting.sync.status.ready": "Ready to synchronize",

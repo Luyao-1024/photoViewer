@@ -56,6 +56,7 @@
 //! "Multi-select" item.
 
 mod loading;
+mod rebuild;
 mod render;
 mod selection;
 mod updates;
