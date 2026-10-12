@@ -215,7 +215,7 @@ fn residual_is_suppressed_when_content_does_not_exceed_viewport() {
 }
 
 #[test]
-fn visual_transform_uses_css_offset_when_adjustment_has_no_scroll_range() {
+fn visual_transform_uses_virtual_offset_when_adjustment_has_no_scroll_range() {
     assert_eq!(
         compute_thumb_visual_transform(240.0, 0.0, 300.0, 300.0),
         -240.0
@@ -227,26 +227,6 @@ fn visual_transform_uses_only_residual_when_adjustment_can_scroll() {
     assert_eq!(
         compute_thumb_visual_transform(240.0, 12.0, 720.0, 300.0),
         12.0
-    );
-}
-
-#[test]
-fn animated_scroll_value_eases_between_current_and_target() {
-    assert_eq!(
-        compute_thumb_animated_scroll_value(100.0, 260.0, 0.0),
-        100.0
-    );
-    assert_eq!(
-        compute_thumb_animated_scroll_value(100.0, 260.0, 1.0),
-        260.0
-    );
-
-    let halfway = compute_thumb_animated_scroll_value(100.0, 260.0, 0.5);
-    assert!(halfway > 100.0);
-    assert!(halfway < 260.0);
-    assert!(
-        halfway > 180.0,
-        "ease-out should move past the linear midpoint by halfway through the animation"
     );
 }
 
@@ -472,18 +452,5 @@ fn thumb_strip_template_starts_without_layout_spacers() {
     assert_eq!(
         count, 0,
         "thumb_strip must not contain template spacer children because viewport-sized children feed back into ScrolledWindow allocation"
-    );
-}
-
-#[test]
-fn thumb_scroll_skips_its_frame_clock_without_motion() {
-    assert!(thumb_scroll_should_animate(240.0, true));
-    assert!(
-        !thumb_scroll_should_animate(240.0, false),
-        "reduce-motion must jump straight to the target"
-    );
-    assert!(
-        !thumb_scroll_should_animate(0.4, true),
-        "sub-pixel jumps were already instant and stay that way"
     );
 }

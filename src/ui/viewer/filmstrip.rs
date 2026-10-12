@@ -3,7 +3,6 @@
 use super::ViewerPage;
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use gtk4 as gtk;
-use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -32,7 +31,6 @@ pub(super) const THUMB_WINDOW_MAX: u32 = 40;
 /// re-centring request coalesced into a burst that then expired, which is the
 /// same staleness the convergence rule exists to prevent, just later.
 pub(super) const THUMB_CENTER_RETRY_FRAMES: u8 = 60;
-pub(super) const THUMB_SCROLL_ANIMATION_MS: f64 = 140.0;
 
 /// Whether the centring tick callback should run another frame.
 ///
@@ -87,18 +85,6 @@ pub(super) fn compute_thumb_positioning(
         compute_thumb_scroll_and_residual(btn_x, btn_w, page_size, effective_upper);
     let transform = compute_thumb_visual_transform(target, residual, adjustment_upper, page_size);
     (target, residual, transform)
-}
-
-/// A thumb jump shorter than half a pixel is not worth a frame clock, and the
-/// desktop's reduce-animation preference cancels the rest of them.
-pub(super) fn thumb_scroll_should_animate(distance: f64, motion_enabled: bool) -> bool {
-    motion_enabled && distance >= 0.5
-}
-
-pub(super) fn compute_thumb_animated_scroll_value(start: f64, target: f64, progress: f64) -> f64 {
-    let t = progress.clamp(0.0, 1.0);
-    let eased = 1.0 - (1.0 - t).powi(3);
-    start + (target - start) * eased
 }
 
 pub(super) fn thumb_item_widths(items: &[gtk::Button]) -> Vec<f64> {
@@ -317,17 +303,19 @@ impl ViewerPage {
             self.media_item_summary_at(current)
         );
 
-        if in_window {
-            self.update_thumb_highlight(current);
-        } else {
+        if !in_window {
             self.load_initial_thumb_window(current);
         }
+        // Center against the existing allocated window before lazy growth adds
+        // unallocated buttons. In particular, appending on the right must not
+        // delay emphasis and centering of an already visible current item.
+        self.scroll_thumb_to_current();
         self.try_extend_thumb_window_for_current();
         self.schedule_scroll_thumb_to_current();
     }
 
     /// First-time load: centre a small bounded window around `current`.
-    /// The visible strip is positioned later by CSS transform so ultrawide
+    /// The visible strip is positioned later by an allocation transform so ultrawide
     /// viewports do not force the viewer to load the whole album.
     fn load_initial_thumb_window(&self, current: u32) {
         let Some(n_items) = self.list_n_items() else {
@@ -870,7 +858,7 @@ impl ViewerPage {
         let imp = self.imp();
         let old_value = hadj.value();
         let old_transform = imp.thumb_last_transform.get();
-        self.animate_thumb_scroll_adjustment_to(target);
+        self.set_thumb_scroll_adjustment_value(target);
         self.apply_thumb_strip_transform(visual_transform);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
@@ -893,6 +881,8 @@ impl ViewerPage {
             visual_transform - old_transform,
             item_widths
         );
+        drop(items);
+        self.update_thumb_highlight(current);
         true
     }
 
@@ -904,133 +894,38 @@ impl ViewerPage {
         imp.thumb_programmatic_scroll.set(false);
     }
 
-    fn animate_thumb_scroll_adjustment_to(&self, target: f64) {
-        let imp = self.imp();
-        let hadj = imp.thumb_scrolled.get().hadjustment();
-        let start = hadj.value();
-        let clamped_target = target.clamp(0.0, (hadj.upper() - hadj.page_size()).max(0.0));
-        let distance = (clamped_target - start).abs();
-        let animation_id = imp.thumb_scroll_animation_seq.get() + 1;
-        imp.thumb_scroll_animation_seq.set(animation_id);
-
-        if !thumb_scroll_should_animate(distance, crate::ui::motion::enabled()) {
-            self.set_thumb_scroll_adjustment_value(clamped_target);
-            tracing::debug!(
-                target: crate::core::log_targets::VIEWER,
-                "VIEWER_JITTER thumb_scroll_anim_skip id={} reason=small_distance start={} target={}",
-                animation_id,
-                start,
-                clamped_target
-            );
-            return;
-        }
-
-        tracing::debug!(
-            target: crate::core::log_targets::VIEWER,
-            "VIEWER_JITTER thumb_scroll_anim_start id={} start={} target={} distance={} duration_ms={}",
-            animation_id,
-            start,
-            clamped_target,
-            distance,
-            THUMB_SCROLL_ANIMATION_MS
-        );
-        let weak = self.downgrade();
-        let start_time_us = Rc::new(Cell::new(None::<i64>));
-        self.imp()
-            .thumb_scrolled
-            .get()
-            .add_tick_callback(move |_, clock| {
-                let Some(this) = weak.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                if this.imp().thumb_scroll_animation_seq.get() != animation_id {
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_JITTER thumb_scroll_anim_cancel id={} current_id={}",
-                        animation_id,
-                        this.imp().thumb_scroll_animation_seq.get()
-                    );
-                    return glib::ControlFlow::Break;
-                }
-
-                let frame_time = clock.frame_time();
-                let start_time = match start_time_us.get() {
-                    Some(value) => value,
-                    None => {
-                        start_time_us.set(Some(frame_time));
-                        frame_time
-                    }
-                };
-                let elapsed_ms = (frame_time - start_time).max(0) as f64 / 1000.0;
-                let progress = (elapsed_ms / THUMB_SCROLL_ANIMATION_MS).clamp(0.0, 1.0);
-                let value = compute_thumb_animated_scroll_value(start, clamped_target, progress);
-                this.set_thumb_scroll_adjustment_value(value);
-
-                if progress >= 1.0 {
-                    tracing::debug!(
-                        target: crate::core::log_targets::VIEWER,
-                        "VIEWER_JITTER thumb_scroll_anim_done id={} target={}",
-                        animation_id,
-                        clamped_target
-                    );
-                    glib::ControlFlow::Break
-                } else {
-                    glib::ControlFlow::Continue
-                }
-            });
-    }
-
     fn apply_thumb_strip_transform(&self, offset: f64) {
         let imp = self.imp();
-        // Nothing to do when the strip is already exactly here.
-        //
-        // This makes the extra centring passes that arrive with every thumbnail
-        // texture free, and it is safe because the transform lives in a
-        // display-wide CSS provider: whatever was loaded last still applies to
-        // the strip that is on screen, rebuilt or not.
-        //
-        // A half-pixel dead zone matches the CSS the offset is rendered through —
-        // anything under 0.5px becomes `transform: none` anyway, so re-loading
-        // it would restart the 220ms transition over a sub-pixel move and leave
-        // the strip visibly twitching for no reason.
-        if (offset - imp.thumb_last_transform.get()).abs() < 0.5 {
-            return;
-        }
-        if imp.thumb_transform_provider.borrow().is_none() {
-            let provider = gtk::CssProvider::new();
-            if let Some(display) = gdk::Display::default() {
-                gtk::style_context_add_provider_for_display(
-                    &display,
-                    &provider,
-                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-                );
-            }
-            *imp.thumb_transform_provider.borrow_mut() = Some(provider);
-        }
-
-        let css = if offset.abs() < 0.5 {
-            ".viewer-thumb-strip { transform: none; }".to_string()
-        } else {
-            format!(".viewer-thumb-strip {{ transform: translate({offset}px, 0); }}")
-        };
-        if let Some(provider) = imp.thumb_transform_provider.borrow().as_ref() {
-            provider.load_from_data(&css);
-        }
+        let strip = imp.thumb_strip.get();
+        let allocation = strip.allocation();
+        let hadj = imp.thumb_scrolled.get().hadjustment();
+        // Use the widget's allocation transform rather than invalidating CSS.
+        // CSS changes made after layout are deferred until the next frame;
+        // this transform becomes part of the frame about to be painted. The
+        // viewport normally translates its child by -hadjustment.value().
+        let transform = gtk::gsk::Transform::new().translate(&gtk::graphene::Point::new(
+            (offset - hadj.value()) as f32,
+            allocation.y() as f32,
+        ));
+        strip.allocate(
+            allocation.width(),
+            allocation.height(),
+            strip.allocated_baseline(),
+            Some(transform),
+        );
         let old_offset = imp.thumb_last_transform.replace(offset);
         tracing::debug!(
             target: crate::core::log_targets::VIEWER,
-            "VIEWER_JITTER thumb_transform_apply old_offset={} new_offset={} delta={} css=\"{}\"",
+            "VIEWER_JITTER thumb_transform_apply old_offset={} new_offset={} delta={}",
             old_offset,
             offset,
             offset - old_offset,
-            css
         );
-        imp.thumb_strip.get().queue_draw();
     }
 
     /// Position the filmstrip around the current item. GTK's adjustment is
-    /// used when it has a real scroll range; otherwise a CSS transform provides
-    /// virtual scrolling without increasing the window's natural width.
+    /// used when it has a real scroll range; otherwise an allocation transform
+    /// provides virtual scrolling without increasing the window's natural width.
     fn scroll_thumb_to_current(&self) -> bool {
         self.update_thumb_scroll_position()
     }
@@ -1154,6 +1049,45 @@ impl ViewerPage {
     /// scrolling near either edge of the strip lazy-loads another half-row
     /// of thumbnails (see `try_extend_thumb_window`).
     pub(super) fn setup_thumb_strip_listener(&self) {
+        // Tick callbacks run before GTK allocates children. Lazy window growth
+        // can change even existing button widths in that allocation, so a tick
+        // alone leaves one painted frame at the previous geometry. Correct the
+        // position after the layout signal's GTK handlers, before painting.
+        let weak = self.downgrade();
+        self.imp()
+            .thumb_scrolled
+            .get()
+            .connect_map(move |scrolled| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                let Some(clock) = scrolled.frame_clock() else {
+                    return;
+                };
+                let weak = this.downgrade();
+                let handler = clock.connect_local("layout", true, move |_| {
+                    if let Some(this) = weak.upgrade() {
+                        if this.imp().thumb_scroll_scheduled.get() {
+                            this.scroll_thumb_to_current();
+                        } else {
+                            // Retain the virtual offset after the viewport's
+                            // allocation without recentering a user's scroll.
+                            this.apply_thumb_strip_transform(this.imp().thumb_last_transform.get());
+                        }
+                    }
+                    None
+                });
+                *this.imp().thumb_layout_handler.borrow_mut() = Some((clock, handler));
+            });
+        let weak = self.downgrade();
+        self.imp().thumb_scrolled.get().connect_unmap(move |_| {
+            if let Some(this) = weak.upgrade() {
+                if let Some((clock, handler)) = this.imp().thumb_layout_handler.borrow_mut().take()
+                {
+                    clock.disconnect(handler);
+                }
+            }
+        });
         let scrolled = self.imp().thumb_scrolled.get();
         let hadj = scrolled.hadjustment();
         let weak = self.downgrade();

@@ -38,6 +38,19 @@ harness, so "real input" means the same thing everywhere:
   the thing under test. Every scenario drops its shell, which destroys the
   window, so runs do not starve each other's frame clock.
 
+`tests/ux_filmstrip_centering.rs` checks every painted frame during real viewer
+navigation. It observes the current thumbnail's emphasis, transformed bounds,
+and clear space beside its picture in `GdkFrameClock::after-paint`, so a
+highlight-then-center transition or overlapping neighbours cannot pass
+by reaching the correct position later. Its 44-file library uses
+`Shell::with_repeated_photos`, which cycles the committed JPEG fixtures through
+the real scanner; `Shell::with_photos` still requires distinct committed scenes.
+Run it alone during filmstrip work:
+
+```bash
+tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_filmstrip_centering
+```
+
 The primary deterministic gate is `tests/ux_click_flows.rs`. It initializes GTK
 once and runs its scenarios serially, because multiple GTK application shells are
 not safe to drive concurrently in one test process. Its journeys are complete

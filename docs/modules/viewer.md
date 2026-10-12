@@ -188,12 +188,15 @@ The thumbnail strip is a low raised-glass carousel surface and should initialize
 
 **The invariant, and how it is checked.** The current photo's thumbnail is in
 the middle of the filmstrip in every scenario — on open, on Next, on the arrow
-keys, on a jump to the last photo, and on a jump back to the first. That is what
-makes "keep going" and "go back" legible in a long run, and it is easy to lose at
+keys, on a jump to the last photo, and on a jump back to the first. This includes
+the frames painted during navigation, not only the position after settling.
+Current-item emphasis and its centering position must update together; do not
+emphasize a thumbnail at the old strip position and animate it into the middle.
+That is what makes "keep going" and "go back" legible in a long run, and it is easy to lose at
 both ends of the list, where there is nothing to scroll *toward*.
 
 Measuring it needs the transform. The strip sizes its content to the viewport
-and centres with `apply_thumb_strip_transform`, so `upper == page_size` and the
+and centres with `apply_thumb_strip_transform`; when `upper == page_size`, the
 horizontal adjustment never moves at all; reading the adjustment reports a
 perfectly centred strip as "no scroll happened". `journey_filmstrip_shows_every_photo_and_centres_the_current_one`
 measures `compute_bounds` in the window's coordinate space instead, which carries
@@ -250,6 +253,14 @@ minimum size, or any other layout-affecting property; otherwise the selected
 state pushes neighboring thumbnails and creates visible strip jitter while
 navigation moves.
 
+Current-item emphasis uses a 1.24 scale, a 3px lift, and full image opacity.
+There is no selected background, outline, border, or glow on the button or its
+picture. Every button reserves a fixed 8px of transparent horizontal padding,
+leaving room beside the enlarged image without changing layout on selection.
+The resting transform is explicit (`translateY(0px) scale(1)`); scale and opacity
+share a 240ms ease-out transition so their timing stays together. Keyboard-focus
+styling still belongs to the shared accessibility sheet.
+
 The filmstrip content keeps a fixed internal edge inset so thumbnails do not
 touch the rounded carousel edges while navigation or scroll animation is in
 progress. Keep the CSS `.viewer-thumb-strip` horizontal padding and the Rust
@@ -275,11 +286,21 @@ transient tiny child allocations. GTK can briefly report near-zero widths before
 the new buttons settle; centering should retry on later frames and coalesce
 bursts of thumbnail-loaded callbacks into a single pending scroll update.
 
-When the carousel has a real horizontal adjustment range, moving the active
-thumbnail into view should animate the adjustment over a short ease-out window
-instead of jumping directly to the target value. A newer navigation target must
-cancel the previous animation and continue from the current adjustment value, so
-rapid key presses feel continuous rather than queued.
+Navigation applies the horizontal adjustment and strip transform immediately,
+then updates the current-item emphasis. Allocated geometry is used in the same
+refresh; newly built geometry still uses the coalesced frame retry. A frame-clock
+layout handler runs after GTK's allocation handlers and corrects requested
+centering before paint. Use the strip's native allocation transform here: a CSS
+provider reload after layout can defer the correction to the next frame. Retain
+the virtual offset on ordinary layouts without recentering a user's scroll, and
+disconnect the layout handler when the strip unmaps. Neither the
+adjustment nor `.viewer-thumb-strip`'s transform may animate toward the center:
+such a transition paints the new current thumbnail away from the center. The
+thumbnail's own scale, opacity, and outline may retain their emphasis transitions.
+`tests/ux_filmstrip_centering.rs` samples `compute_bounds` after every painted
+frame through real Next, Left, and thumbnail presses, including mixed aspect
+ratios, both ends of the list, lazy window growth, sliding at the forty-button
+cap in both directions, and listener cleanup when the viewer closes.
 
 Thumbnail generation applies the same orientation metadata as the original viewer decode. Because the thumbnail cache key includes source mtime, orientation-only edits must update the in-memory `MediaItem.file_mtime` before refreshing the strip; waiting for the filesystem watcher leaves the current viewer session using the old cache key and can show a stale direction.
 

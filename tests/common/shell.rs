@@ -224,13 +224,20 @@ impl Shell {
     /// distinct JPEG with its own size, colour and capture day, so a switch is
     /// observable in the pixels, in the header date, and by file identity.
     pub fn with_photos(count: usize) -> Self {
-        build(count)
+        build(count, false)
+    }
+
+    /// A large library of distinct files, cycling the committed real JPEGs.
+    /// Use when exercising bounded widget windows needs more than fourteen
+    /// items; tests requiring distinct scenes should keep using `with_photos`.
+    pub fn with_repeated_photos(count: usize) -> Self {
+        build(count, true)
     }
 
     /// The default fixture: enough photos to exercise selection, batching, and
     /// a multi-item trash journey.
     pub fn new() -> Self {
-        build(2)
+        build(2, false)
     }
 
     /// The tile currently showing `media_id`, waiting for the grid to realize it,
@@ -455,7 +462,7 @@ impl Shell {
     }
 }
 
-fn build(photo_count: usize) -> Shell {
+fn build(photo_count: usize, repeat_fixtures: bool) -> Shell {
     // The work root lives inside the project, under the gitignored `target/`, so
     // a failing run leaves its tree where a developer can look at it instead of
     // scattering directories through `$HOME`. Only the run root varies — the
@@ -481,7 +488,7 @@ fn build(photo_count: usize) -> Shell {
     // geometry or a tile's width sailed straight through. Production code gets
     // its workers from the app; a test shell has to ask for them too.
     loader.spawn_workers(photo_viewer::core::runtime_config::thumbnail_worker_count());
-    let items = scan_media(&pool, tmp.path(), photo_count);
+    let items = scan_media(&pool, tmp.path(), photo_count, repeat_fixtures);
     albums::refresh(&pool).unwrap();
 
     let media_list = gtk::gio::ListStore::new::<glib::BoxedAnyObject>();
@@ -604,18 +611,23 @@ fn set_fixture_mtime(path: &Path, index: usize) {
 /// Every indexed row is checked against the bytes before it is handed back, so a
 /// fixture whose declared shape drifts from its file fails here rather than
 /// surfacing later as a puzzling save-path failure.
-fn scan_media(pool: &db::DbPool, root: &Path, count: usize) -> Vec<MediaItem> {
+fn scan_media(
+    pool: &db::DbPool,
+    root: &Path,
+    count: usize,
+    repeat_fixtures: bool,
+) -> Vec<MediaItem> {
     let media_dir = root.join(UX_DIR_PHOTOS);
     std::fs::create_dir_all(&media_dir).unwrap();
     assert!(
-        count <= UX_FIXTURE_PHOTOS.len(),
+        repeat_fixtures || count <= UX_FIXTURE_PHOTOS.len(),
         "{count} photos were requested but only {} are committed under tests/fixtures/media/ux; \
          add the fixture rather than generating one, so the bytes stay reviewable",
         UX_FIXTURE_PHOTOS.len()
     );
 
     let mut expected: Vec<(PathBuf, (u32, u32))> = Vec::new();
-    for (idx, fixture) in UX_FIXTURE_PHOTOS.iter().take(count).enumerate() {
+    for (idx, fixture) in UX_FIXTURE_PHOTOS.iter().cycle().take(count).enumerate() {
         let path = install_fixture(&media_dir, &format!("photo-{idx}.jpg"), fixture);
         let dimensions = jpeg_dimensions(&path)
             .unwrap_or_else(|| panic!("{} is not a readable JPEG", path.display()));

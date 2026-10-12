@@ -291,26 +291,23 @@ mod imp {
         /// The adjustment emits `value-changed` synchronously, so the lazy-load
         /// edge listener must ignore these programmatic moves.
         pub thumb_programmatic_scroll: Cell<bool>,
-        /// Cached CssProvider for filmstrip visual positioning. It keeps the
-        /// current item centred without feeding child width into GTK layout.
-        pub thumb_transform_provider: RefCell<Option<gtk::CssProvider>>,
         /// Monotonic id for scheduled filmstrip centering callbacks. Used only
         /// to correlate jitter logs across rebuilds, thumbnail loads, and ticks.
         pub thumb_scroll_schedule_seq: Cell<u64>,
-        /// Last visual transform applied to the filmstrip. Used only for logs.
+        /// Virtual offset retained across viewport allocations and used for logs.
         pub thumb_last_transform: Cell<f64>,
         /// True while a filmstrip centering tick callback is already queued.
         /// Coalesces bursts of thumbnail-loaded events into one layout read.
         pub thumb_scroll_scheduled: Cell<bool>,
+        /// The after-layout centering hook for the currently mapped frame clock.
+        /// Disconnected on unmap so closed viewers leave no clock callbacks.
+        pub thumb_layout_handler: RefCell<Option<(gdk::FrameClock, glib::SignalHandlerId)>>,
         /// True when a centring request arrived that the current burst has not
         /// answered yet. Set on *every* request, including one that arrives
         /// while `thumb_scroll_scheduled` is set: centring is idempotent, so
         /// the request has to survive the burst that was already running rather
         /// than be dropped as a duplicate.
         pub thumb_scroll_requested: Cell<bool>,
-        /// Monotonic id for animated adjustment moves. A newer target cancels
-        /// any previous filmstrip scroll animation on its next frame.
-        pub thumb_scroll_animation_seq: Cell<u64>,
         pub crop_overlay_active: Cell<bool>,
         pub crop_overlay_selected: Cell<bool>,
         pub crop_overlay_rect: Cell<Option<(u32, u32, u32, u32)>>,
