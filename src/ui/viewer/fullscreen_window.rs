@@ -1,5 +1,5 @@
 use super::fullscreen::viewer_overlay_button;
-use super::transform::step_zoom;
+use super::transform::{apply_transform_control_visibility, step_zoom};
 use super::ViewerPage;
 use crate::core::i18n::tr;
 use gtk4 as gtk;
@@ -158,11 +158,14 @@ impl ViewerPage {
                     "picture.viewer-fullscreen-preview-picture {{ transform: rotate({current_rotation}deg) scale({current_scale}); }}"
                 ));
                 let zoomed = current_scale > super::MIN_VIEWER_ZOOM;
-                zoom_in_btn.set_visible(true);
-                zoom_out_btn.set_visible(zoomed);
-                zoom_reset_btn.set_visible(zoomed);
-                rotate_left_btn.set_visible(!zoomed);
-                rotate_right_btn.set_visible(!zoomed);
+                apply_transform_control_visibility(
+                    zoomed,
+                    &zoom_in_btn,
+                    &zoom_out_btn,
+                    &zoom_reset_btn,
+                    &rotate_left_btn,
+                    &rotate_right_btn,
+                );
                 picture.queue_draw();
             }
         });

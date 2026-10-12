@@ -4,6 +4,7 @@
 //! `BoxedAnyObject` knowledge in one place and gives us a single place to
 //! add new accessors (e.g. `media_item_by_id`).
 
+use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use gtk4::gio;
 use gtk4::glib;
@@ -25,6 +26,26 @@ pub fn media_list_contains_id(list: &gio::ListStore, item_id: i64) -> bool {
             .map(|item| item.id == item_id)
             .unwrap_or(false)
     })
+}
+
+/// Position of `media_id` in the list, or `None` when the list does not hold it.
+///
+/// Returns the index without cloning the item, which is what the callers that
+/// need to hand the index to GTK (`select`, `scroll_to_slot`, `splice`) want —
+/// `media_item_at` would copy every row it walks past.
+pub fn index_for_media_id(list: &gio::ListStore, media_id: MediaId) -> Option<u32> {
+    for index in 0..list.n_items() {
+        let Some(obj) = list.item(index) else {
+            continue;
+        };
+        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
+            continue;
+        };
+        if boxed.borrow::<MediaItem>().id == media_id.get() {
+            return Some(index);
+        }
+    }
+    None
 }
 
 /// Put an item back into a live list at the position its query would have given

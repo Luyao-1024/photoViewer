@@ -46,6 +46,9 @@ fn main() {
             endpoint,
             username: "seeduser".into(),
             credential_ref: REF.into(),
+            // A seeded job must opt in explicitly; the schema default stays false so an
+            // unverified server contract is never trusted by accident.
+            etag_is_sha256: false,
             local_root: local_root.into(),
             remote_root: "PhotoViewer".into(),
             direction: SyncDirection::Bidirectional,

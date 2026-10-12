@@ -16,6 +16,14 @@ use std::path::PathBuf;
 
 use super::ViewerPage;
 
+/// How long to wait after the details panel starts closing before re-enabling pop.
+///
+/// Same contract as [`super::editor::EDITOR_SLIDE_OUT_GUARD_MS`]: a safety margin over
+/// the revealer's `transition-duration` in `data/ui/viewer-page.blp` (220 ms), because
+/// NavigationView can emit a delayed built-in pop shortly after the close starts.
+/// The details revealer slides a taller panel, so it needs more margin than the editor's.
+const DETAILS_SLIDE_OUT_GUARD_MS: u64 = 700;
+
 pub(super) fn action_row(title: &str, subtitle: &str) -> adw::ActionRow {
     adw::ActionRow::builder()
         .title(title)
@@ -201,15 +209,18 @@ impl ViewerPage {
             // shortly after the details revealer starts closing.
             self.set_can_pop(false);
             let weak = self.downgrade();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                if !this.imp().details_split_view.get().shows_sidebar() {
-                    this.set_details_sidebar_child_visible(false);
-                    this.set_can_pop(true);
-                }
-            });
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(DETAILS_SLIDE_OUT_GUARD_MS),
+                move || {
+                    let Some(this) = weak.upgrade() else {
+                        return;
+                    };
+                    if !this.imp().details_split_view.get().shows_sidebar() {
+                        this.set_details_sidebar_child_visible(false);
+                        this.set_can_pop(true);
+                    }
+                },
+            );
         }
     }
 

@@ -250,3 +250,7 @@ impl glib::variant::ToVariant for ParamValue {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

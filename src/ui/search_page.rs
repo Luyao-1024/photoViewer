@@ -23,6 +23,7 @@ use crate::core::thumbnails::ThumbnailLoader;
 use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::media_grid::{FavoriteMenuState, MediaGrid, MediaGridCallbacks};
+use crate::ui::media_list::index_for_media_id;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
 
@@ -1096,21 +1097,6 @@ fn replace_store_items(store: &gtk::gio::ListStore, items: Vec<MediaItem>) {
 
 fn preview_items(items: &[MediaItem], limit: usize) -> Vec<MediaItem> {
     items.iter().take(limit).cloned().collect()
-}
-
-fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
-    for idx in 0..media_list.n_items() {
-        let Some(obj) = media_list.item(idx) else {
-            continue;
-        };
-        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-            continue;
-        };
-        if boxed.borrow::<MediaItem>().id == media_id.get() {
-            return Some(idx);
-        }
-    }
-    None
 }
 
 fn remove_media_items_by_ids(list: &gtk::gio::ListStore, ids: &HashSet<i64>) {

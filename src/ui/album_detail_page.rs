@@ -22,6 +22,7 @@ use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
+use crate::ui::media_list::index_for_media_id;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
 use std::cell::{Cell, RefCell};
@@ -1042,21 +1043,6 @@ fn remove_media_items_by_ids(list: &gtk::gio::ListStore, ids: &HashSet<i64>) {
             list.remove(idx);
         }
     }
-}
-
-fn index_for_media_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
-    for index in 0..list.n_items() {
-        let Some(obj) = list.item(index) else {
-            continue;
-        };
-        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-            continue;
-        };
-        if boxed.borrow::<MediaItem>().id == media_id.get() {
-            return Some(index);
-        }
-    }
-    None
 }
 
 fn media_uri_for_id(list: &gtk::gio::ListStore, media_id: MediaId) -> Option<String> {

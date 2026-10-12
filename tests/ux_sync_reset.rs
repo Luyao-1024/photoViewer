@@ -99,6 +99,11 @@ fn assert_empty(shell: &Shell, service: &SyncService, id: i64) {
 #[test]
 fn global_off_clears_suppression_conflicts_and_staging_and_serializes_rapid_toggles() {
     let config = tempfile::tempdir().unwrap();
+    // This binary owns its process and isolates preferences from the real user.
+    // Safe because this file has exactly one #[test]: each `tests/*.rs` is its own
+    // binary, so nothing else observes these variables. Adding a second #[test]
+    // here would make them race — follow `locale_pictures_dir.rs` and guard with
+    // its `ENV_LOCK` instead.
     std::env::set_var("XDG_CONFIG_HOME", config.path());
     std::env::set_var("XDG_DATA_HOME", config.path().join("data"));
     std::env::set_var("XDG_CACHE_HOME", config.path().join("cache"));

@@ -9,6 +9,15 @@ use gtk4::subclass::prelude::ObjectSubclassIsExt;
 use libadwaita as adw;
 use libadwaita::prelude::{AdwDialogExt, AlertDialogExt, NavigationPageExt};
 
+/// How long to wait after closing the editor sidebar before re-enabling pop.
+///
+/// This is a safety margin over the revealer's `transition-duration` in
+/// `data/ui/viewer-page.blp` (220 ms), not the animation length itself.
+/// NavigationView can emit a delayed built-in pop after the slide-out starts,
+/// so re-enabling pop at the transition boundary reintroduces that race.
+/// Do not shorten this toward the blueprint value.
+const EDITOR_SLIDE_OUT_GUARD_MS: u64 = 400;
+
 impl ViewerPage {
     /// Wire the Edit button: configure the embedded `EditorPanel` for the
     /// current item and reveal it as a right-side overlay (same pattern as
@@ -107,16 +116,19 @@ impl ViewerPage {
 
         // Re-enable pop after the slide-out animation.
         let weak = self.downgrade();
-        glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-            if let Some(this) = weak.upgrade() {
-                if !this.imp().is_editing.get()
-                    && !this.imp().editor_split_view.get().shows_sidebar()
-                {
-                    this.set_editor_sidebar_child_visible(false);
-                    this.set_can_pop(true);
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(EDITOR_SLIDE_OUT_GUARD_MS),
+            move || {
+                if let Some(this) = weak.upgrade() {
+                    if !this.imp().is_editing.get()
+                        && !this.imp().editor_split_view.get().shows_sidebar()
+                    {
+                        this.set_editor_sidebar_child_visible(false);
+                        this.set_can_pop(true);
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// Connect EditorPanel callbacks to ViewerPage state (picture, spinner,

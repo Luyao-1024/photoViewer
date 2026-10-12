@@ -38,6 +38,7 @@ use crate::ui::album_picker;
 use crate::ui::empty_states;
 use crate::ui::keyboard::{KeyboardAction, KeyboardResult};
 use crate::ui::media_grid::{FavoriteMenuState, MediaGridCallbacks};
+use crate::ui::media_list::index_for_media_id;
 use crate::ui::mode_selector::ModeSelector;
 use crate::ui::viewer_page::{NavDelta, ViewerPage, NAV_POP, VIEWER_OPEN_POP_GUARD_MS};
 use crate::ui::virtual_media_grid::VirtualMediaGrid;
@@ -2265,21 +2266,6 @@ fn media_item_for_index(
     let boxed = obj.downcast::<glib::BoxedAnyObject>().ok()?;
     let item = (*boxed.borrow::<crate::core::media::MediaItem>()).clone();
     Some(item)
-}
-
-fn index_for_media_id(media_list: &gtk::gio::ListStore, media_id: MediaId) -> Option<u32> {
-    for index in 0..media_list.n_items() {
-        let Some(obj) = media_list.item(index) else {
-            continue;
-        };
-        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-            continue;
-        };
-        if boxed.borrow::<crate::core::media::MediaItem>().id == media_id.get() {
-            return Some(index);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

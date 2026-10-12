@@ -1,6 +1,28 @@
 use super::ViewerPage;
+use gtk4 as gtk;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::ObjectSubclassIsExt;
+
+/// Shared rule for the zoom/rotate control group.
+///
+/// Zooming trades rotation for pan-and-reset, so the rotate buttons hide while
+/// the reset button appears. The fullscreen preview window shows the same five
+/// controls and has to follow the same rule; it used to repeat this block
+/// verbatim, which is exactly how two copies drift apart.
+pub(super) fn apply_transform_control_visibility(
+    zoomed: bool,
+    zoom_in: &gtk::Button,
+    zoom_out: &gtk::Button,
+    zoom_reset: &gtk::Button,
+    rotate_left: &gtk::Button,
+    rotate_right: &gtk::Button,
+) {
+    zoom_in.set_visible(true);
+    zoom_out.set_visible(zoomed);
+    zoom_reset.set_visible(zoomed);
+    rotate_left.set_visible(!zoomed);
+    rotate_right.set_visible(!zoomed);
+}
 
 impl ViewerPage {
     pub(super) fn setup_zoom_controls(&self) {
@@ -134,11 +156,14 @@ impl ViewerPage {
     fn update_zoom_buttons(&self) {
         let imp = self.imp();
         let zoomed = imp.zoom_scale.get() > super::MIN_VIEWER_ZOOM;
-        imp.zoom_in_btn.get().set_visible(true);
-        imp.zoom_out_btn.get().set_visible(zoomed);
-        imp.zoom_reset_btn.get().set_visible(zoomed);
-        imp.rotate_left_btn.get().set_visible(!zoomed);
-        imp.rotate_right_btn.get().set_visible(!zoomed);
+        apply_transform_control_visibility(
+            zoomed,
+            &imp.zoom_in_btn.get(),
+            &imp.zoom_out_btn.get(),
+            &imp.zoom_reset_btn.get(),
+            &imp.rotate_left_btn.get(),
+            &imp.rotate_right_btn.get(),
+        );
         // A separator has to sit between two groups that are both present. The
         // transform group disappears entirely once zoomed, which would leave its
         // separator dangling, so it follows that group and not the zoom one.

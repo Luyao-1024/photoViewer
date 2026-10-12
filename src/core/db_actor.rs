@@ -151,7 +151,28 @@ impl DbCommand {
             | Self::Sync(crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }) => {
                 DbWritePriority::UserInteractive
             }
-            Self::Sync(_) => DbWritePriority::StartupScan,
+            // The remaining sync writes are engine bookkeeping rather than user intent,
+            // so they run below a filesystem-watcher burst. Listed exhaustively on purpose:
+            // a catch-all `Self::Sync(_)` would silently demote any variant added later,
+            // with no compiler error. Adding a `SyncWrite` variant now fails to compile
+            // here, which is the point — classify it deliberately.
+            Self::Sync(
+                crate::core::sync::store::SyncWrite::FailScheduledRun { .. }
+                | crate::core::sync::store::SyncWrite::FinishRun { .. }
+                | crate::core::sync::store::SyncWrite::ReconcileInterruptedRuns
+                | crate::core::sync::store::SyncWrite::FailPendingEdit { .. }
+                | crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
+                | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
+                | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
+                | crate::core::sync::store::SyncWrite::ReplaceInventory { .. }
+                | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
+                | crate::core::sync::store::SyncWrite::SuppressLocalDeletion { .. }
+                | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
+                | crate::core::sync::store::SyncWrite::RecordConflict { .. }
+                | crate::core::sync::store::SyncWrite::PrepareTask { .. }
+                | crate::core::sync::store::SyncWrite::SetTaskState { .. }
+                | crate::core::sync::store::SyncWrite::ResolveConflict { .. },
+            ) => DbWritePriority::StartupScan,
         }
     }
 }

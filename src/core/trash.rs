@@ -630,7 +630,15 @@ pub fn move_to_trash_marked(pool: &DbPool, id: i64, uri: &str) -> Result<()> {
     match move_to_configured_trash(uri) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = db::unmark_trashed(pool, id);
+            // The row is still marked trashed when the rollback itself fails, so the photo
+            // vanishes from the library while its file is untouched. Surface that instead of
+            // letting disk and DB disagree silently.
+            if let Err(rollback) = db::unmark_trashed(pool, id) {
+                tracing::error!(
+                    "trash rollback failed for media {id}: {rollback}; the row stays marked \
+                     trashed while its file was never moved"
+                );
+            }
             Err(e)
         }
     }

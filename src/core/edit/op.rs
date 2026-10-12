@@ -68,3 +68,7 @@ fn adjust_saturation(img: &DynamicImage, saturation: i32) -> DynamicImage {
 fn scale_channel_from_luma(channel: f32, luma: f32, factor: f32) -> u8 {
     (luma + (channel - luma) * factor).round().clamp(0.0, 255.0) as u8
 }
+
+#[cfg(test)]
+#[path = "op/tests.rs"]
+mod tests;

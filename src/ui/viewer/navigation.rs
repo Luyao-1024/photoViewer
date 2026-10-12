@@ -43,20 +43,8 @@ pub(super) fn next_index_after_deleted_item(deleted_index: u32, remaining_len: u
     }
 }
 
-pub(super) fn index_for_media_id(media_list: &gio::ListStore, media_id: MediaId) -> Option<u32> {
-    for index in 0..media_list.n_items() {
-        let Some(obj) = media_list.item(index) else {
-            continue;
-        };
-        let Ok(boxed) = obj.downcast::<glib::BoxedAnyObject>() else {
-            continue;
-        };
-        if boxed.borrow::<MediaItem>().id == media_id.get() {
-            return Some(index);
-        }
-    }
-    None
-}
+/// Re-exported from [`crate::ui::media_list`] so viewer callers keep a local name.
+pub(super) use crate::ui::media_list::index_for_media_id;
 
 impl ViewerPage {
     pub(super) fn fire_nav(&self, delta: NavDelta) {
