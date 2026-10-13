@@ -15,6 +15,16 @@ Application metadata — favorites, album covers, ordering, edit history — is
 **not** synchronized. Do not copy the SQLite/WAL files to achieve it; a future
 metadata sync needs a versioned sidecar protocol.
 
+## Planned Native SyncServer Integration
+
+The native Rust service has a separate [client contract](native-sync.md): normal
+downstream first, acquire one upload lease, held-lock applied-token gate and
+catch-up, delete→modify→create, database dirty fields and valid success callbacks.
+Acquisition failure skips uplink once; lease loss aborts every unfinished uplink
+item while concurrent downstream remains available. These rules are planned C1
+capabilities and do not describe the existing WebDAV runtime or override its
+upload scope/local-deletion suppression.
+
 ## Key Files
 
 | File | Role |

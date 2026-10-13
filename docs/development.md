@@ -184,3 +184,12 @@ test file or trash entry.
 - Prefer replacing duplicate detailed documents with a short compatibility pointer to the active source of truth, and delete the duplicate once the pointer proves unnecessary.
 - Do not add a point-in-time review record as a maintained document. Fold its findings into the owning module doc, and keep the record in git history. `docs/README.md` explains how to recover one.
 - Do not create a directory for a single file. Promote a subdirectory to `docs/modules/` only once it holds a document that has its own functional ownership.
+
+
+## Development Branch
+
+The user-selected working branch is `dev`; push PhotoViewer changes to
+`origin/dev`. Retain `main` as the release/integration branch and do not move its
+remote tip without a separate instruction. The independent SyncServer repository
+continues on `main`. CI runs on pushes to both PhotoViewer branches; the full
+local push gate and exact-SHA cloud reporting still apply to `dev`.

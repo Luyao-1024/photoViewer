@@ -394,3 +394,15 @@ to gdk-pixbuf instead of logging recoverable turbojpeg fallback warnings.
 
 **Video thumbnails use `ffmpegthumbnailer` with layered fallbacks.** Most phone/camera video is limited-range (TV) YUV (16–235). `extract_video_frame` prefers `ffmpegthumbnailer` (libav-based; correctly expands limited→full range and applies rotation), then tries the `ffmpeg` CLI available on many development hosts, and finally uses `extract_video_frame_gst` with `uridecodebin → videoflip(auto) → videoconvert → RGB appsink`. `videoconvert` derives range/colorimetry from the decoded input caps. Do not force `colorimetry=sRGB` on the raw RGB caps: common decoders cannot negotiate it and report `Internal data stream error`. Only if all decoders fail does it create the synthetic unavailable placeholder in memory; failed placeholders are not written to the thumbnail cache. External decoders and `videoflip video-direction=auto` apply container rotation. Successfully extracted frames are cached as JPEG.
 The per-video ffmpegthumbnailer fallback, GStreamer extraction, cache-hit, and generated-thumbnail progress messages are debug diagnostics only; default logs should retain warnings for unrecoverable decode/cache problems, not every recovered thumbnail path.
+
+
+## Planned Native Sync Fields
+
+The [native SyncServer contract](native-sync.md) adds dirty/local change version,
+edit/deletion event time, remote identity and confirmation correlation to existing
+sync_entries records during C1. No independent dirty file/table/persistent queue
+is introduced. Receive progress uses ingest/applied token fields; paired file
+publication recovery is a separate concern. Current schema remains version 8;
+this documentation change does not add these columns or alter current WebDAV
+migration/behavior. Valid callbacks update only matching completed obligations,
+while local edits and failed/skipped/lost-lease tasks keep dirty.

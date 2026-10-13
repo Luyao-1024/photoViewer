@@ -93,3 +93,9 @@ For persistent overrides, copy one of the examples from `config/` to:
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).
+
+
+Native SyncServer integration is planned separately in
+[the native client contract](docs/modules/native-sync.md); lease/token/dirty
+coordination and dual-resource publication are not implemented by this doc change.
+Development work is pushed to `dev`, with CI using the same gate as `main`.

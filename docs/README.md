@@ -22,6 +22,7 @@ This is the human entry point for project documentation. Agents should start fro
 | Module | Scope |
 |---|---|
 | [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails |
+| [`modules/native-sync.md`](modules/native-sync.md) | Planned native SyncServer Provider, upload lease/token gate, DB dirty callbacks and complete-media publication |
 | [`modules/sync.md`](modules/sync.md) | Provider-neutral bidirectional sync, WebDAV adapter, planner, conflicts, recovery, cloud badges |
 | [`modules/browsing.md`](modules/browsing.md) | Photos page, Year/Month/Day grouping, thumbnail grids, mode selector |
 | [`modules/viewer.md`](modules/viewer.md) | Viewer page, image/video playback, overlay controls, thumbnail strip, details/editor panels |
