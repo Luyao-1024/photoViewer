@@ -74,6 +74,20 @@ struct FakeProvider {
     /// Declared lengths that override the stored byte count. Lets a test place
     /// an object beyond a size threshold without allocating gigabytes for it.
     reported_sizes: Mutex<BTreeMap<String, u64>>,
+    /// Listing observability, so a test can prove the walk really overlaps
+    /// requests and still visits every collection exactly once.
+    list_calls: Mutex<Vec<String>>,
+    list_in_flight: AtomicU64,
+    max_list_in_flight: AtomicU64,
+    /// Hold one named collection's listing until released, so a test can
+    /// observe the service after part of the tree is already walked.
+    hold_listing_of: Mutex<Option<String>>,
+    listing_entered: AtomicBool,
+    listing_release: tokio::sync::Notify,
+    /// Artificial round-trip cost. Without a real suspension point a fake
+    /// provider completes each listing in a single poll, so overlapping them
+    /// would be unobservable no matter how the walk is written.
+    list_latency: Mutex<Option<Duration>>,
 }
 
 impl FakeProvider {
@@ -97,36 +111,38 @@ impl FakeProvider {
     fn revision(bytes: &[u8]) -> Revision {
         Revision::etag(format!("\"{}\"", blake3::hash(bytes).to_hex()))
     }
-}
 
-#[async_trait]
-impl SyncProvider for FakeProvider {
-    fn content_sha256(&self, entry: &RemoteEntry) -> ProviderResult<Option<String>> {
-        use sha2::{Digest, Sha256};
-        if !self.provide_sha256.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        let objects = self.objects.lock().unwrap();
-        Ok(objects
-            .get(&entry.key)
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes))))
+    /// Make every listing take `latency`, so overlapping calls are observable.
+    fn set_listing_latency(&self, latency: Duration) {
+        *self.list_latency.lock().unwrap() = Some(latency);
     }
 
-    fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            read: true,
-            write_new: true,
-            conditional_replace: true,
-            conditional_delete: true,
-            ..ProviderCapabilities::default()
-        }
+    /// Block one named collection's listing until [`Self::release_listing`].
+    fn hold_listing_of(&self, collection: &str) {
+        self.listing_entered.store(false, Ordering::Release);
+        *self.hold_listing_of.lock().unwrap() = Some(collection.trim_matches('/').to_string());
     }
 
-    async fn probe(&self) -> ProviderResult<ProviderCapabilities> {
-        Ok(self.capabilities())
+    fn release_listing(&self) {
+        self.listing_release.notify_waiters();
     }
 
-    async fn list_children(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>> {
+    /// `true` once a held listing has actually been reached.
+    fn listing_is_blocked(&self) -> bool {
+        self.listing_entered.load(Ordering::Acquire)
+    }
+
+    /// Highest number of `list_children` calls that were ever in flight at once.
+    fn peak_listing_concurrency(&self) -> u64 {
+        self.max_list_in_flight.load(Ordering::Acquire)
+    }
+
+    /// Every collection the walk listed, in the order the calls started.
+    fn listed_collections(&self) -> Vec<String> {
+        self.list_calls.lock().unwrap().clone()
+    }
+
+    fn list_collection(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>> {
         if self.fail_listing.swap(false, Ordering::Relaxed) {
             return Err(ProviderError::Offline("injected incomplete listing".into()));
         }
@@ -158,6 +174,59 @@ impl SyncProvider for FakeProvider {
             }
         }
         Ok(entries.into_values().collect())
+    }
+}
+
+#[async_trait]
+impl SyncProvider for FakeProvider {
+    fn content_sha256(&self, entry: &RemoteEntry) -> ProviderResult<Option<String>> {
+        use sha2::{Digest, Sha256};
+        if !self.provide_sha256.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let objects = self.objects.lock().unwrap();
+        Ok(objects
+            .get(&entry.key)
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes))))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            read: true,
+            write_new: true,
+            conditional_replace: true,
+            conditional_delete: true,
+            ..ProviderCapabilities::default()
+        }
+    }
+
+    async fn probe(&self) -> ProviderResult<ProviderCapabilities> {
+        Ok(self.capabilities())
+    }
+
+    async fn list_children(&self, collection: &str) -> ProviderResult<Vec<RemoteEntry>> {
+        self.list_calls
+            .lock()
+            .unwrap()
+            .push(collection.trim_matches('/').to_string());
+        let in_flight = self.list_in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+        self.max_list_in_flight
+            .fetch_max(in_flight, Ordering::AcqRel);
+        let latency = *self.list_latency.lock().unwrap();
+        if let Some(latency) = latency {
+            tokio::time::sleep(latency).await;
+        }
+        // Held here so the caller can observe the walk while it is mid-flight.
+        let holding =
+            self.hold_listing_of.lock().unwrap().as_deref() == Some(collection.trim_matches('/'));
+        if holding {
+            self.hold_listing_of.lock().unwrap().take();
+            self.listing_entered.store(true, Ordering::Release);
+            self.listing_release.notified().await;
+        }
+        let listed = self.list_collection(collection);
+        self.list_in_flight.fetch_sub(1, Ordering::AcqRel);
+        listed
     }
 
     async fn stat(&self, key: &str) -> ProviderResult<Option<RemoteEntry>> {
@@ -1749,5 +1818,178 @@ async fn reconcile_verifies_then_suppresses_and_reuses_a_changed_remote_download
             .unwrap()
             .count(),
         0
+    );
+}
+
+/// A remote walk is a chain of small round trips, so listing collections one at
+/// a time spends the whole run waiting on latency. The walk overlaps them, but
+/// only up to a fixed bound — an unbounded fan-out would just move the problem
+/// onto the server.
+#[tokio::test]
+async fn remote_discovery_overlaps_collection_listings_within_a_bound() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job_in_direction(&service, local.clone(), SyncDirection::DownloadOnly);
+    let provider = Arc::new(FakeProvider::default());
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif"),
+    )
+    .unwrap();
+    // One root-level collection plus twenty siblings: enough breadth that a
+    // serial walk would need twenty-one round trips.
+    provider.insert("PhotoViewer/root-level.gif", bytes.clone());
+    for index in 0..20 {
+        provider.insert(
+            &format!("PhotoViewer/album{index:02}/shot.gif"),
+            bytes.clone(),
+        );
+    }
+    provider.set_listing_latency(Duration::from_millis(5));
+
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+
+    let mut listed = provider.listed_collections();
+    listed.sort();
+    let mut expected: Vec<String> = (0..20)
+        .map(|index| format!("PhotoViewer/album{index:02}"))
+        .collect();
+    expected.push("PhotoViewer".to_string());
+    expected.sort();
+    assert_eq!(
+        listed, expected,
+        "every collection must be listed exactly once — no repeats, none skipped"
+    );
+
+    let peak = provider.peak_listing_concurrency();
+    assert!(
+        peak > 1,
+        "a serial walk leaves the whole run waiting on one round trip at a time; peak was {peak}"
+    );
+    assert!(
+        peak <= REMOTE_LISTING_CONCURRENCY as u64,
+        "the walk must stay within its bound, saw {peak} concurrent listings"
+    );
+}
+
+/// The denominator the overview renders is the persisted inventory. While
+/// discovery is still walking, that inventory used to stay empty and the status
+/// line read "syncing, 0/0 synced" for the entire enumeration — indistinguishable
+/// from a run that is broken. Proven scope has to be published as it is found.
+#[tokio::test]
+async fn discovery_publishes_scope_while_the_walk_is_still_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job_in_direction(&service, local.clone(), SyncDirection::DownloadOnly);
+    let provider = Arc::new(FakeProvider::default());
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif"),
+    )
+    .unwrap();
+    // The root alone carries more media than one publish batch, so the walk
+    // publishes before it descends. A child album is then held open, leaving
+    // the run provably mid-discovery with its first batch already persisted.
+    let root_media = DISCOVERY_SCOPE_PUBLISH_BATCH + 44;
+    for index in 0..root_media {
+        provider.insert(&format!("PhotoViewer/root{index:03}.gif"), bytes.clone());
+    }
+    provider.insert("PhotoViewer/album00/shot.gif", bytes.clone());
+    provider.hold_listing_of("PhotoViewer/album00");
+
+    let runner = service.clone();
+    let running_provider = Arc::clone(&provider);
+    let run = tokio::spawn(async move { runner.run_with_provider(&job, running_provider).await });
+
+    let blocked = tokio::time::timeout(Duration::from_secs(8), async {
+        while !provider.listing_is_blocked() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(blocked.is_ok(), "the walk never reached the held listing");
+
+    let mid_walk = service.store().overview().unwrap();
+    assert!(
+        mid_walk.total_items > 0,
+        "scope proven before the walk finished must already be counted, so the overview \
+         stops reading 0/0 while discovery is still running"
+    );
+    assert!(
+        mid_walk.total_items < root_media + 1,
+        "the held collection is not walked yet, so its file must not be counted: {}",
+        mid_walk.total_items
+    );
+
+    provider.release_listing();
+    run.await.unwrap().unwrap();
+
+    let after = service.store().overview().unwrap();
+    assert_eq!(
+        after.total_items,
+        root_media + 1,
+        "a completed discovery must report the whole discovered scope"
+    );
+}
+
+/// Discovery publishes scope as it goes, which means a walk that dies part-way
+/// has already written rows. Those writes must never *remove* anything: the last
+/// complete scope has to survive an incomplete run, and the next complete run
+/// has to converge back to the exact scope.
+#[tokio::test]
+async fn an_incomplete_discovery_only_ever_adds_to_the_known_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("photos");
+    std::fs::create_dir(&local).unwrap();
+    let service = recovery_service(temp.path());
+    let job = recovery_job_in_direction(&service, local.clone(), SyncDirection::DownloadOnly);
+    let provider = Arc::new(FakeProvider::default());
+    let bytes = std::fs::read(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/media/animated_source.gif"),
+    )
+    .unwrap();
+    provider.insert("PhotoViewer/first.gif", bytes.clone());
+    provider.insert("PhotoViewer/album/second.gif", bytes.clone());
+
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    let complete = service.store().overview().unwrap();
+    assert_eq!(complete.total_items, 2);
+
+    // A new remote-only file appears, and the next walk fails part-way through.
+    provider.insert("PhotoViewer/album/third.gif", bytes.clone());
+    provider.fail_listing.store(true, Ordering::Release);
+    assert!(
+        service
+            .run_with_provider(&job, provider.clone())
+            .await
+            .is_err(),
+        "the injected listing failure must surface as a failed run"
+    );
+
+    let after_failure = service.store().overview().unwrap();
+    assert!(
+        after_failure.total_items >= complete.total_items,
+        "a failed discovery must never shrink the known scope: {} < {}",
+        after_failure.total_items,
+        complete.total_items
+    );
+
+    // The following complete run reconciles the scope to exactly what is there.
+    service
+        .run_with_provider(&job, provider.clone())
+        .await
+        .unwrap();
+    let reconciled = service.store().overview().unwrap();
+    assert_eq!(
+        reconciled.total_items, 3,
+        "a later complete discovery must converge on the exact scope"
     );
 }

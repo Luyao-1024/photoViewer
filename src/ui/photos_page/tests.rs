@@ -267,11 +267,9 @@ fn a_sync_run_started_at_the_grid_top_reveals_the_overview_without_a_pull() {
     );
     assert_eq!(
         page.imp().overview_sync_label.get().label(),
-        trf(
-            "photos.overview.sync.running",
-            &[("done", "0"), ("total", "0")]
-        ),
-        "the revealed panel has to carry the running sentence, not just the spinner"
+        tr("photos.overview.sync.preparing"),
+        "a run that has not proven any scope yet must say it is preparing, not report \
+         a 0/0 fraction that reads as a broken run"
     );
 
     // Settling keeps the result readable instead of folding itself away.
@@ -668,6 +666,70 @@ fn running_sync_overview_shows_history_over_complete_inventory() {
             &[("done", "104"), ("total", "340")]
         ),
         "committing a new baseline advances the numerator without adding to the inventory"
+    );
+}
+
+/// A run cannot report a fraction before discovery has proven any scope, and on
+/// a large library that listing takes minutes. `0/0` during that window reads
+/// as a broken run, so the overview says what is actually happening.
+#[test]
+fn running_sync_overview_says_it_is_preparing_before_any_scope_is_known() {
+    let undiscovered = SyncOverview {
+        status: SyncOverviewStatus::Running,
+        job_count: 1,
+        synced_items: 0,
+        total_items: 0,
+        conflict_images: 0,
+    };
+    let preparing = SyncLiveProgress {
+        phase: SyncLivePhase::Preparing,
+        downloaded: 0,
+        download_total: 0,
+        uploaded: 0,
+        upload_total: 0,
+        transfer_active: false,
+        current_bytes: 0,
+        current_total: 0,
+    };
+    for progress in [
+        None,
+        Some(preparing),
+        Some(SyncLiveProgress {
+            phase: SyncLivePhase::Downloading,
+            downloaded: 7,
+            download_total: 240,
+            ..preparing
+        }),
+        Some(SyncLiveProgress {
+            phase: SyncLivePhase::Uploading,
+            uploaded: 7,
+            upload_total: 240,
+            ..preparing
+        }),
+    ] {
+        let text = sync_overview_text(undiscovered, progress);
+        assert_eq!(
+            text,
+            tr("photos.overview.sync.preparing"),
+            "no known path means no fraction — the upload wording must not appear either"
+        );
+        assert!(
+            !text.contains("0/0"),
+            "a bare 0/0 is indistinguishable from a stalled run: {text}"
+        );
+    }
+
+    // The moment any scope is proven the fraction returns.
+    let discovered = SyncOverview {
+        total_items: 240,
+        ..undiscovered
+    };
+    assert_eq!(
+        sync_overview_text(discovered, None),
+        trf(
+            "photos.overview.sync.running",
+            &[("done", "0"), ("total", "240")]
+        )
     );
 }
 

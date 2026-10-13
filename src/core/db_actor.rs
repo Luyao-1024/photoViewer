@@ -165,6 +165,7 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
                 | crate::core::sync::store::SyncWrite::ReplaceInventory { .. }
+                | crate::core::sync::store::SyncWrite::ExtendInventory { .. }
                 | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
                 | crate::core::sync::store::SyncWrite::SuppressLocalDeletion { .. }
                 | crate::core::sync::store::SyncWrite::CommitBaseline { .. }

@@ -90,7 +90,16 @@ fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>
 
 /// The fraction combines historical proven baselines and all known sync paths.
 /// Live counters reset per run and must never supply either side of this ratio.
+///
+/// With no known path there is no fraction to report: the run has started but
+/// has not yet proven any scope. Discovery has to finish before a denominator
+/// exists, and on a large library that is minutes of listing — long enough that
+/// rendering `0/0` reads as a broken run rather than as one still preparing. Say
+/// what is actually happening instead.
 fn sync_running_text(overview: SyncOverview, progress: Option<SyncLiveProgress>) -> String {
+    if overview.total_items == 0 {
+        return tr("photos.overview.sync.preparing");
+    }
     let key = match progress.map(|progress| progress.phase) {
         Some(SyncLivePhase::Uploading) => "photos.overview.sync.running_upload",
         _ => "photos.overview.sync.running",

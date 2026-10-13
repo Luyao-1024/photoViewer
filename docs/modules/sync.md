@@ -50,6 +50,22 @@ WebDAV keys reject leading slashes, dot segments and NUL while allowing empty
 keys/segments. Root-relative mapping retains its slash-boundary prefix check.
 Normalization, error types and error text stay at their existing boundaries.
 
+`walk_remote_collections` in `service.rs` is the single breadth-first traversal
+of a remote tree, shared by the engine's discovery and the settings album
+picker. It lists up to `REMOTE_LISTING_CONCURRENCY` collections at a time,
+hands each collection's children to its caller as they arrive, and lets each
+caller keep its own object/collection budget. Because the listings overlap, the
+order collections complete in is not the order they were queued; callers must
+not depend on it.
+
+Concurrency pays off only when round-trip latency is what costs. Measured
+against a real endpoint whose library is one flat collection of 3,107 files,
+the walk took 184,557 ms at concurrency 8 against 184,693 ms serial — no
+change. That server spends its time inside a *single* `PROPFIND`, computing
+content hashes for every file before it can answer, so there is nothing left to
+overlap. The bound is worth keeping for trees with many modest collections, and
+it must not be read as a universal speedup.
+
 Test bodies live in child modules: `model/tests.rs`, `local/tests.rs`, `planner/tests.rs`,
 `service/tests.rs`, `store/tests.rs`, `webdav/tests.rs`.
 
@@ -91,7 +107,7 @@ content hash and not a stable file ID.
 
 | Capability | WebDAV direction | When missing |
 |---|---|---|
-| Enumerate / stat | `PROPFIND Depth: 1`, per-directory | Pause the job; an unreadable directory is not an empty one |
+| Enumerate / stat | `PROPFIND Depth: 1`, per-directory, a bounded number of directories at a time | Pause the job; an unreadable directory is not an empty one |
 | Prepare parent | `MKCOL`, handling already-exists and permission errors | Fail the object; do not skip a required parent |
 | Read | Streaming `GET`, conditional when a strong validator exists | Mark the guarantee weak; do not fake snapshot consistency |
 | Create-only | Conditional `PUT`, `If-None-Match: *` | Refuse automatic writes |
@@ -729,21 +745,42 @@ once; changed files, repeat verification, and pending conflicts cannot add a
 second denominator slot for a historical path. Completed labels retain X/Y and
 optionally append the unresolved image-conflict count.
 
+While no path is known yet the overview shows "同步准备中" instead of a
+fraction. Y cannot exist before discovery has proven scope, and a large library
+spends minutes listing — measured against a real endpoint, a single collection
+holding 3,107 files took 162 seconds on its own. Rendering `0/0` for that long
+is indistinguishable from a stalled run; naming the phase is the honest
+alternative. The fraction returns as soon as any scope is known, so this only
+covers the pre-discovery window and never hides a partial result.
+
+Discovery grows the inventory while it runs. Each batch of remote paths the
+walk has proven is appended in a generation-guarded transaction, so the
+overview's denominator becomes visible during the enumeration instead of
+staying empty until the whole tree has been listed. The append never removes a
+row, so a discovery that fails part-way can only leave a superset of the last
+complete scope, never a smaller one; the next complete discovery converges on
+the exact scope through the authoritative write below. Remote files are only
+published while the job can download — in `UploadOnly` they are not part of the
+scope at all.
+
 After complete remote discovery and a successful local scan, the service saves
 the job's entire inventory in one generation-guarded database transaction,
-before the first transfer. Remote files count in download-capable jobs; local
-files count only in upload-capable jobs and the user's selected upload scope.
-Thus unselected local-only albums and remote-only files in UploadOnly mode are
-excluded. Protected unfinished uploads remain in scope. An unchanged snapshot
-skips rewriting inventory rows. Failed/incomplete discovery never replaces the
-previous inventory, and interrupted transfers leave the full denominator in
-place for restart. New configuration generations invalidate obsolete snapshots
-without removing history; the next complete scan refreshes the scope. Known
-totals may grow when new files or jobs are discovered, including sequential jobs
-in one trigger. Before first discovery, only previously known paths can be
-counted. Schema v7 seeds legacy inventory from proven baselines and unresolved
-sync entries. Media-index rebuilds preserve it; job removal cascades, and an
-explicit global opt-out clears it with the other sync history.
+before the first transfer. That write is authoritative: it reconciles away
+anything the running walk appended, and it is the only place that decides
+membership for locally proven paths. Remote files count in download-capable
+jobs; local files count only in upload-capable jobs and the user's selected
+upload scope. Thus unselected local-only albums and remote-only files in
+UploadOnly mode are excluded. Protected unfinished uploads remain in scope. An
+unchanged snapshot skips rewriting inventory rows. Failed/incomplete discovery
+never removes from the previous inventory, and interrupted transfers leave the
+full denominator in place for restart. New configuration generations invalidate
+obsolete snapshots without removing history; the next complete scan refreshes
+the scope. Known totals may grow when new files or jobs are discovered,
+including sequential jobs in one trigger. Before first discovery, only
+previously known paths can be counted. Schema v7 seeds legacy inventory from
+proven baselines and unresolved sync entries. Media-index rebuilds preserve it;
+job removal cascades, and an explicit global opt-out clears it with the other
+sync history.
 
 `SyncService` still tracks live transfer progress in an in-memory, process-wide
 session that is never persisted. The home pull and each application launch open
@@ -783,6 +820,18 @@ copy as supported:
 - Remote enumeration and BLAKE3 hashing for checked/remote-present paths still
   run every cycle, so large selected albums need metadata/watcher-based
   dirty-item optimization.
+- **WebDAV has no change feed**, so every cycle costs the server `O(all
+  bytes)`: answering a `PROPFIND` with content-hash ETags requires recomputing
+  every member's hash, and there is nowhere to persist the result. Measured on a
+  1.7 GiB host with a 17 GB flat collection, one listing took 156 s and a
+  second identical listing took 160 s — page cache cannot hold the working set,
+  so nothing is reused. This is paid every cycle, at every trigger, and scales
+  linearly: 100 GB of library is roughly 11 minutes per cycle. It is the reason
+  a large library outgrows WebDAV regardless of client-side tuning.
+- With SHA-256 content ETags the client can prove a cloud copy identical from
+  metadata alone, which replaces a full download per path with a local read.
+  That switch is a per-job contract, not a capability probe: it is off for jobs
+  that predate the column, and on by default only for newly created ones.
 - Single-direction UI modes and remote browsing are post-release.
 - Verified real-service coverage: DAV locking, both-side additions and
   modifications, Unicode paths, and conflict resolution, against an Aliyun
@@ -814,6 +863,7 @@ These are binding. Violating one is a bug even when the current tests pass.
 | C17 | Running/quiescing jobs remain editable; viewing, drafting, cancellation, invalid input and no-ops have no pause/restart side effects |
 | C18 | An accepted effective edit drives durable desired state, safe quiescence and automatic latest-configuration reconciliation; never require manual pause/resume or a Photos pull, and never restart opted-out/deleted jobs |
 | C19 | Serialize/coalesce edits per job; obsolete runs and callbacks cannot overwrite newer desired state, claim new old-generation work, or mark the latest generation complete |
+| C20 | A remote walk lists a bounded number of collections concurrently (`REMOTE_LISTING_CONCURRENCY`); every collection is visited exactly once, the first listing error aborts the walk, and the existing object/collection budgets still apply |
 
 ## Acceptance Matrix
 

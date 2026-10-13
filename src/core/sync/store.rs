@@ -194,6 +194,15 @@ pub enum SyncWrite {
         generation: i64,
         relative_paths: Vec<String>,
     },
+    /// Add paths to the known scope without removing anything.
+    ///
+    /// Used to publish discovery progress while the walk is still running. An
+    /// obsolete worker cannot extend the inventory of a newer configuration.
+    ExtendInventory {
+        job_id: i64,
+        generation: i64,
+        relative_paths: Vec<String>,
+    },
     UpsertObservation {
         job_id: i64,
         relative_path: String,
@@ -807,6 +816,45 @@ impl SyncStore {
         }
     }
 
+    /// Publish part of a discovered scope while discovery is still running.
+    ///
+    /// This only ever adds. The overview's denominator is the union of the
+    /// persisted inventory and proven history, so appending as the walk
+    /// progresses makes the scope visible immediately instead of leaving the
+    /// overview reading `0/0` for the whole enumeration. Because nothing is
+    /// ever removed here, a discovery that fails part-way can only leave a
+    /// superset of the previous complete scope — never a smaller one — and the
+    /// next complete discovery converges on the exact scope through
+    /// [`Self::replace_inventory`].
+    ///
+    /// Returns whether at least one new row was added.
+    pub(crate) fn extend_inventory(
+        &self,
+        job_id: i64,
+        generation: i64,
+        relative_paths: &[String],
+    ) -> Result<bool> {
+        if relative_paths.is_empty() {
+            return Ok(false);
+        }
+        let relative_paths = relative_paths
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        match self.write(SyncWrite::ExtendInventory {
+            job_id,
+            generation,
+            relative_paths,
+        })? {
+            SyncWriteResult::Changed(changed) => Ok(changed),
+            _ => Err(AppError::Backend(
+                "sync inventory returned an unexpected result".into(),
+            )),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_observation(
         &self,
@@ -1313,6 +1361,41 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             }
             tx.commit()?;
             Ok(SyncWriteResult::Changed(true))
+        }
+        SyncWrite::ExtendInventory {
+            job_id,
+            generation,
+            relative_paths,
+        } => {
+            let mut conn = pool.get()?;
+            let tx = conn.transaction()?;
+            // Same guard as `ReplaceInventory`: an obsolete worker must not add
+            // to the scope a newer configuration is about to define.
+            let current: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_jobs j
+                 JOIN sync_connections c ON c.id = j.connection_id
+                 WHERE j.id = ?1 AND j.config_generation = ?2 AND c.enabled = 1)",
+                params![job_id, generation],
+                |row| row.get(0),
+            )?;
+            if !current {
+                return Ok(SyncWriteResult::Changed(false));
+            }
+            // `INSERT OR IGNORE` keeps this idempotent and, critically, additive:
+            // re-publishing a batch, or finishing after an aborted walk, must
+            // never shrink the known scope.
+            let mut added = 0usize;
+            {
+                let mut statement = tx.prepare(
+                    "INSERT OR IGNORE INTO sync_inventory(job_id, relative_path, config_generation)
+                     VALUES (?1, ?2, ?3)",
+                )?;
+                for path in relative_paths {
+                    added += statement.execute(params![job_id, path, generation])?;
+                }
+            }
+            tx.commit()?;
+            Ok(SyncWriteResult::Changed(added > 0))
         }
         SyncWrite::UpsertObservation {
             job_id,
