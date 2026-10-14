@@ -95,7 +95,12 @@ For persistent overrides, copy one of the examples from `config/` to:
 See [CHANGELOG.md](CHANGELOG.md).
 
 
-Native SyncServer integration is planned separately in
-[the native client contract](docs/modules/native-sync.md); lease/token/dirty
-coordination and dual-resource publication are not implemented by this doc change.
+Native SyncServer C1 has an implementation-ready
+[client contract](docs/modules/native-sync.md),
+[protocol mapping](docs/modules/native-sync-protocol.md),
+[storage/publication design](docs/modules/native-sync-storage.md), and
+[staged implementation/acceptance plan](docs/modules/native-sync-plan.md), aligned
+with server M3/M4 at `syncserver@2d9f9a7`. PhotoViewer Native runtime is still
+pending: this documentation does not implement lease/token/dirty coordination
+or dual-resource publication.
 Development work is pushed to `dev`, with CI using the same gate as `main`.

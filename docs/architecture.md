@@ -24,6 +24,13 @@ in-process service: network I/O stays off the GTK thread, and every sync state
 commit goes through the single `DbActor` connection owner. See
 [`modules/sync.md`](modules/sync.md).
 
+The [Native SyncServer C1 design](modules/native-sync.md) is implementation-ready
+against server M3/M4, while the client runtime remains pending. Its typed protocol
+gateway and coordinator dispatch sit beside the file-only WebDAV adapter; native
+DB commands stay behind SyncStore/DbActor and paired cache/media admission stays
+in the local storage/thumbnail boundary. Planned modules, migration rules and
+acceptance are in [the C1 plan](modules/native-sync-plan.md).
+
 ## Navigation
 
 `MainWindow` owns the sidebar and an `adw::NavigationView`.

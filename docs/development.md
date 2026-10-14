@@ -193,3 +193,16 @@ The user-selected working branch is `dev`; push PhotoViewer changes to
 remote tip without a separate instruction. The independent SyncServer repository
 continues on `main`. CI runs on pushes to both PhotoViewer branches; the full
 local push gate and exact-SHA cloud reporting still apply to `dev`.
+
+
+## Native SyncServer Client Development
+
+The independent service has implemented its M3/M4 baseline at `2d9f9a7`; client
+C1 can start with [the maintained design](modules/native-sync.md) and
+[staged patch/acceptance plan](modules/native-sync-plan.md). Read wire and storage
+contracts before editing protocol/DB/loader code. The current file-only provider
+trait is not the native delta/lease protocol, and the existing application schema
+is still 8. Do not treat completed design or server synthetic receivers as client
+implementation. Native initially enables explicit Sync jobs while existing
+WebDAV Backup/Sync remain intact. Run a local/private server for real protocol
+fixtures; production rollout is separate from source/CI delivery.

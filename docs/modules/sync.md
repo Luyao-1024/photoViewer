@@ -15,15 +15,21 @@ Application metadata — favorites, album covers, ordering, edit history — is
 **not** synchronized. Do not copy the SQLite/WAL files to achieve it; a future
 metadata sync needs a versioned sidecar protocol.
 
-## Planned Native SyncServer Integration
+## Native SyncServer Client Design (C1 Pending)
 
-The native Rust service has a separate [client contract](native-sync.md): normal
+The native Rust service implements M3/M4 at `syncserver@2d9f9a7`; the C1 client
+design is split into [main contract](native-sync.md),
+[wire mapping](native-sync-protocol.md), [storage/publication](native-sync-storage.md)
+and [implementation/acceptance](native-sync-plan.md). It defines normal
 downstream first, acquire one upload lease, held-lock applied-token gate and
 catch-up, delete→modify→create, database dirty fields and valid success callbacks.
 Acquisition failure skips uplink once; lease loss aborts every unfinished uplink
 item while concurrent downstream remains available. These rules are planned C1
 capabilities and do not describe the existing WebDAV runtime or override its
-upload scope/local-deletion suppression.
+upload scope/local-deletion suppression. Native needs typed protocol/service
+dispatch beyond the current file-only SyncProvider; existing WebDAV Backup remains
+unchanged while C1 initially enables explicit Native Sync jobs. Server readiness
+does not establish client implementation or real-client acceptance.
 
 ## Key Files
 
@@ -42,7 +48,7 @@ upload scope/local-deletion suppression.
 | `src/platform/credentials.rs` | Secret Service-backed credential storage |
 | `src/ui/window/settings.rs` | Connections, jobs, upload scope, conflict UI |
 | `src/core/sync/service/backup.rs` | Immutable remote version objects and path/version records, protected before replacement |
-| `src/ui/window/settings/sync_strategy.rs` | Native Backup / Sync strategy buttons for new and saved tasks |
+| `src/ui/window/settings/sync_strategy.rs` | GTK Backup / Sync strategy buttons for new and saved tasks |
 | `src/ui/window/settings/sync_upload.rs` | Select All, atomic upload selection, checked-first list sorting |
 | `src/ui/cloud_badge.rs` | Per-media cloud badge resources, and the rendered-ink contract for them |
 | `src/core/schema.sql` | `sync_connections`, `sync_jobs`, `sync_job_upload_albums`, `sync_entries`, `sync_tasks`, `sync_conflicts` |

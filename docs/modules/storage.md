@@ -396,13 +396,28 @@ to gdk-pixbuf instead of logging recoverable turbojpeg fallback warnings.
 The per-video ffmpegthumbnailer fallback, GStreamer extraction, cache-hit, and generated-thumbnail progress messages are debug diagnostics only; default logs should retain warnings for unrecoverable decode/cache problems, not every recovered thumbnail path.
 
 
-## Planned Native Sync Fields
+## Native Sync Storage Design (C1 Pending)
 
-The [native SyncServer contract](native-sync.md) adds dirty/local change version,
-edit/deletion event time, remote identity and confirmation correlation to existing
-sync_entries records during C1. No independent dirty file/table/persistent queue
-is introduced. Receive progress uses ingest/applied token fields; paired file
-publication recovery is a separate concern. Current schema remains version 8;
-this documentation change does not add these columns or alter current WebDAV
-migration/behavior. Valid callbacks update only matching completed obligations,
-while local edits and failed/skipped/lost-lease tasks keep dirty.
+The [native client contract](native-sync.md) and
+[storage/publication design](native-sync-storage.md) freeze the next C1 migration
+and actor boundaries. Current runtime schema remains version 8; no new columns,
+provider, dirty tracking or media-admission implementation is added by these docs.
+The server's pre-release compatibility waiver does not apply to existing
+PhotoViewer libraries: preserve media/favorites/albums and current WebDAV state
+when migrating to the next available schema version.
+
+Dirty and local/category versions/events belong on existing sync_entries records,
+separate from entry_generation, BLAKE3 fingerprints and WebDAV revisions. There
+is no independent dirty file/table/persistent scheduling queue. Existing
+sync_tasks retains issued-operation recovery facts only; received inbox,
+projection, ingest/applied progress, resource work and pair-publication intents
+have distinct responsibilities in the same DB. Only valid version/epoch-checked
+success confirmations settle dirty obligations.
+
+Native publication must be admitted consistently through scanner/watcher/direct
+upsert and startup recovery. Original and thumbnail are both verified, stable
+and mapped to the existing thumb-v4 source-path/final-mtime/size cache before
+media admission. Existing grid/viewer loading stays on local complete media;
+internal sync/cache events do not create fresh user dirty. See
+[NC01–NC20 acceptance](native-sync-plan.md#mandatory-acceptance-matrix) for real
+DB/file/network/UI evidence required before these become implemented guarantees.

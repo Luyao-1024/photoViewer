@@ -2,18 +2,40 @@
 
 ## Scope And Status
 
-This module owns the planned PhotoViewer client for the independent Rust
-`Luyao-1024/syncserver` service. It is a maintained integration contract, not an
-implementation report. No native Provider, upload lease, token gate, or database
-dirty field has been added to PhotoViewer in this change. The server currently
-implements M1/M2 metadata foundations; M3/M4 and this client's C1 remain pending.
+This module owns PhotoViewer's planned C1 client for the independent Rust
+`Luyao-1024/syncserver` service. Updated 2026-10-14 against server main
+`2d9f9a7`: M3 token/snapshot/delta/lease coordination and M4 resource publication
+are available, with M5 CI/deployment tooling. Server development is no longer
+blocking C1. Server availability does not mean the PhotoViewer client is already
+implemented or that a production endpoint has been deployed.
 
-The canonical server documents are `docs/contracts/upload-coordination.md`,
-`docs/contracts/snapshots.md`, `docs/contracts/photo-records.md`,
-`docs/contracts/assets.md`, and `docs/design/next-development-tasks.md` in that
-repository. Its CloudKit-style endpoints are a documented subset plus native
-extensions, not Apple authentication. Existing [WebDAV behavior](sync.md) and
-[edit-first configuration](sync-configuration-ux.md) remain the current runtime.
+Current PhotoViewer schema remains 8, its runtime provider remains WebDAV, and
+Native Provider/dirty/token/lease/publication code has not been added. These
+pages freeze client implementation and acceptance; they do not advertise runtime
+support. The server's pre-release compatibility waiver applies to that service,
+not the existing PhotoViewer user database.
+
+| Read | Owns |
+|---|---|
+| [Protocol mapping](native-sync-protocol.md) | actual endpoints, DTO/capability names, scope/auth, limits, events, resources and errors |
+| [Storage/publication](native-sync-storage.md) | actor/migration, existing-row dirty/version facts, receive progress, callbacks and full-media admission |
+| [Implementation/acceptance](native-sync-plan.md) | module ownership, C1.1–C1.6 patch order, scope decisions and NC01–NC20 evidence |
+
+Canonical server paths are `docs/design/v0.1-server.md`,
+`docs/contracts/{upload-coordination,snapshots,photo-records,assets,records}.md`
+and `docs/design/next-development-tasks.md` in its repository. When historical
+M2 text differs, use the pinned implementation and current capability bits.
+These are CloudKit-style subsets plus native extensions, not Apple login/private
+SDK compatibility. Existing [WebDAV behavior](sync.md) and
+[edit-first configuration](sync-configuration-ux.md) remain binding.
+
+C1 starts with explicit Native Sync jobs, while current WebDAV Backup remains
+available; Native Backup/history browsing is a separate future contract.
+Native metadata mapping initially covers favorite, relative path and capture date;
+app-only album covers/order/editor history have no implied protocol. Supported
+image/video originals use one stable original+thumbnail combination and existing
+local extraction/loading, within actual server limits. No provider is silently
+changed and no existing local library is automatically enrolled.
 
 ## Cycle And Exclusive Uplink
 
@@ -34,7 +56,8 @@ metadata and download resources concurrently without that lease. The lease
 covers all server mutations, including original/thumbnail upload sessions and
 final record binding; one server SQLite writer is not itself a device lock.
 
-The server's planned default TTL is 90 seconds, heartbeat interval 30 seconds.
+The server's default TTL is 90 seconds, suggested heartbeat interval 30 seconds;
+use actual grant/renewal values.
 Heartbeat runs independently from file I/O, hashing, decoding and ordinary
 request queues. The client uses a monotonic conservative deadline based on a
 successful renewal request and known TTL, not its wall clock or receipt time of
@@ -126,8 +149,11 @@ client reverted committed server changes.
 
 Use the existing baseline to distinguish remote change from merely finding a
 local dirty row. If both sides changed the same content/field, prefer the newer
-edit event, with distinct metadataModifiedAt/contentModifiedAt/deletedAt and a
-stable tie rule. File mtime/photo capture date cannot describe all three. Merge
+real edit event, separately mapping `_syncserver.metadataEvent`, contentEvent and
+deletionEvent (editedAtMs/source/eventId), with a stable tie rule. Unknown legacy
+events and server commit-time fallback must not fabricate a newer user edit;
+retain explicit conflicts/copies when comparison is ambiguous. File mtime/photo
+capture date cannot describe all three. Merge
 independent metadata/content changes and preserve losing content in a conflict
 copy. Different photo IDs at the same path are a path conflict.
 
@@ -145,23 +171,17 @@ from the server's exclusive upload lease and from dirty flags.
 
 ## Implementation Order And Verification
 
-1. Wait for the server's M3 token/real delta and lease/gate/phase capabilities,
-   then its M4 resource publication. Do not emulate missing capabilities with a
-   local mutex or opaque-token string equality.
-2. Add a native Provider and transactional inbox/token fields behind SyncStore,
-   preserving the core/GTK separation, selected scope and configuration epochs.
-3. Migrate existing sync_entries with dirty/version/event/identity fields;
-   update real local mutation paths, suppression and recovery without changing
-   WebDAV's current semantics to claim native support.
-4. Add the once-per-cycle lease coordinator/heartbeat, held-lock catch-up,
-   delete/modify/create task derivation and version-checked callbacks.
-5. Add original/thumbnail publication, cache import and scanner/watcher admission
-   plus local read leases. Existing media viewing continues to use complete files.
-6. Test two devices, skipped acquisition, several TTLs of transfer, loss at each
-   commit window, late callbacks, newer local edits, partial batch success and
-   internal-event suppression against real DB/network/file paths. Drive GTK
-   through real [testing input helpers](../testing.md), not terminal widget state.
+C1 can start now. Implement [C1.1–C1.6](native-sync-plan.md#stages-and-exit-gates):
+connection/typed transport → durable receive → local dirty/lease/coordinator →
+complete resource transfer/publication → real UI/recovery → integration delivery.
+The detailed [wire contract](native-sync-protocol.md) and
+[storage transactions](native-sync-storage.md) are prerequisites for code.
 
-Implement only after entering C1; synthetic server client tests are not this
-client's acceptance evidence. At the remote-push gate run the exact commands
-from `.github/workflows/ci.yml` and report local versus exact-SHA cloud results.
+Current `SyncProvider` only models file operations. Add a typed Native gateway
+and provider-kind service dispatch; do not fake a zone feed through list_children,
+replace server leases with a local mutex, or use token string equality for currency.
+New original/thumbnail, scanner/cache and GTK acceptance must use real actor/
+network/file/input paths. Server synthetic receivers do not establish PhotoViewer
+acceptance. Each milestone distinguishes transport/metadata support from full
+photo availability. Follow the exact dev push gate and report cloud CI for the
+pushed SHA separately from local and production results.
