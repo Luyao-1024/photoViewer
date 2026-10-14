@@ -15,8 +15,13 @@ provider-kind dispatch in storage, and the native receive/dirty/publication
 schema (schema 9). The WebDAV engine that previously shared this module has been
 removed outright.
 
-Not implemented yet: media synchronization of any kind — no receive cycle, no
-lease, no upload, no publication, and no settings surface. Native jobs exist as
+C1.2 adds the **durable receive path**: snapshot bootstrap with per-type
+markers, an ordered replayable delta inbox, a validated typed remote graph, and
+promotion that materializes resource obligations. `applied` deliberately stays
+behind `target` while any of them is outstanding.
+
+Not implemented yet: media synchronization of any kind — no lease, no upload,
+no download, no publication, and no settings surface. Native jobs exist as
 configuration but are not scheduled. The server's pre-release compatibility
 waiver applies to that service, not the PhotoViewer user database.
 

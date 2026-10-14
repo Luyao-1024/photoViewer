@@ -530,7 +530,7 @@ fn describe(status: u16, body: &[u8]) -> String {
     }
 }
 
-fn map_status(status: u16, body: &[u8]) -> SyncError {
+pub(super) fn map_status(status: u16, body: &[u8]) -> SyncError {
     let detail = describe(status, body);
     match status {
         401 | 403 => SyncError::Authentication,
@@ -575,8 +575,51 @@ impl NativeClient {
         &self.base
     }
 
+    /// Absolute URL for a path under the configured origin.
+    pub(super) fn path(&self, segments: &[&str]) -> SyncResult<Url> {
+        self.base.join(segments)
+    }
+
+    /// The single JSON POST path. Auth, the shared error envelope, the response
+    /// size ceiling and the in-band-error check all live here so every control
+    /// and metadata call is treated identically.
+    pub(super) async fn post_json<B: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        url: &Url,
+        body: &B,
+    ) -> SyncResult<R> {
+        super::receive::post_json(self, url, body).await
+    }
+
+    /// POST a body that must be exactly the given bytes, for the one endpoint
+    /// whose request shape is an empty object rather than a DTO.
+    pub(super) async fn post_json_raw<R: serde::de::DeserializeOwned>(
+        &self,
+        url: &Url,
+        body: &[u8],
+    ) -> SyncResult<R> {
+        super::receive::post_json_raw(self, url, body).await
+    }
+
     fn request(&self, url: Url) -> reqwest::RequestBuilder {
         self.client.get(url).bearer_auth(&self.api_key)
+    }
+
+    /// Authenticated JSON POST. This is the only path that attaches the Bearer
+    /// key to a body-bearing request, so there is one place to audit.
+    pub(super) async fn send_json(
+        &self,
+        url: &Url,
+        payload: Vec<u8>,
+    ) -> Result<reqwest::Response, crate::core::sync::SyncError> {
+        Ok(self
+            .client
+            .post(url.clone())
+            .bearer_auth(&self.api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(payload)
+            .send()
+            .await?)
     }
 
     /// `GET /readyz`, unauthenticated. Confirms the process is serving before

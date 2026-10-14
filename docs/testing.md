@@ -781,3 +781,29 @@ instructions and skips rather than faking a pass.
 cargo build --locked --manifest-path ../syncserver/Cargo.toml
 cargo test --locked --test native_sync_probe -- --nocapture
 ```
+
+## Native SyncServer durable receive
+
+`tests/native_sync_receive.rs` drives the same real binary through the receive
+contract: a snapshot mints two equal-for-one-head cursors, an empty zone reads as
+one complete page with no continuation marker, a write after a position arrives
+in the next round but not in a read pinned to the earlier snapshot, a write
+between pages cannot split a fixed-height round (only the final page's token is
+re-based), a replayed round projects the same graph, and a zone token is refused
+where a snapshot token is expected. Records are written as `Album` rather than
+photos: a photo needs an asset upload and a paired atomic write, which is C1.4's
+machinery, and this stage is about transport, paging and ordering rather than
+media.
+
+The half of the contract that needs no server lives in
+`src/core/sync/store/receive/tests.rs`: bootstrap markers stay pending until
+every supported type finishes, inbox replay is deduplicated by revision,
+promotion replaces the projection wholesale, unknown record types survive,
+`applied` refuses to advance while any resource or conflict is outstanding, and
+a scope/generation change discards the previous completeness claim without
+touching local dirty state or confirmed identity.
+
+```bash
+cargo test --locked --lib core::sync::store::receive -- --nocapture
+cargo test --locked --test native_sync_receive -- --nocapture
+```

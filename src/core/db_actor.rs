@@ -161,7 +161,8 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::FailPendingEdit { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
-                | crate::core::sync::store::SyncWrite::MarkJobFailed { .. },
+                | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
+                | crate::core::sync::store::SyncWrite::NativeReceive(_),
             ) => DbWritePriority::StartupScan,
         }
     }

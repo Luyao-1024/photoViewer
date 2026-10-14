@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added the native SyncServer durable receive path (C1.2): snapshot bootstrap
+  with an independent marker per record type, an ordered replayable delta inbox,
+  a validated typed remote graph, and promotion that materializes resource
+  obligations. `applied` stays behind `target` while any of them is
+  outstanding, so a fully received but un-downloaded photo never reports itself
+  as synchronized. A changed scope, namespace or database generation discards
+  the previous completeness claim rather than inheriting it.
+
 - Replaced the WebDAV synchronization engine with a native SyncServer client
   (C1.1): typed protocol DTOs, endpoint normalization, the health/capability
   probe, capability/scope/origin validation, and a pinned capability scope on

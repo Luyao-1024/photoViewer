@@ -6,6 +6,8 @@
 
 pub mod protocol;
 pub mod provider;
+pub mod receive;
+pub mod records;
 
 pub use protocol::{
     validate_api_key, validate_capabilities, validate_zone, ForbiddenCapability,
@@ -15,6 +17,8 @@ pub use protocol::{
     FORBIDDEN_CAPABILITIES, REQUIRED_CAPABILITIES, SERVICE_NAME, SUPPORTED_PROTOCOL_VERSION,
 };
 pub use provider::NativeProvider;
+pub use receive::{NativeRecord, ZoneId};
+pub use records::{GraphError, RemoteGraph, RemotePhoto, RemoteResource};
 
 #[cfg(test)]
 pub(crate) use protocol::demo_pinned_scope;

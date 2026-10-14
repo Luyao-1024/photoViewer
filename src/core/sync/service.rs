@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod configuration;
+pub mod receive;
 mod reset;
 use configuration::JobKey;
 

@@ -2,7 +2,7 @@ use super::*;
 use crate::core::sync::native::demo_pinned_scope as pinned;
 use crate::core::sync::native::NativeZone;
 
-fn new_job(root: PathBuf) -> NewSyncJob {
+pub(super) fn new_job(root: PathBuf) -> NewSyncJob {
     NewSyncJob {
         provider_kind: ProviderKind::NativeSyncServer,
         endpoint: "https://sync.example.invalid/".into(),
@@ -16,7 +16,7 @@ fn new_job(root: PathBuf) -> NewSyncJob {
     }
 }
 
-fn temp_root(name: &str) -> PathBuf {
+pub(super) fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "photoviewer-sync-store-{name}-{}",
         std::process::id()

@@ -8,13 +8,19 @@ removed outright: no provider, planner, reconciler or migration for it remains,
 and a schema-8 library is upgraded by dropping the WebDAV sync tables and
 recreating them empty (media, albums, favorites and edits are untouched).
 
-C1.1 (current state) delivers the **connection and capability probe only**.
-A native connection can be created and probed, its accepted capability scope is
-pinned onto the connection row, and a job can map a local root to a configured
-zone. Nothing synchronizes media yet: no receive cycle, no lease, no upload,
-and no settings surface. The WebDAV-era settings group, strategy controls,
-conflict buttons and cloud-folder browser are gone; the native configuration UI
-arrives in C1.5.
+C1.1 and C1.2 are implemented. A native connection can be created and probed,
+its accepted capability scope is pinned onto the connection row, a job can map a
+local root to a configured zone, and a receive cycle can bootstrap that zone and
+keep an ordered, replayable delta of everything the cloud says — durably,
+resumable mid-page, and validated as a complete photo graph before it is
+projected.
+
+Nothing synchronizes media yet: no lease, no upload, no download, no
+publication, and no settings surface. Promotion deliberately materializes the
+resource obligations those stages will settle, which is why `applied` stays
+behind `target`. The WebDAV-era settings group, strategy controls, conflict
+buttons and cloud-folder browser are gone; the native configuration UI arrives
+in C1.5.
 
 | Read | Owns |
 |---|---|
@@ -28,7 +34,11 @@ arrives in C1.5.
 | File | Owns |
 |---|---|
 | `src/core/sync/native/protocol.rs` | typed DTOs, endpoint normalization, capability validation, `NativeClient` HTTP (readyz/capabilities/probe), CloudKit base building, error envelope parsing |
-| `src/core/sync/native/provider.rs` | `NativeProvider`: a connection + pinned scope + zone; C1.2 adds the typed zone/record/delta calls |
+| `src/core/sync/native/provider.rs` | `NativeProvider`: a connection + pinned scope + zone; C1.3 adds the lease |
+| `src/core/sync/native/receive.rs` | receive-side wire types: snapshot/query/zone-delta DTOs, the record envelope, and the shared authenticated JSON POST |
+| `src/core/sync/native/records.rs` | the typed remote graph: pair validation, path safety, resource expectations |
+| `src/core/sync/store/receive.rs` | durable receive state: bootstrap markers, the ordered inbox, promotion, and the `applied` gate |
+| `src/core/sync/service/receive.rs` | one receive cycle: bootstrap when needed, then a fixed-height delta round |
 | `src/core/sync/model.rs` | `ProviderKind`, `SyncDirection`, `UploadScope` |
 | `src/core/sync/store.rs` | `SyncStore`: jobs/connections/inventory/overview, native job creation + zone/pin validation, run lifecycle |
 | `src/core/sync/store/configuration.rs` | durable accepted-edit queue (`sync_job_changes`) |
@@ -63,7 +73,32 @@ endpoint+zone into different local roots, and overlapping local roots are
 refused — the UNIQUE constraints on `sync_jobs` back the application-level
 checks that name the offending task.
 
+## Receive Position And The Applied Gate
+
+Four token positions, never interchanged: `snapshot_token` pins a full read at
+one height; `ingest_token` is where the delta stream resumes; `target_token` is
+the height of the newest complete projection; `applied_token` is the height
+this client has actually finished catching up to.
+
+The snapshot's zone token means "nothing after H", so the bootstrap pages *are*
+the inventory; a delta round resumed from it reports only later changes. While
+`moreComing` is true the returned token pins the round's height, so a
+concurrent write cannot leak into the pages that follow it — only the final
+page's token is re-based and may start the next round.
+
+`applied` advances only when the projection at `target` owes nothing. Promotion
+materializes one pending resource per photo role, so in the current stage
+`applied` correctly stays behind `target` for any non-empty zone. A changed
+scope, namespace or database generation discards every previous claim: the old
+applied position says nothing about work that was never in scope.
+
 ## Dirty Truth, Badges, Overview
+
+Promotion also rejects an incomplete graph: an asset without its master, a master
+no asset references, mismatched content generations, a cross-zone reference, a
+duplicate or unsafe relative path, or a thumbnail digest that is not SHA-256 hex
+are all refusals, never partial accepts. Unknown record types are retained in
+the projection and never counted as complete supported media.
 
 `sync_entries.native_dirty` (bitmask 0–15: 1=NEW, 2=METADATA, 4=CONTENT,
 8=DELETE) is the only dirty truth; there is no second queue. Cloud badges read
@@ -82,7 +117,9 @@ leaves no stranded secret.
 
 ## Testing
 
-Unit tests live beside the code (`native/protocol/tests.rs`, `store/tests.rs`,
-`service/tests.rs`); the real-server acceptance suite is
-`tests/native_sync_probe.rs` (see `docs/testing.md`). Schema shape and the
-schema-8 → 9 upgrade are covered in `tests/db_migrations.rs`.
+Unit tests live beside the code (`native/protocol/tests.rs`,
+`native/receive/tests.rs`, `native/records/tests.rs`, `store/receive/tests.rs`,
+`store/tests.rs`, `service/tests.rs`); the real-server acceptance suites are
+`tests/native_sync_probe.rs` and `tests/native_sync_receive.rs` (see
+`docs/testing.md`). Schema shape and the schema-8 → 9 upgrade are covered in
+`tests/db_migrations.rs`.

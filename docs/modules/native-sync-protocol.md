@@ -95,6 +95,20 @@ A single type/page does not establish a complete inventory. Validate the final
 one-to-one graph at shared H, then receive changes from its zone syncToken.
 Snapshot/marker/database tokens must never substitute for an applied zone token.
 
+Three verified properties of these tokens bound how a round may be resumed:
+
+- They are signed **cursors**, not one-shot receipts: two snapshots of the same
+  head return equal tokens. A position is identified by the height it names.
+- The snapshot's zone token means "nothing after H". A delta round resumed from
+  it therefore reports only changes made after the snapshot — the bootstrap
+  pages *are* the inventory, and replaying them through the delta would double
+  count.
+- While `moreComing` is true the returned token keeps pinning the round's
+  height, so a concurrent write cannot leak into the pages that follow it. Only
+  the **final** page's token is re-based to the current head, and only that token
+  may start the next round. Resuming from a mid-round token re-reads the same
+  height.
+
 ```json
 {"zones":[{"zoneID":{"zoneName":"PrimarySync"},"syncToken":"example-zone-token","resultsLimit":200}]}
 ```
