@@ -2,7 +2,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-const RESET_KEY: &str = "webdav_sync_reset_pending";
+const RESET_KEY: &str = "sync_reset_pending";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResetIntent {
@@ -51,15 +51,6 @@ impl SyncStore {
     pub(crate) fn reset_intent(&self) -> Result<Option<ResetIntent>> {
         let conn = self.pool.get()?;
         read(&conn)
-    }
-
-    pub(crate) fn fail_scheduled_run(&self, id: i64, generation: i64, error: &str) -> Result<()> {
-        self.write(SyncWrite::FailScheduledRun {
-            id,
-            generation,
-            error: error.into(),
-        })?;
-        Ok(())
     }
 
     pub(crate) fn begin_reset(&self) -> Result<()> {
@@ -141,18 +132,6 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
             tx.execute("DELETE FROM sync_jobs WHERE id=?1", [id])?;
             continue;
         }
-        if let Some(root) = change.remote_root {
-            tx.execute(
-                "UPDATE sync_jobs SET remote_root=?1 WHERE id=?2",
-                params![root, id],
-            )?;
-        }
-        if let Some(enabled) = change.etag_is_sha256 {
-            tx.execute(
-                "UPDATE sync_jobs SET etag_is_sha256=?1 WHERE id=?2",
-                params![enabled, id],
-            )?;
-        }
         if let Some(direction) = change.direction {
             tx.execute(
                 "UPDATE sync_jobs SET direction=?1 WHERE id=?2",
@@ -190,21 +169,4 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
     tx.execute("DELETE FROM settings WHERE key=?1", [RESET_KEY])?;
     tx.commit()?;
     Ok(SyncWriteResult::Changed(true))
-}
-
-pub(super) fn fail_scheduled_run(
-    pool: &DbPool,
-    id: i64,
-    generation: i64,
-    error: String,
-) -> Result<SyncWriteResult> {
-    // A keyring/admission failure may occur before a run starts. It must not
-    // synthesize completion timestamps or attribute an old error to reset state.
-    pool.get()?.execute(
-        "UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND config_generation=?3
-        AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2)
-        AND NOT EXISTS(SELECT 1 FROM settings WHERE key=?4)",
-        params![error, id, generation, RESET_KEY],
-    )?;
-    Ok(SyncWriteResult::None)
 }

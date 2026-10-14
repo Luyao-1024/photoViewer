@@ -96,12 +96,15 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     let store = crate::core::sync::SyncStore::new(pool.clone());
     let job = store
         .create_job(&crate::core::sync::NewSyncJob {
-            endpoint: "https://dav.example.test/root/".into(),
-            username: "alice".into(),
+            provider_kind: crate::core::sync::ProviderKind::NativeSyncServer,
+            endpoint: "https://sync.example.test/".into(),
             credential_ref: "overview-credential".into(),
-            etag_is_sha256: false,
             local_root: local,
-            remote_root: "PhotoViewer".into(),
+            native_zone: Some(crate::core::sync::NativeZone::new("PrimarySync")),
+            native_pinned: Some(crate::core::sync::native::demo_pinned_scope(
+                "https://sync.example.test/",
+                &["PrimarySync"],
+            )),
             direction: crate::core::sync::SyncDirection::Bidirectional,
             upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
             upload_albums: Vec::new(),
@@ -143,19 +146,16 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
             &[("photos", "2"), ("videos", "1")]
         )
     );
-    if crate::core::prefs::webdav_sync_enabled() {
+    if crate::core::prefs::sync_enabled() {
         assert_eq!(
             page.imp().overview_sync_label.get().label(),
-            sync_overview_text(
-                SyncOverview {
-                    status: SyncOverviewStatus::Paused,
-                    job_count: 1,
-                    synced_items: 0,
-                    total_items: 0,
-                    conflict_images: 0,
-                },
-                None,
-            )
+            sync_overview_text(SyncOverview {
+                status: SyncOverviewStatus::Paused,
+                job_count: 1,
+                synced_items: 0,
+                total_items: 0,
+                conflict_images: 0,
+            },)
         );
         assert!(page.imp().overview_sync_row.get().is_visible());
     } else {
@@ -189,7 +189,6 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
             total_items: 0,
             conflict_images: 0,
         },
-        sync_progress: None,
     });
 
     let imp = page.imp();
@@ -233,7 +232,6 @@ fn overview_snapshot(status: SyncOverviewStatus) -> PhotosOverviewSnapshot {
             total_items: 0,
             conflict_images: 0,
         },
-        sync_progress: None,
     }
 }
 
@@ -373,99 +371,16 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
             total_items: 8,
             conflict_images: 1,
         },
-        sync_progress: None,
     });
 
     assert!(!page.imp().overview_sync_row.get().is_visible());
     assert!(page.imp().overview_sync_label.get().label().is_empty());
     assert!(!page.imp().overview_sync_running.get());
-    assert!(
-        !page.imp().overview_sync_retry_btn.get().is_visible(),
-        "the retry belongs to a failed sync, not to a hidden sync row"
-    );
 }
 
 /// P2-8: a failed sync used to be one sentence with no way out. The retry
 /// belongs to the failure alone — a row that always carried a button would read
 /// as if synchronization were permanently broken.
-#[gtk::test]
-fn a_failed_sync_offers_a_retry_and_other_states_do_not() {
-    let _ = gtk::init();
-    let tmp = tempfile::tempdir().unwrap();
-    let pool = crate::core::db::init_pool(&tmp.path().join("retry.db")).unwrap();
-    let loader = Arc::new(ThumbnailLoader::new(
-        pool.clone(),
-        tmp.path().join("thumbs"),
-    ));
-    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
-    page.set_db_pool(pool);
-
-    let retry = page.imp().overview_sync_retry_btn.get();
-    let snapshot = |status| PhotosOverviewSnapshot {
-        photos: 2,
-        videos: 1,
-        live_total: 3,
-        sync: SyncOverview {
-            status,
-            job_count: 1,
-            synced_items: 0,
-            total_items: 0,
-            conflict_images: 0,
-        },
-        sync_progress: None,
-    };
-
-    for status in [
-        SyncOverviewStatus::Completed,
-        SyncOverviewStatus::Running,
-        SyncOverviewStatus::Paused,
-        SyncOverviewStatus::Ready,
-    ] {
-        page.apply_overview_snapshot(snapshot(status));
-        assert!(
-            !retry.is_visible(),
-            "{status:?} is a description of state, not a failure that needs a retry"
-        );
-    }
-
-    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
-    assert!(
-        retry.is_visible(),
-        "a failed sync has to be actionable, not just described"
-    );
-    assert_eq!(
-        retry.label().as_deref(),
-        Some(tr("common.retry").as_str()),
-        "the retry label comes from the catalogues like every other string"
-    );
-
-    // No db actor is wired in this page, so the pull is refused before it can
-    // spawn anything; the button must survive that without going dead.
-    retry.emit_clicked();
-    assert!(
-        retry.is_sensitive(),
-        "a retry that was refused before starting has to stay pressable"
-    );
-
-    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
-    page.imp().overview_sync_pull_in_flight.set(true);
-    page.apply_overview_snapshot(snapshot(SyncOverviewStatus::Failed));
-    assert!(
-        !retry.is_sensitive(),
-        "while a pull is already running the retry should say so instead of stacking a second one"
-    );
-
-    // The read path failing is the other failure the row can show. The retry is
-    // offered only when it can act: the pull it triggers is a no-op while WebDAV
-    // sync is switched off, and a dead button would be worse than none.
-    page.apply_overview_error();
-    assert_eq!(
-        retry.is_visible(),
-        crate::core::prefs::webdav_sync_enabled(),
-        "a failed overview read retries only when a retry can reach the sync service"
-    );
-}
-
 /// The three reasons an empty Photos grid can be empty have to stay separate on
 /// screen: indexing, a failed scan, and a genuinely empty library each need a
 /// different next step. `ScanPhase` is the only signal that distinguishes them,
@@ -571,168 +486,20 @@ fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
         total_items: 105,
         conflict_images: 0,
     };
-    assert!(sync_overview_text(overview, None).contains("103/105"));
+    assert!(sync_overview_text(overview).contains("103/105"));
     let with_conflicts = SyncOverview {
         conflict_images: 2,
         ..overview
     };
-    let text = sync_overview_text(with_conflicts, None);
+    let text = sync_overview_text(with_conflicts);
     assert!(text.contains("103"));
     assert!(text.contains('2'));
-    assert_ne!(sync_overview_text(overview, None), text);
-}
-
-#[test]
-fn running_sync_overview_shows_history_over_complete_inventory() {
-    let overview = SyncOverview {
-        status: SyncOverviewStatus::Running,
-        job_count: 2,
-        synced_items: 103,
-        total_items: 340,
-        conflict_images: 0,
-    };
-    let expected = trf(
-        "photos.overview.sync.running",
-        &[("done", "103"), ("total", "340")],
-    );
-    assert!(expected.contains("103/340"));
-    assert_eq!(sync_overview_text(overview, None), expected);
-    let preparing = SyncLiveProgress {
-        phase: SyncLivePhase::Preparing,
-        downloaded: 0,
-        download_total: 0,
-        uploaded: 0,
-        upload_total: 0,
-        transfer_active: false,
-        current_bytes: 0,
-        current_total: 0,
-    };
-    let downloading = SyncLiveProgress {
-        phase: SyncLivePhase::Downloading,
-        downloaded: 12,
-        download_total: 237,
-        transfer_active: true,
-        current_bytes: 100,
-        current_total: 4096,
-        ..preparing
-    };
-    for progress in [
-        preparing,
-        downloading,
-        SyncLiveProgress {
-            downloaded: 0,
-            ..downloading
-        },
-    ] {
-        assert_eq!(
-            sync_overview_text(overview, Some(progress)),
-            expected,
-            "neither live transfer counts nor a new session may reset the historical fraction"
-        );
-    }
-    let uploading = SyncLiveProgress {
-        phase: SyncLivePhase::Uploading,
-        uploaded: 5,
-        upload_total: 9,
-        ..preparing
-    };
-    for progress in [
-        uploading,
-        SyncLiveProgress {
-            uploaded: 0,
-            ..uploading
-        },
-    ] {
-        let text = sync_overview_text(overview, Some(progress));
-        assert_eq!(
-            text,
-            trf(
-                "photos.overview.sync.running_upload",
-                &[("done", "103"), ("total", "340")]
-            )
-        );
-        assert!(text.contains("103/340"));
-    }
-    assert_eq!(
-        sync_overview_text(
-            SyncOverview {
-                synced_items: 104,
-                ..overview
-            },
-            Some(downloading)
-        ),
-        trf(
-            "photos.overview.sync.running",
-            &[("done", "104"), ("total", "340")]
-        ),
-        "committing a new baseline advances the numerator without adding to the inventory"
-    );
+    assert_ne!(sync_overview_text(overview), text);
 }
 
 /// A run cannot report a fraction before discovery has proven any scope, and on
 /// a large library that listing takes minutes. `0/0` during that window reads
 /// as a broken run, so the overview says what is actually happening.
-#[test]
-fn running_sync_overview_says_it_is_preparing_before_any_scope_is_known() {
-    let undiscovered = SyncOverview {
-        status: SyncOverviewStatus::Running,
-        job_count: 1,
-        synced_items: 0,
-        total_items: 0,
-        conflict_images: 0,
-    };
-    let preparing = SyncLiveProgress {
-        phase: SyncLivePhase::Preparing,
-        downloaded: 0,
-        download_total: 0,
-        uploaded: 0,
-        upload_total: 0,
-        transfer_active: false,
-        current_bytes: 0,
-        current_total: 0,
-    };
-    for progress in [
-        None,
-        Some(preparing),
-        Some(SyncLiveProgress {
-            phase: SyncLivePhase::Downloading,
-            downloaded: 7,
-            download_total: 240,
-            ..preparing
-        }),
-        Some(SyncLiveProgress {
-            phase: SyncLivePhase::Uploading,
-            uploaded: 7,
-            upload_total: 240,
-            ..preparing
-        }),
-    ] {
-        let text = sync_overview_text(undiscovered, progress);
-        assert_eq!(
-            text,
-            tr("photos.overview.sync.preparing"),
-            "no known path means no fraction — the upload wording must not appear either"
-        );
-        assert!(
-            !text.contains("0/0"),
-            "a bare 0/0 is indistinguishable from a stalled run: {text}"
-        );
-    }
-
-    // The moment any scope is proven the fraction returns.
-    let discovered = SyncOverview {
-        total_items: 240,
-        ..undiscovered
-    };
-    assert_eq!(
-        sync_overview_text(discovered, None),
-        trf(
-            "photos.overview.sync.running",
-            &[("done", "0"), ("total", "240")]
-        )
-    );
-}
-
 #[gtk::test]
 fn select_all_is_capped_at_two_thousand_not_current_virtual_window() {
     let _ = gtk::init();
@@ -1305,7 +1072,7 @@ fn edit_first_overview_text_describes_automatic_reconfiguration() {
         conflict_images: 0,
     };
     assert_eq!(
-        sync_overview_text(overview, None),
+        sync_overview_text(overview),
         tr("photos.overview.sync.applying")
     );
     assert_eq!(

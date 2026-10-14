@@ -181,16 +181,15 @@ Design intent:
   (it never triggers a run — the pull stays the only gesture that does), is never
   undone if the user folds the panel mid-run, and leaves a settled result on
   screen. A grid scrolled away from the top keeps its own state; a placeholder
-  stack counts as the top because it has no scroll offset. A pull-down at the top
-  also runs saved WebDAV tasks once; there are still no per-task Sync Now buttons
-  and no background sync timers — the only extra action is the retry that appears
-  *inside* the sync line when synchronization has failed, which re-runs that same
-  saved-task pull. The overview is a centered, backgroundless two-line surface: a
-  compact full-library photo/video count and a quieter icon-led sync status line.
-  Counts come from the database, not the current virtual-grid window. While sync is
-  actively running, the status line uses a deliberately slow activity spinner
-  with a two-second rotation period; static lifecycle states use their
-  corresponding symbolic icon.
+  stack counts as the top because it has no scroll offset. The overview is a
+  centered, backgroundless two-line surface: a compact full-library photo/video
+  count and a quieter icon-led sync status line. Counts come from the database,
+  not the current virtual-grid window. While a cycle is running, the status line
+  uses a deliberately slow activity spinner with a two-second rotation period;
+  static lifecycle states use their corresponding symbolic icon. The C1.1 client
+  has no run engine yet, so the line reports configuration-level status only;
+  the home-pull run gesture and its retry affordance return with the C1.5
+  native configuration surface.
 - The batch-action toolbar is split across the header: select-all (text label,
   toggling 全选 / 取消全选) stays on the left (`[start]`); the icon-only batch
   actions live on the right (`[end]`) — add-to-album (`list-add-symbolic`, the
@@ -497,8 +496,10 @@ hide which backend is active when system trash and app trash can both exist.
 Settings is reached from the sidebar footer gear button and opens as a popup
 dialog. It owns the quiet preference groups (language, appearance, video
 playback, Day grid columns, thumbnail speed), bounded management groups for
-scan folders, trash backend, and WebDAV synchronization, and the combined
-cache/data cleanup action. While the dialog is visible, the gallery content
+scan folders and trash backend, and the combined cache/data cleanup action.
+The WebDAV synchronization group was removed with the WebDAV engine; the
+native SyncServer configuration surface (endpoint, API key, zone) is planned
+for C1.5. While the dialog is visible, the gallery content
 behind it is lightly dimmed so the modal layer reads clearly above the library
 without forcing a full-window blur during the dialog animation.
 
@@ -513,45 +514,13 @@ Design intent:
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
-- WebDAV settings use one collapsed top-level expander row with the master
-  switch in its suffix. The collapsed row is the only visible WebDAV control;
-  opening it reveals the task selector, connection form, task status, folder
-  picker, upload scopes, conflicts, and a Day-view cloud-icon switch. That
-  switch defaults to on and affects only the Day grid; the viewer always shows
-  cloud state. The master switch is persisted and off by
-  default, and gates home-pull sync and conflict resolution for every task.
-  The “Add WebDAV Sync Task” form stays unavailable until that switch is on and
-  saves the task after complete server configuration is validated. Saved jobs
-  run on a Photos pull or application launch, without periodic polling. Under
-  the binding edit-first contract, validated new tasks and effective config
-  changes must also automatically schedule the latest eligible configuration.
-- Cloud-sync configuration follows **edit first, reconfigure afterwards**.
-  Running or internally applying changes must not disable configuration input.
-  Opening/expanding a checklist or browsing cloud folders has no pause/restart
-  side effect. Only a validated, accepted effective edit requests safe stopping
-  of obsolete work and automatic synchronization using the latest configuration;
-  never require a prior pause or a subsequent manual Photos pull. Continuous
-  edits remain available and are coalesced. Deletion and global opt-out never
-  restart their target. The cloud-folder row combines browsing and relationship
-  deletion. The binding specification and current migration gaps are in
-  [`sync-configuration-ux.md`](sync-configuration-ux.md) and
-  [`sync.md`](sync.md#edit-first-configuration-contract).
-- Each sync job row shows its local ↔ remote mapping with its paused/error
-  state. The task selector reuses the
-  connection form fields to show saved server URL, username, local root, and
-  remote root; saved passwords remain in the system keyring and are never read
-  back or exposed through a reveal control. Expanding the album checklist
-  must not pause the job. Checkbox and Select All edits apply immediately after
-  an effective change is accepted; show an applying/latest-configuration status
-  without locking input. Checking a physical folder album enables uploads for
-  that album while every remote album stays in download scope. Cloud discovery
-  never changes local upload permission. Select All covers the current list,
-  and checked albums sort first without losing keyboard focus.
-- Open sync conflicts render as rows offering Use Local / Use Cloud / Keep
-  Both. Executing a choice re-checks both recorded versions; if either side
-  changed, the stale selection is rejected and a fresh reconciliation is
-  required. See [`sync.md`](sync.md) for the behavior contracts behind this
-  group.
+- The native sync configuration surface (C1.5) will follow **edit first,
+  reconfigure afterwards**: viewing, drafting, cancelling or re-submitting the
+  same values never pauses or restarts anything; only a validated, accepted
+  effective edit stops obsolete work and automatically schedules the latest
+  configuration. The durable-edit engine behind that rule is described in
+  [`sync.md`](docs/modules/sync.md). Conflicts over cloud content render as
+  explicit choices, never as silent overwrites.
 - Buttons inside the Settings dialog use always-on glass
   (`.glass-toolbar-button`), consistent with the toolbar-button rule for
   dedicated sub-window surfaces.

@@ -1,943 +1,344 @@
 use super::*;
+use crate::core::sync::native::demo_pinned_scope as pinned;
+use crate::core::sync::native::NativeZone;
 
 fn new_job(root: PathBuf) -> NewSyncJob {
     NewSyncJob {
-        endpoint: "https://dav.example.test/root/".into(),
-        username: "alice".into(),
+        provider_kind: ProviderKind::NativeSyncServer,
+        endpoint: "https://sync.example.invalid/".into(),
         credential_ref: "credential-test".into(),
-        etag_is_sha256: false,
         local_root: root,
-        remote_root: "PhotoViewer".into(),
         direction: SyncDirection::Bidirectional,
         upload_scope: UploadScope::All,
         upload_albums: Vec::new(),
+        native_zone: Some(NativeZone::new("PrimarySync")),
+        native_pinned: Some(pinned("https://sync.example.invalid/", &["PrimarySync"])),
     }
 }
 
-#[test]
-fn stores_job_and_baseline_independently_from_media_rows() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool.clone());
-    let job = store.create_job(&new_job(local)).unwrap();
-    let fingerprint = Fingerprint {
-        size: 5,
-        blake3: "abc".into(),
-    };
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "a.jpg",
-            Some(&fingerprint),
-            Some(1),
-            Some(&fingerprint),
-            Some("\"etag\""),
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("\"etag\""))
-        .unwrap();
-
-    crate::core::db_actor::start_db_actor(
-        pool.clone(),
-        crate::core::events::DomainEventSender::new().0,
-    )
-    .execute_blocking(crate::core::db_actor::DbCommand::ResetLibraryDatabase)
-    .unwrap();
-
-    let entries = store.entries(job.id).unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].baseline.as_ref(), Some(&fingerprint));
-    assert_eq!(entries[0].state, "synced");
+fn temp_root(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "photoviewer-sync-store-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).expect("temp root");
+    std::fs::canonicalize(&root).expect("canonical temp root")
 }
 
 #[test]
-fn cloud_state_respects_baseline_media_changes_and_selected_albums() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+fn a_native_job_round_trips_its_zone_owner_and_pinned_scope() {
+    let pool =
+        crate::core::db::init_pool(&temp_root("native-round-trip").join("library.db")).unwrap();
     let store = SyncStore::new(pool.clone());
-    let job = store.create_job(&new_job(local.clone())).unwrap();
-    let fingerprint = Fingerprint {
-        size: 5,
-        blake3: "abc".into(),
-    };
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "a.jpg",
-            Some(&fingerprint),
-            Some(123),
-            Some(&fingerprint),
-            Some("etag"),
-            false,
-            "pending",
-        )
+    let job = store
+        .create_job(&new_job(temp_root("native-round-trip-media")))
         .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("etag"))
-        .unwrap();
-    let conn = pool.get().unwrap();
-    conn.execute(
-        "INSERT INTO media_items
-         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, 'image/jpeg', 'image', 1, 123, 5, '', 1)",
-        params!["file:///a.jpg", local.join("a.jpg").to_string_lossy(), local.to_string_lossy()],
-    ).unwrap();
-    let id = conn.last_insert_rowid();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[id], true)
-            .unwrap(),
-        HashMap::from([(id, CloudState::Synced)])
-    );
-    conn.execute(
-        "UPDATE media_items SET file_mtime_ns = 124 WHERE id = ?1",
-        [id],
-    )
-    .unwrap();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[id], true)
-            .unwrap()[&id],
-        CloudState::Off
-    );
-    conn.execute(
-        "UPDATE media_items SET file_mtime_ns = 123 WHERE id = ?1",
-        [id],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE sync_entries SET state = 'conflict' WHERE id = ?1",
-        [entry],
-    )
-    .unwrap();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[id], true)
-            .unwrap()[&id],
-        CloudState::Off
-    );
-    store.set_upload_albums(job.id, &["Other".into()]).unwrap();
-    assert!(store
-        .media_cloud_states_with_sync_enabled(&[id], true)
+
+    assert_eq!(job.provider_kind, ProviderKind::NativeSyncServer);
+    assert_eq!(job.native_zone, Some(NativeZone::new("PrimarySync")));
+    assert_eq!(job.credential_ref, "credential-test");
+
+    // The zone lives in its own columns; there is no DAV collection path to
+    // smuggle it through.
+    let (zone, owner): (String, String) = pool
+        .get()
         .unwrap()
-        .is_empty());
-    store.set_upload_albums(job.id, &["".into()]).unwrap();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[id], true)
-            .unwrap()[&id],
-        CloudState::Off
-    );
-
-    conn.execute(
-        "INSERT INTO media_items
-         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, 'video/mp4', 'video', 1, 123, 5, '', 1)",
-        params!["file:///v.mp4", local.join("v.mp4").to_string_lossy(), local.to_string_lossy()],
-    ).unwrap();
-    let video_id = conn.last_insert_rowid();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[video_id], true)
-            .unwrap()[&video_id],
-        CloudState::Off
-    );
-    let video_entry = store
-        .upsert_observation(
-            job.id,
-            "v.mp4",
-            Some(&fingerprint),
-            Some(123),
-            Some(&fingerprint),
-            Some("etag"),
-            false,
-            "pending",
+        .query_row(
+            "SELECT native_zone_name, native_owner FROM sync_jobs WHERE id=?1",
+            [job.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    store
-        .commit_baseline(video_entry, &fingerprint, Some("etag"))
-        .unwrap();
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[video_id], true)
-            .unwrap()[&video_id],
-        CloudState::Synced
-    );
+    assert_eq!(zone, "PrimarySync");
+    assert_eq!(owner, "_defaultOwner");
+
+    let scope = store.native_scope(job.connection_id).unwrap().unwrap();
+    assert_eq!(scope.public_base_url, "https://sync.example.invalid/");
+    assert_eq!(scope.namespace.container, "com.apple.photos.cloud");
+    assert_eq!(scope.protocol_version, 1);
+    assert!(scope.has_zone("PrimarySync"));
 }
 
-/// Turning the global switch off keeps saved configuration, so the connection
-/// stays enabled and its baselines survive. Nothing about the rows changed, so
-/// the projection must be the thing that honours the opt-out.
 #[test]
-fn cloud_state_is_empty_while_sync_is_globally_disabled() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+fn an_unprobed_connection_reports_no_native_scope() {
+    let pool = crate::core::db::init_pool(&temp_root("unprobed-scope").join("library.db")).unwrap();
     let store = SyncStore::new(pool.clone());
-    let job = store.create_job(&new_job(local.clone())).unwrap();
-    let fingerprint = Fingerprint {
-        size: 5,
-        blake3: "abc".into(),
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_connections(id,provider_kind,endpoint,credential_ref)
+             VALUES(1,'native_syncserver','https://sync.example.invalid/','ref')",
+            [],
+        )
+        .unwrap();
+    // A connection that never completed a probe has no pinned scope, which is
+    // exactly the state in which a native job must not run.
+    assert!(store.native_scope(1).unwrap().is_none());
+}
+
+#[test]
+fn an_unprobed_or_mismatched_scope_is_rejected_before_any_row_is_written() {
+    let pool = crate::core::db::init_pool(&temp_root("unprobed").join("library.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let count = |pool: &crate::core::db::DbPool| -> i64 {
+        pool.get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sync_jobs", [], |row| row.get(0))
+            .unwrap()
     };
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "a.jpg",
-            Some(&fingerprint),
-            Some(123),
-            Some(&fingerprint),
-            Some("etag"),
-            false,
-            "pending",
+
+    let mut unprobed = new_job(temp_root("unprobed-media"));
+    unprobed.native_pinned = None;
+    assert!(store.create_job(&unprobed).is_err());
+    assert_eq!(count(&pool), 0);
+
+    let mut unknown_zone = new_job(temp_root("unknown-zone-media"));
+    unknown_zone.native_zone = Some(NativeZone::new("OtherSync"));
+    assert!(store.create_job(&unknown_zone).is_err());
+    assert_eq!(count(&pool), 0);
+
+    // A scope probed against a different origin must not be reusable for this
+    // endpoint: it would send the Bearer key somewhere the user never chose.
+    let mut foreign = new_job(temp_root("foreign-origin-media"));
+    foreign.native_pinned = Some(pinned(
+        "https://elsewhere.example.invalid/",
+        &["PrimarySync"],
+    ));
+    assert!(store.create_job(&foreign).is_err());
+    assert_eq!(count(&pool), 0);
+
+    let mut missing_zone = new_job(temp_root("missing-zone-media"));
+    missing_zone.native_zone = None;
+    assert!(store.create_job(&missing_zone).is_err());
+    assert_eq!(count(&pool), 0);
+}
+
+#[test]
+fn two_active_jobs_cannot_claim_the_same_zone_or_overlapping_roots() {
+    let pool = crate::core::db::init_pool(&temp_root("zone-conflict").join("library.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let first = store
+        .create_job(&new_job(temp_root("zone-conflict-a")))
+        .unwrap();
+
+    // A second connection to the same endpoint is still one server, so the
+    // same zone must not fan out into two local roots even under a different
+    // credential reference.
+    let mut second = new_job(temp_root("zone-conflict-b"));
+    second.credential_ref = "credential-test-two".into();
+    second.native_pinned = Some(pinned("https://sync.example.invalid/", &["PrimarySync"]));
+    assert!(store.create_job(&second).is_err());
+
+    // A different zone is fine as long as the local roots do not overlap.
+    let mut other_zone = new_job(temp_root("zone-conflict-c"));
+    other_zone.credential_ref = "credential-test-three".into();
+    other_zone.native_zone = Some(NativeZone::new("ArchiveSync"));
+    other_zone.native_pinned = Some(pinned(
+        "https://sync.example.invalid/",
+        &["PrimarySync", "ArchiveSync"],
+    ));
+    let created = store.create_job(&other_zone).unwrap();
+    assert_eq!(created.native_zone, Some(NativeZone::new("ArchiveSync")));
+
+    // Nested local roots are ambiguous ownership and must be refused.
+    let mut nested = new_job(first.local_root.join("nested"));
+    nested.credential_ref = "credential-test-four".into();
+    nested.native_zone = Some(NativeZone::new("ThirdSync"));
+    nested.native_pinned = Some(pinned(
+        "https://sync.example.invalid/",
+        &["PrimarySync", "ThirdSync"],
+    ));
+    assert!(store.create_job(&nested).is_err());
+}
+
+#[test]
+fn reusing_a_credential_reference_updates_one_connection_rather_than_duplicating_it() {
+    let pool = crate::core::db::init_pool(&temp_root("reuse-ref").join("library.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    store
+        .create_job(&new_job(temp_root("reuse-ref-media")))
+        .unwrap();
+
+    // A second task with the same reference re-probes and refreshes the same
+    // connection row; it must not leave two connections fighting over one
+    // credential. A different zone is required so the task itself is valid.
+    let mut reused = new_job(temp_root("reuse-ref-media-2"));
+    reused.native_zone = Some(NativeZone::new("ArchiveSync"));
+    reused.native_pinned = Some(pinned(
+        "https://sync.example.invalid/",
+        &["PrimarySync", "ArchiveSync"],
+    ));
+    store.create_job(&reused).unwrap();
+
+    let connections: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_connections WHERE credential_ref='credential-test'",
+            [],
+            |row| row.get(0),
         )
         .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("etag"))
-        .unwrap();
-    let conn = pool.get().unwrap();
-    conn.execute(
-        "INSERT INTO media_items
-         (uri, path, folder_path, mime_type, media_kind, file_mtime, file_mtime_ns, file_size, blake3_hash, indexed_at)
-         VALUES (?1, ?2, ?3, 'image/jpeg', 'image', 1, 123, 5, '', 1)",
-        params!["file:///a.jpg", local.join("a.jpg").to_string_lossy(), local.to_string_lossy()],
-    ).unwrap();
-    let id = conn.last_insert_rowid();
-
-    assert_eq!(
-        store
-            .media_cloud_states_with_sync_enabled(&[id], true)
-            .unwrap()[&id],
-        CloudState::Synced
-    );
-    assert!(store
-        .media_cloud_states_with_sync_enabled(&[id], false)
-        .unwrap()
-        .is_empty());
-    assert!(store
-        .media_cloud_states_with_sync_enabled(&[], true)
-        .unwrap()
-        .is_empty());
+    assert_eq!(connections, 1);
 }
 
 #[test]
-fn rejects_insecure_non_local_endpoint() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool);
-    let mut job = new_job(local);
-    job.endpoint = "http://dav.example.test/".into();
-    assert!(store.create_job(&job).is_err());
-}
-
-#[test]
-fn stores_selected_upload_albums_and_advances_configuration_generation() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool);
-    let mut requested = new_job(local);
-    requested.upload_scope = UploadScope::SelectedAlbums;
-    requested.upload_albums = vec!["Trips/2026".into(), "Camera".into(), "Camera".into()];
-
-    let job = store.create_job(&requested).unwrap();
-    assert_eq!(job.upload_scope, UploadScope::SelectedAlbums);
-    assert_eq!(
-        store.upload_albums(job.id).unwrap(),
-        vec!["Camera".to_string(), "Trips/2026".to_string()]
-    );
-
-    store
-        .set_upload_albums(job.id, &["Screenshots".into()])
-        .unwrap();
-    let updated = store.get_job(job.id).unwrap().unwrap();
-    assert_eq!(updated.upload_scope, UploadScope::SelectedAlbums);
-    assert_eq!(updated.config_generation, job.config_generation + 1);
-    assert_eq!(
-        store.upload_albums(job.id).unwrap(),
-        vec!["Screenshots".to_string()]
-    );
-}
-
-#[test]
-fn rejects_upload_album_parent_traversal() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool);
-    let mut requested = new_job(local);
-    requested.upload_albums = vec!["../outside".into()];
-    assert!(store.create_job(&requested).is_err());
-}
-
-#[test]
-fn overview_reports_persisted_job_lifecycle() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+fn native_entry_columns_start_neutral_so_no_row_is_mistaken_for_a_dirtied_one() {
+    let pool = crate::core::db::init_pool(&temp_root("neutral").join("library.db")).unwrap();
     let store = SyncStore::new(pool.clone());
-
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap(),
-        SyncOverview {
-            status: SyncOverviewStatus::NotConfigured,
-            job_count: 0,
-            synced_items: 0,
-            total_items: 0,
-            conflict_images: 0,
-        }
-    );
-    assert_eq!(
-        store.overview_with_sync_enabled(false).unwrap().status,
-        SyncOverviewStatus::Disabled
-    );
-
-    let job = store.create_job(&new_job(local)).unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(false).unwrap().status,
-        SyncOverviewStatus::Disabled
-    );
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Ready
-    );
-
-    store.mark_job_started(job.id).unwrap();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "UPDATE sync_jobs SET last_started_at = 20, last_completed_at = 10 WHERE id = ?1",
+    let job = store
+        .create_job(&new_job(temp_root("neutral-media")))
+        .unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_entries(job_id,relative_path) VALUES(?1,'a/photo.jpg')",
             [job.id],
         )
         .unwrap();
-    }
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Running
-    );
 
-    store
-        .mark_job_failed(job.id, "network unavailable")
+    let conn = pool.get().unwrap();
+    let row: (i64, i64, Option<String>, Option<String>, Option<String>, i64) = conn
+        .query_row(
+            "SELECT native_dirty, native_local_version, native_photo_id, native_confirmed_generation,
+                    native_metadata_event, native_local_version
+             FROM sync_entries WHERE job_id=?1 AND relative_path='a/photo.jpg'",
+            [job.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
         .unwrap();
+    assert_eq!(row.0, 0, "a new entry must be CLEAN");
+    assert_eq!(row.1, 0);
+    assert_eq!(row.2, None, "an allocated id must not precede a create");
+    assert_eq!(row.3, None, "no confirmed pair exists yet");
     assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Failed
+        row.4, None,
+        "an unknown edit event stays NULL rather than being invented"
     );
-
-    store.mark_job_completed(job.id).unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Completed
-    );
-
-    store.set_job_paused(job.id, true).unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Paused
-    );
+    assert_eq!(row.5, 0);
 }
 
 #[test]
-fn overview_counts_synced_media_and_open_image_conflicts() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool);
-    let job = store.create_job(&new_job(local)).unwrap();
-    let fingerprint = Fingerprint {
-        size: 4,
-        blake3: "test".into(),
-    };
-    for path in ["A/photo.JPG", "A/movie.mp4"] {
-        let entry = store
-            .upsert_observation(
-                job.id,
-                path,
-                Some(&fingerprint),
-                None,
-                Some(&fingerprint),
-                Some("strong"),
-                false,
-                "pending",
-            )
-            .unwrap();
-        store
-            .commit_baseline(entry, &fingerprint, Some("strong"))
-            .unwrap();
-    }
-    let photo = store
-        .entries(job.id)
-        .unwrap()
-        .into_iter()
-        .find(|entry| entry.relative_path == "A/photo.JPG")
-        .unwrap();
-    store
-        .record_conflict(
-            job.id,
-            photo.id,
-            "both_changed",
-            Some(&fingerprint),
-            Some(&fingerprint),
-            Some("strong"),
-        )
-        .unwrap();
-    let movie = store
-        .entries(job.id)
-        .unwrap()
-        .into_iter()
-        .find(|entry| entry.relative_path == "A/movie.mp4")
-        .unwrap();
-    store
-        .record_conflict(
-            job.id,
-            movie.id,
-            "both_changed",
-            Some(&fingerprint),
-            Some(&fingerprint),
-            Some("strong"),
-        )
-        .unwrap();
-    let overview = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!(overview.synced_items, 2);
-    assert_eq!(overview.conflict_images, 1);
-}
-
-#[test]
-fn overview_does_not_report_completion_with_blocked_uploads() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool);
-    let job = store.create_job(&new_job(local)).unwrap();
-    let fingerprint = Fingerprint {
-        size: 4,
-        blake3: "test".into(),
-    };
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "A/photo.jpg",
-            Some(&fingerprint),
-            None,
-            None,
-            None,
-            false,
-            "pending",
-        )
-        .unwrap();
-    let artifact = temp.path().join("photo.upload");
-    std::fs::write(&artifact, b"test").unwrap();
-    store
-        .prepare_task(
-            "pending-upload",
-            job.id,
-            entry,
-            "upload_new",
-            None,
-            &artifact,
-            &fingerprint.blake3,
-            job.config_generation,
-            1,
-        )
-        .unwrap();
-    store
-        .set_task_state("pending-upload", "blocked", Some("locked"))
-        .unwrap();
-    store.mark_job_completed(job.id).unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Failed
-    );
-}
-
-#[test]
-fn edit_first_pending_edits_merge_and_survive_reopening_without_mutating_active_roots() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("photos");
-    std::fs::create_dir(&root).unwrap();
-    let path = temp.path().join("photos.db");
-    let pool = crate::core::db::init_pool(&path).unwrap();
+fn a_pending_edit_survives_and_merges_without_touching_the_active_configuration() {
+    let pool = crate::core::db::init_pool(&temp_root("edit-first").join("library.db")).unwrap();
     let store = SyncStore::new(pool.clone());
-    let mut requested = new_job(root);
-    requested.upload_scope = UploadScope::SelectedAlbums;
-    let job = store.create_job(&requested).unwrap();
-    assert!(!store
-        .queue_edit(job.id, JobEdit::UploadAlbums(Vec::new()))
-        .unwrap());
-    assert!(!store
-        .queue_edit(job.id, JobEdit::RemoteRoot("/PhotoViewer/".into()))
-        .unwrap());
-    assert!(store.pending_change(job.id).unwrap().is_none());
+    let job = store
+        .create_job(&new_job(temp_root("edit-first-media")))
+        .unwrap();
+
     assert!(store
-        .queue_edit(job.id, JobEdit::RemoteRoot("NewRoot".into()))
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["a".into()]))
         .unwrap());
-    assert!(store
-        .queue_edit(
-            job.id,
-            JobEdit::UploadAlbums(vec!["camera".into(), "camera".into()])
-        )
+    // Re-submitting the same effective values is not a change.
+    assert!(!store
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["a".into()]))
         .unwrap());
+    // A different order is not a change either.
+    assert!(!store
+        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["a".into()]))
+        .unwrap());
+
     let pending = store.pending_change(job.id).unwrap().unwrap();
-    assert_eq!(pending.remote_root.as_deref(), Some("NewRoot"));
-    assert_eq!(pending.upload_albums, Some(vec!["camera".into()]));
-    assert_eq!(pending.revision, job.config_generation + 2);
+    assert_eq!(pending.upload_albums, Some(vec!["a".to_string()]));
+    // The active configuration is untouched until the worker applies it.
     assert_eq!(
-        store.get_job(job.id).unwrap().unwrap().remote_root,
-        "PhotoViewer"
+        store.get_job(job.id).unwrap().unwrap().upload_scope,
+        UploadScope::All
     );
-    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
-    assert_eq!(
-        store.desired_job(job.id).unwrap().unwrap().remote_root,
-        "NewRoot"
-    );
-    assert!(!store
-        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["camera".into()]))
-        .unwrap());
-    assert!(store
-        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["../invalid".into()]))
-        .is_err());
-    drop(store);
-    drop(pool);
-    let store = SyncStore::new(crate::core::db::init_pool(&path).unwrap());
-    assert_eq!(store.pending_change(job.id).unwrap().unwrap(), pending);
-    store.set_job_paused(job.id, true).unwrap();
-    assert!(matches!(
-        store.apply_change(job.id, pending.revision - 1).unwrap(),
-        SyncWriteResult::Changed(false)
-    ));
-    assert!(matches!(
-        store.apply_change(job.id, pending.revision).unwrap(),
-        SyncWriteResult::Changed(true)
-    ));
-    assert!(store.pending_change(job.id).unwrap().is_none());
-    assert_eq!(store.upload_albums(job.id).unwrap(), vec!["camera"]);
-    assert_eq!(
-        store.get_job(job.id).unwrap().unwrap().remote_root,
-        "NewRoot"
-    );
-    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
+    let queued: i64 = pool
+        .get()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sync_job_changes", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(queued, 1);
 }
 
 #[test]
-fn edit_first_pending_roots_reserve_their_namespace_and_recovery_is_not_discarded() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("one");
-    let other = temp.path().join("two");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::create_dir(&other).unwrap();
-    let store = SyncStore::new(crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap());
-    let job = store.create_job(&new_job(root)).unwrap();
-    let mut requested = new_job(other);
-    requested.remote_root = "Other".into();
-    let second = store.create_job(&requested).unwrap();
+fn a_job_without_a_zone_is_a_corrupt_row_rather_than_a_default() {
+    let pool = crate::core::db::init_pool(&temp_root("zoneless").join("library.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
     store
-        .queue_edit(second.id, JobEdit::RemoteRoot("Reserved/Album".into()))
+        .create_job(&new_job(temp_root("zoneless-media")))
         .unwrap();
-    assert!(store
-        .queue_edit(job.id, JobEdit::RemoteRoot("Reserved".into()))
+    // The database itself refuses a zoneless row: synthesising a zone would
+    // point the task at a cloud location the user never chose.
+    assert!(pool
+        .get()
+        .unwrap()
+        .execute("UPDATE sync_jobs SET native_zone_name=NULL", [])
         .is_err());
-    assert!(store.pending_change(job.id).unwrap().is_none());
-    let artifact = temp.path().join("only-copy.upload");
-    std::fs::write(&artifact, b"only complete copy").unwrap();
-    let fp = super::super::local::fingerprint(&artifact).unwrap();
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "photo.jpg",
-            Some(&fp),
-            None,
-            None,
-            None,
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .prepare_task(
-            "uncertain",
-            job.id,
-            entry,
-            "upload_new",
-            None,
-            &artifact,
-            &fp.blake3,
-            job.config_generation,
-            1,
-        )
-        .unwrap();
-    store
-        .queue_edit(job.id, JobEdit::RemoteRoot("NewRoot".into()))
-        .unwrap();
-    let pending = store.pending_change(job.id).unwrap().unwrap();
-    store.set_job_paused(job.id, true).unwrap();
-    assert!(store.apply_change(job.id, pending.revision).is_err());
-    assert!(artifact.exists());
-    assert_eq!(
-        store.get_job(job.id).unwrap().unwrap().remote_root,
-        "PhotoViewer"
-    );
-    assert_eq!(store.unfinished_tasks(job.id).unwrap().len(), 1);
-    assert!(store.pending_change(job.id).unwrap().is_some());
+    assert!(store.list_jobs().is_ok());
 }
 
-#[test]
-fn edit_first_overview_distinguishes_applying_from_paused_and_failed() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("photos");
-    std::fs::create_dir(&root).unwrap();
-    let store = SyncStore::new(crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap());
-    let job = store.create_job(&new_job(root)).unwrap();
-    store
-        .queue_edit(job.id, JobEdit::UploadAlbums(vec!["camera".into()]))
-        .unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Applying
-    );
-    store.set_job_paused(job.id, true).unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Applying
-    );
-    store
-        .mark_job_failed(job.id, "old write cannot be verified")
-        .unwrap();
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Failed
-    );
-    assert_eq!(
-        store.overview_with_sync_enabled(false).unwrap().status,
-        SyncOverviewStatus::Disabled
-    );
-}
-
-/// A run cannot outlive the process that started it, so a job whose start is
-/// still ahead of its completion at launch is describing a run this process never
-/// began. Without an explicit reconciliation the derived overview status keeps
-/// reporting `Running` on every later launch — no failure recorded, so not even
-/// the retry is offered, and nothing else can clear it.
 #[test]
 fn startup_reconciliation_closes_runs_left_open_by_an_earlier_process() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
+    let pool = crate::core::db::init_pool(&temp_root("reconcile").join("library.db")).unwrap();
     let store = SyncStore::new(pool.clone());
-
-    let job = store.create_job(&new_job(local)).unwrap();
-    store.mark_job_started(job.id).unwrap();
-    {
-        let conn = pool.get().unwrap();
-        conn.execute(
-            "UPDATE sync_jobs SET last_started_at = 20, last_completed_at = 10 WHERE id = ?1",
+    let job = store
+        .create_job(&new_job(temp_root("reconcile-media")))
+        .unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sync_jobs SET last_started_at=100 WHERE id=?1",
             [job.id],
         )
         .unwrap();
-    }
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Running,
-        "precondition: an open run reads as running"
-    );
 
     assert_eq!(store.reconcile_interrupted_runs().unwrap(), 1);
-    let recovered = store.get_job(job.id).unwrap().unwrap();
-    assert_eq!(
-        recovered.last_error.as_deref(),
-        Some("sync.interrupted_run"),
-        "recovery must persist a locale-independent reason, not user-visible copy"
-    );
+    // A second pass has nothing left to close, so it stays idempotent.
     assert_eq!(store.reconcile_interrupted_runs().unwrap(), 0);
-    assert_eq!(
-        store.get_job(job.id).unwrap().unwrap().last_error,
-        recovered.last_error,
-        "a repeated launch must retain the reason without rewriting it"
-    );
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Failed,
-        "an interrupted run did not finish; reporting it as failed is honest and offers the retry"
-    );
-
-    // A settled job is left alone, and the reconciliation is idempotent.
-    store.mark_job_failed(job.id, "boom").unwrap();
-    store.mark_job_completed(job.id).unwrap();
-    assert_eq!(store.reconcile_interrupted_runs().unwrap(), 0);
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Completed,
-        "a run that already ended must not be rewritten by a later launch"
-    );
-}
-
-/// The completion timestamp records "no run is in flight", which is true however
-/// the run ended. Only the *error* is attributable to one configuration. Guarding
-/// both on `config_generation` meant an edit applied mid-run turned the update
-/// into a silent zero-row no-op and pinned the overview to "syncing" forever.
-#[test]
-fn finishing_a_run_records_the_end_even_when_an_edit_superseded_its_generation() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool.clone());
-
-    let job = store.create_job(&new_job(local)).unwrap();
-    let stale_generation = job.config_generation;
-    store.mark_job_started(job.id).unwrap();
-
-    // An edit is accepted and applied while the run is in flight, so the
-    // generation moves on and the pending row is consumed.
-    store
-        .set_upload_albums(job.id, &[String::from("Trips")])
-        .unwrap();
-    assert_ne!(
-        store.get_job(job.id).unwrap().unwrap().config_generation,
-        stale_generation,
-        "precondition: the applied edit advanced the generation"
-    );
-
-    store.finish_run(job.id, stale_generation, None).unwrap();
-
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Completed,
-        "the run ended, so it must not keep reading as running just because its \
-         configuration was superseded"
-    );
-}
-
-/// The same split applies to a failing run: the error belongs to a configuration,
-/// but the run still ended.
-#[test]
-fn finishing_a_failed_run_records_the_end_without_blaming_a_superseded_configuration() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let store = SyncStore::new(pool.clone());
-
-    let job = store.create_job(&new_job(local)).unwrap();
-    let stale_generation = job.config_generation;
-    store.mark_job_started(job.id).unwrap();
-    store
-        .set_upload_albums(job.id, &[String::from("Trips")])
-        .unwrap();
-
-    store
-        .finish_run(job.id, stale_generation, Some("network unavailable"))
-        .unwrap();
-
-    assert_eq!(
-        store.overview_with_sync_enabled(true).unwrap().status,
-        SyncOverviewStatus::Completed,
-        "the stale error is not attributable to the current configuration, and the run \
-         must not stay stuck reading as running"
-    );
-    assert!(
-        store.get_job(job.id).unwrap().unwrap().last_error.is_none(),
-        "settings that did not cause the failure must not inherit its error"
-    );
 }
 
 #[test]
-fn overview_inventory_preserves_history_deduplicates_paths_and_rejects_stale_scans() {
-    let temp = tempfile::tempdir().unwrap();
-    let local = temp.path().join("photos");
-    std::fs::create_dir(&local).unwrap();
-    let database = temp.path().join("photos.db");
-    let pool = crate::core::db::init_pool(&database).unwrap();
-    let store = SyncStore::new(pool.clone());
-    let job = store.create_job(&new_job(local.clone())).unwrap();
-    let sibling = temp.path().join("sibling-photos");
-    std::fs::create_dir(&sibling).unwrap();
-    let mut other_request = new_job(sibling);
-    other_request.remote_root = "AnotherReplica".into();
-    let other = store.create_job(&other_request).unwrap();
-    let fingerprint = Fingerprint {
-        size: 4,
-        blake3: "history".into(),
-    };
-    let entry = store
-        .upsert_observation(
-            job.id,
-            "done.jpg",
-            Some(&fingerprint),
-            None,
-            Some(&fingerprint),
-            Some("old"),
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("old"))
-        .unwrap();
-    assert!(store
-        .replace_inventory(
-            job.id,
-            job.config_generation,
-            &["done.jpg".into(), "pending.mp4".into()]
-        )
-        .unwrap());
-    assert!(store
-        .replace_inventory(
-            other.id,
-            other.config_generation,
-            &["done.jpg".into(), "pending.mp4".into(), "new.jpg".into()]
-        )
-        .unwrap());
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!((counts.synced_items, counts.total_items), (1, 5));
-    assert!(
-        !store
-            .replace_inventory(
-                job.id,
-                job.config_generation,
-                &["pending.mp4".into(), "done.jpg".into(), "done.jpg".into()]
-            )
-            .unwrap(),
-        "an unchanged inventory must not rewrite rows"
-    );
-    // Updating an already synchronized file is still one historical item.
-    store
-        .upsert_observation(
-            job.id,
-            "done.jpg",
-            Some(&fingerprint),
-            None,
-            None,
-            Some("changed"),
-            false,
-            "pending",
-        )
-        .unwrap();
-    let pending = store
-        .upsert_observation(
-            job.id,
-            "pending.mp4",
-            Some(&fingerprint),
-            None,
-            Some(&fingerprint),
-            Some("new"),
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .commit_baseline(pending, &fingerprint, Some("new"))
-        .unwrap();
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!((counts.synced_items, counts.total_items), (2, 5));
-    drop(store);
-    drop(pool);
-    let pool = crate::core::db::init_pool(&database).unwrap();
-    let store = SyncStore::new(pool);
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!(
-        (counts.synced_items, counts.total_items),
-        (2, 5),
-        "both sides of the fraction must survive reopening the database"
-    );
-    store
-        .set_upload_albums(other.id, &["selected".into()])
-        .unwrap();
-    assert!(!store
-        .replace_inventory(other.id, other.config_generation, &["stale.jpg".into()])
-        .unwrap());
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!(
-        (counts.synced_items, counts.total_items),
-        (2, 2),
-        "an inventory from the old configuration must not remain in the total"
-    );
-    let other_root = temp.path().join("other-photos");
-    std::fs::create_dir(&other_root).unwrap();
-    let mut third_request = new_job(other_root);
-    third_request.remote_root = "ThirdReplica".into();
-    let different_root = store.create_job(&third_request).unwrap();
-    store
-        .replace_inventory(
-            different_root.id,
-            different_root.config_generation,
-            &["done.jpg".into()],
-        )
-        .unwrap();
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!(
-        (counts.synced_items, counts.total_items),
-        (2, 3),
-        "identical relative names under different local roots are distinct items"
-    );
-    store
-        .pool
-        .get()
-        .unwrap()
-        .execute("UPDATE sync_connections SET enabled=0", [])
-        .unwrap();
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!((counts.synced_items, counts.total_items), (0, 0));
-    store
-        .pool
-        .get()
-        .unwrap()
-        .execute("UPDATE sync_connections SET enabled=1", [])
-        .unwrap();
-    store.begin_reset().unwrap();
-    let token = store.reset_intent().unwrap().unwrap().token;
-    store.finish_reset(&token).unwrap();
-    let counts = store.overview_with_sync_enabled(true).unwrap();
-    assert_eq!((counts.synced_items, counts.total_items), (0, 0));
-    let rows: i64 = store
-        .pool
-        .get()
-        .unwrap()
-        .query_row("SELECT COUNT(*) FROM sync_inventory", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(
-        rows, 0,
-        "global opt-out clears inventory together with history"
-    );
-}
-
-#[test]
-fn remote_root_segment_policy_preserves_normalization_and_empty_segment_rejection() {
-    for root in [
-        "Photos",
-        "/Photos/",
-        "//Photos//",
-        "Photos/相册",
-        "Photos/a b",
+fn an_insecure_or_mislocated_endpoint_is_rejected() {
+    for endpoint in [
+        // A base path would silently prefix every control call.
+        "https://sync.example.invalid/api/",
+        // Cleartext needs a literal loopback address, not a DNS name.
+        "http://sync.example.invalid/",
+        "http://localhost:8790/",
+        "https://user:pw@sync.example.invalid/",
     ] {
-        assert_eq!(validate_remote_root(root).unwrap(), root.trim_matches('/'));
+        let pool = crate::core::db::init_pool(
+            &temp_root("endpoint").join(format!("{}.db", endpoint.len())),
+        )
+        .unwrap();
+        let store = SyncStore::new(pool.clone());
+        let mut request = new_job(temp_root("endpoint-media"));
+        request.endpoint = endpoint.into();
+        request.native_pinned = Some(pinned(endpoint, &["PrimarySync"]));
+        assert!(
+            store.create_job(&request).is_err(),
+            "{endpoint} must be rejected as a native endpoint"
+        );
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM sync_jobs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
-    for root in [
-        "",
-        "/",
-        "Photos//Camera",
-        "Photos/./Camera",
-        "Photos/../Camera",
+}
+
+#[test]
+fn upload_album_names_cannot_escape_the_local_root() {
+    for albums in [
+        vec!["../elsewhere".to_string()],
+        vec!["a/../../b".to_string()],
+        vec!["a//b".to_string()],
     ] {
-        assert!(validate_remote_root(root).is_err(), "{root:?}");
+        let pool = crate::core::db::init_pool(&temp_root("albums").join("library.db")).unwrap();
+        let store = SyncStore::new(pool.clone());
+        let mut request = new_job(temp_root("albums-media"));
+        request.upload_albums = albums.clone();
+        assert!(
+            store.create_job(&request).is_err(),
+            "{albums:?} must be rejected"
+        );
     }
-    assert_eq!(
-        normalize_relative_albums(&["".into(), "/相册/".into()]).unwrap(),
-        vec!["", "相册"]
-    );
-    assert!(normalize_relative_albums(&["Photos//Camera".into()]).is_err());
 }

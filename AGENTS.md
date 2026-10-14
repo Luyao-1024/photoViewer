@@ -25,7 +25,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Editor operations and save paths | [`docs/modules/editor.md`](docs/modules/editor.md) |
 | Keyboard shortcut routing and keymap | [`docs/modules/keyboard.md`](docs/modules/keyboard.md) |
 | DB, scanner, filesystem watcher, thumbnails | [`docs/modules/storage.md`](docs/modules/storage.md) |
-| WebDAV sync, conflicts, recovery, cloud badges | [`docs/modules/sync.md`](docs/modules/sync.md) |
+| Native sync (SyncServer client, cloud badges) | [`docs/modules/sync.md`](docs/modules/sync.md) |
 | Native SyncServer client (C1 design, runtime pending) | [`docs/modules/native-sync.md`](docs/modules/native-sync.md), then its protocol/storage/implementation guides |
 | Crash logs, panic hook, signal handler | [`docs/modules/diagnostics.md`](docs/modules/diagnostics.md) |
 | Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
@@ -46,7 +46,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## UI Invariants
 
-- Cloud sync follows **edit first, reconfigure afterwards**: running or internally quiescing jobs must remain editable. Opening/expanding/browsing, drafts, cancellation, invalid input and no-op saves must not pause or restart sync. Only an accepted effective change may stop obsolete work; safely apply the latest configuration and automatically retrigger affected surviving jobs when sync is enabled. Never require a prior pause or a later manual resume/Photos pull. Coalesce rapid edits, guard stale results, and preserve explicit upload scope. See [`docs/modules/sync-configuration-ux.md`](docs/modules/sync-configuration-ux.md) for the binding contract, opt-out/deletion exceptions and acceptance criteria.
+- Cloud sync follows **edit first, reconfigure afterwards**: running or internally quiescing jobs must remain editable. Opening/expanding/browsing, drafts, cancellation, invalid input and no-op saves must not pause or restart sync. Only an accepted effective change may stop obsolete work; safely apply the latest configuration and automatically retrigger affected surviving jobs when sync is enabled. Never require a prior pause or a later manual resume/Photos pull. Coalesce rapid edits, guard stale results, and preserve explicit upload scope. The settings surface for it returns with the native configuration UI in C1.5; the durable-edit engine is described in [`docs/modules/sync.md`](docs/modules/sync.md).
 - The year/month/day mode selector is the canonical Liquid Glass segmented control. Preserve its visual model: one raised glass capsule, lightweight internal state, no per-segment active background block.
 - Reuse the shared `.glass-*` and `.glass-segment*` CSS classes before adding selectors.
 - Any new glass surface must work in both Liquid Glass and plain translucent modes.

@@ -1079,60 +1079,19 @@ h1 {
   background: rgba(255,255,255,0.045);
 }
 
-.sync-settings-preview > summary {
-  cursor: pointer;
-  list-style: none;
-}
 
-.sync-settings-preview > summary::-webkit-details-marker {
-  display: none;
-}
 
-.sync-settings-children {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 0 18px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
-}
 
-.sync-strategy-preview {
-  display: flex;
-  flex: none;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
-}
 
-.sync-strategy-preview button {
-  position: relative;
-  width: 66px;
-  height: 28px;
-  padding: 0 0 4px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-}
 
-.sync-strategy-preview button.selected {
-  color: var(--accent);
-  font-weight: 700;
-}
 
-.sync-strategy-preview button.selected::after {
-  content: "";
-  position: absolute;
-  bottom: 2px;
-  left: calc(50% - 10px);
-  width: 20px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
-}
+
+
+
+
+
+
+
 
 .pref-row span:first-child {
   flex: 1;
@@ -1449,12 +1408,9 @@ body[data-pv-demo="album-empty"] .section-title { display: none; }
 body[data-pv-demo="trash-flash"] .legacy-trash-flash { display: flex; }
 body[data-pv-demo="trash-flash"] .tile-grid.compact { display: none; }
 
-/* P2-8：概览行内的 .overview-retry 是真实 chrome，不再由提案 token 门控。命名模式恒可见
-   （它是 data-ui 条目）；运行模式按真实状态显示——概览默认收起，只有 Failed 才出重试，
-   与 photos_page.rs apply_overview_retry_affordance 一致。header 里曾有一枚
-   .overview-disclosure 圆钮，现已移除，样式与命名条目一并删掉。 */
-body[data-pv-mode="run"]:not([data-pv-ovr="open"]):not([data-pv-ovr="failed"]) .photos-overview-row { display: none; }
-body[data-pv-mode="run"]:not([data-pv-ovr="failed"]) .overview-retry { display: none; }
+/* 运行模式按真实状态显示：概览默认收起，与 photos_page.rs 的揭示逻辑一致。
+   行内重试按钮已随 C1.1 移除——没有可触发的运行引擎之前它是死按钮。 */
+body[data-pv-mode="run"]:not([data-pv-ovr="open"]) .photos-overview-row { display: none; }
 
 /* P2-9 收藏下拉指示（尚未落盘，仍由提案 token 控制） */
 /* 沉浸浏览（结构性议题）已落盘为常态：F 收起的是查看器自己的四块界面——顶栏、

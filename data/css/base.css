@@ -401,37 +401,6 @@ box.mode-dot {
   color: @window_fg_color;
 }
 
-/* Settings uses a compact variant of the same single glass capsule. Accent text
-   and a short underline identify the current mode without a second
-   raised surface; the inactive underline still reserves its space. */
-box.glass-segmented.sync-strategy-selector {
-  min-height: 0;
-  padding: 3px;
-  border-radius: 12px;
-}
-
-box.sync-strategy-selector button.glass-segment {
-  min-width: 50px;
-  min-height: 24px;
-  padding: 2px 8px;
-  border: none;
-  border-radius: 8px;
-  font-size: 10pt;
-  font-weight: 500;
-  color: alpha(@window_fg_color, 0.60);
-}
-
-box.sync-strategy-selector button.glass-segment:checked {
-  color: @accent_color;
-  font-weight: 700;
-}
-
-box.sync-strategy-selector .glass-segment-indicator {
-  min-width: 20px;
-  min-height: 2px;
-  margin-top: 2px;
-}
-
 /* glass-toolbar-button — individual buttons in glass header bars.
    This base rule owns only geometry; the actual material lives in the
    Liquid/Plain material blocks so Settings can switch every button at once. */
@@ -1082,17 +1051,6 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
 
 .photos-overview-sync-row {
   color: alpha(@window_fg_color, 0.78);
-  font-size: 11pt;
-}
-
-/* The retry that a failed sync now carries (P2-8) has to read as part of the
-   sentence, not as a toolbar: keep it at the row's 11pt scale and drop the
-   theme's minimum button box. It stays a plain .flat button — no glass material
-   is introduced here. */
-.photos-overview-retry {
-  min-width: 0;
-  min-height: 0;
-  padding: 2px 10px;
   font-size: 11pt;
 }
 

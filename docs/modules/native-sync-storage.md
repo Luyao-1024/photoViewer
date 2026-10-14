@@ -1,10 +1,12 @@
 # Native SyncServer Storage And Publication Design
 
-Status: frozen C1 design, 2026-10-14. Current code/schema remains version 8.
-These names are planned columns/tables and command boundaries, not migrations
-already executed. Follow [the main contract](native-sync.md),
-[wire mapping](native-sync-protocol.md), [storage rules](storage.md) and
-[configuration UX](sync-configuration-ux.md).
+Status: C1.1 delivered, 2026-10-14. Schema 9 is the native-only shape: the
+WebDAV engine and its columns were removed outright, and a schema-8 library is
+upgraded by dropping the sync tables and recreating them empty — media, albums,
+favorites, edits and settings are untouched, WebDAV sync history is not carried
+forward. There is no in-place column migration and no compatibility waiver for
+the old sync rows. Follow [the main contract](native-sync.md),
+[wire mapping](native-sync-protocol.md) and [storage rules](storage.md).
 
 ## Ownership And Migration
 
@@ -13,22 +15,19 @@ no SQL, GTK widgets or direct media-row admission. Extend SyncStore/DbCommand
 with typed native operations; background scans, editor/favorite changes, trash,
 recovery and callbacks use the same transaction owner.
 
-The server's pre-release schema compatibility waiver does not permit discarding
-PhotoViewer's existing user database. The first C1 migration is the next schema
-version after 8 (9 if no intervening migration lands), transactional and tested
-from populated existing libraries. Preserve media IDs, favorites, album order,
-covers, WebDAV configurations, baselines, suppression, operation journals and
-historical overview counts. Existing provider_kind stays webdav; new native
-connections are explicitly created. Native fields on legacy entries are neutral
-and legacy paths do not read/write them. Adding a native connection never enrolls
-all local media or resets established WebDAV rows.
+Schema 9 exists to preserve the *library*, not the WebDAV state: media IDs,
+favorites, album order, covers and edits survive the upgrade; sync connections,
+jobs, entries, tasks and conflicts are discarded because they describe a
+transport this build no longer speaks. `provider_kind` is native-only (a CHECK,
+not a default). A native connection is created explicitly by a completed probe;
+nothing enrolls local media automatically.
 
 ## Planned Fields On Existing Rows
 
 | Owner | Added native data / invariant |
 |---|---|
-| sync_connections | provider_kind=native_syncserver, credential_ref for Bearer, pinned capability namespace/protocol; no plaintext key |
-| sync_jobs | explicit native zone/owner and scope metadata; config_generation still gates desired state; no DAV remote_root reinterpretation |
+| sync_connections | provider_kind=native_syncserver (CHECK-enforced), credential_ref for Bearer, pinned capability document; no plaintext key |
+| sync_jobs | explicit NOT NULL zone/owner and scope metadata; config_generation still gates desired state; no path-shaped remote root exists |
 | sync_entries | native_dirty bitmask and native_local_version; independent metadata/content/deletion versions and edit events |
 | sync_entries | stable photo/master IDs, both confirmed record revisions, content generation and typed field baselines |
 | sync_entries | native original/thumbnail IDs, SHA-256/size baselines, acknowledged category versions and desired metadata snapshot |

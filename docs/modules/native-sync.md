@@ -2,18 +2,23 @@
 
 ## Scope And Status
 
-This module owns PhotoViewer's planned C1 client for the independent Rust
-`Luyao-1024/syncserver` service. Updated 2026-10-14 against server main
+This module owns PhotoViewer's C1 client for the independent Rust
+`Luyao-1024/syncserver` service. Verified 2026-10-14 against server main
 `2d9f9a7`: M3 token/snapshot/delta/lease coordination and M4 resource publication
 are available, with M5 CI/deployment tooling. Server development is no longer
-blocking C1. Server availability does not mean the PhotoViewer client is already
-implemented or that a production endpoint has been deployed.
+blocking C1.
 
-Current PhotoViewer schema remains 8, its runtime provider remains WebDAV, and
-Native Provider/dirty/token/lease/publication code has not been added. These
-pages freeze client implementation and acceptance; they do not advertise runtime
-support. The server's pre-release compatibility waiver applies to that service,
-not the existing PhotoViewer user database.
+**C1.1 is implemented**: typed protocol DTOs, endpoint normalization, the
+`/readyz` + `/v1/capabilities` probe, capability/scope/origin validation, a
+pinned capability scope on the connection row, explicit zone mapping on the job,
+provider-kind dispatch in storage, and the native receive/dirty/publication
+schema (schema 9). The WebDAV engine that previously shared this module has been
+removed outright.
+
+Not implemented yet: media synchronization of any kind — no receive cycle, no
+lease, no upload, no publication, and no settings surface. Native jobs exist as
+configuration but are not scheduled. The server's pre-release compatibility
+waiver applies to that service, not the PhotoViewer user database.
 
 | Read | Owns |
 |---|---|
@@ -26,11 +31,12 @@ Canonical server paths are `docs/design/v0.1-server.md`,
 and `docs/design/next-development-tasks.md` in its repository. When historical
 M2 text differs, use the pinned implementation and current capability bits.
 These are CloudKit-style subsets plus native extensions, not Apple login/private
-SDK compatibility. Existing [WebDAV behavior](sync.md) and
-[edit-first configuration](sync-configuration-ux.md) remain binding.
+SDK compatibility. The edit-first configuration contract will be restated
+against the C1.5 native settings surface; the durable-edit engine itself is
+described in [the module guide](sync.md).
 
-C1 starts with explicit Native Sync jobs, while current WebDAV Backup remains
-available; Native Backup/history browsing is a separate future contract.
+C1 starts with explicit Native Sync jobs; Native Backup/history browsing is a
+separate future contract.
 Native metadata mapping initially covers favorite, relative path and capture date;
 app-only album covers/order/editor history have no implied protocol. Supported
 image/video originals use one stable original+thumbnail combination and existing
@@ -177,9 +183,10 @@ complete resource transfer/publication → real UI/recovery → integration deli
 The detailed [wire contract](native-sync-protocol.md) and
 [storage transactions](native-sync-storage.md) are prerequisites for code.
 
-Current `SyncProvider` only models file operations. Add a typed Native gateway
-and provider-kind service dispatch; do not fake a zone feed through list_children,
-replace server leases with a local mutex, or use token string equality for currency.
+The file-operation provider trait is gone. The typed Native gateway in
+`sync/native/` is the only transport boundary; do not fake a zone feed through
+file operations, replace server leases with a local mutex, or use token string
+equality for currency.
 New original/thumbnail, scanner/cache and GTK acceptance must use real actor/
 network/file/input paths. Server synthetic receivers do not establish PhotoViewer
 acceptance. Each milestone distinguishes transport/metadata support from full

@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -88,36 +88,31 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
                 CASE WHEN json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.hdr') = 1 THEN 4 ELSE 0 END;"
         )?;
     }
+    if version > 0 && version < SCHEMA_VERSION {
+        // Schema 9 redesigned the synchronization layer around the native
+        // SyncServer client, and the WebDAV file-sync engine was removed
+        // outright. Its tables have no successor rows to carry forward —
+        // baselines, ETag contracts and DAV collections describe a transport
+        // this build no longer speaks — so they are dropped and recreated
+        // empty from schema.sql. Media, albums, favorites, edits and settings
+        // are untouched: only synchronization history is discarded.
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS sync_publications;
+             DROP TABLE IF EXISTS sync_native_resources;
+             DROP TABLE IF EXISTS sync_native_records;
+             DROP TABLE IF EXISTS sync_native_inbox;
+             DROP TABLE IF EXISTS sync_native_progress;
+             DROP TABLE IF EXISTS sync_conflicts;
+             DROP TABLE IF EXISTS sync_tasks;
+             DROP TABLE IF EXISTS sync_inventory;
+             DROP TABLE IF EXISTS sync_job_upload_albums;
+             DROP TABLE IF EXISTS sync_job_changes;
+             DROP TABLE IF EXISTS sync_entries;
+             DROP TABLE IF EXISTS sync_jobs;
+             DROP TABLE IF EXISTS sync_connections;",
+        )?;
+    }
     tx.execute_batch(SCHEMA_SQL)?;
-    if version < 4 {
-        let sync_job_columns = {
-            let mut stmt = tx.prepare("PRAGMA table_info(sync_jobs)")?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-            rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
-        };
-        if !sync_job_columns.contains("upload_scope") {
-            tx.execute_batch(
-                "ALTER TABLE sync_jobs ADD COLUMN upload_scope TEXT NOT NULL DEFAULT 'selected_albums';
-                 UPDATE sync_jobs SET upload_scope = 'all';",
-            )?;
-        }
-    }
-    if version < 6 {
-        let mut stmt = tx.prepare("PRAGMA table_info(sync_entries)")?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
-        drop(stmt);
-        if !columns.contains("suppressed_fingerprint") {
-            tx.execute_batch(
-                "ALTER TABLE sync_entries ADD COLUMN suppressed_fingerprint TEXT;
-                              ALTER TABLE sync_entries ADD COLUMN suppressed_size INTEGER;",
-            )?;
-        }
-        // Earlier upload-only jobs had no immutable history; the next backup
-        // establishes it even when the ordinary file baseline is current.
-        tx.execute("UPDATE sync_entries SET remote_fingerprint=NULL,remote_size=NULL WHERE job_id IN (SELECT id FROM sync_jobs WHERE direction='upload_only') AND local_fingerprint IS NOT NULL", [])?;
-    }
     if version < 2 {
         if version == 1 && !columns.contains("file_mtime_ns") {
             tx.execute_batch(
@@ -137,25 +132,6 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
                 "UPDATE media_items SET uri = ?1 WHERE id = ?2",
                 rusqlite::params![uri, id],
             )?;
-        }
-    }
-    if version < 7 {
-        // Preserve known totals on upgrade; the next complete scan replaces
-        // this partial inventory without changing existing proven baselines.
-        tx.execute_batch(
-            "INSERT OR IGNORE INTO sync_inventory(job_id, relative_path, config_generation)
-             SELECT e.job_id, e.relative_path, j.config_generation
-             FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
-             WHERE e.baseline_fingerprint IS NOT NULL OR e.state <> 'synced';",
-        )?;
-    }
-    if version < 8 {
-        let has_hash_contract: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_jobs') WHERE name='etag_is_sha256')",
-            [], |row| row.get(0),
-        )?;
-        if !has_hash_contract {
-            tx.execute_batch("ALTER TABLE sync_jobs ADD COLUMN etag_is_sha256 INTEGER NOT NULL DEFAULT 0 CHECK (etag_is_sha256 IN (0, 1));")?;
         }
     }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;

@@ -30,9 +30,7 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
-use crate::core::sync::{
-    live_progress, SyncLivePhase, SyncLiveProgress, SyncOverview, SyncOverviewStatus, SyncStore,
-};
+use crate::core::sync::{SyncOverview, SyncOverviewStatus, SyncStore};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -58,16 +56,15 @@ struct PhotosOverviewSnapshot {
     /// from here instead (P2-5).
     live_total: u32,
     sync: SyncOverview,
-    sync_progress: Option<SyncLiveProgress>,
 }
 
-fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>) -> String {
+fn sync_overview_text(overview: SyncOverview) -> String {
     match overview.status {
         SyncOverviewStatus::Disabled => String::new(),
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
         SyncOverviewStatus::Applying => tr("photos.overview.sync.applying"),
-        SyncOverviewStatus::Running => sync_running_text(overview, progress),
+        SyncOverviewStatus::Running => sync_running_text(overview),
         SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
         SyncOverviewStatus::Completed if overview.conflict_images > 0 => trf(
@@ -91,21 +88,17 @@ fn sync_overview_text(overview: SyncOverview, progress: Option<SyncLiveProgress>
 /// The fraction combines historical proven baselines and all known sync paths.
 /// Live counters reset per run and must never supply either side of this ratio.
 ///
-/// With no known path there is no fraction to report: the run has started but
-/// has not yet proven any scope. Discovery has to finish before a denominator
+/// With no known path there is no fraction to report: the cycle has started but
+/// has not yet proven any scope. Bootstrap has to finish before a denominator
 /// exists, and on a large library that is minutes of listing — long enough that
 /// rendering `0/0` reads as a broken run rather than as one still preparing. Say
 /// what is actually happening instead.
-fn sync_running_text(overview: SyncOverview, progress: Option<SyncLiveProgress>) -> String {
+fn sync_running_text(overview: SyncOverview) -> String {
     if overview.total_items == 0 {
         return tr("photos.overview.sync.preparing");
     }
-    let key = match progress.map(|progress| progress.phase) {
-        Some(SyncLivePhase::Uploading) => "photos.overview.sync.running_upload",
-        _ => "photos.overview.sync.running",
-    };
     trf(
-        key,
+        "photos.overview.sync.running",
         &[
             ("done", &overview.synced_items.to_string()),
             ("total", &overview.total_items.to_string()),
@@ -242,8 +235,6 @@ mod imp {
         #[template_child]
         pub overview_sync_label: TemplateChild<gtk::Label>,
         #[template_child]
-        pub overview_sync_retry_btn: TemplateChild<gtk::Button>,
-        #[template_child]
         pub scroll_date_revealer: TemplateChild<gtk::Revealer>,
         #[template_child]
         pub scroll_date_label: TemplateChild<gtk::Label>,
@@ -334,7 +325,6 @@ mod imp {
                 overview_sync_icon: TemplateChild::default(),
                 overview_sync_spinner: TemplateChild::default(),
                 overview_sync_label: TemplateChild::default(),
-                overview_sync_retry_btn: TemplateChild::default(),
                 scroll_date_revealer: TemplateChild::default(),
                 scroll_date_label: TemplateChild::default(),
                 header_bar: TemplateChild::default(),
@@ -454,14 +444,10 @@ impl PhotosPage {
             .get()
             .set_tooltip_text(Some(&tr("photos.search.tooltip")));
         obj.imp()
-            .overview_sync_retry_btn
-            .get()
-            .set_label(&tr("common.retry"));
-        obj.imp()
             .overview_count_label
             .get()
             .set_label(&tr("photos.overview.loading"));
-        let sync_enabled = crate::core::prefs::webdav_sync_enabled();
+        let sync_enabled = crate::core::prefs::sync_enabled();
         obj.imp().overview_sync_row.get().set_visible(sync_enabled);
         if sync_enabled {
             obj.imp()
@@ -774,18 +760,6 @@ impl PhotosPage {
                 this.open_search_page();
             }
         });
-
-        let weak = obj.downgrade();
-        obj.imp()
-            .overview_sync_retry_btn
-            .get()
-            .connect_clicked(move |_| {
-                let Some(this) = weak.upgrade() else {
-                    return;
-                };
-                this.trigger_sync_from_home_pull();
-                this.apply_overview_retry_affordance(true);
-            });
 
         // Exit multi-select: clears selection across every grid and hides the
         // batch toolbar. Same effect as the right-click "Exit Multi-select".
@@ -1101,7 +1075,6 @@ impl PhotosPage {
                     videos: repository.count(MediaQuery::Videos)?,
                     live_total: repository.count(MediaQuery::LiveAll)?,
                     sync: SyncStore::new(pool).overview()?,
-                    sync_progress: live_progress(),
                 })
             })
             .await;
@@ -1129,7 +1102,6 @@ impl PhotosPage {
             videos,
             live_total,
             sync,
-            sync_progress,
         } = snapshot;
         // The select-all label asks "is everything reachable already selected?",
         // which needs this number; it arrives asynchronously now, so re-run the
@@ -1148,12 +1120,9 @@ impl PhotosPage {
         self.imp()
             .overview_sync_label
             .get()
-            .set_label(&sync_overview_text(sync, sync_progress));
+            .set_label(&sync_overview_text(sync));
         let sync_visible = sync.status != SyncOverviewStatus::Disabled;
         self.imp().overview_sync_row.get().set_visible(sync_visible);
-        self.apply_overview_retry_affordance(
-            sync_visible && sync.status == SyncOverviewStatus::Failed,
-        );
         if !sync_visible {
             self.set_overview_sync_running(false);
             return;
@@ -1292,15 +1261,6 @@ impl PhotosPage {
     }
 
     /// A failed sync is the one overview state with an action attached (P2-8);
-    /// every other state leaves the row as plain information. The pull is already
-    /// coalesced by `overview_sync_pull_in_flight`, and the button reports that
-    /// rather than swallowing a second click.
-    fn apply_overview_retry_affordance(&self, failed: bool) {
-        let in_flight = self.imp().overview_sync_pull_in_flight.get();
-        self.imp().overview_sync_retry_btn.set_visible(failed);
-        self.imp().overview_sync_retry_btn.set_sensitive(!in_flight);
-    }
-
     fn apply_overview_error(&self) {
         let unavailable = tr("photos.overview.unavailable");
         self.imp()
@@ -1316,9 +1276,6 @@ impl PhotosPage {
             .get()
             .set_icon_name(Some("dialog-warning-symbolic"));
         imp.overview_sync_icon.get().set_visible(true);
-        // The retry re-enters the same pull the header gesture uses, and that
-        // pull is a no-op while sync is off — so only offer it when it can act.
-        self.apply_overview_retry_affordance(crate::core::prefs::webdav_sync_enabled());
     }
 
     pub(crate) fn open_search_page(&self) {
@@ -1680,40 +1637,10 @@ impl PhotosPage {
                 .is_none_or(|last| now.duration_since(last) >= OVERVIEW_SYNC_PULL_COOLDOWN);
             if can_trigger {
                 self.imp().overview_sync_last_pull_at.set(Some(now));
-                self.trigger_sync_from_home_pull();
             }
         } else if delta_y > 0.0 {
             self.imp().overview_revealer.set_reveal_child(false);
         }
-    }
-
-    fn trigger_sync_from_home_pull(&self) {
-        if !crate::core::prefs::webdav_sync_enabled()
-            || self.imp().overview_sync_pull_in_flight.replace(true)
-        {
-            return;
-        }
-        let (Some(pool), Some(actor)) = (
-            self.imp().pool.borrow().clone(),
-            self.imp().db_actor.borrow().clone(),
-        ) else {
-            self.imp().overview_sync_pull_in_flight.set(false);
-            return;
-        };
-        let service = crate::core::sync::SyncService::with_actor(pool, actor);
-        let weak = self.downgrade();
-        let task = tokio::spawn(async move { service.trigger_saved_jobs_once().await });
-        glib::spawn_future_local(async move {
-            match task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => tracing::warn!("home pull synchronization failed: {error}"),
-                Err(error) => tracing::warn!("home pull synchronization task failed: {error}"),
-            }
-            if let Some(page) = weak.upgrade() {
-                page.imp().overview_sync_pull_in_flight.set(false);
-                page.refresh_overview_async();
-            }
-        });
     }
 
     fn hide_overview_after_leaving_top(&self) {

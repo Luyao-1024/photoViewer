@@ -1,19 +1,18 @@
 # Native SyncServer C1 Implementation And Acceptance Plan
 
-Status: design ready for implementation, 2026-10-14; no C1 runtime delivered.
-The server dependency is available at `Luyao-1024/syncserver@2d9f9a7`; waiting for
-M3/M4 is no longer a task. Follow [main contract](native-sync.md),
+Status: C1.1 delivered 2026-10-14 against `Luyao-1024/syncserver@2d9f9a7`.
+The WebDAV engine was removed outright rather than kept alongside; native is the
+only provider. Follow [main contract](native-sync.md),
 [wire mapping](native-sync-protocol.md), [storage/publication](native-sync-storage.md)
 and [testing rules](../testing.md).
 
 ## Scope Decisions
 
-C1 initially enables Native **Sync/Bidirectional**. WebDAV keeps its existing
-Backup/Sync modes, scope, deletion suppression, archives and status semantics.
-Native Backup is not exposed as supported until its immutable-history/catalog
-and restore behavior has a separate acceptance contract; server history retention
-alone is not a Backup client. An unsupported strategy/provider switch fails
-validation before stopping current work, following edit-first UX.
+C1 enables Native **Sync/Bidirectional** only. Native Backup is not exposed as
+supported until its immutable-history/catalog and restore behavior has a
+separate acceptance contract; server history retention alone is not a Backup
+client. An unsupported strategy fails validation before stopping current work,
+following edit-first UX.
 
 Synchronize complete original/thumbnail pairs and the supported favorite/path/
 capture-date fields. Preserve unknown server fields with patch updates. No
@@ -42,26 +41,25 @@ Keep one in-process service on the current Tokio runtime and the existing DbActo
 | `sync/native/receive.rs` | shared bootstrap, delta inbox, graph/conflict planning and applied readiness | pure planner concepts, actor transactions; no file publication mid-page |
 | `sync/native/upload.rs` | DB-derived tasks, stable original/thumbnail snapshots, resource sessions, atomic record requests and unknown outcomes | local snapshot machinery and existing issued-operation evidence |
 | `sync/native/publish.rs` | verified dual downloads, cache import, owned file intent/recovery and admission | local publication, scanner/watcher, ThumbnailLoader and existing media model |
-| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, migration, native dirty/version/baseline/progress commands | no second dirty queue, existing WebDAV values preserved |
+| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, schema 9, native dirty/version/baseline/progress commands | no second dirty queue, no WebDAV-era columns left behind |
 | `platform/credentials.rs` | distinct Bearer credential reference and lifecycle | current Secret Service boundary; never persist plaintext key |
 | Settings + event/UI adapters | create/probe native connection, configured zone, supported strategy/scope, localized errors and truthful status | accepted changes only; existing local grid/viewer and glass/i18n/accessibility rules |
 
-Current `SyncProvider` only exposes file list/stat/upload/delete and cannot
-represent shared snapshots, two-record mutations, delta pages or upload leases.
-Introduce a typed Native protocol boundary and provider-kind dispatch in
-SyncService. Do not pretend `list_children` is an incremental zone feed or
-implement false file capabilities to force Native through the WebDAV reconciler.
-Shared scheduling/progress/error helpers stay shared where their contracts fit.
+The former file-only `SyncProvider` trait was removed with the WebDAV engine.
+The native boundary is its own typed protocol (`sync/native/`): zone feeds,
+record mutations, delta pages and upload leases are methods with their own
+shapes, never squeezed through a file metaphor. `NativeProvider` deliberately
+implements no file operations.
 
 ## Stages And Exit Gates
 
 | Stage | Concrete patch scope | Required focused evidence | Exit condition |
 |---|---|---|---|
-| C1.1 Connection/transport | provider discriminator, native DTOs/probe/auth/limit handling, native job configuration, isolated schema additions | populated v8 migration preserves user/WebDAV state; real server health/capability/scope/auth/errors; invalid drafts have no side effects | native connection can be configured/probed; no claim of media sync yet |
+| C1.1 Connection/transport | provider discriminator, native DTOs/probe/auth/limit handling, native job configuration, schema 9 (WebDAV tables dropped and recreated, library preserved) | real server health/capability/scope/auth/errors (tests/native_sync_probe.rs against the actual binary); invalid drafts have no side effects; schema-8 upgrade keeps media/favorites/albums and discards sync history | native connection can be configured/probed; no claim of media sync yet |
 | C1.2 Durable receive | snapshot/type markers, ordered delta inbox/projection, typed remote graph, scope-aware obligations and progress | concurrent create/update/delete at fixed H; split atomic pairs, receiver rollback, restart mid-page, token expiry, other-zone head movement | metadata is durable; ingest can advance; applied remains blocked by unresolved work |
 | C1.3 Dirty/coordination/uplink | real local mutation hooks, category versions/events, server lease/heartbeat/gate/phases, issued-operation reconciliation and callbacks | two actual clients/DBs; one acquire; busy skip; held-lock catch-up; renewal/deadline; category edits racing callbacks; per-item errors | generic coordinator and metadata-only native mutation work; no fake asset publication |
 | C1.4 Complete media | stable source/thumbnail upload, trusted receipts, atomic photo pair, dual download/publication/cache/admission | original/thumbnail role mismatch; one-resource failure; late local edit; all publication fault windows; hash/ETag/Range; same-stat content change | new/updated media appears only when its complete validated pair is usable locally |
-| C1.5 Real UI/recovery | settings/scope/status/explicit native cloud-delete intent/local media events, read leases, startup ordering and complete protocol journeys | real input/middle painted frames; favorites/edit/trash/recreation; viewport navigation causes no image network; interrupted config/global Off | complete native user journey while WebDAV remains correct |
+| C1.5 Real UI/recovery | settings/scope/status/explicit native cloud-delete intent/local media events, read leases, startup ordering and complete protocol journeys | real input/middle painted frames; favorites/edit/trash/recreation; viewport navigation causes no image network; interrupted config/global Off | complete native user journey end to end |
 | C1.6 Integration delivery | final mixed-provider tests, maintainer docs, clean dev commit and push | exact full push gate and exact-SHA CI; real two-device HTTP/DB/file journeys | client acceptance recorded; production deployment is separate evidence |
 
 C1.3 validates metadata coordination with native records/fixtures. Resource-
@@ -75,7 +73,7 @@ storage work.
 
 | ID | Real behavior to prove |
 |---|---|
-| NC01 | fresh connection and v8 migration preserve existing media/favorites/albums/WebDAV configurations and baselines |
+| NC01 | schema-8 upgrade preserves existing media/favorites/albums while discarding the removed WebDAV sync state; a fresh schema-9 library is native-shaped end to end |
 | NC02 | different photo types share S/H; independent markers and delta catch-up do not omit/mix versions |
 | NC03 | inbox/work/ingest commit atomically; split-pair pages and a crash never produce visible half media |
 | NC04 | applied requires full projection + current configured-scope resource/conflict readiness; no token-only success |

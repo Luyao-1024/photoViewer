@@ -90,3 +90,65 @@ pub fn write_jpeg_with_exif(
     std::fs::write(&path, &out).unwrap();
     path
 }
+
+/// A capability scope shaped like a real M4 server's, for job fixtures.
+///
+/// Job creation validates the pinned document, so a fixture has to supply a
+/// complete one. Only the fields that validation reads are meaningful here.
+pub fn pinned_scope(base_url: &str, zones: &[&str]) -> photo_viewer::core::sync::NativePinnedScope {
+    use photo_viewer::core::sync::{
+        NativeCapabilityBits, NativeLimits, NativeNamespace, NativePinnedScope, NativeSyncLimits,
+    };
+    NativePinnedScope {
+        public_base_url: base_url.into(),
+        namespace: NativeNamespace {
+            tenant: "local".into(),
+            container: "com.apple.photos.cloud".into(),
+            environment: "production".into(),
+            database: "private".into(),
+        },
+        database_generation: "501855bb-18d3-4008-abc3-37e4948bf6f0".into(),
+        protocol_version: 1,
+        service_version: "0.1.0".into(),
+        stage: "M4".into(),
+        checksum_algorithm: "SHA256".into(),
+        zones: zones.iter().map(|zone| (*zone).to_string()).collect(),
+        capabilities: NativeCapabilityBits {
+            zone_listing: true,
+            record_crud: true,
+            snapshots: true,
+            incremental_changes: true,
+            upload_leases: true,
+            fencing: true,
+            token_current_gate: true,
+            upload_phases: true,
+            operation_status_read: true,
+            asset_upload: true,
+            asset_download: true,
+            photo_publication: true,
+            query_batch: false,
+            change_aliases: false,
+            apple_authentication: false,
+            sharing: false,
+            upload_resume: false,
+        },
+        limits: NativeLimits {
+            max_asset_bytes: 536_870_912,
+            thumbnail_max_bytes: 2_097_152,
+            upload_concurrency: 2,
+            download_concurrency: 8,
+            upload_idle_timeout_secs: 30,
+            upload_total_timeout_secs: 3600,
+            db_queue_capacity: 128,
+            json_body_limit: 1_048_576,
+            lease_ttl_secs: 90,
+            lease_heartbeat_secs: 30,
+            control_queue_capacity: 16,
+        },
+        sync_limits: NativeSyncLimits {
+            max_page: 200,
+            max_zones: 20,
+        },
+        record_limits: Default::default(),
+    }
+}

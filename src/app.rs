@@ -112,7 +112,6 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
                     // 排空 change_rx。Upserted/Removed → 同步到 media_list；
                     // TrashChanged → 刷新当前可见的回收站页面（文件管理器改了回收站
                     // 后无需切换页面即可看到）。
-                    let sync_changes = install_sync_scheduler(&window, pool.clone(), db_actor.clone());
                     let window_for_consumer = window.downgrade();
                     let album_refresh = crate::core::refresh::RefreshCoordinator::new(
                         db_actor.clone(),
@@ -136,9 +135,7 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
                             let media_list = media_list.clone();
                             let window_for_consumer = window_for_consumer.clone();
                             let album_refresh = album_refresh.clone();
-                            let sync_changes = sync_changes.clone();
                             move |event| {
-                                sync_changes(event);
                                 apply_domain_event_to_legacy_ui(
                                     event,
                                     &media_list,
@@ -178,85 +175,6 @@ pub fn build_app_with_startup_trace(startup_trace: OperationTrace) -> adw::Appli
     });
 
     app
-}
-
-/// Keep network work off GTK: local file events debounce for two seconds and
-/// remote changes are polled every thirty seconds while this window exists.
-fn install_sync_scheduler(
-    window: &MainWindow,
-    pool: DbPool,
-    actor: crate::core::db_actor::DbActorHandle,
-) -> Rc<dyn Fn(&DomainEvent)> {
-    let service = crate::core::sync::SyncService::with_actor(pool, actor);
-    let automatic = Rc::new({
-        let service = service.clone();
-        move || {
-            if let Err(error) = service.request_automatic_sync() {
-                tracing::warn!("cannot schedule automatic WebDAV synchronization: {error}");
-            }
-        }
-    });
-    let window_weak = window.downgrade();
-    let polling = automatic.clone();
-    gtk::glib::timeout_add_local(std::time::Duration::from_secs(30), move || {
-        if window_weak.upgrade().is_none() {
-            return gtk::glib::ControlFlow::Break;
-        }
-        polling();
-        gtk::glib::ControlFlow::Continue
-    });
-    let pending = Rc::new(std::cell::RefCell::new(None::<gtk::glib::SourceId>));
-    let window_weak = window.downgrade();
-    Rc::new(move |event| {
-        use crate::core::events::ChangeSource;
-        if !crate::core::prefs::webdav_sync_enabled()
-            || service.store().reset_pending().unwrap_or(true)
-        {
-            if let Some(source) = pending.borrow_mut().take() {
-                source.remove();
-            }
-            return;
-        }
-        let source = match event {
-            DomainEvent::MediaUpserted { source, .. }
-            | DomainEvent::MediaRemoved { source, .. }
-            | DomainEvent::MediaMovedToTrash { source, .. }
-            | DomainEvent::MediaRestored { source, .. } => Some(source),
-            DomainEvent::MediaUpdated { source, fields, .. }
-                if fields.location || fields.metadata || fields.attributes || fields.trash =>
-            {
-                Some(source)
-            }
-            _ => None,
-        };
-        if source.is_none_or(|source| {
-            matches!(
-                source,
-                ChangeSource::Synchronization
-                    | ChangeSource::StartupScan
-                    | ChangeSource::ThumbnailWorker
-            )
-        }) {
-            return;
-        }
-        if let Some(source) = pending.borrow_mut().take() {
-            source.remove();
-        }
-        let pending_for_timeout = pending.clone();
-        let epoch = service.scheduling_epoch();
-        let service = service.clone();
-        let window_weak = window_weak.clone();
-        let source =
-            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
-                pending_for_timeout.borrow_mut().take();
-                if window_weak.upgrade().is_some() && epoch == service.scheduling_epoch() {
-                    if let Err(error) = service.request_local_changes() {
-                        tracing::warn!("cannot schedule changed local WebDAV files: {error}");
-                    }
-                }
-            });
-        pending.replace(Some(source));
-    })
 }
 
 fn domain_event_label(event: &DomainEvent) -> String {
@@ -497,11 +415,11 @@ async fn initialize(
         let sync_actor = db_actor.clone();
         tokio::spawn(async move {
             let service = crate::core::sync::SyncService::with_actor(sync_pool, sync_actor);
-            if !crate::core::prefs::webdav_sync_enabled()
+            if !crate::core::prefs::sync_enabled()
                 || service.store().reset_pending().unwrap_or(true)
             {
                 if let Err(error) = service.sync_enabled_changed() {
-                    tracing::warn!("cannot resume WebDAV state cleanup at startup: {error}");
+                    tracing::warn!("cannot resume synchronization cleanup at startup: {error}");
                 }
                 return;
             }
@@ -515,9 +433,6 @@ async fn initialize(
                     "closed synchronization runs left open by a previous session"
                 ),
                 Err(error) => tracing::warn!("could not reconcile interrupted sync runs: {error}"),
-            }
-            if let Err(error) = service.trigger_saved_jobs_once().await {
-                tracing::warn!("startup synchronization failed: {error}");
             }
         });
     }

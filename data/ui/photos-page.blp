@@ -220,15 +220,6 @@ template $PhotosPage : Adw.NavigationPage {
             xalign: 0.5;
             wrap: true;
           }
-
-          // A failed sync used to be a sentence with no way out (P2-8). Rust
-          // shows this only for the failed states, and labels it from
-          // common.retry; it is a plain flat button so the row stays one line of
-          // information instead of a control bar.
-          Gtk.Button overview_sync_retry_btn {
-            visible: false;
-            css-classes: ["flat", "photos-overview-retry"];
-          }
         }
       }
     }

@@ -67,7 +67,11 @@ async fn blocking_sync_writes_reply_to_runtime_worker() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sync_state_writes_emit_refresh_events() {
-    use crate::core::sync::{Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope};
+    use crate::core::sync::native::protocol::NativePinnedScope;
+    use crate::core::sync::{
+        NativeCapabilityBits, NativeLimits, NativeNamespace, NativeZone, NewSyncJob, SyncDirection,
+        SyncStore, UploadScope,
+    };
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("photos");
@@ -78,44 +82,75 @@ async fn sync_state_writes_emit_refresh_events() {
     let store = SyncStore::with_actor(pool, actor);
 
     tokio::task::spawn_blocking(move || {
-        let job = store
+        store
             .create_job(&NewSyncJob {
-                endpoint: "https://dav.example.test/root/".into(),
-                username: "alice".into(),
+                provider_kind: crate::core::sync::ProviderKind::NativeSyncServer,
+                endpoint: "https://sync.example.test/".into(),
                 credential_ref: "sync-refresh-test".into(),
-                etag_is_sha256: false,
                 local_root: root,
-                remote_root: "PhotoViewer".into(),
                 direction: SyncDirection::Bidirectional,
                 upload_scope: UploadScope::All,
                 upload_albums: Vec::new(),
+                native_zone: Some(NativeZone::new("PrimarySync")),
+                native_pinned: Some(NativePinnedScope {
+                    public_base_url: "https://sync.example.test/".into(),
+                    namespace: NativeNamespace {
+                        tenant: "local".into(),
+                        container: "com.apple.photos.cloud".into(),
+                        environment: "production".into(),
+                        database: "private".into(),
+                    },
+                    database_generation: "501855bb-18d3-4008-abc3-37e4948bf6f0".into(),
+                    protocol_version: 1,
+                    service_version: "0.1.0".into(),
+                    stage: "M4".into(),
+                    checksum_algorithm: "SHA256".into(),
+                    zones: vec!["PrimarySync".into()],
+                    capabilities: NativeCapabilityBits {
+                        zone_listing: true,
+                        record_crud: true,
+                        snapshots: true,
+                        incremental_changes: true,
+                        upload_leases: true,
+                        fencing: true,
+                        token_current_gate: true,
+                        upload_phases: true,
+                        operation_status_read: true,
+                        asset_upload: true,
+                        asset_download: true,
+                        photo_publication: true,
+                        query_batch: false,
+                        change_aliases: false,
+                        apple_authentication: false,
+                        sharing: false,
+                        upload_resume: false,
+                    },
+                    limits: NativeLimits {
+                        max_asset_bytes: 536_870_912,
+                        thumbnail_max_bytes: 2_097_152,
+                        upload_concurrency: 2,
+                        download_concurrency: 8,
+                        upload_idle_timeout_secs: 30,
+                        upload_total_timeout_secs: 3600,
+                        db_queue_capacity: 128,
+                        json_body_limit: 1_048_576,
+                        lease_ttl_secs: 90,
+                        lease_heartbeat_secs: 30,
+                        control_queue_capacity: 16,
+                    },
+                    sync_limits: Default::default(),
+                    record_limits: Default::default(),
+                }),
             })
             .unwrap();
-        let fingerprint = Fingerprint {
-            size: 5,
-            blake3: "abc".into(),
-        };
-        let entry = store
-            .upsert_observation(
-                job.id,
-                "a.jpg",
-                Some(&fingerprint),
-                Some(123),
-                Some(&fingerprint),
-                Some("etag"),
-                false,
-                "pending",
-            )
-            .unwrap();
-        store
-            .commit_baseline(entry, &fingerprint, Some("etag"))
-            .unwrap();
-        store.set_upload_albums(job.id, &["Other".into()]).unwrap();
+        store.set_upload_albums(1, &["Other".into()]).unwrap();
     })
     .await
     .unwrap();
 
-    for _ in 0..4 {
+    // Creating a connection and applying an upload-scope change both move cloud
+    // state, so the grid and the overview have to be told to refresh.
+    for _ in 0..2 {
         assert!(matches!(rx.try_recv(), Ok(DomainEvent::SyncStateDirty)));
     }
     assert!(rx.try_recv().is_err());

@@ -7,9 +7,8 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 
-use super::model::{
-    Fingerprint, Revision, RevisionStrength, SyncDirection, SyncFailureReason, UploadScope,
-};
+use super::model::{ProviderKind, SyncDirection, UploadScope};
+use super::native::protocol::{NativePinnedScope, NativeZone};
 use super::remote_path::{has_empty_segment, has_navigation_segment};
 
 mod configuration;
@@ -18,32 +17,33 @@ pub use configuration::{JobEdit, PendingChange};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewSyncJob {
+    pub provider_kind: ProviderKind,
     pub endpoint: String,
-    pub username: String,
     pub credential_ref: String,
-    /// Explicitly trust the server contract that strong ETags are SHA-256 content digests.
-    pub etag_is_sha256: bool,
     pub local_root: PathBuf,
-    pub remote_root: String,
     pub direction: SyncDirection,
     pub upload_scope: UploadScope,
     pub upload_albums: Vec<String>,
+    /// The configured zone. Always present: a native job is meaningless
+    /// without naming the zone it maps its local root to.
+    pub native_zone: Option<NativeZone>,
+    /// The capability scope accepted by the last successful probe. Persisted
+    /// with the connection so later cycles compare against it instead of
+    /// trusting whatever the server announces at that moment.
+    pub native_pinned: Option<NativePinnedScope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncJob {
     pub id: i64,
     pub connection_id: i64,
+    pub provider_kind: ProviderKind,
     pub endpoint: String,
-    pub username: String,
     pub credential_ref: String,
-    /// Explicitly trust the server contract that strong ETags are SHA-256 content digests.
-    pub etag_is_sha256: bool,
     pub local_root: PathBuf,
-    pub remote_root: String,
     pub direction: SyncDirection,
     pub upload_scope: UploadScope,
-    pub propagate_deletes: bool,
+    pub native_zone: Option<NativeZone>,
     pub paused: bool,
     pub config_generation: i64,
     pub last_error: Option<String>,
@@ -77,63 +77,18 @@ pub enum CloudState {
     Off,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredEntry {
-    pub id: i64,
-    pub relative_path: String,
-    pub local: Option<Fingerprint>,
-    pub local_mtime_ns: Option<i64>,
-    pub remote: Option<Fingerprint>,
-    pub remote_revision: Option<String>,
-    pub remote_revision_weak: bool,
-    pub baseline: Option<Fingerprint>,
-    pub suppressed: Option<Fingerprint>,
-    pub baseline_remote_revision: Option<String>,
-    pub state: String,
-    pub generation: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SyncConflict {
-    pub id: i64,
-    pub job_id: i64,
-    pub entry_id: i64,
-    pub relative_path: String,
-    pub kind: String,
-    pub local_fingerprint: Option<String>,
-    pub remote_fingerprint: Option<String>,
-    pub remote_revision: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredTask {
-    pub operation_id: String,
-    pub job_id: i64,
-    pub entry_id: i64,
-    pub relative_path: String,
-    pub action: String,
-    pub state: String,
-    pub expected_revision: Option<String>,
-    pub expected_weak: bool,
-    pub artifact_path: PathBuf,
-    pub artifact_hash: String,
-    pub config_generation: i64,
-    pub entry_generation: i64,
-}
-
 #[derive(Clone)]
 pub struct SyncStore {
     pool: DbPool,
     actor: Option<DbActorHandle>,
 }
 
+/// Stored reason for a run a previous process left open. A stable key rather
+/// than a translated sentence, so a later locale change never rewrites history.
+const INTERRUPTED_RUN: &str = "sync.interrupted_run";
+
 #[derive(Debug)]
 pub enum SyncWrite {
-    FailScheduledRun {
-        id: i64,
-        generation: i64,
-        error: String,
-    },
     BeginReset {
         token: String,
     },
@@ -163,14 +118,10 @@ pub enum SyncWrite {
         id: i64,
         revision: i64,
     },
-    CreateJob(NewSyncJob),
+    CreateJob(Box<NewSyncJob>),
     SetJobPaused {
         id: i64,
         paused: bool,
-    },
-    SetRemoteRoot {
-        id: i64,
-        remote_root: String,
     },
     DeleteJob {
         id: i64,
@@ -189,71 +140,6 @@ pub enum SyncWrite {
         id: i64,
         error: String,
     },
-    ReplaceInventory {
-        job_id: i64,
-        generation: i64,
-        relative_paths: Vec<String>,
-    },
-    /// Add paths to the known scope without removing anything.
-    ///
-    /// Used to publish discovery progress while the walk is still running. An
-    /// obsolete worker cannot extend the inventory of a newer configuration.
-    ExtendInventory {
-        job_id: i64,
-        generation: i64,
-        relative_paths: Vec<String>,
-    },
-    UpsertObservation {
-        job_id: i64,
-        relative_path: String,
-        local: Option<Fingerprint>,
-        local_mtime_ns: Option<i64>,
-        remote: Option<Fingerprint>,
-        remote_revision: Option<String>,
-        remote_revision_weak: bool,
-        state: String,
-    },
-    SuppressLocalDeletion {
-        entry_id: i64,
-        fingerprint: Fingerprint,
-    },
-    CommitBaseline {
-        entry_id: i64,
-        fingerprint: Fingerprint,
-        remote_revision: Option<String>,
-    },
-    RecordConflict {
-        job_id: i64,
-        entry_id: i64,
-        kind: String,
-        local: Option<Fingerprint>,
-        remote: Option<Fingerprint>,
-        remote_revision: Option<String>,
-    },
-    PrepareTask {
-        operation_id: String,
-        job_id: i64,
-        entry_id: i64,
-        action: String,
-        expected_revision: Option<String>,
-        expected_weak: bool,
-        artifact_path: PathBuf,
-        artifact_hash: String,
-        config_generation: i64,
-        entry_generation: i64,
-    },
-    SetTaskState {
-        operation_id: String,
-        state: String,
-        error: Option<String>,
-    },
-    ResolveConflict {
-        conflict_id: i64,
-        entry_id: i64,
-        resolution: String,
-        fingerprint: Fingerprint,
-        remote_revision: Option<String>,
-    },
 }
 
 #[derive(Debug)]
@@ -269,10 +155,7 @@ pub enum SyncWriteResult {
 impl SyncStore {
     /// Cloud state for media in enabled jobs' selected physical albums.
     pub fn media_cloud_states(&self, media_ids: &[i64]) -> Result<HashMap<i64, CloudState>> {
-        self.media_cloud_states_with_sync_enabled(
-            media_ids,
-            crate::core::prefs::webdav_sync_enabled(),
-        )
+        self.media_cloud_states_with_sync_enabled(media_ids, crate::core::prefs::sync_enabled())
     }
 
     /// A global opt-out has no cloud relationship left to report. Connections
@@ -288,11 +171,8 @@ impl SyncStore {
         }
         let placeholders = vec!["?"; media_ids.len()].join(",");
         let sql = format!(
-            "SELECT m.id, MAX(CASE WHEN e.state = 'synced'
-                            AND e.local_fingerprint = e.baseline_fingerprint
-                            AND e.local_size = e.baseline_size
-                            AND e.baseline_size = m.file_size
-                            AND e.local_mtime_ns = m.file_mtime_ns
+            "SELECT m.id, MAX(CASE WHEN e.native_confirmed_generation IS NOT NULL
+                            AND e.native_dirty = 0
                        THEN 1 ELSE 0 END)
              FROM media_items m
              JOIN sync_jobs j ON substr(m.path, 1, length(rtrim(j.local_root, '/')) + 1)
@@ -329,6 +209,10 @@ impl SyncStore {
         Self { pool, actor: None }
     }
 
+    pub(crate) fn with_optional_actor(pool: DbPool, actor: Option<DbActorHandle>) -> Self {
+        Self { pool, actor }
+    }
+
     pub fn with_actor(pool: DbPool, actor: DbActorHandle) -> Self {
         Self {
             pool,
@@ -340,9 +224,8 @@ impl SyncStore {
         validate_new_job(job)?;
         let mut job = job.clone();
         job.local_root = std::fs::canonicalize(&job.local_root)?;
-        job.remote_root = job.remote_root.trim_matches('/').to_string();
         job.upload_albums = normalize_relative_albums(&job.upload_albums)?;
-        let job_id = match self.write(SyncWrite::CreateJob(job))? {
+        let job_id = match self.write(SyncWrite::CreateJob(Box::new(job)))? {
             SyncWriteResult::Id(id) => id,
             SyncWriteResult::None | SyncWriteResult::Changed(_) => {
                 return Err(AppError::Backend(
@@ -367,15 +250,12 @@ impl SyncStore {
 
     pub fn list_jobs(&self) -> Result<Vec<SyncJob>> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
-                    j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.upload_scope, j.last_error, j.etag_is_sha256
-             FROM sync_jobs j
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {JOB_COLUMNS} FROM sync_jobs j
              JOIN sync_connections c ON c.id = j.connection_id
              WHERE c.enabled = 1
-             ORDER BY j.id",
-        )?;
+             ORDER BY j.id"
+        ))?;
         let rows = stmt.query_map([], map_job)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(AppError::from)
@@ -384,11 +264,11 @@ impl SyncStore {
     pub fn get_job(&self, id: i64) -> Result<Option<SyncJob>> {
         let conn = self.pool.get()?;
         conn.query_row(
-            "SELECT j.id, j.connection_id, c.endpoint, c.username, c.credential_ref,
-                    j.local_root, j.remote_root, j.direction, j.propagate_deletes,
-                    j.paused, j.config_generation, j.upload_scope, j.last_error, j.etag_is_sha256
-             FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id
-             WHERE j.id = ?1",
+            &format!(
+                "SELECT {JOB_COLUMNS} FROM sync_jobs j
+                 JOIN sync_connections c ON c.id = j.connection_id
+                 WHERE j.id = ?1"
+            ),
             [id],
             map_job,
         )
@@ -396,27 +276,34 @@ impl SyncStore {
         .map_err(AppError::from)
     }
 
+    /// The capability scope this connection was accepted against. `None` for a
+    /// connection that never completed a probe — exactly the state in which a
+    /// native job must not run.
+    pub fn native_scope(&self, connection_id: i64) -> Result<Option<NativePinnedScope>> {
+        let conn = self.pool.get()?;
+        let pinned: Option<String> = conn
+            .query_row(
+                "SELECT native_pinned_scope FROM sync_connections
+                 WHERE id = ?1 AND provider_kind = 'native_syncserver'",
+                [connection_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        match pinned {
+            // A malformed pinned document is a corrupt connection, not an
+            // absent one: reporting it as absent would silently downgrade a
+            // native job to "never probed" instead of surfacing the problem.
+            Some(document) => serde_json::from_str(&document)
+                .map(Some)
+                .map_err(configuration::json_error),
+            None => Ok(None),
+        }
+    }
+
     pub fn set_job_paused(&self, id: i64, paused: bool) -> Result<()> {
         self.write(SyncWrite::SetJobPaused { id, paused })?;
         Ok(())
-    }
-
-    pub fn set_remote_root(&self, id: i64, remote_root: &str) -> Result<()> {
-        let remote_root = validate_remote_root(remote_root)?;
-        self.write(SyncWrite::SetRemoteRoot { id, remote_root })?;
-        Ok(())
-    }
-
-    pub fn artifact_paths(&self, job_id: i64) -> Result<Vec<PathBuf>> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT artifact_path FROM sync_tasks
-             WHERE job_id = ?1 AND artifact_path IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([job_id], |row| row.get::<_, String>(0))?;
-        rows.map(|path| path.map(PathBuf::from))
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(AppError::from)
     }
 
     pub fn delete_job(&self, id: i64) -> Result<Option<String>> {
@@ -442,7 +329,7 @@ impl SyncStore {
     /// Return the persisted, provider-neutral synchronization state used by
     /// compact status surfaces such as the Photos overview.
     pub fn overview(&self) -> Result<SyncOverview> {
-        self.overview_with_sync_enabled(crate::core::prefs::webdav_sync_enabled())
+        self.overview_with_sync_enabled(crate::core::prefs::sync_enabled())
     }
 
     fn overview_with_sync_enabled(&self, sync_enabled: bool) -> Result<SyncOverview> {
@@ -452,7 +339,7 @@ impl SyncStore {
                  SELECT j.local_root || '/' || e.relative_path, 1
                  FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
                  JOIN sync_connections c ON c.id = j.connection_id
-                 WHERE c.enabled = 1 AND e.baseline_fingerprint IS NOT NULL
+                 WHERE c.enabled = 1 AND e.native_confirmed_generation IS NOT NULL
                  UNION ALL
                  SELECT j.local_root || '/' || i.relative_path, 0
                  FROM sync_inventory i JOIN sync_jobs j ON j.id = i.job_id
@@ -570,24 +457,6 @@ impl SyncStore {
                 conflict_images,
             });
         }
-        let blocked_uploads: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sync_tasks t
-             JOIN sync_jobs j ON j.id = t.job_id
-             JOIN sync_connections c ON c.id = j.connection_id
-             WHERE c.enabled = 1 AND j.paused = 0 AND t.state = 'blocked'
-                   AND t.action LIKE 'upload_%'",
-            [],
-            |row| row.get(0),
-        )?;
-        if blocked_uploads > 0 {
-            return Ok(SyncOverview {
-                status: SyncOverviewStatus::Failed,
-                job_count,
-                synced_items,
-                total_items,
-                conflict_images,
-            });
-        }
         if active
             .clone()
             .any(|(_, _, completed, _)| completed.is_some())
@@ -623,7 +492,9 @@ impl SyncStore {
         Ok(())
     }
 
-    pub(crate) fn finish_run(&self, id: i64, generation: i64, error: Option<&str>) -> Result<()> {
+    /// Close a run's lifecycle. Only the run that captured this generation may
+    /// write, so a superseded worker cannot report the newer run's outcome.
+    pub fn finish_run(&self, id: i64, generation: i64, error: Option<&str>) -> Result<()> {
         self.write(SyncWrite::FinishRun {
             id,
             generation,
@@ -664,158 +535,8 @@ impl SyncStore {
         Ok(())
     }
 
-    pub fn entries(&self, job_id: i64) -> Result<Vec<StoredEntry>> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, relative_path, local_fingerprint, local_size, local_mtime_ns,
-                    remote_fingerprint, remote_size, remote_revision, remote_revision_weak,
-                    baseline_fingerprint, baseline_size, baseline_remote_revision,
-                    state, entry_generation, suppressed_fingerprint, suppressed_size
-             FROM sync_entries WHERE job_id = ?1 ORDER BY relative_path",
-        )?;
-        let rows = stmt.query_map([job_id], |row| {
-            Ok(StoredEntry {
-                id: row.get(0)?,
-                relative_path: row.get(1)?,
-                local: fingerprint(row.get(2)?, row.get(3)?),
-                local_mtime_ns: row.get(4)?,
-                remote: fingerprint(row.get(5)?, row.get(6)?),
-                remote_revision: row.get(7)?,
-                remote_revision_weak: row.get::<_, i64>(8)? != 0,
-                baseline: fingerprint(row.get(9)?, row.get(10)?),
-                baseline_remote_revision: row.get(11)?,
-                state: row.get(12)?,
-                generation: row.get(13)?,
-                suppressed: fingerprint(row.get(14)?, row.get(15)?),
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(AppError::from)
-    }
-
-    pub(crate) fn suppress_local_deletion(
-        &self,
-        entry_id: i64,
-        fingerprint: &Fingerprint,
-    ) -> Result<()> {
-        self.write(SyncWrite::SuppressLocalDeletion {
-            entry_id,
-            fingerprint: fingerprint.clone(),
-        })?;
-        Ok(())
-    }
-
-    pub fn open_conflicts(&self, job_id: i64) -> Result<Vec<SyncConflict>> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT c.id, c.job_id, c.entry_id, e.relative_path, c.kind,
-                    c.local_fingerprint, c.remote_fingerprint, c.remote_revision
-             FROM sync_conflicts c
-             JOIN sync_entries e ON e.id = c.entry_id
-             WHERE c.job_id = ?1 AND c.state = 'open'
-             ORDER BY e.relative_path",
-        )?;
-        let rows = stmt.query_map([job_id], |row| {
-            Ok(SyncConflict {
-                id: row.get(0)?,
-                job_id: row.get(1)?,
-                entry_id: row.get(2)?,
-                relative_path: row.get(3)?,
-                kind: row.get(4)?,
-                local_fingerprint: row.get(5)?,
-                remote_fingerprint: row.get(6)?,
-                remote_revision: row.get(7)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(AppError::from)
-    }
-
-    pub fn get_open_conflict(&self, conflict_id: i64) -> Result<Option<SyncConflict>> {
-        let conn = self.pool.get()?;
-        conn.query_row(
-            "SELECT c.id, c.job_id, c.entry_id, e.relative_path, c.kind,
-                    c.local_fingerprint, c.remote_fingerprint, c.remote_revision
-             FROM sync_conflicts c
-             JOIN sync_entries e ON e.id = c.entry_id
-             WHERE c.id = ?1 AND c.state = 'open'",
-            [conflict_id],
-            |row| {
-                Ok(SyncConflict {
-                    id: row.get(0)?,
-                    job_id: row.get(1)?,
-                    entry_id: row.get(2)?,
-                    relative_path: row.get(3)?,
-                    kind: row.get(4)?,
-                    local_fingerprint: row.get(5)?,
-                    remote_fingerprint: row.get(6)?,
-                    remote_revision: row.get(7)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(AppError::from)
-    }
-
-    pub fn unfinished_tasks(&self, job_id: i64) -> Result<Vec<StoredTask>> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT t.operation_id, t.job_id, t.entry_id, e.relative_path,
-                    t.action, t.state, t.expected_revision, t.expected_weak,
-                    t.artifact_path, t.artifact_hash, t.config_generation,
-                    t.entry_generation
-             FROM sync_tasks t
-             JOIN sync_entries e ON e.id = t.entry_id
-             WHERE t.job_id = ?1 AND (t.state IN ('prepared', 'reconciling')
-                  OR (t.state = 'blocked' AND t.action LIKE 'upload_%'))
-             ORDER BY t.id",
-        )?;
-        let rows = stmt.query_map([job_id], |row| {
-            Ok(StoredTask {
-                operation_id: row.get(0)?,
-                job_id: row.get(1)?,
-                entry_id: row.get(2)?,
-                relative_path: row.get(3)?,
-                action: row.get(4)?,
-                state: row.get(5)?,
-                expected_revision: row.get(6)?,
-                expected_weak: row.get::<_, i64>(7)? != 0,
-                artifact_path: PathBuf::from(row.get::<_, String>(8)?),
-                artifact_hash: row.get(9)?,
-                config_generation: row.get(10)?,
-                entry_generation: row.get(11)?,
-            })
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(AppError::from)
-    }
-
     /// Persist a complete discovered scope before transferring any path.
     /// An obsolete worker cannot replace the inventory of a newer configuration.
-    pub(crate) fn replace_inventory(
-        &self,
-        job_id: i64,
-        generation: i64,
-        relative_paths: &[String],
-    ) -> Result<bool> {
-        let relative_paths = relative_paths
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        match self.write(SyncWrite::ReplaceInventory {
-            job_id,
-            generation,
-            relative_paths,
-        })? {
-            SyncWriteResult::Changed(changed) => Ok(changed),
-            _ => Err(AppError::Backend(
-                "sync inventory returned an unexpected result".into(),
-            )),
-        }
-    }
-
     /// Publish part of a discovered scope while discovery is still running.
     ///
     /// This only ever adds. The overview's denominator is the union of the
@@ -828,163 +549,8 @@ impl SyncStore {
     /// [`Self::replace_inventory`].
     ///
     /// Returns whether at least one new row was added.
-    pub(crate) fn extend_inventory(
-        &self,
-        job_id: i64,
-        generation: i64,
-        relative_paths: &[String],
-    ) -> Result<bool> {
-        if relative_paths.is_empty() {
-            return Ok(false);
-        }
-        let relative_paths = relative_paths
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        match self.write(SyncWrite::ExtendInventory {
-            job_id,
-            generation,
-            relative_paths,
-        })? {
-            SyncWriteResult::Changed(changed) => Ok(changed),
-            _ => Err(AppError::Backend(
-                "sync inventory returned an unexpected result".into(),
-            )),
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn upsert_observation(
-        &self,
-        job_id: i64,
-        relative_path: &str,
-        local: Option<&Fingerprint>,
-        local_mtime_ns: Option<i64>,
-        remote: Option<&Fingerprint>,
-        remote_revision: Option<&str>,
-        remote_revision_weak: bool,
-        state: &str,
-    ) -> Result<i64> {
-        match self.write(SyncWrite::UpsertObservation {
-            job_id,
-            relative_path: relative_path.into(),
-            local: local.cloned(),
-            local_mtime_ns,
-            remote: remote.cloned(),
-            remote_revision: remote_revision.map(str::to_string),
-            remote_revision_weak,
-            state: state.into(),
-        })? {
-            SyncWriteResult::Id(id) => Ok(id),
-            SyncWriteResult::None | SyncWriteResult::Changed(_) => Err(AppError::Backend(
-                "upsert synchronization observation returned no identity".into(),
-            )),
-            SyncWriteResult::DeletedJob(_) => Err(AppError::Backend(
-                "upsert synchronization observation returned a delete result".into(),
-            )),
-            SyncWriteResult::ReconciledRuns(_) => Err(AppError::Backend(
-                "upsert synchronization observation returned a reconciliation result".into(),
-            )),
-        }
-    }
-
-    pub fn commit_baseline(
-        &self,
-        entry_id: i64,
-        fingerprint: &Fingerprint,
-        remote_revision: Option<&str>,
-    ) -> Result<()> {
-        self.write(SyncWrite::CommitBaseline {
-            entry_id,
-            fingerprint: fingerprint.clone(),
-            remote_revision: remote_revision.map(str::to_string),
-        })?;
-        Ok(())
-    }
-
-    pub fn record_conflict(
-        &self,
-        job_id: i64,
-        entry_id: i64,
-        kind: &str,
-        local: Option<&Fingerprint>,
-        remote: Option<&Fingerprint>,
-        remote_revision: Option<&str>,
-    ) -> Result<()> {
-        self.write(SyncWrite::RecordConflict {
-            job_id,
-            entry_id,
-            kind: kind.into(),
-            local: local.cloned(),
-            remote: remote.cloned(),
-            remote_revision: remote_revision.map(str::to_string),
-        })?;
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare_task(
-        &self,
-        operation_id: &str,
-        job_id: i64,
-        entry_id: i64,
-        action: &str,
-        expected_revision: Option<&Revision>,
-        artifact_path: &std::path::Path,
-        artifact_hash: &str,
-        config_generation: i64,
-        entry_generation: i64,
-    ) -> Result<()> {
-        self.write(SyncWrite::PrepareTask {
-            operation_id: operation_id.into(),
-            job_id,
-            entry_id,
-            action: action.into(),
-            expected_revision: expected_revision.map(|revision| revision.value.clone()),
-            expected_weak: expected_revision
-                .is_some_and(|revision| revision.strength == RevisionStrength::Weak),
-            artifact_path: artifact_path.to_path_buf(),
-            artifact_hash: artifact_hash.into(),
-            config_generation,
-            entry_generation,
-        })?;
-        Ok(())
-    }
-
-    pub fn set_task_state(
-        &self,
-        operation_id: &str,
-        state: &str,
-        error: Option<&str>,
-    ) -> Result<()> {
-        self.write(SyncWrite::SetTaskState {
-            operation_id: operation_id.into(),
-            state: state.into(),
-            error: error.map(str::to_string),
-        })?;
-        Ok(())
-    }
-
-    pub fn resolve_conflict(
-        &self,
-        conflict_id: i64,
-        entry_id: i64,
-        resolution: &str,
-        fingerprint: &Fingerprint,
-        remote_revision: Option<&str>,
-    ) -> Result<()> {
-        self.write(SyncWrite::ResolveConflict {
-            conflict_id,
-            entry_id,
-            resolution: resolution.into(),
-            fingerprint: fingerprint.clone(),
-            remote_revision: remote_revision.map(str::to_string),
-        })?;
-        Ok(())
-    }
-
     fn write(&self, command: SyncWrite) -> Result<SyncWriteResult> {
         if let Some(actor) = &self.actor {
             return match actor.execute_blocking(DbCommand::Sync(command))? {
@@ -1000,11 +566,6 @@ impl SyncStore {
 
 pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWriteResult> {
     match command {
-        SyncWrite::FailScheduledRun {
-            id,
-            generation,
-            error,
-        } => reset::fail_scheduled_run(pool, id, generation, error),
         SyncWrite::BeginReset { token } => reset::begin(pool, token),
         SyncWrite::FinishReset { token } => reset::finish(pool, token),
         SyncWrite::FailReset { token, error } => reset::fail(pool, token, error),
@@ -1067,7 +628,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         last_error=?1 \
                   WHERE last_started_at IS NOT NULL \
                     AND (last_completed_at IS NULL OR last_started_at > last_completed_at)",
-                [SyncFailureReason::InterruptedRun.as_str()],
+                [INTERRUPTED_RUN],
             )?;
             Ok(SyncWriteResult::ReconciledRuns(updated))
         }
@@ -1084,69 +645,55 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
         SyncWrite::CreateJob(job) => {
             let mut conn = pool.get()?;
             let tx = conn.transaction()?;
-            let connection_id = match tx
-                .query_row(
-                    "SELECT id FROM sync_connections WHERE credential_ref = ?1",
-                    [&job.credential_ref],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-            {
-                Some(id) => id,
-                None => {
-                    tx.execute(
-                        "INSERT INTO sync_connections
-                         (provider_kind, endpoint, username, credential_ref)
-                         VALUES ('webdav', ?1, ?2, ?3)",
-                        params![job.endpoint, job.username, job.credential_ref],
-                    )?;
-                    tx.last_insert_rowid()
-                }
-            };
-            tx.execute(
-                "UPDATE sync_connections SET endpoint = ?1, username = ?2,
-                        updated_at = unixepoch() WHERE id = ?3",
-                params![job.endpoint, job.username, connection_id],
-            )?;
+            let connection_id = create_connection(&tx, &job)?;
+            let zone = job.native_zone.as_ref().ok_or_else(|| {
+                AppError::Backend("a native synchronization job must name its zone".into())
+            })?;
             let existing = {
-                let mut stmt =
-                    tx.prepare("SELECT connection_id, local_root, remote_root FROM sync_jobs")?;
+                let mut stmt = tx.prepare(
+                    "SELECT j.local_root, c.endpoint, j.native_zone_name
+                     FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id",
+                )?;
                 let rows = stmt.query_map([], |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,
-                        PathBuf::from(row.get::<_, String>(1)?),
+                        PathBuf::from(row.get::<_, String>(0)?),
+                        row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                     ))
                 })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
-            for (existing_connection, existing_local, existing_remote) in existing {
+            for (existing_local, existing_endpoint, existing_zone) in existing {
                 if paths_overlap(&existing_local, &job.local_root) {
                     return Err(AppError::Backend(format!(
                         "synchronization local root overlaps an existing job: {}",
                         existing_local.display()
                     )));
                 }
-                if existing_connection == connection_id
-                    && remote_paths_overlap(&existing_remote, &job.remote_root)
-                {
+                // A zone has one effective uplink device per *server*, not per
+                // connection row: two credential references to the same
+                // endpoint are still one namespace, so mapping the same
+                // endpoint+zone into two local roots must be refused however
+                // the connections were created.
+                if existing_endpoint == job.endpoint && existing_zone == zone.zone_name {
                     return Err(AppError::Backend(format!(
-                        "synchronization remote root overlaps an existing job: {existing_remote}"
+                        "zone {} on {} is already mapped by another task",
+                        zone.zone_name, existing_endpoint
                     )));
                 }
             }
-            configuration::validate_other_roots(&tx, connection_id, 0, &job.remote_root)?;
             tx.execute(
                 "INSERT INTO sync_jobs
-                 (connection_id, local_root, remote_root, direction, upload_scope, etag_is_sha256)
+                 (connection_id, local_root, direction, upload_scope,
+                  native_zone_name, native_owner)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     connection_id,
                     job.local_root.to_string_lossy(),
-                    job.remote_root,
                     job.direction.as_str(),
                     job.upload_scope.as_str(),
-                    job.etag_is_sha256,
+                    zone.zone_name,
+                    zone.owner,
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -1166,63 +713,6 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                 "UPDATE sync_jobs SET paused = ?1 WHERE id = ?2",
                 params![paused, id],
             )?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::SetRemoteRoot { id, remote_root } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            let job = tx
-                .query_row(
-                    "SELECT connection_id, remote_root, paused
-                     FROM sync_jobs WHERE id = ?1",
-                    [id],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)? != 0,
-                        ))
-                    },
-                )
-                .optional()?
-                .ok_or_else(|| AppError::Backend(format!("sync job {id} does not exist")))?;
-            if !job.2 {
-                return Err(AppError::Backend(
-                    "pause this synchronization task before changing its cloud folder".into(),
-                ));
-            }
-            if job.1 == remote_root {
-                return Ok(SyncWriteResult::None);
-            }
-
-            let mut stmt = tx.prepare(
-                "SELECT remote_root FROM sync_jobs
-                 WHERE connection_id = ?1 AND id != ?2",
-            )?;
-            let other_roots = stmt
-                .query_map(params![job.0, id], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(stmt);
-            if other_roots
-                .iter()
-                .any(|other| remote_paths_overlap(other, &remote_root))
-            {
-                return Err(AppError::Backend(
-                    "the selected cloud folder overlaps another task on this connection".into(),
-                ));
-            }
-
-            tx.execute("DELETE FROM sync_tasks WHERE job_id = ?1", [id])?;
-            tx.execute("DELETE FROM sync_entries WHERE job_id = ?1", [id])?;
-            tx.execute(
-                "UPDATE sync_jobs SET remote_root = ?1,
-                        config_generation = config_generation + 1,
-                        last_started_at = NULL, last_completed_at = NULL,
-                        last_error = NULL
-                 WHERE id = ?2",
-                params![remote_root, id],
-            )?;
-            tx.commit()?;
             Ok(SyncWriteResult::None)
         }
         SyncWrite::DeleteJob { id } => {
@@ -1320,296 +810,97 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             )?;
             Ok(SyncWriteResult::None)
         }
-        SyncWrite::ReplaceInventory {
-            job_id,
-            generation,
-            relative_paths,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            let current: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_jobs j
-                 JOIN sync_connections c ON c.id = j.connection_id
-                 WHERE j.id = ?1 AND j.config_generation = ?2 AND c.enabled = 1)",
-                params![job_id, generation],
-                |row| row.get(0),
-            )?;
-            if !current {
-                return Ok(SyncWriteResult::Changed(false));
-            }
-            let existing = {
-                let mut statement = tx.prepare(
-                    "SELECT relative_path FROM sync_inventory
-                     WHERE job_id = ?1 AND config_generation = ?2 ORDER BY relative_path",
-                )?;
-                let rows = statement
-                    .query_map(params![job_id, generation], |row| row.get::<_, String>(0))?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()?
-            };
-            if existing == relative_paths {
-                return Ok(SyncWriteResult::Changed(false));
-            }
-            tx.execute("DELETE FROM sync_inventory WHERE job_id = ?1", [job_id])?;
-            {
-                let mut statement = tx.prepare(
-                    "INSERT INTO sync_inventory(job_id, relative_path, config_generation)
-                     VALUES (?1, ?2, ?3)",
-                )?;
-                for path in relative_paths {
-                    statement.execute(params![job_id, path, generation])?;
-                }
-            }
-            tx.commit()?;
-            Ok(SyncWriteResult::Changed(true))
-        }
-        SyncWrite::ExtendInventory {
-            job_id,
-            generation,
-            relative_paths,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            // Same guard as `ReplaceInventory`: an obsolete worker must not add
-            // to the scope a newer configuration is about to define.
-            let current: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_jobs j
-                 JOIN sync_connections c ON c.id = j.connection_id
-                 WHERE j.id = ?1 AND j.config_generation = ?2 AND c.enabled = 1)",
-                params![job_id, generation],
-                |row| row.get(0),
-            )?;
-            if !current {
-                return Ok(SyncWriteResult::Changed(false));
-            }
-            // `INSERT OR IGNORE` keeps this idempotent and, critically, additive:
-            // re-publishing a batch, or finishing after an aborted walk, must
-            // never shrink the known scope.
-            let mut added = 0usize;
-            {
-                let mut statement = tx.prepare(
-                    "INSERT OR IGNORE INTO sync_inventory(job_id, relative_path, config_generation)
-                     VALUES (?1, ?2, ?3)",
-                )?;
-                for path in relative_paths {
-                    added += statement.execute(params![job_id, path, generation])?;
-                }
-            }
-            tx.commit()?;
-            Ok(SyncWriteResult::Changed(added > 0))
-        }
-        SyncWrite::UpsertObservation {
-            job_id,
-            relative_path,
-            local,
-            local_mtime_ns,
-            remote,
-            remote_revision,
-            remote_revision_weak,
-            state,
-        } => {
-            let conn = pool.get()?;
-            conn.execute(
-                "INSERT INTO sync_entries
-                 (job_id, relative_path, local_fingerprint, local_size, local_mtime_ns,
-                  remote_fingerprint, remote_size, remote_revision, remote_revision_weak, state)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                 ON CONFLICT(job_id, relative_path) DO UPDATE SET
-                   local_fingerprint = excluded.local_fingerprint,
-                   local_size = excluded.local_size,
-                   local_mtime_ns = excluded.local_mtime_ns,
-                   remote_fingerprint = excluded.remote_fingerprint,
-                   remote_size = excluded.remote_size,
-                   remote_revision = excluded.remote_revision,
-                   remote_revision_weak = excluded.remote_revision_weak,
-                   state = excluded.state,
-                   entry_generation = sync_entries.entry_generation + 1,
-                   updated_at = unixepoch()",
-                params![
-                    job_id,
-                    relative_path,
-                    local.as_ref().map(|f| f.blake3.as_str()),
-                    local.as_ref().map(|f| f.size as i64),
-                    local_mtime_ns,
-                    remote.as_ref().map(|f| f.blake3.as_str()),
-                    remote.as_ref().map(|f| f.size as i64),
-                    remote_revision,
-                    remote_revision_weak,
-                    state,
-                ],
-            )?;
-            let id = conn.query_row(
-                "SELECT id FROM sync_entries WHERE job_id = ?1 AND relative_path = ?2",
-                params![job_id, relative_path],
-                |row| row.get(0),
-            )?;
-            Ok(SyncWriteResult::Id(id))
-        }
-        SyncWrite::SuppressLocalDeletion {
-            entry_id,
-            fingerprint,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            tx.execute("UPDATE sync_entries SET suppressed_fingerprint=?1,suppressed_size=?2,state='local_deleted',updated_at=unixepoch() WHERE id=?3", params![fingerprint.blake3, fingerprint.size as i64, entry_id])?;
-            tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='retain_remote',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='MissingWithDeletesDisabled'", [entry_id])?;
-            tx.commit()?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::CommitBaseline {
-            entry_id,
-            fingerprint,
-            remote_revision,
-        } => {
-            let conn = pool.get()?;
-            conn.execute(
-                "UPDATE sync_entries SET
-                        local_fingerprint = ?1, local_size = ?2,
-                        remote_fingerprint = ?1, remote_size = ?2,
-                        remote_revision = ?3,
-                        baseline_fingerprint = ?1, baseline_size = ?2,
-                        baseline_remote_revision = ?3, state = 'synced',
-                        suppressed_fingerprint = NULL, suppressed_size = NULL,
-                        updated_at = unixepoch() WHERE id = ?4",
-                params![
-                    fingerprint.blake3,
-                    fingerprint.size as i64,
-                    remote_revision,
-                    entry_id
-                ],
-            )?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::RecordConflict {
-            job_id,
-            entry_id,
-            kind,
-            local,
-            remote,
-            remote_revision,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            tx.execute(
-                "UPDATE sync_entries SET state = 'conflict', updated_at = unixepoch() WHERE id = ?1",
-                [entry_id],
-            )?;
-            let updated = tx.execute(
-                "UPDATE sync_conflicts SET kind = ?3, local_fingerprint = ?4,
-                        remote_fingerprint = ?5, remote_revision = ?6
-                 WHERE job_id = ?1 AND entry_id = ?2 AND state = 'open'",
-                params![
-                    job_id,
-                    entry_id,
-                    kind,
-                    local.as_ref().map(|f| f.blake3.as_str()),
-                    remote.as_ref().map(|f| f.blake3.as_str()),
-                    remote_revision
-                ],
-            )?;
-            if updated == 0 {
-                tx.execute(
-                    "INSERT INTO sync_conflicts
-                     (job_id, entry_id, kind, local_fingerprint, remote_fingerprint, remote_revision)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![
-                        job_id,
-                        entry_id,
-                        kind,
-                        local.as_ref().map(|f| f.blake3.as_str()),
-                        remote.as_ref().map(|f| f.blake3.as_str()),
-                        remote_revision
-                    ],
-                )?;
-            }
-            tx.commit()?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::PrepareTask {
-            operation_id,
-            job_id,
-            entry_id,
-            action,
-            expected_revision,
-            expected_weak,
-            artifact_path,
-            artifact_hash,
-            config_generation,
-            entry_generation,
-        } => {
-            let conn = pool.get()?;
-            conn.execute(
-                "INSERT INTO sync_tasks
-                 (operation_id, job_id, entry_id, action, state, expected_revision,
-                  expected_weak, artifact_path, artifact_hash, config_generation,
-                  entry_generation)
-                 VALUES (?1, ?2, ?3, ?4, 'prepared', ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    operation_id,
-                    job_id,
-                    entry_id,
-                    action,
-                    expected_revision,
-                    expected_weak,
-                    artifact_path.to_string_lossy(),
-                    artifact_hash,
-                    config_generation,
-                    entry_generation,
-                ],
-            )?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::SetTaskState {
-            operation_id,
-            state,
-            error,
-        } => {
-            let conn = pool.get()?;
-            conn.execute(
-                "UPDATE sync_tasks SET state = ?1, last_error = ?2,
-                        updated_at = unixepoch() WHERE operation_id = ?3",
-                params![state, error, operation_id],
-            )?;
-            Ok(SyncWriteResult::None)
-        }
-        SyncWrite::ResolveConflict {
-            conflict_id,
-            entry_id,
-            resolution,
-            fingerprint,
-            remote_revision,
-        } => {
-            let mut conn = pool.get()?;
-            let tx = conn.transaction()?;
-            let updated = tx.execute(
-                "UPDATE sync_conflicts SET state = 'resolved', resolution = ?1,
-                        resolved_at = unixepoch()
-                 WHERE id = ?2 AND entry_id = ?3 AND state = 'open'",
-                params![resolution, conflict_id, entry_id],
-            )?;
-            if updated != 1 {
-                return Err(AppError::Backend(
-                    "synchronization conflict is no longer open".into(),
-                ));
-            }
-            tx.execute(
-                "UPDATE sync_entries SET
-                        local_fingerprint = ?1, local_size = ?2,
-                        remote_fingerprint = ?1, remote_size = ?2,
-                        remote_revision = ?3,
-                        baseline_fingerprint = ?1, baseline_size = ?2,
-                        baseline_remote_revision = ?3, state = 'synced',
-                        updated_at = unixepoch() WHERE id = ?4",
-                params![
-                    fingerprint.blake3,
-                    fingerprint.size as i64,
-                    remote_revision,
-                    entry_id
-                ],
-            )?;
-            tx.commit()?;
-            Ok(SyncWriteResult::None)
-        }
     }
+}
+
+/// Insert or refresh the connection a job belongs to.
+///
+/// The `credential_ref` is the identity a connection is reused by. The stored
+/// provider kind must agree with the request — there is only one kind today,
+/// but the check keeps a future second provider from silently adopting another
+/// provider's credential reference and pinned scope.
+fn create_connection(tx: &rusqlite::Transaction<'_>, job: &NewSyncJob) -> Result<i64> {
+    let existing: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, provider_kind FROM sync_connections WHERE credential_ref = ?1",
+            [&job.credential_ref],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((connection_id, stored_kind)) = existing else {
+        let pinned = job.native_pinned.as_ref();
+        tx.execute(
+            "INSERT INTO sync_connections
+             (provider_kind, endpoint, credential_ref,
+              native_public_base_url, native_protocol_version, native_service_version,
+              native_stage, native_checksum_algorithm, native_tenant, native_container,
+              native_environment, native_database, native_database_generation, native_zones,
+              native_pinned_scope, native_probed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     CASE WHEN ?16 IS NULL THEN NULL ELSE unixepoch() END)",
+            params![
+                job.provider_kind.as_str(),
+                job.endpoint,
+                job.credential_ref,
+                pinned.map(|p| p.public_base_url.clone()),
+                pinned.map(|p| p.protocol_version),
+                pinned.map(|p| p.service_version.clone()),
+                pinned.map(|p| p.stage.clone()),
+                pinned.map(|p| p.checksum_algorithm.clone()),
+                pinned.map(|p| p.namespace.tenant.clone()),
+                pinned.map(|p| p.namespace.container.clone()),
+                pinned.map(|p| p.namespace.environment.clone()),
+                pinned.map(|p| p.namespace.database.clone()),
+                pinned.map(|p| p.database_generation.clone()),
+                pinned.and_then(|p| serde_json::to_string(&p.zones).ok()),
+                pinned.and_then(|p| serde_json::to_string(p).ok()),
+                pinned.map(|p| p.public_base_url.clone()),
+            ],
+        )?;
+        return Ok(tx.last_insert_rowid());
+    };
+
+    if stored_kind != job.provider_kind.as_str() {
+        return Err(AppError::Backend(format!(
+            "this credential reference already belongs to a {stored_kind} connection; \
+             native connections are created explicitly and are never converted"
+        )));
+    }
+    match &job.native_pinned {
+        Some(pinned) => tx.execute(
+            "UPDATE sync_connections SET endpoint = ?1,
+                    native_public_base_url = ?2, native_protocol_version = ?3,
+                    native_service_version = ?4, native_stage = ?5, native_checksum_algorithm = ?6,
+                    native_tenant = ?7, native_container = ?8, native_environment = ?9,
+                    native_database = ?10, native_database_generation = ?11, native_zones = ?12,
+                    native_pinned_scope = ?13, native_probed_at = unixepoch(),
+                    native_probe_error = NULL,
+                    updated_at = unixepoch()
+             WHERE id = ?14",
+            params![
+                job.endpoint,
+                pinned.public_base_url,
+                pinned.protocol_version,
+                pinned.service_version,
+                pinned.stage,
+                pinned.checksum_algorithm,
+                pinned.namespace.tenant,
+                pinned.namespace.container,
+                pinned.namespace.environment,
+                pinned.namespace.database,
+                pinned.database_generation,
+                serde_json::to_string(&pinned.zones).map_err(configuration::json_error)?,
+                serde_json::to_string(pinned).map_err(configuration::json_error)?,
+                connection_id,
+            ],
+        )?,
+        None => tx.execute(
+            "UPDATE sync_connections SET endpoint = ?1, updated_at = unixepoch()
+             WHERE id = ?2",
+            params![job.endpoint, connection_id],
+        )?,
+    };
+    Ok(connection_id)
 }
 
 fn validate_new_job(job: &NewSyncJob) -> Result<()> {
@@ -1618,33 +909,47 @@ fn validate_new_job(job: &NewSyncJob) -> Result<()> {
             "synchronization local root must be absolute".into(),
         ));
     }
-    validate_remote_root(&job.remote_root)?;
     if !job.local_root.is_dir() {
         return Err(AppError::Backend(
             "synchronization local root must be an existing directory".into(),
         ));
     }
     normalize_relative_albums(&job.upload_albums)?;
-    let endpoint = url::Url::parse(&job.endpoint)
-        .map_err(|error| AppError::Backend(format!("invalid WebDAV endpoint: {error}")))?;
-    if endpoint.scheme() != "https" && endpoint.host_str() != Some("localhost") {
-        return Err(AppError::Backend(
-            "WebDAV endpoint must use HTTPS (HTTP is allowed only for localhost tests)".into(),
-        ));
+    let endpoint = super::native::NativeEndpoint::parse(&job.endpoint)
+        .map_err(|error| AppError::Backend(error.to_string()))?;
+    // A native task is only meaningful against a scope a probe accepted.
+    let pinned = job.native_pinned.as_ref().ok_or_else(|| {
+        AppError::Backend("a native connection must be probed before a task can use it".into())
+    })?;
+    super::native::validate_zone(pinned, job.native_zone_name()?)
+        .map_err(|error| AppError::Backend(error.to_string()))?;
+    // A pinned document from another origin would send the Bearer key and the
+    // lease proof to a server the user never configured.
+    if let Ok(announced) = url::Url::parse(&pinned.public_base_url) {
+        let announced = (
+            announced.scheme().to_string(),
+            announced.host_str().unwrap_or_default().to_string(),
+            announced.port(),
+        );
+        if announced != endpoint.origin() {
+            return Err(AppError::Backend(format!(
+                "the probed scope belongs to {}, not to the configured endpoint",
+                pinned.public_base_url
+            )));
+        }
     }
     Ok(())
 }
 
-fn validate_remote_root(remote_root: &str) -> Result<String> {
-    let remote_root = remote_root.trim_matches('/');
-    if remote_root.is_empty()
-        || (has_empty_segment(remote_root) || has_navigation_segment(remote_root))
-    {
-        return Err(AppError::Backend(
-            "synchronization remote root is invalid".into(),
-        ));
+impl NewSyncJob {
+    fn native_zone_name(&self) -> Result<&str> {
+        self.native_zone
+            .as_ref()
+            .map(|zone| zone.zone_name.as_str())
+            .ok_or_else(|| {
+                AppError::Backend("a native synchronization task must name its zone".into())
+            })
     }
-    Ok(remote_root.into())
 }
 
 fn normalize_relative_albums(albums: &[String]) -> Result<Vec<String>> {
@@ -1665,57 +970,57 @@ fn paths_overlap(left: &std::path::Path, right: &std::path::Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
 
-fn remote_paths_overlap(left: &str, right: &str) -> bool {
-    let left = left.trim_matches('/');
-    let right = right.trim_matches('/');
-    left == right
-        || left
-            .strip_prefix(right)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-        || right
-            .strip_prefix(left)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-}
+/// Column order `map_job` decodes. Keep the two in step: the positional reader
+/// is deliberate so a job row costs one prepared statement per list call.
+const JOB_COLUMNS: &str = "j.id, j.connection_id, c.endpoint, c.credential_ref,
+                    j.local_root, j.direction,
+                    j.paused, j.config_generation, j.upload_scope, j.last_error,
+                    c.provider_kind, j.native_zone_name, j.native_owner";
 
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncJob> {
-    let direction: String = row.get(7)?;
+    let provider_kind: String = row.get(10)?;
+    let provider_kind = ProviderKind::parse(&provider_kind).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            10,
+            rusqlite::types::Type::Text,
+            format!("invalid sync provider kind: {provider_kind}").into(),
+        )
+    })?;
+    let direction: String = row.get(5)?;
     let direction = SyncDirection::parse(&direction).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
-            7,
+            5,
             rusqlite::types::Type::Text,
             format!("invalid sync direction: {direction}").into(),
         )
     })?;
-    let upload_scope: String = row.get(11)?;
+    let upload_scope: String = row.get(8)?;
     let upload_scope = UploadScope::parse(&upload_scope).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
-            11,
+            8,
             rusqlite::types::Type::Text,
             format!("invalid upload scope: {upload_scope}").into(),
         )
     })?;
+    // A job without a zone is meaningless, so this is an error rather than a
+    // default: silently synthesising a zone would point a task at a cloud
+    // location the user never chose.
+    let zone_name: Option<String> = row.get(11)?;
+    let owner: String = row.get(12)?;
+    let native_zone = zone_name.map(|zone_name| NativeZone { zone_name, owner });
     Ok(SyncJob {
         id: row.get(0)?,
         connection_id: row.get(1)?,
+        provider_kind,
         endpoint: row.get(2)?,
-        username: row.get(3)?,
-        credential_ref: row.get(4)?,
-        etag_is_sha256: row.get(13)?,
-        local_root: PathBuf::from(row.get::<_, String>(5)?),
-        remote_root: row.get(6)?,
+        credential_ref: row.get(3)?,
+        local_root: PathBuf::from(row.get::<_, String>(4)?),
         direction,
         upload_scope,
-        propagate_deletes: row.get::<_, i64>(8)? != 0,
-        paused: row.get::<_, i64>(9)? != 0,
-        config_generation: row.get(10)?,
-        last_error: row.get(12)?,
-    })
-}
-
-fn fingerprint(hash: Option<String>, size: Option<i64>) -> Option<Fingerprint> {
-    Some(Fingerprint {
-        blake3: hash?,
-        size: u64::try_from(size?).ok()?,
+        native_zone,
+        paused: row.get::<_, i64>(6)? != 0,
+        config_generation: row.get(7)?,
+        last_error: row.get(9)?,
     })
 }
 

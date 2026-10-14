@@ -146,7 +146,6 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::ApplyChange { .. },
             )
             | Self::Sync(crate::core::sync::store::SyncWrite::SetJobPaused { .. })
-            | Self::Sync(crate::core::sync::store::SyncWrite::SetRemoteRoot { .. })
             | Self::Sync(crate::core::sync::store::SyncWrite::DeleteJob { .. })
             | Self::Sync(crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }) => {
                 DbWritePriority::UserInteractive
@@ -157,22 +156,12 @@ impl DbCommand {
             // with no compiler error. Adding a `SyncWrite` variant now fails to compile
             // here, which is the point — classify it deliberately.
             Self::Sync(
-                crate::core::sync::store::SyncWrite::FailScheduledRun { .. }
-                | crate::core::sync::store::SyncWrite::FinishRun { .. }
+                crate::core::sync::store::SyncWrite::FinishRun { .. }
                 | crate::core::sync::store::SyncWrite::ReconcileInterruptedRuns
                 | crate::core::sync::store::SyncWrite::FailPendingEdit { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
-                | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
-                | crate::core::sync::store::SyncWrite::ReplaceInventory { .. }
-                | crate::core::sync::store::SyncWrite::ExtendInventory { .. }
-                | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
-                | crate::core::sync::store::SyncWrite::SuppressLocalDeletion { .. }
-                | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
-                | crate::core::sync::store::SyncWrite::RecordConflict { .. }
-                | crate::core::sync::store::SyncWrite::PrepareTask { .. }
-                | crate::core::sync::store::SyncWrite::SetTaskState { .. }
-                | crate::core::sync::store::SyncWrite::ResolveConflict { .. },
+                | crate::core::sync::store::SyncWrite::MarkJobFailed { .. },
             ) => DbWritePriority::StartupScan,
         }
     }
@@ -807,14 +796,8 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::FinishReset { .. }
                     | crate::core::sync::store::SyncWrite::FailReset { .. }
                     | crate::core::sync::store::SyncWrite::CreateJob(_)
-                    | crate::core::sync::store::SyncWrite::SetRemoteRoot { .. }
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
-                    | crate::core::sync::store::SyncWrite::UpsertObservation { .. }
-                    | crate::core::sync::store::SyncWrite::SuppressLocalDeletion { .. }
-                    | crate::core::sync::store::SyncWrite::CommitBaseline { .. }
-                    | crate::core::sync::store::SyncWrite::RecordConflict { .. }
-                    | crate::core::sync::store::SyncWrite::ResolveConflict { .. }
             );
             let result = crate::core::sync::store::execute_write(pool, command)?;
             if cloud_state_changed {

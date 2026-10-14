@@ -45,9 +45,7 @@ use photo_viewer::core::edit::Rotation;
 use photo_viewer::core::i18n::tr;
 use photo_viewer::core::identity::MediaId;
 use photo_viewer::core::media::MediaItem;
-use photo_viewer::core::sync::{
-    CloudState, Fingerprint, NewSyncJob, SyncDirection, SyncStore, UploadScope,
-};
+use photo_viewer::core::sync::{NewSyncJob, SyncDirection, SyncStore, UploadScope};
 use photo_viewer::ui::virtual_media_grid::VirtualMediaGrid;
 use photo_viewer::ui::{
     album_picker, AlbumDetailPage, ModeSelector, SearchPage, TrashPage, ViewerPage,
@@ -57,12 +55,16 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// Journeys
+// ---------------------------------------------------------------------------
+
 #[test]
 fn ux_full_shell_user_journeys_and_interaction_contracts() {
     // The sandbox goes in before `gtk::init()` because GLib reads `HOME` and the
     // XDG directories once per process, on the first call that needs them. A
     // journey must also not inherit whatever the developer happens to have set:
-    // `webdav_sync_enabled` gates the cloud badges, so a personal setting — or
+    // `sync_enabled` gates the cloud badges, so a personal setting — or
     // simply its `false` default — decides which marks a journey can see.
     let _sandbox = photo_viewer::testing::Sandbox::install();
     gtk::init().expect("GTK init failed");
@@ -106,99 +108,7 @@ fn ux_full_shell_user_journeys_and_interaction_contracts() {
     album_picker_clicks_album_row_and_copy_move();
     album_detail_context_menu_moves_to_album();
     synced_image_badge_survives_the_jump_from_day_grid_to_viewer();
-    cloud_badges_survive_leaving_and_returning_to_the_day_view();
 }
-
-/// A run that settles while the Day view is off screen still has to be visible
-/// when the user comes back to it: the grid drops those events, and a loaded
-/// range is not re-queried just because the user returned.
-fn cloud_badges_survive_leaving_and_returning_to_the_day_view() {
-    let shell = Shell::new();
-    let ui = &shell.ui;
-    let day_grid = shell.visible_photos_grid();
-    let target = &shell.items[0];
-    let tile = shell.tile_for(&day_grid, MediaId::from(target.id), "the newest photo");
-
-    let selector = shell
-        .photos
-        .imp()
-        .mode_selector
-        .get()
-        .clone()
-        .downcast::<ModeSelector>()
-        .expect("PhotosPage should contain a ModeSelector");
-    let year_label = find_label_containing(&selector, &tr("photo.mode.year"))
-        .unwrap_or_else(|| panic!("the capsule should show a year cell"));
-    ui.click(&year_label, &tr("photo.mode.year"));
-
-    // The run finishes while the Day view is inactive. Its writes land as plain
-    // store writes here, the way a run's do — no event has anywhere to go,
-    // because the page that would repaint is not the one on screen.
-    let store = SyncStore::new(shell.pool.clone());
-    let job = store
-        .create_job(&NewSyncJob {
-            endpoint: "https://dav.example.test/root/".into(),
-            username: "alice".into(),
-            credential_ref: "ux-settled-badge".into(),
-            etag_is_sha256: false,
-            local_root: target.folder_path.clone(),
-            remote_root: "PhotoViewer".into(),
-            direction: SyncDirection::Bidirectional,
-            upload_scope: UploadScope::All,
-            upload_albums: Vec::new(),
-        })
-        .unwrap();
-    let fingerprint = Fingerprint {
-        size: target.file_size,
-        blake3: "verified-settled-content".into(),
-    };
-    let conn = shell.pool.get().unwrap();
-    conn.execute(
-        "UPDATE media_items SET blake3_hash = '' WHERE id = ?1",
-        [target.id],
-    )
-    .unwrap();
-    let mtime_ns: i64 = conn
-        .query_row(
-            "SELECT file_mtime_ns FROM media_items WHERE id = ?1",
-            [target.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let entry = store
-        .upsert_observation(
-            job.id,
-            target.display_name(),
-            Some(&fingerprint),
-            Some(mtime_ns),
-            Some(&fingerprint),
-            Some("etag"),
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("etag"))
-        .unwrap();
-
-    let day_label = find_label_containing(&selector, &tr("photo.mode.day"))
-        .unwrap_or_else(|| panic!("the capsule should show a day cell"));
-    ui.click(&day_label, &tr("photo.mode.day"));
-
-    assert!(
-        ui.wait_until(Duration::from_secs(6), || {
-            tile.cloud_state() == Some(CloudState::Synced)
-        }),
-        "returning to Day should repaint the badge the finished run settled, \
-         not leave the tile on the state the run started from \
-         (got {:?}, want Synced)",
-        tile.cloud_state()
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Journeys
-// ---------------------------------------------------------------------------
 
 /// Open a photo whose bytes cannot be decoded, and prove the viewer's dead end
 /// is a real, reachable escape hatch rather than a blank stage.
@@ -2845,7 +2755,7 @@ fn synced_image_badge_survives_the_jump_from_day_grid_to_viewer() {
     // switch off there is no relationship to report and no badge to draw, which
     // is exactly what the grid shows — this journey is about the mark surviving
     // the jump, so it states the precondition rather than inheriting the default.
-    photo_viewer::core::prefs::set_webdav_sync_enabled(true)
+    photo_viewer::core::prefs::set_sync_enabled(true)
         .expect("the cloud badge journey needs synchronization enabled");
     let shell = Shell::new();
     let ui = &shell.ui;
@@ -2867,49 +2777,29 @@ fn synced_image_badge_survives_the_jump_from_day_grid_to_viewer() {
     let store = SyncStore::new(shell.pool.clone());
     let job = store
         .create_job(&NewSyncJob {
-            endpoint: "https://dav.example.test/root/".into(),
-            username: "alice".into(),
+            provider_kind: photo_viewer::core::sync::ProviderKind::NativeSyncServer,
+            endpoint: "https://sync.example.test/".into(),
             credential_ref: "ux-sync-badge".into(),
-            etag_is_sha256: false,
             local_root: synced.folder_path.clone(),
-            remote_root: "PhotoViewer".into(),
             direction: SyncDirection::Bidirectional,
             upload_scope: UploadScope::All,
             upload_albums: Vec::new(),
+            native_zone: Some(photo_viewer::core::sync::NativeZone::new("PrimarySync")),
+            native_pinned: Some(common::pinned_scope(
+                "https://sync.example.test/",
+                &["PrimarySync"],
+            )),
         })
         .unwrap();
-    let fingerprint = Fingerprint {
-        size: synced.file_size,
-        blake3: "verified-sync-content".into(),
-    };
+    // The badge claims a *confirmed* complete pair with nothing outstanding, so
+    // the fixture writes exactly that fact and nothing weaker.
     let conn = shell.pool.get().unwrap();
     conn.execute(
-        "UPDATE media_items SET blake3_hash = '' WHERE id = ?1",
-        [synced.id],
+        "INSERT INTO sync_entries(job_id,relative_path,native_confirmed_generation,native_dirty)
+         VALUES(?1,?2,'501855bb-18d3-4008-abc3-37e4948bf6f0',0)",
+        rusqlite::params![job.id, synced.display_name()],
     )
     .unwrap();
-    let mtime_ns: i64 = conn
-        .query_row(
-            "SELECT file_mtime_ns FROM media_items WHERE id = ?1",
-            [synced.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let entry = store
-        .upsert_observation(
-            job.id,
-            synced.display_name(),
-            Some(&fingerprint),
-            Some(mtime_ns),
-            Some(&fingerprint),
-            Some("etag"),
-            false,
-            "pending",
-        )
-        .unwrap();
-    store
-        .commit_baseline(entry, &fingerprint, Some("etag"))
-        .unwrap();
 
     grid.refresh_sync_badges();
     assert!(

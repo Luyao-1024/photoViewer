@@ -33,6 +33,11 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"sync_tasks".to_string()));
     assert!(tables.contains(&"sync_conflicts".to_string()));
     assert!(tables.contains(&"sync_job_changes".to_string()));
+    assert!(tables.contains(&"sync_native_progress".to_string()));
+    assert!(tables.contains(&"sync_native_inbox".to_string()));
+    assert!(tables.contains(&"sync_native_records".to_string()));
+    assert!(tables.contains(&"sync_native_resources".to_string()));
+    assert!(tables.contains(&"sync_publications".to_string()));
 }
 
 #[test]
@@ -335,7 +340,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
     assert_eq!(
         connection
             .query_row(
@@ -355,66 +360,6 @@ fn unversioned_library_migrates_without_losing_user_data() {
             )
             .unwrap(),
         "file:///library/a.gif"
-    );
-}
-
-#[test]
-fn version_three_sync_jobs_keep_full_upload_scope_during_migration() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("v3.db");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sync_connections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                provider_kind TEXT NOT NULL,
-                endpoint TEXT NOT NULL,
-                username TEXT NOT NULL,
-                credential_ref TEXT NOT NULL UNIQUE,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-             );
-             CREATE TABLE sync_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                connection_id INTEGER NOT NULL REFERENCES sync_connections(id) ON DELETE CASCADE,
-                local_root TEXT NOT NULL,
-                remote_root TEXT NOT NULL,
-                direction TEXT NOT NULL DEFAULT 'bidirectional',
-                propagate_deletes INTEGER NOT NULL DEFAULT 0,
-                paused INTEGER NOT NULL DEFAULT 0,
-                config_generation INTEGER NOT NULL DEFAULT 1,
-                last_started_at INTEGER,
-                last_completed_at INTEGER,
-                last_error TEXT,
-                UNIQUE(connection_id, local_root, remote_root)
-             );
-             INSERT INTO sync_connections
-                (provider_kind, endpoint, username, credential_ref)
-             VALUES ('webdav', 'https://dav.example.test', 'alice', 'legacy');
-             INSERT INTO sync_jobs
-                (connection_id, local_root, remote_root, direction)
-             VALUES (1, '/tmp/photos', 'Photos', 'bidirectional');
-             PRAGMA user_version = 3;",
-        )
-        .unwrap();
-    }
-
-    let pool = db::init_pool(&path).unwrap();
-    let conn = pool.get().unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT upload_scope FROM sync_jobs WHERE id = 1",
-            [],
-            |row| { row.get::<_, String>(0) }
-        )
-        .unwrap(),
-        "all"
-    );
-    assert_eq!(
-        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .unwrap(),
-        8
     );
 }
 
@@ -478,153 +423,234 @@ fn version_one_migration_normalizes_legacy_raw_file_uris() {
     );
 }
 
+/// The sync layer is native-only from schema 9: every WebDAV-era column is
+/// gone, and the native columns exist with neutral defaults so a fresh library
+/// never mistakes an unprobed entry for a dirtied one.
 #[test]
-fn schema_v4_adds_durable_sync_edits_without_changing_upload_permission() {
+fn schema_nine_creates_native_sync_columns_with_neutral_defaults() {
     let dir = tempdir().unwrap();
-    let path = dir.path().join("photos.db");
-    let pool = db::init_pool(&path).unwrap();
-    drop(pool);
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE sync_job_changes; PRAGMA user_version=4;
-        INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref) VALUES(1,'webdav','https://dav.example.test/','alice','ref');
-        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,upload_scope) VALUES(1,1,'/photos','Photos','selected_albums');
-        INSERT INTO sync_job_upload_albums(job_id,relative_album) VALUES(1,'camera');").unwrap();
-    drop(conn);
+    let path = dir.path().join("native-shape.db");
     let pool = db::init_pool(&path).unwrap();
     let conn = pool.get().unwrap();
-    assert_eq!(
-        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        8
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM sync_job_changes", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT relative_album FROM sync_job_upload_albums WHERE job_id=1",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "camera"
-    );
-}
 
-#[test]
-fn schema_v5_sync_state_migrates_without_changing_existing_strategy() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("sync-v5.db");
-    let conn = Connection::open(&path).unwrap();
-    let schema = include_str!("../src/core/schema.sql")
-        .replace("    suppressed_fingerprint TEXT,\n", "")
-        .replace("    suppressed_size      INTEGER,\n", "");
-    conn.execute_batch(&schema).unwrap();
-    conn.execute_batch(r#"INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref) VALUES(1,'webdav','https://dav.example.test','alice','migration');
-        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,direction,upload_scope) VALUES(1,1,'/library','Photos','bidirectional','selected_albums');
-        INSERT INTO sync_entries(job_id,relative_path,baseline_fingerprint,baseline_size,state) VALUES(1,'camera/a.gif','hash',42,'synced');
-        INSERT INTO sync_job_changes(job_id,payload) VALUES(1,'{"revision":2,"upload_albums":["camera"],"remote_root":null,"delete":false,"conflict":null}');
-        PRAGMA user_version=5;"#).unwrap();
-    drop(conn);
-    let pool = db::init_pool(&path).unwrap();
-    let store = photo_viewer::core::sync::SyncStore::new(pool);
-    assert_eq!(
-        store.get_job(1).unwrap().unwrap().direction,
-        photo_viewer::core::sync::SyncDirection::Bidirectional
-    );
-    let entries = store.entries(1).unwrap();
-    assert_eq!(entries[0].baseline.as_ref().unwrap().blake3, "hash");
-    assert!(entries[0].suppressed.is_none());
-    assert_eq!(store.desired_upload_albums(1).unwrap(), vec!["camera"]);
-}
+    let entry_columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('sync_entries')")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    for column in [
+        "native_dirty",
+        "native_local_version",
+        "native_metadata_version",
+        "native_content_version",
+        "native_deletion_version",
+        "native_acked_metadata_version",
+        "native_acked_content_version",
+        "native_acked_deletion_version",
+        "native_metadata_event",
+        "native_content_event",
+        "native_deletion_event",
+        "native_photo_id",
+        "native_master_id",
+        "native_asset_revision",
+        "native_master_revision",
+        "native_confirmed_generation",
+        "native_content_generation",
+        "native_desired_metadata",
+        "native_baseline_metadata",
+        "native_resource_baseline",
+    ] {
+        assert!(
+            entry_columns.contains(&column.to_string()),
+            "sync_entries must carry {column}"
+        );
+    }
+    // The WebDAV fingerprint pipeline is deleted, not merely unused.
+    for gone in [
+        "local_fingerprint",
+        "remote_fingerprint",
+        "baseline_fingerprint",
+        "suppressed_fingerprint",
+        "remote_revision",
+        "state",
+        "etag_is_sha256",
+        "remote_root",
+    ] {
+        let job_columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('sync_jobs')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            !entry_columns.contains(&gone.to_string()) && !job_columns.contains(&gone.to_string()),
+            "{gone} belonged to the deleted WebDAV engine"
+        );
+    }
 
-#[test]
-fn schema_v6_preserves_sync_history_and_seeds_known_inventory() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("photos.db");
-    let pool = db::init_pool(&path).unwrap();
-    drop(pool);
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch(
-        r#"
-        DROP TABLE sync_inventory;
-        INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref)
-            VALUES(1,'webdav','https://dav.example.test','alice','inventory-migration');
-        INSERT INTO sync_jobs(id,connection_id,local_root,remote_root,config_generation)
-            VALUES(1,1,'/photos','Photos',9);
-        INSERT INTO sync_entries(job_id,relative_path,baseline_fingerprint,baseline_size,state)
-            VALUES(1,'done.jpg','hash',42,'synced');
-        INSERT INTO sync_entries(job_id,relative_path,state) VALUES
-            (1,'pending.mp4','pending'),(1,'conflict.gif','conflict'),(1,'ignored.gif','synced');
-        PRAGMA user_version=6;
-    "#,
+    // A zone is required at the database level, not defaulted.
+    conn.execute(
+        "INSERT INTO sync_connections(endpoint,credential_ref) VALUES('https://sync.example.invalid/','shape')",
+        [],
     )
     .unwrap();
-    drop(conn);
-    for _ in 0..2 {
-        let pool = db::init_pool(&path).unwrap();
-        let conn = pool.get().unwrap();
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 8);
-        let rows: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sync_inventory WHERE config_generation=9",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(rows, 3);
-        let fingerprint: String = conn
-            .query_row(
-                "SELECT baseline_fingerprint FROM sync_entries WHERE relative_path='done.jpg'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(fingerprint, "hash");
-        drop(conn);
-        let store = photo_viewer::core::sync::SyncStore::new(pool);
-        let overview = store.overview().unwrap();
-        assert_eq!((overview.synced_items, overview.total_items), (1, 3));
-    }
+    assert!(conn
+        .execute(
+            "INSERT INTO sync_jobs(connection_id,local_root) VALUES(1,'/photos')",
+            [],
+        )
+        .is_err());
+    conn.execute(
+        "INSERT INTO sync_jobs(connection_id,local_root,native_zone_name) VALUES(1,'/photos','PrimarySync')",
+        [],
+    )
+    .unwrap();
+    let dirty: i64 = conn
+        .query_row("SELECT native_dirty FROM sync_entries LIMIT 0", [], |row| {
+            row.get(0)
+        })
+        .unwrap_or(0);
+    assert_eq!(dirty, 0);
 }
 
+/// Upgrading a schema-8 library drops the WebDAV sync tables and recreates them
+/// empty, while media, albums, favorites and edits survive untouched. Sync
+/// history described a transport this build no longer speaks, so carrying it
+/// forward would only be dead rows; the user's photographs are the opposite.
 #[test]
-fn v7_migration_preserves_jobs_and_never_assumes_sha256_etags() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("library.db");
+fn schema_nine_upgrade_discards_webdav_history_and_keeps_the_library() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("upgrade.db");
     {
         let pool = db::init_pool(&path).unwrap();
         let conn = pool.get().unwrap();
-        conn.execute_batch("ALTER TABLE sync_jobs DROP COLUMN etag_is_sha256;
+        conn.execute_batch(
+            "INSERT INTO media_items(uri,path,folder_path,mime_type,media_kind,file_mtime,file_size,blake3_hash,indexed_at)
+                 VALUES('file:///photos/a.jpg','/photos/a.jpg','/photos','image/jpeg','image',1700000000,1024,'hash',1700000000);
+             UPDATE media_items SET is_favorite=1 WHERE path='/photos/a.jpg';
+             INSERT INTO albums(folder_path,name,last_modified) VALUES('/photos','Photos',1700000000);",
+        )
+        .unwrap();
+        // Replace the sync tables with their schema-8 shapes, seed real WebDAV
+        // rows, and stamp the old version: this is what an upgrading library
+        // actually looks like.
+        conn.execute_batch(
+            r#"
+            DROP TABLE sync_publications;
+            DROP TABLE sync_native_resources;
+            DROP TABLE sync_native_records;
+            DROP TABLE sync_native_inbox;
+            DROP TABLE sync_native_progress;
+            DROP TABLE sync_conflicts;
+            DROP TABLE sync_tasks;
+            DROP TABLE sync_inventory;
+            DROP TABLE sync_job_upload_albums;
+            DROP TABLE sync_job_changes;
+            DROP TABLE sync_entries;
+            DROP TABLE sync_jobs;
+            DROP TABLE sync_connections;
+            CREATE TABLE sync_connections(id INTEGER PRIMARY KEY AUTOINCREMENT, provider_kind TEXT NOT NULL,
+                endpoint TEXT NOT NULL, username TEXT NOT NULL, credential_ref TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE sync_jobs(id INTEGER PRIMARY KEY AUTOINCREMENT, connection_id INTEGER NOT NULL,
+                local_root TEXT NOT NULL, remote_root TEXT NOT NULL, direction TEXT NOT NULL DEFAULT 'bidirectional',
+                etag_is_sha256 INTEGER NOT NULL DEFAULT 0, upload_scope TEXT NOT NULL DEFAULT 'selected_albums',
+                propagate_deletes INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
+                config_generation INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE sync_entries(id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL,
+                relative_path TEXT NOT NULL, local_fingerprint TEXT, local_size INTEGER, local_mtime_ns INTEGER,
+                remote_fingerprint TEXT, remote_size INTEGER, remote_revision TEXT,
+                baseline_fingerprint TEXT, baseline_size INTEGER, state TEXT NOT NULL DEFAULT 'pending');
             INSERT INTO sync_connections(id,provider_kind,endpoint,username,credential_ref)
-                VALUES(1,'webdav','https://dav.example.test/','user','ref');
-            INSERT INTO sync_jobs(id,connection_id,local_root,remote_root) VALUES(1,1,'/photos','Photos');
-            INSERT INTO sync_entries(job_id,relative_path,state) VALUES(1,'a.jpg','pending');
-            PRAGMA user_version=7;").unwrap();
+                VALUES(1,'webdav','https://dav.example.test/','alice','legacy');
+            INSERT INTO sync_jobs(id,connection_id,local_root,remote_root)
+                VALUES(1,1,'/photos','Photos');
+            INSERT INTO sync_entries(job_id,relative_path,baseline_fingerprint,state)
+                VALUES(1,'a.jpg','legacy-hash','synced');
+            PRAGMA user_version=8;"#,
+        )
+        .unwrap();
     }
+    // Migration must be idempotent: an interrupted upgrade re-runs cleanly.
     for _ in 0..2 {
         let pool = db::init_pool(&path).unwrap();
         let conn = pool.get().unwrap();
-        assert!(!conn
-            .query_row("SELECT etag_is_sha256 FROM sync_jobs WHERE id=1", [], |r| r
-                .get::<_, bool>(0))
-            .unwrap());
+
+        // The library itself is intact.
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM sync_entries", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
+            conn.query_row(
+                "SELECT is_favorite FROM media_items WHERE path='/photos/a.jpg'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
             1
         );
+        assert!(
+            conn.query_row("SELECT COUNT(*) FROM albums", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap()
+                > 0
+        );
+
+        // The WebDAV connection, its job and its baseline are gone, and the
+        // tables came back in the native shape.
         assert_eq!(
-            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM sync_connections", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sync_entries", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        let has_native: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_entries') WHERE name='native_dirty')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_native);
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            8
+            9
         );
     }
+}
+
+/// Deriving the uplink view filters dirty entries per job; that query must use
+/// the covering index rather than sorting the table.
+#[test]
+fn native_dirty_uplift_query_uses_its_index_without_temp_btree() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("explain.db");
+    let pool = db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let plan: String = conn
+        .prepare("EXPLAIN QUERY PLAN SELECT id, native_dirty FROM sync_entries WHERE job_id = 1 AND native_dirty > 0")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan.contains("idx_sync_entries_native_dirty"),
+        "the dirty-entry scan must use its index: {plan}"
+    );
+    assert!(
+        !plan.contains("TEMP B-TREE"),
+        "a covering index must not need an intermediate sort: {plan}"
+    );
 }

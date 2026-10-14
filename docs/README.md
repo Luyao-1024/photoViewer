@@ -26,7 +26,7 @@ This is the human entry point for project documentation. Agents should start fro
 | [`modules/native-sync-protocol.md`](modules/native-sync-protocol.md) | Pinned server endpoints, capabilities, typed wire fields, events and error/recovery decisions |
 | [`modules/native-sync-storage.md`](modules/native-sync-storage.md) | Existing-row dirty/version fields, safe migration, atomic receive/callback and dual-resource admission |
 | [`modules/native-sync-plan.md`](modules/native-sync-plan.md) | C1.1–C1.6 module/patch order and NC01–NC20 client acceptance |
-| [`modules/sync.md`](modules/sync.md) | Provider-neutral bidirectional sync, WebDAV adapter, planner, conflicts, recovery, cloud badges |
+| [`modules/sync.md`](modules/sync.md) | Native SyncServer client: connection/probe (C1.1), dirty truth, badges, credentials |
 | [`modules/browsing.md`](modules/browsing.md) | Photos page, Year/Month/Day grouping, thumbnail grids, mode selector |
 | [`modules/viewer.md`](modules/viewer.md) | Viewer page, image/video playback, overlay controls, thumbnail strip, details/editor panels |
 | [`modules/albums-trash.md`](modules/albums-trash.md) | Albums, album detail, sidebar album management, trash restore/delete flows |

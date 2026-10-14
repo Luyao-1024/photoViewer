@@ -621,7 +621,7 @@
       "photos.batch.unfavorite": "取消收藏",
       // 逐字取自仓库 i18n/zh-CN.json 的对应行。
       "photos.overview.sync.paused": "同步已暂停；首页下拉后继续同步",
-      "photos.overview.sync.failed": "同步失败；可点「重试」，或在设置中查看详情",
+      "photos.overview.sync.failed": "同步失败",
       "common.retry": "重试",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/zh.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "键盘快捷键", "keyboard.group.global": "全局", "keyboard.group.browsing": "浏览与选择",
@@ -674,7 +674,7 @@
       "photos.batch.unfavorite": "Unfavorite",
       // 与仓库 i18n/en.json 的对应行同值。
       "photos.overview.sync.paused": "Sync is paused; pull down on Photos to sync",
-      "photos.overview.sync.failed": "Sync failed; use Retry, or open Settings for details",
+      "photos.overview.sync.failed": "Synchronization failed",
       "common.retry": "Retry",
       // P0-4 已落盘：以下 34 个键来自仓库 i18n/en.json，快捷键表与设置行直接引用。
       "keyboard.window.title": "Keyboard Shortcuts", "keyboard.group.global": "Global",
@@ -784,8 +784,6 @@
     emit("overview", state);
   }
   function applyOverview() {
-    var retry = q(".overview-retry");
-    if (retry) retry.textContent = tr("common.retry");
     var sync = q('[data-ovr="sync"]');
     if (sync) {
       sync.textContent = tr(body.dataset.pvOvr === "failed"
@@ -1158,7 +1156,6 @@
       case "toggle-overlay":
         q(".collapsed-workspace").classList.toggle("overlay-open");
         break;
-      case "sync-retry": toast("重新触发一次同步任务", { kind: "info" }); break;
       case "toggle-overview":
         // P2-8 已落盘：chevron 只是 revealer 的镜像，开合都回到同一个状态位。
         setOverview(overviewIsOpen() ? "closed" : "open");

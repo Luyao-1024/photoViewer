@@ -25,9 +25,7 @@ harness, so "real input" means the same thing everywhere:
   `key_gesture` for the production router, and `pump` / `wait_until` for the loop.
   `scroll_to_reveal` checks the actual picked target, not just a mapped widget's
   stale coordinates, and searches upward and downward so sorted rows remain
-  reachable after moving ahead of the viewport. The focused saved-task journey
-  is `tests/ux_sync_album_selection.rs` (Select All, partial selection, checked-first
-  ordering, atomic persistence and reopening Settings).
+  reachable after moving ahead of the viewport.
 - **`tests/common/shell.rs`** — `Shell`, a presented `MainWindow` over a real
   SQLite library of real distinct JPEGs on a real filesystem, wired with the same
   pool, `ThumbnailLoader`, `media_list` and `DbActor` the app uses. `Shell::new()`
@@ -51,17 +49,12 @@ Run it alone during filmstrip work:
 tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_filmstrip_centering
 ```
 
-The focused startup-recovery journey is `tests/ux_sync_interrupted.rs`. It runs
-English and Chinese in separate instances of its one-test binary, each with
-private config/data/cache directories. A controlled provider holds a real
-transfer; cancelling the future leaves the persisted run open, and production
-startup reconciliation closes it. The journey opens and expands Settings through
-`Ui`, checks task and upload-selection subtitles across their refresh intervals,
-and verifies browsing did not change the stored reason or rerun synchronization.
-
-```bash
-tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_interrupted
-```
+Startup closes synchronization runs a previous process left open before any new
+cycle starts; the focused case is
+`schema_nine_upgrade_discards_webdav_history_and_keeps_the_library` in
+`tests/db_migrations.rs`, with the store-level counterpart in
+`src/core/sync/store/tests.rs`
+(`startup_reconciliation_closes_runs_left_open_by_an_earlier_process`).
 
 If a private D-Bus session cannot launch AT-SPI but the existing desktop session
 passes `tools/with-at-spi.sh --check`, reuse that session by setting
@@ -139,45 +132,13 @@ grid tile to the Viewer header.
 
 ### Cloud Sync Edit-First Acceptance
 
-The binding contract is
-[`modules/sync-configuration-ux.md`](modules/sync-configuration-ux.md). The
-existing `ux_sync_album_selection` journey covers idle selection, Select All,
-sorting and persistence; it is **not** evidence that editing during sync works.
-The following coverage is required before declaring the migration complete:
-
-1. Start a real sync run against a controllable test provider that holds a file
-   operation in flight. Open Settings and expand the checklist by hit-tested
-   presses. Checkboxes and Select All must already be editable, and inspection
-   alone must not pause the job, change its generation or enqueue a restart.
-2. Edit an album while the transfer is held. Observe the accepted selection and
-   reconfiguration intent **before** releasing the old operation. Safely settle
-   old work and verify a new run uses the latest scope, without pressing Pause,
-   Resume or pulling Photos. Also cover Select All and clearing uploads while
-   cloud downloads remain allowed.
-3. Make successive edits while the first edit is applying. Input must remain
-   available; verify the final generation/selection drives the next run and an
-   older completion or failure cannot revert newer input. Count bulk writes and
-   restart requests, not just final checkbox appearance.
-4. Browse a cloud folder, cancel its picker/confirmation, submit the same root,
-   and submit invalid input. Each must leave the existing run and generation
-   untouched. Confirm a genuinely changed root and verify safe transition plus
-   automatic restart, with old-root evidence/results isolated from the new root.
-5. Cover task creation, confirmed deletion, global off/on and confirmed conflict
-   choices. No remembered trigger may restart a deleted/disabled target; saving
-   eligible changes must not require a later manual refresh. Display-only badge
-   changes must never interrupt transfers.
-6. Exercise validation/save/application failures and restart recovery of an
-   accepted pending edit. Preserve the latest desired state and sole recovery
-   copies; report actual errors rather than claiming the new run completed.
-
-Use `tests/common/interaction.rs` + `tests/common/shell.rs` for the real input
-path and a 1920x1080 display. Provider barriers and generations may be observed
-as evidence; never pre-pause the fixture, emit `clicked`, set selection or
-visibility, or alter database rows to reach the editable/reconfigured state
-under test. An idle-only test, direct setter test or successful manual refresh
-cannot substitute for these in-flight acceptance checks. Run only new/directly
-modified focused tests during development; reserve the full suite for the push
-gate as documented above.
+The edit-first engine (durable accepted edits, coalescing, latest-wins) survives
+the WebDAV removal and is covered by unit tests in `src/core/sync/store/tests.rs`
+and `src/core/sync/service/tests.rs`. The settings *surface* for it returns with
+the native configuration UI in C1.5, and the binding UX contract will be
+rewritten against that surface; until then there is no user-facing editing flow
+to accept. Real-input acceptance with a run genuinely in flight remains the bar
+for that milestone — an idle-only test cannot substitute.
 
 ### Controls that hand off to the desktop
 
@@ -805,50 +766,18 @@ blind spot is worse: a CSS `margin-bottom` "lift" reads as movement in
 `src/ui/grid_css/tests/render.rs` sample the whole window for the same reason -
 a single widget's snapshot omits its parent's background.
 
-## WebDAV backup and sync strategies
+## Native SyncServer connection probing
 
-Focused backend cases in `src/core/sync/service/tests/strategies.rs` exercise
-upload-only version preservation, initial collisions, failure/recovery before
-overwrite, no local resurrection, content-version deletion suppression, unchanged
-ETag/content verification, mode switching, and persistence across reopening and
-media-index deletion. The schema-v5 migration fixture preserves old direction,
-common baselines, and pending edits.
-
-`tests/ux_sync_strategies.rs` uses the full shell and hit-tested presses. It checks
-new-task Backup defaults, live transfer mode editing, rapid-switch coalescing,
-automatic restart, reopening persistence and editable modes while globally off.
-It does not pre-pause the job or set toggle state to reach the tested behavior.
+`tests/native_sync_probe.rs` drives the real `syncserver` binary from the
+sibling checkout (`../syncserver`). It starts a fresh instance on a free
+loopback port with its own key files and data directory, then proves the client
+accepts an actual M4 capability document, pins the announced scope, refuses a
+wrong Bearer key as an authentication failure, refuses cleartext off loopback
+before any request, refuses a foreign announced origin, and rejects an unknown
+zone without writing a job. Without the binary the suite prints build
+instructions and skips rather than faking a pass.
 
 ```bash
-cargo test --locked --lib core::sync::service::tests::strategies -- --nocapture
-cargo test --locked --test db_migrations schema_v5_sync_state_migrates_without_changing_existing_strategy -- --exact
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_strategies -- --nocapture
-```
-
-The desktop-session bus prefix is a local fallback when a newly launched D-Bus
-session cannot execute the host AT-SPI service; CI uses its normal session bus.
-
-## WebDAV global-off history reset
-
-Focused backend cases in `src/core/sync/service/tests/reset.rs` cover preserving
-accounts/task configuration, merging latest accepted fields, discarding conflict
-choices, clearing all runtime rows and owned temporary files, waiting for active
-file/configuration operations, late-write rejection, durable retry and tokens,
-database isolation, disabled accounts, no-task orphans and symlink/source-media
-protection. Stage roots are fixture-owned, never the real user's data directory.
-
-`tests/ux_sync_reset.rs` creates an actual saved job through the service fixture,
-favorites and trashes a synced photo through Viewer input, lets the ordinary
-engine create deletion suppression and a content conflict, then presses the
-global switch with native mouse input. It verifies empty history, retained
-configuration/media/favorites/trash/cloud content, hidden old conflict rows,
-fresh-association download on re-enable, immediate Off → On restart through a
-retiring worker, and Off → On → Off during a held transfer.
-The existing strategy/album-selection journeys also assert the new Off contract.
-
-```bash
-cargo test --locked --lib core::sync::service::tests::reset -- --nocapture
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_reset -- --nocapture
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_strategies -- --nocapture
-DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_sync_album_selection saved_task_album_selection_selects_all_sorts_and_persists -- --exact --nocapture
+cargo build --locked --manifest-path ../syncserver/Cargo.toml
+cargo test --locked --test native_sync_probe -- --nocapture
 ```

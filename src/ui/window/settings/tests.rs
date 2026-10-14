@@ -146,66 +146,6 @@ fn settings_page_exposes_day_grid_columns_slider_with_three_to_eight_range() {
 }
 
 #[gtk::test]
-fn settings_page_exposes_theme_selector() {
-    let _ = gtk::init();
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.WindowThemeSelector")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
-
-    let window = MainWindow::new(&app);
-    let host = window.clone().upcast::<gtk::Widget>();
-    let page = window.build_settings_page(&host);
-    let page = page.upcast::<gtk::Widget>();
-
-    let mut labels = Vec::new();
-    collect_labels(&page, &mut labels);
-    assert!(
-        labels.iter().any(|label| label == &tr("setting.theme")),
-        "settings page should expose a theme label, got {labels:?}"
-    );
-
-    let mut check_buttons = Vec::new();
-    collect_check_buttons(&page, &mut check_buttons);
-    let theme_labels: Vec<String> = check_buttons
-        .iter()
-        .filter_map(|btn| btn.label().map(|label| label.to_string()))
-        .collect();
-    assert!(
-        theme_labels.contains(&tr("setting.theme.system")),
-        "settings page should expose Follow System theme option, got {theme_labels:?}"
-    );
-    assert!(
-        theme_labels.contains(&tr("setting.theme.light")),
-        "settings page should expose Light theme option, got {theme_labels:?}"
-    );
-    assert!(
-        theme_labels.contains(&tr("setting.theme.dark")),
-        "settings page should expose Dark theme option, got {theme_labels:?}"
-    );
-
-    let mut titles = Vec::new();
-    collect_preference_titles(&page, &mut titles);
-    assert!(
-        titles.iter().any(|title| title == &tr("setting.theme")),
-        "theme selector should live in a PreferencesRow, got {titles:?}"
-    );
-    assert!(
-        titles
-            .iter()
-            .any(|title| title == &tr("setting.liquid_glass")),
-        "Liquid Glass toggle should live in a PreferencesRow, got {titles:?}"
-    );
-    assert!(
-        titles
-            .iter()
-            .any(|title| title == &tr("setting.video_default_muted")),
-        "video mute toggle should live in a PreferencesRow, got {titles:?}"
-    );
-}
-
-#[gtk::test]
 fn settings_page_exposes_thumbnail_generation_speed_selector() {
     let _ = gtk::init();
     let app = adw::Application::builder()
@@ -282,162 +222,63 @@ fn settings_page_exposes_scan_path_management() {
     );
 }
 
-fn find_expander_row(widget: &gtk::Widget, title: &str) -> Option<adw::ExpanderRow> {
-    if let Some(row) = widget.downcast_ref::<adw::ExpanderRow>() {
-        if row.title() == title {
-            return Some(row.clone());
-        }
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        child = current.next_sibling();
-        if let Some(row) = find_expander_row(&current, title) {
-            return Some(row);
-        }
-    }
-    None
-}
-
-fn find_switch(widget: &gtk::Widget) -> Option<gtk::Switch> {
-    if let Some(switch) = widget.downcast_ref::<gtk::Switch>() {
-        return Some(switch.clone());
-    }
-    let mut child = widget.first_child();
-    while let Some(current) = child {
-        child = current.next_sibling();
-        if let Some(switch) = find_switch(&current) {
-            return Some(switch);
-        }
-    }
-    None
-}
-
 #[gtk::test]
-fn webdav_settings_share_one_collapsed_master_row() {
+fn settings_page_exposes_theme_selector() {
     let _ = gtk::init();
     let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.WindowWebDavSettings")
+        .application_id("io.github.luyao_1024.photoviewer.WindowThemeSelector")
         .build();
     app.register(None::<&gtk::gio::Cancellable>)
         .expect("test application should register");
 
     let window = MainWindow::new(&app);
     let host = window.clone().upcast::<gtk::Widget>();
-    let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
-    let row = find_expander_row(&page, &tr("setting.section.sync"))
-        .expect("settings should expose one WebDAV master row");
-    let row_widget = row.clone().upcast::<gtk::Widget>();
-    let global_switch =
-        find_switch(&row_widget).expect("the WebDAV master row should contain its switch");
-    assert_eq!(
-        global_switch.is_active(),
-        crate::core::prefs::webdav_sync_enabled()
+    let page = window.build_settings_page(&host);
+    let page = page.upcast::<gtk::Widget>();
+
+    let mut labels = Vec::new();
+    collect_labels(&page, &mut labels);
+    assert!(
+        labels.iter().any(|label| label == &tr("setting.theme")),
+        "settings page should expose a theme label, got {labels:?}"
     );
 
-    assert!(!row.shows_enable_switch());
+    let mut check_buttons = Vec::new();
+    collect_check_buttons(&page, &mut check_buttons);
+    let theme_labels: Vec<String> = check_buttons
+        .iter()
+        .filter_map(|btn| btn.label().map(|label| label.to_string()))
+        .collect();
     assert!(
-        row.is_sensitive(),
-        "saved settings should remain inspectable"
+        theme_labels.contains(&tr("setting.theme.system")),
+        "settings page should expose Follow System theme option, got {theme_labels:?}"
+    );
+    assert!(
+        theme_labels.contains(&tr("setting.theme.light")),
+        "settings page should expose Light theme option, got {theme_labels:?}"
+    );
+    assert!(
+        theme_labels.contains(&tr("setting.theme.dark")),
+        "settings page should expose Dark theme option, got {theme_labels:?}"
     );
 
-    row.set_expanded(true);
+    let mut titles = Vec::new();
+    collect_preference_titles(&page, &mut titles);
     assert!(
-        row.is_expanded(),
-        "expanding the master row should reveal WebDAV settings"
+        titles.iter().any(|title| title == &tr("setting.theme")),
+        "theme selector should live in a PreferencesRow, got {titles:?}"
     );
-
-    row.set_expanded(false);
     assert!(
-        !row.is_expanded(),
-        "collapsing the row should hide its form"
+        titles
+            .iter()
+            .any(|title| title == &tr("setting.liquid_glass")),
+        "Liquid Glass toggle should live in a PreferencesRow, got {titles:?}"
     );
-}
-
-#[gtk::test]
-fn webdav_job_uploads_only_checked_albums_and_keeps_cloud_download_copy() {
-    let _ = gtk::init();
-    // Unchecking an album routes through accept_upload_albums, which spawns
-    // the configuration worker; the toggle callback needs the runtime entered
-    // on this thread, mirroring what the app installs on its main thread.
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let _guard = runtime.enter();
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.WindowWebDavAlbumScope")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
-
-    let temp = tempfile::tempdir().unwrap();
-    let local_root = temp.path().join("photos");
-    let camera = local_root.join("Camera");
-    std::fs::create_dir_all(&camera).unwrap();
-    let pool = crate::core::db::init_pool(&temp.path().join("photos.db")).unwrap();
-    let camera_string = camera.to_string_lossy().into_owned();
-    pool.get()
-        .unwrap()
-        .execute(
-            "INSERT INTO albums (folder_path, name, photo_count, last_modified)
-             VALUES (?1, 'Camera', 1, unixepoch())",
-            [&camera_string],
-        )
-        .unwrap();
-    let store = crate::core::sync::SyncStore::new(pool.clone());
-    let job = store
-        .create_job(&crate::core::sync::NewSyncJob {
-            endpoint: "https://dav.example.test".into(),
-            username: "alice".into(),
-            credential_ref: "ui-album-scope".into(),
-            etag_is_sha256: false,
-            local_root: local_root.clone(),
-            remote_root: "PhotoViewer".into(),
-            direction: crate::core::sync::SyncDirection::Bidirectional,
-            upload_scope: crate::core::sync::UploadScope::SelectedAlbums,
-            upload_albums: vec!["Camera".into()],
-        })
-        .unwrap();
-    store.set_job_paused(job.id, true).unwrap();
-    let (sender, _receiver) = crate::core::events::DomainEventSender::new();
-    let actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
-
-    let window = MainWindow::new(&app);
-    *window.imp().pool.borrow_mut() = Some(pool.clone());
-    window.set_db_actor(actor);
-    let host = window.clone().upcast::<gtk::Widget>();
-    let page = window.build_settings_page(&host).upcast::<gtk::Widget>();
-    let row = find_expander_row(&page, &tr("setting.sync.upload_albums"))
-        .expect("configured WebDAV job should expose album upload choices");
-    assert!(row.is_sensitive(), "paused jobs should allow scope editing");
     assert!(
-        row.subtitle().contains('1'),
-        "selection subtitle should report one checked album"
-    );
-
-    let mut checks = Vec::new();
-    collect_check_buttons(&row.clone().upcast::<gtk::Widget>(), &mut checks);
-    assert_eq!(checks.len(), 1);
-    assert!(checks[0].is_active());
-    checks[0].set_active(false);
-    // Edit acceptance is durable first; the worker lands it in the store a
-    // beat later, so the assertion cannot ride the statement that triggered it.
-    let context = gtk::glib::MainContext::default();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while std::time::Instant::now() < deadline
-        && !crate::core::sync::SyncStore::new(pool.clone())
-            .upload_albums(job.id)
-            .unwrap()
-            .is_empty()
-    {
-        while context.pending() {
-            context.iteration(false);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        crate::core::sync::SyncStore::new(pool)
-            .upload_albums(job.id)
-            .unwrap()
-            .is_empty(),
-        "unchecking the album should persist an empty upload selection"
+        titles
+            .iter()
+            .any(|title| title == &tr("setting.video_default_muted")),
+        "video mute toggle should live in a PreferencesRow, got {titles:?}"
     );
 }
 
@@ -526,50 +367,4 @@ fn settings_dialog_uses_bounded_scroll_child() {
             .is_some_and(|child| child.is::<gtk::ScrolledWindow>()),
         "settings dialog should use a ScrolledWindow so tall content does not over-request sheet height"
     );
-}
-
-#[test]
-fn interrupted_run_errors_localize_tag_and_legacy_copy_at_the_ui_boundary() {
-    let message = tr("setting.sync.error.interrupted_run");
-    assert_ne!(message, "setting.sync.error.interrupted_run");
-    for error in [
-        "sync.interrupted_run",
-        "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。",
-    ] {
-        for key in ["setting.sync.failed", "setting.sync.changes_apply_failed"] {
-            assert_eq!(
-                sync_failure_text(key, error),
-                trf(key, &[("error", &message)])
-            );
-        }
-    }
-}
-
-#[test]
-fn interrupted_run_errors_localize_when_surfaced_by_a_backend_error() {
-    let message = tr("setting.sync.error.interrupted_run");
-    for detail in [
-        "sync.interrupted_run",
-        "上次同步被中断（应用在同步完成前退出），已标记为失败，可重试。",
-    ] {
-        let error = crate::core::error::AppError::Backend(detail.into()).to_string();
-        assert_eq!(
-            sync_failure_text("setting.sync.failed", &error),
-            trf("setting.sync.failed", &[("error", &message)])
-        );
-    }
-}
-
-#[test]
-fn interrupted_run_localization_preserves_unrecognized_server_diagnostics() {
-    for error in [
-        "HTTP 503 Service Unavailable",
-        "backend unavailable: permission denied",
-        "server returned sync.interrupted_run in its response body",
-    ] {
-        assert_eq!(
-            sync_failure_text("setting.sync.failed", error),
-            trf("setting.sync.failed", &[("error", error)])
-        );
-    }
 }

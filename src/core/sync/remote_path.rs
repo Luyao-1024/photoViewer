@@ -1,37 +1,28 @@
-//! Shared remote path operations. Callers own normalization and error types.
+//! Job-relative path rules shared by validation and owned publication.
+//!
+//! These are the only path helpers the sync layer keeps: they describe paths
+//! *inside* a configured job root, not remote object keys. A remote key is a
+//! provider-specific concept and each provider owns its own.
 
-use crate::core::error::{AppError, Result};
+use std::path::Path;
 
-pub(super) fn has_navigation_segment(path: &str) -> bool {
+pub(crate) fn has_navigation_segment(path: &str) -> bool {
     path.split('/')
         .any(|segment| segment == "." || segment == "..")
 }
 
-pub(super) fn has_empty_segment(path: &str) -> bool {
+pub(crate) fn has_empty_segment(path: &str) -> bool {
     path.split('/').any(str::is_empty)
 }
 
-pub(super) fn remote_key(root: &str, relative: &str) -> Result<String> {
-    if has_empty_segment(relative) || has_navigation_segment(relative) {
-        return Err(AppError::Backend(
-            "invalid relative synchronization path".into(),
-        ));
-    }
-    let root = root.trim_matches('/');
-    Ok(if root.is_empty() {
-        relative.into()
-    } else {
-        format!("{root}/{relative}")
-    })
+/// Files this application owns while publishing a pair. Ordinary media and
+/// directory symlink targets never participate in this namespace, so the
+/// cleanup that removes them cannot reach user content.
+pub(crate) fn is_internal_sync_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".photoviewer-sync-"))
 }
 
-pub(super) fn relative_remote_key(root: &str, key: &str) -> Result<String> {
-    let key = key.trim_matches('/');
-    if root.is_empty() {
-        return Ok(key.into());
-    }
-    key.strip_prefix(root)
-        .and_then(|relative| relative.strip_prefix('/'))
-        .map(str::to_string)
-        .ok_or_else(|| AppError::Backend(format!("remote object escaped configured root: {key}")))
-}
+#[cfg(test)]
+mod tests;

@@ -1,7 +1,10 @@
 //! Global off is a durable reset barrier, not a reversible scheduling pause.
 use super::*;
-use std::collections::HashMap;
+use crate::core::sync::remote_path::is_internal_sync_name;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Default)]
@@ -52,28 +55,12 @@ impl SyncService {
             tokio::spawn(async move {
                 let result = service.perform_sync_reset().await;
                 match result {
-                    Ok(()) => {
-                        if crate::core::prefs::webdav_sync_enabled() {
-                            match service.store.list_jobs() {
-                                Ok(jobs) => {
-                                    for job in jobs {
-                                        // A retiring worker still owns its slot. Mark
-                                        // a catch-up instead of losing the new opt-in.
-                                        if let Err(error) = service.request_job_sync(job.id) {
-                                            tracing::warn!(
-                                                "cannot resume after WebDAV reset: {error}"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::warn!("cannot list jobs after WebDAV reset: {error}")
-                                }
-                            }
-                        }
-                    }
+                    // A newer opt-in may have landed during cleanup. It stays
+                    // queued in `sync_job_changes`, so the next trigger picks it
+                    // up without losing the user's accepted edit.
+                    Ok(()) => {}
                     Err(error) => {
-                        tracing::warn!("cannot clear WebDAV synchronization state: {error}")
+                        tracing::warn!("cannot clear synchronization state: {error}")
                     }
                 }
                 // Stay pending until a newer opt-in has actually been queued.
@@ -88,7 +75,7 @@ impl SyncService {
                     .is_some_and(|intent| intent.error.is_none())
                 {
                     if let Err(error) = service.start_reset_worker() {
-                        tracing::warn!("cannot continue newer WebDAV reset: {error}");
+                        tracing::warn!("cannot continue a newer synchronization reset: {error}");
                     }
                 }
             });
@@ -113,7 +100,7 @@ impl SyncService {
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            let staging = self.staging_root.clone();
+            let staging = self.staging_root().to_path_buf();
             let roots = self.store.reset_local_roots()?;
             let cleanup = match tokio::task::spawn_blocking(move || {
                 let owned_staging =
@@ -147,7 +134,6 @@ impl SyncService {
             match self.store.finish_reset(&intent.token) {
                 Ok(true) => {
                     self.discard_queued_work()?;
-                    live_progress_end_session(&database);
                 }
                 Ok(false) => {}
                 Err(error) => {
@@ -190,7 +176,7 @@ fn clear_local_temporaries(roots: &BTreeSet<PathBuf>) -> Result<()> {
             let entry = entry.map_err(|error| {
                 AppError::Backend(format!("cannot inspect local sync temporaries: {error}"))
             })?;
-            if !entry.file_type().is_dir() && local::is_internal_sync_name(entry.path()) {
+            if !entry.file_type().is_dir() && is_internal_sync_name(entry.path()) {
                 std::fs::remove_file(entry.path())?;
             }
         }

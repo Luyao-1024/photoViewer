@@ -9,11 +9,10 @@ and [implementation plan](native-sync-plan.md).
 
 ## Connection And Discovery
 
-Use a new `native_syncserver` provider kind. Preserve every existing `webdav`
-connection/job and its credential reference. Native authentication is one Bearer
-API key stored by the [credential boundary](sync.md#key-files); username/password,
+`native_syncserver` is the only provider kind (CHECK-enforced in schema 9; the
+WebDAV engine was removed outright). Native authentication is one Bearer API key
+stored by the [credential boundary](sync.md#credentials); username/password,
 Apple ID, Cookie and the server's signing key are not client credentials.
-Never convert an existing WebDAV connection implicitly.
 
 Normalize an absolute root endpoint, reject userinfo/query/fragment/path prefixes,
 and require HTTPS except for literal loopback IPs. C1 initially requires the
