@@ -940,6 +940,85 @@ impl Drop for ThumbnailLoader {
     }
 }
 
+/// Render a source file to JPEG bytes, bounded by its longest edge.
+///
+/// This is the native upload's path: it produces bytes to send, not a cache
+/// entry. It reuses the same decode and scaling the grid uses, so an uploaded
+/// thumbnail and a locally generated one of the same size agree about
+/// orientation and colour.
+pub fn render_jpeg_bytes(source: &std::path::Path, max_edge: u32) -> anyhow::Result<Vec<u8>> {
+    render_jpeg_bytes_at(source, max_edge, 90)
+}
+
+/// As [`render_jpeg_bytes`], with an explicit JPEG quality. A caller shrinking
+/// a thumbnail to fit a byte ceiling lowers quality before it lowers size.
+pub fn render_jpeg_bytes_at_quality(
+    source: &std::path::Path,
+    max_edge: u32,
+    quality: u8,
+) -> anyhow::Result<Vec<u8>> {
+    render_jpeg_bytes_at(source, max_edge, quality)
+}
+
+fn render_jpeg_bytes_at(
+    source: &std::path::Path,
+    max_edge: u32,
+    quality: u8,
+) -> anyhow::Result<Vec<u8>> {
+    use std::cell::RefCell;
+    thread_local! {
+        /// A scratch cache stem. The encoder never writes here — `Pixbuf` is
+        /// handed bytes directly — so nothing survives the call.
+        static SCRATCH: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+    }
+    let stem = SCRATCH.with(|scratch| {
+        let mut scratch = scratch.borrow_mut();
+        let stem = scratch.get_or_insert_with(|| {
+            std::env::temp_dir().join(format!("photoviewer-render-{}", std::process::id()))
+        });
+        stem.clone()
+    });
+    let scaled = decode::generate_via_pixbuf(source, max_edge, &stem)?;
+    let opaque = decode::ensure_opaque(&scaled);
+    opaque
+        .save_to_bufferv("jpeg", &[("quality", &quality.to_string())])
+        .map_err(|e| anyhow::anyhow!("JPEG 渲染失败: {e}"))
+}
+
+/// Import a thumbnail this client received from the cloud into the ordinary
+/// cache, so the grid, the viewer and the memo cache all keep working exactly
+/// as they do for a locally generated one.
+///
+/// `favourite_cache_generated_at` is **not** touched: it records when this
+/// client last generated a thumbnail for the file, and a cache import is not a
+/// generation. Writing it would make the pipeline skip work it still owes.
+pub fn import_cached_thumbnail(
+    cache_dir: &std::path::Path,
+    uri: &str,
+    size: ThumbnailSize,
+    mtime: Option<SystemTime>,
+    bytes: &[u8],
+) -> anyhow::Result<()> {
+    let stem = cache::cache_stem_for(cache_dir, uri, size, mtime)?;
+    if let Some(parent) = stem.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // The bytes are decoded before they are published: a thumbnail that cannot
+    // be decoded would leave a cache file that every later read has to detect
+    // and delete again.
+    let path = stem.with_extension("jpg");
+    {
+        let glib_bytes = glib::Bytes::from(bytes);
+        let stream = gtk4::gio::MemoryInputStream::from_bytes(&glib_bytes);
+        gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)
+            .map_err(|e| anyhow::anyhow!("收到的缩略图无法解码: {e}"))?;
+    }
+    let temporary = path.with_extension("jpg.importing");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, &path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) fn generate_for_tests(
     cache_dir: &std::path::Path,

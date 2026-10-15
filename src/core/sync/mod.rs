@@ -1,5 +1,6 @@
 //! Provider-neutral, local-first bidirectional file synchronization.
 
+pub mod content;
 pub mod device;
 mod error;
 pub mod model;
@@ -8,9 +9,11 @@ mod remote_path;
 pub mod service;
 pub mod store;
 
+pub use content::ContentDigest;
 pub use error::{SyncError, SyncResult};
 pub use model::{ProviderKind, SyncDirection, UploadScope};
 pub use native::lease::{UploadLease, UploadPhase};
+pub use native::records::{AssetDescriptor, RemoteGraph, RemotePhoto, RemoteResource};
 pub use native::{
     LeaseProof, ModifyOutcome, MutationBatch, NativeCapabilitiesResponse, NativeCapabilityBits,
     NativeClient, NativeEndpoint, NativeLimits, NativeNamespace, NativePinnedScope,
@@ -18,5 +21,6 @@ pub use native::{
 };
 pub use service::SyncService;
 pub use store::{
-    ChangeCategory, CloudState, NewSyncJob, SyncJob, SyncOverview, SyncOverviewStatus, SyncStore,
+    ChangeCategory, CloudState, NewSyncJob, PublicationIntent, ResourceState, ResourceWork,
+    SyncJob, SyncOverview, SyncOverviewStatus, SyncStore,
 };

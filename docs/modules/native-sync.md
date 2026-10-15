@@ -20,6 +20,8 @@ markers, an ordered replayable delta inbox, a validated typed remote graph, and
 promotion that materializes resource obligations. `applied` deliberately stays
 behind `target` while any of them is outstanding.
 
+C1.4 adds **complete media transfer**: stable local snapshots with dual-encoded digests, thumbnails generated from the staged copy, paired reservation and upload, verified download, durable publication intents, and an admission gate that only opens when a photo's whole pair is usable locally.
+
 C1.3 adds the **uplink coordinator**: real local mutation hooks writing dirty
 truth in the same transaction as the user's edit, per-category versions and edit
 events, the exclusive upload lease with a conservative monotonic deadline, and

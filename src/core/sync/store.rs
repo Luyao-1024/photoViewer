@@ -13,6 +13,7 @@ use super::remote_path::{has_empty_segment, has_navigation_segment};
 
 mod configuration;
 pub mod dirty;
+pub mod publication;
 pub mod receive;
 mod reset;
 pub use configuration::{JobEdit, PendingChange};
@@ -20,6 +21,7 @@ pub use dirty::{
     note_local_change_in, CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyCommand,
     DirtyEntry, DirtyOutcome, EditEventStamp, NativeDirty,
 };
+pub use publication::{PublicationIntent, ResourceState, ResourceWork};
 pub use receive::{
     BootstrapState, InboxEvent, InboxKind, NativeProgress, NativeReceiveCommand,
     NativeReceiveOutcome, TypeMarker, TypeStatus,
@@ -152,6 +154,8 @@ pub enum SyncWrite {
     },
     /// One dirty-truth write. A single variant keeps the actor match exhaustive.
     Dirty(Box<dirty::DirtyCommand>),
+    /// One publication/resource write.
+    Publication(Box<publication::PublicationCommand>),
     /// One durable receive write. A single variant rather than one per
     /// operation keeps the actor's priority match exhaustive by construction.
     NativeReceive(Box<NativeReceiveCommand>),
@@ -166,6 +170,7 @@ pub enum SyncWriteResult {
     ReconciledRuns(usize),
     Native(NativeReceiveOutcome),
     Dirty(DirtyOutcome),
+    Publication(publication::PublicationOutcome),
     DeletedJob(Option<String>),
 }
 
@@ -256,7 +261,8 @@ impl SyncStore {
             }
             SyncWriteResult::ReconciledRuns(_)
             | SyncWriteResult::Native(_)
-            | SyncWriteResult::Dirty(_) => {
+            | SyncWriteResult::Dirty(_)
+            | SyncWriteResult::Publication(_) => {
                 return Err(AppError::Backend(
                     "create synchronization job returned an unrelated result".into(),
                 ))
@@ -663,6 +669,10 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             let outcome = dirty::execute(pool, command.as_ref())?;
             Ok(SyncWriteResult::Dirty(outcome))
         }
+        SyncWrite::Publication(command) => {
+            let outcome = publication::execute(pool, command.as_ref())?;
+            Ok(SyncWriteResult::Publication(outcome))
+        }
         SyncWrite::NativeReceive(command) => {
             let outcome = receive::execute(pool, command.as_ref())?;
             Ok(SyncWriteResult::Native(outcome))
@@ -1052,4 +1062,4 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncJob> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

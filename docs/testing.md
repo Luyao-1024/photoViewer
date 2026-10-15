@@ -834,3 +834,29 @@ cargo test --locked --lib core::sync::store::dirty -- --nocapture
 cargo test --locked --lib core::sync::native::lease -- --nocapture
 cargo test --locked --test native_sync_lease -- --nocapture
 ```
+
+## Native asset transfer and publication
+
+`tests/native_sync_assets.rs` moves real bytes against the real service: a
+reserved pair uploads and downloads back byte for byte, with the ETag carrying
+the digest that was declared; tampered bytes under a declared digest are refused
+and the session is terminally failed; a role swapped into the wrong master field
+is refused by the service itself; a reservation in the wrong phase is refused; a
+description is fresh per read while identity stays the asset id and digest; and
+an unknown asset is a miss, not an empty descriptor.
+
+The local half lives in `src/core/sync/content/tests.rs`,
+`src/core/sync/store/publication/tests.rs` and
+`src/core/sync/service/transfer/tests.rs`: a snapshot is stable when the source
+changes underneath it, an over-ceiling thumbnail is reported rather than looped
+on, a Base64 digest decodes back to the hex it joined, a publication cannot
+complete until both roles are verified, a fully verified pair is admitted
+exactly once, and a photo that left the projection cannot be resurrected from a
+stale intent.
+
+```bash
+cargo test --locked --lib core::sync::content -- --nocapture
+cargo test --locked --lib core::sync::store::publication -- --nocapture
+cargo test --locked --lib core::sync::service::transfer -- --nocapture
+cargo test --locked --test native_sync_assets -- --nocapture
+```

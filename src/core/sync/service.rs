@@ -8,6 +8,7 @@ mod configuration;
 pub mod coordinator;
 pub mod receive;
 mod reset;
+pub mod transfer;
 use configuration::JobKey;
 
 use crate::core::error::{AppError, Result};
@@ -79,12 +80,34 @@ impl SyncService {
         pool: crate::core::db::DbPool,
         actor: Option<crate::core::db_actor::DbActorHandle>,
     ) -> Self {
-        let staging_root = crate::config::data_dir().join("sync-staging");
+        Self::with_staging_root_and_optional_actor(pool, actor, None)
+    }
+
+    /// `staging_override` exists for tests: the default staging root is the
+    /// user's real data directory, which a test must never write into — and
+    /// which two concurrently running tests would fight over. Production always
+    /// passes `None`.
+    fn with_staging_root_and_optional_actor(
+        pool: crate::core::db::DbPool,
+        actor: Option<crate::core::db_actor::DbActorHandle>,
+        staging_override: Option<PathBuf>,
+    ) -> Self {
+        let staging_root =
+            staging_override.unwrap_or_else(|| crate::config::data_dir().join("sync-staging"));
         Self {
             store: SyncStore::with_optional_actor(pool.clone(), actor),
             pool,
             staging_root,
         }
+    }
+
+    /// A service whose staging lives in a caller-owned directory.
+    #[doc(hidden)]
+    pub fn with_staging_root_for_tests(
+        pool: crate::core::db::DbPool,
+        staging_root: PathBuf,
+    ) -> Self {
+        Self::with_staging_root_and_optional_actor(pool, None, Some(staging_root))
     }
 
     pub fn store(&self) -> &SyncStore {

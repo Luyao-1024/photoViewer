@@ -39,6 +39,23 @@ fn settle(milliseconds: u64) {
     )));
 }
 
+/// `pixels`, but only once the widget has stopped changing: sampled until two
+/// consecutive reads agree, bounded so a permanently animating widget still
+/// terminates. A fixed sleep is not enough under parallel test load, where the
+/// frame clock can lag arbitrarily far behind wall time.
+fn settled_pixels(window: &gtk::Window, widget: &impl IsA<gtk::Widget>) -> (usize, Vec<u8>) {
+    let mut previous = pixels(window, widget);
+    for _ in 0..20 {
+        settle(150);
+        let current = pixels(window, widget);
+        if current == previous {
+            return current;
+        }
+        previous = current;
+    }
+    previous
+}
+
 fn pixels(window: &gtk::Window, widget: &impl IsA<gtk::Widget>) -> (usize, Vec<u8>) {
     let widget = widget.as_ref();
     let snapshot = gtk::Snapshot::new();
@@ -162,8 +179,11 @@ fn thumbnail_emphasis_covers_white_image_edges() {
         // both, but the pointer stays the lighter of the two.
         for (class, ceiling) in [("thumb-pointer-hover", 240u8), ("media-selected", 210u8)] {
             tile.add_css_class(class);
-            settle(250);
-            let (active_width, active) = pixels(&window, &tile);
+            // The veil fades in, and how fast depends on the frame clock — which
+            // under a fully parallel test binary can lag well behind wall time.
+            // Waiting for the pixels to stop changing is what the assertion
+            // actually needs, not a fixed millisecond count.
+            let (active_width, active) = settled_pixels(&window, &tile);
             assert_eq!(active_width, width, "emphasis must not resize the tile");
             assert_eq!(active.len(), normal.len());
             // Follow the actual white picture extent, excluding rounded corners.

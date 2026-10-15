@@ -8,18 +8,19 @@ removed outright: no provider, planner, reconciler or migration for it remains,
 and a schema-8 library is upgraded by dropping the WebDAV sync tables and
 recreating them empty (media, albums, favorites and edits are untouched).
 
-C1.1, C1.2 and C1.3 are implemented. A native connection can be created and probed,
+C1.1 through C1.4 are implemented. A native connection can be created and probed,
 its accepted capability scope is pinned onto the connection row, a job can map a
 local root to a configured zone, and a receive cycle can bootstrap that zone and
 keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-Nothing synchronizes *resources* yet: no asset upload, no download, no
-publication, and no settings surface. Metadata-only record mutations do work
-under the exclusive upload lease. Promotion deliberately materializes the
-resource obligations those stages will settle, which is why `applied` stays
-behind `target`. The WebDAV-era settings group, strategy controls, conflict
+The settings surface is still absent (C1.5). Everything else is in place: the
+connection and probe, the durable receive path, the dirty-truth/lease
+coordinator, and complete media transfer — a local photo is snapshotted, digested,
+paired with a thumbnail from the same copy, uploaded, downloaded, verified and
+published. A photo becomes visible only when its whole pair is usable, and
+`applied` cannot advance past work that is still owed. The WebDAV-era settings group, strategy controls, conflict
 buttons and cloud-folder browser are gone; the native configuration UI arrives
 in C1.5.
 
@@ -43,6 +44,10 @@ in C1.5.
 | `src/core/sync/store/receive.rs` | durable receive state: bootstrap markers, the ordered inbox, promotion, and the `applied` gate |
 | `src/core/sync/store/dirty.rs` | dirty truth: category bits, versions, edit events, the derived uplink view, and confirmation |
 | `src/core/sync/service/coordinator.rs` | one cycle: receive, acquire, gate, phases, dispatch, callbacks, release |
+| `src/core/sync/content.rs` | stable snapshots, dual-encoded digests, bounded thumbnail generation |
+| `src/core/sync/native/assets.rs` | asset reservation, byte upload, session status, describe and download |
+| `src/core/sync/store/publication.rs` | resource obligations, publication intents, and the admission gate |
+| `src/core/sync/service/transfer.rs` | the download path: fetch, verify, stage, publish, admit |
 | `src/core/sync/device.rs` | this installation's stable device identity |
 | `src/core/sync/service/receive.rs` | one receive cycle: bootstrap when needed, then a fixed-height delta round |
 | `src/core/sync/model.rs` | `ProviderKind`, `SyncDirection`, `UploadScope` |
@@ -115,6 +120,22 @@ trashed photo, gain nothing. Row disappearance is never a delete intent.
 Confirmation is version-matched: a callback carrying the version that was sent
 clears that category, and a callback carrying an older one registers the cloud
 identity it proved but leaves the newer obligation standing.
+
+## Complete Media
+
+A local upload snapshots the original into owned staging first — a user editing
+the file mid-upload would otherwise produce bytes that no longer match the
+declared digest — and generates the thumbnail from that copy, so the pair
+describes one version. The digest is stated twice in two encodings (hex for
+reservation and photo field, Base64 for a descriptor); `ContentDigest` is the
+join and never a re-hash.
+
+Downloads verify what arrived against what the projection promised, before
+anything is written. Publication is ordered: staged → published (file in the job
+root) → verified (cache artifact exists) → complete (both roles verified) →
+admitted (media row written, exactly once). A crash between any two steps leaves
+the previous complete version readable and the work still owed; a photo that
+left the projection cannot be resurrected from a stale intent.
 
 ## Badges And Overview
 

@@ -163,7 +163,8 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
                 | crate::core::sync::store::SyncWrite::NativeReceive(_)
-                | crate::core::sync::store::SyncWrite::Dirty(_),
+                | crate::core::sync::store::SyncWrite::Dirty(_)
+                | crate::core::sync::store::SyncWrite::Publication(_),
             ) => DbWritePriority::StartupScan,
         }
     }

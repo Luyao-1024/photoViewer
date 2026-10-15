@@ -163,7 +163,12 @@ impl TintCache {
 
 fn paint(key: [u8; 4]) -> gdk::Texture {
     // `from_resource` reads the asset straight out of the GResource, so there is
-    // no path to get wrong and no file handle to leak.
+    // no path to get wrong and no file handle to leak. Only the bundle is
+    // registered — the icon-theme side effect of the public helper changes how
+    // symbolic icons resolve, which is not this call's business — and it is
+    // ensured here rather than assumed: reaching this code before any widget
+    // constructor ran would otherwise find an empty resource database.
+    crate::ensure_resource_bundle();
     let mask = gdk_pixbuf::Pixbuf::from_resource(RESOURCE)
         .unwrap_or_else(|err| panic!("{RESOURCE} should be in the GResource: {err}"));
     let (pw, ph) = (mask.width(), mask.height());

@@ -4,6 +4,7 @@
 //! receive, lease and asset calls to [`protocol`] and media orchestration to
 //! [`provider`].
 
+pub mod assets;
 pub mod lease;
 pub mod modify;
 pub mod protocol;

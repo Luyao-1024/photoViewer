@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Added complete media transfer for the native client (C1.4). A local photo is
+  snapshotted into owned staging and digested in one bounded pass, its thumbnail
+  is generated from that exact copy so the pair always describes one version,
+  and both roles are reserved and uploaded together. Downloaded bytes are
+  verified against the size and digest the projection promised before anything is
+  written, and a photo becomes visible only once its whole pair is published —
+  a half-downloaded pair never reaches the library.
+- Resource obligations and publication intents are durable: a crash between
+  staging, publishing, verifying and admitting leaves the previous complete
+  version in place and the work still owed. Admission happens exactly once, and
+  a photo that left the projection cannot be resurrected from a stale intent.
+
 - Added the native synchronization cycle's dirty truth and uplink coordination
   (C1.3): a real local change now writes the user's edit and the obligation it
   creates in one transaction, each change category carries its own version and

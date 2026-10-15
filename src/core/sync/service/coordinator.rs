@@ -36,6 +36,8 @@ use super::super::store::dirty::{
     CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyEntry, NativeDirty,
 };
 use super::super::store::receive::NativeProgress;
+use crate::core::error::AppError;
+
 use super::super::store::SyncJob;
 use super::receive;
 use super::SyncService;
@@ -422,6 +424,30 @@ fn map_lease_error(error: crate::core::sync::SyncError) -> CycleError {
 async fn receive_cycle(
     service: &SyncService,
     job_id: i64,
-) -> Result<receive::ReceiveReport, receive::ReceiveError> {
+) -> std::result::Result<receive::ReceiveReport, receive::ReceiveError> {
     service.run_receive(job_id).await
+}
+
+impl SyncService {
+    /// Build a client for one job: the endpoint is re-validated on every use and
+    /// the Bearer key is read from the platform secret store, never cached.
+    ///
+    /// Re-validating here rather than trusting the stored endpoint is what keeps
+    /// a configuration edit from quietly redirecting traffic somewhere the user
+    /// never chose.
+    pub(crate) async fn transport_client_for(
+        &self,
+        job: &SyncJob,
+    ) -> std::result::Result<NativeClient, AppError> {
+        let endpoint = crate::core::sync::native::NativeEndpoint::parse(&job.endpoint)
+            .map_err(|error| AppError::Backend(error.to_string()))?;
+        let reference = job.credential_ref.clone();
+        let api_key = tokio::task::spawn_blocking(move || {
+            crate::platform::credentials::load_api_key(&reference)
+        })
+        .await
+        .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
+        crate::core::sync::native::NativeClient::new(&endpoint, &api_key)
+            .map_err(|error| AppError::Backend(error.to_string()))
+    }
 }

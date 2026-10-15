@@ -660,6 +660,40 @@ impl NativeClient {
         Ok(self.request(url.clone()).send().await?)
     }
 
+    /// A GET authorized by the capability in the URL's query string, with **no**
+    /// `Authorization` header.
+    ///
+    /// The service treats a capability URL and a Bearer key on the same request
+    /// as contradictory and refuses it, so the two authorities are separate
+    /// request builders rather than one with a flag.
+    pub(super) async fn capability_get(&self, url: &Url) -> SyncResult<reqwest::Response> {
+        Ok(self.client.get(url.clone()).send().await?)
+    }
+
+    /// Raw `application/octet-stream` upload to a capability URL under a held
+    /// lease: capability authority plus lease proof, and deliberately no
+    /// `Authorization` header.
+    pub(super) async fn upload_bytes_request(
+        &self,
+        url: &str,
+        proof: &super::lease::LeaseProof,
+        bytes: &[u8],
+    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
+        let parsed = url::Url::parse(url)
+            .map_err(|error| SyncError::Protocol(format!("upload URL is unusable: {error}")))?;
+        let mut request = self
+            .client
+            .post(parsed)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(bytes.to_vec());
+        for (name, value) in super::lease::lease_headers(proof) {
+            request = request.header(name, value);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        Ok((status, response.bytes().await?.to_vec()))
+    }
+
     /// Authenticated JSON POST. This is the only path that attaches the Bearer
     /// key to a body-bearing request, so there is one place to audit.
     pub(super) async fn send_json(
