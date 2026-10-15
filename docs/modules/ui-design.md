@@ -497,7 +497,8 @@ Settings is reached from the sidebar footer gear button and opens as a popup
 dialog. It owns the quiet preference groups (language, appearance, video
 playback, Day grid columns, thumbnail speed), bounded management groups for
 scan folders and trash backend, and the combined cache/data cleanup action.
-The native synchronization group provides endpoint/username/password login, zone and local
+The cloud-sync row in main Settings exposes only the global switch and a navigation
+affordance. Its subpage provides endpoint/username/password login, zone and local
 root selection, explicit physical album scope, task controls and conflict decisions.
 An empty upload selection receives cloud photos only; adding a connection never
 implicitly selects the whole library. While the dialog is visible, the gallery content
@@ -509,7 +510,8 @@ Design intent:
 - Settings should be quiet and preference-oriented, using standard Libadwaita
   rows and switches. Operational groups (scan folders, trash migration,
   cache/data cleanup, sync management) stay as bounded management surfaces
-  inside the same dialog rather than becoming a separate administrative page.
+  inside the same dialog. Cloud sync has its own navigable subpage so operational
+  controls do not crowd the preferences list.
 - The Liquid Glass setting changes the visual material live. It should affect
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
@@ -532,7 +534,7 @@ Design intent:
 - Storage usage rows may display a pending size briefly. Directory-size
   calculations, especially thumbnail-cache scans, must not run synchronously
   while constructing or presenting the Settings dialog.
-- Settings content is wrapped in a bounded vertical scroller inside the dialog.
+- Each Settings navigation page wraps its content in a bounded vertical scroller.
   Keep the dialog's requested height below common 800px windows so
   `AdwFloatingSheet` does not over-request during open/close animations.
 - Scrolling over the Liquid Glass transparency and Day grid column sliders
@@ -629,3 +631,14 @@ Before editing UI code:
 
 
 Native task management displays the accepted username and supports sign-out and sign-in again. Sign-out revokes/removes the session and pauses only that task. Reauthentication can resume the same identity, while a different account needs another task and a non-overlapping local root. Draft fields never replace accepted credentials, and passwords are not saved. See [account integration](native-sync-accounts.md).
+
+
+Cloud sync uses a single ActionRow with a directly operable switch in main
+Settings. Activating the row pushes a NavigationPage in the same dialog; the
+page header provides a return button. Overview/progress and task configuration
+live exclusively on that subpage. Task cards start collapsed; details show the
+full folder and server/account/zone identity, an album-scope summary with a
+Choose button, and cloud-photo management. An accessible overflow menu groups
+pause/resume, sign-in, sign-out and confirmed removal. Existing glass button
+classes and libadwaita rows provide both material modes without custom fills.
+Background polling updates existing cards rather than replacing them.

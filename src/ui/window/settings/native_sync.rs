@@ -60,49 +60,44 @@ impl MainWindow {
             None => SyncService::new(pool),
         };
         let group = adw::PreferencesGroup::new();
-        group.set_title(&tr("native.settings"));
-        group.set_description(Some(&tr("native.scope_hint")));
-        group.set_widget_name("native-sync-settings");
         let enabled = gtk::Switch::builder()
             .active(prefs::sync_enabled())
             .valign(gtk::Align::Center)
             .build();
         enabled.set_widget_name("native-sync-enabled");
-        let enabled_row = adw::ActionRow::builder()
-            .title(tr("native.enabled"))
+        enabled.update_property(&[gtk::accessible::Property::Label(&tr("native.enabled"))]);
+        let entry = adw::ActionRow::builder()
+            .title(tr("native.settings"))
+            .activatable(true)
             .build();
-        enabled_row.add_suffix(&enabled);
-        group.add(&enabled_row);
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let add = button("native.add", "native-sync-add");
-        let sync = button("native.sync_now", "native-sync-now");
-        actions.append(&add);
-        actions.append(&sync);
-        group.add(&actions);
+        entry.set_widget_name("native-sync-entry");
+        entry.add_prefix(&decoration("folder-remote-symbolic"));
+        entry.add_suffix(&enabled);
+        entry.add_suffix(&decoration("go-next-symbolic"));
+        group.add(&entry);
+        // Only failures add a message to the otherwise single-row entry.
         let status = label();
-        status.set_widget_name("native-sync-status");
+        status.add_css_class("error");
+        status.set_visible(false);
+        status.connect_label_notify(|label| label.set_visible(!label.label().is_empty()));
         group.add(&status);
-        let jobs = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        group.add(&jobs);
         content.append(&group);
-        let parent_add = parent.clone();
-        let service_add = service.clone();
-        add.connect_clicked(move |_| show_connection(&parent_add, service_add.clone()));
-        let service_sync = service.clone();
-        let status_sync = status.clone();
-        sync.connect_clicked(move |_| {
-            let service = service_sync.clone();
-            let status = status_sync.clone();
-            glib::spawn_future_local(async move {
-                let result =
-                    tokio::spawn(
-                        async move { service.request_all_sync().map_err(|e| e.to_string()) },
-                    )
-                    .await;
-                if let Ok(Err(error)) = result {
-                    status.set_label(&error);
-                }
-            });
+        let weak_window = self.downgrade();
+        let parent_open = parent.clone();
+        let service_open = service.clone();
+        entry.connect_activated(move |entry| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let Some(navigation) = entry
+                .ancestor(adw::NavigationView::static_type())
+                .and_downcast::<adw::NavigationView>()
+            else {
+                return;
+            };
+            let page =
+                window.build_native_sync_page(&parent_open, &navigation, service_open.clone());
+            navigation.push(&page);
         });
         let changing = Rc::new(Cell::new(false));
         let parent_enabled = parent.clone();
@@ -141,56 +136,181 @@ impl MainWindow {
                 set_enabled(service_enabled.clone(), true, &status_enabled);
             }
         });
-        let weak_group = group.downgrade();
-        let parent = parent.downgrade();
-        let mut signature = String::new();
-        glib::timeout_add_local(Duration::from_millis(500), move || {
-            if weak_group.upgrade().is_none() {
-                return glib::ControlFlow::Break;
+    }
+
+    fn build_native_sync_page(
+        &self,
+        parent: &gtk::Widget,
+        navigation: &adw::NavigationView,
+        service: SyncService,
+    ) -> adw::NavigationPage {
+        let content = column();
+        content.add_css_class("settings-dialog-content");
+        content.set_spacing(20);
+        let group = adw::PreferencesGroup::new();
+        group.set_widget_name("native-sync-settings");
+        group.set_title(&tr("native.overview"));
+        group.set_description(Some(&tr("native.automatic")));
+        let overview_row = adw::ActionRow::new();
+        overview_row.set_title_lines(1);
+        overview_row.set_subtitle_lines(2);
+        overview_row.set_widget_name("native-sync-overview");
+        overview_row.add_prefix(&decoration("emblem-synchronizing-symbolic"));
+        let sync = button("native.sync_now", "native-sync-now");
+        sync.set_sensitive(false);
+        overview_row.add_suffix(&sync);
+        group.add(&overview_row);
+        group.set_visible(false);
+        content.append(&group);
+        let status = label();
+        status.set_widget_name("native-sync-status");
+        status.add_css_class("error");
+        status.set_visible(false);
+        status.connect_label_notify(|label| label.set_visible(!label.label().is_empty()));
+        content.append(&status);
+        let tasks = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let title = gtk::Label::new(Some(&tr("native.tasks")));
+        title.add_css_class("heading");
+        title.set_xalign(0.0);
+        title.set_hexpand(true);
+        heading.append(&title);
+        let add = button("native.add", "native-sync-add");
+        heading.append(&add);
+        tasks.append(&heading);
+        let empty_group = adw::PreferencesGroup::new();
+        let empty = adw::ActionRow::builder()
+            .title(tr("native.empty"))
+            .subtitle(tr("native.empty_hint"))
+            .build();
+        empty.set_widget_name("native-sync-empty");
+        empty_group.add(&empty);
+        tasks.append(&empty_group);
+        content.append(&tasks);
+        let jobs = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        content.append(&jobs);
+        let hint = label();
+        hint.set_label(&tr("native.scope_hint"));
+        hint.add_css_class("dim-label");
+        hint.add_css_class("caption");
+        content.append(&hint);
+        let parent_add = parent.clone();
+        let service_add = service.clone();
+        add.connect_clicked(move |_| show_connection(&parent_add, service_add.clone()));
+        let service_sync = service.clone();
+        let status_sync = status.clone();
+        sync.connect_clicked(move |_| {
+            let service = service_sync.clone();
+            let status = status_sync.clone();
+            status.set_label("");
+            glib::spawn_future_local(async move {
+                match tokio::spawn(
+                    async move { service.request_all_sync().map_err(|e| e.to_string()) },
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => status.set_label(&error),
+                    Err(_) => status.set_label(&tr("native.worker_failed")),
+                }
+            });
+        });
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .child(&content)
+            .build();
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder().show_back_button(false).build();
+        let back = gtk::Button::from_icon_name("go-previous-symbolic");
+        back.set_widget_name("native-sync-back");
+        back.set_tooltip_text(Some(&tr("native.back")));
+        back.add_css_class("glass-toolbar-button");
+        let weak_navigation = navigation.downgrade();
+        back.connect_clicked(move |_| {
+            if let Some(navigation) = weak_navigation.upgrade() {
+                navigation.pop();
             }
+        });
+        header.pack_start(&back);
+        toolbar.add_top_bar(&header);
+        toolbar.set_content(Some(&scroller));
+        let page = adw::NavigationPage::new(&toolbar, &tr("native.settings"));
+        page.set_widget_name("native-sync-page");
+        let weak_page = page.downgrade();
+        let parent = parent.downgrade();
+        let mut cards = std::collections::BTreeMap::<i64, JobCard>::new();
+        // Update existing widgets so background progress never collapses details,
+        // closes an open action menu, or discards keyboard focus.
+        let refresh = move || {
+            let Some(page) = weak_page.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             let Some(parent) = parent.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            // Small local metadata reads only; all network and secret I/O runs on Tokio.
+            if !page.is_mapped() {
+                return glib::ControlFlow::Continue;
+            }
             match (service.store().list_jobs(), service.store().overview()) {
                 (Ok(list), Ok(overview)) => {
-                    status.set_label(&trf(
-                        "native.status",
+                    let enabled = prefs::sync_enabled();
+                    overview_row.set_title(&trf(
+                        "native.progress",
                         &[
                             ("done", &overview.synced_items.to_string()),
                             ("total", &overview.total_items.to_string()),
-                            ("conflicts", &overview.conflict_images.to_string()),
                         ],
                     ));
-                    sync.set_sensitive(prefs::sync_enabled() && !list.is_empty());
-                    let identities = list
-                        .iter()
-                        .map(|job| {
-                            service
-                                .store()
-                                .native_scope(job.connection_id)
-                                .ok()
-                                .flatten()
-                                .and_then(|s| s.authentication)
-                                .and_then(|a| a.user)
+                    let summary = if overview.conflict_images > 0 {
+                        trf(
+                            "native.conflicts",
+                            &[("count", &overview.conflict_images.to_string())],
+                        )
+                    } else {
+                        tr(if enabled {
+                            "native.up_to_date_hint"
+                        } else {
+                            "native.disabled"
                         })
-                        .collect::<Vec<_>>();
-                    let next = format!("{list:?}{overview:?}{identities:?}");
-                    if signature != next {
-                        signature = next;
-                        while let Some(child) = jobs.first_child() {
-                            jobs.remove(&child);
+                    };
+                    overview_row.set_subtitle(&summary);
+                    if overview.conflict_images > 0 {
+                        overview_row.add_css_class("warning");
+                    } else {
+                        overview_row.remove_css_class("warning");
+                    }
+                    group.set_visible(!list.is_empty());
+                    empty_group.set_visible(list.is_empty());
+                    sync.set_sensitive(enabled && list.iter().any(|job| !job.paused));
+                    empty.set_visible(list.is_empty());
+                    cards.retain(|id, card| {
+                        let keep = list.iter().any(|job| job.id == *id);
+                        if !keep {
+                            jobs.remove(&card.group);
                         }
-                        for job in list {
-                            append_job(&jobs, &parent, &service, job);
-                        }
+                        keep
+                    });
+                    for job in list {
+                        let card = cards
+                            .entry(job.id)
+                            .or_insert_with(|| append_job(&jobs, &parent, &service, &job, &status));
+                        card.refresh(&service, &job);
                     }
                 }
                 (Err(error), _) | (_, Err(error)) => status.set_label(&error.to_string()),
             }
             glib::ControlFlow::Continue
-        });
+        };
+        glib::timeout_add_local(Duration::from_millis(500), refresh);
+        page
     }
+}
+
+fn decoration(icon: &str) -> gtk::Image {
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_accessible_role(gtk::AccessibleRole::Presentation);
+    image
 }
 
 fn set_enabled(service: SyncService, enabled: bool, status: &gtk::Label) {
@@ -210,24 +330,120 @@ fn set_enabled(service: SyncService, enabled: bool, status: &gtk::Label) {
     });
 }
 
+struct JobCard {
+    group: adw::PreferencesGroup,
+    row: adw::ExpanderRow,
+    state: gtk::Label,
+    pause: gtk::Button,
+    scope: adw::ActionRow,
+}
+impl JobCard {
+    fn refresh(&self, service: &SyncService, job: &crate::core::sync::store::SyncJob) {
+        let state = tr(if !prefs::sync_enabled() {
+            "native.disabled"
+        } else if job.paused {
+            "native.paused"
+        } else if job.last_error.is_some() {
+            "native.needs_attention"
+        } else {
+            "native.ready"
+        });
+        self.row.set_subtitle(&state);
+        self.state
+            .set_label(job.last_error.as_deref().unwrap_or(""));
+        self.state.set_visible(job.last_error.is_some());
+        self.pause.set_label(&tr(if job.paused {
+            "native.resume"
+        } else {
+            "native.pause"
+        }));
+        let albums = service.store().upload_albums(job.id).unwrap_or_default();
+        self.scope
+            .set_subtitle(&if job.upload_scope == UploadScope::All {
+                tr("native.all_albums")
+            } else if albums.is_empty() {
+                tr("native.receive_only")
+            } else {
+                trf(
+                    "native.album_count",
+                    &[("count", &albums.len().to_string())],
+                )
+            });
+    }
+}
+
+fn detail(key: &str, value: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(tr(key))
+        .subtitle(value)
+        .build();
+    row.set_subtitle_selectable(true);
+    row.set_subtitle_lines(2);
+    row.set_use_markup(false);
+    row
+}
+
+fn menu_action(key: &str, name: &str, menu: &gtk::Popover) -> gtk::Button {
+    let action = gtk::Button::with_label(&tr(key));
+    action.set_widget_name(name);
+    action.set_halign(gtk::Align::Fill);
+    action.add_css_class("flat");
+    let menu = menu.downgrade();
+    action.connect_clicked(move |_| {
+        if let Some(menu) = menu.upgrade() {
+            menu.popdown();
+        }
+    });
+    action
+}
+
 fn append_job(
     container: &gtk::Box,
     parent: &gtk::Widget,
     service: &SyncService,
-    job: crate::core::sync::store::SyncJob,
-) {
+    job: &crate::core::sync::store::SyncJob,
+    status: &gtk::Label,
+) -> JobCard {
     let group = adw::PreferencesGroup::new();
-    let row = adw::ActionRow::builder()
-        .title(job.local_root.to_string_lossy().as_ref())
-        .subtitle(format!(
-            "{} · {}",
-            job.endpoint,
-            job.native_zone
-                .as_ref()
-                .map(|z| z.zone_name.as_str())
-                .unwrap_or("")
-        ))
+    let title = job
+        .local_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| job.local_root.to_string_lossy().into_owned());
+    let row = adw::ExpanderRow::builder().title(&title).build();
+    row.set_use_markup(false);
+    row.set_title_lines(1);
+    row.set_subtitle_lines(2);
+    row.set_widget_name(&format!("native-sync-job-{}", job.id));
+    row.add_prefix(&decoration("folder-pictures-symbolic"));
+    let menu = gtk::Popover::new();
+    let actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .margin_top(6)
+        .margin_bottom(6)
+        .margin_start(6)
+        .margin_end(6)
         .build();
+    menu.set_child(Some(&actions));
+    let more = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .valign(gtk::Align::Center)
+        .popover(&menu)
+        .build();
+    more.add_css_class("glass-toolbar-button");
+    more.set_widget_name(&format!("native-sync-menu-{}", job.id));
+    more.set_tooltip_text(Some(&tr("native.task_actions")));
+    row.add_suffix(&more);
+    let state = label();
+    state.add_css_class("error");
+    state.set_margin_start(16);
+    state.set_margin_end(16);
+    state.set_margin_top(8);
+    state.set_margin_bottom(8);
+    row.add_row(&state);
+    row.add_row(&detail("native.root", &job.local_root.to_string_lossy()));
+    row.add_row(&detail("native.endpoint", &job.endpoint));
     let account = service
         .store()
         .native_scope(job.connection_id)
@@ -237,46 +453,43 @@ fn append_job(
         .and_then(|a| a.user)
         .map(|u| u.username);
     if let Some(account) = &account {
-        row.set_subtitle(&format!(
-            "{} · {} · {}",
-            job.endpoint,
-            account,
-            job.native_zone
-                .as_ref()
-                .map(|z| z.zone_name.as_str())
-                .unwrap_or("")
-        ));
+        row.add_row(&detail("native.username", account));
     }
-    row.set_widget_name(&format!("native-sync-job-{}", job.id));
+    if let Some(zone) = &job.native_zone {
+        row.add_row(&detail("native.zone", &zone.zone_name));
+    }
+    let scope_row = detail("native.albums", "");
+    let scope = button("native.choose", &format!("native-sync-scope-{}", job.id));
+    scope_row.add_suffix(&scope);
+    scope_row.set_activatable_widget(Some(&scope));
+    row.add_row(&scope_row);
+    let manage_row = detail("native.manage", &tr("native.manage_summary"));
+    let manage = gtk::Button::from_icon_name("go-next-symbolic");
+    manage.add_css_class("glass-toolbar-button");
+    manage.set_widget_name(&format!("native-sync-manage-{}", job.id));
+    manage.set_tooltip_text(Some(&tr("native.manage")));
+    manage.set_valign(gtk::Align::Center);
+    manage_row.add_suffix(&manage);
+    manage_row.set_activatable_widget(Some(&manage));
+    row.add_row(&manage_row);
     group.add(&row);
-    let state = label();
-    state.set_label(&job.last_error.clone().unwrap_or_else(|| {
-        tr(if job.paused {
-            "native.paused"
-        } else {
-            "native.automatic"
-        })
-    }));
-    group.add(&state);
-    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let scope = button("native.albums", &format!("native-sync-scope-{}", job.id));
-    let manage = button("native.manage", &format!("native-sync-manage-{}", job.id));
-    let pause = button(
+    let pause = menu_action(
         if job.paused {
             "native.resume"
         } else {
             "native.pause"
         },
         &format!("native-sync-pause-{}", job.id),
+        &menu,
     );
-    let remove = button("native.remove", &format!("native-sync-remove-{}", job.id));
-    for b in [&scope, &manage, &pause, &remove] {
-        actions.append(b);
-    }
-    group.add(&actions);
-    let authentication = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let login = button("native.relogin", &format!("native-sync-relogin-{}", job.id));
-    authentication.append(&login);
+    actions.append(&pause);
+    actions.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let login = menu_action(
+        "native.relogin",
+        &format!("native-sync-relogin-{}", job.id),
+        &menu,
+    );
+    actions.append(&login);
     let parent_login = parent.clone();
     let service_login = service.clone();
     let job_login = job.clone();
@@ -290,11 +503,15 @@ fn append_job(
         )
     });
     if account.is_some() {
-        let logout = button("native.logout", &format!("native-sync-logout-{}", job.id));
-        authentication.append(&logout);
+        let logout = menu_action(
+            "native.logout",
+            &format!("native-sync-logout-{}", job.id),
+            &menu,
+        );
+        actions.append(&logout);
         let service_logout = service.clone();
         let id = job.id;
-        let state_logout = state.clone();
+        let state_logout = status.clone();
         logout.connect_clicked(move |_| {
             let service = service_logout.clone();
             let state = state_logout.clone();
@@ -307,14 +524,21 @@ fn append_job(
                 })
                 .await
                 {
-                    Ok(Ok(())) => state.set_label(&tr("native.logged_out")),
+                    Ok(Ok(())) => state.set_label(""),
                     Ok(Err(e)) => state.set_label(&e),
                     Err(_) => state.set_label(&tr("native.worker_failed")),
                 }
             });
         });
     }
-    group.add(&authentication);
+    actions.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let remove = menu_action(
+        "native.remove",
+        &format!("native-sync-remove-{}", job.id),
+        &menu,
+    );
+    remove.add_css_class("destructive-action");
+    actions.append(&remove);
     container.append(&group);
     let id = job.id;
     let parent_scope = parent.clone();
@@ -346,6 +570,9 @@ fn append_job(
     pause.connect_clicked(move |_| {
         let service = service_pause.clone();
         tokio::spawn(async move {
+            let Ok(Some(job)) = service.store().get_job(id) else {
+                return;
+            };
             if let Err(e) = service.store().set_job_paused(id, !job.paused) {
                 tracing::warn!("pause failed: {e}");
                 return;
@@ -357,6 +584,7 @@ fn append_job(
     });
     let parent_remove = parent.clone();
     let service_remove = service.clone();
+    let state_remove = status.clone();
     remove.connect_clicked(move |_| {
         let dialog = adw::AlertDialog::builder()
             .heading(tr("native.remove"))
@@ -367,7 +595,7 @@ fn append_job(
         dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
         dialog.set_close_response("cancel");
         let service = service_remove.clone();
-        let state = state.clone();
+        let state = state_remove.clone();
         dialog.connect_response(Some("remove"), move |_, _| {
             let service = service.clone();
             let state = state.clone();
@@ -386,6 +614,13 @@ fn append_job(
         });
         dialog.present(&parent_remove);
     });
+    JobCard {
+        group,
+        row,
+        state,
+        pause,
+        scope: scope_row,
+    }
 }
 
 fn show_connection(parent: &gtk::Widget, service: SyncService) {

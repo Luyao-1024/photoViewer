@@ -15,7 +15,14 @@ keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-The native Settings surface now supports connection probes, explicit album scope,
+The main Settings surface contains a single cloud-sync row and the global switch.
+Activating the row pushes a dedicated page within the Settings navigation view;
+toggling the switch does not navigate. The subpage separates overview, empty-state
+guidance and collapsed task cards. Task details contain identity and album scope;
+a named overflow menu contains pause/resume, authentication and removal actions.
+Polling updates existing task widgets so progress changes preserve expansion and focus.
+
+The native Settings surface supports connection probes, explicit album scope,
 manual/automatic synchronization, pause/resume and cloud-photo decisions. The
 implementation boundaries are the connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,

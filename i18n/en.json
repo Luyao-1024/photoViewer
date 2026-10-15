@@ -448,5 +448,22 @@
   "native.relogin": "Sign in and resume",
   "native.logout": "Sign out",
   "native.logged_out": "Signed out; synchronization is paused.",
-  "native.relogin_hint": "Sign in again to update this task’s credential for the same account. Use a new task with a different local root for another account."
+  "native.relogin_hint": "Sign in again to update this task’s credential for the same account. Use a new task with a different local root for another account.",
+  "native.overview": "Sync overview",
+  "native.tasks": "Sync tasks",
+  "native.empty": "No servers yet",
+  "native.empty_hint": "Add a server and choose a local photo folder to get started.",
+  "native.progress": "{done} / {total} photos synced",
+  "native.conflicts": "{count} photos need a version decision. Expand a task to review.",
+  "native.up_to_date_hint": "Includes photos completed in earlier syncs",
+  "native.disabled": "Sync is off",
+  "native.needs_attention": "Needs attention · Expand for details",
+  "native.ready": "Automatic sync is ready",
+  "native.receive_only": "Receive only · No upload albums selected",
+  "native.all_albums": "Upload all albums",
+  "native.album_count": "{count} albums selected for upload",
+  "native.choose": "Choose",
+  "native.manage_summary": "Review photos, resolve conflicts and manage cloud copies",
+  "native.task_actions": "Task actions",
+  "native.back": "Back to Settings"
 }

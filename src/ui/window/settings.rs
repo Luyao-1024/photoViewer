@@ -34,11 +34,18 @@ impl MainWindow {
             .child(&self.build_settings_page(host))
             .build();
 
+        let toolbar = adw::ToolbarView::new();
+        toolbar.add_top_bar(&adw::HeaderBar::new());
+        toolbar.set_content(Some(&scroller));
+        let page = adw::NavigationPage::new(&toolbar, &tr("setting.page.title"));
+        let navigation = adw::NavigationView::new();
+        navigation.set_widget_name("settings-navigation");
+        navigation.add(&page);
         let dialog = adw::Dialog::builder()
             .title(tr("setting.page.title"))
             .content_width(540)
             .content_height(700)
-            .child(&scroller)
+            .child(&navigation)
             .build();
         dialog.add_css_class("glass-alert-dialog");
         dialog.add_css_class("settings-dialog-backdrop");

@@ -26,9 +26,53 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
     common::credentials::install();
+    if let Ok(mode) = std::env::var("PHOTO_VIEWER_SYNC_MATERIAL") {
+        photo_viewer::core::prefs::set_liquid_glass(mode != "plain").unwrap();
+    }
+    if let Ok(theme) = std::env::var("PHOTO_VIEWER_SYNC_THEME") {
+        photo_viewer::core::prefs::set_theme_preference(if theme == "light" {
+            photo_viewer::core::prefs::ThemePreference::Light
+        } else {
+            photo_viewer::core::prefs::ThemePreference::Dark
+        })
+        .unwrap();
+    }
     let shell = Shell::new();
     let ui = &shell.ui;
     ui.click(&shell.window.imp().settings_button.get(), "Settings");
+    // The main Settings surface has just the switch and a navigation affordance.
+    assert!(!descendants::<gtk::Button>(&shell.window)
+        .iter()
+        .any(|b| b.widget_name() == "native-sync-add"));
+    let enabled = named::<gtk::Switch>(&shell.window, "native-sync-enabled");
+    Ui::for_widget(&enabled).scroll_to_reveal(&enabled, "Enable cloud sync");
+    Ui::for_widget(&enabled).click_native(&enabled, "Enable cloud sync without navigating");
+    assert!(ui.wait_until(Duration::from_secs(3), || {
+        photo_viewer::core::prefs::sync_enabled()
+    }));
+    assert!(!descendants::<adw::NavigationPage>(&shell.window)
+        .iter()
+        .any(|p| p.widget_name() == "native-sync-page"));
+    Ui::for_widget(&enabled).click_native(&enabled, "Disable cloud sync");
+    click_response(&shell, "button.cancel");
+    assert!(photo_viewer::core::prefs::sync_enabled());
+    assert!(enabled.is_active());
+    Ui::for_widget(&enabled).click_native(&enabled, "Confirm disabling cloud sync");
+    click_response(&shell, "native.disable");
+    assert!(ui.wait_until(Duration::from_secs(3), || {
+        !photo_viewer::core::prefs::sync_enabled()
+    }));
+    capture(&shell, "main-settings");
+    let entry = named::<adw::ActionRow>(&shell.window, "native-sync-entry");
+    Ui::for_widget(&entry).scroll_to_reveal(&entry, "Cloud sync settings");
+    Ui::for_widget(&entry).click_native(&entry, "Open cloud sync subpage");
+    let page = named::<adw::NavigationPage>(&shell.window, "native-sync-page");
+    assert!(ui.wait_until(Duration::from_secs(3), || page.is_mapped()));
+    let empty = named::<adw::ActionRow>(&page, "native-sync-empty");
+    assert!(empty.is_visible());
+    let sync = named::<gtk::Button>(&page, "native-sync-now");
+    assert!(!sync.is_sensitive());
+    capture(&shell, "sync-empty");
     let add = named::<gtk::Button>(&shell.window, "native-sync-add");
     Ui::for_widget(&add).scroll_to_reveal(&add, "Add server");
     Ui::for_widget(&add).click(&add, "Add server");
@@ -128,6 +172,13 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         .iter()
         .any(|b| b.widget_name() == format!("native-sync-scope-{}", job.id)))
     );
+    let task = named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-job-{}", job.id));
+    assert!(!task.is_expanded(), "task details start collapsed");
+    capture(&shell, "sync-task");
+    assert!(!named::<adw::ActionRow>(&page, "native-sync-empty").is_visible());
+    Ui::for_widget(&task).scroll_to_reveal(&task, "Task details");
+    Ui::for_widget(&task).click_native(&task, "Expand task details");
+    assert!(ui.wait_until(Duration::from_secs(3), || task.is_expanded()));
     let scope = named::<gtk::Button>(&shell.window, &format!("native-sync-scope-{}", job.id));
     Ui::for_widget(&scope).scroll_to_reveal(&scope, "Edit upload albums");
     Ui::for_widget(&scope).click(&scope, "Edit upload albums");
@@ -156,6 +207,12 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         > job.config_generation));
     let generation = store.get_job(job.id).unwrap().unwrap().config_generation;
     ui.pump(Duration::from_millis(600));
+    assert_eq!(
+        task,
+        named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-job-{}", job.id)),
+        "refresh must keep task widgets, keyboard focus and expansion"
+    );
+    assert!(task.is_expanded());
     let scope = named::<gtk::Button>(&shell.window, &format!("native-sync-scope-{}", job.id));
     Ui::for_widget(&scope).scroll_to_reveal(&scope, "Reopen scope");
     Ui::for_widget(&scope).click(&scope, "Reopen scope");
@@ -174,13 +231,37 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         store.get_job(job.id).unwrap().unwrap().config_generation,
         generation
     );
+    capture(&shell, "sync-details");
+    for (paused, action) in [(true, "Pause task"), (false, "Resume task")] {
+        open_task_menu(&shell, job.id);
+        let pause = named::<gtk::Button>(&shell.window, &format!("native-sync-pause-{}", job.id));
+        task_ui(&shell, job.id).click(&pause, action);
+        assert!(ui.wait_until(Duration::from_secs(3), || store
+            .get_job(job.id)
+            .unwrap()
+            .unwrap()
+            .paused
+            == paused));
+    }
+    open_task_menu(&shell, job.id);
+    ui.pump(Duration::from_millis(1100));
+    let menu = named::<gtk::MenuButton>(&shell.window, &format!("native-sync-menu-{}", job.id));
+    assert!(
+        menu.popover().unwrap().is_mapped(),
+        "refresh keeps open menus"
+    );
+    capture(&shell, "sync-menu");
+    let remove = named::<gtk::Button>(&shell.window, &format!("native-sync-remove-{}", job.id));
+    task_ui(&shell, job.id).click(&remove, "Remove task");
+    click_response(&shell, "button.cancel");
+    assert!(store.get_job(job.id).unwrap().is_some());
     let saved = photo_viewer::platform::credentials::load_api_key(&job.credential_ref).unwrap();
     assert!(saved.starts_with("ss1_"));
     assert_ne!(saved, "x".repeat(32));
     ui.pump(Duration::from_millis(600));
+    open_task_menu(&shell, job.id);
     let logout = named::<gtk::Button>(&shell.window, &format!("native-sync-logout-{}", job.id));
-    Ui::for_widget(&logout).scroll_to_reveal(&logout, "Sign out");
-    Ui::for_widget(&logout).click(&logout, "Sign out");
+    task_ui(&shell, job.id).click(&logout, "Sign out");
     assert!(ui.wait_until(Duration::from_secs(5), || store
         .get_job(job.id)
         .unwrap()
@@ -188,9 +269,9 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         .paused));
     assert!(photo_viewer::platform::credentials::load_api_key(&job.credential_ref).is_err());
     ui.pump(Duration::from_millis(600));
+    open_task_menu(&shell, job.id);
     let login = named::<gtk::Button>(&shell.window, &format!("native-sync-relogin-{}", job.id));
-    Ui::for_widget(&login).scroll_to_reveal(&login, "Sign in again");
-    Ui::for_widget(&login).click(&login, "Sign in again");
+    task_ui(&shell, job.id).click(&login, "Sign in again");
     let password = named::<adw::PasswordEntryRow>(&shell.window, "native-sync-relogin-password");
     Ui::for_widget(&password).type_editable(&password, &"x".repeat(32));
     let submit = named::<gtk::Button>(&shell.window, "native-sync-relogin-submit");
@@ -206,6 +287,83 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
             .unwrap()
             .starts_with("ss1_")
     );
+    let back = named::<gtk::Button>(&shell.window, "native-sync-back");
+    Ui::for_widget(&back).click(&back, "Back to Settings");
+    assert!(ui.wait_until(Duration::from_secs(3), || !page.is_mapped()));
+    assert!(named::<gtk::Switch>(&shell.window, "native-sync-enabled").is_mapped());
+    let entry = named::<adw::ActionRow>(&shell.window, "native-sync-entry");
+    Ui::for_widget(&entry).click_native(&entry, "Reopen cloud sync");
+    assert!(
+        ui.wait_until(Duration::from_secs(3), || named::<adw::NavigationPage>(
+            &shell.window,
+            "native-sync-page"
+        )
+        .is_mapped())
+    );
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().config_generation,
+        generation
+    );
+}
+
+fn click_response(shell: &Shell, key: &str) {
+    let text = photo_viewer::core::i18n::tr(key);
+    assert!(
+        shell
+            .ui
+            .wait_until(Duration::from_secs(5), || descendants::<gtk::Button>(
+                &shell.window
+            )
+            .iter()
+            .any(|b| b.is_mapped() && b.label().as_deref() == Some(text.as_str()))),
+        "missing dialog response {text}; buttons: {:?}; dialogs: {:?}",
+        descendants::<gtk::Button>(&shell.window)
+            .iter()
+            .map(|b| (b.label(), b.is_mapped()))
+            .collect::<Vec<_>>(),
+        descendants::<adw::AlertDialog>(&shell.window)
+            .iter()
+            .map(|d| d.heading())
+            .collect::<Vec<_>>()
+    );
+    let button = descendants::<gtk::Button>(&shell.window)
+        .into_iter()
+        .find(|b| b.is_mapped() && b.label().as_deref() == Some(text.as_str()))
+        .unwrap();
+    Ui::for_widget(&button).click(&button, &text);
+    shell.ui.pump(Duration::from_millis(250));
+}
+
+// Optional review artifacts are snapshots of the real, input-driven UI.
+fn capture(shell: &Shell, name: &str) {
+    let Some(directory) = std::env::var_os("PHOTO_VIEWER_SYNC_SCREENSHOTS") else {
+        return;
+    };
+    shell.ui.pump(Duration::from_millis(350));
+    let directory = std::path::PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    // Capture the composited X11 surface: a transparent widget snapshot cannot
+    // show backdrop materials or the popover's separate native surface.
+    assert!(std::process::Command::new("import")
+        .args(["-window", "root"])
+        .arg(directory.join(format!("{name}.png")))
+        .status()
+        .expect("optional screenshots require ImageMagick")
+        .success());
+}
+
+fn task_ui(shell: &Shell, id: i64) -> Ui {
+    let menu = named::<gtk::MenuButton>(&shell.window, &format!("native-sync-menu-{id}"));
+    Ui::for_surface(&menu.popover().unwrap(), "Task action popover")
+}
+
+fn open_task_menu(shell: &Shell, id: i64) {
+    let menu = named::<gtk::MenuButton>(&shell.window, &format!("native-sync-menu-{id}"));
+    Ui::for_widget(&menu).scroll_to_reveal(&menu, "Task actions");
+    Ui::for_widget(&menu).click(&menu, "Open task actions");
+    assert!(shell.ui.wait_until(Duration::from_secs(3), || menu
+        .popover()
+        .is_some_and(|p| p.is_mapped())));
 }
 
 struct LocalServer {

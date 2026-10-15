@@ -343,28 +343,39 @@ fn settings_clear_cache_data_row_defers_combined_size_calculation() {
     );
 }
 
-#[gtk::test]
+#[test]
 fn settings_dialog_uses_bounded_scroll_child() {
-    let _ = gtk::init();
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.WindowSettingsDialogBounds")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
+    let _sandbox = crate::testing::Sandbox::install();
+    gtk::test_synced(|| {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.WindowSettingsDialogBounds")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
 
-    let window = MainWindow::new(&app);
-    let host = window.clone().upcast::<gtk::Widget>();
-    let dialog = window.build_settings_dialog(&host);
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let dialog = window.build_settings_dialog(&host);
 
-    assert!(
-        dialog.content_height() <= 700,
-        "settings dialog content height should stay below an 800px window; got {}",
-        dialog.content_height()
-    );
-    assert!(
-        dialog
+        assert!(
+            dialog.content_height() <= 700,
+            "settings dialog content height should stay below an 800px window; got {}",
+            dialog.content_height()
+        );
+        let navigation = dialog
             .child()
-            .is_some_and(|child| child.is::<gtk::ScrolledWindow>()),
-        "settings dialog should use a ScrolledWindow so tall content does not over-request sheet height"
-    );
+            .unwrap()
+            .downcast::<adw::NavigationView>()
+            .unwrap();
+        let page = navigation.visible_page().unwrap();
+        let toolbar = page
+            .child()
+            .unwrap()
+            .downcast::<adw::ToolbarView>()
+            .unwrap();
+        assert!(
+            toolbar.content().unwrap().is::<gtk::ScrolledWindow>(),
+            "each settings page must scroll inside the bounded dialog"
+        );
+    });
 }

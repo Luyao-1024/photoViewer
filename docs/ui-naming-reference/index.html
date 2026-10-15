@@ -448,14 +448,18 @@
 <section id="native-sync-settings-map"><h2>原生云端同步设置</h2>
 <p>实现：src/ui/window/settings/native_sync.rs、native_actions.rs。所有正文通过 Rust tr() 本地化。</p>
 <table><thead><tr><th>Widget name</th><th>类型与职责</th></tr></thead><tbody>
-<tr><td>native-sync-settings / native-sync-enabled / native-sync-status</td><td>PreferencesGroup / Switch / Label：总开关、历史进度和冲突数</td></tr>
+<tr><td>settings-navigation / native-sync-entry / native-sync-enabled</td><td>NavigationView / ActionRow / Switch：主设置的单行入口与独立总开关；点击行进入子页面，操作开关不导航</td></tr>
+<tr><td>native-sync-page / native-sync-back</td><td>NavigationPage / Button：同步子页面、返回主设置</td></tr>
+<tr><td>native-sync-settings / native-sync-overview / native-sync-status</td><td>PreferencesGroup / ActionRow / Label：子页面概览、历史完成比例及冲突提示、操作失败消息</td></tr>
+<tr><td>native-sync-empty</td><td>ActionRow：没有任务时的添加服务器引导</td></tr>
 <tr><td>native-sync-add / native-sync-now</td><td>Button：添加服务器、立即同步</td></tr>
 <tr><td>native-sync-connection-dialog</td><td>Dialog：连接草稿，不接受就不影响现有任务</td></tr>
 <tr><td>native-sync-endpoint / native-sync-username / native-sync-password / native-sync-root</td><td>EntryRow / EntryRow / PasswordEntryRow / EntryRow：地址、用户名、密码、本地根</td></tr>
 <tr><td>native-sync-folder / native-sync-probe / native-sync-zone</td><td>Button / Button / ComboRow：目录选择、用户名密码登录及能力验证、已配置区域</td></tr>
 <tr><td>native-sync-albums / native-sync-save / native-sync-cancel / native-sync-probe-status</td><td>Button / Button / Button / Label：相册草稿、保存、取消、探测状态</td></tr>
 <tr><td>native-sync-album:{relative} / native-sync-albums-save / native-sync-albums-cancel</td><td>CheckButton / Button / Button：物理相册、接受或放弃选择</td></tr>
-<tr><td>native-sync-job-{id} / native-sync-scope-{id} / native-sync-manage-{id}</td><td>ActionRow / Button / Button：任务身份、范围编辑、云端照片管理</td></tr>
+<tr><td>native-sync-job-{id} / native-sync-scope-{id} / native-sync-manage-{id}</td><td>ExpanderRow / Button / Button：默认折叠的目录与状态卡片；展开后查看服务器/账户/区域/完整路径、范围编辑和云端照片管理</td></tr>
+<tr><td>native-sync-menu-{id}</td><td>MenuButton：带本地化名称的任务操作菜单，包含暂停/继续、登录/退出与移除</td></tr>
 <tr><td>native-sync-pause-{id} / native-sync-remove-{id}</td><td>Button：暂停或继续、确认后移除任务</td></tr>
 <tr><td>native-sync-photo-{id} / native-sync-photo-action-{id}-{action} / native-sync-action-status</td><td>ActionRow / Button / Label：显式云端删除、新身份重新上传、版本选择及恢复副本位置</td></tr>
 <tr><td>native-sync-relogin-{id} / native-sync-logout-{id}</td><td>Button：同账户登录并继续、撤销当前会话并暂停任务</td></tr>
