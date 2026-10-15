@@ -31,11 +31,14 @@ cargo test
 ## Cloud Sync
 
 Cloud synchronization uses the companion native Rust SyncServer. Settings provides
-an HTTPS endpoint/key probe, configured zone selection and an explicit upload
+username/password login and an HTTPS capability probe, configured zone selection and an explicit upload
 album selection. Empty selection receives cloud photos only. Complete original
 and thumbnail pairs are published to the local gallery, with automatic checks,
 manual synchronization, pause/resume, conflict recovery and explicit cloud deletion.
-Credentials remain in the system keyring. Native Backup is not exposed.
+Login sessions remain in the system keyring; passwords are not persisted.
+Different accounts on the same server use separate tasks and local roots, with
+identity checks, sign-out and same-account reauthentication. See the
+[account integration guide](docs/modules/native-sync-accounts.md). Native Backup is not exposed.
 
 See [the client usage guide](docs/modules/native-sync-usage.md) for setup and
 [the implementation record](docs/modules/native-sync-integration.md) for the exact

@@ -163,7 +163,19 @@ impl MainWindow {
                         ],
                     ));
                     sync.set_sensitive(prefs::sync_enabled() && !list.is_empty());
-                    let next = format!("{list:?}{overview:?}");
+                    let identities = list
+                        .iter()
+                        .map(|job| {
+                            service
+                                .store()
+                                .native_scope(job.connection_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|s| s.authentication)
+                                .and_then(|a| a.user)
+                        })
+                        .collect::<Vec<_>>();
+                    let next = format!("{list:?}{overview:?}{identities:?}");
                     if signature != next {
                         signature = next;
                         while let Some(child) = jobs.first_child() {
@@ -216,6 +228,25 @@ fn append_job(
                 .unwrap_or("")
         ))
         .build();
+    let account = service
+        .store()
+        .native_scope(job.connection_id)
+        .ok()
+        .flatten()
+        .and_then(|s| s.authentication)
+        .and_then(|a| a.user)
+        .map(|u| u.username);
+    if let Some(account) = &account {
+        row.set_subtitle(&format!(
+            "{} · {} · {}",
+            job.endpoint,
+            account,
+            job.native_zone
+                .as_ref()
+                .map(|z| z.zone_name.as_str())
+                .unwrap_or("")
+        ));
+    }
     row.set_widget_name(&format!("native-sync-job-{}", job.id));
     group.add(&row);
     let state = label();
@@ -243,6 +274,47 @@ fn append_job(
         actions.append(b);
     }
     group.add(&actions);
+    let authentication = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let login = button("native.relogin", &format!("native-sync-relogin-{}", job.id));
+    authentication.append(&login);
+    let parent_login = parent.clone();
+    let service_login = service.clone();
+    let job_login = job.clone();
+    let account_login = account.clone();
+    login.connect_clicked(move |_| {
+        show_relogin(
+            &parent_login,
+            service_login.clone(),
+            job_login.id,
+            account_login.clone().unwrap_or_default(),
+        )
+    });
+    if account.is_some() {
+        let logout = button("native.logout", &format!("native-sync-logout-{}", job.id));
+        authentication.append(&logout);
+        let service_logout = service.clone();
+        let id = job.id;
+        let state_logout = state.clone();
+        logout.connect_clicked(move |_| {
+            let service = service_logout.clone();
+            let state = state_logout.clone();
+            glib::spawn_future_local(async move {
+                match tokio::spawn(async move {
+                    service
+                        .logout_native_job(id)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                {
+                    Ok(Ok(())) => state.set_label(&tr("native.logged_out")),
+                    Ok(Err(e)) => state.set_label(&e),
+                    Err(_) => state.set_label(&tr("native.worker_failed")),
+                }
+            });
+        });
+    }
+    group.add(&authentication);
     container.append(&group);
     let id = job.id;
     let parent_scope = parent.clone();
@@ -320,16 +392,17 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     let content = column();
     let endpoint = row("native.endpoint", "native-sync-endpoint", "https://");
     let key = adw::PasswordEntryRow::builder()
-        .title(tr("native.api_key"))
+        .title(tr("native.password"))
         .build();
-    key.set_widget_name("native-sync-key");
+    key.set_widget_name("native-sync-password");
+    let username = row("native.username", "native-sync-username", "");
     let root = row(
         "native.root",
         "native-sync-root",
         &config::pictures_dir().to_string_lossy(),
     );
     let choose = button("native.choose_folder", "native-sync-folder");
-    let probe = button("native.probe", "native-sync-probe");
+    let probe = button("native.login", "native-sync-probe");
     let zone = adw::ComboRow::builder().title(tr("native.zone")).build();
     zone.set_widget_name("native-sync-zone");
     zone.set_visible(false);
@@ -344,6 +417,7 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     let cancel = button("button.cancel", "native-sync-cancel");
     for w in [
         endpoint.upcast_ref::<gtk::Widget>(),
+        username.upcast_ref(),
         key.upcast_ref(),
         root.upcast_ref(),
         choose.upcast_ref(),
@@ -360,14 +434,18 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     let dialog = surface("native.add", &content);
     dialog.set_widget_name("native-sync-connection-dialog");
     let draft = Rc::new(RefCell::new(None::<(String, String, Vec<String>)>));
+    let revision = Rc::new(Cell::new(0u64));
     for field in [
         endpoint.upcast_ref::<gtk::Editable>(),
+        username.upcast_ref::<gtk::Editable>(),
         key.upcast_ref::<gtk::Editable>(),
     ] {
         let draft = draft.clone();
         let save = save.clone();
         let zone = zone.clone();
+        let revision = revision.clone();
         field.connect_changed(move |_| {
+            revision.set(revision.get().wrapping_add(1));
             draft.borrow_mut().take();
             save.set_sensitive(false);
             zone.set_visible(false);
@@ -428,6 +506,7 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     });
     let service_probe = service.clone();
     let endpoint_probe = endpoint.clone();
+    let username_probe = username.clone();
     let key_probe = key.clone();
     let draft_probe = draft.clone();
     let status_probe = status.clone();
@@ -435,41 +514,44 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     let zone_probe = zone.clone();
     probe.connect_clicked(move |probe| {
         let address = endpoint_probe.text().trim().to_string();
-        let secret = key_probe.text().to_string();
+        let username = username_probe.text().to_string();
+        let password = key_probe.text().to_string();
         let service = service_probe.clone();
         let draft = draft_probe.clone();
         let status = status_probe.clone();
         let save = save_probe.clone();
         let zone = zone_probe.clone();
         let probe = probe.clone();
-        let endpoint = endpoint_probe.clone();
-        let key = key_probe.clone();
+        let revision = revision.clone();
+        let captured = revision.get();
         probe.set_sensitive(false);
-        status.set_label(&tr("native.probing"));
+        status.set_label(&tr("native.logging_in"));
         glib::spawn_future_local(async move {
-            let request_address = address.clone();
-            let request_secret = secret.clone();
+            let endpoint = address.clone();
             let result = tokio::spawn(async move {
                 service
-                    .probe_native_connection(&request_address, &request_secret)
+                    .login_native_connection(&endpoint, &username, &password)
                     .await
                     .map_err(|e| e.to_string())
             })
             .await;
             probe.set_sensitive(true);
-            if endpoint.text().trim() != address || key.text().as_str() != secret {
+            if revision.get() != captured {
                 return;
             }
             match result {
-                Ok(Ok(pinned)) => {
-                    let zones: Vec<String> = pinned.zones.clone();
-                    let names: Vec<&str> = zones.iter().map(String::as_str).collect();
+                Ok(Ok((session, pinned))) => {
+                    let zones = pinned.zones.clone();
+                    let names = zones.iter().map(String::as_str).collect::<Vec<_>>();
                     zone.set_model(Some(&gtk::StringList::new(&names)));
                     zone.set_selected(0);
                     zone.set_visible(true);
                     save.set_sensitive(!zones.is_empty());
-                    status.set_label(&tr("native.probe_ok"));
-                    *draft.borrow_mut() = Some((address, secret, zones));
+                    status.set_label(&trf(
+                        "native.login_ok",
+                        &[("username", &session.user.username)],
+                    ));
+                    *draft.borrow_mut() = Some((address, session.access_token, zones));
                 }
                 Ok(Err(e)) => status.set_label(&e),
                 Err(_) => status.set_label(&tr("native.worker_failed")),
@@ -646,4 +728,68 @@ fn show_albums(
 
 fn show_managed_photos(parent: &gtk::Widget, service: SyncService, job: i64) {
     super::native_actions::show(parent, service, job);
+}
+
+fn show_relogin(parent: &gtk::Widget, service: SyncService, job: i64, account: String) {
+    let content = column();
+    let hint = label();
+    hint.set_label(&tr("native.relogin_hint"));
+    content.append(&hint);
+    let username = row("native.username", "native-sync-relogin-username", &account);
+    content.append(&username);
+    let password = adw::PasswordEntryRow::builder()
+        .title(tr("native.password"))
+        .build();
+    password.set_widget_name("native-sync-relogin-password");
+    content.append(&password);
+    let status = label();
+    status.set_widget_name("native-sync-relogin-status");
+    content.append(&status);
+    let login = button("native.relogin", "native-sync-relogin-submit");
+    content.append(&login);
+    let cancel = button("button.cancel", "native-sync-relogin-cancel");
+    content.append(&cancel);
+    let dialog = surface("native.relogin", &content);
+    let weak = dialog.downgrade();
+    login.connect_clicked(move |button| {
+        let service = service.clone();
+        let username = username.text().to_string();
+        let password = password.text().to_string();
+        let status = status.clone();
+        let button = button.clone();
+        let weak = weak.clone();
+        button.set_sensitive(false);
+        status.set_label(&tr("native.logging_in"));
+        glib::spawn_future_local(async move {
+            match tokio::spawn(async move {
+                service
+                    .reauthenticate_native_job(job, &username, &password)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            {
+                Ok(Ok(())) => {
+                    if let Some(dialog) = weak.upgrade() {
+                        dialog.close();
+                    }
+                }
+                Ok(Err(e)) => {
+                    status.set_label(&e);
+                    button.set_sensitive(true);
+                }
+                Err(_) => {
+                    status.set_label(&tr("native.worker_failed"));
+                    button.set_sensitive(true);
+                }
+            }
+        });
+    });
+    let weak = dialog.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let Some(dialog) = weak.upgrade() {
+            dialog.close();
+        }
+    });
+    dialog.present(parent);
 }

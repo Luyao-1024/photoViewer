@@ -8,7 +8,8 @@
 |---|---|
 | 功能与验收约束 | [服务端规格](../../../syncserver/spac.md) |
 | 实现范围与支持能力 | [实现说明](../../../syncserver/docs/design/v0.1-server.md)、[兼容矩阵](../../../syncserver/docs/design/protocol-compatibility.md) |
-| 身份、认证与部署配置 | [安全与运维](../../../syncserver/docs/design/security-operations.md) |
+| 用户、密码登录、会话与隔离 | [认证契约](../../../syncserver/docs/contracts/authentication.md) |
+| 身份、认证与部署配置 | [安全与运维](../../../syncserver/docs/design/security-operations.md)、[多用户管理](../../../syncserver/docs/design/multi-user.md) |
 | 首次清单、快照、游标与增量 | [快照与增量契约](../../../syncserver/docs/contracts/snapshots.md) |
 | 记录读写、版本条件与幂等结果 | [记录契约](../../../syncserver/docs/contracts/records.md) |
 | 照片记录、两角色与 generation | [照片记录契约](../../../syncserver/docs/contracts/photo-records.md) |
@@ -30,3 +31,6 @@
 同一原生任务绑定一个本地根和一个服务端 zone；上传范围由客户端显式配置决定。当前产品只开放 Sync/Bidirectional；Backup、隐藏照片展示和其他缺少本地模型的能力不能仅因服务端支持而自动启用。未知或未适配内容进入可见的冲突/待办，不假装已经应用。
 
 `native/protocol.rs`、`receive.rs`、`assets.rs`、`lease.rs`、`modify.rs` 是对上述服务端契约的 Rust 适配。线上字段所属记录、摘要编码、错误和版本条件均以服务端为准。客户端方案只解释它们如何映射到本地媒体、数据库与交互，不另行列一份 wire 规范。
+
+
+多账户的客户端映射、凭证生命周期和 UI 接入见[账户接入方案](native-sync-accounts.md)，此页不复制服务器登录接口定义。

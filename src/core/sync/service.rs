@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod actions;
+mod authentication;
 mod configuration;
 pub mod coordinator;
 pub mod receive;

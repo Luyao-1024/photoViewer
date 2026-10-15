@@ -357,6 +357,8 @@ pub struct NativeRecordLimits {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeCapabilitiesResponse {
+    #[serde(default)]
+    pub authentication: Option<super::auth::NativeAuthentication>,
     pub service: String,
     pub version: String,
     pub stage: String,
@@ -386,6 +388,8 @@ pub struct NativeCapabilitiesResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativePinnedScope {
+    #[serde(default)]
+    pub authentication: Option<super::auth::NativeAuthentication>,
     #[serde(rename = "publicBaseURL")]
     pub public_base_url: String,
     pub namespace: NativeNamespace,
@@ -548,7 +552,7 @@ const MAX_CAPABILITIES_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone)]
 pub struct NativeClient {
-    client: reqwest::Client,
+    pub(super) client: reqwest::Client,
     base: NativeEndpoint,
     api_key: String,
 }
@@ -573,6 +577,23 @@ impl NativeClient {
 
     pub fn endpoint(&self) -> &NativeEndpoint {
         &self.base
+    }
+
+    pub async fn logout(&self) -> SyncResult<()> {
+        let url = self
+            .base
+            .base()
+            .join("v1/auth/logout")
+            .map_err(|_| SyncError::Protocol("invalid logout endpoint".into()))?;
+        let (status, bytes) = self
+            .send_lease_json(&url, b"{}".to_vec(), None, None)
+            .await?;
+        if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::UNAUTHORIZED
+        {
+            Ok(())
+        } else {
+            Err(map_status(status.as_u16(), &bytes))
+        }
     }
 
     /// Absolute URL for a path under the configured origin.
@@ -663,9 +684,8 @@ impl NativeClient {
     /// A GET authorized by the capability in the URL's query string, with **no**
     /// `Authorization` header.
     ///
-    /// The service treats a capability URL and a Bearer key on the same request
-    /// as contradictory and refuses it, so the two authorities are separate
-    /// request builders rather than one with a flag.
+    /// Session authentication and a resource capability are both required in
+    /// account mode. Authenticate only after the origin is checked.
     pub(super) fn check_origin(&self, url: &Url) -> SyncResult<()> {
         let base = self.base.base();
         if url.scheme() != base.scheme()
@@ -685,14 +705,14 @@ impl NativeClient {
         Ok(self
             .client
             .get(url.clone())
+            .bearer_auth(&self.api_key)
             .timeout(std::time::Duration::from_secs(3600))
             .send()
             .await?)
     }
 
     /// Raw `application/octet-stream` upload to a capability URL under a held
-    /// lease: capability authority plus lease proof, and deliberately no
-    /// `Authorization` header.
+    /// lease: same-account authentication, capability authority and lease proof.
     pub(super) async fn upload_bytes_request(
         &self,
         url: &str,
@@ -705,6 +725,7 @@ impl NativeClient {
         let mut request = self
             .client
             .post(parsed)
+            .bearer_auth(&self.api_key)
             .timeout(std::time::Duration::from_secs(3600))
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(bytes.to_vec());
@@ -727,6 +748,7 @@ impl NativeClient {
         let mut request = self
             .client
             .post(url.clone())
+            .bearer_auth(&self.api_key)
             .timeout(std::time::Duration::from_secs(3600))
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .header(reqwest::header::CONTENT_LENGTH, size)
@@ -888,6 +910,7 @@ pub fn validate_capabilities(
     }
 
     Ok(NativePinnedScope {
+        authentication: response.authentication.clone(),
         public_base_url: response.public_base_url.clone(),
         namespace: response.namespace.clone(),
         database_generation: response.database_generation.clone(),
@@ -953,6 +976,7 @@ fn is_uuid(value: &str) -> bool {
 #[cfg(test)]
 pub(crate) fn demo_pinned_scope(public_base_url: &str, zones: &[&str]) -> NativePinnedScope {
     NativePinnedScope {
+        authentication: None,
         public_base_url: public_base_url.into(),
         namespace: NativeNamespace {
             tenant: "local".into(),

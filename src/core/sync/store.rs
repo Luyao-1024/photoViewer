@@ -713,7 +713,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             })?;
             let existing = {
                 let mut stmt = tx.prepare(
-                    "SELECT j.local_root, c.endpoint, j.native_zone_name
+                    "SELECT j.local_root, c.endpoint, j.native_zone_name, c.native_tenant
                      FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id",
                 )?;
                 let rows = stmt.query_map([], |row| {
@@ -721,23 +721,28 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         PathBuf::from(row.get::<_, String>(0)?),
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
-            for (existing_local, existing_endpoint, existing_zone) in existing {
+            for (existing_local, existing_endpoint, existing_zone, existing_tenant) in existing {
                 if paths_overlap(&existing_local, &job.local_root) {
                     return Err(AppError::Backend(format!(
                         "synchronization local root overlaps an existing job: {}",
                         existing_local.display()
                     )));
                 }
-                // A zone has one effective uplink device per *server*, not per
-                // connection row: two credential references to the same
-                // endpoint are still one namespace, so mapping the same
-                // endpoint+zone into two local roots must be refused however
-                // the connections were created.
-                if existing_endpoint == job.endpoint && existing_zone == zone.zone_name {
+                // One local mapping per endpoint/account/zone; separate users
+                // of the same server can map to distinct local roots.
+                if existing_endpoint == job.endpoint
+                    && existing_zone == zone.zone_name
+                    && existing_tenant.as_deref()
+                        == job
+                            .native_pinned
+                            .as_ref()
+                            .map(|p| p.namespace.tenant.as_str())
+                {
                     return Err(AppError::Backend(format!(
                         "zone {} on {} is already mapped by another task",
                         zone.zone_name, existing_endpoint

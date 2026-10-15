@@ -25,7 +25,7 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     gtk::init().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let _guard = runtime.enter();
-    keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    common::credentials::install();
     let shell = Shell::new();
     let ui = &shell.ui;
     ui.click(&shell.window.imp().settings_button.get(), "Settings");
@@ -35,7 +35,7 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     let dialog = named::<adw::Dialog>(&shell.window, "native-sync-connection-dialog");
     assert!(ui.wait_until(Duration::from_secs(3), || dialog.is_visible()));
     let entry = named::<adw::EntryRow>(&dialog, "native-sync-endpoint");
-    let key = named::<adw::PasswordEntryRow>(&dialog, "native-sync-key");
+    let key = named::<adw::PasswordEntryRow>(&dialog, "native-sync-password");
     let save = named::<gtk::Button>(&dialog, "native-sync-save");
     assert!(!save.is_sensitive());
     let dialog_ui = Ui::for_widget(&entry);
@@ -93,9 +93,11 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     Ui::for_widget(&add).click(&add, "Add server");
     let dialog = named::<adw::Dialog>(&shell.window, "native-sync-connection-dialog");
     let entry = named::<adw::EntryRow>(&dialog, "native-sync-endpoint");
-    let key = named::<adw::PasswordEntryRow>(&dialog, "native-sync-key");
+    let key = named::<adw::PasswordEntryRow>(&dialog, "native-sync-password");
     let root = named::<adw::EntryRow>(&dialog, "native-sync-root");
+    let username = named::<adw::EntryRow>(&dialog, "native-sync-username");
     let form = Ui::for_widget(&entry);
+    form.type_editable(&username, "alice");
     form.type_editable(&entry, &server.endpoint);
     form.type_editable(&key, &"x".repeat(32));
     form.type_editable(&root, &shell.photos_dir().to_string_lossy());
@@ -172,6 +174,38 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         store.get_job(job.id).unwrap().unwrap().config_generation,
         generation
     );
+    let saved = photo_viewer::platform::credentials::load_api_key(&job.credential_ref).unwrap();
+    assert!(saved.starts_with("ss1_"));
+    assert_ne!(saved, "x".repeat(32));
+    ui.pump(Duration::from_millis(600));
+    let logout = named::<gtk::Button>(&shell.window, &format!("native-sync-logout-{}", job.id));
+    Ui::for_widget(&logout).scroll_to_reveal(&logout, "Sign out");
+    Ui::for_widget(&logout).click(&logout, "Sign out");
+    assert!(ui.wait_until(Duration::from_secs(5), || store
+        .get_job(job.id)
+        .unwrap()
+        .unwrap()
+        .paused));
+    assert!(photo_viewer::platform::credentials::load_api_key(&job.credential_ref).is_err());
+    ui.pump(Duration::from_millis(600));
+    let login = named::<gtk::Button>(&shell.window, &format!("native-sync-relogin-{}", job.id));
+    Ui::for_widget(&login).scroll_to_reveal(&login, "Sign in again");
+    Ui::for_widget(&login).click(&login, "Sign in again");
+    let password = named::<adw::PasswordEntryRow>(&shell.window, "native-sync-relogin-password");
+    Ui::for_widget(&password).type_editable(&password, &"x".repeat(32));
+    let submit = named::<gtk::Button>(&shell.window, "native-sync-relogin-submit");
+    Ui::for_widget(&submit).scroll_to_reveal(&submit, "Sign in and resume");
+    Ui::for_widget(&submit).click(&submit, "Sign in and resume");
+    assert!(ui.wait_until(Duration::from_secs(10), || !store
+        .get_job(job.id)
+        .unwrap()
+        .unwrap()
+        .paused));
+    assert!(
+        photo_viewer::platform::credentials::load_api_key(&job.credential_ref)
+            .unwrap()
+            .starts_with("ss1_")
+    );
 }
 
 struct LocalServer {
@@ -238,6 +272,25 @@ impl LocalServer {
             assert!(std::time::Instant::now() < deadline, "server did not start");
             std::thread::sleep(Duration::from_millis(50));
         }
+        use std::io::Write;
+        let mut admin = std::process::Command::new(
+            std::env::var_os("SYNC_SERVER_BIN")
+                .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into()),
+        )
+        .args(["users", "create", "alice", "--password-stdin"])
+        .env("SYNC_DATA_DIR", server._root.path().join("data"))
+        .env("SYNC_API_KEY_FILE", server._root.path().join("api.key"))
+        .env(
+            "SYNC_SIGNING_KEY_FILE",
+            server._root.path().join("signing.key"),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+        writeln!(admin.stdin.take().unwrap(), "{}", "x".repeat(32)).unwrap();
+        assert!(admin.wait().unwrap().success());
         server
     }
 }

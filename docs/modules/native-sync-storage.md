@@ -286,3 +286,8 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 用户选择版本时核对本地版本、冲突快照及未确认操作。UseCloud 先保留本地原图，再创建原有双资源发布意图；KeepLocal 先下载并保留竞争云端资源，已校验但未作为图库版本发布的资源以 retained 区分于 verified。该状态只结算明确用户选择覆盖的接收义务，不能用于普通媒体入库。确认的原子拒绝只结束已发出操作证据，不清 dirty；网络超时和未知回执继续保留。
 
 新范围的本地索引通过已有 scanner 的 mtime/size 短路和 DbActor 批次完成；未变化的本地原图不参与每 15 秒检查的正文哈希。每个资源后检查可以入库的照片，后台发布任务完成前不释放运行屏障。下载期间接受配置编辑可以停止旧网络传输；文件发布仍等待完成或回滚。
+
+
+## 账户身份与重新认证
+
+用户信息是服务器 pinned scope 的一部分，在既有 JSON 中增加可选 authentication 字段即可保留原生 schema 11。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他用户可用不同根建立任务，物理路径重叠仍拒绝。细节见[账户接入方案](native-sync-accounts.md)。

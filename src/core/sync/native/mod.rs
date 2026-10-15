@@ -5,6 +5,8 @@
 //! and local publication live in `sync::service`; protocol ownership stays on the server.
 
 pub mod assets;
+pub mod auth;
+pub use auth::{NativeAuthentication, NativeSession, NativeUser};
 pub mod lease;
 pub mod modify;
 pub mod protocol;

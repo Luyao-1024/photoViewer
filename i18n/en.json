@@ -439,5 +439,14 @@
   "native.action_accepted": "Accepted; synchronization will run automatically. Reopen this window to see the latest state.",
   "native.hidden_conflict": "This cloud photo is hidden. Unhide it in a client that supports hidden photos, then synchronize again.",
   "native.deleted_conflict": "The cloud photo was deleted while local edits remain. Keep local to upload with a new identity, or accept cloud deletion and retain the local file.",
-  "native.version_conflict": "Local and cloud versions differ. Choose which version to use; the other version is kept for recovery."
+  "native.version_conflict": "Local and cloud versions differ. Choose which version to use; the other version is kept for recovery.",
+  "native.username": "Username",
+  "native.password": "Password",
+  "native.login": "Sign in and verify",
+  "native.logging_in": "Signing in and verifying the account…",
+  "native.login_ok": "Signed in as {username}. Choose the zone, local root and upload albums.",
+  "native.relogin": "Sign in and resume",
+  "native.logout": "Sign out",
+  "native.logged_out": "Signed out; synchronization is paused.",
+  "native.relogin_hint": "Sign in again to update this task’s credential for the same account. Use a new task with a different local root for another account."
 }

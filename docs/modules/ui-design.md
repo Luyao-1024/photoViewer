@@ -497,7 +497,7 @@ Settings is reached from the sidebar footer gear button and opens as a popup
 dialog. It owns the quiet preference groups (language, appearance, video
 playback, Day grid columns, thumbnail speed), bounded management groups for
 scan folders and trash backend, and the combined cache/data cleanup action.
-The native synchronization group provides endpoint/key probing, zone and local
+The native synchronization group provides endpoint/username/password login, zone and local
 root selection, explicit physical album scope, task controls and conflict decisions.
 An empty upload selection receives cloud photos only; adding a connection never
 implicitly selects the whole library. While the dialog is visible, the gallery content
@@ -626,3 +626,6 @@ Before editing UI code:
 6. Add or update focused UI/template/CSS tests when changing contracts.
 7. Run the smallest relevant test first, then broaden when shared behavior is
    affected.
+
+
+Native task management displays the accepted username and supports sign-out and sign-in again. Sign-out revokes/removes the session and pauses only that task. Reauthentication can resume the same identity, while a different account needs another task and a non-overlapping local root. Draft fields never replace accepted credentials, and passwords are not saved. See [account integration](native-sync-accounts.md).

@@ -769,7 +769,7 @@ impl SyncService {
         report.mutations_confirmed += 1;
         Ok(())
     }
-    pub(crate) async fn transport_client_for(
+    pub(super) async fn credential_client_for(
         &self,
         job: &SyncJob,
     ) -> Result<NativeClient, AppError> {
@@ -780,7 +780,25 @@ impl SyncService {
         let key = tokio::task::spawn_blocking(move || reader(&reference))
             .await
             .map_err(|_| AppError::Backend("credential worker stopped".into()))??;
-        NativeClient::new(&endpoint, &key).map_err(|e| AppError::Backend(e.to_string()))
+        let client =
+            NativeClient::new(&endpoint, &key).map_err(|e| AppError::Backend(e.to_string()))?;
+        Ok(client)
+    }
+    pub(crate) async fn transport_client_for(
+        &self,
+        job: &SyncJob,
+    ) -> Result<NativeClient, AppError> {
+        let client = self.credential_client_for(job).await?;
+        let pinned = self
+            .store()
+            .native_scope(job.connection_id)?
+            .ok_or_else(|| AppError::Backend("connection has no pinned identity".into()))?;
+        let current = client
+            .probe()
+            .await
+            .map_err(|e| AppError::Backend(e.to_string()))?;
+        super::authentication::validate_identity(&pinned, &current)?;
+        Ok(client)
     }
 }
 fn matches_phase(entry: &DirtyEntry, phase: UploadPhase) -> bool {

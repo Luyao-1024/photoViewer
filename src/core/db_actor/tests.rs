@@ -93,6 +93,7 @@ async fn sync_state_writes_emit_refresh_events() {
                 upload_albums: Vec::new(),
                 native_zone: Some(NativeZone::new("PrimarySync")),
                 native_pinned: Some(NativePinnedScope {
+                    authentication: None,
                     public_base_url: "https://sync.example.test/".into(),
                     namespace: NativeNamespace {
                         tenant: "local".into(),

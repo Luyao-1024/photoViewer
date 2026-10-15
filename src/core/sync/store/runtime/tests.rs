@@ -267,3 +267,48 @@ fn a_definitive_atomic_rejection_keeps_dirty_and_unblocks_a_new_decision() {
     assert!(f.store.pending_issued(f.epoch.job).unwrap().is_empty());
     assert_eq!(f.store.uplink_view(f.epoch.job).unwrap()[0].dirty.bits(), 2);
 }
+
+#[test]
+fn authentication_upgrade_keeps_scope_but_cannot_replace_an_accepted_account() {
+    use crate::core::sync::native::{NativeAuthentication, NativeUser};
+    let f = fixture("authentication-identity");
+    let job = f.store.get_job(f.epoch.job).unwrap().unwrap();
+    let original = f.store.native_scope(job.connection_id).unwrap().unwrap();
+    let mut accepted = original.clone();
+    accepted.authentication = Some(NativeAuthentication {
+        mode: "username_password".into(),
+        user: Some(NativeUser {
+            id: "11111111-1111-4111-8111-111111111111".into(),
+            username: "owner".into(),
+        }),
+        resource_bearer_required: true,
+    });
+    f.store
+        .runtime(Command::AcceptAuthentication {
+            connection: job.connection_id,
+            expected: Box::new(original),
+            updated: Box::new(accepted.clone()),
+        })
+        .unwrap();
+    let mut foreign = accepted.clone();
+    foreign
+        .authentication
+        .as_mut()
+        .unwrap()
+        .user
+        .as_mut()
+        .unwrap()
+        .id = "22222222-2222-4222-8222-222222222222".into();
+    assert!(f
+        .store
+        .runtime(Command::AcceptAuthentication {
+            connection: job.connection_id,
+            expected: Box::new(accepted.clone()),
+            updated: Box::new(foreign)
+        })
+        .is_err());
+    assert_eq!(
+        f.store.native_scope(job.connection_id).unwrap().unwrap(),
+        accepted
+    );
+}

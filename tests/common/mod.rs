@@ -3,6 +3,7 @@
 //! unused to the dead-code lint in some binaries even though they are used in
 //! others. Allow the warning at module level.
 #![allow(dead_code)]
+pub mod credentials;
 pub mod db;
 pub mod interaction;
 pub mod shell;
@@ -100,6 +101,7 @@ pub fn pinned_scope(base_url: &str, zones: &[&str]) -> photo_viewer::core::sync:
         NativeCapabilityBits, NativeLimits, NativeNamespace, NativePinnedScope, NativeSyncLimits,
     };
     NativePinnedScope {
+        authentication: None,
         public_base_url: base_url.into(),
         namespace: NativeNamespace {
             tenant: "local".into(),

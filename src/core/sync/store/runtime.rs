@@ -36,6 +36,11 @@ pub struct Issued {
 
 #[derive(Debug)]
 pub enum Command {
+    AcceptAuthentication {
+        connection: i64,
+        expected: Box<super::super::NativePinnedScope>,
+        updated: Box<super::super::NativePinnedScope>,
+    },
     RetireIssued {
         epoch: Epoch,
         operation: Issued,
@@ -143,6 +148,38 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match command {
+        Command::AcceptAuthentication {
+            connection,
+            expected,
+            updated,
+        } => {
+            let before: String = tx.query_row(
+                "SELECT native_pinned_scope FROM sync_connections WHERE id=?1",
+                [connection],
+                |r| r.get(0),
+            )?;
+            let current: super::super::NativePinnedScope = serde_json::from_str(&before)
+                .map_err(|_| invalid("invalid connection identity"))?;
+            let before_user = current
+                .authentication
+                .as_ref()
+                .and_then(|a| a.user.as_ref())
+                .map(|u| u.id.as_str());
+            let after_user = updated
+                .authentication
+                .as_ref()
+                .and_then(|a| a.user.as_ref())
+                .map(|u| u.id.as_str());
+            if current != *expected
+                || before_user.is_some_and(|id| Some(id) != after_user)
+                || current.public_base_url != updated.public_base_url
+                || current.namespace != updated.namespace
+                || current.database_generation != updated.database_generation
+            {
+                return Err(invalid("connection changed during login"));
+            }
+            tx.execute("UPDATE sync_connections SET native_pinned_scope=?2,native_probed_at=unixepoch(),native_probe_error=NULL WHERE id=?1",params![connection,serde_json::to_string(&updated).map_err(|_|invalid("invalid connection identity"))?])?;
+        }
         Command::RetireIssued {
             epoch,
             operation,
