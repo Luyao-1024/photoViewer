@@ -39,6 +39,7 @@ pub(in crate::core::thumbnails) fn generate(
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<(Pixbuf, DecodeOrigin)> {
+    let _publication = crate::core::sync::publication_io::read()?;
     let (src_path, mtime) = resolve_src(uri, mtime)?;
     let cache_stem = cache_stem_for(cache_dir, uri, size, Some(mtime))?;
     let jpeg_path = cache_stem.with_extension("jpg");

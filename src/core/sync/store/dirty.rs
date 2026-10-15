@@ -104,6 +104,7 @@ impl ChangeCategory {
         }
     }
 
+    #[cfg(test)]
     fn acked_column(self) -> &'static str {
         match self {
             Self::Metadata => "native_acked_metadata_version",
@@ -219,6 +220,7 @@ pub enum DirtyCommand {
     /// Derive the in-flight obligations for one job, oldest entry first.
     UplinkView { job_id: i64 },
     /// Confirm one category of one entry against the version that was sent.
+    #[cfg(test)]
     Confirm {
         entry_id: i64,
         category: ChangeCategory,
@@ -267,6 +269,7 @@ impl SyncStore {
     }
 
     /// Confirm one category against the version that was actually sent.
+    #[cfg(test)]
     pub fn confirm_category(
         &self,
         entry_id: i64,
@@ -506,6 +509,7 @@ fn relative_under(tx: &rusqlite::Transaction<'_>, job_id: i64, path: &str) -> Re
 /// Record the cloud identity a confirmed operation established. Only fields
 /// the answer actually carried are written; the rest keep whatever was already
 /// known rather than being blanked.
+#[cfg(test)]
 fn register_identity(
     tx: &rusqlite::Transaction<'_>,
     entry_id: i64,
@@ -547,13 +551,14 @@ pub(super) fn execute(pool: &DbPool, command: &DirtyCommand) -> Result<DirtyOutc
             // only reads the path and writes the obligation alongside it.
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let outcome = note(&tx, *media_id, *category, stamp)?;
-            drop(tx);
+            tx.commit()?;
             Ok(outcome.unwrap_or(DirtyOutcome::Entries(Vec::new())))
         }
         DirtyCommand::UplinkView { job_id } => {
             let conn = pool.get()?;
             Ok(DirtyOutcome::Entries(read_entries(&conn, *job_id, None)?))
         }
+        #[cfg(test)]
         DirtyCommand::Confirm {
             entry_id,
             category,
@@ -579,6 +584,7 @@ pub(super) fn execute(pool: &DbPool, command: &DirtyCommand) -> Result<DirtyOutc
     }
 }
 
+#[cfg(test)]
 fn confirm(
     pool: &DbPool,
     entry_id: i64,

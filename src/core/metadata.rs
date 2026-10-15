@@ -306,6 +306,7 @@ pub fn extract(path: &Path) -> Result<RawMetadata> {
 /// HEIC ignores `head`: its EXIF item can live anywhere in the file, so it needs
 /// the whole file (read once) and is not a motion-photo candidate.
 pub fn extract_with_head(path: &Path, head: Option<&[u8]>) -> Result<RawMetadata> {
+    let _publication = crate::core::sync::publication_io::read()?;
     let extension_mime = mime_from_extension(path);
     let owned_head;
     let head_for_mime = if head.is_none()

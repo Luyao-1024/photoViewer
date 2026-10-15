@@ -5,6 +5,7 @@ pub mod device;
 mod error;
 pub mod model;
 pub mod native;
+pub mod publication_io;
 mod remote_path;
 pub mod service;
 pub mod store;

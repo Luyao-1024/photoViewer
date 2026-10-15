@@ -26,11 +26,13 @@ This file is the entry point for coding agents working in this repository. Keep 
 | Keyboard shortcut routing and keymap | [`docs/modules/keyboard.md`](docs/modules/keyboard.md) |
 | DB, scanner, filesystem watcher, thumbnails | [`docs/modules/storage.md`](docs/modules/storage.md) |
 | Native sync (SyncServer client, cloud badges) | [`docs/modules/sync.md`](docs/modules/sync.md) |
-| Native SyncServer client (C1 design, runtime pending) | [`docs/modules/native-sync.md`](docs/modules/native-sync.md), then its protocol/storage/implementation guides |
+| Native SyncServer client integration and server contract links | [`docs/modules/native-sync.md`](docs/modules/native-sync.md), then its protocol/storage/implementation guides |
 | Crash logs, panic hook, signal handler | [`docs/modules/diagnostics.md`](docs/modules/diagnostics.md) |
 | Screen-by-screen UI design reference | [`docs/modules/ui-design.md`](docs/modules/ui-design.md) |
 | Visual UI component naming map | [`docs/ui-naming-reference/index.html`](docs/ui-naming-reference/index.html) |
 | Liquid Glass and shared UI material classes | [`docs/modules/ui-liquid-glass.md`](docs/modules/ui-liquid-glass.md) |
+
+Native wire contracts are owned exclusively by the sibling SyncServer repository. Link them using local relative paths through `docs/modules/native-sync-protocol.md`; keep client mapping, DB, recovery and UX plans here. Do not copy a second protocol specification into this repository. Replace local contract links with pinned web links only at formal release.
 
 ## Development Rules
 

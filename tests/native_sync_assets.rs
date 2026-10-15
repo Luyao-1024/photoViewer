@@ -56,6 +56,10 @@ struct Server {
 
 impl Server {
     fn start() -> Option<Self> {
+        Self::start_with_lease(90, 30)
+    }
+    fn start_with_lease(ttl: u64, heartbeat: u64) -> Option<Self> {
+        photo_viewer::testing::Sandbox::install();
         let binary = server_binary()?;
         let root = tempfile::tempdir().expect("temp dir");
         let api_key = secret_value();
@@ -73,6 +77,8 @@ impl Server {
             .env("SYNC_SIGNING_KEY_FILE", root.path().join("signing.key"))
             .env("SYNC_BIND", format!("127.0.0.1:{port}"))
             .env("SYNC_PUBLIC_BASE_URL", &base_url)
+            .env("SYNC_LEASE_TTL_SECS", ttl.to_string())
+            .env("SYNC_LEASE_HEARTBEAT_SECS", heartbeat.to_string())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -603,4 +609,273 @@ fn an_empty_reservation_is_refused() {
         &[],
     ))
     .expect_err("an empty reservation must be refused");
+}
+
+/// One actual client cycle, including the actor, disk publication and server.
+/// Unlike transport tests, this does not manufacture verified resource rows.
+#[test]
+fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let Some(server) = Server::start_with_lease(2, 1) else {
+        return skip();
+    };
+    let root = sandbox.scratch("native-cycle");
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    let path = common::write_plain_jpeg(&source, "photo.jpg");
+    block_on(async {
+        use photo_viewer::core::{
+            db,
+            db_actor::{start_db_actor, DbCommand},
+            events::{ChangeSource, DomainEventSender},
+            identity::MediaId,
+            media::NewMediaItem,
+            sync::{NewSyncJob, ProviderKind, SyncDirection, SyncService, UploadScope},
+        };
+        let client = server.client();
+        let scope = client.probe().await.unwrap();
+        let (sender_a, _events_a) = DomainEventSender::new();
+        let pool_a = db::init_pool(&root.path().join("a.sqlite")).unwrap();
+        let actor_a = start_db_actor(pool_a.clone(), sender_a);
+        let key = server.api_key.clone();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let a = SyncService::with_actor(pool_a.clone(), actor_a.clone()).with_credential_reader(
+            move |_| {
+                // The third credential lookup happens during held-lock catch-up.
+                // It blocks a worker, while the independent heartbeat must renew.
+                if reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 2 {
+                    std::thread::sleep(Duration::from_millis(3200));
+                }
+                Ok(key.clone())
+            },
+        );
+        let (sender_b, mut events_b) = DomainEventSender::new();
+        let pool_b = db::init_pool(&root.path().join("b.sqlite")).unwrap();
+        let actor_b = start_db_actor(pool_b.clone(), sender_b);
+        let key = server.api_key.clone();
+        let b = SyncService::with_actor(pool_b.clone(), actor_b.clone())
+            .with_credential_reader(move |_| Ok(key.clone()));
+        let item = |path: &Path| NewMediaItem {
+            uri: photo_viewer::core::file_uri::from_path(path),
+            path: path.into(),
+            folder_path: path.parent().unwrap().into(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: "standard".into(),
+            media_attributes: "{}".into(),
+            width: Some(64),
+            height: Some(48),
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
+            file_size: std::fs::metadata(path).unwrap().len(),
+            blake3_hash: String::new(),
+        };
+        actor_a
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items: vec![item(&path)],
+            })
+            .unwrap();
+        let job = |root: PathBuf| NewSyncJob {
+            provider_kind: ProviderKind::NativeSyncServer,
+            endpoint: server.base_url.clone(),
+            credential_ref: "isolated-test-key".into(),
+            local_root: root,
+            direction: SyncDirection::Bidirectional,
+            upload_scope: UploadScope::All,
+            upload_albums: vec![],
+            native_zone: Some(NativeZone::new("PrimarySync")),
+            native_pinned: Some(scope.clone()),
+        };
+        let job_a = a.store().create_job(&job(source.clone())).unwrap();
+        let job_b = b.store().create_job(&job(target.clone())).unwrap();
+        let started = Instant::now();
+        let created = a.run_cycle(job_a.id).await.unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(3));
+        assert!(created.failures.is_empty(), "{created:?}");
+        assert_eq!(created.mutations_confirmed, 1, "{created:?}");
+        assert_eq!(created.outstanding, 0);
+        let source_id = db::list_all_media(&pool_a).unwrap()[0].id;
+        actor_a
+            .execute_blocking(DbCommand::SetFavorite {
+                ids: vec![MediaId::from(source_id)],
+                is_favorite: true,
+            })
+            .unwrap();
+        let metadata = a.run_cycle(job_a.id).await.unwrap();
+        assert!(metadata.failures.is_empty(), "{metadata:?}");
+        assert_eq!(metadata.mutations_confirmed, 1);
+        let received = b.run_cycle(job_b.id).await.unwrap();
+        assert!(received.failures.is_empty(), "{received:?}");
+        assert_eq!(received.outstanding, 0);
+        assert_eq!(
+            std::fs::read(target.join("photo.jpg")).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+        let local = db::list_all_media(&pool_b).unwrap();
+        assert_eq!(local.len(), 1);
+        assert!(local[0].is_favorite);
+        let received_id = local[0].id;
+        assert!(
+            std::iter::from_fn(|| events_b.try_recv().ok()).any(|event| matches!(
+                event,
+                photo_viewer::core::events::DomainEvent::MediaUpserted {
+                    source: ChangeSource::Synchronization,
+                    ..
+                }
+            ))
+        );
+        // Both installations have local entry id 1 and first metadata version 1.
+        // Their actual server mutations must still carry distinct operation IDs.
+        actor_b
+            .execute_blocking(DbCommand::SetFavorite {
+                ids: vec![MediaId::from(received_id)],
+                is_favorite: false,
+            })
+            .unwrap();
+        let changed = b.run_cycle(job_b.id).await.unwrap();
+        assert!(changed.failures.is_empty(), "{changed:?}");
+        assert_eq!(changed.outstanding, 0);
+        let pulled = a.run_cycle(job_a.id).await.unwrap();
+        assert!(pulled.failures.is_empty(), "{pulled:?}");
+        assert!(!db::get_media_item(&pool_a, source_id).unwrap().is_favorite);
+        common::write_distinct_jpeg(&path, 96, 80, [220, 30, 60]);
+        actor_a
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(source_id),
+                item: item(&path),
+            })
+            .unwrap();
+        let updated = a.run_cycle(job_a.id).await.unwrap();
+        assert!(updated.failures.is_empty(), "{updated:?}");
+        assert_eq!(updated.outstanding, 0);
+        let replaced = b.run_cycle(job_b.id).await.unwrap();
+        assert!(replaced.failures.is_empty(), "{replaced:?}");
+        assert_eq!(replaced.outstanding, 0);
+        assert_eq!(
+            std::fs::read(target.join("photo.jpg")).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+        let local = db::list_all_media(&pool_b).unwrap();
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].id, received_id);
+        let report = b.run_cycle(job_b.id).await.unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(report.outstanding, 0);
+        assert_eq!(report.mutations_sent, 0);
+        assert!(target.read_dir().unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".photoviewer-sync-")));
+    });
+}
+
+#[test]
+fn a_second_job_downloads_from_its_own_server_and_credential() {
+    use photo_viewer::core::{
+        db,
+        db_actor::{start_db_actor, DbCommand},
+        events::{ChangeSource, DomainEventSender},
+        media::NewMediaItem,
+        sync::{NewSyncJob, ProviderKind, SyncDirection, SyncService, UploadScope},
+    };
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let Some(first) = Server::start() else {
+        return skip();
+    };
+    let Some(second) = Server::start() else {
+        return skip();
+    };
+    let root = sandbox.scratch("native-multiple-connections");
+    let source = root.path().join("source");
+    let unused = root.path().join("unused-first-job");
+    let target = root.path().join("target-second-job");
+    for path in [&source, &unused, &target] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let path = common::write_plain_jpeg(&source, "second-server.jpg");
+    block_on(async {
+        let first_scope = first.client().probe().await.unwrap();
+        let second_scope = second.client().probe().await.unwrap();
+        let job = |scope: NativePinnedScope, root: PathBuf, reference: &str| NewSyncJob {
+            provider_kind: ProviderKind::NativeSyncServer,
+            endpoint: scope.public_base_url.clone(),
+            credential_ref: reference.into(),
+            local_root: root,
+            direction: SyncDirection::Bidirectional,
+            upload_scope: UploadScope::All,
+            upload_albums: vec![],
+            native_zone: Some(NativeZone::new("PrimarySync")),
+            native_pinned: Some(scope),
+        };
+        let pool_a = db::init_pool(&root.path().join("source.sqlite")).unwrap();
+        let (sender, _events) = DomainEventSender::new();
+        let actor_a = start_db_actor(pool_a.clone(), sender);
+        let key = second.api_key.clone();
+        let a = SyncService::with_actor(pool_a.clone(), actor_a.clone())
+            .with_credential_reader(move |_| Ok(key.clone()));
+        let metadata = photo_viewer::core::metadata::extract(&path).unwrap();
+        actor_a
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items: vec![NewMediaItem {
+                    uri: photo_viewer::core::file_uri::from_path(&path),
+                    path: path.clone(),
+                    folder_path: source.clone(),
+                    mime_type: metadata.mime_type,
+                    media_subkind: "standard".into(),
+                    media_attributes: "{}".into(),
+                    width: metadata.width,
+                    height: metadata.height,
+                    video_duration_secs: None,
+                    taken_at: None,
+                    file_mtime: std::fs::metadata(&path).unwrap().modified().unwrap().into(),
+                    file_size: std::fs::metadata(&path).unwrap().len(),
+                    blake3_hash: String::new(),
+                }],
+            })
+            .unwrap();
+        let source_job = a
+            .store()
+            .create_job(&job(second_scope.clone(), source, "second"))
+            .unwrap();
+        let sent = a.run_cycle(source_job.id).await.unwrap();
+        assert!(sent.failures.is_empty(), "{sent:?}");
+        assert_eq!(sent.outstanding, 0);
+        let pool_b = db::init_pool(&root.path().join("target.sqlite")).unwrap();
+        let (sender, _events) = DomainEventSender::new();
+        let actor_b = start_db_actor(pool_b.clone(), sender);
+        let keys = std::collections::HashMap::from([
+            ("first".to_string(), first.api_key.clone()),
+            ("second".to_string(), second.api_key.clone()),
+        ]);
+        let b = SyncService::with_actor(pool_b.clone(), actor_b).with_credential_reader(
+            move |reference| {
+                keys.get(reference).cloned().ok_or_else(|| {
+                    photo_viewer::core::error::AppError::Backend(
+                        "unknown isolated credential".into(),
+                    )
+                })
+            },
+        );
+        b.store()
+            .create_job(&job(first_scope, unused, "first"))
+            .unwrap();
+        let second_job = b
+            .store()
+            .create_job(&job(second_scope, target.clone(), "second"))
+            .unwrap();
+        assert_eq!(second_job.id, 2);
+        let downloaded = b.run_cycle(second_job.id).await.unwrap();
+        assert!(downloaded.failures.is_empty(), "{downloaded:?}");
+        assert_eq!(downloaded.outstanding, 0);
+        assert_eq!(
+            std::fs::read(target.join("second-server.jpg")).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+        assert_eq!(db::list_all_media(&pool_b).unwrap().len(), 1);
+    });
 }

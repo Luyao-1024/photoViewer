@@ -146,6 +146,9 @@ impl SyncService {
         if self.store.reset_pending()? {
             return self.start_reset_worker();
         }
+        for job in self.store.list_jobs()? {
+            self.request_job_sync(job.id)?;
+        }
         Ok(())
     }
 
@@ -198,16 +201,6 @@ impl SyncService {
             if !work.requested.swap(false, Ordering::AcqRel) {
                 break;
             }
-            let _slot = match self.acquire_run_slot(id).await {
-                Ok(slot) => slot,
-                Err(error) => {
-                    // A reset barrier or an in-flight apply is not a user error;
-                    // the pending edit stays durable and is retried by the next
-                    // trigger rather than being reported as a failure.
-                    tracing::debug!("configuration is not quiescent yet: {error}");
-                    continue;
-                }
-            };
             if let Err(error) = self.apply_pending_job(id).await {
                 tracing::warn!("cannot apply an accepted synchronization edit: {error}");
                 // Attribute the failure to the edit that is still queued, so the
@@ -216,6 +209,18 @@ impl SyncService {
                     let _ = self
                         .store
                         .fail_pending_edit(id, pending.revision, &error.to_string());
+                }
+                continue;
+            }
+            if crate::core::prefs::sync_enabled() && !self.store.reset_pending().unwrap_or(true) {
+                if let Ok(Some(job)) = self.store.get_job(id) {
+                    if !job.paused {
+                        let result = self.run_cycle(id).await;
+                        let reason = result.as_ref().err().map(ToString::to_string);
+                        let _ = self
+                            .store
+                            .finish_run(id, job.config_generation, reason.as_deref());
+                    }
                 }
             }
         }

@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -88,7 +88,7 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
                 CASE WHEN json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.hdr') = 1 THEN 4 ELSE 0 END;"
         )?;
     }
-    if version > 0 && version < SCHEMA_VERSION {
+    if version > 0 && version < 9 {
         // Schema 9 redesigned the synchronization layer around the native
         // SyncServer client, and the WebDAV file-sync engine was removed
         // outright. Its tables have no successor rows to carry forward —
@@ -113,6 +113,32 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
         )?;
     }
     tx.execute_batch(SCHEMA_SQL)?;
+    if version == 9 {
+        tx.execute_batch("ALTER TABLE sync_jobs ADD COLUMN native_cycle_id TEXT")?;
+        let rows = {
+            let mut statement = tx.prepare("SELECT job_id,generation,asset_id,role,expected_sha256 FROM sync_native_resources WHERE expected_sha256 IS NOT NULL")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (job, generation, asset, role, digest) in rows {
+            if let Some(hex) = crate::core::sync::ContentDigest::hex_from_descriptor_base64(&digest)
+                .filter(|hex| hex.len() == 64)
+            {
+                tx.execute("UPDATE sync_native_resources SET expected_sha256=?5 WHERE job_id=?1 AND generation=?2 AND asset_id=?3 AND role=?4",rusqlite::params![job,generation,asset,role,hex])?;
+            }
+        }
+        tx.execute("UPDATE sync_native_progress SET applied_token=NULL WHERE EXISTS(SELECT 1 FROM sync_native_resources r WHERE r.job_id=sync_native_progress.job_id AND r.state<>'verified') OR EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=sync_native_progress.job_id AND p.state<>'complete')",[])?;
+    }
     if version < 2 {
         if version == 1 && !columns.contains("file_mtime_ns") {
             tx.execute_batch(
@@ -257,8 +283,37 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
         "SQL_FLOW op=upsert_media_items_batch phase=transaction_started item_count={}",
         items.len()
     );
+    let out = upsert_media_items_in(&tx, items, None)?;
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=commit_begin item_count={} changed_count={}",
+        items.len(),
+        out.len()
+    );
+    tx.commit()?;
+    tracing::trace!(
+        target: crate::core::log_targets::STORAGE,
+        "SQL_FLOW op=upsert_media_items_batch phase=commit_done item_count={} changed_count={} elapsed_ms={}",
+        items.len(),
+        out.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(out)
+}
+
+pub(crate) fn upsert_media_items_in(
+    tx: &rusqlite::Transaction<'_>,
+    items: &[NewMediaItem],
+    publication: Option<&str>,
+) -> Result<Vec<MediaItem>> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
+        let blocked: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_publications WHERE state='publishing' AND json_extract(role_state,'$.target')=?1 AND (?2 IS NULL OR publication_id<>?2))",
+            rusqlite::params![item.path.to_string_lossy(), publication], |row|row.get(0))?;
+        if blocked {
+            continue;
+        }
         let existing: Option<i64> = tx
             .query_row(
                 "SELECT id FROM media_items WHERE uri = ?1",
@@ -332,20 +387,6 @@ fn upsert_media_items_batch_once(pool: &DbPool, items: &[NewMediaItem]) -> Resul
             row_to_media_item,
         )?);
     }
-    tracing::trace!(
-        target: crate::core::log_targets::STORAGE,
-        "SQL_FLOW op=upsert_media_items_batch phase=commit_begin item_count={} changed_count={}",
-        items.len(),
-        out.len()
-    );
-    tx.commit()?;
-    tracing::trace!(
-        target: crate::core::log_targets::STORAGE,
-        "SQL_FLOW op=upsert_media_items_batch phase=commit_done item_count={} changed_count={} elapsed_ms={}",
-        items.len(),
-        out.len(),
-        started.elapsed().as_millis()
-    );
     Ok(out)
 }
 
@@ -1418,13 +1459,15 @@ pub(crate) fn update_media_location(
     new_path: &Path,
     new_folder: &Path,
 ) -> Result<()> {
-    let conn = pool.get()?;
+    let source = crate::core::sync::device::device_id(pool);
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
     let uri = crate::core::file_uri::from_path(new_path);
     let file_time: chrono::DateTime<Utc> = std::fs::metadata(new_path)
         .and_then(|m| m.modified())
         .map(Into::into)
         .unwrap_or_else(|_| chrono::Utc::now());
-    conn.execute(
+    tx.execute(
         "UPDATE media_items
          SET path = ?2, folder_path = ?3, uri = ?4, file_mtime = ?5, file_mtime_ns = ?6
          WHERE id = ?1",
@@ -1437,6 +1480,32 @@ pub(crate) fn update_media_location(
             ts_ns(file_time)
         ],
     )?;
+    let entries = {
+        let mut statement=tx.prepare("SELECT e.id,j.local_root FROM sync_entries e JOIN sync_jobs j ON j.id=e.job_id WHERE e.media_id=?1")?;
+        let rows = statement
+            .query_map([id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (entry, root) in entries {
+        if let Ok(relative) = new_path.strip_prefix(&root) {
+            tx.execute(
+                "UPDATE sync_entries SET relative_path=?2 WHERE id=?1",
+                rusqlite::params![entry, relative.to_string_lossy()],
+            )?;
+        }
+    }
+    crate::core::sync::store::note_local_change_in(
+        &tx,
+        id,
+        crate::core::sync::store::ChangeCategory::Metadata,
+        &crate::core::sync::store::EditEventStamp {
+            edited_at_ms: chrono::Utc::now().timestamp_millis(),
+            source,
+            event_id: uuid::Uuid::new_v4().to_string(),
+        },
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -1446,11 +1515,13 @@ pub(crate) fn update_media_edit_metadata(
     id: i64,
     item: &NewMediaItem,
 ) -> Result<()> {
-    let conn = pool.get()?;
-    conn.execute(
+    let source = crate::core::sync::device::device_id(pool);
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE media_items
          SET file_mtime = ?2, file_size = ?3, blake3_hash = ?4,
-             thumbnail_generated_at = NULL, width = ?5, height = ?6,
+             file_mtime_ns = ?10, thumbnail_generated_at = NULL, width = ?5, height = ?6,
              media_subkind = ?7, media_attributes = ?8, media_type_flags = ?9,
              video_duration_secs = NULL
          WHERE id = ?1",
@@ -1463,9 +1534,21 @@ pub(crate) fn update_media_edit_metadata(
             item.height,
             item.media_subkind,
             item.media_attributes,
-            crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes)
+            crate::core::media::media_type_flags(&item.media_subkind, &item.media_attributes),
+            ts_ns(item.file_mtime)
         ],
     )?;
+    crate::core::sync::store::note_local_change_in(
+        &tx,
+        id,
+        crate::core::sync::store::ChangeCategory::Content,
+        &crate::core::sync::store::EditEventStamp {
+            edited_at_ms: chrono::Utc::now().timestamp_millis(),
+            source,
+            event_id: uuid::Uuid::new_v4().to_string(),
+        },
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

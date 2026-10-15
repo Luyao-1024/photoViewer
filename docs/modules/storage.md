@@ -35,7 +35,9 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 
 ## Database
 
-Schema version 8 adds `sync_jobs.etag_is_sha256`, defaulting to false for
+Current schema is 10: native schema-9 data is preserved while cycle identity and unsafe old progress/checksum rows are corrected; see [native storage](native-sync-storage.md).
+
+Historical schema version 8 adds `sync_jobs.etag_is_sha256`, defaulting to false for
 existing jobs. This is an explicit server contract, never an inferred content
 hash. The idempotent migration preserves sync history and mappings; see
 [`sync.md`](sync.md#sha-256-content-etags).

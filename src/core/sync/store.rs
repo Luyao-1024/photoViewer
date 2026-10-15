@@ -16,6 +16,7 @@ pub mod dirty;
 pub mod publication;
 pub mod receive;
 mod reset;
+pub(crate) mod runtime;
 pub use configuration::{JobEdit, PendingChange};
 pub use dirty::{
     note_local_change_in, CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyCommand,
@@ -154,6 +155,7 @@ pub enum SyncWrite {
     },
     /// One dirty-truth write. A single variant keeps the actor match exhaustive.
     Dirty(Box<dirty::DirtyCommand>),
+    Runtime(Box<runtime::Command>),
     /// One publication/resource write.
     Publication(Box<publication::PublicationCommand>),
     /// One durable receive write. A single variant rather than one per
@@ -663,6 +665,10 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             error,
         } => {
             pool.get()?.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2 AND json_extract(payload,'$.revision')=?3)",params![error,id,revision])?;
+            Ok(SyncWriteResult::None)
+        }
+        SyncWrite::Runtime(command) => {
+            runtime::execute(pool, *command)?;
             Ok(SyncWriteResult::None)
         }
         SyncWrite::Dirty(command) => {

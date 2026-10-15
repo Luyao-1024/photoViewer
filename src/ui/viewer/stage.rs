@@ -104,6 +104,7 @@ fn image_delay_to_duration(delay: image::Delay) -> Duration {
 }
 
 fn load_animated_image_frames(path: &Path) -> anyhow::Result<Vec<AnimatedImageFrame>> {
+    let _publication = crate::core::sync::publication_io::read()?;
     let file = std::fs::File::open(path)?;
     let reader = BufReader::new(file);
     let decoder = image::codecs::gif::GifDecoder::new(reader)?;

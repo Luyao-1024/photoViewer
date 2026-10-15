@@ -469,6 +469,8 @@ async fn initialize_db_once_with_retry(
             let pool = crate::core::init_pool(&path)?;
             let (sender, receiver) = crate::core::events::DomainEventSender::new();
             let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+            crate::core::sync::SyncService::with_actor(pool.clone(), db_actor.clone())
+                .reconcile_interrupted_runs()?;
             let plan = crate::core::trash::prepare_trash_reconcile_for_roots(&pool, &media_roots)?;
             db_actor.execute_blocking(crate::core::db_actor::DbCommand::ReconcileTrash { plan })?;
             let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
@@ -506,6 +508,8 @@ async fn initialize_db_once_with_retry(
                 let pool = crate::core::init_pool(&path)?;
                 let (sender, receiver) = crate::core::events::DomainEventSender::new();
                 let db_actor = crate::core::db_actor::start_db_actor(pool.clone(), sender);
+                crate::core::sync::SyncService::with_actor(pool.clone(), db_actor.clone())
+                    .reconcile_interrupted_runs()?;
                 let plan =
                     crate::core::trash::prepare_trash_reconcile_for_roots(&pool, &media_roots)?;
                 db_actor
@@ -540,6 +544,7 @@ where
     F: FnOnce(&DbPool) -> CoreResult<()>,
 {
     let pool = crate::core::init_pool(&path)?;
+    crate::core::sync::SyncService::new(pool.clone()).reconcile_interrupted_runs()?;
     preload(&pool)?;
     let items = crate::core::repository::MediaRepository::new(pool.clone()).items(
         crate::core::repository::MediaQuery::LiveAll,

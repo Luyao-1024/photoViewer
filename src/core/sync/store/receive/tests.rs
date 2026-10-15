@@ -514,3 +514,51 @@ fn the_zone_identity_survives_a_round_trip_through_storage() {
         "_defaultOwner"
     );
 }
+
+#[test]
+fn failed_or_staged_resources_never_authorize_applied_progress() {
+    for failed in [true, false] {
+        let (store, _pool, job) = store_with_job(if failed {
+            "receive-failed-barrier"
+        } else {
+            "receive-staged-barrier"
+        });
+        begin(&store, &job, "scope-1");
+        let projection = graph(vec![photo("barrier-photo", "generation-1", "barrier.jpg")]);
+        store
+            .promote_remote_graph(job.id, projection.clone(), "target-1")
+            .unwrap();
+        for resource in store.outstanding_resources(job.id).unwrap() {
+            if failed {
+                store
+                    .fail_resource(
+                        job.id,
+                        &resource.asset_id,
+                        &resource.role,
+                        "interrupted download",
+                    )
+                    .unwrap();
+            } else {
+                store
+                    .stage_resource(
+                        job.id,
+                        &resource.asset_id,
+                        &resource.role,
+                        "/owned/staging/not-published",
+                    )
+                    .unwrap();
+            }
+        }
+        let (_, _, _, applied) = store
+            .promote_remote_graph(job.id, projection, "target-2")
+            .unwrap();
+        assert!(!applied);
+        assert!(store
+            .native_progress(job.id)
+            .unwrap()
+            .unwrap()
+            .applied_token
+            .is_none());
+        assert!(store.advance_applied_token(job.id).is_err());
+    }
+}

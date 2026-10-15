@@ -307,7 +307,15 @@ impl NativeClient {
         let payload = serde_json::to_vec(&body).map_err(|error| {
             SyncError::Protocol(format!("reservation is not encodable: {error}"))
         })?;
-        let key = format!("reserve-{master_record}-{}", intent.as_str());
+        // A master has many content generations and each role can be reserved
+        // independently. Bind retries to this exact request and lease, rather
+        // than reusing one permanent key for every upload of the master.
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(&payload);
+        hash.update(proof.lease_id.as_bytes());
+        hash.update(proof.fencing_token.as_bytes());
+        let key = format!("reserve-{:x}", hash.finalize());
         let (status, bytes) = self
             .send_lease_json(&url, payload, Some(proof), Some(&key))
             .await?;
@@ -363,6 +371,105 @@ impl NativeClient {
             TransferError::Transport(format!("upload response is not decodable: {error}"))
         })?;
         Ok(response.single_file)
+    }
+
+    pub(crate) async fn upload_file(
+        &self,
+        reservation: &Reservation,
+        proof: &LeaseProof,
+        path: &std::path::Path,
+        expected: &ContentDigest,
+    ) -> SyncResult<AssetDescriptor> {
+        let url = url::Url::parse(&reservation.url)
+            .map_err(|_| SyncError::Protocol("invalid upload capability".into()))?;
+        self.check_origin(&url)?;
+        let file = tokio::fs::File::open(path)
+            .await
+            .map_err(|_| SyncError::Protocol("upload snapshot is missing".into()))?;
+        if file
+            .metadata()
+            .await
+            .map_err(|_| SyncError::Protocol("cannot inspect upload snapshot".into()))?
+            .len()
+            != expected.size
+        {
+            return Err(SyncError::Protocol("upload snapshot size changed".into()));
+        }
+        let stream = tokio_util::io::ReaderStream::with_capacity(file, 64 * 1024);
+        // The normal request builder is private to the protocol adapter.
+        let response = self
+            .upload_stream(
+                &url,
+                proof,
+                reqwest::Body::wrap_stream(stream),
+                expected.size,
+            )
+            .await?;
+        let descriptor: AssetDescriptor = serde_json::from_value(response["singleFile"].clone())
+            .map_err(|_| SyncError::Protocol("invalid upload descriptor".into()))?;
+        if descriptor.size != expected.size || descriptor.file_checksum != expected.base64 {
+            return Err(SyncError::Protocol(
+                "uploaded resource does not match its snapshot".into(),
+            ));
+        }
+        Ok(descriptor)
+    }
+
+    pub(crate) async fn download_to(
+        &self,
+        descriptor: &DownloadDescriptor,
+        path: &std::path::Path,
+        expected: &ContentDigest,
+    ) -> SyncResult<()> {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncWriteExt;
+        let url = url::Url::parse(&descriptor.download_url)
+            .map_err(|_| SyncError::Protocol("invalid download capability".into()))?;
+        if descriptor.descriptor.size != expected.size
+            || descriptor.descriptor.file_checksum != expected.base64
+        {
+            return Err(SyncError::Protocol(
+                "resource description changed identity".into(),
+            ));
+        }
+        let mut response = self.capability_get(&url).await?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(SyncError::Protocol(format!(
+                "resource download failed with {}",
+                response.status()
+            )));
+        }
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await
+            .map_err(|_| SyncError::Protocol("cannot create owned download staging".into()))?;
+        let mut size = 0u64;
+        let mut hash = Sha256::new();
+        while let Some(chunk) = response.chunk().await? {
+            size = size
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| SyncError::Protocol("download size overflow".into()))?;
+            if size > expected.size {
+                return Err(SyncError::Protocol("download exceeds declared size".into()));
+            }
+            hash.update(&chunk);
+            file.write_all(&chunk)
+                .await
+                .map_err(|_| SyncError::Protocol("download staging write failed".into()))?;
+        }
+        if size != expected.size
+            || crate::core::sync::content::to_hex(&hash.finalize()) != expected.hex
+        {
+            return Err(SyncError::Protocol(
+                "download checksum/size mismatch".into(),
+            ));
+        }
+        file.sync_all()
+            .await
+            .map_err(|_| SyncError::Protocol("download staging flush failed".into()))?;
+        Ok(())
     }
 
     /// What a session turned out to be. Readable without a lease, which is what

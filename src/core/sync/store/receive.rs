@@ -257,17 +257,9 @@ impl super::SyncStore {
     /// rather than filtered by job state so a download failure stays visible.
     pub fn unresolved_resource_count(&self, job_id: i64) -> Result<usize> {
         let conn = self.pool.get()?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND state = 'pending'",
-            [job_id],
-            |row| row.get(0),
-        )?;
-        let conflicts: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
-            [job_id],
-            |row| row.get(0),
-        )?;
-        Ok((count + conflicts) as usize)
+        let mut conn = conn;
+        let tx = conn.transaction()?;
+        unresolved_in_tx(&tx, job_id)
     }
 
     /// The projection this job currently exposes, at `target`.
@@ -649,6 +641,10 @@ fn promote(
         "DELETE FROM sync_native_records WHERE job_id = ?1 AND generation = ?2",
         params![job_id, generation],
     )?;
+    tx.execute(
+        "UPDATE sync_native_resources SET record_name=NULL WHERE job_id=?1 AND generation=?2",
+        params![job_id, generation],
+    )?;
     for photo in &graph.photos {
         tx.execute(
             "INSERT INTO sync_native_records
@@ -667,12 +663,13 @@ fn promote(
                 serde_json::to_string(photo).map_err(json_error)?,
             ],
         )?;
+        super::runtime::project_publication(tx, job_id, photo)?;
         for resource in photo.resources() {
             tx.execute(
                 "INSERT INTO sync_native_resources
                     (job_id, generation, asset_id, role, record_name, expected_sha256,
                      expected_size, state)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CASE WHEN EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id=?5 AND (json_extract(e.native_resource_baseline,'$.original.assetId')=?3 OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=?3)) THEN 'verified' ELSE 'pending' END)
                  ON CONFLICT(job_id, generation, asset_id, role) DO UPDATE SET
                     record_name = excluded.record_name,
                     expected_sha256 = excluded.expected_sha256,
@@ -713,11 +710,7 @@ fn promote(
         )?;
     }
 
-    let resources: usize = tx.query_row(
-        "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND generation = ?2 AND state = 'pending'",
-        params![job_id, generation],
-        |row| row.get::<_, i64>(0),
-    )? as usize;
+    let resources = unresolved_in_tx(tx, job_id)?;
 
     tx.execute(
         "UPDATE sync_native_progress SET target_token = ?1, updated_at = unixepoch() WHERE job_id = ?2",
@@ -746,7 +739,7 @@ fn promote(
 
 fn unresolved_in_tx(tx: &rusqlite::Transaction<'_>, job_id: i64) -> Result<usize> {
     let resources: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND state = 'pending'",
+        "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state <> 'verified'",
         [job_id],
         |row| row.get(0),
     )?;
@@ -755,7 +748,12 @@ fn unresolved_in_tx(tx: &rusqlite::Transaction<'_>, job_id: i64) -> Result<usize
         [job_id],
         |row| row.get(0),
     )?;
-    Ok((resources + conflicts) as usize)
+    let publications: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sync_publications WHERE job_id=?1 AND state NOT IN ('complete','superseded')",
+        [job_id],
+        |row| row.get(0),
+    )?;
+    Ok((resources + conflicts + publications) as usize)
 }
 
 #[cfg(test)]

@@ -8,14 +8,14 @@ removed outright: no provider, planner, reconciler or migration for it remains,
 and a schema-8 library is upgraded by dropping the WebDAV sync tables and
 recreating them empty (media, albums, favorites and edits are untouched).
 
-C1.1 through C1.4 are implemented. A native connection can be created and probed,
+C1.1–C1.4 have local static-review corrections and focused runtime coverage; complete client acceptance is still pending. See [implementation notes](native-sync-integration.md). A native connection can be created and probed,
 its accepted capability scope is pinned onto the connection row, a job can map a
 local root to a configured zone, and a receive cycle can bootstrap that zone and
 keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-The settings surface is still absent (C1.5). Everything else is in place: the
+The settings surface is still absent (C1.5). The existing implementation boundaries are: the
 connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,
 paired with a thumbnail from the same copy, uploaded, downloaded, verified and
@@ -26,7 +26,7 @@ in C1.5.
 
 | Read | Owns |
 |---|---|
-| [Client contract](native-sync.md) | cycle/lease/dirty/callback/conflict contract for the full C1 client |
+| [Client integration](native-sync.md) | cycle orchestration, local dirty/callback data and conflict integration |
 | [Wire mapping](native-sync-protocol.md) | endpoints, DTO/capability names, scope/auth, limits, errors |
 | [Storage/publication](native-sync-storage.md) | actor/migration, dirty/version facts, receive progress, publication |
 | [Implementation/acceptance](native-sync-plan.md) | C1.1–C1.6 patch order and NC01–NC20 evidence |
@@ -64,15 +64,12 @@ in C1.5.
 
 ## Connection And Probe
 
-`NativeEndpoint::parse` accepts only an origin root: no userinfo, query,
-fragment or path prefix, and cleartext HTTP only for a **literal** loopback
-address (`localhost` is a DNS name and is refused). `NativeClient::probe` runs
-`GET /readyz`, then authenticated `GET /v1/capabilities`, then
-`validate_capabilities`, which requires: the service identifies itself as
-`syncserver`, `protocolVersion` 1, all twelve required capability bits, the
-`SHA256` checksum algorithm, a well-formed `databaseGeneration`, and an
-announced `publicBaseURL` that shares the configured origin. A textual `stage`
-never enables anything.
+PhotoViewer applies a root-origin connection policy and rejects insecure non-loopback
+addresses and credential-bearing URLs. `NativeClient::probe` discovers readiness and
+capabilities and checks the features the client actually needs. The endpoint shapes,
+field meanings, protocol versions and checksums come exclusively from the
+[server contracts](native-sync-protocol.md); they are not specified again here.
+A textual stage never enables a client feature.
 
 The accepted document is pinned onto the connection (`native_pinned_scope`);
 later cycles compare against it instead of re-deriving trust. An invalid draft

@@ -122,7 +122,10 @@ impl RemoteResource {
             role: role.to_string(),
             record_name: record_name.to_string(),
             expected_size: descriptor.size,
-            expected_sha256: descriptor.file_checksum.clone(),
+            expected_sha256: crate::core::sync::ContentDigest::hex_from_descriptor_base64(
+                &descriptor.file_checksum,
+            )
+            .unwrap_or_default(),
         }
     }
 }
@@ -376,12 +379,16 @@ fn build_photo(
         });
     }
 
-    let thumbnail_source_sha256 = string_field(asset_fields, "thumbnailSourceOriginalSHA256")
+    let thumbnail_source_sha256 = string_field(master_fields, "thumbnailSourceOriginalSHA256")
         .ok_or_else(|| GraphError::MissingAsset {
             name: photo_id.to_string(),
             field: "thumbnailSourceOriginalSHA256",
         })?;
-    if !is_lower_hex(&thumbnail_source_sha256) {
+    if !is_lower_hex(&thumbnail_source_sha256)
+        || crate::core::sync::ContentDigest::hex_from_descriptor_base64(&original.file_checksum)
+            .as_deref()
+            != Some(&thumbnail_source_sha256)
+    {
         return Err(GraphError::InvalidThumbnailDigest {
             name: photo_id.to_string(),
         });
@@ -455,6 +462,14 @@ fn asset_descriptor(
             name: photo_id.to_string(),
             field: name,
         })?;
+    if crate::core::sync::ContentDigest::hex_from_descriptor_base64(&descriptor.file_checksum)
+        .is_none_or(|digest| !is_lower_hex(&digest))
+    {
+        return Err(GraphError::MissingAsset {
+            name: photo_id.to_string(),
+            field: name,
+        });
+    }
     Ok(descriptor)
 }
 

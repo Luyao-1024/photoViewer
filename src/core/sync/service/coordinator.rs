@@ -1,453 +1,825 @@
-//! One synchronization cycle.
-//!
-//! The order is fixed and each step exists for a reason:
-//!
-//! ```text
-//! receive downstream to completion
-//!   → acquire the zone's upload lease once
-//!       → busy or unconfirmed: skip this cycle's uplink, keep every obligation
-//!       → held: prove the client is current, catching up behind the lock if not
-//!           → walk delete → modify → create, settling issued work between
-//!           → release
-//! ```
-//!
-//! Two rules are load-bearing and easy to lose in a refactor:
-//!
-//! * **Acquisition is attempted once per cycle.** A busy zone means another
-//!   device is uploading; spinning here would fight it and would never end.
-//! * **Lease loss is irreversible for the cycle.** Every unfinished uplink item
-//!   fails, late responses cannot clear an obligation, and the cycle does not
-//!   reacquire. A request that committed before the loss is *not* assumed to
-//!   have failed — it is reconciled through the operation receipt, which is why
-//!   issued work is durable.
-//!
-//! This stage uploads **metadata only**. Content and create need an asset pair,
-//! which is C1.4. An entry that is only content-dirty is reported as outstanding
-//! rather than quietly marked done.
-
-use super::super::native::lease::{LeaseGrant, UploadLease, UploadPhase};
-use super::super::native::modify::{
-    MetadataPatch, ModifyOutcome, MutationBatch, MutationOperation,
+//! Native cycle: receive/publication → one lease → gated delete/modify/create.
+use super::{receive, SyncService};
+use crate::core::{
+    error::AppError,
+    sync::{
+        native::{
+            assets::{AssetRole, ReservationRequest, UploadIntent},
+            modify::OperationState,
+            NativeClient, NativePinnedScope, NativeZone, UploadLease, UploadPhase,
+        },
+        store::{
+            dirty::{DirtyEntry, NativeDirty},
+            runtime::{Command, Epoch, Issued},
+            SyncJob,
+        },
+        SyncError,
+    },
 };
-use super::super::native::NativeClient;
-use super::super::native::NativePinnedScope;
-use super::super::native::NativeZone;
-use super::super::store::dirty::{
-    CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyEntry, NativeDirty,
-};
-use super::super::store::receive::NativeProgress;
-use crate::core::error::AppError;
+use serde_json::{json, Value};
+use std::{future::Future, path::PathBuf, time::Duration};
 
-use super::super::store::SyncJob;
-use super::receive;
-use super::SyncService;
-
-/// What one cycle did, stated without spin.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CycleReport {
     pub job_id: i64,
-    /// Downstream completed before any uplink was considered.
     pub received: bool,
-    /// The lease was granted.
     pub acquired: bool,
-    /// Another device held it; this cycle's uplink was skipped once.
     pub uplink_skipped: bool,
-    /// The client was behind the cloud and caught up while holding the lock.
     pub caught_up_behind_lock: bool,
     pub mutations_sent: usize,
     pub mutations_confirmed: usize,
-    /// Items that failed, with the reason. Never silently dropped.
     pub failures: Vec<ItemFailure>,
-    /// Obligations still outstanding after the cycle.
     pub outstanding: usize,
     pub released: bool,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemFailure {
     pub entry_id: i64,
     pub relative_path: String,
     pub reason: String,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CycleError {
-    /// Another device owns the zone's uplink. Not a failure: the cycle ends
-    /// after downstream, every obligation stays, and nothing is retried.
     #[error("another device holds the upload lease")]
     UplinkBusy,
-    /// The client is behind the cloud and declared itself not ready. The lease
-    /// is kept; a later cycle catches up and asks again.
-    #[error("this client is behind the cloud: {0}")]
+    #[error("this client has unfinished downstream work: {0}")]
     Behind(String),
-    /// The lease ended mid-cycle. Irreversible here.
-    #[error("the upload lease was lost mid-cycle")]
+    #[error("UPLOAD_LEASE_LOST")]
     LeaseLost,
     #[error("transport failed: {0}")]
     Transport(String),
     #[error("{0}")]
     Setup(String),
 }
+fn setup(e: impl std::fmt::Display) -> CycleError {
+    CycleError::Setup(e.to_string())
+}
+fn transport(e: SyncError) -> CycleError {
+    if e.to_string().contains("UPLOAD_LEASE_LOST") {
+        CycleError::LeaseLost
+    } else {
+        CycleError::Transport(e.to_string())
+    }
+}
 
+/// A drop guard owns heartbeat lifetime even if the caller cancels the cycle.
+struct Heartbeat {
+    task: tokio::task::JoinHandle<()>,
+    lost: tokio::sync::watch::Receiver<bool>,
+    watchdog: tokio::task::JoinHandle<()>,
+}
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        self.task.abort();
+        self.watchdog.abort();
+    }
+}
+impl Heartbeat {
+    fn start(
+        client: NativeClient,
+        lease: UploadLease,
+        store: crate::core::sync::store::SyncStore,
+        epoch: Epoch,
+    ) -> Self {
+        let (sender, lost) = tokio::sync::watch::channel(false);
+        let monitor_lease = lease.clone();
+        let monitor_sender = sender.clone();
+        let watchdog = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let check_store = store.clone();
+                let check_epoch = epoch.clone();
+                let current =
+                    tokio::task::spawn_blocking(move || check_store.epoch_current(&check_epoch))
+                        .await;
+                if !monitor_lease.valid_now() || !matches!(current, Ok(Ok(true))) {
+                    monitor_lease.mark_lost().await;
+                    let _ = monitor_sender.send(true);
+                    break;
+                }
+            }
+        });
+        let task = tokio::spawn(async move {
+            let mut delay = lease.heartbeat_interval();
+            loop {
+                let Some(deadline) = lease.deadline().await else {
+                    let _ = sender.send(true);
+                    break;
+                };
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    lease.mark_lost().await;
+                    let _ = sender.send(true);
+                    break;
+                }
+                tokio::time::sleep(delay.min(remaining)).await;
+                if !lease.valid_now() {
+                    lease.mark_lost().await;
+                    let _ = sender.send(true);
+                    break;
+                }
+                let remaining = lease
+                    .deadline()
+                    .await
+                    .map(|d| d.saturating_duration_since(std::time::Instant::now()))
+                    .unwrap_or_default();
+                match tokio::time::timeout(remaining, client.renew_lease(lease.proof())).await {
+                    Ok(Ok((ttl, started))) => {
+                        lease.renew(ttl, started).await;
+                        delay = lease.heartbeat_interval();
+                    }
+                    Ok(Err(SyncError::Offline(_) | SyncError::RateLimited))
+                        if lease.valid_now() =>
+                    {
+                        delay = Duration::from_millis(500);
+                    }
+                    _ => {
+                        lease.mark_lost().await;
+                        let _ = sender.send(true);
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            task,
+            lost,
+            watchdog,
+        }
+    }
+    async fn guard<T>(
+        &self,
+        lease: &UploadLease,
+        future: impl Future<Output = Result<T, CycleError>>,
+    ) -> Result<T, CycleError> {
+        if !lease.valid_now() || *self.lost.borrow() {
+            return Err(CycleError::LeaseLost);
+        }
+        let mut lost = self.lost.clone();
+        tokio::select! {biased;_ = lost.changed()=>Err(CycleError::LeaseLost),result=future=>{let result=result?;if !lease.valid_now(){Err(CycleError::LeaseLost)}else{Ok(result)}}}
+    }
+}
 impl SyncService {
-    /// Run one full cycle for a native job.
-    pub async fn run_cycle(&self, job_id: i64) -> std::result::Result<CycleReport, CycleError> {
+    pub async fn run_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
+        let _slot = self.acquire_run_slot(job_id).await.map_err(setup)?;
         let job = self
             .store()
             .get_job(job_id)
-            .map_err(|error| CycleError::Setup(error.to_string()))?
-            .ok_or_else(|| CycleError::Setup(format!("job {job_id} no longer exists")))?;
+            .map_err(setup)?
+            .ok_or_else(|| setup("job was removed"))?;
+        let epoch = Epoch {
+            job: job.id,
+            config: job.config_generation,
+            cycle: uuid::Uuid::new_v4().to_string(),
+        };
+        self.store()
+            .runtime(Command::Begin(epoch.clone()))
+            .map_err(setup)?;
         let mut report = CycleReport {
             job_id,
-            ..CycleReport::default()
+            ..Default::default()
         };
-
-        // Downstream first and unconditionally. A busy lease must not cost this
-        // client the receive half of the work.
-        self.receive_downstream(&job, &mut report).await?;
-
-        match self.uplink(&job, &mut report).await {
-            Ok(()) => {}
-            Err(CycleError::UplinkBusy) => {
-                report.uplink_skipped = true;
-            }
-            Err(CycleError::Behind(_)) => {
-                // Behind, not blocked: the obligations stay and the next cycle
-                // tries again from the position catch-up left.
-            }
+        let result = self.cycle_inner(&job, &epoch, &mut report).await;
+        self.store().runtime(Command::End(epoch)).map_err(setup)?;
+        match result {
+            Err(CycleError::UplinkBusy) => report.uplink_skipped = true,
             Err(CycleError::LeaseLost) => {
-                // Already recorded as failures by the items that were in flight.
+                for entry in self.store().uplink_view(job_id).map_err(setup)? {
+                    if !report.failures.iter().any(|f| f.entry_id == entry.entry_id) {
+                        report.failures.push(ItemFailure {
+                            entry_id: entry.entry_id,
+                            relative_path: entry.relative_path,
+                            reason: "UPLOAD_LEASE_LOST".into(),
+                        });
+                    }
+                }
+            }
+            Err(CycleError::Behind(reason)) => {
+                report.failures.push(ItemFailure {
+                    entry_id: 0,
+                    relative_path: String::new(),
+                    reason,
+                });
             }
             Err(error) => return Err(error),
+            Ok(()) => {}
         }
-
         report.outstanding = self
             .store()
             .unresolved_resource_count(job_id)
-            .map_err(|error| CycleError::Setup(error.to_string()))?;
+            .map_err(setup)?
+            + self.store().uplink_view(job_id).map_err(setup)?.len();
         Ok(report)
     }
-
-    async fn receive_downstream(
-        &self,
-        job: &SyncJob,
-        report: &mut CycleReport,
-    ) -> std::result::Result<(), CycleError> {
-        match receive_cycle(self, job.id).await {
-            Ok(_) => {
-                report.received = true;
-                Ok(())
-            }
-            // A receive failure must not silently become an uplink: sending
-            // changes while behind is how a conflict gets manufactured.
-            Err(error) => Err(CycleError::Transport(error.to_string())),
+    async fn receive_complete(&self, job: i64) -> Result<receive::ReceiveReport, CycleError> {
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.recover_publications(job))
+            .await
+            .map_err(|_| setup("publication recovery worker stopped"))?
+            .map_err(setup)?;
+        let report = self
+            .run_receive(job)
+            .await
+            .map_err(|e| CycleError::Transport(e.to_string()))?;
+        let transfers = self.run_transfers(job).await.map_err(setup)?;
+        if !transfers.failures.is_empty() {
+            return Err(CycleError::Behind(format!(
+                "resource/publication work is still unresolved: {}",
+                transfers
+                    .failures
+                    .iter()
+                    .map(|(_, reason)| reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
         }
+        Ok(report)
     }
-
-    async fn uplink(
+    async fn cycle_inner(
         &self,
         job: &SyncJob,
+        epoch: &Epoch,
         report: &mut CycleReport,
-    ) -> std::result::Result<(), CycleError> {
-        let zone = job
-            .native_zone
-            .clone()
-            .ok_or_else(|| CycleError::Setup("a native job must name its zone".into()))?;
+    ) -> Result<(), CycleError> {
+        // Even when publication is blocked, read-only receipt reconciliation
+        // after acquisition can settle an earlier committed local operation.
+        match self.receive_complete(job.id).await {
+            Ok(_) => report.received = true,
+            Err(CycleError::Behind(_)) => report.received = true,
+            Err(e) => return Err(e),
+        }
+        let client = self.transport_client_for(job).await.map_err(setup)?;
         let pinned = self
             .store()
             .native_scope(job.connection_id)
-            .map_err(|error| CycleError::Setup(error.to_string()))?
-            .ok_or_else(|| CycleError::Setup("this connection has no probed scope".into()))?;
+            .map_err(setup)?
+            .ok_or_else(|| setup("connection has no pinned scope"))?;
+        let zone = job
+            .native_zone
+            .as_ref()
+            .ok_or_else(|| setup("job has no zone"))?;
         let device = crate::core::sync::device::device_id(self.pool());
-        let client = self.cycle_client(job).await?;
-
-        let (grant, started): (LeaseGrant, _) = client
-            .acquire_lease(&device, &zone)
-            .await
-            .map_err(map_lease_error)?;
+        let (grant, started) = match client.acquire_lease(&device, zone).await {
+            Ok(grant) => grant,
+            Err(SyncError::RateLimited) => return Err(CycleError::UplinkBusy),
+            Err(e) => {
+                report.uplink_skipped = true;
+                report.failures.push(ItemFailure {
+                    entry_id: 0,
+                    relative_path: String::new(),
+                    reason: e.to_string(),
+                });
+                return Ok(());
+            }
+        };
         let lease = UploadLease::from_grant(&grant, started);
         report.acquired = true;
-
-        let progress = self
-            .store()
-            .native_progress(job.id)
-            .map_err(|error| CycleError::Setup(error.to_string()))?
-            .ok_or_else(|| CycleError::Setup("no receive position exists yet".into()))?;
-
-        let result = self
-            .uplink_under_lease(&client, &lease, job, &pinned, &progress, &zone, report)
+        let heartbeat = Heartbeat::start(
+            client.clone(),
+            lease.clone(),
+            self.store().clone(),
+            epoch.clone(),
+        );
+        let result = heartbeat
+            .guard(
+                &lease,
+                self.uplink_held(
+                    &client, &lease, &heartbeat, job, epoch, &pinned, zone, report,
+                ),
+            )
             .await;
-
-        // Release is best effort and uses the exact old proof. It is attempted
-        // even after a loss, because a lease this client can no longer prove it
-        // holds must not be left to expire on the server's schedule.
-        if client.release_lease(lease.proof()).await.is_ok() {
-            report.released = true;
-        }
+        // Abort heartbeat first; an in-flight release can never grant a renewal.
+        drop(heartbeat);
+        report.released = client.release_lease(lease.proof()).await.unwrap_or(false);
+        lease.mark_lost().await;
         result
     }
-
     #[allow(clippy::too_many_arguments)]
-    async fn uplink_under_lease(
+    async fn uplink_held(
         &self,
         client: &NativeClient,
         lease: &UploadLease,
+        heartbeat: &Heartbeat,
         job: &SyncJob,
+        epoch: &Epoch,
         pinned: &NativePinnedScope,
-        progress: &NativeProgress,
         zone: &NativeZone,
         report: &mut CycleReport,
-    ) -> std::result::Result<(), CycleError> {
-        // The gate. `localReady` is only true once this client independently
-        // knows its receive position is complete — the server cannot attest
-        // that anything was downloaded or published here.
-        let local_ready =
-            progress.applied_token.is_some() && progress.applied_token == progress.target_token;
-        let applied = progress.applied_token.as_deref().ok_or_else(|| {
-            CycleError::Setup("this client has not finished catching up yet".into())
-        })?;
-        let check = client
-            .check_lease(lease.proof(), zone, applied, local_ready)
-            .await
-            .map_err(map_lease_error)?;
-        if !check.may_upload {
-            // Behind, or not ready. One catch-up runs while the lease is still
-            // held, and the cycle then ends *without* re-asking: a passed gate
-            // is single-use, and a refused one belongs to a position that
-            // catch-up has just replaced. Asking again in a tight loop would
-            // spin on a zone whose head is being written by someone else. The
-            // obligations stay; the next scheduled cycle asks from the new
-            // position.
-            report.caught_up_behind_lock = true;
-            receive_cycle(self, job.id)
-                .await
-                .map_err(|error| CycleError::Transport(error.to_string()))?;
-            return Err(CycleError::Behind(reason_for(check.is_current)));
-        }
-
-        let entries = self
-            .store()
-            .uplink_view(job.id)
-            .map_err(|error| CycleError::Setup(error.to_string()))?;
-        let _ = pinned;
-
-        for phase in UploadPhase::ORDER {
-            // Every phase is walked, including an empty one: issued operations
-            // are settled before the next phase, not before the next non-empty
-            // phase.
-            if !lease.is_held().await {
-                return Err(CycleError::LeaseLost);
+    ) -> Result<(), CycleError> {
+        for operation in self.store().pending_issued(job.id).map_err(setup)? {
+            if operation.config != job.config_generation
+                || operation.generation != pinned.database_generation
+            {
+                return Err(CycleError::Behind("an issued operation belongs to an obsolete scope/configuration; reconciliation is required".into()));
             }
-            client
-                .set_phase(lease.proof(), phase)
-                .await
-                .map_err(map_lease_error)?;
-            let batch = self.batch_for_phase(&entries, phase);
-            if batch.is_empty() {
+            if operation.body.is_null() {
                 continue;
             }
-            self.dispatch(client, lease, job, pinned, batch, report)
+            if let OperationState::Committed(response) = client
+                .operation_status(&operation.id)
+                .await
+                .map_err(transport)?
+            {
+                self.store()
+                    .runtime(Command::Confirm {
+                        epoch: epoch.clone(),
+                        operation,
+                        response,
+                        lease: lease.clone(),
+                    })
+                    .map_err(setup)?;
+                report.mutations_confirmed += 1;
+            }
+        }
+        let mut ready = false;
+        for _ in 0..3 {
+            self.receive_complete(job.id).await?;
+            let progress = self
+                .store()
+                .native_progress(job.id)
+                .map_err(setup)?
+                .ok_or_else(|| setup("job has no receive progress"))?;
+            let Some(applied) = progress.applied_token.as_deref() else {
+                return Err(CycleError::Behind(
+                    "local resources/conflicts have not been applied".into(),
+                ));
+            };
+            let local_ready = self
+                .store()
+                .unresolved_resource_count(job.id)
+                .map_err(setup)?
+                == 0
+                && progress.target_token == progress.applied_token;
+            let check = client
+                .check_lease(lease.proof(), zone, applied, local_ready)
+                .await
+                .map_err(transport)?;
+            if check.may_upload {
+                ready = true;
+                break;
+            }
+            report.caught_up_behind_lock = true;
+        }
+        if !ready {
+            return Err(CycleError::Behind(
+                "cloud head did not converge within this bounded catch-up cycle".into(),
+            ));
+        }
+        // Freeze the DB-derived view after the gate. Later user edits remain dirty.
+        self.store()
+            .runtime(Command::Enroll {
+                epoch: epoch.clone(),
+            })
+            .map_err(setup)?;
+        let entries = self.store().uplink_view(job.id).map_err(setup)?;
+        for phase in UploadPhase::ORDER {
+            if phase != UploadPhase::Delete {
+                client
+                    .set_phase(lease.proof(), phase)
+                    .await
+                    .map_err(transport)?;
+            }
+            let pending = self.store().pending_issued(job.id).map_err(setup)?;
+            for operation in pending.iter().filter(|op| op.phase == phase.as_str()) {
+                self.execute_issued(
+                    client,
+                    lease,
+                    heartbeat,
+                    job,
+                    epoch,
+                    pinned,
+                    zone,
+                    operation.clone(),
+                    report,
+                )
                 .await?;
+            }
+            for entry in &entries {
+                if !eligible(self, job, entry)? || !matches_phase(entry, phase) {
+                    continue;
+                }
+                if pending.iter().any(|op| op.entry == entry.entry_id) {
+                    continue;
+                }
+                let current = self.store().uplink_view(job.id).map_err(setup)?;
+                if !current.iter().any(|row| {
+                    row.entry_id == entry.entry_id && row.local_version == entry.local_version
+                }) {
+                    continue;
+                }
+                let phase_result = heartbeat
+                    .guard(
+                        lease,
+                        self.prepare_and_send(
+                            client, lease, heartbeat, job, epoch, pinned, zone, entry, phase,
+                            report,
+                        ),
+                    )
+                    .await;
+                match phase_result {
+                    Ok(()) => {}
+                    Err(CycleError::LeaseLost) => return Err(CycleError::LeaseLost),
+                    Err(error) => report.failures.push(ItemFailure {
+                        entry_id: entry.entry_id,
+                        relative_path: entry.relative_path.clone(),
+                        reason: error.to_string(),
+                    }),
+                }
+            }
         }
         Ok(())
     }
-
-    fn batch_for_phase(&self, entries: &[DirtyEntry], phase: UploadPhase) -> Vec<MutationBatch> {
-        entries
-            .iter()
-            .filter_map(|entry| {
-                let operations = operations_for(entry, phase)?;
-                Some(MutationBatch {
-                    entry_id: entry.entry_id,
-                    relative_path: entry.relative_path.clone(),
-                    category: category_for(entry, phase)?,
-                    captured_version: entry.version_for(category_for(entry, phase)?),
-                    operations,
-                })
-            })
-            .collect()
-    }
-
-    async fn dispatch(
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_and_send(
         &self,
         client: &NativeClient,
         lease: &UploadLease,
+        heartbeat: &Heartbeat,
         job: &SyncJob,
-        namespace: &NativePinnedScope,
-        batch: Vec<MutationBatch>,
+        epoch: &Epoch,
+        pinned: &NativePinnedScope,
+        zone: &NativeZone,
+        entry: &DirtyEntry,
+        phase: UploadPhase,
         report: &mut CycleReport,
-    ) -> std::result::Result<(), CycleError> {
-        for item in batch {
-            // Checked immediately before every mutation: a cycle that lost the
-            // lease between two items must not issue the second.
-            if !lease.is_held().await {
-                return Err(CycleError::LeaseLost);
+    ) -> Result<(), CycleError> {
+        let photo = entry
+            .photo_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let master = entry
+            .master_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut operation = Issued {
+            id: format!("pv-{}", uuid::Uuid::new_v4()),
+            job: job.id,
+            config: job.config_generation,
+            entry: entry.entry_id,
+            generation: pinned.database_generation.clone(),
+            phase: phase.as_str().into(),
+            versions: [
+                entry.local_version,
+                entry.metadata_version,
+                entry.content_version,
+                entry.deletion_version,
+            ],
+            dirty: entry.dirty.bits(),
+            photo,
+            master,
+            content_generation: entry
+                .content_generation
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            body: Value::Null,
+            preparation: json!({"metadata":self.store().local_metadata(entry.entry_id).map_err(setup)?,"events":{"metadataEvent":entry.metadata_event,"contentEvent":entry.content_event,"deletionEvent":entry.deletion_event}}),
+        };
+        if phase == UploadPhase::Delete {
+            if entry.photo_id.is_none() || entry.master_id.is_none() {
+                return Err(setup("unconfirmed local creation requires cancellation/reconciliation before cloud deletion"));
             }
-            let zone = job
-                .native_zone
-                .as_ref()
-                .ok_or_else(|| CycleError::Setup("a native job must name its zone".into()))?;
-            let outcome = client
-                .modify_records(lease.proof(), &namespace.namespace, zone, &item)
-                .await
-                .map_err(map_lease_error)?;
-
-            match outcome {
-                ModifyOutcome::LeaseLost => {
-                    report.failures.push(ItemFailure {
-                        entry_id: item.entry_id,
-                        relative_path: item.relative_path.clone(),
-                        reason: "the upload lease was lost before this item was sent".into(),
-                    });
-                    return Err(CycleError::LeaseLost);
+            operation.body = json!({"zoneID":super::super::native::receive::ZoneId::from(zone),"atomic":true,"operations":[{"operationType":"delete","record":{"recordName":operation.photo,"recordChangeTag":entry.asset_revision,"_syncserver":deletion_event(entry)}},{"operationType":"delete","record":{"recordName":operation.master,"recordChangeTag":entry.master_revision,"_syncserver":deletion_event(entry)}}]});
+        } else {
+            operation.preparation["assetRevision"] = json!(entry.asset_revision);
+            operation.preparation["masterRevision"] = json!(entry.master_revision);
+            if phase == UploadPhase::Create || entry.dirty.contains(NativeDirty::CONTENT) {
+                operation.content_generation = uuid::Uuid::new_v4().to_string();
+                let source =
+                    super::transfer::safe_destination(&job.local_root, &entry.relative_path)
+                        .map_err(setup)?;
+                let folder = self.staging_root().join("uploads").join(&operation.id);
+                let max = pinned.limits.max_asset_bytes;
+                let thumb_max = pinned.limits.thumbnail_max_bytes;
+                let prepared=tokio::task::spawn_blocking(move||{
+                    let _read=super::super::publication_io::read()?;
+                    let snapshot=super::super::content::snapshot_source(&source,&folder,"original",max)?;
+                    let (thumbnail,digest)=super::super::content::thumbnail_from(&snapshot,2048,thumb_max)?;
+                    let path=folder.join("thumbnail.jpg");std::fs::write(&path,&thumbnail)?;std::fs::File::open(&path)?.sync_all()?;
+                    Ok::<_,AppError>(json!({"original":{"path":snapshot.path,"hex":snapshot.digest.hex,"base64":snapshot.digest.base64,"size":snapshot.digest.size},"thumbnail":{"path":path,"hex":digest.hex,"base64":digest.base64,"size":digest.size}}))
+                }).await.map_err(|_|setup("snapshot preparation worker stopped"))?.map_err(setup)?;
+                operation.preparation["resources"] = prepared;
+            }
+        }
+        let current = self.store().uplink_view(job.id).map_err(setup)?;
+        if !current
+            .iter()
+            .any(|row| row.entry_id == entry.entry_id && row.local_version == entry.local_version)
+        {
+            return Err(setup("local version changed while preparing the operation"));
+        }
+        self.store()
+            .runtime(Command::Save(epoch.clone(), operation.clone()))
+            .map_err(setup)?;
+        self.execute_issued(
+            client, lease, heartbeat, job, epoch, pinned, zone, operation, report,
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_issued(
+        &self,
+        client: &NativeClient,
+        lease: &UploadLease,
+        _heartbeat: &Heartbeat,
+        _job: &SyncJob,
+        epoch: &Epoch,
+        pinned: &NativePinnedScope,
+        zone: &NativeZone,
+        mut operation: Issued,
+        report: &mut CycleReport,
+    ) -> Result<(), CycleError> {
+        if operation.body.is_null() {
+            if operation.preparation.get("resources").is_some() {
+                let intent = if operation.phase == "create" {
+                    UploadIntent::Create
+                } else {
+                    UploadIntent::Update
+                };
+                for (name, role) in [
+                    ("original", AssetRole::Original),
+                    ("thumbnail", AssetRole::Thumbnail),
+                ] {
+                    let mut descriptor = None;
+                    if let Some(session) =
+                        operation.preparation["resources"][name]["session"].as_str()
+                    {
+                        if let Ok(status) = client.upload_session(session).await {
+                            if status.state.is_published() {
+                                descriptor = status.asset;
+                            }
+                        }
+                    }
+                    if descriptor.is_none() {
+                        let resource = &operation.preparation["resources"][name];
+                        let digest = super::super::ContentDigest {
+                            size: resource["size"]
+                                .as_u64()
+                                .ok_or_else(|| setup("issued snapshot has no size"))?,
+                            hex: resource["hex"]
+                                .as_str()
+                                .ok_or_else(|| setup("issued snapshot has no digest"))?
+                                .into(),
+                            base64: resource["base64"]
+                                .as_str()
+                                .ok_or_else(|| setup("issued snapshot has no digest"))?
+                                .into(),
+                        };
+                        let path = PathBuf::from(
+                            resource["path"]
+                                .as_str()
+                                .ok_or_else(|| setup("issued snapshot has no path"))?,
+                        );
+                        let reservation = client
+                            .reserve_assets(
+                                &pinned.namespace,
+                                zone,
+                                lease.proof(),
+                                &operation.master,
+                                intent,
+                                &[ReservationRequest {
+                                    role,
+                                    intent,
+                                    digest: digest.clone(),
+                                }],
+                            )
+                            .await
+                            .map_err(transport)?
+                            .into_iter()
+                            .next()
+                            .ok_or_else(|| setup("resource reservation was empty"))?;
+                        operation.preparation["resources"][name]["session"] =
+                            json!(reservation.session_id);
+                        self.store()
+                            .runtime(Command::Save(epoch.clone(), operation.clone()))
+                            .map_err(setup)?;
+                        descriptor = Some(
+                            client
+                                .upload_file(&reservation, lease.proof(), &path, &digest)
+                                .await
+                                .map_err(transport)?,
+                        );
+                    }
+                    operation.preparation["resources"][name]["asset"] =
+                        serde_json::to_value(descriptor).map_err(setup)?;
+                    self.store()
+                        .runtime(Command::Save(epoch.clone(), operation.clone()))
+                        .map_err(setup)?;
                 }
-                ModifyOutcome::Confirmed(confirmed) => {
-                    report.mutations_sent += 1;
-                    let outcome = self
-                        .store()
-                        .confirm_category(
-                            item.entry_id,
-                            item.category,
-                            item.captured_version,
-                            ConfirmedIdentity {
-                                photo_id: confirmed.photo_id.clone(),
-                                master_id: confirmed.master_id.clone(),
-                                asset_revision: confirmed.record_change_tag.clone(),
-                                master_revision: confirmed.master_revision.clone(),
-                                content_generation: confirmed.content_generation.clone(),
-                            },
-                        )
-                        .map_err(|error| CycleError::Setup(error.to_string()))?;
-                    if outcome == CategoryOutcome::Cleared {
-                        report.mutations_confirmed += 1;
+            }
+            operation.body = body_for(&operation, zone)?;
+            self.store()
+                .runtime(Command::Save(epoch.clone(), operation.clone()))
+                .map_err(setup)?;
+        }
+        let response = match client
+            .operation_status(&operation.id)
+            .await
+            .map_err(transport)?
+        {
+            OperationState::Committed(response) => response,
+            OperationState::Pending(_) => {
+                return Err(CycleError::Behind(
+                    "an issued atomic operation is still pending".into(),
+                ))
+            }
+            OperationState::Unknown => {
+                let mut body = operation.body.clone();
+                for op in body["operations"]
+                    .as_array_mut()
+                    .ok_or_else(|| setup("issued operation has no records"))?
+                {
+                    if let Some(fields) = op["record"]["fields"].as_object_mut() {
+                        for (field, role) in [
+                            ("resOriginalRes", AssetRole::Original),
+                            ("resJPEGThumbRes", AssetRole::Thumbnail),
+                        ] {
+                            if let Some(value) = fields.get_mut(field) {
+                                let id = value["value"]["assetId"].as_str().ok_or_else(|| {
+                                    setup("issued resource has no stable identity")
+                                })?;
+                                let fresh =
+                                    client.describe_asset(id, role).await.map_err(transport)?;
+                                value["value"]["receipt"] = json!(fresh.receipt);
+                                value["value"]["downloadURL"] = json!(fresh.download_url);
+                            }
+                        }
                     }
                 }
-                ModifyOutcome::ItemFailed(failure) => {
-                    // A per-item failure is reported, never swallowed and never
-                    // treated as a reason to clear the obligation.
-                    report.failures.push(ItemFailure {
-                        entry_id: item.entry_id,
-                        relative_path: item.relative_path.clone(),
-                        reason: failure,
-                    });
+                if operation.phase == "modify" && operation.preparation.get("resources").is_none() {
+                    let current = client
+                        .lookup_current(&pinned.namespace, zone, &[&operation.photo])
+                        .await
+                        .map_err(transport)?;
+                    if metadata_matches(&body, &current) {
+                        self.store()
+                            .runtime(Command::Confirm {
+                                epoch: epoch.clone(),
+                                operation,
+                                response: current,
+                                lease: lease.clone(),
+                            })
+                            .map_err(setup)?;
+                        report.mutations_confirmed += 1;
+                        return Ok(());
+                    }
                 }
+                report.mutations_sent += 1;
+                client
+                    .modify_exact(lease.proof(), &pinned.namespace, &body, &operation.id)
+                    .await
+                    .map_err(transport)?
             }
-        }
+        };
+        // Both monotonic authority and the actor-owned epoch are checked at commit.
+        self.store()
+            .runtime(Command::Confirm {
+                epoch: epoch.clone(),
+                operation,
+                response,
+                lease: lease.clone(),
+            })
+            .map_err(|e| {
+                if e.to_string().contains("UPLOAD_LEASE_LOST") {
+                    CycleError::LeaseLost
+                } else {
+                    setup(e)
+                }
+            })?;
+        report.mutations_confirmed += 1;
         Ok(())
     }
-
-    async fn cycle_client(&self, job: &SyncJob) -> std::result::Result<NativeClient, CycleError> {
-        let endpoint = super::super::native::NativeEndpoint::parse(&job.endpoint)
-            .map_err(|error| CycleError::Setup(error.to_string()))?;
-        let reference = job.credential_ref.clone();
-        let api_key = tokio::task::spawn_blocking(move || {
-            crate::platform::credentials::load_api_key(&reference)
-        })
-        .await
-        .map_err(|error| CycleError::Transport(format!("credential task failed: {error}")))?
-        .map_err(|error| CycleError::Transport(error.to_string()))?;
-        NativeClient::new(&endpoint, &api_key).map_err(|error| CycleError::Setup(error.to_string()))
-    }
-}
-
-/// Which category a phase acts on.
-fn category_for(entry: &DirtyEntry, phase: UploadPhase) -> Option<ChangeCategory> {
-    let bit = match phase {
-        UploadPhase::Delete => NativeDirty::DELETE,
-        UploadPhase::Modify => NativeDirty::METADATA,
-        UploadPhase::Create => NativeDirty::NEW,
-    };
-    entry.dirty.contains(bit).then_some(match phase {
-        UploadPhase::Delete => ChangeCategory::Deletion,
-        UploadPhase::Modify => ChangeCategory::Metadata,
-        UploadPhase::Create => ChangeCategory::Metadata,
-    })
-}
-
-/// The record operations this stage can actually issue.
-///
-/// Only a metadata update on a photo that already exists in the cloud. A create
-/// needs an asset pair (C1.4), and a content change needs new bytes; both are
-/// reported as outstanding rather than approximated with something that would
-/// leave the cloud describing content this client never sent.
-fn operations_for(entry: &DirtyEntry, phase: UploadPhase) -> Option<Vec<MutationOperation>> {
-    match phase {
-        UploadPhase::Modify if entry.dirty.contains(NativeDirty::METADATA) => {
-            let (photo, _master) = entry.remote_names()?;
-            let revision = entry.asset_revision.clone()?;
-            Some(vec![MutationOperation::update_metadata(
-                photo,
-                revision,
-                MetadataPatch {
-                    // A supported field, uploaded conditionally. The value is
-                    // the user's current one; the capture date and path travel
-                    // with it in C1.4's full field set.
-                    favorite: None,
-                },
-            )])
-        }
-        _ => None,
-    }
-}
-
-/// Why the gate refused, in the client's own terms.
-fn reason_for(is_current: bool) -> String {
-    if is_current {
-        // Current but not allowed to upload: this client declared itself not
-        // ready, which is the local side of the gate, not a cloud change.
-        "this client is not ready to upload".to_string()
-    } else {
-        "the zone moved past this client's position".to_string()
-    }
-}
-
-fn map_lease_error(error: crate::core::sync::SyncError) -> CycleError {
-    use crate::core::sync::SyncError;
-    match &error {
-        // Both acquisition contention and a mid-cycle loss arrive as rate
-        // limiting / unsupported codes; the message decides which decision the
-        // cycle makes.
-        SyncError::RateLimited => CycleError::UplinkBusy,
-        SyncError::Unsupported(message) => {
-            if message.contains("UPLOAD_LEASE_LOST") {
-                CycleError::LeaseLost
-            } else {
-                CycleError::Transport(error.to_string())
-            }
-        }
-        other => CycleError::Transport(other.to_string()),
-    }
-}
-
-/// Run one receive cycle. Named here so the coordinator reads as "receive, then
-/// uplink" rather than reaching into the sibling module's internals.
-async fn receive_cycle(
-    service: &SyncService,
-    job_id: i64,
-) -> std::result::Result<receive::ReceiveReport, receive::ReceiveError> {
-    service.run_receive(job_id).await
-}
-
-impl SyncService {
-    /// Build a client for one job: the endpoint is re-validated on every use and
-    /// the Bearer key is read from the platform secret store, never cached.
-    ///
-    /// Re-validating here rather than trusting the stored endpoint is what keeps
-    /// a configuration edit from quietly redirecting traffic somewhere the user
-    /// never chose.
     pub(crate) async fn transport_client_for(
         &self,
         job: &SyncJob,
-    ) -> std::result::Result<NativeClient, AppError> {
-        let endpoint = crate::core::sync::native::NativeEndpoint::parse(&job.endpoint)
-            .map_err(|error| AppError::Backend(error.to_string()))?;
+    ) -> Result<NativeClient, AppError> {
+        let endpoint = super::super::native::NativeEndpoint::parse(&job.endpoint)
+            .map_err(|e| AppError::Backend(e.to_string()))?;
         let reference = job.credential_ref.clone();
-        let api_key = tokio::task::spawn_blocking(move || {
-            crate::platform::credentials::load_api_key(&reference)
-        })
-        .await
-        .map_err(|error| AppError::Backend(format!("credential task failed: {error}")))??;
-        crate::core::sync::native::NativeClient::new(&endpoint, &api_key)
-            .map_err(|error| AppError::Backend(error.to_string()))
+        let reader = self.credential_reader.clone();
+        let key = tokio::task::spawn_blocking(move || reader(&reference))
+            .await
+            .map_err(|_| AppError::Backend("credential worker stopped".into()))??;
+        NativeClient::new(&endpoint, &key).map_err(|e| AppError::Backend(e.to_string()))
     }
+}
+fn matches_phase(entry: &DirtyEntry, phase: UploadPhase) -> bool {
+    if entry.dirty.contains(NativeDirty::DELETE) {
+        phase == UploadPhase::Delete
+    } else if entry.dirty.contains(NativeDirty::NEW) {
+        phase == UploadPhase::Create
+    } else {
+        phase == UploadPhase::Modify
+            && (entry.dirty.contains(NativeDirty::METADATA)
+                || entry.dirty.contains(NativeDirty::CONTENT))
+    }
+}
+fn eligible(service: &SyncService, job: &SyncJob, entry: &DirtyEntry) -> Result<bool, CycleError> {
+    if job.upload_scope == super::super::UploadScope::All {
+        return Ok(true);
+    }
+    let conn = service.pool().get().map_err(setup)?;
+    let album = std::path::Path::new(&entry.relative_path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_job_upload_albums WHERE job_id=?1 AND relative_album=?2)",
+        rusqlite::params![job.id, album],
+        |r| r.get(0),
+    )
+    .map_err(setup)
+}
+fn deletion_event(entry: &DirtyEntry) -> Value {
+    entry
+        .deletion_event
+        .as_ref()
+        .map(|event| json!({"deletionEvent":event}))
+        .unwrap_or_else(|| json!({}))
+}
+fn body_for(operation: &Issued, zone: &NativeZone) -> Result<Value, CycleError> {
+    let create = operation.phase == "create";
+    let resources = operation.preparation.get("resources");
+    let kind = if create { "create" } else { "update" };
+    let mut fields = if create || operation.dirty & NativeDirty::METADATA != 0 {
+        operation.preparation["metadata"].clone()
+    } else {
+        json!({})
+    };
+    if create {
+        if let Some(fields) = fields.as_object_mut() {
+            fields.retain(|_, value| !value.is_null());
+        }
+    }
+    let mut events = operation.preparation["events"].clone();
+    if let Some(map) = events.as_object_mut() {
+        map.retain(|key, value| {
+            !value.is_null()
+                && match key.as_str() {
+                    "metadataEvent" => create || operation.dirty & NativeDirty::METADATA != 0,
+                    "contentEvent" => resources.is_some(),
+                    _ => false,
+                }
+        });
+    }
+    let mut photo = json!({"recordName":operation.photo,"recordType":"CPLAsset","fields":fields,"_syncserver":events});
+    if !create {
+        photo["recordChangeTag"] = operation.preparation["assetRevision"].clone();
+    }
+    let mut operations = Vec::new();
+    if let Some(resources) = resources {
+        photo["fields"]["contentGeneration"] =
+            json!({"type":"STRING","value":operation.content_generation});
+        if create {
+            photo["fields"]["masterRef"] =
+                json!({"type":"REFERENCE","value":{"recordName":operation.master,"action":"NONE"}});
+        }
+        let mut original = resources["original"]["asset"].clone();
+        original["checksumAlgorithm"] = json!("SHA256");
+        let mut thumbnail = resources["thumbnail"]["asset"].clone();
+        thumbnail["checksumAlgorithm"] = json!("SHA256");
+        let mut master = json!({"recordName":operation.master,"recordType":"CPLMaster","fields":{"contentGeneration":{"type":"STRING","value":operation.content_generation},"thumbnailSourceOriginalSHA256":{"type":"STRING","value":resources["original"]["hex"]},"resOriginalRes":{"type":"ASSETID","value":original},"resJPEGThumbRes":{"type":"ASSETID","value":thumbnail}}});
+        if create {
+            master["fields"]["photoId"] = json!({"type":"STRING","value":operation.photo});
+        } else {
+            master["recordChangeTag"] = operation.preparation["masterRevision"].clone();
+        }
+        operations.push(json!({"operationType":kind,"record":master}));
+    }
+    if photo["fields"]
+        .as_object()
+        .is_none_or(|fields| fields.is_empty())
+    {
+        return Err(setup(
+            "an empty metadata patch is not successful synchronization",
+        ));
+    }
+    operations.push(json!({"operationType":kind,"record":photo}));
+    Ok(
+        json!({"zoneID":super::super::native::receive::ZoneId::from(zone),"atomic":true,"operations":operations}),
+    )
+}
+
+fn metadata_matches(request: &Value, response: &Value) -> bool {
+    let Some(requested) = request["operations"].as_array().and_then(|ops| ops.first()) else {
+        return false;
+    };
+    let Some(record) = response["records"].as_array().and_then(|rows| rows.first()) else {
+        return false;
+    };
+    if record.get("serverErrorCode").is_some()
+        || record["recordName"] != requested["record"]["recordName"]
+    {
+        return false;
+    }
+    requested["record"]["fields"]
+        .as_object()
+        .is_some_and(|fields| {
+            fields.iter().all(|(name, value)| {
+                if value.is_null() {
+                    record["fields"].get(name).is_none()
+                } else {
+                    record["fields"][name] == *value
+                }
+            })
+        })
 }

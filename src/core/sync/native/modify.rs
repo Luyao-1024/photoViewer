@@ -14,6 +14,7 @@
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::core::sync::{SyncError, SyncResult};
 
@@ -120,19 +121,24 @@ pub struct MutationBatch {
 }
 
 impl MutationBatch {
-    /// The stable logical identity of this mutation.
-    ///
-    /// It is derived from the *intent* — which entry, which category, which
-    /// captured version — not from the request body. The body may legitimately
-    /// differ between an original attempt and a replay (a refreshed asset
-    /// descriptor, a re-minted lease proof), and treating those as different
-    /// operations would report an idempotency conflict for a retry.
+    /// Compatibility identity for the exact logical metadata request. Different
+    /// revisions/values are distinct operations. Production coordination uses
+    /// the persisted UUID and frozen body in sync_tasks instead of this helper.
     pub fn operation_id(&self) -> String {
+        let body = serde_json::to_vec(
+            &self
+                .operations
+                .iter()
+                .map(MutationOperation::wire)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default();
         format!(
-            "pv-{}-{}-{}",
+            "pv-{}-{}-{}-{:x}",
             self.entry_id,
             category_name(self.category),
-            self.captured_version
+            self.captured_version,
+            Sha256::digest(body)
         )
     }
 }
@@ -189,6 +195,13 @@ impl NativeClient {
         zone: &NativeZone,
         batch: &MutationBatch,
     ) -> SyncResult<ModifyOutcome> {
+        if batch.operations.iter().any(|operation| {
+            operation.operation_type == "update" && operation.record.fields.is_empty()
+        }) {
+            return Err(SyncError::Protocol(
+                "empty metadata patches do not confirm synchronization".into(),
+            ));
+        }
         let url = self
             .cloudkit_url(namespace, &["records", "modify"])
             .map_err(|error| SyncError::Protocol(error.to_string()))?;
@@ -237,7 +250,25 @@ impl NativeClient {
             .ok_or_else(|| {
                 SyncError::Protocol("record mutation returned no records array".into())
             })?;
-        match records.first() {
+        if records.len() != batch.operations.len()
+            || batch.operations.iter().any(|operation| {
+                !records.iter().any(|record| {
+                    record["recordName"].as_str() == Some(&operation.record.record_name)
+                })
+            })
+        {
+            return Err(SyncError::Protocol(
+                "mutation response does not match every requested record".into(),
+            ));
+        }
+        if let Some(failure) = records.iter().find_map(inline_error) {
+            return Ok(ModifyOutcome::ItemFailed(failure));
+        }
+        match records
+            .iter()
+            .find(|record| record["recordType"] == "CPLAsset")
+            .or_else(|| records.first())
+        {
             None => Ok(ModifyOutcome::ItemFailed(
                 "record mutation confirmed nothing".to_string(),
             )),
@@ -248,6 +279,51 @@ impl NativeClient {
                 Ok(ModifyOutcome::Confirmed(read_confirmed(record)?))
             }
         }
+    }
+
+    pub(crate) async fn lookup_current(
+        &self,
+        namespace: &NativeNamespace,
+        zone: &NativeZone,
+        names: &[&str],
+    ) -> SyncResult<Value> {
+        let url = self.cloudkit_url(namespace, &["records", "lookup"])?;
+        self.post_json(&url,&json!({"zoneID":ZoneId::from(zone),"records":names.iter().map(|name|json!({"recordName":name})).collect::<Vec<_>>()})).await
+    }
+
+    /// Submit an actor-persisted logical request under its globally unique id.
+    pub(crate) async fn modify_exact(
+        &self,
+        proof: &LeaseProof,
+        namespace: &NativeNamespace,
+        body: &Value,
+        operation: &str,
+    ) -> SyncResult<Value> {
+        let url = self.cloudkit_url(namespace, &["records", "modify"])?;
+        let payload = serde_json::to_vec(body)
+            .map_err(|_| SyncError::Protocol("invalid mutation body".into()))?;
+        let (status, bytes) = self
+            .send_lease_json(&url, payload, Some(proof), Some(operation))
+            .await?;
+        if !status.is_success() {
+            return Err(map_status(status.as_u16(), &bytes));
+        }
+        let response: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| SyncError::Protocol("invalid mutation response".into()))?;
+        if let Some(code) = inline_error(&response) {
+            return Err(SyncError::Protocol(code));
+        }
+        let records = response["records"]
+            .as_array()
+            .ok_or_else(|| SyncError::Protocol("missing mutation records".into()))?;
+        if records.len() != body["operations"].as_array().map_or(0, Vec::len)
+            || records.iter().any(|r| inline_error(r).is_some())
+        {
+            return Err(SyncError::Protocol(
+                "atomic mutation did not confirm every record".into(),
+            ));
+        }
+        Ok(response)
     }
 
     /// Read one issued operation's receipt. This is a plain authenticated GET:
@@ -320,7 +396,11 @@ fn read_confirmed(record: &Value) -> SyncResult<ConfirmedRecord> {
             .get("recordChangeTag")
             .and_then(Value::as_str)
             .map(str::to_string),
-        photo_id: string("photoId"),
+        photo_id: if record["recordType"] == "CPLAsset" {
+            record["recordName"].as_str().map(str::to_string)
+        } else {
+            string("photoId")
+        },
         // A master reference is an envelope whose value is itself a reference
         // object; the photo id is the master's own name.
         master_id: fields

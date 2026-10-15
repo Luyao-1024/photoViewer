@@ -23,7 +23,8 @@ This is the human entry point for project documentation. Agents should start fro
 |---|---|
 | [`modules/storage.md`](modules/storage.md) | SQLite, media model, preferences, scanner, filesystem watcher, thumbnails |
 | [`modules/native-sync.md`](modules/native-sync.md) | C1 client contract; server M3/M4 available, PhotoViewer implementation pending |
-| [`modules/native-sync-protocol.md`](modules/native-sync-protocol.md) | Pinned server endpoints, capabilities, typed wire fields, events and error/recovery decisions |
+| [`modules/native-sync-integration.md`](modules/native-sync-integration.md) | Client static-review corrections, implementation ownership and validation boundaries |
+| [`modules/native-sync-protocol.md`](modules/native-sync-protocol.md) | Authoritative server contract links and client adaptation boundaries |
 | [`modules/native-sync-storage.md`](modules/native-sync-storage.md) | Existing-row dirty/version fields, safe migration, atomic receive/callback and dual-resource admission |
 | [`modules/native-sync-plan.md`](modules/native-sync-plan.md) | C1.1–C1.6 module/patch order and NC01–NC20 client acceptance |
 | [`modules/sync.md`](modules/sync.md) | Native SyncServer client: connection/probe (C1.1), dirty truth, badges, credentials |

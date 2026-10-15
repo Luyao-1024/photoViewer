@@ -1007,15 +1007,26 @@ pub fn import_cached_thumbnail(
     // be decoded would leave a cache file that every later read has to detect
     // and delete again.
     let path = stem.with_extension("jpg");
+    let glib_bytes = glib::Bytes::from(bytes);
+    let stream = gtk4::gio::MemoryInputStream::from_bytes(&glib_bytes);
+    let pixbuf = gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)?;
+    let scaled = decode::scale_pixbuf_to_fit(&pixbuf, size.max_dim());
+    let opaque = decode::ensure_opaque(&scaled);
+    let encoded = opaque.save_to_bufferv("jpeg", &[("quality", "90")])?;
+    let temporary = path.with_extension(format!("jpg.{}", uuid::Uuid::new_v4()));
     {
-        let glib_bytes = glib::Bytes::from(bytes);
-        let stream = gtk4::gio::MemoryInputStream::from_bytes(&glib_bytes);
-        gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)
-            .map_err(|e| anyhow::anyhow!("收到的缩略图无法解码: {e}"))?;
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&encoded)?;
+        file.sync_all()?;
     }
-    let temporary = path.with_extension("jpg.importing");
-    std::fs::write(&temporary, bytes)?;
     std::fs::rename(&temporary, &path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 

@@ -1,12 +1,6 @@
 # Native SyncServer Storage And Publication Design
 
-Status: C1.1 delivered, 2026-10-14. Schema 9 is the native-only shape: the
-WebDAV engine and its columns were removed outright, and a schema-8 library is
-upgraded by dropping the sync tables and recreating them empty — media, albums,
-favorites, edits and settings are untouched, WebDAV sync history is not carried
-forward. There is no in-place column migration and no compatibility waiver for
-the old sync rows. Follow [the main contract](native-sync.md),
-[wire mapping](native-sync-protocol.md) and [storage rules](storage.md).
+当前实现结构为 schema 10。schema 9 已将旧 WebDAV 表换为原生同步结构；schema 10 增加轮次标识并保留性修正旧摘要和进度，不丢弃 schema 9 的任务、dirty、媒体或用户数据。旧 WebDAV 历史不迁移为原生关系。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。实现和本轮验证边界见[静态检视修订](native-sync-integration.md)。
 
 ## Ownership And Migration
 

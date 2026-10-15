@@ -62,6 +62,7 @@ pub struct SyncService {
     store: SyncStore,
     pool: crate::core::db::DbPool,
     staging_root: PathBuf,
+    credential_reader: Arc<dyn Fn(&str) -> Result<String> + Send + Sync>,
 }
 
 impl SyncService {
@@ -98,6 +99,7 @@ impl SyncService {
             store: SyncStore::with_optional_actor(pool.clone(), actor),
             pool,
             staging_root,
+            credential_reader: Arc::new(crate::platform::credentials::load_api_key),
         }
     }
 
@@ -108,6 +110,17 @@ impl SyncService {
         staging_root: PathBuf,
     ) -> Self {
         Self::with_staging_root_and_optional_actor(pool, None, Some(staging_root))
+    }
+
+    /// Isolate the platform secret boundary in integration fixtures. Production
+    /// constructors always read the platform Secret Service and store no key in SQLite.
+    #[doc(hidden)]
+    pub fn with_credential_reader(
+        mut self,
+        reader: impl Fn(&str) -> Result<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.credential_reader = Arc::new(reader);
+        self
     }
 
     pub fn store(&self) -> &SyncStore {
@@ -130,6 +143,9 @@ impl SyncService {
     /// `last_started_at` is still ahead of `last_completed_at` at launch is
     /// describing a run this process never began.
     pub fn reconcile_interrupted_runs(&self) -> Result<usize> {
+        for job in self.store.list_jobs()? {
+            self.recover_publications(job.id)?;
+        }
         self.store.reconcile_interrupted_runs()
     }
 

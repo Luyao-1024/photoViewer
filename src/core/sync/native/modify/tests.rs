@@ -51,10 +51,10 @@ fn a_patch_with_nothing_to_send_sends_no_fields() {
 }
 
 #[test]
-fn the_operation_id_follows_the_intent_not_the_request_bytes() {
-    // A retry of the same obligation, possibly with a refreshed body, is the
-    // same logical operation. Deriving the id from the body would report an
-    // idempotency conflict for a retry.
+fn changed_logical_metadata_gets_a_distinct_legacy_operation_id() {
+    // This compatibility metadata helper fingerprints its logical request.
+    // Changing the revision or intended value creates a different operation;
+    // production retries use the UUID and exact logical body in sync_tasks.
     let first = batch(7, 3);
     let mut retried = first.clone();
     retried.operations = vec![MutationOperation::update_metadata(
@@ -64,7 +64,7 @@ fn the_operation_id_follows_the_intent_not_the_request_bytes() {
             favorite: Some(false),
         },
     )];
-    assert_eq!(first.operation_id(), retried.operation_id());
+    assert_ne!(first.operation_id(), retried.operation_id());
 
     // A newer obligation is a different operation.
     assert_ne!(first.operation_id(), batch(7, 4).operation_id());

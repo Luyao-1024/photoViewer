@@ -100,6 +100,17 @@ impl SyncService {
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
+            let service = self.clone();
+            tokio::task::spawn_blocking(move || {
+                for job in service.store().list_jobs()? {
+                    service.recover_publications(job.id)?;
+                }
+                Ok::<_, AppError>(())
+            })
+            .await
+            .map_err(|_| {
+                AppError::Backend("publication recovery worker stopped before reset".into())
+            })??;
             let staging = self.staging_root().to_path_buf();
             let roots = self.store.reset_local_roots()?;
             let cleanup = match tokio::task::spawn_blocking(move || {

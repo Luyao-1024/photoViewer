@@ -1,9 +1,9 @@
 # Native SyncServer C1 Implementation And Acceptance Plan
 
-Status: C1.1–C1.4 delivered 2026-10-15 against `Luyao-1024/syncserver@2d9f9a7`.
+Status: C1.1–C1.4 static-review corrections are implemented locally with focused validation; complete C1.5/C1.6 acceptance is still pending. Authoritative protocols are linked in [the contract index](native-sync-protocol.md).
 The WebDAV engine was removed outright rather than kept alongside; native is the
 only provider. Follow [main contract](native-sync.md),
-[wire mapping](native-sync-protocol.md), [storage/publication](native-sync-storage.md)
+[server contracts and client adaptation](native-sync-protocol.md), [storage/publication](native-sync-storage.md)
 and [testing rules](../testing.md).
 
 ## Scope Decisions
@@ -31,17 +31,17 @@ batch or stop unrelated jobs merely because a different job was edited.
 
 ## Modules And Existing Boundaries
 
-Paths below are planned new code; only existing paths are linked in module guides.
+The table describes client ownership; service wire contracts are linked rather than duplicated. Actual corrected entry points are in [implementation notes](native-sync-integration.md).
 Keep one in-process service on the current Tokio runtime and the existing DbActor.
 
 | Boundary | Planned responsibility | Reuse / guard |
 |---|---|---|
 | `sync/native/protocol.rs` | typed DTOs, opaque tokens/revisions, capability/limit/error validation, authenticated HTTP | transfer progress and bounded HTTP helpers; no SQL/GTK |
-| `sync/native/coordinator.rs` | cycle state, local admission, server lease/deadline/heartbeat, catch-up, phase dispatch and callback epoch | current job scheduler/edit-first desired-state worker |
+| `sync/service/coordinator.rs` | cycle state, local admission, server lease/deadline/heartbeat, catch-up, phase dispatch and callback epoch | current job scheduler/edit-first desired-state worker |
 | `sync/native/receive.rs` | shared bootstrap, delta inbox, graph/conflict planning and applied readiness | pure planner concepts, actor transactions; no file publication mid-page |
-| `sync/native/upload.rs` | DB-derived tasks, stable original/thumbnail snapshots, resource sessions, atomic record requests and unknown outcomes | local snapshot machinery and existing issued-operation evidence |
-| `sync/native/publish.rs` | verified dual downloads, cache import, owned file intent/recovery and admission | local publication, scanner/watcher, ThumbnailLoader and existing media model |
-| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, schema 9, native dirty/version/baseline/progress commands | no second dirty queue, no WebDAV-era columns left behind |
+| `sync/service/coordinator.rs`, `sync/content.rs` | DB-derived tasks, stable original/thumbnail snapshots, resource sessions, atomic record requests and unknown outcomes | local snapshot machinery and existing issued-operation evidence |
+| `sync/service/transfer.rs`, `sync/publication_io.rs` | verified dual downloads, cache import, owned file intent/recovery and admission | local publication, scanner/watcher, ThumbnailLoader and existing media model |
+| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, schema 10, native dirty/version/baseline/progress commands | no second dirty queue, no WebDAV-era columns left behind |
 | `platform/credentials.rs` | distinct Bearer credential reference and lifecycle | current Secret Service boundary; never persist plaintext key |
 | Settings + event/UI adapters | create/probe native connection, configured zone, supported strategy/scope, localized errors and truthful status | accepted changes only; existing local grid/viewer and glass/i18n/accessibility rules |
 
@@ -115,3 +115,8 @@ tree: fmt, strict clippy with the existing two allowances, locked all-target
 build, and `tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --all`.
 Every commit has an honest Tests section. Report local result, pushed SHA,
 exact-SHA remote CI and actual deployment independently.
+
+
+## 2026-10-15 静态检视修订
+
+[修订记录](native-sync-integration.md)对应本地代码落点。服务端是协议唯一来源，客户端只拥有接入、映射、数据与恢复方案。此次按最新授权运行基本相关的聚焦测试，未运行全量套件；不沿用此前“C1.1–C1.4 delivered”作为完整运行证明。

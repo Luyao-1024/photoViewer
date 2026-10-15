@@ -302,3 +302,53 @@ fn an_operation_on_a_resource_that_was_never_owed_is_refused() {
         "{error}"
     );
 }
+
+#[test]
+fn one_complete_staged_pair_does_not_wait_for_another_photo() {
+    let fixture = fixture("pub-per-photo-barrier");
+    fixture
+        .store
+        .promote_remote_graph(
+            fixture.job.id,
+            crate::core::sync::RemoteGraph {
+                photos: vec![
+                    remote_photo("first", "first-original", "first-thumb"),
+                    remote_photo("second", "second-original", "second-thumb"),
+                ],
+                records: Vec::new(),
+                tombstones: Vec::new(),
+            },
+            "zone.target",
+        )
+        .unwrap();
+    for (asset, role) in [("first-original", "original"), ("first-thumb", "thumbnail")] {
+        fixture
+            .store
+            .stage_resource(fixture.job.id, asset, role, "/owned/staged-role")
+            .unwrap();
+    }
+    let intents = fixture.store.pending_publications(fixture.job.id).unwrap();
+    let first = intents
+        .iter()
+        .find(|intent| intent.photo_id == "first")
+        .unwrap();
+    let second = intents
+        .iter()
+        .find(|intent| intent.photo_id == "second")
+        .unwrap();
+    assert!(fixture
+        .store
+        .publication_ready(&first.publication_id)
+        .unwrap());
+    assert!(!fixture
+        .store
+        .publication_ready(&second.publication_id)
+        .unwrap());
+    assert!(fixture
+        .store
+        .native_progress(fixture.job.id)
+        .unwrap()
+        .unwrap()
+        .applied_token
+        .is_none());
+}

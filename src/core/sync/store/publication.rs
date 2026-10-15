@@ -281,7 +281,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                     "SELECT job_id, generation, asset_id, role, record_name, expected_sha256,
                             expected_size, state, staging_path, verified_cache
                      FROM sync_native_resources
-                     WHERE job_id = ?1 AND state IN ('pending', 'staged')
+                     WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state IN ('pending', 'staged', 'failed')
                      ORDER BY record_name,
                               CASE role WHEN 'original' THEN 0 ELSE 1 END",
                 )?;
@@ -335,7 +335,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                         original_asset_id, thumbnail_asset_id, state,
                         original_staging, thumbnail_staging
                  FROM sync_publications
-                 WHERE job_id = ?1 AND state <> 'complete'
+                 WHERE job_id = ?1 AND state IN ('pending','publishing')
                  ORDER BY id",
             )?;
             let rows = stmt.query_map([job_id], |row| {
@@ -374,7 +374,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
             let conn = pool.get()?;
             conn.execute(
                 "UPDATE sync_native_resources SET staging_path = ?1, updated_at = unixepoch()
-                 WHERE job_id = ?2 AND asset_id = ?3 AND role = ?4",
+                 WHERE job_id = ?2 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?2) AND asset_id = ?3 AND role = ?4",
                 params![staging_path, job_id, asset_id, role],
             )?;
             Ok(PublicationOutcome::Done(true))
@@ -395,7 +395,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
             let conn = pool.get()?;
             conn.execute(
                 "UPDATE sync_native_resources SET verified_cache = ?1, updated_at = unixepoch()
-                 WHERE job_id = ?2 AND asset_id = ?3 AND role = ?4",
+                 WHERE job_id = ?2 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?2) AND asset_id = ?3 AND role = ?4",
                 params![verified_cache, job_id, asset_id, role],
             )?;
             Ok(PublicationOutcome::Done(true))
@@ -490,14 +490,9 @@ fn publication_is_ready(conn: &rusqlite::Connection, publication_id: &str) -> Re
         [job_id],
         |row| row.get(0),
     )?;
-    let pending: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sync_native_resources
-          WHERE job_id = ?1 AND generation = ?2 AND record_name IS NOT NULL
-            AND state <> 'verified'",
-        params![job_id, generation],
-        |row| row.get(0),
-    )?;
-    Ok(pending == 0)
+    let ready: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sync_publications p JOIN sync_native_resources r ON r.job_id=p.job_id AND r.generation=?2 AND ((r.asset_id=p.original_asset_id AND r.role='original') OR (r.asset_id=p.thumbnail_asset_id AND r.role='thumbnail')) WHERE p.publication_id=?1 AND r.state IN ('staged','verified')",params![publication_id,generation],|r|r.get(0))?;
+    Ok(ready == 2)
 }
 
 fn set_resource_state(
@@ -510,7 +505,7 @@ fn set_resource_state(
     let conn = pool.get()?;
     Ok(conn.execute(
         "UPDATE sync_native_resources SET state = ?1, updated_at = unixepoch()
-          WHERE job_id = ?2 AND asset_id = ?3 AND role = ?4",
+          WHERE job_id = ?2 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?2) AND asset_id = ?3 AND role = ?4",
         params![state.as_str(), job_id, asset_id, role],
     )?)
 }

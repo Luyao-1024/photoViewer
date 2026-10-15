@@ -102,11 +102,18 @@ pub fn snapshot_source(
     std::fs::create_dir_all(staging).map_err(|error| {
         AppError::Backend(format!("cannot create the staging directory: {error}"))
     })?;
-    let staged = staging.join(crate::core::sync::remote_path::staged_name(
+    let name = crate::core::sync::remote_path::staged_name(
         name_hint,
         &crate::core::sync::device::new_event_id(),
-    ));
+    );
+    let extension = source
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| ext.chars().all(|c| c.is_ascii_alphanumeric()));
+    let staged =
+        staging.join(extension.map_or(name.clone(), |extension| format!("{name}.{extension}")));
 
+    let before = std::fs::metadata(source)?;
     let mut reader = std::fs::File::open(source)
         .map_err(|error| AppError::Backend(format!("cannot open the original: {error}")))?;
     let mut writer = std::fs::File::create(&staged)
@@ -142,6 +149,18 @@ pub fn snapshot_source(
         .map_err(|error| AppError::Backend(format!("cannot flush the staged original: {error}")))?;
     drop(writer);
 
+    let after = std::fs::metadata(source)?;
+    use std::os::unix::fs::MetadataExt;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.modified()? != after.modified()?
+    {
+        let _ = std::fs::remove_file(&staged);
+        return Err(AppError::Backend(
+            "source changed while preparing the upload snapshot".into(),
+        ));
+    }
     let digest = hasher.finalize();
     Ok(OwnedSnapshot {
         path: staged,

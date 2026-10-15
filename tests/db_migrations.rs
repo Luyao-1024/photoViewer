@@ -340,7 +340,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     assert_eq!(
         connection
             .query_row(
@@ -623,7 +623,7 @@ fn schema_nine_upgrade_discards_webdav_history_and_keeps_the_library() {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
     }
 }
@@ -652,5 +652,43 @@ fn native_dirty_uplift_query_uses_its_index_without_temp_btree() {
     assert!(
         !plan.contains("TEMP B-TREE"),
         "a covering index must not need an intermediate sort: {plan}"
+    );
+}
+
+#[test]
+fn schema_ten_preserves_native_schema_nine_dirty_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("native-nine.sqlite");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let schema = include_str!("../src/core/schema.sql")
+        .lines()
+        .filter(|line| !line.contains("native_cycle_id"))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    connection.execute_batch(&schema).unwrap();
+    connection.execute_batch("INSERT INTO sync_connections(id,endpoint,credential_ref) VALUES(1,'https://sync.example.invalid/','native-reference'); INSERT INTO sync_jobs(id,connection_id,local_root,native_zone_name) VALUES(1,1,'/owned/library','PrimarySync'); INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_local_version,native_metadata_version,native_content_version) VALUES(1,'photo.jpg',7,4,2,3); PRAGMA user_version=9;").unwrap();
+    drop(connection);
+    let pool = photo_viewer::core::db::init_pool(&path).unwrap();
+    let connection = pool.get().unwrap();
+    let row:(i64,i64,i64,i64)=connection.query_row("SELECT native_dirty,native_local_version,native_metadata_version,native_content_version FROM sync_entries WHERE job_id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(row, (7, 4, 2, 3));
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sync_jobs') WHERE name='native_cycle_id'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        10
     );
 }

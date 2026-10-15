@@ -1,208 +1,70 @@
-# Native SyncServer Client Contract
+# Native SyncServer 客户端接入方案
 
-## Scope And Status
+## 职责与协议来源
 
-This module owns PhotoViewer's C1 client for the independent Rust
-`Luyao-1024/syncserver` service. Verified 2026-10-14 against server main
-`2d9f9a7`: M3 token/snapshot/delta/lease coordination and M4 resource publication
-are available, with M5 CI/deployment tooling. Server development is no longer
-blocking C1.
+本模块拥有 PhotoViewer 的原生同步接入实现，不拥有服务端协议。服务端规格、接口、字段所属记录、摘要编码、错误与版本条件的唯一来源是[协议入口](native-sync-protocol.md)链接到的相邻 SyncServer 仓库。链接暂用本地相对路径，正式发布时改为对应版本的仓库网页链接。
 
-**C1.1 is implemented**: typed protocol DTOs, endpoint normalization, the
-`/readyz` + `/v1/capabilities` probe, capability/scope/origin validation, a
-pinned capability scope on the connection row, explicit zone mapping on the job,
-provider-kind dispatch in storage, and the native receive/dirty/publication
-schema (schema 9). The WebDAV engine that previously shared this module has been
-removed outright.
+客户端知识资产包括：服务端数据到本地媒体的映射、数据库事务、上传范围、任务调度、dirty 与确认基线、已发出操作恢复、成对资源发布、缓存复用和交互。发现 wire 不一致时，修正适配实现；协议变更在服务端仓库提出，不能在此处另写一套规范。
 
-C1.2 adds the **durable receive path**: snapshot bootstrap with per-type
-markers, an ordered replayable delta inbox, a validated typed remote graph, and
-promotion that materializes resource obligations. `applied` deliberately stays
-behind `target` while any of them is outstanding.
+## 当前实现与验证边界
 
-C1.4 adds **complete media transfer**: stable local snapshots with dual-encoded digests, thumbnails generated from the staged copy, paired reservation and upload, verified download, durable publication intents, and an admission gate that only opens when a photo's whole pair is usable locally.
+C1.1–C1.4 已有连接、接收、上行和资源实现。2026-10-15 静态检视发现的九项偏差已在本地修订并通过相关聚焦测试，详见[修订说明](native-sync-integration.md)。当前不将编译通过称为完整运行验收。
 
-C1.3 adds the **uplink coordinator**: real local mutation hooks writing dirty
-truth in the same transaction as the user's edit, per-category versions and edit
-events, the exclusive upload lease with a conservative monotonic deadline, and
-record mutations carrying idempotency keys whose receipts outlive the request.
+原 WebDAV 引擎已移除。schema 9 建立原生表结构；schema 10 在保留原生任务、dirty、媒体与用户数据的前提下增加轮次标识，并修正旧资源摘要和不安全的 applied 进度。schema 8 及更早版本的 WebDAV 同步历史不转成原生状态；媒体、收藏、相册和编辑记录保留。
 
-Not implemented yet: **resource** synchronization — no asset upload, no
-download, no publication, and no settings surface. Metadata-only record
-mutations work; a create or a content change needs an asset pair and is
-reported as outstanding rather than approximated. Native jobs exist as
-configuration but are not yet scheduled onto a timer. The server's pre-release compatibility
-waiver applies to that service, not the PhotoViewer user database.
+C1.5 的设置入口、真实 UI 旅程、显式云删除交互和冲突解决界面仍需独立完成；C1.6 的完整验收和交付也不能由代码或文档替代。本轮按最新要求只运行基本相关的聚焦测试，不运行全量套件、不推送、不访问真实图库或生产服务。
 
-| Read | Owns |
+## 模块边界
+
+| 实现位置 | 客户端职责 |
 |---|---|
-| [Protocol mapping](native-sync-protocol.md) | actual endpoints, DTO/capability names, scope/auth, limits, events, resources and errors |
-| [Storage/publication](native-sync-storage.md) | actor/migration, existing-row dirty/version facts, receive progress, callbacks and full-media admission |
-| [Implementation/acceptance](native-sync-plan.md) | module ownership, C1.1–C1.6 patch order, scope decisions and NC01–NC20 evidence |
+| `sync/native/protocol.rs` | 连接策略、能力探测、同源认证传输和服务端 DTO 适配 |
+| `sync/native/records.rs` | 按服务端照片契约构建本地远端投影，保留未知记录 |
+| `sync/service/receive.rs`、`sync/store/receive.rs` | 共享快照、持久 inbox、完整投影、ingest/applied 的本地事务 |
+| `sync/service/coordinator.rs` | 单轮接收、取锁、保活、锁内补拉、分类上行与结果恢复 |
+| `sync/store/runtime.rs` | actor 内的配置/轮次/版本校验、已发出操作证据与最终媒体提交 |
+| `sync/content.rs`、`sync/native/assets.rs` | 稳定源快照、同源缩略图、流式资源传输与校验 |
+| `sync/service/transfer.rs` | 逐照片发布意图、缓存准备、文件回滚与启动恢复 |
+| `sync/publication_io.rs` | 本地解码/编辑与短暂发布窗口的读写保护，独立于服务器租约 |
+| `sync/store/dirty.rs` | 既有 sync_entries 上的用户变更事实与类别版本 |
 
-Canonical server paths are `docs/design/v0.1-server.md`,
-`docs/contracts/{upload-coordination,snapshots,photo-records,assets,records}.md`
-and `docs/design/next-development-tasks.md` in its repository. When historical
-M2 text differs, use the pinned implementation and current capability bits.
-These are CloudKit-style subsets plus native extensions, not Apple login/private
-SDK compatibility. The edit-first configuration contract will be restated
-against the C1.5 native settings surface; the durable-edit engine itself is
-described in [the module guide](sync.md).
+## 连接与本地范围
 
-C1 starts with explicit Native Sync jobs; Native Backup/history browsing is a
-separate future contract.
-Native metadata mapping initially covers favorite, relative path and capture date;
-app-only album covers/order/editor history have no implied protocol. Supported
-image/video originals use one stable original+thumbnail combination and existing
-local extraction/loading, within actual server limits. No provider is silently
-changed and no existing local library is automatically enrolled.
+连接地址经过规范化和能力探测后，保存已接受的 namespace、zone、数据库代际和能力。Bearer 通过平台凭证服务管理。签名资源地址必须同源，不跟随重定向，不把租约或 Bearer 发给未配置主机。
 
-## Cycle And Exclusive Uplink
+一个任务绑定一个本地根和一个 zone。当前产品只开放 Sync/Bidirectional；Backup 的不可变历史、目录和恢复交互没有独立验收，不能借用服务端历史保留来宣称支持。多个任务可下行；上行权限来自服务端，不能用本地互斥代替。
 
-```text
-Finish ordinary downstream reception and conflict coordination
-  → Acquire one namespace upload lease once
-      → acquisition failure: skip this cycle's entire uplink, retain dirty
-      → acquired: start independent heartbeat and check current progress
-          → behind: keep lease, repeat downstream and coordination, recheck
-          → current + locally ready: freeze the DB-derived task view
-              → delete → modify (metadata / content) → create
-              → valid success callbacks settle their corresponding DB fields
-              → release lease
-```
+上传视图只覆盖用户明确选择的物理相册或 All 范围。离线设备、移出范围、本地独立删除与未选择相册都不自动生成云端删除。原生隐藏照片没有本地展示模型时保留冲突，不能公开入库或变成回收站项目。
 
-A namespace has only one effective uplink device. Multiple devices may receive
-metadata and download resources concurrently without that lease. The lease
-covers all server mutations, including original/thumbnail upload sessions and
-final record binding; one server SQLite writer is not itself a device lock.
+## 接收与本地进度
 
-The server's default TTL is 90 seconds, suggested heartbeat interval 30 seconds;
-use actual grant/renewal values.
-Heartbeat runs independently from file I/O, hashing, decoding and ordinary
-request queues. The client uses a monotonic conservative deadline based on a
-successful renewal request and known TTL, not its wall clock or receipt time of
-an arbitrarily late renewal response. Renewal errors do not extend authority.
+元数据页、接收位置和投影通过现有 DbActor 持久化。跨类型首次清单完成后，才协调完整照片图。网络上读取到新位置不等于本地已完成。
 
-Acquisition failure, including busy or an unconfirmed network result, skips the
-uplink once; do not spin/retry acquisition in the same cycle or mark the whole
-library synced. Preserve the completed downstream result and all pending dirty
-obligations. A later scheduled/manual cycle starts normally.
+资源待办包含未下载、暂存、失败以及尚未完成发布的状态；开放冲突也阻止 applied。每张照片的发布准入只检查自己的两个角色，不能等待整个任务的所有照片同时完成。只有媒体、两角色和发布意图在同一最终事务中结算后，才允许推进 applied。
 
-## Latest Token Gate
+已确认本地版本可复用稳定资源；元数据独立变化不重新下载原图。相同路径的不同身份、未知事件或同类双端修改保持可恢复的冲突；不会以清 dirty 或覆盖原图来隐藏问题。
 
-The server validates the local applied zone tokens against current cloud heads
-while the lease is held: correct namespace, zone, kind, database generation,
-complete pagination and committed watermark. Do not compare opaque strings or
-substitute database discovery tokens, snapshot tokens or query markers.
+## 用户变更与上行确认
 
-`ingestToken` means pages and pending work have been durably received.
-`appliedToken` means a complete fixed-watermark projection, configured download
-scope, paired publication and conflicts have been coordinated. Both are fields
-in the existing synchronization database, not a separate dirty journal.
+用户变更事实保存在既有 `sync_entries` 的 dirty、本地版本和类别事件中，不另建 dirty 文件或镜像队列。收藏、编辑和位置写入与其 dirty 记录同事务。接受配置编辑后使旧轮次失效；打开、草稿、取消和无效输入不停止任务。
 
-Only the applied token may authorize uplink. The client independently checks
-its inbox/projection/download/conflict state before declaring localReady; the
-server cannot attest that local disk publication completed. Unrelated-zone
-writes or a different encoding with no relevant changes must not cause endless
-empty downstream cycles. Respect selected upload/download scope throughout.
+上行前先完成本地接收与协调。租约持有期间独立保活，落后时锁内有界补拉并重新检查。通过服务端门槛后冻结本地数据库视图；不同类别按服务端阶段派发。元数据读取真实本地字段；内容从稳定快照生成两个角色，再提交照片对；删除保留身份与版本直至确认。
 
-When behind, retain and renew the lease during repeated downstream, including
-required resources. A resource failure ends preparation without starting
-uplink. After the gate passes, own uploads change cloud heads without invalidating
-the original cycle gate. Do not optimistically advance receive tokens from an
-upload response; the next downstream receives those changes reliably.
+`sync_tasks` 只记录已经准备发出、结果可能未知的操作。其 UUID、配置与版本捕获、规范化逻辑请求以及资源会话身份持久化；不保存 capability URL 或 leaseToken。下一轮先读取既有结果，再决定是否重发同一个逻辑操作。
 
-## Dirty Is An Existing Database Record Field
+成功确认核对已发出操作、完整原子结果、配置、轮次、数据库代际、租约有效期与类别版本。确认创建后登记远端身份；并发新编辑继续 dirty。跳过、失败、失锁和过时响应不清义务；只读 AlreadyCurrent 必须先验证真实远端目标状态。
 
-C1 adds/uses dirty flags on the existing `sync_entries` records, with local
-change versions, event times, remote identity/baseline and operation correlation.
-Do not create a dirty file, a standalone dirty table, or a second persistent
-dirty queue. The in-memory task view derives from current database fields.
-Existing task/operation recovery and paired publication records have different
-responsibilities and are not another dirty source of truth.
+## 本地发布与恢复
 
-| Dirty flags | Uplink |
-|---|---|
-| CLEAN | No task |
-| NEW | Create; may retain subsequent metadata/content changes |
-| METADATA | Update changed record fields, reuse existing resources |
-| CONTENT | Upload changed resources, prepare thumbnail from the same original version, atomically update the record pair/generation |
-| METADATA + CONTENT | Combine in one photo update |
-| DELETE | Delete the record pair, retain DB identity/version/deletion time until confirmation |
+资源校验和缓存准备在阻塞任务或有界异步 I/O 中完成，不占 GTK 请求线程或 SQLite 事务。原图与缩略图都准备好后，持久保存发布意图及捕获版本，保护旧完整文件，再执行同文件系统替换和 actor 最终提交。
 
-Real local changes set the field and advance its local version. Enqueueing,
-lease acquisition, request transmission and finishing one resource do not clear
-it. Preserve explicit cloud deletion intent: local-only removal, scope exit and
-unreachable drives keep [existing suppression safety](sync.md), not an automatic
-remote delete. A newly created item that has never been submitted can cancel its
-local-only obligation; if submission is uncertain, query the known operation
-before assuming cloud absence.
+普通索引/upsert 不能穿过发布窗口。本地图片读取和编辑共享短暂文件发布保护；网络传输不持有该保护。崩溃后先结算拥有的发布意图，再加载首屏和启动扫描。失败或检测到后来的外部修改时保留旧文件/备份，不静默覆盖。
 
-## Callbacks And Loss Of Lease
+缩略图使用现有本地 URI、最终 mtime 和 Small/Medium/Large 缓存键，宫格与详情继续走本地加载，不增加网络占位或浏览触发原图下载。
 
-Success callbacks correlate job/config/cycle/operationId and the captured local
-change version. In one DbActor transaction, record confirmed upload facts and
-clear only the corresponding completed dirty obligation. A local edit during
-upload remains dirty for the next cycle; local CRUD and edit-first UI remain
-available. A confirmed create registers remote identity even when subsequent
-edits remain, converting their obligation to update/delete rather than repeating
-create.
+## 后续入口
 
-HTTP 200 alone is not success: validate atomic results or each non-atomic item.
-AlreadyCurrent is allowed only after a verified matching target state and local
-version, through the same successful confirmation path; do not use token equality
-or an empty remote write just to clear dirty. Ordinary downstream LocalReady
-updates download baselines, not proof of uplink success.
-
-Lease expiration/explicit loss makes the cycle irreversibly Aborted. Cancel the
-current body and attached preparation, stop dispatch, and fail every unfinished
-uplink item with UPLOAD_LEASE_LOST. Do not acquire again inside this aborted cycle.
-Previously confirmed successful items remain successful; late HTTP 200 does not
-clear any field for this cycle. Independently running downstream is unaffected.
-
-A request may have committed before loss while its response was lost. Keep dirty
-and report failure now; a new cycle reads server operation/session status and
-reconciles that fact before a valid confirmation. Never promise that aborting a
-client reverted committed server changes.
-
-## Conflict And Display Contract
-
-Use the existing baseline to distinguish remote change from merely finding a
-local dirty row. If both sides changed the same content/field, prefer the newer
-real edit event, separately mapping `_syncserver.metadataEvent`, contentEvent and
-deletionEvent (editedAtMs/source/eventId), with a stable tie rule. Unknown legacy
-events and server commit-time fallback must not fabricate a newer user edit;
-retain explicit conflicts/copies when comparison is ambiguous. File mtime/photo
-capture date cannot describe all three. Merge
-independent metadata/content changes and preserve losing content in a conflict
-copy. Different photo IDs at the same path are a path conflict.
-
-Downstream conflict resolution checks the current local version again before
-publication so an edit made while downloading is not overwritten. Internal
-sync writes must not set fresh user dirty through scanner/watcher events.
-
-Download both original and thumbnail, verify the matching generation/digests,
-prepare existing cache keys/sizes, and publish before gallery admission. Each
-photo becomes visible separately once complete. Existing photos keep the last
-complete version during failure. Grid/viewer continue their local URI/thumbnail/
-preview/original pipelines; no remote placeholders or browse-triggered original
-fetch. The planned publication ledger/read leases/old snapshot are distinct
-from the server's exclusive upload lease and from dirty flags.
-
-## Implementation Order And Verification
-
-C1 can start now. Implement [C1.1–C1.6](native-sync-plan.md#stages-and-exit-gates):
-connection/typed transport → durable receive → local dirty/lease/coordinator →
-complete resource transfer/publication → real UI/recovery → integration delivery.
-The detailed [wire contract](native-sync-protocol.md) and
-[storage transactions](native-sync-storage.md) are prerequisites for code.
-
-The file-operation provider trait is gone. The typed Native gateway in
-`sync/native/` is the only transport boundary; do not fake a zone feed through
-file operations, replace server leases with a local mutex, or use token string
-equality for currency.
-New original/thumbnail, scanner/cache and GTK acceptance must use real actor/
-network/file/input paths. Server synthetic receivers do not establish PhotoViewer
-acceptance. Each milestone distinguishes transport/metadata support from full
-photo availability. Follow the exact dev push gate and report cloud CI for the
-pushed SHA separately from local and production results.
+- [本地存储设计](native-sync-storage.md)
+- [修订与实现落点](native-sync-integration.md)
+- [阶段和验收矩阵](native-sync-plan.md)
+- [测试与运行边界](../testing.md)

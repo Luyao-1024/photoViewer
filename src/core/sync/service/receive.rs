@@ -11,7 +11,7 @@
 //! those stages will settle, and it leaves `applied` behind `target` while any
 //! of them is outstanding. That is the honest C1.2 state.
 
-use super::super::native::protocol::{NativeClient, NativeEndpoint, NativePinnedScope, NativeZone};
+use super::super::native::protocol::{NativeClient, NativePinnedScope, NativeZone};
 use super::super::native::receive::{NativeRecord, ZoneChangesEntry, SUPPORTED_RECORD_TYPES};
 use super::super::native::records::{RecordSet, RemoteGraph};
 use super::super::store::receive::{InboxEvent, InboxKind, NativeProgress, TypeStatus};
@@ -133,15 +133,9 @@ impl SyncService {
         if !super::super::native::receive::receive_is_permitted(&pinned.capabilities) {
             return Err(ReceiveError::CapabilityMissing);
         }
-        let endpoint = NativeEndpoint::parse(&job.endpoint).map_err(map_transport)?;
-        let reference = job.credential_ref.clone();
-        let api_key = tokio::task::spawn_blocking(move || {
-            crate::platform::credentials::load_api_key(&reference)
-        })
-        .await
-        .map_err(|error| ReceiveError::Transport(format!("credential task failed: {error}")))?
-        .map_err(|error| ReceiveError::Transport(error.to_string()))?;
-        NativeClient::new(&endpoint, &api_key).map_err(map_transport)
+        self.transport_client_for(job)
+            .await
+            .map_err(|error| ReceiveError::Transport(error.to_string()))
     }
 
     /// Bootstrap every supported record type at one shared height.

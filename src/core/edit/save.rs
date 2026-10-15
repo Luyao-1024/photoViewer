@@ -137,6 +137,7 @@ fn overwrite(
     registry: &EditRegistry,
     actor: Option<&DbActorHandle>,
 ) -> Result<()> {
+    let _publication = crate::core::sync::publication_io::write()?;
     let trace = OperationTrace::start(TraceChain::Mutation, "save_overwrite");
     let result = (|| {
         let _guard = SaveGuard::acquire(&source.path)?;

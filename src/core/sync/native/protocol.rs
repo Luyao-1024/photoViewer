@@ -465,9 +465,9 @@ impl From<NativeProbeFailure> for SyncError {
 impl From<reqwest::Error> for SyncError {
     fn from(error: reqwest::Error) -> Self {
         if error.is_timeout() || error.is_connect() || error.is_request() {
-            SyncError::Offline(error.to_string())
+            SyncError::Offline(error.without_url().to_string())
         } else {
-            SyncError::Protocol(error.to_string())
+            SyncError::Protocol(error.without_url().to_string())
         }
     }
 }
@@ -666,8 +666,28 @@ impl NativeClient {
     /// The service treats a capability URL and a Bearer key on the same request
     /// as contradictory and refuses it, so the two authorities are separate
     /// request builders rather than one with a flag.
+    pub(super) fn check_origin(&self, url: &Url) -> SyncResult<()> {
+        let base = self.base.base();
+        if url.scheme() != base.scheme()
+            || url.host_str() != base.host_str()
+            || url.port_or_known_default() != base.port_or_known_default()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(SyncError::Protocol(
+                "cross-origin resource capability refused".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(super) async fn capability_get(&self, url: &Url) -> SyncResult<reqwest::Response> {
-        Ok(self.client.get(url.clone()).send().await?)
+        self.check_origin(url)?;
+        Ok(self
+            .client
+            .get(url.clone())
+            .timeout(std::time::Duration::from_secs(3600))
+            .send()
+            .await?)
     }
 
     /// Raw `application/octet-stream` upload to a capability URL under a held
@@ -681,9 +701,11 @@ impl NativeClient {
     ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
         let parsed = url::Url::parse(url)
             .map_err(|error| SyncError::Protocol(format!("upload URL is unusable: {error}")))?;
+        self.check_origin(&parsed)?;
         let mut request = self
             .client
             .post(parsed)
+            .timeout(std::time::Duration::from_secs(3600))
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(bytes.to_vec());
         for (name, value) in super::lease::lease_headers(proof) {
@@ -692,6 +714,34 @@ impl NativeClient {
         let response = request.send().await?;
         let status = response.status();
         Ok((status, response.bytes().await?.to_vec()))
+    }
+
+    pub(super) async fn upload_stream(
+        &self,
+        url: &Url,
+        proof: &super::lease::LeaseProof,
+        body: reqwest::Body,
+        size: u64,
+    ) -> SyncResult<serde_json::Value> {
+        self.check_origin(url)?;
+        let mut request = self
+            .client
+            .post(url.clone())
+            .timeout(std::time::Duration::from_secs(3600))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(body);
+        for (name, value) in super::lease::lease_headers(proof) {
+            request = request.header(name, value);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if !status.is_success() {
+            return Err(map_status(status.as_u16(), &bytes));
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|_| SyncError::Protocol("invalid upload response".into()))
     }
 
     /// Authenticated JSON POST. This is the only path that attaches the Bearer

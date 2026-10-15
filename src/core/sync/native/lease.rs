@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use crate::core::sync::{SyncError, SyncResult};
 
@@ -41,9 +41,6 @@ pub const SYNC_NOT_CURRENT: &str = "SYNC_NOT_CURRENT";
 /// still assumed live after it. A tenth of the TTL is far larger than either
 /// and far smaller than the safety it buys.
 const DEADLINE_SAFETY: f64 = 0.1;
-
-/// The minimum time a renewal must leave for the cycle to be worth starting.
-const MIN_USEFUL_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -221,7 +218,7 @@ impl From<LeaseError> for SyncError {
 ///
 /// Shared because the heartbeat runs on its own task while the cycle does file
 /// and record work; the deadline must be one value, not one per reader.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct UploadLease {
     proof: LeaseProof,
     ttl: Duration,
@@ -242,11 +239,19 @@ impl UploadLease {
         Self {
             proof: grant.proof(),
             ttl: Duration::from_secs(grant.ttl_seconds),
-            heartbeat: Duration::from_secs(grant.heartbeat_seconds).max(MIN_USEFUL_TTL),
+            heartbeat: Duration::from_secs(grant.heartbeat_seconds).max(Duration::from_millis(10)),
             lost: Arc::new(Mutex::new(LeaseState::Held {
-                deadline: started + conservative(grant.ttl_seconds),
+                deadline: started
+                    .checked_add(conservative(grant.ttl_seconds))
+                    .unwrap_or(started),
             })),
         }
+    }
+
+    pub(crate) fn valid_now(&self) -> bool {
+        self.lost.lock().is_ok_and(
+            |state| matches!(*state, LeaseState::Held {deadline} if Instant::now()<deadline),
+        )
     }
 
     pub fn proof(&self) -> &LeaseProof {
@@ -266,7 +271,7 @@ impl UploadLease {
 
     /// The instant after which this client stops assuming it holds the lease.
     pub async fn deadline(&self) -> Option<Instant> {
-        match *self.lost.lock().await {
+        match *self.lost.lock().unwrap_or_else(|error| error.into_inner()) {
             LeaseState::Held { deadline } => Some(deadline),
             LeaseState::Lost => None,
         }
@@ -275,20 +280,20 @@ impl UploadLease {
     /// Whether authority still stands. Checked immediately before every
     /// mutation, so a cycle cannot keep issuing after losing the lease.
     pub async fn is_held(&self) -> bool {
-        match *self.lost.lock().await {
+        match *self.lost.lock().unwrap_or_else(|error| error.into_inner()) {
             LeaseState::Lost => false,
             LeaseState::Held { deadline } => Instant::now() < deadline,
         }
     }
 
     pub async fn mark_lost(&self) {
-        *self.lost.lock().await = LeaseState::Lost;
+        *self.lost.lock().unwrap_or_else(|error| error.into_inner()) = LeaseState::Lost;
     }
 
     /// Record a successful renewal. `started` is when the request left, so a
     /// slow response grants only what was actually earned.
     pub async fn renew(&self, ttl_seconds: u64, started: Instant) {
-        let mut state = self.lost.lock().await;
+        let mut state = self.lost.lock().unwrap_or_else(|error| error.into_inner());
         *state = renewed(*state, Instant::now(), started, ttl_seconds);
     }
 }
@@ -309,7 +314,9 @@ fn renewed(current: LeaseState, now: Instant, started: Instant, ttl_seconds: u64
                 // another device.
                 LeaseState::Lost
             } else {
-                let offered = started + conservative(ttl_seconds);
+                let offered = started
+                    .checked_add(conservative(ttl_seconds))
+                    .unwrap_or(started);
                 if offered > deadline {
                     LeaseState::Held { deadline: offered }
                 } else {
@@ -323,7 +330,7 @@ fn renewed(current: LeaseState, now: Instant, started: Instant, ttl_seconds: u64
 /// The usable window of a granted TTL.
 fn conservative(ttl_seconds: u64) -> Duration {
     let seconds = ttl_seconds as f64 * (1.0 - DEADLINE_SAFETY);
-    Duration::from_secs_f64(seconds.max(1.0))
+    Duration::from_secs_f64(seconds.max(0.0))
 }
 
 /// Lease control for one client.

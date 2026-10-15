@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS sync_jobs (
     direction         TEXT NOT NULL DEFAULT 'bidirectional',
     upload_scope      TEXT NOT NULL DEFAULT 'selected_albums',
     propagate_deletes INTEGER NOT NULL DEFAULT 0,
+    native_cycle_id TEXT,
     paused            INTEGER NOT NULL DEFAULT 0,
     config_generation INTEGER NOT NULL DEFAULT 1,
     native_zone_name  TEXT NOT NULL CHECK (native_zone_name <> ''),

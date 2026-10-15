@@ -164,7 +164,8 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
                 | crate::core::sync::store::SyncWrite::NativeReceive(_)
                 | crate::core::sync::store::SyncWrite::Dirty(_)
-                | crate::core::sync::store::SyncWrite::Publication(_),
+                | crate::core::sync::store::SyncWrite::Publication(_)
+                | crate::core::sync::store::SyncWrite::Runtime(_),
             ) => DbWritePriority::StartupScan,
         }
     }
@@ -813,6 +814,15 @@ fn execute_command(
             Ok(DbCommandResult::None)
         }
         DbCommand::Sync(command) => {
+            let admitted_uri = match &command {
+                crate::core::sync::store::SyncWrite::Runtime(command) => match command.as_ref() {
+                    crate::core::sync::store::runtime::Command::Admit { item, .. } => {
+                        Some(item.uri.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
             let cloud_state_changed = matches!(
                 &command,
                 crate::core::sync::store::SyncWrite::BeginReset { .. }
@@ -823,6 +833,15 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
             );
             let result = crate::core::sync::store::execute_write(pool, command)?;
+            if let Some(uri) = admitted_uri {
+                if let Some(item) = db::get_media_item_by_uri(pool, &uri)? {
+                    events.send(DomainEvent::MediaUpserted {
+                        source: ChangeSource::Synchronization,
+                        items: vec![item],
+                    });
+                    events.send(DomainEvent::SyncStateDirty);
+                }
+            }
             if cloud_state_changed {
                 events.send(DomainEvent::SyncStateDirty);
             }

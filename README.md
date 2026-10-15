@@ -65,12 +65,6 @@ For persistent overrides, copy one of the examples from `config/` to:
 See [CHANGELOG.md](CHANGELOG.md).
 
 
-Native SyncServer C1 has an implementation-ready
-[client contract](docs/modules/native-sync.md),
-[protocol mapping](docs/modules/native-sync-protocol.md),
-[storage/publication design](docs/modules/native-sync-storage.md), and
-[staged implementation/acceptance plan](docs/modules/native-sync-plan.md), aligned
-with server M3/M4 at `syncserver@2d9f9a7`. PhotoViewer Native runtime is still
-pending: this documentation does not implement lease/token/dirty coordination
-or dual-resource publication.
-Development work is pushed to `dev`, with CI using the same gate as `main`.
+Native SyncServer 的协议唯一来源是服务端仓库，参见[服务端契约入口](docs/modules/native-sync-protocol.md)中的本地相对链接；正式发布时再统一改为网页链接。客户端维护自己的[接入方案](docs/modules/native-sync.md)、[本地数据与发布方案](docs/modules/native-sync-storage.md)、[实现修订](docs/modules/native-sync-integration.md)和[阶段验收](docs/modules/native-sync-plan.md)。
+
+C1.1–C1.4 现有实现已按静态检视修订，schema 10 保留 schema 9 的原生数据。当前不将编译通过视为完整同步验收；C1.5 设置/交互和 C1.6 完整交付仍待完成。本轮按最新要求仅运行基本相关的聚焦用例，不运行全量测试；本地交付与验证记录见[修订说明](docs/modules/native-sync-integration.md)。客户端开发分支保持 dev。

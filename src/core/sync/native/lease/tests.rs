@@ -215,11 +215,13 @@ fn a_missing_lease_header_is_a_loss_not_a_bad_request() {
 }
 
 #[tokio::test]
-async fn a_renewal_grant_shorter_than_the_safety_floor_still_leaves_a_usable_window() {
+async fn a_short_grant_remains_bounded_by_its_actual_ttl() {
     let started = Instant::now();
-    // A pathological one-second grant would otherwise floor to a zero-length
-    // window and make every cycle start already expired.
+    // Keep subsecond usable time without inventing authority past the TTL.
     let lease = UploadLease::from_grant(&grant(1, 1), started);
     let held = lease.deadline().await.unwrap() - started;
-    assert!(held >= Duration::from_secs(1), "{held:?}");
+    assert!(
+        held > Duration::ZERO && held < Duration::from_secs(1),
+        "{held:?}"
+    );
 }

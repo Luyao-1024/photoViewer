@@ -34,6 +34,11 @@ fn master(name: &str, photo_id: &str, generation: &str) -> NativeRecord {
         fields: Some(
             json!({
                 "photoId": field("STRING", photo_id.into()),
+                "thumbnailSourceOriginalSHA256": field(
+                    "STRING",
+                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into()
+                ),
+
                 "contentGeneration": field("STRING", generation.into()),
                 "resOriginalRes": field("ASSETID", asset_descriptor("asset-original", 2048)),
                 "resJPEGThumbRes": field("ASSETID", asset_descriptor("asset-thumb", 512)),
@@ -64,10 +69,6 @@ fn asset(name: &str, master_name: &str, generation: &str, path: &str) -> NativeR
                 "isFavorite": field("INT64", json!(1)),
                 "assetDate": field("TIMESTAMP", json!(1_700_000_000_000i64)),
                 "isHidden": field("INT64", json!(0)),
-                "thumbnailSourceOriginalSHA256": field(
-                    "STRING",
-                    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into()
-                ),
             })
             .as_object()
             .unwrap()
@@ -241,12 +242,12 @@ fn two_photos_cannot_claim_the_same_path_in_one_zone() {
 
 #[test]
 fn a_non_sha256_thumbnail_digest_is_rejected() {
-    let mut broken = asset("a1", "m1", "gen-1", "camera/one.jpg");
+    let mut broken = master("m1", "a1", "gen-1");
     broken.fields.as_mut().unwrap().insert(
         "thumbnailSourceOriginalSHA256".into(),
         field("STRING", "not-a-digest".into()),
     );
-    let set = set_of(vec![master("m1", "a1", "gen-1"), broken]);
+    let set = set_of(vec![broken, asset("a1", "m1", "gen-1", "camera/one.jpg")]);
     assert!(matches!(
         set.to_graph(&zone()).unwrap_err(),
         GraphError::InvalidThumbnailDigest { .. }
@@ -380,4 +381,24 @@ fn the_latest_event_uses_time_then_a_stable_tie() {
     assert_eq!(latest_event(None, Some(&early)), Some(early.clone()));
     assert_eq!(latest_event(Some(&early), None), Some(early.clone()));
     assert_eq!(latest_event(None, None), None);
+}
+
+#[test]
+fn projected_resource_checksum_is_hex_while_wire_descriptor_remains_base64() {
+    let graph = set_of(vec![
+        master("m1", "a1", "gen-1"),
+        asset("a1", "m1", "gen-1", "camera/one.jpg"),
+    ])
+    .to_graph(&zone())
+    .unwrap();
+    let photo = &graph.photos[0];
+    let resources = photo.resources();
+    assert_eq!(
+        resources[0].expected_sha256,
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        photo.original.file_checksum,
+        "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+    );
 }

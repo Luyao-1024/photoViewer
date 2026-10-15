@@ -34,6 +34,7 @@ pub fn read_orientation(path: &Path) -> Result<u16> {
 /// Update orientation metadata by a clockwise delta. Pixel data is not decoded
 /// or rewritten.
 pub fn rotate_orientation_in_place(path: &Path, delta_degrees: i32) -> Result<()> {
+    let _publication = crate::core::sync::publication_io::write()?;
     let current = read_orientation(path)?;
     let next = orientation_from_degrees(
         (degrees_from_orientation(current) + delta_degrees).rem_euclid(360),
@@ -67,6 +68,7 @@ pub fn apply_orientation_to_pixbuf(pb: &Pixbuf, orientation: u16) -> Pixbuf {
 }
 
 pub fn load_oriented_pixbuf(path: &Path) -> Result<Pixbuf> {
+    let _lease = crate::core::sync::publication_io::read()?;
     let pb = Pixbuf::from_file(path).map_err(AppError::Gio)?;
     let orientation = read_orientation(path)?;
     Ok(apply_orientation_to_pixbuf(&pb, orientation))
