@@ -807,3 +807,30 @@ touching local dirty state or confirmed identity.
 cargo test --locked --lib core::sync::store::receive -- --nocapture
 cargo test --locked --test native_sync_receive -- --nocapture
 ```
+
+## Native upload lease and dirty truth
+
+`tests/native_sync_lease.rs` drives two independent clients against one real
+service: one acquires the zone and a second (and a third) are refused; a forged
+fence is refused even with the holder's own id and token; a refused gate keeps
+its lease renewable, a passed gate is single-use, and a zone that moved behind a
+position is not current until the client catches up while still holding the
+lock; renewal extends authority and a lost lease stays lost; an operation
+receipt is readable after the lease that issued it is gone; and a replayed
+mutation returns the same receipt rather than minting a second revision.
+
+The local half lives in `src/core/sync/store/dirty/tests.rs` and
+`src/core/sync/native/lease/tests.rs`: a change outside every job root creates
+no obligation, a change inside one enrolls the photo as NEW, each category keeps
+its own version, a confirmation clears only the category it was captured for,
+an edit made mid-flight survives its callback, and a confirmed create registers
+its cloud identity so the residual work becomes an update rather than a second
+create. The lease deadline rules are tested through a pure function so
+"a late renewal cannot revive an expired lease" is proved without sleeping
+through a real one.
+
+```bash
+cargo test --locked --lib core::sync::store::dirty -- --nocapture
+cargo test --locked --lib core::sync::native::lease -- --nocapture
+cargo test --locked --test native_sync_lease -- --nocapture
+```

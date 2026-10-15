@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Added the native synchronization cycle's dirty truth and uplink coordination
+  (C1.3): a real local change now writes the user's edit and the obligation it
+  creates in one transaction, each change category carries its own version and
+  edit event, and an obligation is cleared only by proof that that category was
+  accepted at that version — so an edit made while an upload was in flight
+  survives its callback instead of being silently dropped.
+- Added the exclusive upload lease with a conservative, monotonic deadline: a
+  renewal extends authority from when the request *left*, a renewal that arrives
+  after the deadline grants nothing, and acquisition is attempted once per cycle
+  so a busy zone is skipped rather than fought.
+- Added record mutations with idempotency keys and issued-operation receipts, so
+  a mutation that committed but never answered can be reconciled instead of
+  guessed, and a release that fails to send cannot leave a stale obligation
+  behind.
+
 - Added the native SyncServer durable receive path (C1.2): snapshot bootstrap
   with an independent marker per record type, an ordered replayable delta inbox,
   a validated typed remote graph, and promotion that materializes resource

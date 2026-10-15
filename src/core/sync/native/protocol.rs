@@ -605,6 +605,61 @@ impl NativeClient {
         self.client.get(url).bearer_auth(&self.api_key)
     }
 
+    /// Authenticated JSON POST carrying a lease proof.
+    ///
+    /// A lease-bearing call and an ordinary one share everything except the
+    /// three proof headers, so both go through the same request builder rather
+    /// than two that could drift.
+    pub(super) async fn send_lease_json(
+        &self,
+        url: &Url,
+        payload: Vec<u8>,
+        proof: Option<&super::lease::LeaseProof>,
+        idempotency_key: Option<&str>,
+    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
+        let mut request = self
+            .client
+            .post(url.clone())
+            .bearer_auth(&self.api_key)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(payload);
+        if let Some(proof) = proof {
+            for (name, value) in super::lease::lease_headers(proof) {
+                request = request.header(name, value);
+            }
+        }
+        if let Some(key) = idempotency_key {
+            request = request.header("Idempotency-Key", key);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        Ok((status, response.bytes().await?.to_vec()))
+    }
+
+    /// Authenticated JSON POST carrying a lease proof and an optional
+    /// idempotency key, returning the raw status and body.
+    ///
+    /// The caller decides what a status means: a lease call maps its failures
+    /// onto arbitration decisions, while a record mutation has to read an
+    /// in-band error inside a 200. Both go through the same request so the
+    /// proof headers cannot drift apart.
+    pub async fn send_with_proof(
+        &self,
+        url: &Url,
+        payload: Vec<u8>,
+        proof: &super::lease::LeaseProof,
+        idempotency_key: Option<&str>,
+    ) -> SyncResult<(reqwest::StatusCode, Vec<u8>)> {
+        self.send_lease_json(url, payload, Some(proof), idempotency_key)
+            .await
+    }
+
+    /// Authenticated GET. Reconciling an uncertain outcome has to work after
+    /// the lease that issued it is gone, so this carries no lease proof.
+    pub(super) async fn authorized_get(&self, url: &Url) -> SyncResult<reqwest::Response> {
+        Ok(self.request(url.clone()).send().await?)
+    }
+
     /// Authenticated JSON POST. This is the only path that attaches the Bearer
     /// key to a body-bearing request, so there is one place to audit.
     pub(super) async fn send_json(

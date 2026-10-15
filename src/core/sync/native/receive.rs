@@ -409,7 +409,11 @@ impl NativeClient {
         pinned.sync_limits.max_page.clamp(1, 200)
     }
 
-    fn cloudkit_url(&self, namespace: &NativeNamespace, segments: &[&str]) -> SyncResult<Url> {
+    pub(super) fn cloudkit_url(
+        &self,
+        namespace: &NativeNamespace,
+        segments: &[&str],
+    ) -> SyncResult<Url> {
         let base = self.cloudkit_base(namespace)?;
         let mut url = base;
         {

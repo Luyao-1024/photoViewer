@@ -1550,8 +1550,16 @@ pub fn is_media_favorite(pool: &DbPool, media_id: i64) -> Result<bool> {
 }
 
 /// 设置单张媒体收藏状态。
-pub(crate) fn set_media_favorite(pool: &DbPool, media_id: i64, is_favorite: bool) -> Result<()> {
-    let conn = pool.get()?;
+/// Set the favorite flag on one media row.
+///
+/// Takes a connection rather than a pool so the caller can hold it inside a
+/// transaction together with the synchronization obligation the change creates:
+/// a user's edit and the work it implies must land together or not at all.
+pub(crate) fn set_media_favorite(
+    conn: &rusqlite::Connection,
+    media_id: i64,
+    is_favorite: bool,
+) -> Result<()> {
     let changed = conn.execute(
         "UPDATE media_items SET is_favorite = ?2 WHERE id = ?1",
         rusqlite::params![media_id, if is_favorite { 1 } else { 0 }],

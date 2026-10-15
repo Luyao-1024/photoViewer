@@ -4,11 +4,15 @@
 //! receive, lease and asset calls to [`protocol`] and media orchestration to
 //! [`provider`].
 
+pub mod lease;
+pub mod modify;
 pub mod protocol;
 pub mod provider;
 pub mod receive;
 pub mod records;
 
+pub use lease::{LeaseError, LeaseGrant, LeaseProof, UploadLease, UploadPhase};
+pub use modify::{ModifyOutcome, MutationBatch, OperationState};
 pub use protocol::{
     validate_api_key, validate_capabilities, validate_zone, ForbiddenCapability,
     NativeCapabilitiesResponse, NativeCapabilityBits, NativeClient, NativeEndpoint,

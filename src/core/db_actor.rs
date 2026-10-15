@@ -162,7 +162,8 @@ impl DbCommand {
                 | crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobCompleted { .. }
                 | crate::core::sync::store::SyncWrite::MarkJobFailed { .. }
-                | crate::core::sync::store::SyncWrite::NativeReceive(_),
+                | crate::core::sync::store::SyncWrite::NativeReceive(_)
+                | crate::core::sync::store::SyncWrite::Dirty(_),
             ) => DbWritePriority::StartupScan,
         }
     }
@@ -611,8 +612,28 @@ fn execute_command(
         }
         DbCommand::SetFavorite { ids, is_favorite } => {
             let mut changed = Vec::new();
-            for id in ids {
-                db::set_media_favorite(pool, id.get(), is_favorite)?;
+            // The user's favorite toggle and the synchronization obligation it
+            // creates are written in one transaction. Splitting them would let
+            // a crash leave a changed photo that the cloud never learns about,
+            // or an obligation for a change that never happened.
+            let mut conn = pool.get()?;
+            let stamp = crate::core::sync::store::EditEventStamp {
+                edited_at_ms: crate::core::sync::device::now_millis(),
+                source: crate::core::sync::device::device_id(pool),
+                event_id: crate::core::sync::device::new_event_id(),
+            };
+            let tx = conn.transaction()?;
+            for id in &ids {
+                db::set_media_favorite(&tx, id.get(), is_favorite)?;
+                crate::core::sync::store::note_local_change_in(
+                    &tx,
+                    id.get(),
+                    crate::core::sync::store::ChangeCategory::Metadata,
+                    &stamp,
+                )?;
+            }
+            tx.commit()?;
+            for id in &ids {
                 changed.push(db::get_media_item(pool, id.get())?);
             }
             if !changed.is_empty() {

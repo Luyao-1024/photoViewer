@@ -440,7 +440,10 @@ impl MediaRepository {
     pub fn set_favorite(&self, ids: &[MediaId], is_favorite: bool) -> Result<MediaMutation> {
         let mut mutation = MediaMutation::default();
         for id in ids {
-            db::set_media_favorite(&self.pool, id.get(), is_favorite)?;
+            {
+                let conn = self.pool.get()?;
+                db::set_media_favorite(&conn, id.get(), is_favorite)?;
+            }
             mutation.changed_ids.push(*id);
             mutation
                 .changed_items

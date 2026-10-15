@@ -8,15 +8,16 @@ removed outright: no provider, planner, reconciler or migration for it remains,
 and a schema-8 library is upgraded by dropping the WebDAV sync tables and
 recreating them empty (media, albums, favorites and edits are untouched).
 
-C1.1 and C1.2 are implemented. A native connection can be created and probed,
+C1.1, C1.2 and C1.3 are implemented. A native connection can be created and probed,
 its accepted capability scope is pinned onto the connection row, a job can map a
 local root to a configured zone, and a receive cycle can bootstrap that zone and
 keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-Nothing synchronizes media yet: no lease, no upload, no download, no
-publication, and no settings surface. Promotion deliberately materializes the
+Nothing synchronizes *resources* yet: no asset upload, no download, no
+publication, and no settings surface. Metadata-only record mutations do work
+under the exclusive upload lease. Promotion deliberately materializes the
 resource obligations those stages will settle, which is why `applied` stays
 behind `target`. The WebDAV-era settings group, strategy controls, conflict
 buttons and cloud-folder browser are gone; the native configuration UI arrives
@@ -34,10 +35,15 @@ in C1.5.
 | File | Owns |
 |---|---|
 | `src/core/sync/native/protocol.rs` | typed DTOs, endpoint normalization, capability validation, `NativeClient` HTTP (readyz/capabilities/probe), CloudKit base building, error envelope parsing |
-| `src/core/sync/native/provider.rs` | `NativeProvider`: a connection + pinned scope + zone; C1.3 adds the lease |
+| `src/core/sync/native/lease.rs` | the exclusive upload lease: acquire/check/phase/renew/release and the conservative monotonic deadline |
+| `src/core/sync/native/modify.rs` | record mutations, idempotency keys, and issued-operation receipts |
+| `src/core/sync/native/provider.rs` | `NativeProvider`: a connection + pinned scope + zone |
 | `src/core/sync/native/receive.rs` | receive-side wire types: snapshot/query/zone-delta DTOs, the record envelope, and the shared authenticated JSON POST |
 | `src/core/sync/native/records.rs` | the typed remote graph: pair validation, path safety, resource expectations |
 | `src/core/sync/store/receive.rs` | durable receive state: bootstrap markers, the ordered inbox, promotion, and the `applied` gate |
+| `src/core/sync/store/dirty.rs` | dirty truth: category bits, versions, edit events, the derived uplink view, and confirmation |
+| `src/core/sync/service/coordinator.rs` | one cycle: receive, acquire, gate, phases, dispatch, callbacks, release |
+| `src/core/sync/device.rs` | this installation's stable device identity |
 | `src/core/sync/service/receive.rs` | one receive cycle: bootstrap when needed, then a fixed-height delta round |
 | `src/core/sync/model.rs` | `ProviderKind`, `SyncDirection`, `UploadScope` |
 | `src/core/sync/store.rs` | `SyncStore`: jobs/connections/inventory/overview, native job creation + zone/pin validation, run lifecycle |
@@ -92,7 +98,25 @@ materializes one pending resource per photo role, so in the current stage
 scope, namespace or database generation discards every previous claim: the old
 applied position says nothing about work that was never in scope.
 
-## Dirty Truth, Badges, Overview
+## Dirty Truth And Local Change
+
+A dirty bit is a field on the existing record, never a queue: 1=NEW, 2=METADATA,
+4=CONTENT, 8=DELETE. Each of the three categories carries its own version, its
+own acknowledged counter and its own edit event, and the uplink view is derived
+from those fields at dispatch time.
+
+A user's change and the obligation it creates are written in **one**
+transaction — the favorite toggle is the current example — so a crash can never
+leave a changed photo the cloud never learns about, or an obligation for a
+change that never happened. A photo inside a job root that has no entry row yet
+is enrolled as NEW rather than ignored; a photo outside every root, and a
+trashed photo, gain nothing. Row disappearance is never a delete intent.
+
+Confirmation is version-matched: a callback carrying the version that was sent
+clears that category, and a callback carrying an older one registers the cloud
+identity it proved but leaves the newer obligation standing.
+
+## Badges And Overview
 
 Promotion also rejects an incomplete graph: an asset without its master, a master
 no asset references, mismatched content generations, a cross-zone reference, a

@@ -12,9 +12,14 @@ use super::native::protocol::{NativePinnedScope, NativeZone};
 use super::remote_path::{has_empty_segment, has_navigation_segment};
 
 mod configuration;
+pub mod dirty;
 pub mod receive;
 mod reset;
 pub use configuration::{JobEdit, PendingChange};
+pub use dirty::{
+    note_local_change_in, CategoryOutcome, ChangeCategory, ConfirmedIdentity, DirtyCommand,
+    DirtyEntry, DirtyOutcome, EditEventStamp, NativeDirty,
+};
 pub use receive::{
     BootstrapState, InboxEvent, InboxKind, NativeProgress, NativeReceiveCommand,
     NativeReceiveOutcome, TypeMarker, TypeStatus,
@@ -145,6 +150,8 @@ pub enum SyncWrite {
         id: i64,
         error: String,
     },
+    /// One dirty-truth write. A single variant keeps the actor match exhaustive.
+    Dirty(Box<dirty::DirtyCommand>),
     /// One durable receive write. A single variant rather than one per
     /// operation keeps the actor's priority match exhaustive by construction.
     NativeReceive(Box<NativeReceiveCommand>),
@@ -158,6 +165,7 @@ pub enum SyncWriteResult {
     /// Rows closed by a startup reconciliation of runs a previous process left open.
     ReconciledRuns(usize),
     Native(NativeReceiveOutcome),
+    Dirty(DirtyOutcome),
     DeletedJob(Option<String>),
 }
 
@@ -246,7 +254,9 @@ impl SyncStore {
                     "create synchronization job returned a delete result".into(),
                 ))
             }
-            SyncWriteResult::ReconciledRuns(_) | SyncWriteResult::Native(_) => {
+            SyncWriteResult::ReconciledRuns(_)
+            | SyncWriteResult::Native(_)
+            | SyncWriteResult::Dirty(_) => {
                 return Err(AppError::Backend(
                     "create synchronization job returned an unrelated result".into(),
                 ))
@@ -648,6 +658,10 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
         } => {
             pool.get()?.execute("UPDATE sync_jobs SET last_error=?1 WHERE id=?2 AND EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=?2 AND json_extract(payload,'$.revision')=?3)",params![error,id,revision])?;
             Ok(SyncWriteResult::None)
+        }
+        SyncWrite::Dirty(command) => {
+            let outcome = dirty::execute(pool, command.as_ref())?;
+            Ok(SyncWriteResult::Dirty(outcome))
         }
         SyncWrite::NativeReceive(command) => {
             let outcome = receive::execute(pool, command.as_ref())?;

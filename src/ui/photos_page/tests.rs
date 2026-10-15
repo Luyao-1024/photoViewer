@@ -548,7 +548,10 @@ fn the_favorite_state_of_a_selection_lands_from_a_worker() {
         &[sample_new_item("fav", 20), sample_new_item("plain", 10)],
     )
     .unwrap();
-    crate::core::db::set_media_favorite(&pool, inserted[0].id, true).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        crate::core::db::set_media_favorite(&conn, inserted[0].id, true).unwrap();
+    }
     let loader = Arc::new(ThumbnailLoader::new(
         pool.clone(),
         tmp.path().join("thumbs"),

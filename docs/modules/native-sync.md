@@ -20,9 +20,16 @@ markers, an ordered replayable delta inbox, a validated typed remote graph, and
 promotion that materializes resource obligations. `applied` deliberately stays
 behind `target` while any of them is outstanding.
 
-Not implemented yet: media synchronization of any kind — no lease, no upload,
-no download, no publication, and no settings surface. Native jobs exist as
-configuration but are not scheduled. The server's pre-release compatibility
+C1.3 adds the **uplink coordinator**: real local mutation hooks writing dirty
+truth in the same transaction as the user's edit, per-category versions and edit
+events, the exclusive upload lease with a conservative monotonic deadline, and
+record mutations carrying idempotency keys whose receipts outlive the request.
+
+Not implemented yet: **resource** synchronization — no asset upload, no
+download, no publication, and no settings surface. Metadata-only record
+mutations work; a create or a content change needs an asset pair and is
+reported as outstanding rather than approximated. Native jobs exist as
+configuration but are not yet scheduled onto a timer. The server's pre-release compatibility
 waiver applies to that service, not the PhotoViewer user database.
 
 | Read | Owns |
