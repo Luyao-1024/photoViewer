@@ -60,6 +60,18 @@ impl SyncService {
         &self,
         job_id: i64,
     ) -> std::result::Result<ReceiveReport, ReceiveError> {
+        match self.receive_once(job_id).await {
+            Err(ReceiveError::TokenExpired) => {
+                self.store
+                    .reset_native_progress(job_id)
+                    .map_err(|error| ReceiveError::Transport(error.to_string()))?;
+                self.receive_once(job_id).await
+            }
+            result => result,
+        }
+    }
+
+    async fn receive_once(&self, job_id: i64) -> std::result::Result<ReceiveReport, ReceiveError> {
         let job = self
             .store()
             .get_job(job_id)
@@ -155,6 +167,21 @@ impl SyncService {
     ) -> std::result::Result<SnapshotCompletion, ReceiveError> {
         let page_limit = client.page_limit(pinned);
         let mut token = progress.ingest_token.clone();
+        let snapshot_token = match &progress.snapshot_token {
+            Some(value) => value.clone(),
+            None => {
+                let snapshot = client.snapshot(zone).await.map_err(map_transport)?;
+                self.store
+                    .pin_native_snapshot(
+                        progress.job_id,
+                        &snapshot.snapshot_token,
+                        &snapshot.sync_token,
+                    )
+                    .map_err(|e| ReceiveError::Transport(e.to_string()))?;
+                token = Some(snapshot.sync_token);
+                snapshot.snapshot_token
+            }
+        };
 
         for record_type in SUPPORTED_RECORD_TYPES {
             let marker = progress.bootstrap.marker(record_type);
@@ -167,14 +194,6 @@ impl SyncService {
                 // the unfinished types and leaves the completed ones alone.
                 continue;
             }
-            let snapshot_token = match &progress.snapshot_token {
-                Some(value) => value.clone(),
-                None => {
-                    let snapshot = client.snapshot(zone).await.map_err(map_transport)?;
-                    token = Some(snapshot.sync_token);
-                    snapshot.snapshot_token
-                }
-            };
             let mut continuation = marker.continuation_marker.clone();
             let mut count = marker.record_count;
             loop {
@@ -337,7 +356,11 @@ fn inbox_events(records: &[NativeRecord]) -> Vec<InboxEvent> {
     records
         .iter()
         .filter_map(|record| {
-            let record_type = record.record_type.clone()?;
+            let record_type = if record.is_tombstone() {
+                record.record_type.clone().unwrap_or_default()
+            } else {
+                record.record_type.clone()?
+            };
             let change_tag = record.record_change_tag.clone()?;
             Some(InboxEvent {
                 ordinal: 0,

@@ -239,3 +239,31 @@ fn metadata_edits_preserve_the_received_capture_dates_subseconds() {
     let metadata = f.store.local_metadata(f.operation.entry).unwrap();
     assert_eq!(metadata["assetDate"]["value"], 1_700_000_000_123i64);
 }
+
+#[test]
+fn uncertain_mutations_cannot_be_discarded_as_superseded_preparation() {
+    let f = fixture("uncertain-retirement");
+    assert!(f
+        .store
+        .runtime(Command::RetireIssued {
+            epoch: f.epoch.clone(),
+            operation: f.operation.clone(),
+            rejected: false
+        })
+        .is_err());
+    assert_eq!(f.store.pending_issued(f.epoch.job).unwrap().len(), 1);
+    assert_eq!(f.store.uplink_view(f.epoch.job).unwrap()[0].dirty.bits(), 2);
+}
+#[test]
+fn a_definitive_atomic_rejection_keeps_dirty_and_unblocks_a_new_decision() {
+    let f = fixture("rejected-retirement");
+    f.store
+        .runtime(Command::RetireIssued {
+            epoch: f.epoch.clone(),
+            operation: f.operation.clone(),
+            rejected: true,
+        })
+        .unwrap();
+    assert!(f.store.pending_issued(f.epoch.job).unwrap().is_empty());
+    assert_eq!(f.store.uplink_view(f.epoch.job).unwrap()[0].dirty.bits(), 2);
+}

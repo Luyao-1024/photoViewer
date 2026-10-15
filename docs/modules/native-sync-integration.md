@@ -1,6 +1,6 @@
-# 原生客户端静态检视修订
+# 原生客户端实现与验证记录
 
-日期：2026-10-15。本页记录客户端实现知识，不定义服务端协议；唯一协议来源见[入口索引](native-sync-protocol.md)。静态修订后，用户进一步授权基本相关测试；本轮只执行聚焦验证，不执行全量套件。
+本页记录客户端实现知识，不定义服务端协议；唯一协议来源见[入口索引](native-sync-protocol.md)。以下先保留本地提交 426a111 的静态修订与 97 项聚焦验证历史，再记录后续 C1.5 开发。每一轮的验证范围独立，不将历史测试数重复算入本轮。
 
 ## 九项偏差的客户端落点
 
@@ -51,3 +51,39 @@ SYNC_SERVER_BIN=../syncserver/target/debug/syncserver cargo test --locked --test
 聚焦验证补充发现并修正了资源预留幂等键的请求/租约绑定、创建时可选字段空值、发布备份的 JSON 持久化格式及短租约不得被最小窗口延长的问题。编译、Clippy、格式和本地文档相对链接另行检查；静态检查不计入上述 97 个运行用例。
 
 全量测试、真实 GUI/AT-SPI、完整崩溃窗口矩阵、远端 CI、远端推送和部署均 **NOT RUN**；本地提交状态以 Git 记录为准。C1.5/C1.6 的完整用户旅程不以这些聚焦结果替代。
+
+
+## 2026-10-15 C1.5 可用功能开发
+
+已接入设置中的 HTTPS/API key 验证、服务器区域、本地根、物理相册选择和任务管理。空选择只接收；勾选目录后后台 scanner 以 mtime/size 短路发现本地新增/变化并经 DbActor 索引。15 秒调度、立即同步和下拉同步共用配置 worker；暂停持久保留，接受有效范围编辑后自动安装最新配置。GTK 真实输入覆盖取消/无效草稿、成功连接保存、默认空范围、范围修改及无变化保存。
+
+双客户端真实服务器旅程扩展到两端竞争内容修改、UseCloud 的本地恢复副本、KeepLocal 的实际云端资源保留、墓碑传播、删除后普通编辑不自动复活，以及显式使用新身份重建。schema 11 保留 9/10 的原生任务和 dirty，并增加退役标识。未知请求仍保留；服务端明确拒绝原子请求时只结束已发出证据，不清用户义务；旧配置的已提交请求允许只读回执恢复。
+
+开发和实机检查补充修复：删除请求的可选 fields 不得被可变 JSON 索引插入 null；recordType=null 的墓碑不能被过滤；首次所有类型必须共用真正持久化的 snapshotToken；不能用 zone token 代替；就绪照片每次资源完成后立即发布；配置编辑可中断旧下载，发布任务仍等待结算。同步事件只对实际变化发送；显式验证工具持续消费有界数据库事件。
+
+### 本轮聚焦测试与构建
+
+**61 个相关测试通过，0 失败、0 忽略；未运行全量测试。**
+
+| 范围 | 结果 |
+|---|---|
+| `db_migrations` | PASS，16 项，包括 schema 9/10 保留性升级 |
+| `native_sync_assets` | PASS，9 项，包含真实双端资源/冲突/删除/重建旅程 |
+| `native_sync_receive` | PASS，8 项，真实服务端固定水位、并发页与 token 区分 |
+| `ux_native_sync_settings` | PASS，1 项完整 GTK 真实控件旅程，1920×1080 Xvfb / 桌面 AT-SPI |
+| receive、device、runtime、service 的指定 library 过滤器 | PASS，27 项，其余 library 用例未执行 |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --locked --all-targets -- -D warnings -A clippy::type_complexity -A clippy::too_many_arguments` | PASS |
+| `cargo build --locked --bin photo-viewer --example connect_native` | PASS |
+
+命令见[使用与验证指南](native-sync-usage.md)。本地日志：`target/native-client-final-{fmt,clippy,build,unit,focused}.log`。完整 GUI 矩阵、全部崩溃窗口、全量测试、远端 CI、远端推送均未运行。本次按用户指令仅创建本地提交，不推送；此前本地 426a111 检查点保留。提交阶段不额外运行测试，上述结果来自开发验证阶段。
+
+### 阿里云实机验证
+
+用户明确授权使用截图相册和现有阿里云服务。已备份实际本地图库数据库及设置，仅选择 `/home/luyao/图片/截图`，167 个 PNG、原始文件总计 344,417,135 字节，包含 251,908,501 字节的大图。实际客户端通过 TLS 443 已确认全部 167 个照片对的上传。
+
+第二客户端使用图库外的独立数据库与接收目录，复用中断前已校验资源并逐照片入库。最终 **167/167 原图 SHA-256 一致**，167 张完整照片入库，收藏更改经公网上传并在另一端应用，随后恢复原值；两端无变化轮次均为 0 次写入。两端 dirty=0、开放冲突=0、ingest/target/applied 相同、last_error 为空，轮次均已结束。既有本地数据库的 37 个收藏值逐项对比备份后均保持不变，原始照片文件不改写。
+
+实际客户端已保存 `https://47.103.11.237/`、`PrimarySync`、本地根 `/home/luyao/图片`，上传范围只含 `截图`，总开关已启用。阿里云 SyncServer/Nginx 仍正常运行，服务端仓库保持原部署提交，无协议或部署变更。连接凭证在系统密钥环，仓库和报告均不包含密钥。
+
+实机证据目录：`/home/luyao/.local/state/photoviewer-native-verification/2026-10-15`。`report.json` 记录 167 项文件摘要、收藏往返与无变化结果；`acceptance-summary.json` 记录两个数据库的最终状态、原收藏保留和本次中断产生的未引用下载临时文件清理。图库数据库与设置的验证前备份、第二客户端接收目录一并保留。最终运行日志在 `target/aliyun-native-final.log`。本地程序已构建为 `target/debug/photo-viewer`，后续可从设置继续使用该连接。

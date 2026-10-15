@@ -20,6 +20,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod native_actions;
+mod native_sync;
+
 impl MainWindow {
     pub(super) fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
         let scroller = gtk::ScrolledWindow::builder()
@@ -104,6 +107,8 @@ impl MainWindow {
         lang_box.append(&btn_zh);
         lang_box.append(&btn_en);
         content.append(&lang_box);
+
+        self.append_native_sync_settings(&content, parent);
 
         let appearance_group = adw::PreferencesGroup::new();
         appearance_group.set_title(&tr("setting.section.appearance"));

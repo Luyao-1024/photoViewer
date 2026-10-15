@@ -4,10 +4,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod actions;
 mod configuration;
 pub mod coordinator;
 pub mod receive;
 mod reset;
+mod scheduling;
 pub mod transfer;
 use configuration::JobKey;
 
@@ -27,8 +29,8 @@ fn job_is_active(job_id: &JobKey) -> bool {
         .unwrap_or(false)
 }
 
-/// Re-entrancy guard for one job. A native cycle in C1.2 acquires this before
-/// claiming any work; until then it only records that nothing is running.
+/// Re-entrancy guard shared by cycles and user decisions; configuration/reset
+/// waits for it before cleaning resources or replacing accepted settings.
 struct ActiveJobGuard(JobKey);
 
 impl ActiveJobGuard {
@@ -179,6 +181,35 @@ impl SyncService {
         direction: SyncDirection,
         upload_albums: Vec<String>,
     ) -> Result<SyncJob> {
+        self.create_native_job_scoped(
+            endpoint,
+            credential_ref,
+            api_key,
+            local_root,
+            zone_name,
+            direction,
+            if upload_albums.is_empty() {
+                UploadScope::All
+            } else {
+                UploadScope::SelectedAlbums
+            },
+            upload_albums,
+        )
+        .await
+    }
+
+    /// An explicit scope distinguishes an empty selection (download only) from All.
+    pub async fn create_native_job_scoped(
+        &self,
+        endpoint: &str,
+        credential_ref: &str,
+        api_key: &str,
+        local_root: &Path,
+        zone_name: &str,
+        direction: SyncDirection,
+        upload_scope: UploadScope,
+        upload_albums: Vec<String>,
+    ) -> Result<SyncJob> {
         // C1.1 enables native Sync/Bidirectional only. Native Backup needs its
         // own immutable-history and restore acceptance, so offering it here
         // would promise behavior nothing has been built for.
@@ -187,10 +218,26 @@ impl SyncService {
                 "native Backup is not available yet; choose Sync".into(),
             ));
         }
+        if self
+            .store
+            .list_jobs()?
+            .iter()
+            .any(|job| job.credential_ref == credential_ref)
+        {
+            return Err(AppError::Backend(
+                "credential reference is already in use".into(),
+            ));
+        }
         let scope = self.probe_native_connection(endpoint, api_key).await?;
         let zone = validate_zone(&scope, zone_name)
             .map_err(|error| AppError::Backend(error.to_string()))?;
-        crate::platform::credentials::store_api_key(credential_ref, api_key)?;
+        let reference = credential_ref.to_owned();
+        let secret = api_key.to_owned();
+        tokio::task::spawn_blocking(move || {
+            crate::platform::credentials::store_api_key(&reference, &secret)
+        })
+        .await
+        .map_err(|_| AppError::Backend("credential worker stopped".into()))??;
         let created = self.store.create_job(&NewSyncJob {
             provider_kind: super::model::ProviderKind::NativeSyncServer,
             // The pinned base URL, not the typed draft: a value that survived
@@ -198,11 +245,7 @@ impl SyncService {
             endpoint: scope.public_base_url.clone(),
             local_root: local_root.to_path_buf(),
             direction,
-            upload_scope: if upload_albums.is_empty() {
-                UploadScope::All
-            } else {
-                UploadScope::SelectedAlbums
-            },
+            upload_scope,
             upload_albums,
             native_zone: Some(zone),
             native_pinned: Some(scope),
@@ -211,7 +254,11 @@ impl SyncService {
         if created.is_err() {
             // The credential is only useful together with its job; leaving it
             // behind would strand a secret the user cannot see or remove.
-            let _ = crate::platform::credentials::delete_api_key(credential_ref);
+            let reference = credential_ref.to_owned();
+            let _ = tokio::task::spawn_blocking(move || {
+                crate::platform::credentials::delete_api_key(&reference)
+            })
+            .await;
         }
         created
     }

@@ -336,7 +336,7 @@
           <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile" data-img="s01"></div><div class="tile" data-img="s02"></div><div class="tile" data-img="s03"></div><div class="tile" data-img="s04"></div><div class="tile" data-img="s05"></div><div class="tile" data-img="s06"></div><div class="tile" data-img="s07"></div><div class="tile" data-img="s08"></div></div></div></main>
         </div>
       </div>
-      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时、WebDAV 同步和存储偏好；内容在有界滚动区域内。">
+      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时、原生 SyncServer 同步和存储偏好；内容在有界滚动区域内。">
         <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare" data-act="close-settings">×</button></div>
         <div class="settings-body">
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
@@ -445,5 +445,19 @@
 <script src="tooltip.js" defer></script>
 <script src="prototype.js" defer></script>
 <script src="ux-review.js" defer></script>
+<section id="native-sync-settings-map"><h2>原生云端同步设置</h2>
+<p>实现：src/ui/window/settings/native_sync.rs、native_actions.rs。所有正文通过 Rust tr() 本地化。</p>
+<table><thead><tr><th>Widget name</th><th>类型与职责</th></tr></thead><tbody>
+<tr><td>native-sync-settings / native-sync-enabled / native-sync-status</td><td>PreferencesGroup / Switch / Label：总开关、历史进度和冲突数</td></tr>
+<tr><td>native-sync-add / native-sync-now</td><td>Button：添加服务器、立即同步</td></tr>
+<tr><td>native-sync-connection-dialog</td><td>Dialog：连接草稿，不接受就不影响现有任务</td></tr>
+<tr><td>native-sync-endpoint / native-sync-key / native-sync-root</td><td>EntryRow / PasswordEntryRow / EntryRow：地址、密钥、本地根</td></tr>
+<tr><td>native-sync-folder / native-sync-probe / native-sync-zone</td><td>Button / Button / ComboRow：目录选择、只读探测、已配置区域</td></tr>
+<tr><td>native-sync-albums / native-sync-save / native-sync-cancel / native-sync-probe-status</td><td>Button / Button / Button / Label：相册草稿、保存、取消、探测状态</td></tr>
+<tr><td>native-sync-album:{relative} / native-sync-albums-save / native-sync-albums-cancel</td><td>CheckButton / Button / Button：物理相册、接受或放弃选择</td></tr>
+<tr><td>native-sync-job-{id} / native-sync-scope-{id} / native-sync-manage-{id}</td><td>ActionRow / Button / Button：任务身份、范围编辑、云端照片管理</td></tr>
+<tr><td>native-sync-pause-{id} / native-sync-remove-{id}</td><td>Button：暂停或继续、确认后移除任务</td></tr>
+<tr><td>native-sync-photo-{id} / native-sync-photo-action-{id}-{action} / native-sync-action-status</td><td>ActionRow / Button / Label：显式云端删除、新身份重新上传、版本选择及恢复副本位置</td></tr>
+</tbody></table></section>
 </body>
 </html>

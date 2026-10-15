@@ -1,6 +1,6 @@
 # Native SyncServer Storage And Publication Design
 
-当前实现结构为 schema 10。schema 9 已将旧 WebDAV 表换为原生同步结构；schema 10 增加轮次标识并保留性修正旧摘要和进度，不丢弃 schema 9 的任务、dirty、媒体或用户数据。旧 WebDAV 历史不迁移为原生关系。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。实现和本轮验证边界见[静态检视修订](native-sync-integration.md)。
+当前实现结构为 schema 11。schema 11 保留 schema 9/10 的任务及 dirty，新增 native_retired 以防止云端删除后由普通本地编辑自动复活；显式重新上传分配新身份。schema 9 已将旧 WebDAV 表换为原生同步结构；schema 10 增加轮次标识并保留性修正旧摘要和进度，不丢弃 schema 9 的任务、dirty、媒体或用户数据。旧 WebDAV 历史不迁移为原生关系。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。实现和本轮验证边界见[静态检视修订](native-sync-integration.md)。
 
 ## Ownership And Migration
 
@@ -275,3 +275,14 @@ deletes ordinary media or remote history. Exit/restart, ordinary failure or scop
 uncheck is not Global Off and preserves dirty/unknown-operation evidence. Failed
 or deleted native jobs do not restart from old triggers. The entire native
 migration/recovery path must remain safe with existing WebDAV jobs in the same DB.
+
+
+## C1.5 客户端决策与快照恢复
+
+首次清单先通过 DbActor 持久保存服务端返回的实际 snapshotToken 和对应 zone syncToken；所有记录类型复用该快照。页标记只推进自己的类型，不能把 zone token 放到 snapshot_token。墓碑即使 recordType 为 null 仍进入持久 inbox。只有完整固定水位图才可判定既有远端身份已删除。
+
+native_retired 保存在既有 sync_entries。干净的云端删除保留本地文件并使身份退役；有竞争本地修改则建立冲突。明确重新上传才清退役标识，并分配新 ID。相册范围变化、离线根和本地删除均不产生云端删除事件。
+
+用户选择版本时核对本地版本、冲突快照及未确认操作。UseCloud 先保留本地原图，再创建原有双资源发布意图；KeepLocal 先下载并保留竞争云端资源，已校验但未作为图库版本发布的资源以 retained 区分于 verified。该状态只结算明确用户选择覆盖的接收义务，不能用于普通媒体入库。确认的原子拒绝只结束已发出操作证据，不清 dirty；网络超时和未知回执继续保留。
+
+新范围的本地索引通过已有 scanner 的 mtime/size 短路和 DbActor 批次完成；未变化的本地原图不参与每 15 秒检查的正文哈希。每个资源后检查可以入库的照片，后台发布任务完成前不释放运行屏障。下载期间接受配置编辑可以停止旧网络传输；文件发布仍等待完成或回滚。

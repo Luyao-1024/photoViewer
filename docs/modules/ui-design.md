@@ -497,9 +497,10 @@ Settings is reached from the sidebar footer gear button and opens as a popup
 dialog. It owns the quiet preference groups (language, appearance, video
 playback, Day grid columns, thumbnail speed), bounded management groups for
 scan folders and trash backend, and the combined cache/data cleanup action.
-The WebDAV synchronization group was removed with the WebDAV engine; the
-native SyncServer configuration surface (endpoint, API key, zone) is planned
-for C1.5. While the dialog is visible, the gallery content
+The native synchronization group provides endpoint/key probing, zone and local
+root selection, explicit physical album scope, task controls and conflict decisions.
+An empty upload selection receives cloud photos only; adding a connection never
+implicitly selects the whole library. While the dialog is visible, the gallery content
 behind it is lightly dimmed so the modal layer reads clearly above the library
 without forcing a full-window blur during the dialog animation.
 
@@ -514,12 +515,12 @@ Design intent:
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact small footer text at the bottom of the settings dialog.
-- The native sync configuration surface (C1.5) will follow **edit first,
+- The native sync configuration surface follows **edit first,
   reconfigure afterwards**: viewing, drafting, cancelling or re-submitting the
   same values never pauses or restarts anything; only a validated, accepted
   effective edit stops obsolete work and automatically schedules the latest
   configuration. The durable-edit engine behind that rule is described in
-  [`sync.md`](docs/modules/sync.md). Conflicts over cloud content render as
+  [`sync.md`](sync.md). Conflicts over cloud content render as
   explicit choices, never as silent overwrites.
 - Buttons inside the Settings dialog use always-on glass
   (`.glass-toolbar-button`), consistent with the toolbar-button rule for

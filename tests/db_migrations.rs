@@ -340,7 +340,7 @@ fn unversioned_library_migrates_without_losing_user_data() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     assert_eq!(
         connection
             .query_row(
@@ -623,7 +623,7 @@ fn schema_nine_upgrade_discards_webdav_history_and_keeps_the_library() {
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            10
+            11
         );
     }
 }
@@ -656,13 +656,13 @@ fn native_dirty_uplift_query_uses_its_index_without_temp_btree() {
 }
 
 #[test]
-fn schema_ten_preserves_native_schema_nine_dirty_rows() {
+fn schema_eleven_preserves_native_schema_nine_dirty_rows() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("native-nine.sqlite");
     let connection = rusqlite::Connection::open(&path).unwrap();
     let schema = include_str!("../src/core/schema.sql")
         .lines()
-        .filter(|line| !line.contains("native_cycle_id"))
+        .filter(|line| !line.contains("native_cycle_id") && !line.contains("native_retired"))
         .collect::<Vec<_>>()
         .join(
             "
@@ -689,6 +689,31 @@ fn schema_ten_preserves_native_schema_nine_dirty_rows() {
         connection
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        10
+        11
     );
+}
+
+#[test]
+fn schema_eleven_preserves_native_schema_ten_and_adds_neutral_retirement() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ten.sqlite");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let schema = include_str!("../src/core/schema.sql")
+        .lines()
+        .filter(|line| !line.contains("native_retired"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    conn.execute_batch(&schema).unwrap();
+    conn.execute_batch("INSERT INTO sync_connections(id,endpoint,credential_ref) VALUES(1,'https://sync.invalid/','key-ref');INSERT INTO sync_jobs(id,connection_id,local_root,native_zone_name) VALUES(1,1,'/library','PrimarySync');INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_local_version) VALUES(1,'photo.png',6,7);PRAGMA user_version=10;").unwrap();
+    drop(conn);
+    let pool = photo_viewer::core::db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+    let row: (i64, i64, bool) = conn
+        .query_row(
+            "SELECT native_dirty,native_local_version,native_retired FROM sync_entries",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (6, 7, false));
 }

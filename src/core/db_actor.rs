@@ -814,6 +814,23 @@ fn execute_command(
             Ok(DbCommandResult::None)
         }
         DbCommand::Sync(command) => {
+            let mut changed_metadata = Vec::new();
+            if let crate::core::sync::store::SyncWrite::NativeReceive(receive) = &command {
+                if let crate::core::sync::store::NativeReceiveCommand::Promote {
+                    job_id,
+                    graph,
+                    ..
+                } = receive.as_ref()
+                {
+                    let conn = pool.get()?;
+                    for photo in &graph.photos {
+                        let row=conn.query_row("SELECT m.id FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.job_id=?1 AND e.native_photo_id=?2 AND (m.is_favorite<>?3 OR m.taken_at IS NOT ?4)",rusqlite::params![job_id,photo.photo_id,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))],|r|r.get::<_,i64>(0));
+                        if let Ok(id) = row {
+                            changed_metadata.push(id);
+                        }
+                    }
+                }
+            }
             let admitted_uri = match &command {
                 crate::core::sync::store::SyncWrite::Runtime(command) => match command.as_ref() {
                     crate::core::sync::store::runtime::Command::Admit { item, .. } => {
@@ -832,7 +849,38 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
             );
+            let lifecycle_changed = match &command {
+                crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
+                | crate::core::sync::store::SyncWrite::FinishRun { .. } => true,
+                crate::core::sync::store::SyncWrite::Runtime(command) => matches!(
+                    command.as_ref(),
+                    crate::core::sync::store::runtime::Command::UserAction { .. }
+                        | crate::core::sync::store::runtime::Command::Confirm { .. }
+                ),
+                _ => false,
+            };
             let result = crate::core::sync::store::execute_write(pool, command)?;
+            let updated = changed_metadata
+                .into_iter()
+                .filter_map(|id| db::get_media_item(pool, id).ok())
+                .collect::<Vec<_>>();
+            if !updated.is_empty() {
+                events.send(DomainEvent::MediaUpdated {
+                    source: ChangeSource::Synchronization,
+                    items: updated,
+                    fields: MediaFields {
+                        favorite: true,
+                        metadata: true,
+                        ..MediaFields::FAVORITE
+                    },
+                });
+                events.send(DomainEvent::AlbumsDirty {
+                    source: ChangeSource::Synchronization,
+                });
+            }
+            if lifecycle_changed {
+                events.send(DomainEvent::SyncStateDirty);
+            }
             if let Some(uri) = admitted_uri {
                 if let Some(item) = db::get_media_item_by_uri(pool, &uri)? {
                     events.send(DomainEvent::MediaUpserted {

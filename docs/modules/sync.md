@@ -8,21 +8,21 @@ removed outright: no provider, planner, reconciler or migration for it remains,
 and a schema-8 library is upgraded by dropping the WebDAV sync tables and
 recreating them empty (media, albums, favorites and edits are untouched).
 
-C1.1–C1.4 have local static-review corrections and focused runtime coverage; complete client acceptance is still pending. See [implementation notes](native-sync-integration.md). A native connection can be created and probed,
+C1.1–C1.5 supported paths have focused runtime coverage; exhaustive recovery and the remote-release gate remain separate. See [implementation notes](native-sync-integration.md). A native connection can be created and probed,
 its accepted capability scope is pinned onto the connection row, a job can map a
 local root to a configured zone, and a receive cycle can bootstrap that zone and
 keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-The settings surface is still absent (C1.5). The existing implementation boundaries are: the
-connection and probe, the durable receive path, the dirty-truth/lease
+The native Settings surface now supports connection probes, explicit album scope,
+manual/automatic synchronization, pause/resume and cloud-photo decisions. The
+implementation boundaries are the connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,
 paired with a thumbnail from the same copy, uploaded, downloaded, verified and
 published. A photo becomes visible only when its whole pair is usable, and
-`applied` cannot advance past work that is still owed. The WebDAV-era settings group, strategy controls, conflict
-buttons and cloud-folder browser are gone; the native configuration UI arrives
-in C1.5.
+`applied` cannot advance past work that is still owed. Native user choices are described in the [usage guide](native-sync-usage.md).
+Protocol definitions remain exclusively in the sibling server repository.
 
 | Read | Owns |
 |---|---|

@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     media_id             INTEGER REFERENCES media_items(id) ON DELETE SET NULL,
     relative_path        TEXT NOT NULL,
     entry_generation     INTEGER NOT NULL DEFAULT 1,
+    native_retired         INTEGER NOT NULL DEFAULT 0 CHECK (native_retired IN (0,1)),
     native_dirty           INTEGER NOT NULL DEFAULT 0 CHECK (native_dirty BETWEEN 0 AND 15),
     native_local_version   INTEGER NOT NULL DEFAULT 0,
     native_metadata_version INTEGER NOT NULL DEFAULT 0,

@@ -167,6 +167,38 @@ impl SyncService {
             .get_job(job_id)
             .map_err(setup)?
             .ok_or_else(|| setup("job was removed"))?;
+        let result = self.run_owned_cycle(job_id).await;
+        let reason = match &result {
+            Err(error) => Some(error.to_string()),
+            Ok(report) if !report.failures.is_empty() => Some(
+                report
+                    .failures
+                    .iter()
+                    .map(|f| format!("{}: {}", f.relative_path, f.reason))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ),
+            Ok(report) if report.uplink_skipped => {
+                Some("another device holds the upload lease; retry scheduled".into())
+            }
+            Ok(report) if report.outstanding > 0 => Some(format!(
+                "{} synchronization obligations remain",
+                report.outstanding
+            )),
+            _ => None,
+        };
+        self.store()
+            .finish_run(job_id, job.config_generation, reason.as_deref())
+            .map_err(setup)?;
+        result
+    }
+    async fn run_owned_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
+        let job = self
+            .store()
+            .get_job(job_id)
+            .map_err(setup)?
+            .ok_or_else(|| setup("job was removed"))?;
+        self.store().mark_job_started(job_id).map_err(setup)?;
         let epoch = Epoch {
             job: job.id,
             config: job.config_generation,
@@ -208,7 +240,13 @@ impl SyncService {
             .store()
             .unresolved_resource_count(job_id)
             .map_err(setup)?
-            + self.store().uplink_view(job_id).map_err(setup)?.len();
+            + self
+                .store()
+                .uplink_view(job_id)
+                .map_err(setup)?
+                .iter()
+                .filter(|entry| eligible(self, &job, entry).unwrap_or(true))
+                .count();
         Ok(report)
     }
     async fn receive_complete(&self, job: i64) -> Result<receive::ReceiveReport, CycleError> {
@@ -241,12 +279,21 @@ impl SyncService {
         epoch: &Epoch,
         report: &mut CycleReport,
     ) -> Result<(), CycleError> {
+        self.index_upload_sources(job).await.map_err(setup)?;
+        self.store()
+            .runtime(Command::Enroll {
+                epoch: epoch.clone(),
+            })
+            .map_err(setup)?;
         // Even when publication is blocked, read-only receipt reconciliation
         // after acquisition can settle an earlier committed local operation.
         match self.receive_complete(job.id).await {
             Ok(_) => report.received = true,
             Err(CycleError::Behind(_)) => report.received = true,
             Err(e) => return Err(e),
+        }
+        if !self.store().epoch_current(epoch).map_err(setup)? {
+            return Err(setup("synchronization configuration was superseded"));
         }
         let client = self.transport_client_for(job).await.map_err(setup)?;
         let pinned = self
@@ -307,12 +354,19 @@ impl SyncService {
         report: &mut CycleReport,
     ) -> Result<(), CycleError> {
         for operation in self.store().pending_issued(job.id).map_err(setup)? {
-            if operation.config != job.config_generation
-                || operation.generation != pinned.database_generation
-            {
+            if operation.generation != pinned.database_generation {
                 return Err(CycleError::Behind("an issued operation belongs to an obsolete scope/configuration; reconciliation is required".into()));
             }
             if operation.body.is_null() {
+                if operation.config != job.config_generation {
+                    self.store()
+                        .runtime(Command::RetireIssued {
+                            epoch: epoch.clone(),
+                            operation,
+                            rejected: false,
+                        })
+                        .map_err(setup)?;
+                }
                 continue;
             }
             if let OperationState::Committed(response) = client
@@ -329,6 +383,8 @@ impl SyncService {
                     })
                     .map_err(setup)?;
                 report.mutations_confirmed += 1;
+            } else if operation.config != job.config_generation {
+                return Err(CycleError::Behind("an older configuration has an unconfirmed issued operation; its outcome must be reconciled before new writes".into()));
             }
         }
         let mut ready = false;
@@ -628,7 +684,11 @@ impl SyncService {
                     .as_array_mut()
                     .ok_or_else(|| setup("issued operation has no records"))?
                 {
-                    if let Some(fields) = op["record"]["fields"].as_object_mut() {
+                    if let Some(fields) = op
+                        .get_mut("record")
+                        .and_then(|record| record.get_mut("fields"))
+                        .and_then(Value::as_object_mut)
+                    {
                         for (field, role) in [
                             ("resOriginalRes", AssetRole::Original),
                             ("resJPEGThumbRes", AssetRole::Thumbnail),
@@ -664,10 +724,31 @@ impl SyncService {
                     }
                 }
                 report.mutations_sent += 1;
-                client
+                match client
                     .modify_exact(lease.proof(), &pinned.namespace, &body, &operation.id)
                     .await
-                    .map_err(transport)?
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        let rejected = match &error {
+                            SyncError::PreconditionFailed(reason) => reason.contains(" CONFLICT:"),
+                            SyncError::Protocol(reason) => {
+                                reason.starts_with("HTTP 400 BAD_REQUEST:")
+                            }
+                            _ => false,
+                        };
+                        if rejected {
+                            self.store()
+                                .runtime(Command::RetireIssued {
+                                    epoch: epoch.clone(),
+                                    operation: operation.clone(),
+                                    rejected: true,
+                                })
+                                .map_err(setup)?;
+                        }
+                        return Err(transport(error));
+                    }
+                }
             }
         };
         // Both monotonic authority and the actor-owned epoch are checked at commit.
@@ -714,6 +795,19 @@ fn matches_phase(entry: &DirtyEntry, phase: UploadPhase) -> bool {
     }
 }
 fn eligible(service: &SyncService, job: &SyncJob, entry: &DirtyEntry) -> Result<bool, CycleError> {
+    if entry.dirty.contains(NativeDirty::DELETE) {
+        return Ok(true);
+    }
+    let path = job.local_root.join(&entry.relative_path);
+    if !path.is_file() {
+        return Ok(false);
+    }
+    if !std::fs::canonicalize(&path)
+        .map_err(setup)?
+        .starts_with(std::fs::canonicalize(&job.local_root).map_err(setup)?)
+    {
+        return Err(setup("local source escaped the configured root"));
+    }
     if job.upload_scope == super::super::UploadScope::All {
         return Ok(true);
     }

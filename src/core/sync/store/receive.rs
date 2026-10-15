@@ -158,6 +158,11 @@ pub enum NativeReceiveCommand {
         zone: NativeZone,
     },
     /// One query page: advance that type's marker and record its sync token.
+    PinSnapshot {
+        job_id: i64,
+        snapshot_token: String,
+        zone_sync_token: String,
+    },
     SaveBootstrapPage {
         job_id: i64,
         record_type: String,
@@ -474,6 +479,27 @@ pub(super) fn execute(
             }
             NativeReceiveOutcome::Progress(Box::new(progress))
         }
+        NativeReceiveCommand::PinSnapshot {
+            job_id,
+            snapshot_token,
+            zone_sync_token,
+        } => {
+            let progress = require_progress(&tx, *job_id)?;
+            if progress
+                .snapshot_token
+                .as_ref()
+                .is_some_and(|old| old != snapshot_token)
+            {
+                return Err(AppError::Backend(
+                    "cannot replace an in-progress bootstrap snapshot".into(),
+                ));
+            }
+            tx.execute(
+                "UPDATE sync_native_progress SET snapshot_token=?2,ingest_token=?3 WHERE job_id=?1",
+                params![job_id, snapshot_token, zone_sync_token],
+            )?;
+            NativeReceiveOutcome::Reset
+        }
         NativeReceiveCommand::SaveBootstrapPage {
             job_id,
             record_type,
@@ -483,9 +509,7 @@ pub(super) fn execute(
         } => {
             let mut progress = require_progress(&tx, *job_id)?;
             progress.bootstrap.started = true;
-            if progress.snapshot_token.is_none() {
-                progress.snapshot_token = Some(zone_sync_token.clone());
-            }
+            let _ = zone_sync_token; // A zone position is never a listing snapshot.
             progress.bootstrap.types.insert(
                 record_type.clone(),
                 TypeMarker {
@@ -710,6 +734,27 @@ fn promote(
         )?;
     }
 
+    // Absence is authoritative only after a complete fixed-height graph.
+    // Preserve local files; a concurrent edit becomes an explicit conflict.
+    let absent = {
+        let mut statement = tx.prepare("SELECT e.id,e.native_dirty FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sync_native_records r WHERE r.job_id=e.job_id AND r.record_name=e.native_photo_id AND r.record_type='__photo__') AND NOT EXISTS(SELECT 1 FROM sync_tasks t WHERE t.entry_id=e.id AND t.state='issued')")?;
+        let rows = statement
+            .query_map([job_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (entry, dirty) in absent {
+        if dirty == 0 || dirty == 8 {
+            super::actions::retire(tx, entry)?;
+        } else {
+            tx.execute("INSERT INTO sync_conflicts(job_id,entry_id,kind,native_detail) VALUES(?1,?2,'native',?3) ON CONFLICT(entry_id) WHERE state='open' DO UPDATE SET native_detail=excluded.native_detail",params![job_id,entry,serde_json::json!({"reason":"remote photo was deleted while local changes remain","remote":null}).to_string()])?;
+        }
+        tx.execute(
+            "UPDATE sync_publications SET state='superseded' WHERE entry_id=?1 AND state='pending'",
+            [entry],
+        )?;
+    }
+
     let resources = unresolved_in_tx(tx, job_id)?;
 
     tx.execute(
@@ -739,7 +784,7 @@ fn promote(
 
 fn unresolved_in_tx(tx: &rusqlite::Transaction<'_>, job_id: i64) -> Result<usize> {
     let resources: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state <> 'verified'",
+        "SELECT COUNT(*) FROM sync_native_resources WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state NOT IN ('verified','retained')",
         [job_id],
         |row| row.get(0),
     )?;
@@ -789,6 +834,20 @@ impl SyncStore {
                 "beginning a receive position returned no progress".into(),
             )),
         }
+    }
+
+    pub fn pin_native_snapshot(
+        &self,
+        job_id: i64,
+        snapshot_token: &str,
+        zone_sync_token: &str,
+    ) -> Result<()> {
+        self.write_receive(NativeReceiveCommand::PinSnapshot {
+            job_id,
+            snapshot_token: snapshot_token.into(),
+            zone_sync_token: zone_sync_token.into(),
+        })?;
+        Ok(())
     }
 
     pub fn save_bootstrap_page(

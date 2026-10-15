@@ -29,14 +29,14 @@ fn a_device_id_is_persisted_so_consecutive_edits_look_like_one_device() {
 }
 
 #[test]
-fn the_process_identity_is_minted_once_and_reused() {
+fn separate_databases_have_stable_independent_device_identities() {
     // The process-wide identity is what every edit event in this run carries,
     // so it must be the same string however many times it is asked for.
     let pool = temp_pool("once");
     let first = device_id(&pool);
     assert!(!first.is_empty());
     assert_eq!(device_id(&pool), first);
-    assert_eq!(device_id(&temp_pool("other-db")), first);
+    assert_ne!(device_id(&temp_pool("other-db")), first);
 }
 
 #[test]

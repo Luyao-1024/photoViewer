@@ -11,7 +11,9 @@ use super::model::{ProviderKind, SyncDirection, UploadScope};
 use super::native::protocol::{NativePinnedScope, NativeZone};
 use super::remote_path::{has_empty_segment, has_navigation_segment};
 
+mod actions;
 mod configuration;
+pub use actions::{ManagedPhoto, PhotoAction};
 pub mod dirty;
 pub mod publication;
 pub mod receive;
@@ -241,6 +243,23 @@ impl SyncStore {
         Self {
             pool,
             actor: Some(actor),
+        }
+    }
+
+    pub(crate) fn commit_local_scan(
+        &self,
+        items: Vec<crate::core::media::NewMediaItem>,
+    ) -> Result<Vec<crate::core::media::MediaItem>> {
+        if let Some(actor) = &self.actor {
+            match actor.execute_blocking(DbCommand::UpsertMediaBatch {
+                source: crate::core::events::ChangeSource::FilesystemWatcher,
+                items,
+            })? {
+                DbCommandResult::MediaItems(items) => Ok(items),
+                _ => Err(AppError::Backend("unexpected scan response".into())),
+            }
+        } else {
+            crate::core::db::upsert_media_items_batch(&self.pool, &items)
         }
     }
 

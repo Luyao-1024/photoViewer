@@ -215,11 +215,9 @@ impl SyncService {
             if crate::core::prefs::sync_enabled() && !self.store.reset_pending().unwrap_or(true) {
                 if let Ok(Some(job)) = self.store.get_job(id) {
                     if !job.paused {
-                        let result = self.run_cycle(id).await;
-                        let reason = result.as_ref().err().map(ToString::to_string);
-                        let _ = self
-                            .store
-                            .finish_run(id, job.config_generation, reason.as_deref());
+                        if let Err(error) = self.run_cycle(id).await {
+                            tracing::warn!("synchronization cycle failed: {error}");
+                        }
                     }
                 }
             }
@@ -255,9 +253,6 @@ impl SyncService {
             return Ok(true);
         };
         let Some(pending) = self.store.pending_change(id)? else {
-            if crate::core::prefs::sync_enabled() {
-                self.store.set_job_paused(id, false)?;
-            }
             return Ok(false);
         };
         // An accepted edit stops the old run here; pausing first is what makes

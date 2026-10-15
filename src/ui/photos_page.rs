@@ -1637,6 +1637,19 @@ impl PhotosPage {
                 .is_none_or(|last| now.duration_since(last) >= OVERVIEW_SYNC_PULL_COOLDOWN);
             if can_trigger {
                 self.imp().overview_sync_last_pull_at.set(Some(now));
+                if crate::core::prefs::sync_enabled() {
+                    if let Some(pool) = self.imp().pool.borrow().as_ref().cloned() {
+                        let service = match self.imp().db_actor.borrow().as_ref().cloned() {
+                            Some(actor) => crate::core::sync::SyncService::with_actor(pool, actor),
+                            None => crate::core::sync::SyncService::new(pool),
+                        };
+                        tokio::spawn(async move {
+                            if let Err(error) = service.request_all_sync() {
+                                tracing::warn!("manual sync failed: {error}");
+                            }
+                        });
+                    }
+                }
             }
         } else if delta_y > 0.0 {
             self.imp().overview_revealer.set_reveal_child(false);

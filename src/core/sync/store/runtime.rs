@@ -36,6 +36,19 @@ pub struct Issued {
 
 #[derive(Debug)]
 pub enum Command {
+    RetireIssued {
+        epoch: Epoch,
+        operation: Issued,
+        rejected: bool,
+    },
+    UserAction {
+        job: i64,
+        entry: i64,
+        version: i64,
+        conflict: Option<String>,
+        action: super::PhotoAction,
+        recovery: Option<String>,
+    },
     Begin(Epoch),
     End(Epoch),
     Save(Epoch, Issued),
@@ -130,6 +143,32 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match command {
+        Command::RetireIssued {
+            epoch,
+            operation,
+            rejected,
+        } => {
+            valid_epoch(&tx, &epoch)?;
+            if !rejected && (!operation.body.is_null() || operation.config == epoch.config) {
+                return Err(invalid("an uncertain issued mutation cannot be discarded"));
+            }
+            let encoded = serde_json::to_string(&operation)
+                .map_err(|_| invalid("invalid issued evidence"))?;
+            let changed=tx.execute("UPDATE sync_tasks SET state='failed',last_error=?4 WHERE operation_id=?1 AND job_id=?2 AND state='issued' AND native_capture=?3",params![operation.id,epoch.job,encoded,if rejected {"server rejected the atomic mutation"} else {"configuration superseded preparation before mutation"}])?;
+            if changed != 1 {
+                return Err(invalid("issued evidence changed before retirement"));
+            }
+        }
+        Command::UserAction {
+            job,
+            entry,
+            version,
+            conflict,
+            action,
+            recovery,
+        } => {
+            super::actions::apply(&tx, job, entry, version, conflict, action, recovery)?;
+        }
         Command::Begin(epoch) => {
             // The caller holds a process-wide job guard. A previous process's
             // epoch is never authority for a newly issued callback.
@@ -154,6 +193,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 rows
             };
+            tx.execute("DELETE FROM sync_inventory WHERE job_id=?1", [epoch.job])?;
             for (media, path) in rows {
                 let relative = std::path::Path::new(&path)
                     .strip_prefix(&root)
@@ -166,6 +206,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     .unwrap_or_default();
                 let selected:bool=scope=="all" || tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_upload_albums WHERE job_id=?1 AND relative_album=?2)",params![epoch.job,album],|r|r.get(0))?;
                 if selected {
+                    tx.execute("INSERT INTO sync_inventory(job_id,relative_path,config_generation) VALUES(?1,?2,?3)",params![epoch.job,relative,epoch.config])?;
                     tx.execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty) VALUES(?1,?2,?3,1) ON CONFLICT(job_id,relative_path) DO NOTHING",params![epoch.job,media,relative])?;
                 }
             }
@@ -255,6 +296,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                 clear |= 1;
             }
             if operation.phase == "delete" {
+                tx.execute("UPDATE sync_entries SET native_retired=CASE WHEN native_local_version=?2 THEN 1 ELSE 0 END WHERE id=?1",params![operation.entry,operation.versions[0]])?;
                 tx.execute("UPDATE sync_entries SET native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_resource_baseline=NULL,native_baseline_metadata=NULL,native_confirmed_generation=NULL,native_dirty=(native_dirty & ?2) | CASE WHEN native_local_version<>?3 THEN 1 ELSE 0 END WHERE id=?1",params![operation.entry,!(clear as i64),operation.versions[0]])?;
             } else {
                 let revision = |name: &str| {
@@ -263,7 +305,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                         .find(|r| r["recordName"].as_str() == Some(name))
                         .and_then(|r| r["recordChangeTag"].as_str())
                 };
-                tx.execute("UPDATE sync_entries SET native_photo_id=?2,native_master_id=?3,native_asset_revision=COALESCE(?4,native_asset_revision),native_master_revision=COALESCE(?5,native_master_revision),native_content_generation=?6,native_confirmed_generation=?7,native_dirty=native_dirty & ?8,native_acked_metadata_version=MAX(native_acked_metadata_version,?9),native_acked_content_version=MAX(native_acked_content_version,?10) WHERE id=?1",params![operation.entry,operation.photo,operation.master,revision(&operation.photo),revision(&operation.master),operation.content_generation,generation,!(clear as i64),if operation.dirty&2!=0{operation.versions[1]}else{0},if operation.dirty&4!=0{operation.versions[2]}else{0}])?;
+                tx.execute("UPDATE sync_entries SET native_retired=0,native_photo_id=?2,native_master_id=?3,native_asset_revision=COALESCE(?4,native_asset_revision),native_master_revision=COALESCE(?5,native_master_revision),native_content_generation=?6,native_confirmed_generation=?7,native_dirty=native_dirty & ?8,native_acked_metadata_version=MAX(native_acked_metadata_version,?9),native_acked_content_version=MAX(native_acked_content_version,?10) WHERE id=?1",params![operation.entry,operation.photo,operation.master,revision(&operation.photo),revision(&operation.master),operation.content_generation,generation,!(clear as i64),if operation.dirty&2!=0{operation.versions[1]}else{0},if operation.dirty&4!=0{operation.versions[2]}else{0}])?;
                 let fields = operation.body["operations"]
                     .as_array()
                     .and_then(|ops| {

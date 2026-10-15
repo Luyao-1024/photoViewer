@@ -14,7 +14,7 @@ Photo Viewer 是一个基于 GNOME GTK4 + Libadwaita 的本地相册应用，面
 - Viewer: image, video, motion photo, details panel, keyboard shortcuts
 - Editor: rotate, crop, brightness, contrast, saturation, save paths
 - Appearance: light/dark/system theme and optional Liquid Glass material
-- Sync: native SyncServer client (connection and capability probe shipped; media synchronization in development)
+- Sync: native SyncServer with selected-album upload, complete-photo download, favorites, conflict recovery and explicit cloud deletion
 
 ## Quick Start
 
@@ -30,15 +30,17 @@ cargo test
 
 ## Cloud Sync
 
-Cloud synchronization is being rebuilt around the native Rust
-[`Luyao-1024/syncserver`](https://github.com/Luyao-1024/syncserver) service. The
-previous WebDAV file-sync engine has been removed. The current build ships the
-connection layer only: a server can be probed and its capability scope pinned,
-but photos are not synchronized yet. The settings surface, receive cycle and
-upload path arrive with the later C1 milestones — see
-[docs/modules/native-sync.md](docs/modules/native-sync.md) for the contract and
-[docs/modules/native-sync-plan.md](docs/modules/native-sync-plan.md) for the
-delivery order.
+Cloud synchronization uses the companion native Rust SyncServer. Settings provides
+an HTTPS endpoint/key probe, configured zone selection and an explicit upload
+album selection. Empty selection receives cloud photos only. Complete original
+and thumbnail pairs are published to the local gallery, with automatic checks,
+manual synchronization, pause/resume, conflict recovery and explicit cloud deletion.
+Credentials remain in the system keyring. Native Backup is not exposed.
+
+See [the client usage guide](docs/modules/native-sync-usage.md) for setup and
+[the implementation record](docs/modules/native-sync-integration.md) for the exact
+focused and live validation evidence. The authoritative protocol is owned by the
+sibling server and linked from [the contract index](docs/modules/native-sync-protocol.md).
 
 ## Documentation
 
@@ -67,4 +69,4 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 Native SyncServer 的协议唯一来源是服务端仓库，参见[服务端契约入口](docs/modules/native-sync-protocol.md)中的本地相对链接；正式发布时再统一改为网页链接。客户端维护自己的[接入方案](docs/modules/native-sync.md)、[本地数据与发布方案](docs/modules/native-sync-storage.md)、[实现修订](docs/modules/native-sync-integration.md)和[阶段验收](docs/modules/native-sync-plan.md)。
 
-C1.1–C1.4 现有实现已按静态检视修订，schema 10 保留 schema 9 的原生数据。当前不将编译通过视为完整同步验收；C1.5 设置/交互和 C1.6 完整交付仍待完成。本轮按最新要求仅运行基本相关的聚焦用例，不运行全量测试；本地交付与验证记录见[修订说明](docs/modules/native-sync-integration.md)。客户端开发分支保持 dev。
+原生同步已接入设置、后台调度和逐照片发布；schema 11 保留 schema 9/10 的原生任务及 dirty，并增加删除后显式重传的标识。按用户要求只运行相关聚焦测试，完整远端发布门禁另行执行。实现与实机证据见[修订说明](docs/modules/native-sync-integration.md)，开发分支保持 dev。

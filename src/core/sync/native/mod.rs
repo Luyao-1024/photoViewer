@@ -1,8 +1,8 @@
 //! Native SyncServer client boundary.
 //!
-//! C1.1 delivers the connection and capability probe only. Later milestones add
-//! receive, lease and asset calls to [`protocol`] and media orchestration to
-//! [`provider`].
+//! Typed server adaptation for connection probes, fixed-height receive,
+//! fenced upload coordination and paired resource transfer. Client orchestration
+//! and local publication live in `sync::service`; protocol ownership stays on the server.
 
 pub mod assets;
 pub mod lease;

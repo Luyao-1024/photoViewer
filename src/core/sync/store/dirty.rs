@@ -341,6 +341,16 @@ fn note(
 
     let mut recorded = Vec::new();
     for (job_id, entry_id) in entries {
+        if let Some(id) = entry_id {
+            let retired: bool = tx.query_row(
+                "SELECT native_retired FROM sync_entries WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            if retired {
+                continue;
+            }
+        }
         let entry_id = match entry_id {
             Some(id) => id,
             // The media is inside a job root but has no entry row yet. It is

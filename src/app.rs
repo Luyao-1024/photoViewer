@@ -421,6 +421,7 @@ async fn initialize(
                 if let Err(error) = service.sync_enabled_changed() {
                     tracing::warn!("cannot resume synchronization cleanup at startup: {error}");
                 }
+                service.start_scheduler();
                 return;
             }
             // 先对账再触发：概览的“正在同步”完全由 last_started_at/last_completed_at
@@ -434,6 +435,7 @@ async fn initialize(
                 ),
                 Err(error) => tracing::warn!("could not reconcile interrupted sync runs: {error}"),
             }
+            service.start_scheduler();
         });
     }
 

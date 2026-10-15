@@ -906,6 +906,12 @@ impl Ui {
         self.pump(Duration::from_millis(80));
     }
 
+    /// EntryRow and PasswordEntryRow use the same editable insertion path.
+    pub fn type_editable<E: gtk4::prelude::EditableExt>(&self, entry: &E, text: &str) {
+        self.insert_chars(entry, text);
+        self.pump(Duration::from_millis(80));
+    }
+
     /// Insert `text` one character at a time through the editable's own insert
     /// path — the call a key handler makes.
     ///

@@ -24,7 +24,8 @@ use super::receive::ZoneId;
 
 /// The categories a record mutation may carry. The service derives its own
 /// event for a category the client does not send; sending one that disagrees
-/// is a client bug the service rejects, so this client sends none.
+/// is a client bug the service rejects. This narrow helper leaves events unset;
+/// the coordinator supplies the captured events for actual user edits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetadataPatch {
     pub favorite: Option<bool>,

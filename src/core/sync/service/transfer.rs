@@ -34,9 +34,28 @@ impl SyncService {
         tokio::task::spawn_blocking(move || service.recover_publications(job_id))
             .await
             .map_err(|_| error("publication recovery worker stopped"))??;
+        let generation = self
+            .store()
+            .get_job(job_id)?
+            .ok_or_else(|| error("job removed"))?
+            .config_generation;
         let mut report = TransferReport::default();
         for obligation in self.store().outstanding_resources(job_id)? {
-            match self.fetch_one(&obligation, &mut report).await {
+            let fetched = {
+                let fetch = self.fetch_one(&obligation, &mut report);
+                tokio::pin!(fetch);
+                let mut check = tokio::time::interval(std::time::Duration::from_millis(250));
+                loop {
+                    tokio::select! {
+                        result=&mut fetch=>break result,
+                        _=check.tick()=>{
+                            let current=self.store().get_job(job_id)?;
+                            if self.store().reset_pending()? || self.store().pending_change(job_id)?.is_some() || !current.is_some_and(|j|j.config_generation==generation && !j.paused) {return Err(error("synchronization configuration changed during download"));}
+                        }
+                    }
+                }
+            };
+            match fetched {
                 Ok(Some(_)) => report.fetched += 1,
                 Ok(None) => {}
                 Err(failure) => {
@@ -50,6 +69,16 @@ impl SyncService {
                     report.failures.push((obligation.asset_id, reason));
                 }
             }
+            // Publish ready photos as their own pair arrives, without waiting
+            // for the rest of the album (which can include very large files).
+            let service = self.clone();
+            let mut available = std::mem::take(&mut report);
+            report = tokio::task::spawn_blocking(move || {
+                service.admit_complete_publications(job_id, &mut available)?;
+                Ok::<_, AppError>(available)
+            })
+            .await
+            .map_err(|_| error("publication worker stopped"))??;
         }
         let service = self.clone();
         report = tokio::task::spawn_blocking(move || {

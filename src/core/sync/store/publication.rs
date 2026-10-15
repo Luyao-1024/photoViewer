@@ -32,6 +32,8 @@ pub enum ResourceState {
     Staged,
     /// The file is published and the role's local artifact (cache entry) exists.
     Verified,
+    /// A verified competing pair retained by an explicit user resolution; never gallery-ready.
+    Retained,
     /// The promise cannot be met as stated. Never silently retried as if new.
     Failed,
 }
@@ -42,6 +44,7 @@ impl ResourceState {
             Self::Pending => "pending",
             Self::Staged => "staged",
             Self::Verified => "verified",
+            Self::Retained => "retained",
             Self::Failed => "failed",
         }
     }
@@ -514,6 +517,7 @@ fn parse_state(value: &str) -> ResourceState {
     match value {
         "staged" => ResourceState::Staged,
         "verified" => ResourceState::Verified,
+        "retained" => ResourceState::Retained,
         "failed" => ResourceState::Failed,
         _ => ResourceState::Pending,
     }

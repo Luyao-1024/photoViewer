@@ -9,16 +9,10 @@
 //! It is not a secret and not a user identity: it exists so a conflict between
 //! two installations can be attributed, not so either can be recognised.
 
-use std::sync::OnceLock;
-
 use crate::core::db::DbPool;
 use crate::core::error::{AppError, Result};
 
 const DEVICE_ID_KEY: &str = "sync_device_id";
-
-/// Cached per process. The stored value is read once and then kept, so a single
-/// cycle cannot emit two different sources.
-static DEVICE_ID: OnceLock<String> = OnceLock::new();
 
 /// The device id for this installation, minted on first use and persisted.
 ///
@@ -26,41 +20,26 @@ static DEVICE_ID: OnceLock<String> = OnceLock::new();
 /// honest rather than convenient: a temporary database gets a temporary
 /// device, and its events stay internally consistent.
 pub fn device_id(pool: &DbPool) -> String {
-    if let Some(cached) = DEVICE_ID.get() {
-        return cached.clone();
-    }
-    let minted = match load_or_mint(pool) {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::debug!("cannot persist a device identity: {error}");
-            uuid::Uuid::new_v4().to_string()
-        }
-    };
-    // `set` loses the race only if another thread won first, in which case the
-    // process must use that value instead: two ids in one run would be worse
-    // than ignoring this one.
-    DEVICE_ID.get_or_init(|| minted).clone()
+    load_or_mint(pool).unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
 }
 
 fn load_or_mint(pool: &DbPool) -> Result<String> {
     let conn = pool.get()?;
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            [DEVICE_ID_KEY],
-            |row| row.get(0),
-        )
-        .ok();
-    if let Some(value) = existing.filter(|value| !value.is_empty()) {
-        return Ok(value);
-    }
+    device_id_in(&conn)
+}
+
+pub(crate) fn device_id_in(conn: &rusqlite::Connection) -> Result<String> {
     let minted = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO settings(key, value) VALUES(?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO NOTHING",
         rusqlite::params![DEVICE_ID_KEY, minted],
     )?;
-    Ok(minted)
+    conn.query_row(
+        "SELECT value FROM settings WHERE key=?1",
+        [DEVICE_ID_KEY],
+        |r| r.get(0),
+    )
+    .map_err(Into::into)
 }
 
 /// The current wall-clock instant in milliseconds, for a real edit event.

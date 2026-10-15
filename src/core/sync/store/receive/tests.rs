@@ -100,6 +100,9 @@ fn a_first_receive_starts_with_no_position_at_all() {
 fn a_bootstrap_is_incomplete_until_every_supported_type_finished() {
     let (store, _pool, job) = store_with_job("receive-bootstrap");
     begin(&store, &job, "scope-1");
+    store
+        .pin_native_snapshot(job.id, "snapshot.h", "zone.h")
+        .unwrap();
 
     // One type finished is still not an inventory.
     let progress = store
@@ -140,7 +143,7 @@ fn a_bootstrap_is_incomplete_until_every_supported_type_finished() {
         .unwrap();
     assert!(!progress.needs_bootstrap(&SUPPORTED_RECORD_TYPES));
     // The snapshot position the read established is kept, not re-minted.
-    assert_eq!(progress.snapshot_token.as_deref(), Some("zone.h"));
+    assert_eq!(progress.snapshot_token.as_deref(), Some("snapshot.h"));
 }
 
 #[test]
@@ -295,7 +298,7 @@ fn promotion_materializes_work_and_leaves_applied_behind_it() {
             "zone.target",
         )
         .unwrap();
-    assert_eq!((photos, unknown, resources), (1, 0, 2));
+    assert_eq!((photos, unknown, resources), (1, 0, 3));
     // The photo's bytes have not been downloaded, so this client is not caught
     // up — reporting otherwise would claim a complete pair it never fetched.
     assert!(!applied);
@@ -303,14 +306,14 @@ fn promotion_materializes_work_and_leaves_applied_behind_it() {
     let progress = store.native_progress(job.id).unwrap().unwrap();
     assert_eq!(progress.target_token.as_deref(), Some("zone.target"));
     assert_eq!(progress.applied_token, None);
-    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 2);
+    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 3);
 
     // Explicitly asking to apply is refused for the same reason.
     assert!(store.advance_applied_token(job.id).is_err());
 }
 
 #[test]
-fn applied_advances_only_once_the_work_it_claims_is_settled() {
+fn verified_resources_alone_do_not_authorize_an_unpublished_photo() {
     let (store, pool, job) = store_with_job("receive-applied");
     begin(&store, &job, "scope-1");
     store
@@ -322,8 +325,8 @@ fn applied_advances_only_once_the_work_it_claims_is_settled() {
         .unwrap();
     assert!(store.advance_applied_token(job.id).is_err());
 
-    // C1.4 settles these; for now the test settles them directly to prove the
-    // gate opens exactly when the work is gone, not at some later moment.
+    // Even forged resource completion cannot bypass the durable photo intent.
+    // The positive path uses real downloads/publication in native_sync_assets.
     pool.get()
         .unwrap()
         .execute(
@@ -331,11 +334,14 @@ fn applied_advances_only_once_the_work_it_claims_is_settled() {
             [job.id],
         )
         .unwrap();
-    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 0);
-    assert!(store.advance_applied_token(job.id).unwrap());
-
-    let progress = store.native_progress(job.id).unwrap().unwrap();
-    assert_eq!(progress.applied_token.as_deref(), Some("zone.target"));
+    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 1);
+    assert!(store.advance_applied_token(job.id).is_err());
+    assert!(store
+        .native_progress(job.id)
+        .unwrap()
+        .unwrap()
+        .applied_token
+        .is_none());
 }
 
 #[test]
@@ -472,8 +478,7 @@ fn a_reset_drops_the_cloud_position_without_touching_local_or_remote_state() {
     pool.get()
         .unwrap()
         .execute(
-            "INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_photo_id)
-             VALUES(?1,'a.jpg',2,'photo-1')",
+            "UPDATE sync_entries SET native_dirty=2,native_photo_id='photo-1' WHERE job_id=?1 AND relative_path='a.jpg'",
             [job.id],
         )
         .unwrap();

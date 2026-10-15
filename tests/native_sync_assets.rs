@@ -765,6 +765,133 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         assert!(report.failures.is_empty(), "{report:?}");
         assert_eq!(report.outstanding, 0);
         assert_eq!(report.mutations_sent, 0);
+        // Two real overlapping content edits require an explicit resolution.
+        use photo_viewer::core::sync::store::PhotoAction;
+        photo_viewer::core::prefs::set_sync_enabled(false).unwrap();
+        common::write_distinct_jpeg(&path, 96, 80, [10, 100, 200]);
+        actor_a
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(source_id),
+                item: item(&path),
+            })
+            .unwrap();
+        common::write_distinct_jpeg(&target.join("photo.jpg"), 96, 80, [90, 80, 70]);
+        actor_b
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(received_id),
+                item: item(&target.join("photo.jpg")),
+            })
+            .unwrap();
+        let local_copy = std::fs::read(target.join("photo.jpg")).unwrap();
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert!(b.run_cycle(job_b.id).await.unwrap().outstanding > 0);
+        let captured = b.store().managed_photos(job_b.id).unwrap().remove(0);
+        assert!(captured.conflict.is_some());
+        let recovery = b
+            .accept_photo_action(job_b.id, captured.clone(), PhotoAction::UseCloud)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(recovery.join("photo.jpg")).unwrap(),
+            local_copy
+        );
+        assert!(
+            b.accept_photo_action(job_b.id, captured, PhotoAction::UseCloud)
+                .await
+                .is_err(),
+            "a stale decision cannot be applied twice"
+        );
+        let resolved = b.run_cycle(job_b.id).await.unwrap();
+        assert!(resolved.failures.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.outstanding, 0);
+        assert_eq!(
+            std::fs::read(target.join("photo.jpg")).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+        // Keep-local first retains the actual verified competing cloud bytes.
+        common::write_distinct_jpeg(&path, 96, 80, [11, 22, 33]);
+        actor_a
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(source_id),
+                item: item(&path),
+            })
+            .unwrap();
+        common::write_distinct_jpeg(&target.join("photo.jpg"), 96, 80, [44, 55, 66]);
+        actor_b
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(received_id),
+                item: item(&target.join("photo.jpg")),
+            })
+            .unwrap();
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert!(b.run_cycle(job_b.id).await.unwrap().outstanding > 0);
+        let captured = b.store().managed_photos(job_b.id).unwrap().remove(0);
+        let recovery = b
+            .accept_photo_action(job_b.id, captured, PhotoAction::KeepLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read(recovery.join("cloud-original")).unwrap(),
+            std::fs::read(&path).unwrap()
+        );
+        let resolved = b.run_cycle(job_b.id).await.unwrap();
+        assert!(resolved.failures.is_empty(), "{resolved:?}");
+        assert_eq!(resolved.outstanding, 0);
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            std::fs::read(target.join("photo.jpg")).unwrap()
+        );
+        // A confirmed cloud delete preserves local files and suppresses revival.
+        let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
+        let old_id = pool_a
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT native_photo_id FROM sync_entries WHERE id=?1",
+                [captured.entry_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
+        a.accept_photo_action(job_a.id, captured, PhotoAction::DeleteCloud)
+            .await
+            .unwrap();
+        let deleted = a.run_cycle(job_a.id).await.unwrap();
+        assert!(deleted.failures.is_empty(), "{deleted:?}");
+        assert_eq!(deleted.outstanding, 0);
+        assert_eq!(b.run_cycle(job_b.id).await.unwrap().outstanding, 0);
+        assert!(b.store().managed_photos(job_b.id).unwrap()[0].retired);
+        assert!(path.is_file());
+        assert!(target.join("photo.jpg").is_file());
+        let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
+        assert!(captured.retired);
+        assert!(!captured.remote);
+        actor_a
+            .execute_blocking(DbCommand::SetFavorite {
+                ids: vec![MediaId::from(source_id)],
+                is_favorite: true,
+            })
+            .unwrap();
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().mutations_sent, 0);
+        let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
+        a.accept_photo_action(job_a.id, captured, PhotoAction::Recreate)
+            .await
+            .unwrap();
+        let recreated = a.run_cycle(job_a.id).await.unwrap();
+        assert!(recreated.failures.is_empty(), "{recreated:?}");
+        assert_eq!(recreated.outstanding, 0);
+        let new_id = pool_a
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT native_photo_id FROM sync_entries WHERE job_id=?1",
+                [job_a.id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap();
+        assert_ne!(old_id, new_id);
         assert!(target.read_dir().unwrap().all(|entry| !entry
             .unwrap()
             .file_name()

@@ -46,7 +46,7 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -113,6 +113,12 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
         )?;
     }
     tx.execute_batch(SCHEMA_SQL)?;
+    if (9..11).contains(&version) {
+        let present: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_entries') WHERE name='native_retired')", [], |r| r.get(0))?;
+        if !present {
+            tx.execute_batch("ALTER TABLE sync_entries ADD COLUMN native_retired INTEGER NOT NULL DEFAULT 0 CHECK (native_retired IN (0,1))")?;
+        }
+    }
     if version == 9 {
         tx.execute_batch("ALTER TABLE sync_jobs ADD COLUMN native_cycle_id TEXT")?;
         let rows = {
@@ -321,6 +327,16 @@ pub(crate) fn upsert_media_items_in(
                 |row| row.get(0),
             )
             .optional()?;
+        let external_content_changed = if let Some(id) = existing {
+            publication.is_none()
+                && tx.query_row(
+                    "SELECT file_mtime_ns<>?2 OR file_size<>?3 FROM media_items WHERE id=?1",
+                    rusqlite::params![id, ts_ns(item.file_mtime), item.file_size as i64],
+                    |r| r.get::<_, bool>(0),
+                )?
+        } else {
+            false
+        };
         let id = if let Some(id) = existing {
             tx.execute(
                 "UPDATE media_items
@@ -378,6 +394,18 @@ pub(crate) fn upsert_media_items_in(
             )?;
             tx.last_insert_rowid()
         };
+        if external_content_changed {
+            crate::core::sync::store::note_local_change_in(
+                tx,
+                id,
+                crate::core::sync::store::ChangeCategory::Content,
+                &crate::core::sync::store::EditEventStamp {
+                    edited_at_ms: chrono::Utc::now().timestamp_millis(),
+                    source: crate::core::sync::device::device_id_in(tx)?,
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                },
+            )?;
+        }
         out.push(tx.query_row(
             "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                     media_attributes, width, height, video_duration_secs, taken_at,
