@@ -38,6 +38,10 @@ pub struct Issued {
 
 #[derive(Debug)]
 pub enum Command {
+    ClearAccount,
+    SelectAccount {
+        job: Option<i64>,
+    },
     AcceptAuthentication {
         connection: i64,
         expected: Box<super::super::NativePinnedScope>,
@@ -170,6 +174,11 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match command {
+        Command::ClearAccount => {
+            tx.execute("UPDATE sync_connections SET enabled=0", [])?;
+            tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_account','null') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
+        }
+        Command::SelectAccount { job } => super::accounts::select_in(&tx, job)?,
         Command::AcceptAuthentication {
             connection,
             expected,

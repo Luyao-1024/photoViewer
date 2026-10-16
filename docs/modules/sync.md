@@ -15,12 +15,13 @@ keep an ordered, replayable delta of everything the cloud says — durably,
 resumable mid-page, and validated as a complete photo graph before it is
 projected.
 
-The main Settings surface contains a single cloud-sync row and the global switch.
-Activating the row pushes a dedicated page within the Settings navigation view;
-toggling the switch does not navigate. The subpage separates overview, empty-state
-guidance and collapsed task cards. Task details contain identity and album scope;
-a named overflow menu contains pause/resume, authentication and removal actions.
-Polling updates existing task widgets so progress changes preserve expansion and focus.
+The cloud-sync Settings category directly contains the global switch, overview,
+empty-state guidance and the current account’s folder cards. Each task has a status header with a visible
+pause/resume button; the header itself has no activation action. A separate
+"Task details" expander reveals identity and album scope. Run control never
+changes expansion, and viewing details never changes job state or configuration.
+The account surface owns switch-account and authentication actions; folder overflow menus contain removal only. Only one account is enabled at a time, and a switch drains the old account before admitting the new one. Saved account histories remain separate; see [account switching](native-sync-accounts.md). Polling
+updates existing task widgets so progress changes preserve expansion and focus.
 
 The native Settings surface supports connection probes, explicit album scope,
 manual/automatic synchronization, pause/resume and cloud-photo decisions. The
@@ -84,7 +85,7 @@ writes nothing: no connection row, no credential, no generation bump.
 
 A native job names its zone explicitly (`sync_jobs.native_zone_name`,
 NOT NULL); `remote_root` no longer exists. Two active jobs may not map the same
-endpoint+zone into different local roots, and overlapping local roots are
+endpoint+account+zone into different local roots, and overlapping local roots within that account are
 refused — the UNIQUE constraints on `sync_jobs` back the application-level
 checks that name the offending task.
 

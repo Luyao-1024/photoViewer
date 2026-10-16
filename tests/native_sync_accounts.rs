@@ -69,6 +69,7 @@ impl Server {
             .env("SYNC_SIGNING_KEY_FILE", &signing)
             .env("SYNC_BIND", address.to_string())
             .env("SYNC_PUBLIC_BASE_URL", &endpoint)
+            .env("SYNC_ZONES", "PrimarySync,ArchiveSync")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -93,7 +94,7 @@ impl Server {
     }
 }
 #[tokio::test(flavor = "multi_thread")]
-async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress() {
+async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() {
     let sandbox = photo_viewer::testing::Sandbox::install();
     common::credentials::install();
     let server = Server::start().await;
@@ -145,6 +146,23 @@ async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress()
         )
         .await
         .unwrap();
+    let archive_root = root.path().join("alice-archive");
+    std::fs::create_dir(&archive_root).unwrap();
+    let archive = service
+        .create_native_job_scoped(
+            &server.endpoint,
+            "alice-archive-session",
+            &alice.access_token,
+            &archive_root,
+            "ArchiveSync",
+            SyncDirection::Bidirectional,
+            UploadScope::SelectedAlbums,
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert!(service.store().job_is_selected(a.id).unwrap());
+    assert!(service.store().job_is_selected(archive.id).unwrap());
     let b = service
         .create_native_job_scoped(
             &server.endpoint,
@@ -159,7 +177,19 @@ async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress()
         .await
         .unwrap();
     assert_ne!(a.connection_id, b.connection_id);
+    assert_eq!(service.store().saved_jobs().unwrap().len(), 3);
+    assert_eq!(service.store().list_jobs().unwrap(), vec![b.clone()]);
+    assert!(service
+        .run_cycle(a.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("inactive"));
+    assert!(service.run_receive(a.id).await.is_err());
+    assert!(service.run_transfers(a.id).await.is_err());
+    assert!(service.store().native_progress(a.id).unwrap().is_none());
     for job in [&a, &b] {
+        service.switch_native_account(job.id).await.unwrap();
         let report = service.run_cycle(job.id).await.unwrap();
         assert!(report.failures.is_empty(), "{report:?}");
         assert_eq!(report.outstanding, 0);
@@ -216,6 +246,7 @@ async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress()
         std::fs::read(&bob_photo).unwrap()
     );
     assert_eq!(db::list_all_media(&target_pool).unwrap().len(), 1);
+    service.switch_native_account(a.id).await.unwrap();
     let before = service.store().native_progress(a.id).unwrap();
     // Inject a wrong account at the credential boundary; no foreign feed may be ingested.
     photo_viewer::platform::credentials::store_api_key(&a.credential_ref, &bob.access_token)
@@ -227,15 +258,25 @@ async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress()
         .to_string()
         .contains("identity changed"));
     assert_eq!(service.store().native_progress(a.id).unwrap(), before);
+    service.switch_native_account(b.id).await.unwrap();
     assert_eq!(service.run_cycle(b.id).await.unwrap().outstanding, 0);
     assert!(service
         .reauthenticate_native_job(a.id, "bob", "synthetic account password")
         .await
         .is_err());
+    assert!(service.store().job_is_selected(b.id).unwrap());
+    assert!(
+        service.switch_native_account(a.id).await.is_err(),
+        "wrong stored credential cannot switch accounts"
+    );
+    assert!(service.store().job_is_selected(b.id).unwrap());
     service
         .reauthenticate_native_job(a.id, "alice", "synthetic account password")
         .await
         .unwrap();
+    assert!(service.store().job_is_selected(archive.id).unwrap());
+    assert!(!service.store().get_job(archive.id).unwrap().unwrap().paused);
+    assert!(photo_viewer::platform::credentials::load_api_key(&archive.credential_ref).is_ok());
     let report = service.run_cycle(a.id).await.unwrap();
     assert!(report.failures.is_empty(), "{report:?}");
     assert_eq!(report.outstanding, 0);
@@ -251,6 +292,9 @@ async fn two_accounts_share_an_endpoint_without_sharing_data_or_local_progress()
     service.logout_native_job(a.id).await.unwrap();
     assert!(service.store().get_job(a.id).unwrap().unwrap().paused);
     assert!(photo_viewer::platform::credentials::load_api_key(&a.credential_ref).is_err());
+    assert!(service.store().get_job(archive.id).unwrap().unwrap().paused);
+    assert!(photo_viewer::platform::credentials::load_api_key(&archive.credential_ref).is_err());
+    service.switch_native_account(b.id).await.unwrap();
     assert_eq!(service.run_cycle(b.id).await.unwrap().outstanding, 0);
     assert_eq!(target.run_cycle(job.id).await.unwrap().outstanding, 0);
 }

@@ -43,12 +43,24 @@ impl SyncService {
     /// first so a global Off is never overtaken by a job that starts behind it,
     /// then the per-job gate, then the re-entrancy guard.
     pub(super) async fn acquire_run_slot(&self, id: i64) -> Result<ActiveJobGuard> {
+        self.acquire_slot(id, true).await
+    }
+
+    pub(super) async fn acquire_authentication_slot(&self, id: i64) -> Result<ActiveJobGuard> {
+        self.acquire_slot(id, false).await
+    }
+
+    async fn acquire_slot(&self, id: i64, require_selected: bool) -> Result<ActiveJobGuard> {
         let reset = self.reset_work()?;
         let _database_gate = reset.gate.lock().await;
         if self.store.reset_pending()? {
             return Err(AppError::Backend(
                 "synchronization history is being cleared".into(),
             ));
+        }
+        self.store.normalize_accounts()?;
+        if require_selected {
+            self.require_selected_account(id)?;
         }
         let work = self.job_work(id)?;
         let _gate = work.gate.lock().await;

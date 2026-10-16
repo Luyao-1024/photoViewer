@@ -127,6 +127,6 @@ exact-SHA remote CI and actual deployment independently.
 设置/范围/调度/逐照片发布、冲突版本选择、退役身份及重新上传见[使用指南](native-sync-usage.md)。本次仅运行直接相关用例；不因基本使用通过而宣称 NC01–NC20 的所有崩溃窗口或远端发布门禁均已验收。协议继续由服务端链接提供。
 
 
-## 多用户接入扩展（当前授权）
+## 用户认证与单账号切换（当前授权）
 
-按服务端[认证契约](../../../syncserver/docs/contracts/authentication.md)接入用户名/密码、会话凭证、同地址多账户、跨账户会话保护、退出/重新登录和旧连接身份升级。客户端知识资产与相关测试入口见[账户接入](native-sync-accounts.md)；不复制服务端协议定义，也不把本地测试当作阿里云升级证据。
+按服务端[认证契约](../../../syncserver/docs/contracts/authentication.md)接入用户名/密码、会话凭证、单一当前账号与显式切换、跨账户会话保护、退出/重新登录和旧连接身份升级。客户端知识资产与相关测试入口见[账户接入](native-sync-accounts.md)；不复制服务端协议定义，也不把本地测试当作阿里云升级证据。

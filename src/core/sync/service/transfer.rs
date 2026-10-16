@@ -30,6 +30,13 @@ fn error(message: impl Into<String>) -> AppError {
 
 impl SyncService {
     pub async fn run_transfers(&self, job_id: i64) -> Result<TransferReport> {
+        let _slot = self.acquire_run_slot(job_id).await?;
+        self.require_selected_account(job_id)?;
+        self.transfer_selected(job_id).await
+    }
+
+    pub(super) async fn transfer_selected(&self, job_id: i64) -> Result<TransferReport> {
+        self.require_selected_account(job_id)?;
         let service = self.clone();
         tokio::task::spawn_blocking(move || service.recover_publications(job_id))
             .await
@@ -50,7 +57,7 @@ impl SyncService {
                         result=&mut fetch=>break result,
                         _=check.tick()=>{
                             let current=self.store().get_job(job_id)?;
-                            if self.store().reset_pending()? || self.store().pending_change(job_id)?.is_some() || !current.is_some_and(|j|j.config_generation==generation && !j.paused) {return Err(error("synchronization configuration changed during download"));}
+                            if !self.store().job_is_selected(job_id)? || self.store().reset_pending()? || self.store().pending_change(job_id)?.is_some() || !current.is_some_and(|j|j.config_generation==generation && !j.paused) {return Err(error("synchronization configuration changed during download"));}
                         }
                     }
                 }

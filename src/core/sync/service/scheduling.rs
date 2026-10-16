@@ -31,7 +31,8 @@ impl SyncService {
                     &root,
                     &excluded,
                     |items| {
-                        if service.store.pending_change(job.id)?.is_some()
+                        if !service.store.job_is_selected(job.id)?
+                            || service.store.pending_change(job.id)?.is_some()
                             || service.store.reset_pending()?
                         {
                             return Err(AppError::Backend(
@@ -50,6 +51,7 @@ impl SyncService {
     }
 
     pub fn request_all_sync(&self) -> Result<()> {
+        self.store.normalize_accounts()?;
         if !crate::core::prefs::sync_enabled() || self.store.reset_pending()? {
             return Ok(());
         }

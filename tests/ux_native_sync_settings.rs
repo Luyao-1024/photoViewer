@@ -41,11 +41,10 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     let ui = &shell.ui;
     ui.click(&shell.window.imp().settings_button.get(), "Settings");
     let category = named::<gtk::ListBoxRow>(&shell.window, "settings-category-sync");
-    Ui::for_widget(&category).click(&category, "Cloud sync category");
-    // The main Settings surface has just the switch and a navigation affordance.
-    assert!(!descendants::<gtk::Button>(&shell.window)
-        .iter()
-        .any(|b| b.widget_name() == "native-sync-add"));
+    Ui::for_widget(&category).click_native(&category, "Cloud sync category");
+    // Cloud sync content lives directly in its Settings category.
+    let page = named::<gtk::Box>(&shell.window, "native-sync-content");
+    assert!(ui.wait_until(Duration::from_secs(3), || page.is_mapped()));
     let enabled = named::<gtk::Switch>(&shell.window, "native-sync-enabled");
     Ui::for_widget(&enabled).scroll_to_reveal(&enabled, "Enable cloud sync");
     Ui::for_widget(&enabled).click_native(&enabled, "Enable cloud sync without navigating");
@@ -65,11 +64,6 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         !photo_viewer::core::prefs::sync_enabled()
     }));
     capture(&shell, "main-settings");
-    let entry = named::<adw::ActionRow>(&shell.window, "native-sync-entry");
-    Ui::for_widget(&entry).scroll_to_reveal(&entry, "Cloud sync settings");
-    Ui::for_widget(&entry).click_native(&entry, "Open cloud sync subpage");
-    let page = named::<adw::NavigationPage>(&shell.window, "native-sync-page");
-    assert!(ui.wait_until(Duration::from_secs(3), || page.is_mapped()));
     let empty = named::<adw::ActionRow>(&page, "native-sync-empty");
     assert!(empty.is_visible());
     let sync = named::<gtk::Button>(&page, "native-sync-now");
@@ -174,13 +168,66 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         .iter()
         .any(|b| b.widget_name() == format!("native-sync-scope-{}", job.id)))
     );
-    let task = named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-job-{}", job.id));
+    let header = named::<adw::ActionRow>(&shell.window, &format!("native-sync-job-{}", job.id));
+    assert!(
+        !header.is_activatable(),
+        "the task header only reports status"
+    );
+    let task = named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-details-{}", job.id));
+    let disclosure = descendants::<gtk::Label>(&task)
+        .into_iter()
+        .find(|label| label.label() == photo_viewer::core::i18n::tr("native.task_details"))
+        .expect("task details has a visible disclosure title");
     assert!(!task.is_expanded(), "task details start collapsed");
+    let pause = named::<gtk::Button>(&shell.window, &format!("native-sync-pause-{}", job.id));
+    assert!(
+        pause.is_mapped(),
+        "run control is visible while details are collapsed"
+    );
+    assert!(
+        pause.is_ancestor(&header),
+        "run control belongs to the task header"
+    );
+    for (paused, action) in [
+        (true, "Pause collapsed task"),
+        (false, "Resume collapsed task"),
+    ] {
+        Ui::for_widget(&pause).scroll_to_reveal(&pause, action);
+        Ui::for_widget(&pause).click(&pause, action);
+        assert!(ui.wait_until(Duration::from_secs(3), || store
+            .get_job(job.id)
+            .unwrap()
+            .unwrap()
+            .paused
+            == paused));
+        assert!(!task.is_expanded(), "run control must not expand details");
+        assert!(
+            ui.wait_until(Duration::from_secs(3), || pause.label().as_deref()
+                == Some(
+                    photo_viewer::core::i18n::tr(if paused {
+                        "native.resume"
+                    } else {
+                        "native.pause"
+                    })
+                    .as_str()
+                ))
+        );
+    }
+    Ui::for_widget(&header).scroll_to_reveal(&header, "Task status");
+    Ui::for_widget(&header).click_native(&header, "Click task status");
+    assert!(!task.is_expanded(), "status header does not expand details");
+    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
     capture(&shell, "sync-task");
     assert!(!named::<adw::ActionRow>(&page, "native-sync-empty").is_visible());
-    Ui::for_widget(&task).scroll_to_reveal(&task, "Task details");
-    Ui::for_widget(&task).click_native(&task, "Expand task details");
+    Ui::for_widget(&disclosure).scroll_to_reveal(&disclosure, "Task details");
+    Ui::for_widget(&disclosure).click_native(&disclosure, "Expand task details");
     assert!(ui.wait_until(Duration::from_secs(3), || task.is_expanded()));
+    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().config_generation,
+        job.config_generation,
+        "viewing details must not reconfigure the job"
+    );
     let scope = named::<gtk::Button>(&shell.window, &format!("native-sync-scope-{}", job.id));
     Ui::for_widget(&scope).scroll_to_reveal(&scope, "Edit upload albums");
     Ui::for_widget(&scope).click(&scope, "Edit upload albums");
@@ -211,7 +258,7 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     ui.pump(Duration::from_millis(600));
     assert_eq!(
         task,
-        named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-job-{}", job.id)),
+        named::<adw::ExpanderRow>(&shell.window, &format!("native-sync-details-{}", job.id)),
         "refresh must keep task widgets, keyboard focus and expansion"
     );
     assert!(task.is_expanded());
@@ -235,16 +282,41 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     );
     capture(&shell, "sync-details");
     for (paused, action) in [(true, "Pause task"), (false, "Resume task")] {
-        open_task_menu(&shell, job.id);
         let pause = named::<gtk::Button>(&shell.window, &format!("native-sync-pause-{}", job.id));
-        task_ui(&shell, job.id).click(&pause, action);
+        Ui::for_widget(&pause).scroll_to_reveal(&pause, action);
+        Ui::for_widget(&pause).click(&pause, action);
         assert!(ui.wait_until(Duration::from_secs(3), || store
             .get_job(job.id)
             .unwrap()
             .unwrap()
             .paused
             == paused));
+        assert!(task.is_expanded(), "run control must not collapse details");
+        assert!(
+            ui.wait_until(Duration::from_secs(3), || pause.label().as_deref()
+                == Some(
+                    photo_viewer::core::i18n::tr(if paused {
+                        "native.resume"
+                    } else {
+                        "native.pause"
+                    })
+                    .as_str()
+                ))
+        );
     }
+    Ui::for_widget(&disclosure).scroll_to_reveal(&disclosure, "Task details");
+    Ui::for_widget(&disclosure).click_native(&disclosure, "Collapse task details");
+    assert!(ui.wait_until(Duration::from_secs(3), || !task.is_expanded()));
+    assert!(!store.get_job(job.id).unwrap().unwrap().paused);
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().config_generation,
+        generation
+    );
+    // Let the collapse animation and double-click interval finish before a
+    // separate disclosure press (native input preserves GTK's click count).
+    ui.pump(Duration::from_millis(400));
+    Ui::for_widget(&disclosure).click_native(&disclosure, "Reopen task details");
+    assert!(ui.wait_until(Duration::from_secs(3), || task.is_expanded()));
     open_task_menu(&shell, job.id);
     ui.pump(Duration::from_millis(1100));
     let menu = named::<gtk::MenuButton>(&shell.window, &format!("native-sync-menu-{}", job.id));
@@ -261,9 +333,9 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     assert!(saved.starts_with("ss1_"));
     assert_ne!(saved, "x".repeat(32));
     ui.pump(Duration::from_millis(600));
-    open_task_menu(&shell, job.id);
+    open_account_menu(&shell);
     let logout = named::<gtk::Button>(&shell.window, &format!("native-sync-logout-{}", job.id));
-    task_ui(&shell, job.id).click(&logout, "Sign out");
+    account_ui(&shell).click(&logout, "Sign out");
     assert!(ui.wait_until(Duration::from_secs(5), || store
         .get_job(job.id)
         .unwrap()
@@ -271,9 +343,9 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         .paused));
     assert!(photo_viewer::platform::credentials::load_api_key(&job.credential_ref).is_err());
     ui.pump(Duration::from_millis(600));
-    open_task_menu(&shell, job.id);
+    open_account_menu(&shell);
     let login = named::<gtk::Button>(&shell.window, &format!("native-sync-relogin-{}", job.id));
-    task_ui(&shell, job.id).click(&login, "Sign in again");
+    account_ui(&shell).click(&login, "Sign in again");
     let password = named::<adw::PasswordEntryRow>(&shell.window, "native-sync-relogin-password");
     Ui::for_widget(&password).type_editable(&password, &"x".repeat(32));
     let submit = named::<gtk::Button>(&shell.window, "native-sync-relogin-submit");
@@ -289,19 +361,129 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
             .unwrap()
             .starts_with("ss1_")
     );
-    let back = named::<gtk::Button>(&shell.window, "native-sync-back");
-    Ui::for_widget(&back).click(&back, "Back to Settings");
-    assert!(ui.wait_until(Duration::from_secs(3), || !page.is_mapped()));
-    assert!(named::<gtk::Switch>(&shell.window, "native-sync-enabled").is_mapped());
-    let entry = named::<adw::ActionRow>(&shell.window, "native-sync-entry");
-    Ui::for_widget(&entry).click_native(&entry, "Reopen cloud sync");
+    open_account_menu(&shell);
+    let logout = named::<gtk::Button>(&shell.window, &format!("native-sync-logout-{}", job.id));
+    account_ui(&shell).click(&logout, "Sign out before switching accounts");
+    assert!(ui.wait_until(Duration::from_secs(5), || {
+        photo_viewer::platform::credentials::load_api_key(&job.credential_ref).is_err()
+    }));
+    let account = named::<adw::ActionRow>(&shell.window, "native-sync-current-account");
+    assert_eq!(account.title(), "alice");
     assert!(
-        ui.wait_until(Duration::from_secs(3), || named::<adw::NavigationPage>(
-            &shell.window,
-            "native-sync-page"
-        )
-        .is_mapped())
+        !named::<gtk::Button>(&shell.window, "native-sync-add").is_visible(),
+        "the connected surface has one account switch, not an add-server action"
     );
+    let switch = named::<gtk::Button>(&shell.window, "native-sync-switch-account");
+    Ui::for_widget(&switch).scroll_to_reveal(&switch, "Switch account");
+    Ui::for_widget(&switch).click(&switch, "Switch account");
+    let cancel = named::<gtk::Button>(&shell.window, "native-sync-accounts-cancel");
+    Ui::for_widget(&cancel).click(&cancel, "Cancel account switch");
+    assert!(store.job_is_selected(job.id).unwrap());
+    assert_eq!(
+        store.get_job(job.id).unwrap().unwrap().config_generation,
+        generation
+    );
+    Ui::for_widget(&switch).click(&switch, "Choose another account");
+    let other = named::<gtk::Button>(&shell.window, "native-sync-other-account");
+    Ui::for_widget(&other).click(&other, "Sign in to another account");
+    let dialog = named::<adw::Dialog>(&shell.window, "native-sync-connection-dialog");
+    let endpoint = named::<adw::EntryRow>(&dialog, "native-sync-endpoint");
+    let username = named::<adw::EntryRow>(&dialog, "native-sync-username");
+    let password = named::<adw::PasswordEntryRow>(&dialog, "native-sync-password");
+    let root = named::<adw::EntryRow>(&dialog, "native-sync-root");
+    let form = Ui::for_widget(&endpoint);
+    form.type_editable(&endpoint, &server.endpoint);
+    form.type_editable(&username, "bob");
+    form.type_editable(&password, "wrong password");
+    form.type_editable(&root, &shell.photos_dir().to_string_lossy());
+    let probe = named::<gtk::Button>(&dialog, "native-sync-probe");
+    form.scroll_to_reveal(&probe, "Verify another account");
+    form.click(&probe, "Reject the wrong password");
+    assert!(ui.wait_until(Duration::from_secs(5), || probe.is_sensitive()));
+    assert!(
+        store.job_is_selected(job.id).unwrap(),
+        "failed login keeps the current account"
+    );
+    assert_eq!(store.saved_jobs().unwrap().len(), 1);
+    form.scroll_to_reveal(&password, "Account password");
+    form.type_editable(&password, &"x".repeat(32));
+    form.scroll_to_reveal(&probe, "Verify another account");
+    form.click(&probe, "Verify Bob");
+    let save = named::<gtk::Button>(&dialog, "native-sync-save");
+    assert!(ui.wait_until(Duration::from_secs(10), || save.is_sensitive()));
+    assert!(
+        store.job_is_selected(job.id).unwrap(),
+        "verified drafts do not switch accounts"
+    );
+    form.scroll_to_reveal(&save, "Accept account switch");
+    form.click(&save, "Use Bob");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || store.saved_jobs().unwrap().len()
+            == 2)
+    );
+    assert!(ui.wait_until(Duration::from_secs(5), || !dialog.is_mapped()));
+    assert!(ui.wait_until(Duration::from_secs(5), || {
+        descendants::<adw::ActionRow>(&shell.window)
+            .iter()
+            .any(|row| row.widget_name() == "native-sync-current-account" && row.title() == "bob")
+    }));
+    let bob = store.list_jobs().unwrap().remove(0);
+    assert_ne!(bob.id, job.id);
+    assert!(!store.job_is_selected(job.id).unwrap());
+    assert!(
+        store.upload_albums(bob.id).unwrap().is_empty(),
+        "account switch preserves explicit upload scope"
+    );
+    assert!(
+        !descendants::<adw::ActionRow>(&shell.window)
+            .iter()
+            .any(|row| row.widget_name() == format!("native-sync-job-{}", job.id)),
+        "only the current account's folders are shown"
+    );
+    capture(&shell, "sync-bob-account");
+    let switch = named::<gtk::Button>(&shell.window, "native-sync-switch-account");
+    Ui::for_widget(&switch).scroll_to_reveal(&switch, "Switch back");
+    Ui::for_widget(&switch).click(&switch, "Open saved accounts");
+    let use_alice = named::<gtk::Button>(
+        &shell.window,
+        &format!("native-sync-use-account-{}", job.id),
+    );
+    Ui::for_widget(&use_alice).click(&use_alice, "Use saved Alice account");
+    let login = named::<gtk::Button>(
+        &shell.window,
+        &format!("native-sync-account-login-{}", job.id),
+    );
+    assert!(ui.wait_until(Duration::from_secs(5), || login.is_visible()));
+    assert!(
+        store.job_is_selected(bob.id).unwrap(),
+        "missing session leaves the current account selected"
+    );
+    Ui::for_widget(&login).click(&login, "Sign in to saved Alice account");
+    let password = named::<adw::PasswordEntryRow>(&shell.window, "native-sync-relogin-password");
+    Ui::for_widget(&password).type_editable(&password, &"x".repeat(32));
+    let submit = named::<gtk::Button>(&shell.window, "native-sync-relogin-submit");
+    Ui::for_widget(&submit).scroll_to_reveal(&submit, "Accept Alice login");
+    Ui::for_widget(&submit).click(&submit, "Sign in and switch to Alice");
+    assert!(ui.wait_until(Duration::from_secs(5), || store
+        .job_is_selected(job.id)
+        .unwrap()));
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || descendants::<adw::ActionRow>(
+            &shell.window
+        )
+        .iter()
+        .any(
+            |row| row.widget_name() == "native-sync-current-account" && row.title() == "alice"
+        ))
+    );
+    assert_eq!(store.upload_albums(job.id).unwrap(), vec![String::new()]);
+    let general = named::<gtk::ListBoxRow>(&shell.window, "settings-category-general");
+    Ui::for_widget(&general).click_native(&general, "General category");
+    assert!(ui.wait_until(Duration::from_secs(3), || !page.is_mapped()));
+    let category = named::<gtk::ListBoxRow>(&shell.window, "settings-category-sync");
+    Ui::for_widget(&category).click_native(&category, "Return to cloud sync category");
+    assert!(ui.wait_until(Duration::from_secs(3), || page.is_mapped()));
+    assert!(store.job_is_selected(job.id).unwrap());
     assert_eq!(
         store.get_job(job.id).unwrap().unwrap().config_generation,
         generation
@@ -352,6 +534,20 @@ fn capture(shell: &Shell, name: &str) {
         .status()
         .expect("optional screenshots require ImageMagick")
         .success());
+}
+
+fn account_ui(shell: &Shell) -> Ui {
+    let menu = named::<gtk::MenuButton>(&shell.window, "native-sync-account-menu");
+    Ui::for_surface(&menu.popover().unwrap(), "Account action popover")
+}
+fn open_account_menu(shell: &Shell) {
+    let menu = named::<gtk::MenuButton>(&shell.window, "native-sync-account-menu");
+    Ui::for_widget(&menu).scroll_to_reveal(&menu, "Account actions");
+    Ui::for_widget(&menu).click(&menu, "Open account actions");
+    assert!(shell.ui.wait_until(Duration::from_secs(3), || menu
+        .popover()
+        .unwrap()
+        .is_mapped()));
 }
 
 fn task_ui(shell: &Shell, id: i64) -> Ui {
@@ -433,24 +629,26 @@ impl LocalServer {
             std::thread::sleep(Duration::from_millis(50));
         }
         use std::io::Write;
-        let mut admin = std::process::Command::new(
-            std::env::var_os("SYNC_SERVER_BIN")
-                .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into()),
-        )
-        .args(["users", "create", "alice", "--password-stdin"])
-        .env("SYNC_DATA_DIR", server._root.path().join("data"))
-        .env("SYNC_API_KEY_FILE", server._root.path().join("api.key"))
-        .env(
-            "SYNC_SIGNING_KEY_FILE",
-            server._root.path().join("signing.key"),
-        )
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-        writeln!(admin.stdin.take().unwrap(), "{}", "x".repeat(32)).unwrap();
-        assert!(admin.wait().unwrap().success());
+        for username in ["alice", "bob"] {
+            let mut admin = std::process::Command::new(
+                std::env::var_os("SYNC_SERVER_BIN")
+                    .unwrap_or_else(|| "../syncserver/target/debug/syncserver".into()),
+            )
+            .args(["users", "create", username, "--password-stdin"])
+            .env("SYNC_DATA_DIR", server._root.path().join("data"))
+            .env("SYNC_API_KEY_FILE", server._root.path().join("api.key"))
+            .env(
+                "SYNC_SIGNING_KEY_FILE",
+                server._root.path().join("signing.key"),
+            )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+            writeln!(admin.stdin.take().unwrap(), "{}", "x".repeat(32)).unwrap();
+            assert!(admin.wait().unwrap().success());
+        }
         server
     }
 }

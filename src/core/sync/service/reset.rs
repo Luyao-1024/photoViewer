@@ -102,7 +102,7 @@ impl SyncService {
             }
             let service = self.clone();
             tokio::task::spawn_blocking(move || {
-                for job in service.store().list_jobs()? {
+                for job in service.store().saved_jobs()? {
                     service.recover_publications(job.id)?;
                 }
                 Ok::<_, AppError>(())

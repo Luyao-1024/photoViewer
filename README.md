@@ -36,7 +36,7 @@ album selection. Empty selection receives cloud photos only. Complete original
 and thumbnail pairs are published to the local gallery, with automatic checks,
 manual synchronization, pause/resume, conflict recovery and explicit cloud deletion.
 Login sessions remain in the system keyring; passwords are not persisted.
-Different accounts on the same server use separate tasks and local roots, with
+Only one account syncs at a time. Switching preserves each account’s settings and progress; accounts may reuse a local folder, with
 identity checks, sign-out and same-account reauthentication. See the
 [account integration guide](docs/modules/native-sync-accounts.md). Native Backup is not exposed.
 

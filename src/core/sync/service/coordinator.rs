@@ -162,6 +162,7 @@ impl Heartbeat {
 impl SyncService {
     pub async fn run_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
         let _slot = self.acquire_run_slot(job_id).await.map_err(setup)?;
+        self.require_selected_account(job_id).map_err(setup)?;
         let job = self
             .store()
             .get_job(job_id)
@@ -256,10 +257,10 @@ impl SyncService {
             .map_err(|_| setup("publication recovery worker stopped"))?
             .map_err(setup)?;
         let report = self
-            .run_receive(job)
+            .receive_selected(job)
             .await
             .map_err(|e| CycleError::Transport(e.to_string()))?;
-        let transfers = self.run_transfers(job).await.map_err(setup)?;
+        let transfers = self.transfer_selected(job).await.map_err(setup)?;
         if !transfers.failures.is_empty() {
             return Err(CycleError::Behind(format!(
                 "resource/publication work is still unresolved: {}",

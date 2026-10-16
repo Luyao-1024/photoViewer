@@ -126,6 +126,9 @@ impl MainWindow {
         content.set_widget_name("native-sync-content");
         content.add_css_class("settings-dialog-content");
         content.set_spacing(20);
+        let account_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        account_box.set_widget_name("native-sync-account");
+        content.append(&account_box);
         let group = adw::PreferencesGroup::new();
         group.set_widget_name("native-sync-settings");
         group.set_title(&tr("native.overview"));
@@ -154,7 +157,7 @@ impl MainWindow {
         title.set_xalign(0.0);
         title.set_hexpand(true);
         heading.append(&title);
-        let add = button("native.add", "native-sync-add");
+        let add = button("native.login_account", "native-sync-add");
         heading.append(&add);
         tasks.append(&heading);
         let empty_group = adw::PreferencesGroup::new();
@@ -175,7 +178,17 @@ impl MainWindow {
         content.append(&hint);
         let parent_add = parent.clone();
         let service_add = service.clone();
-        add.connect_clicked(move |_| show_connection(&parent_add, service_add.clone()));
+        add.connect_clicked(move |_| {
+            if service_add
+                .store()
+                .saved_jobs()
+                .is_ok_and(|jobs| !jobs.is_empty())
+            {
+                show_accounts(&parent_add, service_add.clone());
+            } else {
+                show_connection(&parent_add, service_add.clone());
+            }
+        });
         let service_sync = service.clone();
         let status_sync = status.clone();
         sync.connect_clicked(move |_| {
@@ -197,6 +210,7 @@ impl MainWindow {
         let weak_content = content.downgrade();
         let parent = parent.downgrade();
         let mut cards = std::collections::BTreeMap::<i64, JobCard>::new();
+        let mut shown_account = None;
         // Update existing widgets so background progress never collapses details,
         // closes an open action menu, or discards keyboard focus.
         let refresh = move || {
@@ -211,6 +225,18 @@ impl MainWindow {
             }
             match (service.store().list_jobs(), service.store().overview()) {
                 (Ok(list), Ok(overview)) => {
+                    let current = list.first().map(|job| job.id);
+                    if shown_account != current {
+                        while let Some(child) = account_box.first_child() {
+                            account_box.remove(&child);
+                        }
+                        if let Some(job) = list.first() {
+                            append_account(&account_box, &parent, &service, job, &status);
+                        }
+                        shown_account = current;
+                    }
+                    add.set_visible(list.is_empty());
+                    title.set_visible(!list.is_empty());
                     let enabled = prefs::sync_enabled();
                     overview_row.set_title(&trf(
                         "native.progress",
@@ -289,7 +315,7 @@ fn set_enabled(service: SyncService, enabled: bool, status: &gtk::Label) {
 
 struct JobCard {
     group: adw::PreferencesGroup,
-    row: adw::ExpanderRow,
+    header: adw::ActionRow,
     state: gtk::Label,
     pause: gtk::Button,
     scope: adw::ActionRow,
@@ -305,7 +331,7 @@ impl JobCard {
         } else {
             "native.ready"
         });
-        self.row.set_subtitle(&state);
+        self.header.set_subtitle(&state);
         self.state
             .set_label(job.last_error.as_deref().unwrap_or(""));
         self.state.set_visible(job.last_error.is_some());
@@ -367,12 +393,30 @@ fn append_job(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| job.local_root.to_string_lossy().into_owned());
-    let row = adw::ExpanderRow::builder().title(&title).build();
-    row.set_use_markup(false);
-    row.set_title_lines(1);
-    row.set_subtitle_lines(2);
-    row.set_widget_name(&format!("native-sync-job-{}", job.id));
-    row.add_prefix(&decoration("folder-pictures-symbolic"));
+    let header = adw::ActionRow::builder()
+        .title(&title)
+        .activatable(false)
+        .build();
+    header.set_use_markup(false);
+    header.set_title_lines(1);
+    header.set_subtitle_lines(2);
+    header.set_widget_name(&format!("native-sync-job-{}", job.id));
+    header.add_prefix(&decoration("folder-pictures-symbolic"));
+    let pause = button(
+        if job.paused {
+            "native.resume"
+        } else {
+            "native.pause"
+        },
+        &format!("native-sync-pause-{}", job.id),
+    );
+    header.add_suffix(&pause);
+    group.add(&header);
+    // Disclosure has its own row, separate from the job's run controls.
+    let row = adw::ExpanderRow::builder()
+        .title(tr("native.task_details"))
+        .build();
+    row.set_widget_name(&format!("native-sync-details-{}", job.id));
     let menu = gtk::Popover::new();
     let actions = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -391,7 +435,7 @@ fn append_job(
     more.add_css_class("glass-icon-button");
     more.set_widget_name(&format!("native-sync-menu-{}", job.id));
     more.set_tooltip_text(Some(&tr("native.task_actions")));
-    row.add_suffix(&more);
+    header.add_suffix(&more);
     let state = label();
     state.add_css_class("error");
     state.set_margin_start(16);
@@ -401,17 +445,6 @@ fn append_job(
     row.add_row(&state);
     row.add_row(&detail("native.root", &job.local_root.to_string_lossy()));
     row.add_row(&detail("native.endpoint", &job.endpoint));
-    let account = service
-        .store()
-        .native_scope(job.connection_id)
-        .ok()
-        .flatten()
-        .and_then(|s| s.authentication)
-        .and_then(|a| a.user)
-        .map(|u| u.username);
-    if let Some(account) = &account {
-        row.add_row(&detail("native.username", account));
-    }
     if let Some(zone) = &job.native_zone {
         row.add_row(&detail("native.zone", &zone.zone_name));
     }
@@ -430,65 +463,6 @@ fn append_job(
     manage_row.set_activatable_widget(Some(&manage));
     row.add_row(&manage_row);
     group.add(&row);
-    let pause = menu_action(
-        if job.paused {
-            "native.resume"
-        } else {
-            "native.pause"
-        },
-        &format!("native-sync-pause-{}", job.id),
-        &menu,
-    );
-    actions.append(&pause);
-    actions.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    let login = menu_action(
-        "native.relogin",
-        &format!("native-sync-relogin-{}", job.id),
-        &menu,
-    );
-    actions.append(&login);
-    let parent_login = parent.clone();
-    let service_login = service.clone();
-    let job_login = job.clone();
-    let account_login = account.clone();
-    login.connect_clicked(move |_| {
-        show_relogin(
-            &parent_login,
-            service_login.clone(),
-            job_login.id,
-            account_login.clone().unwrap_or_default(),
-        )
-    });
-    if account.is_some() {
-        let logout = menu_action(
-            "native.logout",
-            &format!("native-sync-logout-{}", job.id),
-            &menu,
-        );
-        actions.append(&logout);
-        let service_logout = service.clone();
-        let id = job.id;
-        let state_logout = status.clone();
-        logout.connect_clicked(move |_| {
-            let service = service_logout.clone();
-            let state = state_logout.clone();
-            glib::spawn_future_local(async move {
-                match tokio::spawn(async move {
-                    service
-                        .logout_native_job(id)
-                        .await
-                        .map_err(|e| e.to_string())
-                })
-                .await
-                {
-                    Ok(Ok(())) => state.set_label(""),
-                    Ok(Err(e)) => state.set_label(&e),
-                    Err(_) => state.set_label(&tr("native.worker_failed")),
-                }
-            });
-        });
-    }
-    actions.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     let remove = menu_action(
         "native.remove",
         &format!("native-sync-remove-{}", job.id),
@@ -573,11 +547,235 @@ fn append_job(
     });
     JobCard {
         group,
-        row,
+        header,
         state,
         pause,
         scope: scope_row,
     }
+}
+
+fn account_name(service: &SyncService, job: &crate::core::sync::store::SyncJob) -> Option<String> {
+    service
+        .store()
+        .native_scope(job.connection_id)
+        .ok()
+        .flatten()
+        .and_then(|scope| scope.authentication)
+        .and_then(|auth| auth.user)
+        .map(|user| user.username)
+}
+
+fn append_account(
+    container: &gtk::Box,
+    parent: &gtk::Widget,
+    service: &SyncService,
+    job: &crate::core::sync::store::SyncJob,
+    status: &gtk::Label,
+) {
+    let group = adw::PreferencesGroup::new();
+    group.set_title(&tr("native.current_account"));
+    let account = account_name(service, job);
+    let row = adw::ActionRow::builder()
+        .title(account.as_deref().unwrap_or(&tr("native.legacy_account")))
+        .subtitle(&job.endpoint)
+        .build();
+    row.set_use_markup(false);
+    row.set_widget_name("native-sync-current-account");
+    row.add_prefix(&decoration("avatar-default-symbolic"));
+    let switch = button("native.switch_account", "native-sync-switch-account");
+    let parent_switch = parent.clone();
+    let service_switch = service.clone();
+    switch.connect_clicked(move |_| show_accounts(&parent_switch, service_switch.clone()));
+    row.add_suffix(&switch);
+    let menu = gtk::Popover::new();
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    actions.set_margin_top(6);
+    actions.set_margin_bottom(6);
+    actions.set_margin_start(6);
+    actions.set_margin_end(6);
+    menu.set_child(Some(&actions));
+    let more = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .valign(gtk::Align::Center)
+        .popover(&menu)
+        .build();
+    more.add_css_class("glass-icon-button");
+    more.set_widget_name("native-sync-account-menu");
+    more.set_tooltip_text(Some(&tr("native.account_actions")));
+    row.add_suffix(&more);
+    let login = menu_action(
+        "native.relogin",
+        &format!("native-sync-relogin-{}", job.id),
+        &menu,
+    );
+    actions.append(&login);
+    let parent_login = parent.clone();
+    let service_login = service.clone();
+    let job_login = job.clone();
+    let account_login = account.clone();
+    login.connect_clicked(move |_| {
+        show_relogin(
+            &parent_login,
+            service_login.clone(),
+            job_login.id,
+            account_login.clone().unwrap_or_default(),
+        )
+    });
+    if account.is_some() {
+        let logout = menu_action(
+            "native.logout",
+            &format!("native-sync-logout-{}", job.id),
+            &menu,
+        );
+        actions.append(&logout);
+        let service_logout = service.clone();
+        let id = job.id;
+        let state_logout = status.clone();
+        logout.connect_clicked(move |_| {
+            let service = service_logout.clone();
+            let state = state_logout.clone();
+            glib::spawn_future_local(async move {
+                match tokio::spawn(async move {
+                    service
+                        .logout_native_job(id)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                {
+                    Ok(Ok(())) => state.set_label(""),
+                    Ok(Err(e)) => state.set_label(&e),
+                    Err(_) => state.set_label(&tr("native.worker_failed")),
+                }
+            });
+        });
+    }
+
+    group.add(&row);
+    container.append(&group);
+}
+
+fn show_accounts(parent: &gtk::Widget, service: SyncService) {
+    let content = column();
+    let hint = label();
+    hint.set_label(&tr("native.single_account_hint"));
+    content.append(&hint);
+    let status = label();
+    status.set_widget_name("native-sync-account-status");
+    let dialog = surface("native.switch_account", &content);
+    dialog.set_widget_name("native-sync-accounts-dialog");
+    let mut identities = std::collections::HashSet::new();
+    for job in service.store().saved_jobs().unwrap_or_default() {
+        let Ok(Some(scope)) = service.store().native_scope(job.connection_id) else {
+            continue;
+        };
+        let identity = (
+            scope.public_base_url.clone(),
+            scope.namespace.tenant.clone(),
+            scope
+                .authentication
+                .as_ref()
+                .and_then(|a| a.user.as_ref())
+                .map(|u| u.id.clone()),
+        );
+        if !identities.insert(identity) {
+            continue;
+        }
+        let account = account_name(&service, &job).unwrap_or_else(|| tr("native.legacy_account"));
+        let group = adw::PreferencesGroup::new();
+        let row = adw::ActionRow::builder()
+            .title(&account)
+            .subtitle(&job.endpoint)
+            .build();
+        row.set_use_markup(false);
+        let selected = service.store().job_is_selected(job.id).unwrap_or(false);
+        let use_account = button(
+            if selected {
+                "native.current_account"
+            } else {
+                "native.use_account"
+            },
+            &format!("native-sync-use-account-{}", job.id),
+        );
+        use_account.set_sensitive(!selected);
+        let reauthenticate = button(
+            "native.relogin",
+            &format!("native-sync-account-login-{}", job.id),
+        );
+        reauthenticate.set_visible(false);
+        let service_login = service.clone();
+        let parent_login = parent.clone();
+        let weak_login = dialog.downgrade();
+        let id = job.id;
+        reauthenticate.connect_clicked(move |_| {
+            if let Some(dialog) = weak_login.upgrade() {
+                dialog.close();
+            }
+            show_relogin(&parent_login, service_login.clone(), id, account.clone());
+        });
+        row.add_suffix(&reauthenticate);
+        let service = service.clone();
+        let weak = dialog.downgrade();
+        let status = status.clone();
+        use_account.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            let service = service.clone();
+            let weak = weak.clone();
+            let status = status.clone();
+            let button = button.clone();
+            let reauthenticate = reauthenticate.clone();
+            status.set_label(&tr("native.switching_account"));
+            glib::spawn_future_local(async move {
+                match tokio::spawn(async move {
+                    service
+                        .switch_native_account(job.id)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                {
+                    Ok(Ok(())) => {
+                        if let Some(dialog) = weak.upgrade() {
+                            dialog.close();
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        status.set_label(&error);
+                        reauthenticate.set_visible(true);
+                        button.set_sensitive(true);
+                    }
+                    Err(_) => {
+                        status.set_label(&tr("native.worker_failed"));
+                        button.set_sensitive(true);
+                    }
+                }
+            });
+        });
+        row.add_suffix(&use_account);
+        group.add(&row);
+        content.append(&group);
+    }
+    content.append(&status);
+    let other = button("native.login_other_account", "native-sync-other-account");
+    let service_other = service.clone();
+    let parent_other = parent.clone();
+    let weak = dialog.downgrade();
+    other.connect_clicked(move |_| {
+        if let Some(dialog) = weak.upgrade() {
+            dialog.close();
+        }
+        show_connection(&parent_other, service_other.clone());
+    });
+    content.append(&other);
+    let cancel = button("button.cancel", "native-sync-accounts-cancel");
+    let weak = dialog.downgrade();
+    cancel.connect_clicked(move |_| {
+        if let Some(dialog) = weak.upgrade() {
+            dialog.close();
+        }
+    });
+    content.append(&cancel);
+    dialog.present(parent);
 }
 
 fn show_connection(parent: &gtk::Widget, service: SyncService) {
@@ -604,7 +802,7 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     scope_text.set_label(&tr("native.none_selected"));
     let status = label();
     status.set_widget_name("native-sync-probe-status");
-    let save = button("native.save", "native-sync-save");
+    let save = button("native.use_account", "native-sync-save");
     save.set_sensitive(false);
     let cancel = button("button.cancel", "native-sync-cancel");
     for w in [
@@ -623,7 +821,7 @@ fn show_connection(parent: &gtk::Widget, service: SyncService) {
     ] {
         content.append(w);
     }
-    let dialog = surface("native.add", &content);
+    let dialog = surface("native.login_account", &content);
     dialog.set_widget_name("native-sync-connection-dialog");
     let draft = Rc::new(RefCell::new(None::<(String, String, Vec<String>)>));
     let revision = Rc::new(Cell::new(0u64));

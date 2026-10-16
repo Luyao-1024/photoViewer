@@ -853,6 +853,9 @@ fn execute_command(
                     | crate::core::sync::store::SyncWrite::DeleteJob { .. }
                     | crate::core::sync::store::SyncWrite::SetUploadAlbums { .. }
             );
+            let cloud_state_changed = cloud_state_changed
+                || matches!(&command,
+                crate::core::sync::store::SyncWrite::Runtime(command) if matches!(command.as_ref(), crate::core::sync::store::runtime::Command::SelectAccount { .. } | crate::core::sync::store::runtime::Command::ClearAccount));
             let lifecycle_changed = match &command {
                 crate::core::sync::store::SyncWrite::MarkJobStarted { .. }
                 | crate::core::sync::store::SyncWrite::FinishRun { .. } => true,

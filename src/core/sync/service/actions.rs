@@ -11,8 +11,9 @@ impl SyncService {
         action: PhotoAction,
     ) -> Result<Option<PathBuf>> {
         let _slot = self.acquire_run_slot(job).await?;
+        self.require_selected_account(job)?;
         if matches!(action, PhotoAction::KeepLocal) && captured.conflict.is_some() {
-            self.run_transfers(job).await?;
+            self.transfer_selected(job).await?;
         }
         let service = self.clone();
         let recovery = tokio::task::spawn_blocking(move || {

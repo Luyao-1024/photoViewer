@@ -64,6 +64,21 @@ impl SyncService {
         &self,
         job_id: i64,
     ) -> std::result::Result<ReceiveReport, ReceiveError> {
+        let _slot = self
+            .acquire_run_slot(job_id)
+            .await
+            .map_err(|e| ReceiveError::Transport(e.to_string()))?;
+        self.require_selected_account(job_id)
+            .map_err(|e| ReceiveError::Transport(e.to_string()))?;
+        self.receive_selected(job_id).await
+    }
+
+    pub(super) async fn receive_selected(
+        &self,
+        job_id: i64,
+    ) -> std::result::Result<ReceiveReport, ReceiveError> {
+        self.require_selected_account(job_id)
+            .map_err(|e| ReceiveError::Transport(e.to_string()))?;
         match self.receive_once(job_id).await {
             Err(ReceiveError::TokenExpired) => {
                 self.store

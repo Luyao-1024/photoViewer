@@ -11,6 +11,7 @@ use super::model::{ProviderKind, SyncDirection, UploadScope};
 use super::native::protocol::{NativePinnedScope, NativeZone};
 use super::remote_path::{has_empty_segment, has_navigation_segment};
 
+pub(crate) mod accounts;
 mod actions;
 mod configuration;
 pub use actions::{ManagedPhoto, PhotoAction};
@@ -713,7 +714,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             })?;
             let existing = {
                 let mut stmt = tx.prepare(
-                    "SELECT j.local_root, c.endpoint, j.native_zone_name, c.native_tenant
+                    "SELECT j.local_root, c.endpoint, j.native_zone_name, c.native_tenant, c.native_pinned_scope
                      FROM sync_jobs j JOIN sync_connections c ON c.id = j.connection_id",
                 )?;
                 let rows = stmt.query_map([], |row| {
@@ -722,12 +723,29 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 })?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
-            for (existing_local, existing_endpoint, existing_zone, existing_tenant) in existing {
-                if paths_overlap(&existing_local, &job.local_root) {
+            for (
+                existing_local,
+                existing_endpoint,
+                existing_zone,
+                existing_tenant,
+                existing_scope,
+            ) in existing
+            {
+                let existing_scope: Option<NativePinnedScope> = existing_scope
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(configuration::json_error)?;
+                let same_account = existing_scope
+                    .as_ref()
+                    .zip(job.native_pinned.as_ref())
+                    .is_none_or(|(a, b)| accounts::same_account(a, b));
+                if same_account && paths_overlap(&existing_local, &job.local_root) {
                     return Err(AppError::Backend(format!(
                         "synchronization local root overlaps an existing job: {}",
                         existing_local.display()
@@ -771,6 +789,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
                     params![id, relative_album],
                 )?;
             }
+            accounts::select_in(&tx, None)?;
             tx.commit()?;
             Ok(SyncWriteResult::Id(id))
         }
@@ -898,12 +917,12 @@ fn create_connection(tx: &rusqlite::Transaction<'_>, job: &NewSyncJob) -> Result
         let pinned = job.native_pinned.as_ref();
         tx.execute(
             "INSERT INTO sync_connections
-             (provider_kind, endpoint, credential_ref,
+             (enabled, provider_kind, endpoint, credential_ref,
               native_public_base_url, native_protocol_version, native_service_version,
               native_stage, native_checksum_algorithm, native_tenant, native_container,
               native_environment, native_database, native_database_generation, native_zones,
               native_pinned_scope, native_probed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+             VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
                      CASE WHEN ?16 IS NULL THEN NULL ELSE unixepoch() END)",
             params![
                 job.provider_kind.as_str(),

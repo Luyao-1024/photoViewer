@@ -147,7 +147,7 @@ impl SyncService {
     /// `last_started_at` is still ahead of `last_completed_at` at launch is
     /// describing a run this process never began.
     pub fn reconcile_interrupted_runs(&self) -> Result<usize> {
-        for job in self.store.list_jobs()? {
+        for job in self.store.saved_jobs()? {
             self.recover_publications(job.id)?;
         }
         self.store.reconcile_interrupted_runs()
@@ -222,7 +222,7 @@ impl SyncService {
         }
         if self
             .store
-            .list_jobs()?
+            .saved_jobs()?
             .iter()
             .any(|job| job.credential_ref == credential_ref)
         {
@@ -262,7 +262,9 @@ impl SyncService {
             })
             .await;
         }
-        created
+        let job = created?;
+        self.activate_native_account(job.id).await?;
+        Ok(job)
     }
 
     /// Every job that still has an accepted configuration edit waiting to be
@@ -270,7 +272,7 @@ impl SyncService {
     pub fn pending_configuration_edits(&self) -> Result<usize> {
         Ok(self
             .store
-            .list_jobs()?
+            .saved_jobs()?
             .into_iter()
             .filter(|job| self.store.pending_change(job.id).ok().flatten().is_some())
             .count())

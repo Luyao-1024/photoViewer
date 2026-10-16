@@ -456,4 +456,4 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 
 ## 账户身份与重新认证
 
-用户信息是服务器 pinned scope 的一部分，在既有 JSON 中保存可选 authentication 字段，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他用户可用不同根建立任务，物理路径重叠仍拒绝。细节见[账户接入方案](native-sync-accounts.md)。
+用户信息是服务器 pinned scope 的一部分，在既有 JSON 中保存可选 authentication 字段，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他账号保留独立任务且可复用本地根；同账号内部仍拒绝重叠。settings.native_sync_account 持久化当前账号身份，sync_connections.enabled 只启用这个账号，切换通过 actor 事务使旧 epoch 失效，并等待旧运行退出后才允许新运行。细节见[账户接入方案](native-sync-accounts.md)。
