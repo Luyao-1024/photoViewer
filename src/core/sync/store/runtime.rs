@@ -1,13 +1,15 @@
 //! Actor-owned cycle and issued-operation evidence. Dirty remains on sync_entries.
+use super::dirty::NativeDirty;
 use super::{SyncStore, SyncWrite, SyncWriteResult};
 use crate::core::{
     db::DbPool,
     error::{AppError, Result},
-    sync::native::UploadLease,
+    sync::{content::ContentDigest, native::UploadLease},
 };
 use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Epoch {
@@ -550,6 +552,7 @@ pub(super) fn project_publication(
     tx: &Transaction<'_>,
     job: i64,
     photo: &super::super::RemotePhoto,
+    local_digests: &HashMap<String, ContentDigest>,
 ) -> Result<()> {
     let row:Option<(i64,i64,i64,Option<String>,Option<String>)>=tx.query_row("SELECT id,native_local_version,native_dirty,native_resource_baseline,native_photo_id FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR relative_path=?3) ORDER BY native_photo_id IS NOT NULL DESC LIMIT 1",params![job,photo.photo_id,photo.relative_path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
     let (entry, local, dirty, baseline, identity) = if let Some(row) = row {
@@ -564,6 +567,7 @@ pub(super) fn project_publication(
             Some(photo.photo_id.clone()),
         )
     };
+    let dirty = NativeDirty(dirty as u8);
     let encoded = serde_json::to_string(photo).map_err(|_| invalid("invalid projected photo"))?;
     if baseline.as_deref() == Some(&encoded) {
         return Ok(());
@@ -585,22 +589,48 @@ pub(super) fn project_publication(
     let same_path = baseline_photo
         .as_ref()
         .is_some_and(|old| old.relative_path == photo.relative_path);
-    if ((dirty == 4 || dirty == 0) && same_content && same_path || same_content && same_metadata)
+    // The dirty value is a bitmask whose categories are tracked independently —
+    // an edit made while an operation was in flight leaves two bits set at once,
+    // and that is a normal state, not an anomaly. Every question here is
+    // therefore asked per category. `content_settled` deliberately exempts a
+    // new entry: it has no confirmed baseline, and comparing content it never
+    // published is not evidence of anything.
+    let content_settled = !dirty.contains(NativeDirty::CONTENT) || dirty.contains(NativeDirty::NEW);
+    if (content_settled && same_content && same_path || same_content && same_metadata)
         && !photo.is_hidden
     {
         let (asset_revision,master_revision):(String,String)=(tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,photo.photo_id],|r|r.get(0))?,tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,photo.master_id],|r|r.get(0))?);
-        if dirty & 2 == 0 {
+        if !dirty.contains(NativeDirty::METADATA) {
             tx.execute("UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![entry,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))])?;
         }
         tx.execute("UPDATE sync_entries SET native_resource_baseline=?2,native_asset_revision=?3,native_master_revision=?4 WHERE id=?1",params![entry,encoded,asset_revision,master_revision])?;
         return Ok(());
     }
-    let preserve_metadata = dirty == 2 && same_metadata;
-    let conflict = if identity.as_deref() != Some(&photo.photo_id) {
-        Some("another local/cloud identity owns this path")
-    } else if photo.is_hidden {
+    // No cloud identity is not a disagreement. It is a local file that has
+    // never been published — or a publication whose confirmation was lost, in
+    // which case the entry looks identical. Both are settled by comparing the
+    // bytes, and only the bytes: the service keys `relativePath` uniquely per
+    // zone, so a same-path cloud photo is the same photo and the identity match
+    // is a claim. A digest match is the proof of it.
+    if identity.is_none() {
+        match adoption(tx, job, entry, photo, dirty, local_digests)? {
+            Adoption::Bound | Adoption::Deferred => return Ok(()),
+            Adoption::Divergent => {}
+        }
+    }
+
+    let preserve_metadata = dirty.contains(NativeDirty::METADATA) && same_metadata;
+    // Hidden is asked first because it is the one reason the user cannot act
+    // on: neither resolution applies to a photo with no local representation,
+    // so reporting it as a version or path disagreement would offer them
+    // choices that all fail.
+    let conflict = if photo.is_hidden {
         Some("remote hidden photo has no supported local representation")
-    } else if dirty != 0 && !preserve_metadata {
+    } else if identity.is_none() {
+        Some("cloud content at this path differs from the local file")
+    } else if identity.as_deref() != Some(&photo.photo_id) {
+        Some("another local/cloud identity owns this path")
+    } else if !dirty.is_clean() && !preserve_metadata {
         Some("remote change intersects an unconfirmed local edit; preserve both versions")
     } else {
         None
@@ -622,9 +652,189 @@ pub(super) fn project_publication(
     );
     tx.execute("UPDATE sync_publications SET state='superseded' WHERE job_id=?1 AND photo_id=?2 AND publication_id<>?3 AND state='pending'",params![job,photo.photo_id,id])?;
     let desired:(String,Option<i64>,Option<i64>)=tx.query_row("SELECT e.relative_path,m.is_favorite,m.taken_at FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-    let capture = json!({"job":job,"entry":entry,"local":local,"config":config,"dirty":dirty,"contentGeneration":photo.content_generation,"projection":encoded,"preserveMetadata":preserve_metadata,"localRelativePath":desired.0,"favorite":desired.1,"takenAt":desired.2});
+    let capture = json!({"job":job,"entry":entry,"local":local,"config":config,"dirty":dirty.bits(),"contentGeneration":photo.content_generation,"projection":encoded,"preserveMetadata":preserve_metadata,"localRelativePath":desired.0,"favorite":desired.1,"takenAt":desired.2});
     tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,master_id,original_asset_id,thumbnail_asset_id,captured_versions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(publication_id) DO UPDATE SET captured_versions=CASE WHEN sync_publications.state='pending' THEN excluded.captured_versions ELSE sync_publications.captured_versions END",params![id,job,entry,photo.photo_id,photo.master_id,photo.original.asset_id,photo.thumbnail.asset_id,capture.to_string()])?;
     Ok(())
+}
+
+/// What comparing a local file against a same-path cloud photo concluded.
+enum Adoption {
+    /// Provably the same bytes. The remote identity is now this entry's.
+    Bound,
+    /// An operation owns this entry, or the inbox cannot yet name its
+    /// revisions. Nothing is written and nothing is reported: this is a state
+    /// that resolves itself, not a decision for the user.
+    Deferred,
+    /// The bytes differ, or could not be compared. A real conflict.
+    Divergent,
+}
+
+/// Bind a never-published local file to the cloud photo that already holds it.
+///
+/// This is the same settlement `PhotoAction::UseCloud` performs, reached
+/// without asking, and the reason that is safe is the digest. That action
+/// refuses to run unless a recovery copy of the local original has been saved,
+/// because discarding local bytes is normally a loss. Here the local bytes and
+/// the cloud bytes are known to be the same bytes, so there is nothing to
+/// preserve — the copy on disk *is* the cloud copy. That is why the guard can
+/// be bypassed on proof and on nothing else.
+///
+/// It is entirely local. The service has no adopt or import operation, and does
+/// not need one: nothing here changes what the cloud holds, it only stops this
+/// client from proposing to recreate what is already there.
+fn adoption(
+    tx: &Transaction<'_>,
+    job: i64,
+    entry: i64,
+    photo: &super::super::RemotePhoto,
+    dirty: NativeDirty,
+    local_digests: &HashMap<String, ContentDigest>,
+) -> Result<Adoption> {
+    // An issued or in-flight operation is the recovery path's business. Binding
+    // the identity underneath it would turn its create into a guaranteed 409
+    // against a record that now answers to this entry.
+    let busy: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND state='issued')
+             OR EXISTS(SELECT 1 FROM sync_publications WHERE entry_id=?1 AND state='publishing')",
+        [entry],
+        |row| row.get(0),
+    )?;
+    if busy {
+        return Ok(Adoption::Deferred);
+    }
+    // A hidden cloud photo has no local representation to bind to, and a
+    // deletion is an explicit intent that adoption would silently cancel.
+    if photo.is_hidden || dirty.contains(NativeDirty::DELETE) {
+        return Ok(Adoption::Divergent);
+    }
+    // An entry with no live local file has nothing to compare. Calling that a
+    // divergence would be a lie, and worse, a conflict row here would block the
+    // very download that would give the photo a local representation. The
+    // resource and admission paths own that outcome, so this stage stays out.
+    //
+    // Resolved by path, for the same reason `unclaimed_local_entries` does it
+    // that way: `media_id` is a presentation association that an entry created
+    // by a cloud projection simply does not have, and every such entry would
+    // otherwise be permanently unmeasurable.
+    let media: Option<i64> = tx
+        .query_row(
+            "SELECT m.id FROM sync_entries e
+               JOIN sync_jobs j ON j.id = e.job_id
+               JOIN media_items m
+                 ON m.path = rtrim(j.local_root, '/') || '/' || e.relative_path
+                AND m.trashed_at IS NULL
+             WHERE e.id = ?1",
+            [entry],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(media) = media else {
+        return Ok(Adoption::Deferred);
+    };
+
+    // The digest is read, never computed here: this function runs inside the
+    // promote transaction, and a transaction that hashes a library is a
+    // transaction that holds the write lock for the length of a disk sweep.
+    // The receive path measures the files first and hands the answers in.
+    let (measured, already_kept): (Option<ContentDigest>, bool) = match tx
+        .query_row(
+            "SELECT native_local_digest FROM sync_entries WHERE id=?1",
+            [entry],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+    {
+        Some(cached) => match serde_json::from_str(&cached) {
+            Ok(digest) => (Some(digest), true),
+            Err(_) => (local_digests.get(&photo.relative_path).cloned(), false),
+        },
+        None => (local_digests.get(&photo.relative_path).cloned(), false),
+    };
+    let Some(measured) = measured else {
+        return Ok(Adoption::Divergent);
+    };
+    // What the local file hashes to is a fact about the local file, whatever
+    // the cloud turns out to hold, so it is kept either way. An entry that ends
+    // up in conflict must not re-read its file on every subsequent cycle just
+    // to arrive at the same conclusion — and if the cloud copy changes, this
+    // cached digest is what the next comparison is made against anyway.
+    if !already_kept {
+        tx.execute(
+            "UPDATE sync_entries SET native_local_digest=?2 WHERE id=?1",
+            params![entry, serde_json::to_string(&measured).unwrap_or_default()],
+        )?;
+    }
+    let expected = ContentDigest::hex_from_descriptor_base64(&photo.original.file_checksum);
+    if Some(measured.hex.as_str()) != expected.as_deref() || measured.size != photo.original.size {
+        return Ok(Adoption::Divergent);
+    }
+
+    // Without both record revisions this is a half-bound identity, and a half
+    // bound identity is worse than none: the next conditional update would go
+    // out with a tag this client cannot produce. Wait for the inbox instead.
+    let revision = |record: &str| -> Result<Option<String>> {
+        tx.query_row(
+            "SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",
+            params![job, record],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    };
+    let (Some(asset_revision), Some(master_revision)) =
+        (revision(&photo.photo_id)?, revision(&photo.master_id)?)
+    else {
+        return Ok(Adoption::Deferred);
+    };
+
+    // A pending metadata bit is a real user edit with no trustworthy cloud
+    // counterpart to weigh it against, so the local value stands and the next
+    // uplink publishes it. With no such bit there is nothing local to lose, and
+    // the cloud is authoritative. The same bit decides both questions: whether
+    // the local row is overwritten, and whether the metadata obligation is
+    // settled.
+    let keep_metadata = dirty.contains(NativeDirty::METADATA);
+    let generation: String = tx.query_row(
+        "SELECT database_generation FROM sync_native_progress WHERE job_id=?1",
+        [job],
+        |row| row.get(0),
+    )?;
+    let settled = NativeDirty(
+        (dirty.bits() & !NativeDirty::NEW & !NativeDirty::CONTENT)
+            & if keep_metadata {
+                u8::MAX
+            } else {
+                !NativeDirty::METADATA
+            },
+    );
+    let encoded = serde_json::to_string(photo).map_err(|_| invalid("invalid projected photo"))?;
+    let baseline_metadata = json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path});
+
+    if !keep_metadata {
+        tx.execute("UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![entry,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))])?;
+    }
+    tx.execute(
+        "UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,
+            native_content_generation=?7,native_confirmed_generation=?8,native_resource_baseline=?9,
+            native_baseline_metadata=?10,native_local_digest=?11,native_dirty=?12,native_retired=0,
+            native_acked_content_version=MAX(native_acked_content_version,native_content_version),
+            native_acked_metadata_version=CASE WHEN ?13 THEN native_acked_metadata_version ELSE MAX(native_acked_metadata_version,native_metadata_version) END,
+            updated_at=unixepoch()
+         WHERE id=?1",
+        params![entry,media,photo.photo_id,photo.master_id,asset_revision,master_revision,photo.content_generation,generation,encoded,baseline_metadata.to_string(),serde_json::to_string(&measured).unwrap_or_default(),settled.bits() as i64,keep_metadata as i64],
+    )?;
+    // Nothing is owed upward. Whatever publication was proposed against this
+    // entry proposed to create what the cloud already has.
+    tx.execute(
+        "DELETE FROM sync_publications WHERE entry_id=?1 AND state<>'publishing'",
+        [entry],
+    )?;
+    // The resource obligations are settled by the INSERT that follows this call:
+    // it reads the baseline written just above, and marks the pair verified
+    // against the library file. Writing that here instead would be a no-op — the
+    // rows do not exist yet at this point in the promotion.
+    Ok(Adoption::Bound)
 }
 
 #[cfg(test)]

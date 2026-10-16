@@ -132,7 +132,15 @@ pub(super) fn apply(
                         tx.execute("UPDATE sync_entries SET native_dirty=0,native_resource_baseline=NULL WHERE id=?1",[entry])?;
                         tx.execute("DELETE FROM sync_publications WHERE entry_id=?1 AND state<>'publishing'",[entry])?;
                         tx.execute("UPDATE sync_native_resources SET state='pending',staging_path=NULL WHERE job_id=?1 AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail'))",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
-                        super::runtime::project_publication(tx, job, &photo)?;
+                        // The identity is already bound by the branch above, so
+                        // adoption cannot be reached here — hence no measured
+                        // digests. The user chose this photo, not the bytes.
+                        super::runtime::project_publication(
+                            tx,
+                            job,
+                            &photo,
+                            &std::collections::HashMap::new(),
+                        )?;
                         // The user explicitly adopted this path after preserving its old file.
                         // The durable publication remains pending until both roles commit.
                         tx.execute(

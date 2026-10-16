@@ -20,6 +20,26 @@
 //! *that* category was accepted at *that* version: an edit made while the
 //! operation was in flight advances the version, so the callback no longer
 //! matches and the obligation correctly survives.
+//!
+//! ## The categories are a bitmask, and that is not negotiable
+//!
+//! `native_dirty` is `NEW=1 | METADATA=2 | CONTENT=4 | DELETE=8`. Two bits set
+//! at once is the ordinary result of an edit landing during an upload, and the
+//! per-category version counters are what let the callback clear the one bit
+//! it can prove and keep the one it cannot. Collapse the value into a single
+//! enumeration and one of those edits is silently dropped — the favourite made
+//! while a photo was uploading would vanish with no undo and no record that it
+//! ever happened.
+//!
+//! So: ask per category with `NativeDirty::contains`, never `dirty == 2`.
+//! `Confirm` and the receive-side projection both read this column and must
+//! read it the same way.
+//!
+//! A new entry absorbing metadata is a separate, deliberate fact, not an
+//! exception to the above: a create carries metadata unconditionally, so the
+//! bit changes nothing about what is sent. It is recorded anyway because a
+//! *later* edit — one made after the create's snapshot — is what the version
+//! comparison must catch. See `docs/modules/native-sync-storage.md`.
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -391,11 +411,17 @@ fn mark(
     // counter advances for the category that changed. The acknowledged counter
     // never moves here, so an in-flight operation's captured version stops
     // matching the moment the user edits again.
+    //
+    // `mark` is the single funnel every local change passes through, so it is
+    // also where a cached digest of the local original stops being true. Any
+    // real edit here is a statement that the bytes are no longer the ones we
+    // measured.
     tx.execute(
         &format!(
             "UPDATE sync_entries
                 SET native_dirty = native_dirty | ?2,
                     native_local_version = native_local_version + 1,
+                    native_local_digest = NULL,
                     {version} = {version} + 1,
                     {event} = ?3,
                     updated_at = unixepoch()

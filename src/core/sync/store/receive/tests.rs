@@ -14,6 +14,13 @@ use crate::core::sync::native::records::{
 use crate::core::sync::store::tests::{new_job, temp_root};
 use crate::core::sync::SyncJob;
 
+/// Promotion with nothing measured. These cases exercise bookkeeping; a measured
+/// digest is what would let an entry adopt a cloud identity instead.
+fn no_local_digests() -> std::collections::HashMap<String, crate::core::sync::content::ContentDigest>
+{
+    std::collections::HashMap::new()
+}
+
 fn namespace() -> NativeNamespace {
     demo_pinned_scope("https://sync.example.invalid/", &["PrimarySync"]).namespace
 }
@@ -159,7 +166,7 @@ fn a_changed_scope_invalidates_every_previous_completeness_claim() {
     // An empty zone owes nothing, so this round really is caught up and the
     // applied position is granted.
     let (_, _, _, applied) = store
-        .promote_remote_graph(job.id, RemoteGraph::default(), "zone.h")
+        .promote_remote_graph(job.id, RemoteGraph::default(), "zone.h", no_local_digests())
         .unwrap();
     assert!(applied);
     assert_eq!(
@@ -296,6 +303,7 @@ fn promotion_materializes_work_and_leaves_applied_behind_it() {
             job.id,
             graph(vec![photo("a1", "gen-1", "camera/one.jpg")]),
             "zone.target",
+            no_local_digests(),
         )
         .unwrap();
     assert_eq!((photos, unknown, resources), (1, 0, 3));
@@ -321,6 +329,7 @@ fn verified_resources_alone_do_not_authorize_an_unpublished_photo() {
             job.id,
             graph(vec![photo("a1", "gen-1", "camera/one.jpg")]),
             "zone.target",
+            no_local_digests(),
         )
         .unwrap();
     assert!(store.advance_applied_token(job.id).is_err());
@@ -349,7 +358,12 @@ fn an_empty_zone_promotes_cleanly_and_applies_immediately() {
     let (store, _pool, job) = store_with_job("receive-empty");
     begin(&store, &job, "scope-1");
     let (_, _, resources, applied) = store
-        .promote_remote_graph(job.id, RemoteGraph::default(), "zone.target")
+        .promote_remote_graph(
+            job.id,
+            RemoteGraph::default(),
+            "zone.target",
+            no_local_digests(),
+        )
         .unwrap();
     assert_eq!(resources, 0);
     // Nothing to download means nothing to wait for. An empty inbox alone is
@@ -365,7 +379,12 @@ fn an_open_conflict_also_blocks_the_applied_position() {
     let (store, pool, job) = store_with_job("receive-conflict");
     begin(&store, &job, "scope-1");
     store
-        .promote_remote_graph(job.id, RemoteGraph::default(), "zone.target")
+        .promote_remote_graph(
+            job.id,
+            RemoteGraph::default(),
+            "zone.target",
+            no_local_digests(),
+        )
         .unwrap();
     pool.get()
         .unwrap()
@@ -407,6 +426,7 @@ fn the_projection_is_replaced_wholesale_not_merged_with_a_previous_one() {
                 photo("a2", "gen-1", "camera/two.jpg"),
             ]),
             "zone.t1",
+            no_local_digests(),
         )
         .unwrap();
     assert_eq!(
@@ -424,6 +444,7 @@ fn the_projection_is_replaced_wholesale_not_merged_with_a_previous_one() {
             job.id,
             graph(vec![photo("a2", "gen-1", "camera/two.jpg")]),
             "zone.t2",
+            no_local_digests(),
         )
         .unwrap();
     let graph = store.remote_graph(job.id, generation).unwrap();
@@ -443,7 +464,7 @@ fn unknown_record_types_survive_promotion_and_are_never_counted_as_photos() {
         payload: serde_json::json!({ "recordName": "album-1" }),
     });
     let (photos, unknown, _, _) = store
-        .promote_remote_graph(job.id, graph, "zone.target")
+        .promote_remote_graph(job.id, graph, "zone.target", no_local_digests())
         .unwrap();
     assert_eq!((photos, unknown), (1, 1));
 
@@ -473,6 +494,7 @@ fn a_reset_drops_the_cloud_position_without_touching_local_or_remote_state() {
             job.id,
             graph(vec![photo("a1", "gen-1", "a.jpg")]),
             "zone.target",
+            no_local_digests(),
         )
         .unwrap();
     pool.get()
@@ -531,7 +553,7 @@ fn failed_or_staged_resources_never_authorize_applied_progress() {
         begin(&store, &job, "scope-1");
         let projection = graph(vec![photo("barrier-photo", "generation-1", "barrier.jpg")]);
         store
-            .promote_remote_graph(job.id, projection.clone(), "target-1")
+            .promote_remote_graph(job.id, projection.clone(), "target-1", no_local_digests())
             .unwrap();
         for resource in store.outstanding_resources(job.id).unwrap() {
             if failed {
@@ -555,7 +577,7 @@ fn failed_or_staged_resources_never_authorize_applied_progress() {
             }
         }
         let (_, _, _, applied) = store
-            .promote_remote_graph(job.id, projection, "target-2")
+            .promote_remote_graph(job.id, projection, "target-2", no_local_digests())
             .unwrap();
         assert!(!applied);
         assert!(store
@@ -566,4 +588,577 @@ fn failed_or_staged_resources_never_authorize_applied_progress() {
             .is_none());
         assert!(store.advance_applied_token(job.id).is_err());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Identity adoption
+//
+// A local file with no cloud identity is not a conflict until the bytes say the
+// two disagree. These cases pin that, because the failure mode it replaces
+// marked an entire library conflicted the first time a client met a cloud it
+// had published from another installation.
+// ---------------------------------------------------------------------------
+
+/// A photo whose original is the empty file, so its descriptor digest is the
+/// well-known SHA-256 of nothing and a real local file can be made to match.
+fn empty_photo(id: &str, path: &str) -> RemotePhoto {
+    let mut photo = photo(id, "gen-1", path);
+    photo.original.size = 0;
+    photo
+}
+
+/// Register a local file the job covers, the way enrolment does: an entry with
+/// no cloud identity, marked as a first publication.
+fn enrol_local_file(pool: &crate::core::db::DbPool, job: &SyncJob, path: &str) -> i64 {
+    let root = job.local_root.clone();
+    let file = root.join(path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"").unwrap();
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO media_items (uri, path, folder_path, mime_type, file_mtime, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, '', 'image/jpeg', 0, 0, '', 0)",
+        rusqlite::params![
+            format!("file://{}", file.display()),
+            file.display().to_string()
+        ],
+    )
+    .unwrap();
+    let media: i64 = conn
+        .query_row(
+            "SELECT id FROM media_items WHERE path = ?1",
+            [file.display().to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO sync_entries (job_id, media_id, relative_path, native_dirty) VALUES (?1, ?2, ?3, 1)",
+        rusqlite::params![job.id, media, path],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+/// Give the inbox the record revisions adoption binds against.
+fn seed_inbox_revisions(pool: &crate::core::db::DbPool, job: &SyncJob, photo: &RemotePhoto) {
+    let conn = pool.get().unwrap();
+    for (ordinal, name, tag) in [
+        (0, photo.photo_id.as_str(), "tag-asset-1"),
+        (1, photo.master_id.as_str(), "tag-master-1"),
+    ] {
+        conn.execute(
+            "INSERT INTO sync_native_inbox
+                (job_id, generation, zone_name, owner, ordinal, record_name, record_type, record_change_tag, kind, payload)
+             VALUES (?1, ?2, 'PrimarySync', '_defaultOwner', ?3, ?4, 'CPLAsset', ?5, 'updated', NULL)",
+            rusqlite::params![job.id, "501855bb-18d3-4008-abc3-37e4948bf6f0", ordinal, name, tag],
+        )
+        .unwrap();
+    }
+}
+
+fn digests_of(path: &str) -> std::collections::HashMap<String, ContentDigest> {
+    let mut map = std::collections::HashMap::new();
+    map.insert(path.to_string(), ContentDigest::of(b""));
+    map
+}
+
+#[test]
+fn a_never_published_file_adopts_the_cloud_photo_it_is_proven_to_be() {
+    let (store, pool, job) = store_with_job("adopt-identical");
+    begin(&store, &job, "scope-1");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+
+    let (_, _, _, applied) = store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let (identity, master, revision, dirty): (Option<String>, Option<String>, Option<String>, i64) =
+        conn.query_row(
+            "SELECT native_photo_id, native_master_id, native_asset_revision, native_dirty
+             FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(identity.as_deref(), Some("a1"));
+    assert_eq!(master.as_deref(), Some("master-a1"));
+    assert_eq!(revision.as_deref(), Some("tag-asset-1"));
+    // The cloud satisfied the pending publication, so nothing is owed upward.
+    assert_eq!(dirty, 0);
+
+    // The identity match is a claim; the digest is the proof. It is kept, so a
+    // second cycle does not re-read the library to reach the same conclusion.
+    let cached: Option<String> = conn
+        .query_row(
+            "SELECT native_local_digest FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<ContentDigest>(&cached.unwrap())
+            .unwrap()
+            .hex,
+        ContentDigest::of(b"").hex
+    );
+
+    // Nothing to download: the local file is the cloud original. Leaving the
+    // obligations outstanding would be worse than a wasted download — while any
+    // remains, the applied position cannot advance and the job reports itself
+    // as synchronizing forever.
+    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 0);
+    let open: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
+    assert!(applied);
+
+    // Both roles are settled and point at the library file, not at staging:
+    // adoption stages nothing, because there is nothing to stage.
+    let settled: Vec<(String, Option<String>)> = {
+        let mut stmt = conn
+            .prepare("SELECT role, verified_cache FROM sync_native_resources WHERE job_id = ?1 ORDER BY role")
+            .unwrap();
+        stmt.query_map([job.id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(settled.len(), 2, "adoption left a resource obligation open");
+    for (role, cache) in &settled {
+        assert!(
+            cache
+                .as_deref()
+                .is_some_and(|value| value.starts_with("file://")),
+            "{role} was settled without pointing at the library file: {cache:?}"
+        );
+    }
+}
+
+#[test]
+fn adoption_keeps_a_local_metadata_edit_and_leaves_it_to_publish() {
+    let (store, pool, job) = store_with_job("adopt-metadata");
+    begin(&store, &job, "scope-1");
+    let mut photo = empty_photo("a1", "camera/one.jpg");
+    photo.is_favorite = true;
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    // The user favourited it after enrolment and before the cloud answered. That
+    // is a real edit with no trustworthy cloud counterpart to weigh it against.
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sync_entries SET native_dirty = native_dirty | 2,
+                native_metadata_version = native_metadata_version + 1
+             WHERE id = ?1",
+            [entry],
+        )
+        .unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE media_items SET is_favorite = 1 WHERE id = (SELECT media_id FROM sync_entries WHERE id = ?1)",
+            [entry],
+        )
+        .unwrap();
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let (identity, dirty): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT native_photo_id, native_dirty FROM sync_entries WHERE id = ?1",
+            [entry],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // The identity is bound — the content question was settled — but the
+    // metadata obligation survives as a conditional update.
+    assert_eq!(identity.as_deref(), Some("a1"));
+    assert_eq!(dirty, 2);
+
+    let (favorite,): (i64,) = conn
+        .query_row(
+            "SELECT m.is_favorite FROM media_items m WHERE m.id = (SELECT media_id FROM sync_entries WHERE id = ?1)",
+            [entry],
+            |row| Ok((row.get(0)?,)),
+        )
+        .unwrap();
+    // The cloud says favourite; the user said favourite too, but the point is
+    // that the local value was not overwritten.
+    assert_eq!(favorite, 1);
+}
+
+#[test]
+fn a_local_edit_blocks_the_cloud_value_from_reaching_the_library_row() {
+    let (store, pool, job) = store_with_job("adopt-metadata-prevails");
+    begin(&store, &job, "scope-1");
+    let mut photo = empty_photo("a1", "camera/one.jpg");
+    photo.is_favorite = true;
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sync_entries SET native_dirty = native_dirty | 2,
+                native_metadata_version = native_metadata_version + 1
+             WHERE id = ?1",
+            [entry],
+        )
+        .unwrap();
+    // The user un-favourited it locally; the cloud has it favourited.
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE media_items SET is_favorite = 0 WHERE id = (SELECT media_id FROM sync_entries WHERE id = ?1)",
+            [entry],
+        )
+        .unwrap();
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let (favorite,): (i64,) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT m.is_favorite FROM media_items m WHERE m.id = (SELECT media_id FROM sync_entries WHERE id = ?1)",
+            [entry],
+            |row| Ok((row.get(0)?,)),
+        )
+        .unwrap();
+    assert_eq!(
+        favorite, 0,
+        "the local metadata edit was overwritten by the cloud"
+    );
+}
+
+#[test]
+fn a_same_path_photo_with_different_bytes_is_a_conflict_not_an_adoption() {
+    let (store, pool, job) = store_with_job("adopt-divergent");
+    begin(&store, &job, "scope-1");
+    let mut photo = photo("a1", "gen-1", "camera/one.jpg");
+    photo.original.size = 0;
+    photo.original.file_checksum = crate::core::sync::content::to_base64(&[0xabu8; 32]);
+    enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let identity: Option<String> = conn
+        .query_row(
+            "SELECT native_photo_id FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(identity.is_none(), "a divergent photo was adopted anyway");
+    let reason: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(native_detail, '$.reason') FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        reason.as_deref(),
+        Some("cloud content at this path differs from the local file")
+    );
+    // The digest of the local file is a fact about the local file, so it is
+    // kept even though the comparison failed. Without it, a permanently
+    // conflicting photo would re-read its original on every cycle.
+    let cached: Option<String> = conn
+        .query_row(
+            "SELECT native_local_digest FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        cached.is_some(),
+        "a divergent entry discarded its measured digest"
+    );
+}
+
+#[test]
+fn a_hidden_cloud_photo_is_never_adopted() {
+    let (store, pool, job) = store_with_job("adopt-hidden");
+    begin(&store, &job, "scope-1");
+    let mut photo = empty_photo("a1", "camera/one.jpg");
+    photo.is_hidden = true;
+    enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let identity: Option<String> = conn
+        .query_row(
+            "SELECT native_photo_id FROM sync_entries WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(identity.is_none());
+    let reason: Option<String> = conn
+        .query_row(
+            "SELECT json_extract(native_detail, '$.reason') FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        reason.as_deref(),
+        Some("remote hidden photo has no supported local representation")
+    );
+}
+
+#[test]
+fn an_issued_operation_defers_adoption_rather_than_deciding_it() {
+    let (store, pool, job) = store_with_job("adopt-inflight");
+    begin(&store, &job, "scope-1");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    // A create whose confirmation was lost. It still owns the entry, and
+    // binding an identity underneath it would turn its recovery into a create
+    // that can only come back 409.
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_tasks (operation_id, job_id, entry_id, action, state, config_generation, entry_generation)
+             VALUES ('op-1', ?1, ?2, 'upload', 'issued', 1, 1)",
+            rusqlite::params![job.id, entry],
+        )
+        .unwrap();
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let identity: Option<String> = conn
+        .query_row(
+            "SELECT native_photo_id FROM sync_entries WHERE id = ?1",
+            [entry],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        identity.is_none(),
+        "adoption overrode an in-flight operation"
+    );
+    // Nothing for the user to decide: this is a state that resolves itself.
+    let open: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE entry_id = ?1 AND state = 'open'",
+            [entry],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0);
+}
+
+#[test]
+fn an_edit_during_an_upload_is_a_merge_rather_than_a_conflict() {
+    let (store, pool, job) = store_with_job("merge-two-categories");
+    begin(&store, &job, "scope-1");
+    let photo = photo("a1", "gen-1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    // A confirmed baseline to compare against, so the projection is not the
+    // photo's first appearance.
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sync_entries SET native_photo_id = 'a1', native_master_id = 'master-a1',
+                native_resource_baseline = ?2, native_dirty = 6,
+                native_metadata_version = 2, native_content_version = 2
+             WHERE id = ?1",
+            rusqlite::params![entry, serde_json::to_string(&photo).unwrap()],
+        )
+        .unwrap();
+
+    // Content and metadata are both pending — the state a mid-flight edit
+    // produces. It is a bitmask, not a single value, so it must not read as
+    // "some unconfirmed local edit" and become a conflict.
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            no_local_digests(),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let open: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE entry_id = ?1 AND state = 'open'",
+            [entry],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0, "two pending categories were read as a conflict");
+}
+
+#[test]
+fn a_cloud_photo_with_no_local_file_is_never_a_conflict() {
+    let (store, pool, job) = store_with_job("adopt-no-local-file");
+    begin(&store, &job, "scope-1");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    // The entry exists and covers the path, but its media is gone: the user
+    // removed it. There is nothing to compare against, and a conflict here
+    // would block the download that would restore it.
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_entries (job_id, relative_path, native_dirty) VALUES (?1, 'camera/one.jpg', 1)",
+            [job.id],
+        )
+        .unwrap();
+
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let open: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE job_id = ?1 AND state = 'open'",
+            [job.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, 0, "a missing local file was reported as a divergence");
+    // The download obligation still stands, so the cycle is not caught up.
+    assert!(store.unresolved_resource_count(job.id).unwrap() > 0);
+}
+
+/// An entry created by a cloud projection has no `media_id`: nothing local
+/// existed when it was first written, and enrolment's `ON CONFLICT DO NOTHING`
+/// never backfills one. It is still a real entry for a real file, and adoption
+/// has to be able to see it.
+fn enrol_unlinked(pool: &crate::core::db::DbPool, job: &SyncJob, path: &str) -> i64 {
+    let file = job.local_root.join(path);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"").unwrap();
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO media_items (uri, path, folder_path, mime_type, file_mtime, file_size, blake3_hash, indexed_at)
+         VALUES (?1, ?2, '', 'image/jpeg', 0, 0, '', 0)",
+        rusqlite::params![format!("file://{}", file.display()), file.display().to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sync_entries (job_id, relative_path, native_dirty) VALUES (?1, ?2, 1)",
+        rusqlite::params![job.id, path],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+#[test]
+fn an_entry_with_no_media_id_is_still_adopted_and_is_linked_by_adoption() {
+    let (store, pool, job) = store_with_job("adopt-unlinked-entry");
+    begin(&store, &job, "scope-1");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_unlinked(&pool, &job, "camera/one.jpg");
+    assert!(
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT media_id FROM sync_entries WHERE id = ?1",
+                [entry],
+                |r| r.get::<_, Option<i64>>(0)
+            )
+            .unwrap()
+            .is_none(),
+        "the fixture must start with no media association"
+    );
+    seed_inbox_revisions(&pool, &job, &photo);
+
+    // The digests are supplied exactly as the receive path supplies them: the
+    // file was found by path, not through media_id.
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of("camera/one.jpg"),
+        )
+        .unwrap();
+
+    let conn = pool.get().unwrap();
+    let (identity, media, dirty): (Option<String>, Option<i64>, i64) = conn
+        .query_row(
+            "SELECT native_photo_id, media_id, native_dirty FROM sync_entries WHERE id = ?1",
+            [entry],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(identity.as_deref(), Some("a1"));
+    assert!(
+        media.is_some(),
+        "adoption did not repair the missing association"
+    );
+    assert_eq!(dirty, 0);
+
+    // And the store can now find it on its own, without being handed a digest.
+    let found = store.unclaimed_local_entries(job.id).unwrap();
+    assert!(
+        found.is_empty(),
+        "a bound entry is still offered for adoption"
+    );
 }

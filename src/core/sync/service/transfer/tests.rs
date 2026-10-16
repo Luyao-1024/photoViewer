@@ -9,6 +9,14 @@ use crate::core::sync::{
     },
     AssetDescriptor, RemotePhoto, SyncJob,
 };
+
+/// Promotion with nothing measured. These cases exercise bookkeeping; a measured
+/// digest is what would let an entry adopt a cloud identity instead.
+fn no_local_digests() -> std::collections::HashMap<String, crate::core::sync::content::ContentDigest>
+{
+    std::collections::HashMap::new()
+}
+
 const GENERATION: &str = "501855bb-18d3-4008-abc3-37e4948bf6f0";
 struct Fixture {
     service: SyncService,
@@ -94,7 +102,12 @@ fn project(f: &Fixture, revision: &str, original: &[u8], thumbnail: &[u8]) -> Re
     let photo = graph.photos[0].clone();
     f.service
         .store()
-        .promote_remote_graph(f.job.id, graph, &format!("token-{revision}"))
+        .promote_remote_graph(
+            f.job.id,
+            graph,
+            &format!("token-{revision}"),
+            no_local_digests(),
+        )
         .unwrap();
     photo
 }

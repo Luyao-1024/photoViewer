@@ -120,9 +120,102 @@ be reconciled before deciding whether restoration needs fresh remote IDs.
 Enrolling an eligible local item supplies NEW without inventing an edit time.
 Bootstrap/import/cache updates do not count as user edits. Existing same-path
 cloud content is not blindly recreated: verified matching pair identity may be
-adopted through AlreadyCurrent confirmation; different IDs/content/path ownership
-are explicit conflicts. Preserve metadata that has no trustworthy comparison
-event instead of assigning migration time and declaring it newer.
+adopted; different IDs/content/path ownership are explicit conflicts. Preserve
+metadata that has no trustworthy comparison event instead of assigning migration
+time and declaring it newer.
+
+### Identity adoption
+
+`native_photo_id IS NULL` is not a disagreement. It means this entry has never
+been published — or a publication whose confirmation was lost, which leaves the
+entry looking identical. Both are settled by comparing the bytes, and the
+comparison is the whole proof: the service keys `relativePath` uniquely per
+zone, so a same-path cloud photo *is* this photo, the identity match is a claim,
+and only a digest match settles it. `runtime::adoption` is the only place that
+decides it, and it fires only on `size` + SHA-256 equality between the local
+original and the cloud `original` descriptor.
+
+Adoption is **entirely local** and sends nothing. The service has no adopt or
+import operation, and does not need one: nothing here changes what the cloud
+holds, it only stops this client from proposing to recreate what is already
+there. It therefore bypasses the "save a recovery copy first" guard that
+`PhotoAction::UseCloud` enforces — that guard exists to prevent losing local
+bytes, and here the digest has proven the local bytes *are* the cloud bytes.
+
+Three states are not adoption, and none of them is a content conflict:
+
+* **An issued or publishing operation owns the entry.** Binding an identity
+  underneath it would turn its recovery into a create the service can only
+  answer with 409. Nothing is written and no conflict is raised; the recovery
+  path settles it.
+* **The entry has no live local file.** There is nothing to compare, and a
+  conflict row would block the very download that would give the photo a local
+  representation. The resource and admission paths own that outcome.
+* **The photo is hidden, or a deletion is pending.** A hidden cloud photo has
+  no local representation to bind to, and adoption would silently cancel an
+  explicit delete intent.
+
+Digests are measured in `SyncService::measure_unclaimed`, before the promotion
+transaction opens — a transaction that hashed a library would hold the single
+write lock for the length of a disk sweep. `native_local_digest` caches the
+result so an unchanged file is read once rather than once per cycle, and
+`mark()` clears it, which is what makes it true: `mark` is the single funnel
+every local change passes through.
+
+### What adoption settles about resources
+
+Adoption also has to settle the photo's `sync_native_resources` rows, and this
+is the part that is easy to get wrong. `state='verified'` means two different
+things depending on how the bytes got here, and the rest of the system reads it
+as one:
+
+* **Downloaded** — the bytes were fetched and checked into staging, so
+  `staging_path` names a real file and `verified_cache` names the local copy.
+* **Adopted** — the library file *is* those bytes. Nothing was staged and
+  nothing needs to be.
+
+So a settled-by-adoption row points at the library file through
+`verified_cache`, and the `ON CONFLICT` refresh that upgrades an existing row's
+state is **guarded on the entry owing nothing upward** — no dirty bits, no
+pending publication. That guard is the whole safety property. A dirty entry's
+bytes are about to be uploaded, which is exactly what staging is for; settling
+its resources would hand the publish stage a verified row and no file to read,
+and it would fail on the missing `staging_path`. A clean entry has no
+publication, so it can never reach that code.
+
+The reason this matters beyond tidiness: an outstanding resource obligation is
+what holds `applied` behind `target`. Leave them open and the job reports
+itself as synchronizing forever, with a spinner and a full counter — which looks
+like a hang and is not one.
+
+### Reading `native_dirty`
+
+`native_dirty` is a **bitmask** — `NEW=1, METADATA=2, CONTENT=4, DELETE=8` —
+not an enumeration. The categories are tracked independently, each with its own
+version counter and its own acknowledgement, because they upload differently
+and are cleared by different evidence. Two bits set at once is the normal
+state, not an anomaly: it is exactly what an edit made while an operation was
+in flight produces, and it is how the residual obligation survives the callback
+that could not prove it was accepted.
+
+**Never compare it for equality against a combined value.** `dirty == 2` and
+`dirty == 4` read as "only metadata" and "only content" and are wrong for every
+combination; ask per category with `NativeDirty::contains` instead. This is
+what `Confirm` already does, and what promotion must do too — the two read the
+same column and must read it the same way.
+
+A new entry absorbs metadata, and the reason is on the wire: a create
+unconditionally carries metadata (`create ||` in the body builder), so a
+metadata bit set alongside `NEW` changes nothing about what is sent. It is still
+recorded, because a *later* metadata edit — one made after the create's
+snapshot was taken — is what the version comparison detects, and the mismatch
+is what forces the follow-up update. Absorbing the bit would lose it.
+
+After adoption, `native_dirty` keeps its `METADATA` bit only when the user had
+actually edited metadata locally. A set bit means the local value stands and
+the next uplink publishes it; a clear bit means there is nothing local to lose,
+the cloud is authoritative, and the value is written to the library row. The
+same bit decides both, so the two cannot disagree.
 
 The uplink queue is an in-memory view of these rows. Native code must not persist
 one sync_tasks row for every future dirty item or replay legacy pending actions

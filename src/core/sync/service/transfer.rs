@@ -535,25 +535,17 @@ fn stamp(meta: Option<&std::fs::Metadata>) -> Option<(u64, u128)> {
     })
 }
 fn verify_file(path: &Path, expected: &ContentDigest) -> Result<()> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(error("resource staging is a symlink"));
     }
-    let mut file = std::fs::File::open(path)?;
-    if file.metadata()?.len() != expected.size {
+    // The one hashing implementation in the tree, so a digest compared against
+    // a descriptor here and a digest compared against local content during
+    // identity adoption can never disagree about the same bytes.
+    let actual = crate::core::sync::content::digest_file(path)?;
+    if actual.size != expected.size {
         return Err(error("staged resource size mismatch"));
     }
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let size = file.read(&mut buffer)?;
-        if size == 0 {
-            break;
-        }
-        hash.update(&buffer[..size]);
-    }
-    if crate::core::sync::content::to_hex(&hash.finalize()) != expected.hex {
+    if actual.hex != expected.hex {
         return Err(error("staged resource checksum mismatch"));
     }
     Ok(())

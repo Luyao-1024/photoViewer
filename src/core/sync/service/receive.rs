@@ -11,6 +11,9 @@
 //! those stages will settle, and it leaves `applied` behind `target` while any
 //! of them is outstanding. That is the honest C1.2 state.
 
+use std::collections::HashMap;
+
+use super::super::content::ContentDigest;
 use super::super::native::protocol::{NativeClient, NativePinnedScope, NativeZone};
 use super::super::native::receive::{NativeRecord, ZoneChangesEntry, SUPPORTED_RECORD_TYPES};
 use super::super::native::records::{RecordSet, RemoteGraph};
@@ -123,7 +126,8 @@ impl SyncService {
             // without dropping what the earlier cycle already read. Promotion
             // therefore always reads the inbox — one code path, no in-memory
             // inventory that a restart would lose.
-            self.promote_from_inbox(job_id, &progress.zone, &snapshot.token, &mut report)?;
+            self.promote_from_inbox(job_id, &progress.zone, &snapshot.token, &mut report)
+                .await?;
         }
 
         // The delta round starts from wherever bootstrap left the ingest
@@ -298,11 +302,12 @@ impl SyncService {
             .map(|progress| progress.zone)
             .ok_or(ReceiveError::NoZone(job_id))?;
         self.promote_from_inbox(job_id, &zone_now, &last_token, report)
+            .await
     }
 
     /// Replay the durable inbox at the current generation into a validated
     /// projection and promote it at `target`.
-    fn promote_from_inbox(
+    async fn promote_from_inbox(
         &self,
         job_id: i64,
         zone: &NativeZone,
@@ -323,18 +328,90 @@ impl SyncService {
         let graph = set
             .to_graph(&super::super::native::receive::ZoneId::from(zone))
             .map_err(|error| ReceiveError::IncompleteGraph(error.to_string()))?;
-        self.promote(graph, target_token, report)
+        let local_digests = self.measure_unclaimed(job_id, &graph).await;
+        self.promote(graph, target_token, local_digests, report)
+    }
+
+    /// Read the local originals that could adopt a cloud photo, and answer with
+    /// their digests.
+    ///
+    /// This is the only place in the receive path that touches the disk, and it
+    /// runs before the promotion transaction opens — a transaction that hashed
+    /// a library would hold the single write lock for the length of a disk
+    /// sweep, and the graph is already whole in memory by now. Files are read
+    /// under the app's photo-tree read lease, because they are the user's media
+    /// and a publication may be rewriting them.
+    async fn measure_unclaimed(
+        &self,
+        job_id: i64,
+        graph: &RemoteGraph,
+    ) -> HashMap<String, ContentDigest> {
+        let entries = match self.store().unclaimed_local_entries(job_id) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::warn!("cannot list unclaimed local entries: {error}");
+                return HashMap::new();
+            }
+        };
+        // The service already states how many bytes the cloud original has. A
+        // local file of a different length cannot be that file, so most
+        // mismatches cost a comparison rather than a read.
+        let wanted: HashMap<&str, u64> = graph
+            .photos
+            .iter()
+            .filter(|photo| !photo.is_hidden)
+            .map(|photo| (photo.relative_path.as_str(), photo.original.size))
+            .collect();
+        let mut digests: HashMap<String, ContentDigest> = HashMap::new();
+        let mut to_measure = Vec::new();
+        for entry in entries {
+            if wanted.get(entry.relative_path.as_str()) != Some(&entry.file_size) {
+                continue;
+            }
+            match entry.cached {
+                Some(digest) => {
+                    digests.insert(entry.relative_path, digest);
+                }
+                None => to_measure.push(entry),
+            }
+        }
+        if to_measure.is_empty() {
+            return digests;
+        }
+        // The lease is taken on the thread that opens the files, not out here:
+        // `publication_io` counts readers per thread, so a lease held across an
+        // await would guard the runtime instead of the reads.
+        let measured = tokio::task::spawn_blocking(move || {
+            let _lease = super::super::publication_io::read().ok();
+            to_measure
+                .into_iter()
+                .filter_map(|entry| {
+                    let digest = super::super::content::digest_file(&entry.local_path).ok()?;
+                    Some((entry.relative_path, digest))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .await;
+        match measured {
+            Ok(measured) => digests.extend(measured),
+            // A measurement that did not finish is not a failure: without the
+            // digests those entries simply stay unadopted and conflict, which
+            // is the state they were already in.
+            Err(error) => tracing::warn!("local digest measurement did not finish: {error}"),
+        }
+        digests
     }
 
     fn promote(
         &self,
         graph: RemoteGraph,
         target_token: &str,
+        local_digests: HashMap<String, ContentDigest>,
         report: &mut ReceiveReport,
     ) -> std::result::Result<(), ReceiveError> {
         let (photos, unknown, resources, applied) = self
             .store
-            .promote_remote_graph(report.job_id, graph, target_token)
+            .promote_remote_graph(report.job_id, graph, target_token, local_digests)
             .map_err(|error| ReceiveError::Transport(error.to_string()))?;
         report.photos_projected = photos;
         report.unknown_records = unknown;

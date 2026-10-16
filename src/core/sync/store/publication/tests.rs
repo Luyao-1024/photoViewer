@@ -8,6 +8,13 @@ use super::*;
 use crate::core::sync::store::tests::{new_job, temp_root};
 use crate::core::sync::SyncJob;
 
+/// Promotion with nothing measured. These cases exercise bookkeeping; a measured
+/// digest is what would let an entry adopt a cloud identity instead.
+fn no_local_digests() -> std::collections::HashMap<String, crate::core::sync::content::ContentDigest>
+{
+    std::collections::HashMap::new()
+}
+
 const GENERATION: &str = "501855bb-18d3-4008-abc3-37e4948bf6f0";
 
 struct Fixture {
@@ -44,7 +51,7 @@ fn owe_pair(fixture: &Fixture, photo: &str, original: &str, thumbnail: &str) {
     };
     fixture
         .store
-        .promote_remote_graph(fixture.job.id, graph, "zone.target")
+        .promote_remote_graph(fixture.job.id, graph, "zone.target", no_local_digests())
         .unwrap();
 }
 
@@ -319,6 +326,7 @@ fn one_complete_staged_pair_does_not_wait_for_another_photo() {
                 tombstones: Vec::new(),
             },
             "zone.target",
+            no_local_digests(),
         )
         .unwrap();
     for (asset, role) in [("first-original", "original"), ("first-thumb", "thumbnail")] {

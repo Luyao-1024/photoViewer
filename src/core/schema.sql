@@ -223,6 +223,10 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     native_desired_metadata  TEXT CHECK (native_desired_metadata IS NULL OR json_valid(native_desired_metadata)),
     native_baseline_metadata TEXT CHECK (native_baseline_metadata IS NULL OR json_valid(native_baseline_metadata)),
     native_resource_baseline  TEXT CHECK (native_resource_baseline IS NULL OR json_valid(native_resource_baseline)),
+    -- Digest of the local original, {size, hex}. Valid only while the file has
+    -- not been marked changed since it was taken; `mark()` clears it. It exists
+    -- so identity adoption hashes each file once, not once per receive cycle.
+    native_local_digest TEXT CHECK (native_local_digest IS NULL OR json_valid(native_local_digest)),
     updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE(job_id, relative_path)
 );

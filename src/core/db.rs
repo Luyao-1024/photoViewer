@@ -27,7 +27,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
 const UPSERT_RETRY_LIMIT: usize = 3;
-/// Initialize or transactionally migrate the library without discarding user data.
+/// Open a library, creating its schema if it is not there yet.
 pub fn init_pool(path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
         c.execute_batch(&format!(
@@ -42,13 +42,21 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
         .build(manager)
         .map_err(AppError::from)?;
     let mut conn = pool.get()?;
-    migrate_schema(&mut conn)?;
+    init_schema(&mut conn)?;
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
-fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
+/// Create the library schema, or refuse a database this build is too old for.
+///
+/// There is deliberately no migration ladder. Every statement in `schema.sql` is
+/// `CREATE ... IF NOT EXISTS`, so it is the whole definition of a library, and
+/// a database that does not match it simply does not get the newer columns —
+/// which is a reason to throw it away, not to patch it in place. Ladders exist
+/// to carry a user's data across a change they cannot undo; before there is a
+/// release anyone's data worth keeping, there is only the current schema.
+fn init_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version > SCHEMA_VERSION {
@@ -56,116 +64,7 @@ fn migrate_schema(conn: &mut rusqlite::Connection) -> Result<()> {
             "library schema {version} requires a newer Photo Viewer (supported: {SCHEMA_VERSION})"
         )));
     }
-    let columns = {
-        let mut stmt = tx.prepare("PRAGMA table_info(media_items)")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
-        rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
-    };
-    if version == 0 && !columns.is_empty() {
-        // Historical unversioned libraries share the same identity/location
-        // columns. Only add derived fields; never rebuild media or user tables.
-        for (name, definition) in [
-            ("media_kind", "TEXT NOT NULL DEFAULT 'image'"),
-            ("media_subkind", "TEXT NOT NULL DEFAULT 'standard'"),
-            ("media_attributes", "TEXT NOT NULL DEFAULT '{}'"),
-            ("media_type_flags", "INTEGER NOT NULL DEFAULT 0"),
-            ("video_duration_secs", "REAL"),
-            ("thumbnail_generated_at", "INTEGER"),
-            ("is_favorite", "INTEGER NOT NULL DEFAULT 0"),
-            ("file_mtime_ns", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            if !columns.contains(name) {
-                tx.execute_batch(&format!(
-                    "ALTER TABLE media_items ADD COLUMN {name} {definition}"
-                ))?;
-            }
-        }
-        tx.execute_batch(
-            "UPDATE media_items SET media_kind = CASE WHEN mime_type LIKE 'video/%' THEN 'video' ELSE 'image' END;
-             UPDATE media_items SET media_type_flags =
-                CASE WHEN media_subkind = 'motion_photo' THEN 1 ELSE 0 END |
-                CASE WHEN mime_type = 'image/gif' OR json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.animated') = 1 THEN 2 ELSE 0 END |
-                CASE WHEN json_extract(CASE WHEN json_valid(media_attributes) THEN media_attributes ELSE '{}' END, '$.hdr') = 1 THEN 4 ELSE 0 END;"
-        )?;
-    }
-    if version > 0 && version < 9 {
-        // Schema 9 redesigned the synchronization layer around the native
-        // SyncServer client, and the WebDAV file-sync engine was removed
-        // outright. Its tables have no successor rows to carry forward —
-        // baselines, ETag contracts and DAV collections describe a transport
-        // this build no longer speaks — so they are dropped and recreated
-        // empty from schema.sql. Media, albums, favorites, edits and settings
-        // are untouched: only synchronization history is discarded.
-        tx.execute_batch(
-            "DROP TABLE IF EXISTS sync_publications;
-             DROP TABLE IF EXISTS sync_native_resources;
-             DROP TABLE IF EXISTS sync_native_records;
-             DROP TABLE IF EXISTS sync_native_inbox;
-             DROP TABLE IF EXISTS sync_native_progress;
-             DROP TABLE IF EXISTS sync_conflicts;
-             DROP TABLE IF EXISTS sync_tasks;
-             DROP TABLE IF EXISTS sync_inventory;
-             DROP TABLE IF EXISTS sync_job_upload_albums;
-             DROP TABLE IF EXISTS sync_job_changes;
-             DROP TABLE IF EXISTS sync_entries;
-             DROP TABLE IF EXISTS sync_jobs;
-             DROP TABLE IF EXISTS sync_connections;",
-        )?;
-    }
     tx.execute_batch(SCHEMA_SQL)?;
-    if (9..11).contains(&version) {
-        let present: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sync_entries') WHERE name='native_retired')", [], |r| r.get(0))?;
-        if !present {
-            tx.execute_batch("ALTER TABLE sync_entries ADD COLUMN native_retired INTEGER NOT NULL DEFAULT 0 CHECK (native_retired IN (0,1))")?;
-        }
-    }
-    if version == 9 {
-        tx.execute_batch("ALTER TABLE sync_jobs ADD COLUMN native_cycle_id TEXT")?;
-        let rows = {
-            let mut statement = tx.prepare("SELECT job_id,generation,asset_id,role,expected_sha256 FROM sync_native_resources WHERE expected_sha256 IS NOT NULL")?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
-        for (job, generation, asset, role, digest) in rows {
-            if let Some(hex) = crate::core::sync::ContentDigest::hex_from_descriptor_base64(&digest)
-                .filter(|hex| hex.len() == 64)
-            {
-                tx.execute("UPDATE sync_native_resources SET expected_sha256=?5 WHERE job_id=?1 AND generation=?2 AND asset_id=?3 AND role=?4",rusqlite::params![job,generation,asset,role,hex])?;
-            }
-        }
-        tx.execute("UPDATE sync_native_progress SET applied_token=NULL WHERE EXISTS(SELECT 1 FROM sync_native_resources r WHERE r.job_id=sync_native_progress.job_id AND r.state<>'verified') OR EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=sync_native_progress.job_id AND p.state<>'complete')",[])?;
-    }
-    if version < 2 {
-        if version == 1 && !columns.contains("file_mtime_ns") {
-            tx.execute_batch(
-                "ALTER TABLE media_items ADD COLUMN file_mtime_ns INTEGER NOT NULL DEFAULT 0",
-            )?;
-        }
-        let paths = {
-            let mut stmt = tx.prepare("SELECT id, path FROM media_items")?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for (id, path) in paths {
-            let uri = crate::core::file_uri::from_path(Path::new(&path));
-            tx.execute(
-                "UPDATE media_items SET uri = ?1 WHERE id = ?2",
-                rusqlite::params![uri, id],
-            )?;
-        }
-    }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;
     Ok(())

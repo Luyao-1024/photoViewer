@@ -18,6 +18,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::core::error::{AppError, Result};
@@ -34,7 +35,10 @@ const MIN_THUMBNAIL_QUALITY: u8 = 40;
 const MIN_THUMBNAIL_EDGE: u32 = 64;
 
 /// A SHA-256 in both of the encodings the wire uses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serialized into `sync_entries.native_local_digest` so a local file is read
+/// once and remembered, rather than re-hashed on every receive cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentDigest {
     pub size: u64,
     /// Lowercase hex. Reservation and photo-field form.
@@ -170,6 +174,62 @@ pub fn snapshot_source(
             base64: to_base64(&digest),
         },
         source: source.to_path_buf(),
+    })
+}
+
+/// Digest a file in place, without copying it anywhere.
+///
+/// This is the read-only counterpart to [`snapshot_source`]. Snapshotting
+/// exists so an upload reads bytes nothing else can change; a comparison does
+/// not need that — it needs the same numbers, and it needs them for a file
+/// that must not be duplicated. The identity of a local file and a cloud
+/// descriptor are compared through this, so the digests must come from the one
+/// hashing implementation in the tree, not a second reader.
+///
+/// The file is re-stat'd afterwards: a digest of bytes that changed mid-pass
+/// describes no version of anything, so it is refused rather than returned.
+pub fn digest_file(path: &Path) -> Result<ContentDigest> {
+    if !path.is_file() {
+        return Err(AppError::Backend(format!(
+            "cannot digest a path that is not a readable file: {}",
+            path.display()
+        )));
+    }
+    let before = std::fs::metadata(path)?;
+    let mut reader = std::fs::File::open(path)
+        .map_err(|error| AppError::Backend(format!("cannot open {}: {error}", path.display())))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; COPY_CHUNK];
+    let mut size: u64 = 0;
+    loop {
+        let read = reader.read(&mut buffer).map_err(|error| {
+            AppError::Backend(format!("cannot read {}: {error}", path.display()))
+        })?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        hasher.update(&buffer[..read]);
+    }
+
+    let after = std::fs::metadata(path)?;
+    use std::os::unix::fs::MetadataExt;
+    if before.dev() != after.dev()
+        || before.ino() != after.ino()
+        || before.len() != after.len()
+        || before.modified()? != after.modified()?
+    {
+        return Err(AppError::Backend(format!(
+            "the file changed while it was being digested: {}",
+            path.display()
+        )));
+    }
+
+    let digest = hasher.finalize();
+    Ok(ContentDigest {
+        size,
+        hex: to_hex(&digest),
+        base64: to_base64(&digest),
     })
 }
 
