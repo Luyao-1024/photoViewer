@@ -511,6 +511,8 @@ without forcing a full-window blur during the dialog animation.
 
 Design intent:
 
+- The header's “Settings” title uses `title-2`; right-hand category headings
+  use `heading`. The main title must render larger in both material modes.
 - Settings should be quiet and preference-oriented, using standard Libadwaita
   rows and switches. Operational groups (scan folders, trash migration,
   cache/data cleanup, sync management) stay as bounded management surfaces
@@ -551,6 +553,10 @@ Design intent:
   confirmation after a successful save. Choosing yes relaunches the current
   executable and quits the current process; choosing no leaves the setting saved
   for the next manual restart.
+
+The focused journey in `tests/ux_settings.rs` checks rendered title hierarchy,
+inline management and shortcut return through real pointer input in both material
+modes. It does not substitute a CSS-class assertion for the rendered font size.
 
 When adding settings, prefer clear row labels and standard controls over custom
 compact chrome.

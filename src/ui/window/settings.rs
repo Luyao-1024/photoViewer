@@ -29,7 +29,12 @@ impl MainWindow {
     pub(super) fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
         let toolbar = adw::ToolbarView::new();
         toolbar.add_css_class("settings-dialog-surface");
-        toolbar.add_top_bar(&adw::HeaderBar::new());
+        let title = gtk::Label::new(Some(&tr("setting.page.title")));
+        title.set_widget_name("settings-title");
+        title.add_css_class("title-2");
+        let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&title));
+        toolbar.add_top_bar(&header);
         toolbar.set_content(Some(&self.build_settings_page(host)));
         let page = adw::NavigationPage::new(&toolbar, &tr("setting.page.title"));
         let navigation = adw::NavigationView::new();

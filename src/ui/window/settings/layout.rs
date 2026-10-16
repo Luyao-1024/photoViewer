@@ -75,7 +75,7 @@ impl Layout {
                 .build();
             page.add_css_class("settings-dialog-content");
             let heading = gtk::Label::new(Some(&tr(key)));
-            heading.add_css_class("title-2");
+            heading.add_css_class("heading");
             heading.set_margin_bottom(6);
             page.append(&heading);
             let clamp = adw::Clamp::builder()
