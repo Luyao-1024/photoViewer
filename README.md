@@ -48,7 +48,7 @@ sibling server and linked from [the contract index](docs/modules/native-sync-pro
 ## Logs and Local Cleanup
 
 Settings now groups preferences in a category sidebar. **Storage and Logs** lets
-you change the logging level immediately. Its **Data Cleanup** subpage shows
+you change the logging level immediately. Its inline **Data Cleanup** group shows
 usage and provides separate actions for thumbnails + media metadata, logs,
 accounts, or all application data. Library/log cleanup preserves login; account
 and all-data cleanup remove both local account records and system-keyring tokens.

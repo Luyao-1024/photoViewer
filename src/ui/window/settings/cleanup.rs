@@ -35,43 +35,10 @@ impl MainWindow {
         });
         group.add(&row);
     }
-    pub(super) fn append_cleanup_entry(&self, content: &gtk::Box, parent: &gtk::Widget) {
-        let group = adw::PreferencesGroup::new();
-        let row = adw::ActionRow::builder()
-            .title(tr("setting.cleanup.title"))
-            .subtitle(tr("setting.cleanup.description"))
-            .activatable(true)
-            .build();
-        row.set_widget_name("settings-cleanup-entry");
-        let arrow = gtk::Image::from_icon_name("go-next-symbolic");
-        arrow.set_accessible_role(gtk::AccessibleRole::Presentation);
-        row.add_suffix(&arrow);
-        group.add(&row);
-        content.append(&group);
-        let weak = self.downgrade();
-        let parent = parent.clone();
-        row.connect_activated(move |row| {
-            if let (Some(window), Some(navigation)) = (
-                weak.upgrade(),
-                row.ancestor(adw::NavigationView::static_type())
-                    .and_downcast::<adw::NavigationView>(),
-            ) {
-                navigation.push(&window.build_cleanup_page(&parent));
-            }
-        });
-    }
-    fn build_cleanup_page(&self, parent: &gtk::Widget) -> adw::NavigationPage {
-        let content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(20)
-            .margin_start(24)
-            .margin_end(24)
-            .margin_top(24)
-            .margin_bottom(24)
-            .build();
-        let hint = gtk::Label::new(Some(&tr("setting.cleanup.description")));
-        hint.set_wrap(true);
-        content.append(&hint);
+    pub(super) fn append_cleanup_settings(&self, container: &gtk::Box, parent: &gtk::Widget) {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 20);
+        content.set_widget_name("settings-cleanup");
+        container.append(&content);
         let limit_group = adw::PreferencesGroup::new();
         let limit = adw::SpinRow::with_range(1.0, 500.0, 1.0);
         limit.set_title(&tr("setting.logs.limit"));
@@ -107,12 +74,14 @@ impl MainWindow {
         limit_group.add(&limit);
         content.append(&limit_group);
         let rows = adw::PreferencesGroup::new();
+        rows.set_title(&tr("setting.cleanup.title"));
+        rows.set_description(Some(&tr("setting.cleanup.description")));
         content.append(&rows);
         let Some(pool) = self.imp().pool.borrow().clone() else {
-            return cleanup_page(&content);
+            return;
         };
         let Some(actor) = self.imp().db_actor.borrow().clone() else {
-            return cleanup_page(&content);
+            return;
         };
         let service = SyncService::with_actor(pool.clone(), actor.clone());
         for (name, key, detail, kind) in [
@@ -234,22 +203,5 @@ impl MainWindow {
                 });
             });
         }
-        cleanup_page(&content)
     }
-}
-fn cleanup_page(content: &gtk::Box) -> adw::NavigationPage {
-    let clamp = adw::Clamp::builder()
-        .maximum_size(760)
-        .child(content)
-        .build();
-    let scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .child(&clamp)
-        .build();
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
-    toolbar.set_content(Some(&scroll));
-    let page = adw::NavigationPage::new(&toolbar, &tr("setting.cleanup.title"));
-    page.set_widget_name("settings-cleanup-page");
-    page
 }

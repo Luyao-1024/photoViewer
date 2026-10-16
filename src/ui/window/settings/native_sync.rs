@@ -67,13 +67,12 @@ impl MainWindow {
         enabled.set_widget_name("native-sync-enabled");
         enabled.update_property(&[gtk::accessible::Property::Label(&tr("native.enabled"))]);
         let entry = adw::ActionRow::builder()
-            .title(tr("native.settings"))
-            .activatable(true)
+            .title(tr("native.enabled"))
+            .activatable(false)
             .build();
         entry.set_widget_name("native-sync-entry");
         entry.add_prefix(&decoration("folder-remote-symbolic"));
         entry.add_suffix(&enabled);
-        entry.add_suffix(&decoration("go-next-symbolic"));
         group.add(&entry);
         // Only failures add a message to the otherwise single-row entry.
         let status = label();
@@ -82,23 +81,6 @@ impl MainWindow {
         status.connect_label_notify(|label| label.set_visible(!label.label().is_empty()));
         group.add(&status);
         content.append(&group);
-        let weak_window = self.downgrade();
-        let parent_open = parent.clone();
-        let service_open = service.clone();
-        entry.connect_activated(move |entry| {
-            let Some(window) = weak_window.upgrade() else {
-                return;
-            };
-            let Some(navigation) = entry
-                .ancestor(adw::NavigationView::static_type())
-                .and_downcast::<adw::NavigationView>()
-            else {
-                return;
-            };
-            let page =
-                window.build_native_sync_page(&parent_open, &navigation, service_open.clone());
-            navigation.push(&page);
-        });
         let changing = Rc::new(Cell::new(false));
         let parent_enabled = parent.clone();
         let service_enabled = service.clone();
@@ -136,15 +118,12 @@ impl MainWindow {
                 set_enabled(service_enabled.clone(), true, &status_enabled);
             }
         });
+        content.append(&self.build_native_sync_content(parent, service));
     }
 
-    fn build_native_sync_page(
-        &self,
-        parent: &gtk::Widget,
-        navigation: &adw::NavigationView,
-        service: SyncService,
-    ) -> adw::NavigationPage {
-        let content = column();
+    fn build_native_sync_content(&self, parent: &gtk::Widget, service: SyncService) -> gtk::Box {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 20);
+        content.set_widget_name("native-sync-content");
         content.add_css_class("settings-dialog-content");
         content.set_spacing(20);
         let group = adw::PreferencesGroup::new();
@@ -215,41 +194,19 @@ impl MainWindow {
                 }
             });
         });
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .child(&content)
-            .build();
-        let toolbar = adw::ToolbarView::new();
-        let header = adw::HeaderBar::builder().show_back_button(false).build();
-        let back = gtk::Button::from_icon_name("go-previous-symbolic");
-        back.set_widget_name("native-sync-back");
-        back.set_tooltip_text(Some(&tr("native.back")));
-        back.add_css_class("glass-toolbar-button");
-        let weak_navigation = navigation.downgrade();
-        back.connect_clicked(move |_| {
-            if let Some(navigation) = weak_navigation.upgrade() {
-                navigation.pop();
-            }
-        });
-        header.pack_start(&back);
-        toolbar.add_top_bar(&header);
-        toolbar.set_content(Some(&scroller));
-        let page = adw::NavigationPage::new(&toolbar, &tr("native.settings"));
-        page.set_widget_name("native-sync-page");
-        let weak_page = page.downgrade();
+        let weak_content = content.downgrade();
         let parent = parent.downgrade();
         let mut cards = std::collections::BTreeMap::<i64, JobCard>::new();
         // Update existing widgets so background progress never collapses details,
         // closes an open action menu, or discards keyboard focus.
         let refresh = move || {
-            let Some(page) = weak_page.upgrade() else {
+            let Some(content) = weak_content.upgrade() else {
                 return glib::ControlFlow::Break;
             };
             let Some(parent) = parent.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !page.is_mapped() {
+            if !content.is_mapped() {
                 return glib::ControlFlow::Continue;
             }
             match (service.store().list_jobs(), service.store().overview()) {
@@ -303,7 +260,7 @@ impl MainWindow {
             glib::ControlFlow::Continue
         };
         glib::timeout_add_local(Duration::from_millis(500), refresh);
-        page
+        content
     }
 }
 

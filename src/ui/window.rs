@@ -950,14 +950,9 @@ impl MainWindow {
         dialog.close();
     }
 
-    /// Present the shortcut reference, from `F1`/`Ctrl+/` or the settings row.
-    /// The reference is modal, so an open settings dialog has to step aside
-    /// rather than sit underneath it.
+    /// Keep the settings instance and its category/scroll state underneath the
+    /// transient modal reference. Closing the reference returns to those settings.
     pub(crate) fn show_shortcuts_reference(&self) {
-        let dialog = self.imp().settings_dialog.borrow().as_ref().cloned();
-        if let Some(dialog) = dialog {
-            self.close_settings_dialog(dialog);
-        }
         keyboard::shortcuts_window::open(self);
     }
 

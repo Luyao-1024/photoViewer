@@ -498,12 +498,12 @@ dialog with a Fedora-style category sidebar and independently scrolling content.
 Categories are General, Appearance, Photos and Videos, Cloud Sync, Storage and
 Logs, and About. Language and shortcuts live in General; theme/glass/grid in
 Appearance; playback/scan/trash in Photos and Videos. Storage contains thumbnail
-speed, live logging level and a Data Cleanup navigation entry. The cleanup page
-combines thumbnails and media metadata into one category and provides separate
-logs, account and all-data actions, each with usage and an explicit scope notice.
-The cloud-sync category exposes only the global switch and a navigation
-affordance. Its subpage provides endpoint/username/password login, zone and local
-root selection, explicit physical album scope, task controls and conflict decisions.
+speed, live logging level, log storage limit and the four Data Cleanup actions
+inline. Thumbnails and media metadata form one cleanup category; logs, accounts
+and all-data each retain their own usage and explicit scope notice. Cloud Sync
+shows the global switch, overview, task controls and scope guidance directly in
+its category. Task details use expanders; ordinary settings add no second
+navigation page. Connection drafts and destructive confirmations remain dialogs.
 An empty upload selection receives cloud photos only; adding a connection never
 implicitly selects the whole library. While the dialog is visible, the gallery content
 behind it is lightly dimmed so the modal layer reads clearly above the library
@@ -514,13 +514,15 @@ Design intent:
 - Settings should be quiet and preference-oriented, using standard Libadwaita
   rows and switches. Operational groups (scan folders, trash migration,
   cache/data cleanup, sync management) stay as bounded management surfaces
-  inside the same dialog. Cloud sync has its own navigable subpage so operational
-  controls do not crowd the preferences list.
+  inside their right-hand category, with task details expandable in place.
 - The Liquid Glass setting changes the visual material live. It should affect
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
   license as compact text in the About category.
+- The shortcut reference remains an independent modal window. Opening it from
+  Settings keeps the exact Settings instance, category and scroll position alive;
+  closing the reference exposes that same Settings surface again.
 - The native sync configuration surface follows **edit first,
   reconfigure afterwards**: viewing, drafting, cancelling or re-submitting the
   same values never pauses or restarts anything; only a validated, accepted
@@ -538,7 +540,7 @@ Design intent:
 - Storage usage rows may display a pending size briefly. Directory-size
   calculations, especially thumbnail-cache scans, must not run synchronously
   while constructing or presenting the Settings dialog.
-- Each category and nested Settings page has its own bounded vertical scroller.
+- Each category has its own bounded vertical scroller.
   The category sidebar retains its width while the right content changes.
   Keep the dialog's requested height below common 800px windows so
   `AdwFloatingSheet` does not over-request during open/close animations.
@@ -638,10 +640,8 @@ Before editing UI code:
 Native task management displays the accepted username and supports sign-out and sign-in again. Sign-out revokes/removes the session and pauses only that task. Reauthentication can resume the same identity, while a different account needs another task and a non-overlapping local root. Draft fields never replace accepted credentials, and passwords are not saved. See [account integration](native-sync-accounts.md).
 
 
-Cloud sync uses a single ActionRow with a directly operable switch in main
-Settings. Activating the row pushes a NavigationPage in the same dialog; the
-page header provides a return button. Overview/progress and task configuration
-live exclusively on that subpage. Task cards start collapsed; details show the
+Cloud Sync shows a non-navigating ActionRow with a directly operable global
+switch. Overview/progress and task configuration follow inline in the category. Task cards start collapsed; details show the
 full folder and server/account/zone identity, an album-scope summary with a
 Choose button, and cloud-photo management. An accessible overflow menu groups
 pause/resume, sign-in, sign-out and confirmed removal. Existing glass button

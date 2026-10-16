@@ -34,8 +34,7 @@ All paths are below `$XDG_CACHE_HOME/<app>/logs/`:
 - `trace.json`: optional performance capture. Whole events are retained up to a
   separate bounded allowance; normal shutdown still produces valid JSON.
 
-The shared hard ceiling is **500,000,000 bytes**. Settings → Storage and Logs →
-Data Cleanup can lower it to 1–500 MB. Quota checks reserve space for crash/trace
+The shared hard ceiling is **500,000,000 bytes**. Settings → Storage and Logs can lower it to 1–500 MB. Quota checks reserve space for crash/trace
 output and compression temporaries. Remove oldest log dates first, including
 archives; compression's newer filesystem mtime does not change retention order.
 A long-running process also enforces the budget, rather than waiting for restart.

@@ -336,7 +336,7 @@
           <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile" data-img="s01"></div><div class="tile" data-img="s02"></div><div class="tile" data-img="s03"></div><div class="tile" data-img="s04"></div><div class="tile" data-img="s05"></div><div class="tile" data-img="s06"></div><div class="tile" data-img="s07"></div><div class="tile" data-img="s08"></div></div></div></main>
         </div>
       </div>
-      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="Fedora 风格：左侧固定分类，右侧独立滚动内容；常规、外观、照片与视频、云同步、存储与日志、关于。数据清理另有子页面。">
+      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="Fedora 风格：左侧固定分类，右侧独立滚动内容；常规、外观、照片与视频、云同步、存储与日志、关于。云同步及数据清理直接展示在分类内；快捷键独立窗口关闭后回到设置。">
         <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare" data-act="close-settings">×</button></div>
         <div style="display:flex;gap:12px" data-ui="settings-category-layout" data-name="设置分类布局" data-impl="settings/layout.rs Layout + Gtk.Stack">
           <aside style="min-width:140px;padding:12px" class="hotspot" tabindex="0" data-ui="settings-category-sidebar" data-name="设置分类侧栏" data-impl="Gtk.ListBox navigation-sidebar" data-props="固定宽度；真实选中行切换右侧 Gtk.Stack，不重建设置值。">
@@ -453,9 +453,9 @@
 <section id="native-sync-settings-map"><h2>原生云端同步设置</h2>
 <p>实现：src/ui/window/settings/native_sync.rs、native_actions.rs。所有正文通过 Rust tr() 本地化。</p>
 <table><thead><tr><th>Widget name</th><th>类型与职责</th></tr></thead><tbody>
-<tr><td>settings-navigation / native-sync-entry / native-sync-enabled</td><td>NavigationView / ActionRow / Switch：主设置的单行入口与独立总开关；点击行进入子页面，操作开关不导航</td></tr>
-<tr><td>native-sync-page / native-sync-back</td><td>NavigationPage / Button：同步子页面、返回主设置</td></tr>
-<tr><td>native-sync-settings / native-sync-overview / native-sync-status</td><td>PreferencesGroup / ActionRow / Label：子页面概览、历史完成比例及冲突提示、操作失败消息</td></tr>
+<tr><td>settings-navigation / native-sync-entry / native-sync-enabled</td><td>NavigationView / ActionRow / Switch：分类设置容器、云同步分类内的启用行和总开关；不再导航到子页面</td></tr>
+<tr><td>native-sync-content</td><td>Box：云同步分类直接展示概览、任务、范围说明；任务详情原地展开</td></tr>
+<tr><td>native-sync-settings / native-sync-overview / native-sync-status</td><td>PreferencesGroup / ActionRow / Label：分类内的概览、历史完成比例及冲突提示、操作失败消息</td></tr>
 <tr><td>native-sync-empty</td><td>ActionRow：没有任务时的添加服务器引导</td></tr>
 <tr><td>native-sync-add / native-sync-now</td><td>Button：添加服务器、立即同步</td></tr>
 <tr><td>native-sync-connection-dialog</td><td>Dialog：连接草稿，不接受就不影响现有任务</td></tr>
@@ -476,8 +476,9 @@
 <table><thead><tr><th>Widget name</th><th>类型与职责</th></tr></thead><tbody>
 <tr><td>settings-category-layout / settings-category-sidebar / settings-category-stack</td><td>Box / ListBox / Stack：固定分类侧栏，右侧每类独立滚动</td></tr>
 <tr><td>settings-category-{general,appearance,media,sync,storage,about}</td><td>ListBoxRow：常规、外观、照片与视频、云同步、存储与日志、关于</td></tr>
+<tr><td>shortcut-reference-group</td><td>PreferencesGroup / ActionRow：打开独立快捷键窗口，原设置保持分类与滚动状态；关闭快捷键后回到设置</td></tr>
 <tr><td>settings-log-level</td><td>ComboRow：关闭、错误、警告、信息、调试、详细跟踪；即时保存并重载打印等级</td></tr>
-<tr><td>settings-cleanup-entry / settings-cleanup-page</td><td>ActionRow / NavigationPage：存储分类内的数据清理入口和子页面</td></tr>
+<tr><td>settings-cleanup</td><td>Box：存储与日志分类内的空间上限、分组清理与占用统计；无需二次导航</td></tr>
 <tr><td>settings-log-limit</td><td>SpinRow：日志空间上限 1–500 MB；后台回收，快速修改合并</td></tr>
 <tr><td>settings-cleanup-{library,logs,accounts,all}</td><td>ActionRow：缩略图与媒体元数据、日志、登录与同步账户、全部数据；后台计算各类占用</td></tr>
 <tr><td>settings-cleanup-{library,logs,accounts,all}-button</td><td>Button：单独确认清理；日志/媒体清理保留登录；账户/全部清理同时删除数据库记录和系统密钥环令牌。原始文件保留。</td></tr>

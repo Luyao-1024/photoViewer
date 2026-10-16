@@ -84,6 +84,14 @@ the same key would be swallowed. Both now emit a matching `key-released`. Any
 new helper that synthesizes a key press has to do the same, or it silently
 tests a permanently-held key.
 
+## Reference window and Settings
+
+The reference is an independent modal GtkShortcutsWindow, transient for the main
+window. Opening it from the Settings row preserves the existing Settings dialog
+underneath, including its selected category and scroll position. Closing the
+reference returns to those settings; it must not close or rebuild the dialog.
+Opening the reference from the main window does not manufacture a Settings dialog.
+
 ## Default Keymap
 
 | Scope | Keys | Action |

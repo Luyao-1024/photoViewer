@@ -28,6 +28,7 @@ mod native_sync;
 impl MainWindow {
     pub(super) fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
         let toolbar = adw::ToolbarView::new();
+        toolbar.add_css_class("settings-dialog-surface");
         toolbar.add_top_bar(&adw::HeaderBar::new());
         toolbar.set_content(Some(&self.build_settings_page(host)));
         let page = adw::NavigationPage::new(&toolbar, &tr("setting.page.title"));
@@ -411,7 +412,7 @@ impl MainWindow {
         );
 
         self.append_log_settings(&storage_group, parent);
-        self.append_cleanup_entry(&layout.storage, parent);
+        self.append_cleanup_settings(&layout.storage, parent);
 
         content.append(&self.build_shortcuts_group());
 
@@ -427,7 +428,7 @@ impl MainWindow {
 
     /// Mouse-only users need a path to the shortcut reference that does not
     /// require knowing the key that opens it, so the row lives in settings and
-    /// closes the dialog before presenting the modal window.
+    /// preserves Settings underneath the independent modal reference window.
     pub(super) fn build_shortcuts_group(&self) -> adw::PreferencesGroup {
         let group = adw::PreferencesGroup::new();
         group.set_title(&tr("setting.section.keyboard"));
@@ -597,7 +598,7 @@ pub(super) fn add_close_on_backdrop_click(dialog: &adw::Dialog) {
         let picked = dialog.pick(x, y, gtk::PickFlags::DEFAULT);
         if !picked
             .as_ref()
-            .is_some_and(|widget| widget_or_ancestor_has_class(widget, "settings-dialog-content"))
+            .is_some_and(|widget| widget_or_ancestor_has_class(widget, "settings-dialog-surface"))
         {
             let _ = dialog.close();
         }
