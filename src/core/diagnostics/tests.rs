@@ -89,6 +89,7 @@ fn retention_keeps_five_newest_crash_files() {
 
 #[test]
 fn write_panic_crash_log_writes_expected_sections() {
+    let _sandbox = crate::testing::Sandbox::install();
     let dir = tempfile::tempdir().unwrap();
     // Provide an app.log so the tail section is exercised.
     std::fs::write(dir.path().join(APP_LOG_NAME), b"lead-up event line\n").unwrap();
@@ -147,4 +148,15 @@ fn chrome_layer_uses_flow_target_for_selective_chain_capture() {
         src.contains("metadata.target() == log_targets::FLOW"),
         "focused capture must exclude unrelated process-wide spans"
     );
+}
+
+#[test]
+fn panic_reports_bound_oversized_payloads_and_keep_utf8_valid() {
+    let _sandbox = crate::testing::Sandbox::install();
+    let dir = tempfile::tempdir().unwrap();
+    let huge = "长消息".repeat(100_000);
+    let path = write_panic_crash_log(dir.path(), &huge, &huge, &huge, &huge);
+    let bytes = std::fs::read(path).unwrap();
+    assert!(bytes.len() < 256 * 1024);
+    assert!(String::from_utf8(bytes).is_ok());
 }

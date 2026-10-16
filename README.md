@@ -45,6 +45,21 @@ See [the client usage guide](docs/modules/native-sync-usage.md) for setup and
 focused and live validation evidence. The authoritative protocol is owned by the
 sibling server and linked from [the contract index](docs/modules/native-sync-protocol.md).
 
+## Logs and Local Cleanup
+
+Settings now groups preferences in a category sidebar. **Storage and Logs** lets
+you change the logging level immediately. Its **Data Cleanup** subpage shows
+usage and provides separate actions for thumbnails + media metadata, logs,
+accounts, or all application data. Library/log cleanup preserves login; account
+and all-data cleanup remove both local account records and system-keyring tokens.
+Original photos and videos are preserved.
+
+Each launch writes a timestamped plain-text log under
+`$XDG_CACHE_HOME/io.github.luyao_1024.photoviewer/logs/`. On startup, logs dated
+before today are compressed into daily gzip archives; today's earlier runs stay
+uncompressed. Total log storage is capped at 500 MB and can be reduced in Data
+Cleanup. See [diagnostics](docs/modules/diagnostics.md) for paths and retention.
+
 ## Documentation
 
 Start from [docs/README.md](docs/README.md). Current behavior is documented by functional module under `docs/modules/`. Earlier milestone specs and plans are not kept in the tree; recover them from git history when you need the original rationale.
@@ -72,4 +87,4 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 Native SyncServer 的协议唯一来源是服务端仓库，参见[服务端契约入口](docs/modules/native-sync-protocol.md)中的本地相对链接；正式发布时再统一改为网页链接。客户端维护自己的[接入方案](docs/modules/native-sync.md)、[本地数据与发布方案](docs/modules/native-sync-storage.md)、[实现修订](docs/modules/native-sync-integration.md)和[阶段验收](docs/modules/native-sync-plan.md)。
 
-原生同步已接入设置、后台调度和逐照片发布；schema 11 保留 schema 9/10 的原生任务及 dirty，并增加删除后显式重传的标识。按用户要求只运行相关聚焦测试，完整远端发布门禁另行执行。实现与实机证据见[修订说明](docs/modules/native-sync-integration.md)，开发分支保持 dev。
+原生同步已接入设置、后台调度和逐照片发布；数据库版本固定为 1，开发阶段不维护旧结构迁移兼容。按用户要求只运行相关聚焦测试，完整远端发布门禁另行执行。实现与实机证据见[修订说明](docs/modules/native-sync-integration.md)，开发分支保持 dev。

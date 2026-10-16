@@ -1340,6 +1340,20 @@ pub(crate) fn reset_library_database(pool: &DbPool) -> Result<usize> {
     tx.execute("DELETE FROM album_order", [])?;
     tx.execute("DELETE FROM album_covers", [])?;
     tx.commit()?;
+    conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
+    Ok(count)
+}
+
+/// Credentials are deleted from the platform store before this actor command.
+/// Keep the DB references on credential failure so cleanup can be retried.
+pub(crate) fn reset_account_data(pool: &DbPool) -> Result<usize> {
+    let mut conn = pool.get()?;
+    conn.execute_batch("PRAGMA secure_delete=ON;")?;
+    let tx = conn.transaction()?;
+    let count = tx.execute("DELETE FROM sync_connections", [])?;
+    tx.execute("DELETE FROM settings", [])?;
+    tx.commit()?;
+    conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
     Ok(count)
 }
 

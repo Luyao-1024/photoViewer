@@ -20,30 +20,23 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+mod cleanup;
+mod layout;
 mod native_actions;
 mod native_sync;
 
 impl MainWindow {
     pub(super) fn build_settings_dialog(&self, host: &gtk::Widget) -> adw::Dialog {
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .propagate_natural_height(false)
-            .min_content_height(0)
-            .max_content_height(700)
-            .child(&self.build_settings_page(host))
-            .build();
-
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&adw::HeaderBar::new());
-        toolbar.set_content(Some(&scroller));
+        toolbar.set_content(Some(&self.build_settings_page(host)));
         let page = adw::NavigationPage::new(&toolbar, &tr("setting.page.title"));
         let navigation = adw::NavigationView::new();
         navigation.set_widget_name("settings-navigation");
         navigation.add(&page);
         let dialog = adw::Dialog::builder()
             .title(tr("setting.page.title"))
-            .content_width(540)
+            .content_width(980)
             .content_height(700)
             .child(&navigation)
             .build();
@@ -56,15 +49,8 @@ impl MainWindow {
 
     pub(super) fn build_settings_page(&self, parent: &gtk::Widget) -> gtk::Box {
         let current = locale().to_string();
-        let content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(16)
-            .margin_top(24)
-            .margin_bottom(24)
-            .margin_start(24)
-            .margin_end(24)
-            .build();
-        content.add_css_class("settings-dialog-content");
+        let layout = layout::Layout::new();
+        let content = &layout.general;
 
         let title = gtk::Label::new(Some(&tr("setting.section.language")));
         title.set_xalign(0.0);
@@ -115,12 +101,12 @@ impl MainWindow {
         lang_box.append(&btn_en);
         content.append(&lang_box);
 
-        self.append_native_sync_settings(&content, parent);
+        self.append_native_sync_settings(&layout.sync, parent);
 
         let appearance_group = adw::PreferencesGroup::new();
         appearance_group.set_title(&tr("setting.section.appearance"));
         appearance_group.add_css_class("settings-preferences-group");
-        content.append(&appearance_group);
+        layout.appearance.append(&appearance_group);
 
         let btn_theme_system = gtk::CheckButton::with_label(&tr("setting.theme.system"));
         let btn_theme_light = gtk::CheckButton::with_label(&tr("setting.theme.light"));
@@ -234,7 +220,7 @@ impl MainWindow {
         let video_group = adw::PreferencesGroup::new();
         video_group.set_title(&tr("setting.section.video"));
         video_group.add_css_class("settings-preferences-group");
-        content.append(&video_group);
+        layout.media.append(&video_group);
 
         let muted_switch = gtk::Switch::builder()
             .valign(gtk::Align::Center)
@@ -286,14 +272,16 @@ impl MainWindow {
             }
         });
 
-        content.append(&build_scan_paths_group(parent));
-        content.append(&self.build_trash_settings_group(parent));
+        layout.media.append(&build_scan_paths_group(parent));
+        layout
+            .media
+            .append(&self.build_trash_settings_group(parent));
 
         let grid_group = adw::PreferencesGroup::new();
         grid_group.set_title(&tr("setting.section.grid"));
         grid_group.set_description(Some(&tr("setting.section.grid_description")));
         grid_group.add_css_class("settings-preferences-group");
-        content.append(&grid_group);
+        layout.appearance.append(&grid_group);
 
         let initial_columns = runtime_config::photos_grid_columns();
         let columns_scale = gtk::Scale::with_range(
@@ -353,7 +341,7 @@ impl MainWindow {
         storage_group.set_title(&tr("setting.section.storage"));
         storage_group.set_description(Some(&tr("setting.section.storage_description")));
         storage_group.add_css_class("settings-preferences-group");
-        content.append(&storage_group);
+        layout.storage.append(&storage_group);
 
         let slow_label = tr("setting.thumbnail_generation_speed.slow");
         let normal_label = tr("setting.thumbnail_generation_speed.normal");
@@ -422,99 +410,8 @@ impl MainWindow {
             runtime_config::ThumbnailGenerationSpeed::Fastest,
         );
 
-        let thumb_dir = config::cache_dir().join("thumbnails");
-        let db_path = crate::config::data_dir().join("photos.db");
-
-        let clear_row = adw::ActionRow::new();
-        clear_row.add_css_class("settings-action-row");
-        clear_row.set_title(&tr("setting.clear_cache_data"));
-        clear_row.set_activatable(false);
-        update_storage_size_async(&clear_row, move || {
-            crate::core::cache::dir_size(&thumb_dir)
-                + std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0)
-        });
-
-        let btn_clear_data = gtk::Button::new();
-        btn_clear_data.set_icon_name("user-trash-symbolic");
-        btn_clear_data.set_valign(gtk::Align::Center);
-        btn_clear_data.add_css_class("glass-toolbar-button");
-        btn_clear_data.add_css_class("glass-toolbar-danger");
-        btn_clear_data.set_tooltip_text(Some(&tr("setting.clear_cache_data")));
-        clear_row.add_suffix(&btn_clear_data);
-        storage_group.add(&clear_row);
-
-        let parent_for_clear = parent.clone();
-        let db_actor_for_clear = self.imp().db_actor.borrow().clone();
-        let loader_for_clear = self.imp().loader.borrow().clone();
-        let media_list_for_clear = self.imp().media_list.borrow().clone();
-        btn_clear_data.connect_clicked(move |button| {
-            let db_actor_clone = db_actor_for_clear.clone();
-            let loader_clone = loader_for_clear.clone();
-            let media_list_clone = media_list_for_clear.clone();
-            let button = button.clone();
-            show_clear_confirm_dialog(
-                &parent_for_clear,
-                &tr("setting.clear_cache_data_confirm_title"),
-                &tr("setting.clear_cache_data_confirm_body"),
-                move || {
-                    let thumb_dir = config::cache_dir().join("thumbnails");
-                    let Some(db_actor) = db_actor_clone.as_ref() else {
-                        show_clear_error_toast(&tr("setting.clear_database_unavailable"));
-                        return;
-                    };
-                    let db_actor = db_actor.clone();
-                    let loader = loader_clone.clone();
-                    let media_list = media_list_clone.clone();
-                    let button = button.clone();
-                    button.set_sensitive(false);
-                    glib::spawn_future_local(async move {
-                        let result = gtk::gio::spawn_blocking(move || {
-                            let cleanup =
-                                crate::core::cache::enforce_size_limit_report(&thumb_dir, 0)?;
-                            if cleanup.failed_files > 0 {
-                                return Err(crate::core::error::AppError::Backend(format!(
-                                    "failed to remove {} cache files",
-                                    cleanup.failed_files
-                                )));
-                            }
-                            db_actor.execute_blocking(
-                                crate::core::db_actor::DbCommand::ResetLibraryDatabase,
-                            )
-                        })
-                        .await;
-                        button.set_sensitive(true);
-                        match result {
-                            Ok(Ok(crate::core::db_actor::DbCommandResult::Count(_))) => {
-                                if let Some(ref loader) = loader {
-                                    loader.clear_mem_cache();
-                                }
-                                if let Some(ref media_list) = media_list {
-                                    media_list.remove_all();
-                                }
-                                if let Err(err) = restart_application() {
-                                    show_clear_error_toast(&trf(
-                                        "setting.clear_failed",
-                                        &[("error", &err)],
-                                    ));
-                                }
-                            }
-                            Ok(Ok(other)) => show_clear_error_toast(&trf(
-                                "setting.clear_failed",
-                                &[("error", &format!("unexpected result: {other:?}"))],
-                            )),
-                            Ok(Err(err)) => show_clear_error_toast(&trf(
-                                "setting.clear_failed",
-                                &[("error", &err.to_string())],
-                            )),
-                            Err(err) => show_clear_error_toast(&trf(
-                                "setting.clear_failed",
-                                &[("error", &format!("worker failed: {err:?}"))],
-                            )),
-                        }
-                    });
-                },
-            );
-        });
+        self.append_log_settings(&storage_group, parent);
+        self.append_cleanup_entry(&layout.storage, parent);
 
         content.append(&self.build_shortcuts_group());
 
@@ -522,10 +419,10 @@ impl MainWindow {
             .orientation(gtk::Orientation::Vertical)
             .vexpand(true)
             .build();
-        content.append(&spacer);
-        content.append(&build_about_label());
+        layout.about.append(&build_about_label());
+        layout.about.append(&spacer);
 
-        content
+        layout.root
     }
 
     /// Mouse-only users need a path to the shortcut reference that does not
@@ -1143,6 +1040,9 @@ fn current_restart_spec() -> Result<RestartSpec, String> {
 
 fn restart_application() -> Result<(), String> {
     let spec = current_restart_spec()?;
+    // Flush before spawning: the replacement must start after this process has
+    // released the log-directory lock, even if a flush takes longer than 0.2 s.
+    let _ = crate::core::diagnostics::flush_logs();
     Command::new("sh")
         .arg("-c")
         .arg("sleep 0.2; exec \"$@\"")

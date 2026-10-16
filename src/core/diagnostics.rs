@@ -1,20 +1,4 @@
-//! Crash and session diagnostics.
-//!
-//! Four layers, all wired in [`init`], which `main()` runs as its very first
-//! statement (before GTK, resources, or the DB) so panics and logs from every
-//! later stage are captured:
-//!
-//! 1. A non-blocking file writer layered under the existing `EnvFilter`
-//!    subscriber, writing `<log_dir>/app.log` (truncated each launch).
-//! 2. A Rust panic hook that writes a self-contained `crash-<ts>.log`.
-//! 3. A GLib/GTK/GStreamer log writer redirect, so every `GObject-CRITICAL`,
-//!    GTK warning, and GStreamer error lands in `app.log` (and in crash files,
-//!    via the tail).
-//! 4. A best-effort native signal handler (see [`crate::core::crash_signal`])
-//!    that writes a `crash-<ts>.log` on `SIGSEGV`/`SIGABRT`/… — the only layer
-//!    that can catch the native-crash class (a Rust panic hook cannot).
-//!
-//! Crash files older than the 5 most recent are pruned on launch.
+//! Bounded timestamped log files, daily compressed archives and crash diagnostics.
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -29,6 +13,58 @@ use crate::config;
 use crate::core::log_targets;
 use crate::core::telemetry;
 
+mod runtime;
+mod storage;
+mod trace;
+use std::sync::OnceLock;
+use tracing_subscriber::{reload, Registry};
+static LOGGER: OnceLock<runtime::Logger> = OnceLock::new();
+static FILTER: OnceLock<reload::Handle<EnvFilter, Registry>> = OnceLock::new();
+
+/// Owns graceful draining of the log writer and optional performance trace.
+pub struct DiagnosticsGuard {
+    _chrome: Option<tracing_chrome::FlushGuard>,
+    _worker: Option<runtime::Worker>,
+}
+
+pub fn log_size() -> u64 {
+    storage::size(&config::cache_dir().join("logs"))
+}
+pub fn flush_logs() -> Result<()> {
+    if let Some(logger) = LOGGER.get() {
+        logger.flush()?;
+    }
+    Ok(())
+}
+pub fn clear_logs() -> Result<()> {
+    trace::reset(crate::core::prefs::log_limit_mb() * 1_000_000)?;
+    if let Some(logger) = LOGGER.get() {
+        return logger.clear();
+    }
+    let mut store = storage::Store::open(
+        &config::cache_dir().join("logs"),
+        crate::core::prefs::log_limit_mb() * 1_000_000,
+    )?
+    .context("another process owns the log directory")?;
+    store.clear()
+}
+pub fn set_log_level(level: &str) -> Result<()> {
+    let filter = EnvFilter::try_new(level)?;
+    crate::core::prefs::set_log_level(level).map_err(anyhow::Error::msg)?;
+    if let Some(handle) = FILTER.get() {
+        handle.reload(filter)?;
+    }
+    Ok(())
+}
+pub fn set_log_limit_mb(mb: u64) -> Result<()> {
+    let mb = mb.clamp(1, 500);
+    trace::reset(mb * 1_000_000)?;
+    if let Some(logger) = LOGGER.get() {
+        logger.resize(mb * 1_000_000)?;
+    }
+    crate::core::prefs::set_log_limit_mb(mb).map_err(anyhow::Error::msg)
+}
+
 const CRASH_FILE_PREFIX: &str = "crash-";
 const CRASH_FILE_SUFFIX: &str = ".log";
 const KEEP_CRASH_FILES: usize = 5;
@@ -38,36 +74,38 @@ const APP_LOG_TAIL_BYTES: i64 = 32 * 1024;
 
 /// Install all four diagnostics layers. Must be the first call in `main()`.
 ///
-/// Returns an optional Chrome trace `FlushGuard` when the
-/// `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` env var is set.
-/// `main()` must hold this binding for the whole process lifetime: the trace
+/// Returns the worker guard and an optional Chrome trace `FlushGuard` when
+/// `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` is set.
+/// `main()` holds both for the whole process lifetime: the trace
 /// file (`<log_dir>/trace.json`) is only finalized (closing bracket written)
 /// when the guard is dropped on normal exit. A crashed/`SIGKILL`ed process will
 /// leave an unfinished trace — that is expected; crashes are diagnosed via the
 /// crash-log layers, not the trace.
-pub fn init() -> Result<Option<tracing_chrome::FlushGuard>> {
+pub fn init() -> Result<DiagnosticsGuard> {
     let log_dir = make_log_dir()?;
 
-    // Start each session with an empty `app.log`. The previous session's
-    // lead-up is preserved inside whatever `crash-<ts>.log` was written at its
-    // end, so truncating here loses nothing.
-    let _ = std::fs::remove_file(log_dir.join(APP_LOG_NAME));
-
-    // Layer 1 first, so the hook/redirect layers below can log their own setup.
-    // The returned guard is the optional Chrome trace flush handle (see fn doc).
-    let chrome_flush_guard = install_subscriber(&log_dir);
-    install_panic_hook(log_dir.clone());
+    let started = runtime::Logger::start(&log_dir, crate::core::prefs::log_limit_mb() * 1_000_000)?;
+    let (logger, worker) = match started {
+        Some((logger, worker)) => {
+            let _ = LOGGER.set(logger.clone());
+            (Some(logger), Some(worker))
+        }
+        None => (None, None), // A second launcher never archives the live process.
+    };
+    let owns_logs = logger.is_some();
+    let chrome_flush_guard = install_subscriber(&log_dir, logger);
     install_glib_log_redirect();
-    install_signal_handler(&log_dir);
-
-    // Prune before we (potentially) add a new crash file this session.
-    retain_crash_files(&log_dir);
+    if owns_logs {
+        install_panic_hook(log_dir.clone());
+        install_signal_handler(&log_dir);
+        retain_crash_files(&log_dir);
+    }
 
     tracing::info!(
         target: log_targets::APP,
         "diagnostics: session log -> {}/{}  (crash files: {}<ts>{})",
         log_dir.display(),
-        APP_LOG_NAME,
+        "<date>/<startup-timestamp>.log",
         CRASH_FILE_PREFIX,
         CRASH_FILE_SUFFIX
     );
@@ -80,7 +118,10 @@ pub fn init() -> Result<Option<tracing_chrome::FlushGuard>> {
         );
     }
     telemetry::emit_configuration_log();
-    Ok(chrome_flush_guard)
+    Ok(DiagnosticsGuard {
+        _chrome: chrome_flush_guard,
+        _worker: worker,
+    })
 }
 
 fn make_log_dir() -> Result<PathBuf> {
@@ -92,22 +133,19 @@ fn make_log_dir() -> Result<PathBuf> {
 
 // ---- Layer 1: subscriber + file writer -------------------------------------
 
-fn install_subscriber(log_dir: &Path) -> Option<tracing_chrome::FlushGuard> {
+fn install_subscriber(
+    log_dir: &Path,
+    logger: Option<runtime::Logger>,
+) -> Option<tracing_chrome::FlushGuard> {
     use tracing_subscriber::fmt;
     use tracing_subscriber::prelude::*;
 
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(crate::core::prefs::log_level()));
+    let (filter_layer, handle) = reload::Layer::new(env_filter);
+    let _ = FILTER.set(handle);
     let stderr_layer = fmt::layer().with_writer(std::io::stderr);
-
-    let file_appender = tracing_appender::rolling::never(log_dir, APP_LOG_NAME);
-    let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
-    // The guard's only job is graceful shutdown flush, which a crashing process
-    // never reaches. Forgetting it lets the worker thread drain the channel for
-    // the whole process lifetime; the panic/signal layers flush their own files.
-    std::mem::forget(guard);
-    let file_layer = fmt::layer().with_ansi(false).with_writer(file_writer);
-
+    let owns_logs = logger.is_some();
     // Optional Layer 5: Chrome/Perfetto trace layer. Off by default; enabled only
     // when PHOTOVIEWER_CHROME_TRACE or PHOTOVIEWER_TRACE_CHAINS is set (see
     // `telemetry::chrome_trace_requested`), so release builds pay no extra
@@ -115,13 +153,19 @@ fn install_subscriber(log_dir: &Path) -> Option<tracing_chrome::FlushGuard> {
     // already admits every `#[instrument]` span (info-level); focused selectors
     // retain only the reusable OperationTrace target. The FlushGuard is returned
     // to `main()` so the trace finalizes on normal exit (see `init` doc).
-    let (chrome_layer, chrome_guard) = match telemetry::chrome_trace_requested() {
+    let (chrome_layer, chrome_guard) = match owns_logs && telemetry::chrome_trace_requested() {
         true => {
             let path = log_dir.join("trace.json");
             match std::fs::File::create(&path) {
                 Ok(file) => {
                     let (layer, flush_guard) = tracing_chrome::ChromeLayerBuilder::new()
-                        .writer(file)
+                        .writer(
+                            trace::Writer::new(
+                                file,
+                                trace::limit(crate::core::prefs::log_limit_mb() * 1_000_000),
+                            )
+                            .expect("trace file was opened"),
+                        )
                         // Serialize span/event field values (uri, queue_wait_ms,
                         // tier, media_id, cache_hit, …) into each event's `args`.
                         // tracing-chrome 0.7 defaults this OFF; without it the trace
@@ -151,9 +195,9 @@ fn install_subscriber(log_dir: &Path) -> Option<tracing_chrome::FlushGuard> {
     };
 
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(filter_layer)
         .with(stderr_layer)
-        .with(file_layer)
+        .with(logger)
         .with(chrome_layer)
         .init();
 
@@ -175,6 +219,9 @@ fn install_panic_hook(log_dir: PathBuf) {
         let thread_name = thread.name().unwrap_or("<unnamed>").to_string();
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
 
+        if std::thread::current().name() != Some("diagnostics-writer") {
+            let _ = flush_logs();
+        }
         let path = write_panic_crash_log(&log_dir, &payload, &location, &thread_name, &backtrace);
 
         eprintln!(
@@ -204,6 +251,19 @@ fn write_panic_crash_log(
     thread: &str,
     backtrace: &str,
 ) -> PathBuf {
+    let field_limit =
+        (crate::core::prefs::log_limit_mb() * 1_000_000 / 128).min(32 * 1024) as usize;
+    let trim = |value: &str| {
+        let mut end = value.len().min(field_limit);
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value[..end].to_owned()
+    };
+    let payload = trim(payload);
+    let backtrace = trim(backtrace);
+    let location = trim(location);
+    let thread = trim(thread);
     let ts = unix_now();
     let path = log_dir.join(format!("{CRASH_FILE_PREFIX}{ts}{CRASH_FILE_SUFFIX}"));
     let result = (|| -> std::io::Result<()> {
@@ -229,6 +289,7 @@ fn write_panic_crash_log(
             path.display()
         );
     }
+    retain_crash_files(log_dir);
     path
 }
 
@@ -253,6 +314,7 @@ fn append_app_log_tail(f: &mut File, log_dir: &Path) -> std::io::Result<()> {
         0
     };
     let _ = src.seek(SeekFrom::Start(from as u64));
+    let mut src = src.take(APP_LOG_TAIL_BYTES as u64);
     let mut buf = vec![0u8; 4096];
     loop {
         let n = src.read(&mut buf)?;

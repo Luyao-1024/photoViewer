@@ -40,6 +40,8 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     let shell = Shell::new();
     let ui = &shell.ui;
     ui.click(&shell.window.imp().settings_button.get(), "Settings");
+    let category = named::<gtk::ListBoxRow>(&shell.window, "settings-category-sync");
+    Ui::for_widget(&category).click(&category, "Cloud sync category");
     // The main Settings surface has just the switch and a navigation affordance.
     assert!(!descendants::<gtk::Button>(&shell.window)
         .iter()

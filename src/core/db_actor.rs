@@ -60,6 +60,7 @@ pub enum DbCommand {
         cover_uri: String,
     },
     ResetLibraryDatabase,
+    ResetAccountData,
     DeleteMediaRows {
         ids: Vec<MediaId>,
     },
@@ -126,6 +127,7 @@ impl DbCommand {
             | Self::SetAlbumOrder { .. }
             | Self::SetAlbumCover { .. }
             | Self::ResetLibraryDatabase
+            | Self::ResetAccountData
             | Self::DeleteMediaRows { .. } => DbWritePriority::UserInteractive,
             Self::MarkThumbnailsGenerated { .. } => DbWritePriority::Thumbnail,
             Self::MarkTrashed { .. }
@@ -489,6 +491,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::SetAlbumOrder { .. } => "set_album_order",
         DbCommand::SetAlbumCover { .. } => "set_album_cover",
         DbCommand::ResetLibraryDatabase => "reset_library_database",
+        DbCommand::ResetAccountData => "reset_account_data",
         DbCommand::DeleteMediaRows { .. } => "delete_media_rows",
         DbCommand::MarkThumbnailsGenerated { .. } => "mark_thumbnails_generated",
         DbCommand::MarkTrashed { .. } => "mark_trashed",
@@ -720,6 +723,7 @@ fn execute_command(
         DbCommand::ResetLibraryDatabase => {
             Ok(DbCommandResult::Count(db::reset_library_database(pool)?))
         }
+        DbCommand::ResetAccountData => Ok(DbCommandResult::Count(db::reset_account_data(pool)?)),
         DbCommand::DeleteTrashedRows { ids } => {
             for id in ids {
                 let conn = pool.get()?;

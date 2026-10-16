@@ -336,9 +336,13 @@
           <main class="content"><div class="headerbar"><span class="header-title">照片</span></div><div class="grid-page"><div class="tile-grid compact"><div class="tile" data-img="s01"></div><div class="tile" data-img="s02"></div><div class="tile" data-img="s03"></div><div class="tile" data-img="s04"></div><div class="tile" data-img="s05"></div><div class="tile" data-img="s06"></div><div class="tile" data-img="s07"></div><div class="tile" data-img="s08"></div></div></div></main>
         </div>
       </div>
-      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="外观、运行时、原生 SyncServer 同步和存储偏好；内容在有界滚动区域内。">
+      <div class="settings-card hotspot" tabindex="0" data-ui="settings-dialog" data-name="设置弹窗" data-impl="popup dialog from settings_button" data-props="Fedora 风格：左侧固定分类，右侧独立滚动内容；常规、外观、照片与视频、云同步、存储与日志、关于。数据清理另有子页面。">
         <div class="settings-head"><strong>设置</strong><span class="header-title"></span><button class="button round bare" data-act="close-settings">×</button></div>
-        <div class="settings-body">
+        <div style="display:flex;gap:12px" data-ui="settings-category-layout" data-name="设置分类布局" data-impl="settings/layout.rs Layout + Gtk.Stack">
+          <aside style="min-width:140px;padding:12px" class="hotspot" tabindex="0" data-ui="settings-category-sidebar" data-name="设置分类侧栏" data-impl="Gtk.ListBox navigation-sidebar" data-props="固定宽度；真实选中行切换右侧 Gtk.Stack，不重建设置值。">
+            <div>常规</div><div>外观</div><div>照片与视频</div><div>云同步</div><div>存储与日志</div><div>关于</div>
+          </aside>
+          <div class="settings-body" style="flex:1" data-ui="settings-category-stack" data-name="设置分类内容" data-impl="Gtk.Stack → 每类独立 Gtk.ScrolledWindow + Adw.Clamp">
           <div class="pref-row hotspot" tabindex="0" data-ui="theme-preference" data-name="主题设置" data-impl="ThemePreference rows → AdwStyleManager" data-props="跟随系统、浅色、深色；不重写 Liquid Glass 设置。"><span>外观主题</span><span>跟随系统</span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="liquid-glass-toggle" data-name="Liquid Glass 开关" data-impl="core::prefs.liquid_glass + grid_css::reapply()" data-props="在 Liquid Glass 与普通 translucent fallback 间切换。"><span>Liquid Glass</span><span class="switch" data-act="toggle-material"></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="glass-transparency-slider" data-name="玻璃透明度" data-impl="liquid_glass_transparency slider" data-props="0-100；装饰底色逐渐透明，模糊平滑减弱；菜单与文字面板保留阅读底色，焦点轮廓不受透明度影响。评审时把它拉到 100 再看 P1-13 的文本对比。"><span>透明度</span><span class="pref-scale-cell"><input class="range" type="range" min="0" max="100" value="0" id="transparency-range" aria-label="玻璃透明度"></span></div>
@@ -346,6 +350,7 @@
           <div class="pref-row hotspot" tabindex="0" data-ui="shortcut-reference-group" data-name="快捷键设置组" data-impl="Adw.PreferencesGroup「键盘」+ Adw.ActionRow → MainWindow::show_shortcuts_reference()" data-props="P0-4 已落盘：键位表从只能读 docs 变成应用内可发现。整行 activatable，右侧 go-next-symbolic；点击会先关闭设置弹窗再打开参考窗口，保证同一时刻只有一个模态窗。行下方描述提醒「随时按 F1 或 Ctrl+/ 打开」，让入口不依赖这次点击。" data-source="src/ui/window/settings.rs:523-545 构造 · :508 插入位置（About 之前）· src/ui/window.rs:929-936"><span data-i18n="setting.keyboard.reference">查看快捷键列表</span><button class="button" data-act="open-shortcuts">打开</button></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="photos-grid-columns-slider" data-name="日视图每行图片数量" data-impl="Gtk.Scale → runtime_config.photos_grid_columns" data-props="3-8、步长 1；立即保存，关闭设置后一次性重排日视图并请求窗口宽度，避免弹窗移动。"><span>日视图每行图片数量</span><span class="pref-scale-cell"><span class="scale"></span></span></div>
           <div class="pref-row hotspot" tabindex="0" data-ui="thumbnail-speed" data-name="缩略图生成速度" data-impl="runtime preference row" data-props="慢速、正常、快速、最快；不暴露原始 worker 数。"><span>缩略图生成</span><span>正常</span></div>
+          </div>
         </div>
       </div>
     </div>
@@ -465,6 +470,17 @@
 <tr><td>native-sync-relogin-{id} / native-sync-logout-{id}</td><td>Button：同账户登录并继续、撤销当前会话并暂停任务</td></tr>
 <tr><td>native-sync-relogin-username / native-sync-relogin-password / native-sync-relogin-status</td><td>EntryRow / PasswordEntryRow / Label：重新登录草稿与结果</td></tr>
 <tr><td>native-sync-relogin-submit / native-sync-relogin-cancel</td><td>Button：接受同账户登录或取消，不切换为其他账户</td></tr>
+</tbody></table></section>
+<section id="settings-cleanup-map"><h2>设置分类、日志与数据清理</h2>
+<p>实现：src/ui/window/settings/layout.rs、cleanup.rs。所有正文通过 Rust tr() 本地化。</p>
+<table><thead><tr><th>Widget name</th><th>类型与职责</th></tr></thead><tbody>
+<tr><td>settings-category-layout / settings-category-sidebar / settings-category-stack</td><td>Box / ListBox / Stack：固定分类侧栏，右侧每类独立滚动</td></tr>
+<tr><td>settings-category-{general,appearance,media,sync,storage,about}</td><td>ListBoxRow：常规、外观、照片与视频、云同步、存储与日志、关于</td></tr>
+<tr><td>settings-log-level</td><td>ComboRow：关闭、错误、警告、信息、调试、详细跟踪；即时保存并重载打印等级</td></tr>
+<tr><td>settings-cleanup-entry / settings-cleanup-page</td><td>ActionRow / NavigationPage：存储分类内的数据清理入口和子页面</td></tr>
+<tr><td>settings-log-limit</td><td>SpinRow：日志空间上限 1–500 MB；后台回收，快速修改合并</td></tr>
+<tr><td>settings-cleanup-{library,logs,accounts,all}</td><td>ActionRow：缩略图与媒体元数据、日志、登录与同步账户、全部数据；后台计算各类占用</td></tr>
+<tr><td>settings-cleanup-{library,logs,accounts,all}-button</td><td>Button：单独确认清理；日志/媒体清理保留登录；账户/全部清理同时删除数据库记录和系统密钥环令牌。原始文件保留。</td></tr>
 </tbody></table></section>
 </body>
 </html>

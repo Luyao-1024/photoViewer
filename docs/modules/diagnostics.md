@@ -2,35 +2,72 @@
 
 ## Scope
 
-In-app crash and session diagnostics, so a crash leaves a usable trail in the
-app's own files — not just whatever systemd/abrt happen to grab. Covers the
-tracing file layer, the Rust panic hook, the GLib/GTK/GStreamer log redirect,
-the native signal handler, and crash-file retention.
+In-app session logs and crash diagnostics use ordinary files, independently of
+the media database. `main()` initializes them before GTK or library startup.
 
 | File | Role |
 |---|---|
-| `src/core/diagnostics.rs` | `init()` (subscriber + file layer, panic hook, GLib redirect, retention, optional chrome trace layer), `write_panic_crash_log`, crash-file pruning |
-| `src/core/crash_signal.rs` | Async-signal-safe `SIGSEGV`/`SIGABRT`/… handler that writes a crash file. The only `unsafe` in the feature. |
-| `src/main.rs` | Calls `diagnostics::init()` as the **first** statement of `main()` |
+| `src/core/diagnostics.rs` | subscriber, live level reload, panic/GLib redirects, guards |
+| `src/core/diagnostics/storage.rs` | timestamped run files, daily gzip archives, quota, clearing |
+| `src/core/diagnostics/runtime.rs` | bounded producer queue and owned disk worker |
+| `src/core/diagnostics/trace.rs` | bounded, complete-event Perfetto writer |
+| `src/core/crash_signal.rs` | async-signal-safe native crash report |
 
-## Output
+## Files, archive and retention
 
-All under `$XDG_CACHE_HOME/<app>/logs/`:
+All paths are below `$XDG_CACHE_HOME/<app>/logs/`:
 
-- `app.log` — current session trace (every `tracing` event plus redirected GLib messages). **Truncated each launch.**
-- `crash-<unix_seconds>.log` — written by the panic hook (Rust panic) or the signal handler (native crash). Self-contained: a header + (panic: a `force_capture` backtrace) + the last 32 KiB of `app.log` as the lead-up.
-- `trace.json` — **only when `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` is set.** A Chrome/Perfetto-format flow trace (see [Flow tracing](#flow-tracing-chromeperfetto)). Finalized on normal process exit; an unfinished/missing file means the process was killed/crashed mid-trace.
-- Retention: on every launch, only the **5 newest** `crash-*.log` are kept; older ones are deleted. `app.log` (and `trace.json`) are never pruned by retention.
+- `<YYYY-MM-DD>/<startup timestamp>-<pid>.log`: a new plain-text file for each
+  launch. Timestamp precision is microseconds. Long runs roll additional numbered
+  segments with the same startup prefix, each at most 8 MiB (smaller under a low
+  quota). The current segment is written directly by the disk worker.
+- `archive/<YYYY-MM-DD>/<original filename>.gz`: at startup, compress **all log
+  files dated before today**. Previous runs from today stay uncompressed. Archives
+  retain the run's startup date. Gzip is published atomically before removing the
+  source, and incomplete compression can be retried after a crash.
+- `app.log`: a relative symlink to the active segment, used by existing crash-tail
+  readers. Usage counts its target once. Legacy app.log/trace files are preserved
+  as dated input to the same archive/retention rules.
+- `crash-<unix seconds>.log`: self-contained Rust/native crash reports plus the
+  last 32 KiB of app.log. Keep five recent Rust reports; native crash adds at most
+  one final report before termination. Large panic fields are bounded.
+- `trace.json`: optional performance capture. Whole events are retained up to a
+  separate bounded allowance; normal shutdown still produces valid JSON.
 
-The launch log prints the resolved logs dir via `tracing::info!(target: "app", ...)`.
+The shared hard ceiling is **500,000,000 bytes**. Settings → Storage and Logs →
+Data Cleanup can lower it to 1–500 MB. Quota checks reserve space for crash/trace
+output and compression temporaries. Remove oldest log dates first, including
+archives; compression's newer filesystem mtime does not change retention order.
+A long-running process also enforces the budget, rather than waiting for restart.
+An advisory directory lock prevents a second launcher archiving the live process.
+
+## Levels and clearing
+
+Settings → Storage and Logs exposes Off / Error / Warning / Information / Debug /
+Trace. Changes persist in settings.json and reload the filter for **both file and
+stderr output immediately**, without restart. RUST_LOG can override the initial
+filter for developer capture; a subsequent accepted UI choice replaces it. Debug
+and trace remain compiled in release builds.
+
+Data Cleanup clears logs independently of media/account data. It removes run
+history, archives and crash reports, truncates the **live writer's inode**, and
+resets an active performance trace. New events keep writing to a visible file.
+No media rows, account records or keyring credentials participate in log cleanup.
 
 ## Layer contract
 
-1. **File + stderr subscriber.** `tracing_appender::non_blocking` layered under the existing `EnvFilter`, writing `app.log` (ANSI disabled). The worker guard is forgotten — the worker drains the channel for the process lifetime; crash paths flush their own files independently.
-2. **Panic hook** writes `crash-<ts>.log` with payload, location, thread, `Backtrace::force_capture()`, and the `app.log` tail, then prints a short summary + the path to stderr.
-3. **GLib log redirect** via `glib::log_set_writer_func`: GObject/GTK/GStreamer warnings and errors are re-emitted on tracing target `"glib"` (domain embedded in the message), while message/info/debug entries are downgraded to `debug` and high-frequency known render noise is dropped. `Handled` is returned so GLib's own stderr writer doesn't duplicate retained messages.
-4. **Native signal handler** for `SIGSEGV`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGBUS`, `SIGTRAP`, installed with `SA_SIGINFO | SA_ONSTACK` plus `sigaltstack` (so a stack-exhaustion `SIGSEGV` can still run the handler).
-5. **Optional Chrome trace layer** (off unless `PHOTOVIEWER_CHROME_TRACE` or `PHOTOVIEWER_TRACE_CHAINS` is set) — see [Flow tracing](#flow-tracing-chromeperfetto). Not a crash-diagnostic layer; it captures per-flow timing for performance work.
+1. File + stderr subscriber under a reloadable EnvFilter. A 1024-event queue
+   bounds memory; queue overflow is counted and reported in a subsequent warning.
+   Individual event fields are bounded and named credential fields are redacted.
+   main() owns a guard that drains queued events at normal exit.
+2. Panic hook captures payload/location/thread/backtrace, attempts a bounded log
+   flush, then writes a bounded crash file. It never waits for its own disk worker.
+3. GLib/GTK/GStreamer warnings and errors redirect to target `glib`; low-severity
+   render chatter stays debug, and known render noise is suppressed.
+4. Native signal handler for SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS/SIGTRAP uses an
+   alternate stack and only async-signal-safe calls.
+5. Optional Chrome/Perfetto layer keeps existing flow selection and fields, with
+   a bounded output writer. It stays disabled unless explicitly requested.
 
 ### Async-signal-safety (Layer 4)
 

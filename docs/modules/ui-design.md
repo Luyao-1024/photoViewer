@@ -494,10 +494,14 @@ hide which backend is active when system trash and app trash can both exist.
 ## Settings
 
 Settings is reached from the sidebar footer gear button and opens as a popup
-dialog. It owns the quiet preference groups (language, appearance, video
-playback, Day grid columns, thumbnail speed), bounded management groups for
-scan folders and trash backend, and the combined cache/data cleanup action.
-The cloud-sync row in main Settings exposes only the global switch and a navigation
+dialog with a Fedora-style category sidebar and independently scrolling content.
+Categories are General, Appearance, Photos and Videos, Cloud Sync, Storage and
+Logs, and About. Language and shortcuts live in General; theme/glass/grid in
+Appearance; playback/scan/trash in Photos and Videos. Storage contains thumbnail
+speed, live logging level and a Data Cleanup navigation entry. The cleanup page
+combines thumbnails and media metadata into one category and provides separate
+logs, account and all-data actions, each with usage and an explicit scope notice.
+The cloud-sync category exposes only the global switch and a navigation
 affordance. Its subpage provides endpoint/username/password login, zone and local
 root selection, explicit physical album scope, task controls and conflict decisions.
 An empty upload selection receives cloud photos only; adding a connection never
@@ -516,7 +520,7 @@ Design intent:
   the full chrome language consistently: sidebar, headers, toolbar buttons,
   menus, panels, and segmented controls.
 - Keep static software information such as app name, version, author, and
-  license as compact small footer text at the bottom of the settings dialog.
+  license as compact text in the About category.
 - The native sync configuration surface follows **edit first,
   reconfigure afterwards**: viewing, drafting, cancelling or re-submitting the
   same values never pauses or restarts anything; only a validated, accepted
@@ -534,7 +538,8 @@ Design intent:
 - Storage usage rows may display a pending size briefly. Directory-size
   calculations, especially thumbnail-cache scans, must not run synchronously
   while constructing or presenting the Settings dialog.
-- Each Settings navigation page wraps its content in a bounded vertical scroller.
+- Each category and nested Settings page has its own bounded vertical scroller.
+  The category sidebar retains its width while the right content changes.
   Keep the dialog's requested height below common 800px windows so
   `AdwFloatingSheet` does not over-request during open/close animations.
 - Scrolling over the Liquid Glass transparency and Day grid column sliders

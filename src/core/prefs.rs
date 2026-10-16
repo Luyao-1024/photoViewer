@@ -354,6 +354,34 @@ fn clamp_liquid_glass_transparency(transparency: f64) -> f64 {
     }
 }
 
+/// Diagnostic preferences are read before GTK and the library DB start.
+pub fn log_level() -> String {
+    read_object_at(&settings_path())
+        .get("log_level")
+        .and_then(Value::as_str)
+        .filter(|v| ["off", "error", "warn", "info", "debug", "trace"].contains(v))
+        .unwrap_or("info")
+        .to_owned()
+}
+pub fn set_log_level(level: &str) -> Result<(), String> {
+    if !["off", "error", "warn", "info", "debug", "trace"].contains(&level) {
+        return Err("invalid log level".into());
+    }
+    write_string_at(&settings_path(), "log_level", level)
+}
+pub fn log_limit_mb() -> u64 {
+    read_object_at(&settings_path())
+        .get("log_limit_mb")
+        .and_then(Value::as_u64)
+        .unwrap_or(500)
+        .clamp(1, 500)
+}
+pub fn set_log_limit_mb(mb: u64) -> Result<(), String> {
+    let mut object = read_object_at(&settings_path());
+    object.insert("log_limit_mb".into(), Value::from(mb.clamp(1, 500)));
+    write_object_at(&settings_path(), object)
+}
+
 /// Current Liquid Glass preference, resolved from `settings.json`.
 /// Defaults to enabled when the file or key is absent.
 pub fn liquid_glass_enabled() -> bool {

@@ -321,26 +321,26 @@ fn settings_page_exposes_trash_backend_controls() {
     );
 }
 
-#[gtk::test]
-fn settings_clear_cache_data_row_defers_combined_size_calculation() {
-    let _ = gtk::init();
-    let app = adw::Application::builder()
-        .application_id("io.github.luyao_1024.photoviewer.WindowStorageUsage")
-        .build();
-    app.register(None::<&gtk::gio::Cancellable>)
-        .expect("test application should register");
+#[test]
+fn settings_cleanup_has_a_separate_navigation_entry() {
+    let _sandbox = crate::testing::Sandbox::install();
+    gtk::test_synced(|| {
+        let app = adw::Application::builder()
+            .application_id("io.github.luyao_1024.photoviewer.WindowStorageUsage")
+            .build();
+        app.register(None::<&gtk::gio::Cancellable>)
+            .expect("test application should register");
 
-    let window = MainWindow::new(&app);
-    let host = window.clone().upcast::<gtk::Widget>();
-    let page = window.build_settings_page(&host);
-    let page = page.upcast::<gtk::Widget>();
-    let pending = tr("setting.storage_usage_calculating");
-
-    assert_eq!(
-        find_action_row_subtitle(&page, &tr("setting.clear_cache_data")).as_deref(),
-        Some(pending.as_str()),
-        "combined cache-data size must not be calculated while constructing Settings"
-    );
+        let window = MainWindow::new(&app);
+        let host = window.clone().upcast::<gtk::Widget>();
+        let page = window.build_settings_page(&host);
+        let page = page.upcast::<gtk::Widget>();
+        assert_eq!(
+            find_action_row_subtitle(&page, &tr("setting.cleanup.title")).as_deref(),
+            Some(tr("setting.cleanup.description").as_str()),
+            "cleanup should navigate to separately measured categories"
+        );
+    });
 }
 
 #[test]
@@ -374,8 +374,8 @@ fn settings_dialog_uses_bounded_scroll_child() {
             .downcast::<adw::ToolbarView>()
             .unwrap();
         assert!(
-            toolbar.content().unwrap().is::<gtk::ScrolledWindow>(),
-            "each settings page must scroll inside the bounded dialog"
+            toolbar.content().unwrap().widget_name() == "settings-category-layout",
+            "settings must contain the category sidebar and independently scrolling pages"
         );
     });
 }
