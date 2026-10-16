@@ -421,12 +421,28 @@ box.mode-dot {
    transition itself is the same in Liquid and Plain mode — only the rest/
    hover/active *values* live in the material blocks. */
 .glass-toolbar-button,
+.glass-icon-button,
 .glass-menu-item,
 .glass-context-menu-item,
 .glass-sidebar-row,
 .sidebar-settings-button,
 .viewer-overlay-nav-btn {
   transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+
+/* glass-icon-button — the icon-only sibling of .glass-toolbar-button: same
+   glass material, square geometry. The text geometry (padding: 0 14px) turns
+   an icon-only button into a wide flat oval, and a GtkMenuButton paints its
+   material on an internal child button, so that child fills only the content
+   box and leaves a hollow ring around itself. Zero padding plus a matching
+   child rule keeps one square surface. Used by Settings row suffixes. */
+.glass-icon-button,
+.glass-icon-button > button {
+  min-height: 34px;
+  min-width: 34px;
+  border-radius: 10px;
+  padding: 0;
+  color: inherit;
 }
 
 .glass-toolbar-button.round-search-button {
@@ -475,6 +491,8 @@ box.mode-dot {
 
 .glass-toolbar-button:focus-visible,
 .glass-toolbar-button:focus,
+.glass-icon-button:focus-visible,
+.glass-icon-button:focus,
 .glass-header windowcontrols button:focus-visible,
 .glass-header windowcontrols button:focus {
   outline: none;

@@ -199,6 +199,17 @@ The shared `.glass-toolbar-button` material is **always-on** by default — phot
 
 Each scope gets its own bare-at-rest reset plus a hover/focus material rule in **both** `LIQUID_GLASS_MATERIAL_CSS` and `PLAIN_GLASS_MATERIAL_CSS`. Add new hover-only buttons by introducing a unique class and mirroring these two rules; do not loosen the shared `.glass-toolbar-button` rule, which other headers depend on being always-on.
 
+`.glass-icon-button` is the icon-only sibling of `.glass-toolbar-button`: the
+same always-on material in a **square** capsule. Use it for every icon-only
+button — row suffixes, card actions, inline controls — never
+`.glass-toolbar-button`, whose `padding: 0 14px` is text geometry and turns a
+lone icon into a wide flat oval. A `GtkMenuButton` additionally paints part of
+its material on an internal child button, so both `.glass-icon-button` and
+`.glass-icon-button > button` are addressed; without the child the surface
+covers only part of the capsule and leaves a hollow ring around the icon.
+`ui::grid_css::tests::render::icon_only_row_button_is_square_and_solid` guards
+both halves.
+
 ## Motion and reduce-motion
 
 `src/ui/motion.rs` is the only place that reads the desktop's

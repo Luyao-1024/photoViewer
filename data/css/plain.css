@@ -69,6 +69,30 @@ box.mode-selector.glass-raised.on-light-background {
   border-color: alpha(@window_fg_color, 0.20);
 }
 
+/* Icon-only glass buttons reuse the toolbar material verbatim — only the base
+   geometry differs. A GtkMenuButton paints part of its material on an internal
+   child button, so both nodes are addressed or the surface would not cover the
+   whole capsule. */
+.glass-icon-button,
+.glass-icon-button > button {
+  background: alpha(@window_bg_color, 0.52);
+  background-clip: padding-box;
+  border: 1px solid alpha(@window_fg_color, 0.10);
+  box-shadow: 0 3px 10px alpha(black, 0.18);
+}
+
+.glass-icon-button:hover,
+.glass-icon-button > button:hover {
+  background: alpha(@window_bg_color, 0.64);
+  border-color: alpha(@window_fg_color, 0.16);
+}
+
+.glass-icon-button:active,
+.glass-icon-button > button:active {
+  background: alpha(@window_bg_color, 0.74);
+  border-color: alpha(@window_fg_color, 0.20);
+}
+
 .glass-header windowcontrols button.close image {
   color: inherit;
 }

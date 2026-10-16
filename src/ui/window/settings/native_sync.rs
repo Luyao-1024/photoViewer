@@ -388,7 +388,7 @@ fn append_job(
         .valign(gtk::Align::Center)
         .popover(&menu)
         .build();
-    more.add_css_class("glass-toolbar-button");
+    more.add_css_class("glass-icon-button");
     more.set_widget_name(&format!("native-sync-menu-{}", job.id));
     more.set_tooltip_text(Some(&tr("native.task_actions")));
     row.add_suffix(&more);
@@ -422,7 +422,7 @@ fn append_job(
     row.add_row(&scope_row);
     let manage_row = detail("native.manage", &tr("native.manage_summary"));
     let manage = gtk::Button::from_icon_name("go-next-symbolic");
-    manage.add_css_class("glass-toolbar-button");
+    manage.add_css_class("glass-icon-button");
     manage.set_widget_name(&format!("native-sync-manage-{}", job.id));
     manage.set_tooltip_text(Some(&tr("native.manage")));
     manage.set_valign(gtk::Align::Center);

@@ -681,3 +681,79 @@ fn median_surface(window: &gtk::Window, widget: &impl IsA<gtk::Widget>) -> gdk::
     };
     gdk::RGBA::new(middle(0), middle(1), middle(2), 1.0)
 }
+
+/// An icon-only button on a Settings row suffix is square, and its surface
+/// covers the whole capsule. The text-button geometry (`padding: 0 14px`)
+/// fails both halves: it widens a lone icon into a flat oval, and the
+/// GtkMenuButton paints its material on an internal child button, so the
+/// content box is filled while the padding ring around it stays bare — a
+/// hollow outline around a filled square.
+#[gtk::test]
+fn icon_only_row_button_is_square_and_solid() {
+    use libadwaita::prelude::*;
+    adw::init().unwrap();
+    let display = gdk::Display::default().unwrap();
+    let provider = gtk::CssProvider::new();
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    let group = adw::PreferencesGroup::new();
+    let row = adw::ExpanderRow::builder()
+        .title("图片")
+        .subtitle("自动同步已就绪")
+        .build();
+    let menu = gtk::Popover::new();
+    menu.set_child(Some(&gtk::Box::new(gtk::Orientation::Vertical, 2)));
+    let more = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .valign(gtk::Align::Center)
+        .popover(&menu)
+        .build();
+    more.add_css_class("glass-icon-button");
+    row.add_suffix(&more);
+    group.add(&row);
+    let window = gtk::Window::builder()
+        .default_width(620)
+        .default_height(160)
+        .child(&group)
+        .build();
+    window.present();
+    for liquid in [true, false] {
+        provider.load_from_data(&runtime_compatible_css(&build_css_with_transparency(
+            liquid, 0.5,
+        )));
+        settle(400);
+        let allocation = more.allocation();
+        let width = f64::from(allocation.width());
+        let height = f64::from(allocation.height());
+        assert!(
+            (width - height).abs() <= 2.0,
+            "icon-only button must be square in {liquid} mode, got {width:.0}x{height:.0}"
+        );
+
+        // Solid: the surface reaches the capsule's own edge instead of
+        // stopping at the icon's content box.
+        let (scale_width, data) = pixels(&window, &window);
+        let scale = scale_width as f64 / f64::from(window.width().max(1));
+        let (origin_x, origin_y) = more
+            .translate_coordinates(&window, 0.0, 0.0)
+            .expect("a mapped row suffix is inside the window");
+        let sample = |x: f64, y: f64| -> u8 {
+            let px = ((x * scale) as usize).min(scale_width - 1);
+            let py = ((y * scale) as usize).min(data.len() / (scale_width * 4) - 1);
+            data[(py * scale_width + px) * 4]
+        };
+        let mid_y = origin_y + height / 2.0;
+        let inside = sample(origin_x + 3.0, mid_y);
+        let outside = sample(origin_x - 6.0, mid_y);
+        assert!(
+            inside.abs_diff(outside) >= 4,
+            "icon button must paint its full capsule in {liquid} mode: \
+             {inside} at the edge vs {outside} on the row"
+        );
+    }
+    window.close();
+    gtk::style_context_remove_provider_for_display(&display, &provider);
+}

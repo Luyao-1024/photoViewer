@@ -1,6 +1,8 @@
 /* GTK-supported focus styling, applied after both material modes. Keep this
    independent of transparency so keyboard navigation remains discoverable. */
 .glass-toolbar-button:focus-visible,
+.glass-icon-button:focus-visible,
+.glass-icon-button > button:focus-visible,
 .glass-header windowcontrols button:focus-visible,
 .glass-menu-item:focus-visible,
 .glass-context-menu-item:focus-visible,

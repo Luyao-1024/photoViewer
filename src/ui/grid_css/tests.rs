@@ -322,6 +322,67 @@ fn viewer_chrome_is_glass_only_on_hover() {
     }
 }
 
+/// Icon-only glass buttons get their own class because the text geometry
+/// cannot serve them: `padding: 0 14px` widens a lone icon into a flat oval,
+/// and a GtkMenuButton paints its material on an internal child button that
+/// then covers only the content box — a hollow ring around a filled square.
+/// `.glass-icon-button` is square (padding: 0) and addresses that child in
+/// both material modes, so one surface covers the whole capsule.
+#[test]
+fn icon_only_glass_button_is_square_in_both_modes() {
+    for liquid in [true, false] {
+        let css = build_css(liquid);
+
+        // The text class keeps its text geometry — the two must not drift.
+        assert!(
+            css_block(&css, ".glass-toolbar-button")
+                .is_some_and(|block| block.contains("padding: 0 14px")),
+            "text buttons must keep their horizontal padding ({liquid} mode)"
+        );
+
+        // Square geometry, and the GtkMenuButton's internal child is matched
+        // with it — otherwise the child paints a narrower fill inside the
+        // button's own border ring.
+        let geometry = css_block(&css, ".glass-icon-button,\n.glass-icon-button > button")
+            .unwrap_or_else(|| panic!("icon button geometry missing ({liquid} mode)"));
+        for declaration in ["padding: 0;", "min-width: 34px;", "min-height: 34px;"] {
+            assert!(
+                geometry.contains(declaration),
+                "icon button must be square: {declaration} ({liquid} mode)"
+            );
+        }
+
+        // Rest, hover and active all carry the material on both nodes, in the
+        // mode's own values — an icon-only button must never sit bare while the
+        // text button beside it is lit.
+        for (state, selector) in [
+            ("rest", ".glass-icon-button,\n.glass-icon-button > button"),
+            (
+                "hover",
+                ".glass-icon-button:hover,\n.glass-icon-button > button:hover",
+            ),
+            (
+                "active",
+                ".glass-icon-button:active,\n.glass-icon-button > button:active",
+            ),
+        ] {
+            // The base geometry carries the same selector, so the material
+            // block is the last one.
+            let block = last_css_block(&css, selector)
+                .unwrap_or_else(|| panic!("icon button {state} material missing ({liquid} mode)"));
+            assert!(
+                block.contains("background: alpha(@window_bg_color"),
+                "icon button {state} must paint its surface ({liquid} mode)"
+            );
+            assert!(
+                block.contains("border: 1px solid alpha(@window_fg_color")
+                    || block.contains("border-color: alpha(@window_fg_color"),
+                "icon button {state} must keep the button outline ({liquid} mode)"
+            );
+        }
+    }
+}
+
 /// The sidebar settings button mirrors the viewer-chrome hover-only
 /// treatment: bare icon at rest, glass capsule on hover/focus, in BOTH
 /// glass modes. Scoped to .sidebar-settings-button so the shared always-on
@@ -383,7 +444,7 @@ fn glass_chrome_eases_on_state_change() {
 
         assert!(
                 css.contains(
-                    ".glass-toolbar-button,\n.glass-menu-item,\n.glass-context-menu-item,\n.glass-sidebar-row,\n.sidebar-settings-button,\n.viewer-overlay-nav-btn"
+                    ".glass-toolbar-button,\n.glass-icon-button,\n.glass-menu-item,\n.glass-context-menu-item,\n.glass-sidebar-row,\n.sidebar-settings-button,\n.viewer-overlay-nav-btn"
                 ),
                 "glass chrome classes must share one transition selector ({liquid} mode)"
             );
