@@ -765,9 +765,9 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         assert!(report.failures.is_empty(), "{report:?}");
         assert_eq!(report.outstanding, 0);
         assert_eq!(report.mutations_sent, 0);
-        // Two real overlapping content edits require an explicit resolution.
+        // A uploads first, but B edited later: edit time, not upload order,
+        // chooses B's bytes for this same cloud record on both installations.
         use photo_viewer::core::sync::store::PhotoAction;
-        photo_viewer::core::prefs::set_sync_enabled(false).unwrap();
         common::write_distinct_jpeg(&path, 96, 80, [10, 100, 200]);
         actor_a
             .execute_blocking(DbCommand::UpdateEditedMedia {
@@ -775,6 +775,7 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
                 item: item(&path),
             })
             .unwrap();
+        std::thread::sleep(Duration::from_millis(5));
         common::write_distinct_jpeg(&target.join("photo.jpg"), 96, 80, [90, 80, 70]);
         actor_b
             .execute_blocking(DbCommand::UpdateEditedMedia {
@@ -782,41 +783,20 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
                 item: item(&target.join("photo.jpg")),
             })
             .unwrap();
-        let local_copy = std::fs::read(target.join("photo.jpg")).unwrap();
+        let newer_b = std::fs::read(target.join("photo.jpg")).unwrap();
         assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
-        assert!(b.run_cycle(job_b.id).await.unwrap().outstanding > 0);
-        let captured = b.store().managed_photos(job_b.id).unwrap().remove(0);
-        assert!(captured.conflict.is_some());
-        let recovery = b
-            .accept_photo_action(job_b.id, captured.clone(), PhotoAction::UseCloud)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            std::fs::read(recovery.join("photo.jpg")).unwrap(),
-            local_copy
-        );
-        assert!(
-            b.accept_photo_action(job_b.id, captured, PhotoAction::UseCloud)
-                .await
-                .is_err(),
-            "a stale decision cannot be applied twice"
-        );
-        let resolved = b.run_cycle(job_b.id).await.unwrap();
-        assert!(resolved.failures.is_empty(), "{resolved:?}");
-        assert_eq!(resolved.outstanding, 0);
-        assert_eq!(
-            std::fs::read(target.join("photo.jpg")).unwrap(),
-            std::fs::read(&path).unwrap()
-        );
-        // Keep-local first retains the actual verified competing cloud bytes.
-        common::write_distinct_jpeg(&path, 96, 80, [11, 22, 33]);
-        actor_a
-            .execute_blocking(DbCommand::UpdateEditedMedia {
-                id: MediaId::from(source_id),
-                item: item(&path),
-            })
-            .unwrap();
+        let merged = b.run_cycle(job_b.id).await.unwrap();
+        assert!(merged.failures.is_empty(), "{merged:?}");
+        assert_eq!(merged.outstanding, 0);
+        assert!(b.store().managed_photos(job_b.id).unwrap()[0]
+            .conflict
+            .is_none());
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), newer_b);
+        assert_eq!(std::fs::read(target.join("photo.jpg")).unwrap(), newer_b);
+
+        // B edits first, A edits later and publishes: B automatically receives
+        // A's winner while retaining its independently newer favorite edit.
         common::write_distinct_jpeg(&target.join("photo.jpg"), 96, 80, [44, 55, 66]);
         actor_b
             .execute_blocking(DbCommand::UpdateEditedMedia {
@@ -824,26 +804,37 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
                 item: item(&target.join("photo.jpg")),
             })
             .unwrap();
-        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
-        assert!(b.run_cycle(job_b.id).await.unwrap().outstanding > 0);
-        let captured = b.store().managed_photos(job_b.id).unwrap().remove(0);
-        let recovery = b
-            .accept_photo_action(job_b.id, captured, PhotoAction::KeepLocal)
-            .await
-            .unwrap()
+        std::thread::sleep(Duration::from_millis(5));
+        common::write_distinct_jpeg(&path, 96, 80, [11, 22, 33]);
+        actor_a
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(source_id),
+                item: item(&path),
+            })
             .unwrap();
-        assert_eq!(
-            std::fs::read(recovery.join("cloud-original")).unwrap(),
-            std::fs::read(&path).unwrap()
-        );
-        let resolved = b.run_cycle(job_b.id).await.unwrap();
-        assert!(resolved.failures.is_empty(), "{resolved:?}");
-        assert_eq!(resolved.outstanding, 0);
+        actor_b
+            .execute_blocking(DbCommand::SetFavorite {
+                ids: vec![MediaId::from(received_id)],
+                is_favorite: true,
+            })
+            .unwrap();
+        let newer_a = std::fs::read(&path).unwrap();
         assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            std::fs::read(target.join("photo.jpg")).unwrap()
+        let merged = b.run_cycle(job_b.id).await.unwrap();
+        assert!(merged.failures.is_empty(), "{merged:?}");
+        assert_eq!(merged.outstanding, 0);
+        assert!(b.store().managed_photos(job_b.id).unwrap()[0]
+            .conflict
+            .is_none());
+        assert_eq!(std::fs::read(target.join("photo.jpg")).unwrap(), newer_a);
+        assert!(
+            db::get_media_item(&pool_b, received_id)
+                .unwrap()
+                .is_favorite
         );
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert!(db::get_media_item(&pool_a, source_id).unwrap().is_favorite);
+        assert_eq!(std::fs::read(&path).unwrap(), newer_a);
         // A confirmed cloud delete preserves local files and suppresses revival.
         let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
         let old_id = pool_a
@@ -892,6 +883,60 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
             )
             .unwrap();
         assert_ne!(old_id, new_id);
+        assert_eq!(b.run_cycle(job_b.id).await.unwrap().outstanding, 0);
+
+        // Identity, not path, ties the edits together: A renames the record
+        // while B edits its content. Both changes must eventually be local.
+        common::write_distinct_jpeg(&target.join("photo.jpg"), 96, 80, [76, 54, 32]);
+        actor_b
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(received_id),
+                item: item(&target.join("photo.jpg")),
+            })
+            .unwrap();
+        let winning_content = std::fs::read(target.join("photo.jpg")).unwrap();
+        photo_viewer::core::repository::MediaRepository::new(pool_a.clone())
+            .rename_media_file_with_actor(MediaId::from(source_id), "renamed", &actor_a)
+            .unwrap();
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        for _ in 0..2 {
+            let round = b.run_cycle(job_b.id).await.unwrap();
+            assert!(round.failures.is_empty(), "{round:?}");
+            assert_eq!(round.outstanding, 0);
+        }
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert_eq!(
+            std::fs::read(source.join("renamed.jpg")).unwrap(),
+            winning_content
+        );
+        assert_eq!(
+            std::fs::read(target.join("renamed.jpg")).unwrap(),
+            winning_content
+        );
+        assert!(!path.exists());
+        assert!(!target.join("photo.jpg").exists());
+        assert_eq!(
+            db::get_media_item(&pool_b, received_id).unwrap().path,
+            target.join("renamed.jpg")
+        );
+        assert!(b
+            .store()
+            .managed_photos(job_b.id)
+            .unwrap()
+            .iter()
+            .all(|photo| photo.conflict.is_none()));
+        actor_b
+            .execute_blocking(DbCommand::SetFavorite {
+                ids: vec![MediaId::from(received_id)],
+                is_favorite: false,
+            })
+            .unwrap();
+        let after_rename = b.run_cycle(job_b.id).await.unwrap();
+        assert!(after_rename.failures.is_empty(), "{after_rename:?}");
+        assert_eq!(after_rename.mutations_confirmed, 1);
+        assert_eq!(b.store().managed_photos(job_b.id).unwrap().len(), 1);
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
+        assert!(!db::get_media_item(&pool_a, source_id).unwrap().is_favorite);
         assert!(target.read_dir().unwrap().all(|entry| !entry
             .unwrap()
             .file_name()
@@ -1004,5 +1049,134 @@ fn a_second_job_downloads_from_its_own_server_and_credential() {
             std::fs::read(&path).unwrap()
         );
         assert_eq!(db::list_all_media(&pool_b).unwrap().len(), 1);
+    });
+}
+
+#[test]
+fn receiving_path_collisions_merge_matching_bytes_and_preserve_local_variants() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    let Some(server) = Server::start() else {
+        return skip();
+    };
+    let root = sandbox.scratch("native-path-collisions");
+    let source = root.path().join("source");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(source.join("album")).unwrap();
+    std::fs::create_dir_all(target.join("album")).unwrap();
+    let same = common::write_plain_jpeg(&source.join("album"), "same.jpg");
+    std::fs::copy(&same, target.join("album/same.jpg")).unwrap();
+    common::write_distinct_jpeg(&source.join("album/different.jpg"), 64, 48, [10, 20, 30]);
+    common::write_distinct_jpeg(&target.join("album/different.jpg"), 64, 48, [30, 10, 20]);
+    let mut cloud = std::fs::read(source.join("album/different.jpg")).unwrap();
+    let mut local = std::fs::read(target.join("album/different.jpg")).unwrap();
+    let length = cloud.len().max(local.len());
+    cloud.resize(length, 0);
+    local.resize(length, 0);
+    assert_ne!(cloud, local);
+    std::fs::write(source.join("album/different.jpg"), &cloud).unwrap();
+    std::fs::write(target.join("album/different.jpg"), &local).unwrap();
+    std::fs::write(target.join("album/different_1.jpg"), b"occupied one").unwrap();
+    std::fs::write(target.join("album/different_2.jpg"), b"occupied two").unwrap();
+    let size = common::write_plain_jpeg(&source.join("album"), "size.jpg");
+    let mut local_size = std::fs::read(&size).unwrap();
+    local_size.extend_from_slice(b"local variant");
+    std::fs::write(target.join("album/size.jpg"), &local_size).unwrap();
+    block_on(async {
+        use photo_viewer::core::{
+            db,
+            db_actor::{start_db_actor, DbCommand},
+            events::{ChangeSource, DomainEventSender},
+            sync::{NewSyncJob, ProviderKind, SyncDirection, SyncService, UploadScope},
+        };
+        let scope = server.client().probe().await.unwrap();
+        let make_service = |name: &str| {
+            let pool = db::init_pool(&root.path().join(format!("{name}.db"))).unwrap();
+            let (sender, _receiver) = DomainEventSender::new();
+            let actor = start_db_actor(pool.clone(), sender);
+            let key = server.api_key.clone();
+            let service = SyncService::with_actor(pool.clone(), actor.clone())
+                .with_credential_reader(move |_| Ok(key.clone()));
+            (service, pool, actor)
+        };
+        let (a, pool_a, actor_a) = make_service("a");
+        let (b, pool_b, _actor_b) = make_service("b");
+        let items = ["same.jpg", "different.jpg", "size.jpg"]
+            .into_iter()
+            .map(|name| {
+                photo_viewer::core::backend::local::LocalBackend::new_item_from_path(
+                    &source.join("album").join(name),
+                )
+                .unwrap()
+                .unwrap()
+            })
+            .collect();
+        actor_a
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items,
+            })
+            .unwrap();
+        let make_job = |path: PathBuf, upload_scope| NewSyncJob {
+            provider_kind: ProviderKind::NativeSyncServer,
+            endpoint: server.base_url.clone(),
+            credential_ref: "collision-test".into(),
+            local_root: path,
+            direction: SyncDirection::Bidirectional,
+            upload_scope,
+            upload_albums: vec![],
+            native_zone: Some(NativeZone::new("PrimarySync")),
+            native_pinned: Some(scope.clone()),
+        };
+        let job_a = a
+            .store()
+            .create_job(&make_job(source.clone(), UploadScope::All))
+            .unwrap();
+        let job_b = b
+            .store()
+            .create_job(&make_job(target.clone(), UploadScope::SelectedAlbums))
+            .unwrap();
+        let uploaded = a.run_cycle(job_a.id).await.unwrap();
+        assert!(uploaded.failures.is_empty(), "{uploaded:?}");
+        assert_eq!(uploaded.mutations_confirmed, 3);
+        let received = b.run_cycle(job_b.id).await.unwrap();
+        assert!(received.failures.is_empty(), "{received:?}");
+        assert_eq!(received.outstanding, 0);
+        assert_eq!(received.mutations_sent, 0);
+        for name in ["same.jpg", "different.jpg", "size.jpg"] {
+            assert_eq!(
+                std::fs::read(target.join("album").join(name)).unwrap(),
+                std::fs::read(source.join("album").join(name)).unwrap(),
+                "{name}"
+            );
+        }
+        assert!(!target.join("album/same_1.jpg").exists());
+        assert_eq!(
+            std::fs::read(target.join("album/different_3.jpg")).unwrap(),
+            local
+        );
+        assert_eq!(
+            std::fs::read(target.join("album/different_1.jpg")).unwrap(),
+            b"occupied one"
+        );
+        assert_eq!(
+            std::fs::read(target.join("album/different_2.jpg")).unwrap(),
+            b"occupied two"
+        );
+        assert_eq!(
+            std::fs::read(target.join("album/size_1.jpg")).unwrap(),
+            local_size
+        );
+        assert!(b
+            .store()
+            .managed_photos(job_b.id)
+            .unwrap()
+            .iter()
+            .all(|photo| photo.conflict.is_none()));
+        assert_eq!(db::list_all_media(&pool_b).unwrap().len(), 5);
+        assert_eq!(db::list_all_media(&pool_a).unwrap().len(), 3);
+        let again = b.run_cycle(job_b.id).await.unwrap();
+        assert!(again.failures.is_empty(), "{again:?}");
+        assert_eq!(again.outstanding, 0);
+        assert!(!target.join("album/different_4.jpg").exists());
     });
 }

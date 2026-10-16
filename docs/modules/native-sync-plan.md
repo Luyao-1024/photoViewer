@@ -41,7 +41,7 @@ Keep one in-process service on the current Tokio runtime and the existing DbActo
 | `sync/native/receive.rs` | shared bootstrap, delta inbox, graph/conflict planning and applied readiness | pure planner concepts, actor transactions; no file publication mid-page |
 | `sync/service/coordinator.rs`, `sync/content.rs` | DB-derived tasks, stable original/thumbnail snapshots, resource sessions, atomic record requests and unknown outcomes | local snapshot machinery and existing issued-operation evidence |
 | `sync/service/transfer.rs`, `sync/publication_io.rs` | verified dual downloads, cache import, owned file intent/recovery and admission | local publication, scanner/watcher, ThumbnailLoader and existing media model |
-| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, schema 11, native dirty/version/baseline/progress commands | no second dirty queue, no WebDAV-era columns left behind |
+| `sync/model.rs`, `sync/store.rs`, `db_actor.rs`, `schema.sql` | typed provider discriminator, schema 1, native dirty/version/baseline/progress commands | no second dirty queue, no WebDAV-era columns left behind |
 | `platform/credentials.rs` | distinct Bearer credential reference and lifecycle | current Secret Service boundary; never persist plaintext key |
 | Settings + event/UI adapters | create/probe native connection, configured zone, supported strategy/scope, localized errors and truthful status | accepted changes only; existing local grid/viewer and glass/i18n/accessibility rules |
 
@@ -55,7 +55,7 @@ implements no file operations.
 
 | Stage | Concrete patch scope | Required focused evidence | Exit condition |
 |---|---|---|---|
-| C1.1 Connection/transport | provider discriminator, native DTOs/probe/auth/limit handling, native job configuration, schema 9 (WebDAV tables dropped and recreated, library preserved) | real server health/capability/scope/auth/errors (tests/native_sync_probe.rs against the actual binary); invalid drafts have no side effects; schema-8 upgrade keeps media/favorites/albums and discards sync history | native connection can be configured/probed; no claim of media sync yet |
+| C1.1 Connection/transport | provider discriminator, native DTOs/probe/auth/limit handling, native job configuration, schema 1 (native-only development schema) | real server health/capability/scope/auth/errors (tests/native_sync_probe.rs against the actual binary); invalid drafts have no side effects; development schema stays at version 1 without a migration ladder | native connection can be configured/probed; no claim of media sync yet |
 | C1.2 Durable receive | snapshot/type markers, ordered delta inbox/projection, typed remote graph, scope-aware obligations and progress | `tests/native_sync_receive.rs` against the real binary: concurrent writes at a fixed height, a write between pages, replay idempotence, an empty zone, token-substitution refusal; store suites cover split atomic pairs, mid-page restart, scope/generation invalidation and token-expiry reset | metadata is durable; ingest can advance; applied remains blocked by unresolved work |
 | C1.3 Dirty/coordination/uplink | real local mutation hooks, category versions/events, server lease/heartbeat/gate/phases, issued-operation reconciliation and callbacks | `tests/native_sync_lease.rs`: two clients, one acquire, busy skip, a forged fence refused, a refused gate keeping its lease, a passed gate being single-use, held-lock catch-up, renewal after loss, a receipt readable after the lease ended, a replayed mutation returning one receipt; store suites cover a mid-flight edit racing its callback and a confirmed create that must not repeat | generic coordinator and metadata-only native mutation work; no fake asset publication |
 | C1.4 Complete media | stable source/thumbnail upload, trusted receipts, atomic photo pair, dual download/publication/cache/admission | `tests/native_sync_assets.rs` against the real binary: a pair uploads and downloads back byte for byte, tampered bytes fail the session terminally, a swapped role/field and a wrong-phase reservation are refused; store/service suites cover half-pair non-admission, exactly-once admission, stale intents, vanished staging and replaced files | new/updated media appears only when its complete validated pair is usable locally |
@@ -73,7 +73,7 @@ storage work.
 
 | ID | Real behavior to prove |
 |---|---|
-| NC01 | schema-8 upgrade preserves existing media/favorites/albums while discarding the removed WebDAV sync state; a fresh schema-9 library is native-shaped end to end |
+| NC01 | fresh and reopened current-shape databases use version 1 and remain native-shaped end to end |
 | NC02 | different photo types share S/H; independent markers and delta catch-up do not omit/mix versions |
 | NC03 | inbox/work/ingest commit atomically; split-pair pages and a crash never produce visible half media |
 | NC04 | applied requires full projection + current configured-scope resource/conflict readiness; no token-only success |

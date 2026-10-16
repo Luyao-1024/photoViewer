@@ -13,12 +13,13 @@
 
 use std::collections::HashMap;
 
-use super::super::content::ContentDigest;
 use super::super::native::protocol::{NativeClient, NativePinnedScope, NativeZone};
 use super::super::native::receive::{NativeRecord, ZoneChangesEntry, SUPPORTED_RECORD_TYPES};
 use super::super::native::records::{RecordSet, RemoteGraph};
+use super::super::store::receive::LocalDigest;
 use super::super::store::receive::{InboxEvent, InboxKind, NativeProgress, TypeStatus};
 use super::SyncService;
+pub(super) mod collisions;
 
 /// What one cycle accomplished. `applied` stays false for the whole of C1.2,
 /// because promotion always materializes resource work that C1.4 settles.
@@ -328,25 +329,22 @@ impl SyncService {
         let graph = set
             .to_graph(&super::super::native::receive::ZoneId::from(zone))
             .map_err(|error| ReceiveError::IncompleteGraph(error.to_string()))?;
-        let local_digests = self.measure_unclaimed(job_id, &graph).await;
+        self.prepare_local_matches(job_id, &graph).await?;
+        let local_digests = self.measure_local_matches(job_id, &graph).await;
+        self.preserve_collisions(job_id, &graph, &local_digests)
+            .await?;
         self.promote(graph, target_token, local_digests, report)
     }
 
-    /// Read the local originals that could adopt a cloud photo, and answer with
-    /// their digests.
-    ///
-    /// This is the only place in the receive path that touches the disk, and it
-    /// runs before the promotion transaction opens — a transaction that hashed
-    /// a library would hold the single write lock for the length of a disk
-    /// sweep, and the graph is already whole in memory by now. Files are read
-    /// under the app's photo-tree read lease, because they are the user's media
-    /// and a publication may be rewriting them.
-    async fn measure_unclaimed(
+    /// Hash only equal-size, same-path local candidates with no matching cloud
+    /// record identity. Ordinary local files and same-record updates never enter
+    /// this comparison. Preparation refreshed size/mtime without hashing first.
+    async fn measure_local_matches(
         &self,
         job_id: i64,
         graph: &RemoteGraph,
-    ) -> HashMap<String, ContentDigest> {
-        let entries = match self.store().unclaimed_local_entries(job_id) {
+    ) -> HashMap<String, LocalDigest> {
+        let entries = match self.store().local_entries(job_id) {
             Ok(entries) => entries,
             Err(error) => {
                 tracing::warn!("cannot list unclaimed local entries: {error}");
@@ -356,21 +354,33 @@ impl SyncService {
         // The service already states how many bytes the cloud original has. A
         // local file of a different length cannot be that file, so most
         // mismatches cost a comparison rather than a read.
-        let wanted: HashMap<&str, u64> = graph
+        let wanted: HashMap<&str, _> = graph
             .photos
             .iter()
             .filter(|photo| !photo.is_hidden)
-            .map(|photo| (photo.relative_path.as_str(), photo.original.size))
+            .map(|photo| (photo.relative_path.as_str(), photo))
             .collect();
-        let mut digests: HashMap<String, ContentDigest> = HashMap::new();
+        let mut digests: HashMap<String, LocalDigest> = HashMap::new();
         let mut to_measure = Vec::new();
         for entry in entries {
-            if wanted.get(entry.relative_path.as_str()) != Some(&entry.file_size) {
+            let Some(photo) = wanted.get(entry.relative_path.as_str()) else {
+                continue;
+            };
+            if entry.photo_id.as_deref() == Some(&photo.photo_id)
+                || entry.file_size != photo.original.size
+            {
                 continue;
             }
             match entry.cached {
                 Some(digest) => {
-                    digests.insert(entry.relative_path, digest);
+                    digests.insert(
+                        entry.relative_path,
+                        LocalDigest {
+                            entry_id: entry.entry_id,
+                            local_version: entry.local_version,
+                            digest,
+                        },
+                    );
                 }
                 None => to_measure.push(entry),
             }
@@ -387,7 +397,14 @@ impl SyncService {
                 .into_iter()
                 .filter_map(|entry| {
                     let digest = super::super::content::digest_file(&entry.local_path).ok()?;
-                    Some((entry.relative_path, digest))
+                    Some((
+                        entry.relative_path,
+                        LocalDigest {
+                            entry_id: entry.entry_id,
+                            local_version: entry.local_version,
+                            digest,
+                        },
+                    ))
                 })
                 .collect::<HashMap<_, _>>()
         })
@@ -406,7 +423,7 @@ impl SyncService {
         &self,
         graph: RemoteGraph,
         target_token: &str,
-        local_digests: HashMap<String, ContentDigest>,
+        local_digests: HashMap<String, LocalDigest>,
         report: &mut ReceiveReport,
     ) -> std::result::Result<(), ReceiveError> {
         let (photos, unknown, resources, applied) = self

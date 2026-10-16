@@ -287,22 +287,30 @@ fn connections_wait_for_transient_write_locks() {
 }
 
 #[test]
-fn newer_schema_is_rejected_instead_of_being_modified() {
+fn development_schema_version_is_always_one() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("future.db");
-    let connection = Connection::open(&path).unwrap();
-    connection.pragma_update(None, "user_version", 999).unwrap();
-    drop(connection);
-
-    let error = db::init_pool(&path).unwrap_err().to_string();
-    assert!(error.contains("requires a newer Photo Viewer"));
+    let path = dir.path().join("development.db");
+    for previous in [0, 1, 12, 999] {
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", previous)
+            .unwrap();
+        drop(connection);
+        let pool = db::init_pool(&path).unwrap();
+        let version: i64 = pool
+            .get()
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+    }
 }
 
-/// The sync layer is native-only from schema 9: every WebDAV-era column is
+/// The development schema is native-only: every WebDAV-era column is
 /// gone, and the native columns exist with neutral defaults so a fresh library
 /// never mistakes an unprobed entry for a dirtied one.
 #[test]
-fn schema_nine_creates_native_sync_columns_with_neutral_defaults() {
+fn schema_creates_native_sync_columns_with_neutral_defaults() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("native-shape.db");
     let pool = db::init_pool(&path).unwrap();
@@ -336,6 +344,7 @@ fn schema_nine_creates_native_sync_columns_with_neutral_defaults() {
         "native_desired_metadata",
         "native_baseline_metadata",
         "native_resource_baseline",
+        "native_local_digest",
     ] {
         assert!(
             entry_columns.contains(&column.to_string()),

@@ -12,8 +12,8 @@ use crate::core::sync::{
 
 /// Promotion with nothing measured. These cases exercise bookkeeping; a measured
 /// digest is what would let an entry adopt a cloud identity instead.
-fn no_local_digests() -> std::collections::HashMap<String, crate::core::sync::content::ContentDigest>
-{
+fn no_local_digests(
+) -> std::collections::HashMap<String, crate::core::sync::store::receive::LocalDigest> {
     std::collections::HashMap::new()
 }
 

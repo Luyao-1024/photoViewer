@@ -16,8 +16,8 @@ use crate::core::sync::SyncJob;
 
 /// Promotion with nothing measured. These cases exercise bookkeeping; a measured
 /// digest is what would let an entry adopt a cloud identity instead.
-fn no_local_digests() -> std::collections::HashMap<String, crate::core::sync::content::ContentDigest>
-{
+fn no_local_digests(
+) -> std::collections::HashMap<String, crate::core::sync::store::receive::LocalDigest> {
     std::collections::HashMap::new()
 }
 
@@ -656,9 +656,27 @@ fn seed_inbox_revisions(pool: &crate::core::db::DbPool, job: &SyncJob, photo: &R
     }
 }
 
-fn digests_of(path: &str) -> std::collections::HashMap<String, ContentDigest> {
+fn digests_of(
+    store: &SyncStore,
+    job: i64,
+    path: &str,
+) -> std::collections::HashMap<String, LocalDigest> {
+    let entry = store
+        .unclaimed_local_entries(job)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.relative_path == path);
     let mut map = std::collections::HashMap::new();
-    map.insert(path.to_string(), ContentDigest::of(b""));
+    if let Some(entry) = entry {
+        map.insert(
+            path.to_string(),
+            LocalDigest {
+                entry_id: entry.entry_id,
+                local_version: entry.local_version,
+                digest: entry.cached.unwrap_or_else(|| ContentDigest::of(b"")),
+            },
+        );
+    }
     map
 }
 
@@ -675,7 +693,7 @@ fn a_never_published_file_adopts_the_cloud_photo_it_is_proven_to_be() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -704,8 +722,9 @@ fn a_never_published_file_adopts_the_cloud_photo_it_is_proven_to_be() {
         )
         .unwrap();
     assert_eq!(
-        serde_json::from_str::<ContentDigest>(&cached.unwrap())
+        serde_json::from_str::<LocalDigest>(&cached.unwrap())
             .unwrap()
+            .digest
             .hex,
         ContentDigest::of(b"").hex
     );
@@ -779,7 +798,7 @@ fn adoption_keeps_a_local_metadata_edit_and_leaves_it_to_publish() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -839,7 +858,7 @@ fn a_local_edit_blocks_the_cloud_value_from_reaching_the_library_row() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -859,7 +878,7 @@ fn a_local_edit_blocks_the_cloud_value_from_reaching_the_library_row() {
 }
 
 #[test]
-fn a_same_path_photo_with_different_bytes_is_a_conflict_not_an_adoption() {
+fn divergent_bytes_cannot_be_adopted_before_preserving_the_local_path() {
     let (store, pool, job) = store_with_job("adopt-divergent");
     begin(&store, &job, "scope-1");
     let mut photo = photo("a1", "gen-1", "camera/one.jpg");
@@ -873,7 +892,7 @@ fn a_same_path_photo_with_different_bytes_is_a_conflict_not_an_adoption() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -927,7 +946,7 @@ fn a_hidden_cloud_photo_is_never_adopted() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -977,7 +996,7 @@ fn an_issued_operation_defers_adoption_rather_than_deciding_it() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -1005,7 +1024,7 @@ fn an_issued_operation_defers_adoption_rather_than_deciding_it() {
 }
 
 #[test]
-fn an_edit_during_an_upload_is_a_merge_rather_than_a_conflict() {
+fn an_unchanged_projection_preserves_both_pending_categories() {
     let (store, pool, job) = store_with_job("merge-two-categories");
     begin(&store, &job, "scope-1");
     let photo = photo("a1", "gen-1", "camera/one.jpg");
@@ -1069,7 +1088,7 @@ fn a_cloud_photo_with_no_local_file_is_never_a_conflict() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -1136,7 +1155,7 @@ fn an_entry_with_no_media_id_is_still_adopted_and_is_linked_by_adoption() {
             job.id,
             graph(vec![photo.clone()]),
             "zone.target",
-            digests_of("camera/one.jpg"),
+            digests_of(&store, job.id, "camera/one.jpg"),
         )
         .unwrap();
 
@@ -1161,4 +1180,450 @@ fn an_entry_with_no_media_id_is_still_adopted_and_is_linked_by_adoption() {
         found.is_empty(),
         "a bound entry is still offered for adoption"
     );
+}
+
+fn stamped_event(time: i64, source: &str) -> crate::core::sync::native::receive::EditEvent {
+    crate::core::sync::native::receive::EditEvent {
+        edited_at_ms: time,
+        source: source.into(),
+        event_id: format!("{source}-{time}"),
+    }
+}
+
+fn note_edit(
+    pool: &crate::core::db::DbPool,
+    entry: i64,
+    category: crate::core::sync::store::ChangeCategory,
+    time: i64,
+) {
+    let mut conn = pool.get().unwrap();
+    let tx = conn.transaction().unwrap();
+    let media: i64 = tx
+        .query_row(
+            "SELECT media_id FROM sync_entries WHERE id=?1",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap();
+    SyncStore::note_local_change_in(
+        &tx,
+        media,
+        category,
+        &crate::core::sync::store::EditEventStamp {
+            edited_at_ms: time,
+            source: "local".into(),
+            event_id: format!("local-{time}"),
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+}
+
+fn confirmed_local(
+    name: &str,
+) -> (
+    SyncStore,
+    crate::core::db::DbPool,
+    SyncJob,
+    i64,
+    RemotePhoto,
+) {
+    let (store, pool, job) = store_with_job(name);
+    begin(&store, &job, "scope-1");
+    let baseline = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &baseline);
+    pool.get().unwrap().execute(
+        "UPDATE sync_entries SET native_photo_id='a1',native_master_id='master-a1',native_dirty=0,native_resource_baseline=?2 WHERE id=?1",
+        rusqlite::params![entry,serde_json::to_string(&baseline).unwrap()]).unwrap();
+    (store, pool, job, entry, baseline)
+}
+
+fn assert_no_conflict(pool: &crate::core::db::DbPool, entry: i64) {
+    let open: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE entry_id=?1 AND state='open'",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        open, 0,
+        "ordinary concurrent edits must resolve automatically"
+    );
+}
+
+#[test]
+fn adoption_cannot_confirm_an_edit_made_after_measurement() {
+    use crate::core::sync::store::ChangeCategory;
+    let (store, pool, job) = store_with_job("adopt-edit-after-measurement");
+    begin(&store, &job, "scope-1");
+    let remote = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &remote);
+    let measured = digests_of(&store, job.id, "camera/one.jpg");
+    std::fs::write(job.local_root.join("camera/one.jpg"), b"new local content").unwrap();
+    note_edit(&pool, entry, ChangeCategory::Content, 200);
+    store
+        .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
+        .unwrap();
+    let row:(i64,i64,Option<String>,Option<String>)=pool.get().unwrap().query_row(
+        "SELECT native_dirty,native_acked_content_version,native_photo_id,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_ne!(row.0 & 4, 0, "old digest must not clear the later edit");
+    assert_eq!(row.1, 0);
+    assert!(row.2.is_none());
+    assert!(
+        row.3.is_none(),
+        "old digest must not be cached against the later version"
+    );
+}
+
+#[test]
+fn concurrent_metadata_edits_use_event_time_and_stable_ties() {
+    use crate::core::sync::store::ChangeCategory;
+    for (name, local_time, remote_time, remote_source, keep_local) in [
+        ("local-newer", 300, 200, "remote", true),
+        ("remote-newer", 100, 200, "remote", false),
+        ("tie-local", 200, 200, "aaa", true),
+        ("tie-remote", 200, 200, "zzz", false),
+    ] {
+        let (store, pool, job, entry, mut remote) =
+            confirmed_local(&format!("lww-metadata-{name}"));
+        pool.get().unwrap().execute("UPDATE media_items SET taken_at=42 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",[entry]).unwrap();
+        note_edit(&pool, entry, ChangeCategory::Metadata, local_time);
+        remote.asset_date_ms = Some(99_000);
+        remote.events.metadata = Some(stamped_event(remote_time, remote_source));
+        store
+            .promote_remote_graph(job.id, graph(vec![remote]), "target", no_local_digests())
+            .unwrap();
+        assert_no_conflict(&pool, entry);
+        let (dirty,taken,acked):(i64,i64,i64)=pool.get().unwrap().query_row("SELECT e.native_dirty,m.taken_at,e.native_acked_metadata_version FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+        assert_eq!(taken, if keep_local { 42 } else { 99 }, "{name}");
+        assert_eq!(dirty, if keep_local { 2 } else { 0 }, "{name}");
+        assert_eq!(acked, if keep_local { 0 } else { 1 }, "{name}");
+        assert_eq!(
+            store.unresolved_resource_count(job.id).unwrap(),
+            0,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn independent_local_content_and_remote_metadata_merge_without_downloads() {
+    use crate::core::sync::store::ChangeCategory;
+    let (store, pool, job, entry, mut remote) = confirmed_local("lww-independent");
+    note_edit(&pool, entry, ChangeCategory::Content, 200);
+    remote.is_favorite = true;
+    remote.events.metadata = Some(stamped_event(300, "remote"));
+    store
+        .promote_remote_graph(job.id, graph(vec![remote]), "target", no_local_digests())
+        .unwrap();
+    assert_no_conflict(&pool, entry);
+    let (dirty,favorite):(i64,bool)=pool.get().unwrap().query_row("SELECT e.native_dirty,m.is_favorite FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(dirty, 4);
+    assert!(favorite);
+    assert!(store.outstanding_resources(job.id).unwrap().is_empty());
+    assert!(store.pending_publications(job.id).unwrap().is_empty());
+    assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 0);
+}
+
+#[test]
+fn concurrent_content_and_metadata_choose_each_category_independently() {
+    use crate::core::sync::store::ChangeCategory;
+    for (
+        name,
+        local_content,
+        remote_content,
+        local_metadata,
+        remote_metadata,
+        content_wins,
+        metadata_wins,
+    ) in [
+        ("both-local", 400, 200, 300, 100, true, true),
+        ("both-remote", 100, 300, 200, 400, false, false),
+        ("local-content", 400, 200, 100, 300, true, false),
+        ("local-metadata", 100, 300, 400, 200, false, true),
+    ] {
+        let (store, pool, job, entry, mut remote) =
+            confirmed_local(&format!("lww-categories-{name}"));
+        note_edit(&pool, entry, ChangeCategory::Content, local_content);
+        note_edit(&pool, entry, ChangeCategory::Metadata, local_metadata);
+        pool.get().unwrap().execute("UPDATE media_items SET taken_at=42 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",[entry]).unwrap();
+        remote.content_generation = "new-generation".into();
+        remote.original.asset_id = "new-original".into();
+        remote.thumbnail.asset_id = "new-thumb".into();
+        remote.asset_date_ms = Some(99_000);
+        remote.events.content = Some(stamped_event(remote_content, "remote"));
+        remote.events.metadata = Some(stamped_event(remote_metadata, "remote"));
+        store
+            .promote_remote_graph(
+                job.id,
+                graph(vec![remote.clone()]),
+                "target",
+                no_local_digests(),
+            )
+            .unwrap();
+        assert_no_conflict(&pool, entry);
+        let dirty: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT native_dirty FROM sync_entries WHERE id=?1",
+                [entry],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dirty,
+            if content_wins { 4 } else { 0 } | if metadata_wins { 2 } else { 0 },
+            "{name}"
+        );
+        if content_wins {
+            assert!(
+                store.pending_publications(job.id).unwrap().is_empty(),
+                "{name}"
+            );
+            assert_eq!(
+                store.unresolved_resource_count(job.id).unwrap(),
+                0,
+                "{name}"
+            );
+            // A repeated projection must continue to owe the newer local upload,
+            // without reintroducing downloads of the remote losing version.
+            store
+                .promote_remote_graph(job.id, graph(vec![remote]), "next", no_local_digests())
+                .unwrap();
+            assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 0);
+        } else {
+            let pending = store.pending_publications(job.id).unwrap();
+            assert_eq!(pending.len(), 1, "{name}");
+            let capture: String = pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT captured_versions FROM sync_publications WHERE publication_id=?1",
+                    [&pending[0].publication_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let capture: serde_json::Value = serde_json::from_str(&capture).unwrap();
+            assert_eq!(capture["preserveMetadata"], metadata_wins, "{name}");
+            assert_eq!(
+                store.outstanding_resources(job.id).unwrap().len(),
+                2,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn different_record_ids_do_not_use_the_timestamp_winner_rule() {
+    use crate::core::sync::store::ChangeCategory;
+    let (store, pool, job, entry, baseline) = confirmed_local("lww-requires-same-record-id");
+    note_edit(&pool, entry, ChangeCategory::Metadata, 100);
+    let mut other = baseline.clone();
+    other.photo_id = "a-different-record".into();
+    other.master_id = "a-different-master".into();
+    other.is_favorite = true;
+    other.events.metadata = Some(stamped_event(900, "remote"));
+    seed_inbox_revisions(&pool, &job, &other);
+    // Keep the original cloud record present too: this is an identity/path
+    // disagreement, not remote deletion of the original record.
+    let mut old = baseline;
+    old.relative_path = "camera/other.jpg".into();
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![other, old]),
+            "target",
+            no_local_digests(),
+        )
+        .unwrap();
+    let (identity,dirty,favorite):(String,i64,bool)=pool.get().unwrap().query_row("SELECT e.native_photo_id,e.native_dirty,m.is_favorite FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!(identity, "a1");
+    assert_eq!(dirty, 2);
+    assert!(!favorite);
+    let conflicts: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_conflicts WHERE entry_id=?1 AND state='open'",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(conflicts, 1);
+}
+
+#[test]
+fn a_cached_digest_is_also_scoped_to_the_measured_version() {
+    use crate::core::sync::store::ChangeCategory;
+    let (store, pool, job) = store_with_job("adopt-stale-cached-digest");
+    begin(&store, &job, "scope-1");
+    let remote = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &remote);
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sync_entries SET native_local_digest=?2 WHERE id=?1",
+            rusqlite::params![
+                entry,
+                serde_json::to_string(&LocalDigest {
+                    entry_id: entry,
+                    local_version: 0,
+                    digest: ContentDigest::of(b"")
+                })
+                .unwrap()
+            ],
+        )
+        .unwrap();
+    assert!(store.unclaimed_local_entries(job.id).unwrap()[0]
+        .cached
+        .is_some());
+    let measured = digests_of(&store, job.id, "camera/one.jpg");
+    std::fs::write(
+        job.local_root.join("camera/one.jpg"),
+        b"edited after cache lookup",
+    )
+    .unwrap();
+    note_edit(&pool, entry, ChangeCategory::Content, 200);
+    store
+        .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
+        .unwrap();
+    let (dirty,acked,cached):(i64,i64,Option<String>)=pool.get().unwrap().query_row("SELECT native_dirty,native_acked_content_version,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_ne!(dirty & 4, 0);
+    assert_eq!(acked, 0);
+    assert!(cached.is_none());
+}
+
+#[test]
+fn remote_rename_can_restage_library_backed_resources_for_the_same_record() {
+    let (store, pool, job, entry, mut remote) = confirmed_local("lww-rename-restages");
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![remote.clone()]),
+            "old",
+            no_local_digests(),
+        )
+        .unwrap();
+    assert!(store.outstanding_resources(job.id).unwrap().is_empty());
+    remote.relative_path = "camera/renamed.jpg".into();
+    remote.events.metadata = Some(stamped_event(200, "remote"));
+    store
+        .promote_remote_graph(job.id, graph(vec![remote]), "new", no_local_digests())
+        .unwrap();
+    assert_no_conflict(&pool, entry);
+    assert_eq!(store.pending_publications(job.id).unwrap().len(), 1);
+    let resources = store.outstanding_resources(job.id).unwrap();
+    assert_eq!(resources.len(), 2);
+    assert!(resources
+        .iter()
+        .all(|resource| resource.state == super::super::ResourceState::Pending));
+}
+
+#[test]
+fn a_replacement_entry_cannot_adopt_a_digest_of_the_previous_entry() {
+    let (store, pool, job) = store_with_job("adopt-replaced-entry");
+    begin(&store, &job, "scope-1");
+    let remote = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &remote);
+    let measured = digests_of(&store, job.id, "camera/one.jpg");
+    let media: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT media_id FROM sync_entries WHERE id=?1",
+            [entry],
+            |r| r.get(0),
+        )
+        .unwrap();
+    pool.get()
+        .unwrap()
+        .execute("DELETE FROM sync_entries WHERE id=?1", [entry])
+        .unwrap();
+    pool.get().unwrap().execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty) VALUES(?1,?2,'camera/one.jpg',1)",rusqlite::params![job.id,media]).unwrap();
+    store
+        .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
+        .unwrap();
+    let (new_id, identity, dirty): (i64, Option<String>, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT id,native_photo_id,native_dirty FROM sync_entries WHERE job_id=?1",
+            [job.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_ne!(new_id, entry);
+    assert!(identity.is_none());
+    assert_eq!(dirty, 1);
+}
+
+#[test]
+fn missing_edit_events_have_a_deterministic_nonblocking_fallback() {
+    use crate::core::sync::store::ChangeCategory;
+    for (local_known, remote_known, keep_local) in [
+        (false, false, true),
+        (true, false, true),
+        (false, true, false),
+    ] {
+        let (store, pool, job, entry, mut remote) =
+            confirmed_local(&format!("lww-missing-{local_known}-{remote_known}"));
+        note_edit(&pool, entry, ChangeCategory::Metadata, 100);
+        if !local_known {
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE sync_entries SET native_metadata_event=NULL WHERE id=?1",
+                    [entry],
+                )
+                .unwrap();
+        }
+        pool.get().unwrap().execute("UPDATE media_items SET taken_at=42 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",[entry]).unwrap();
+        remote.asset_date_ms = Some(99_000);
+        if remote_known {
+            remote.events.metadata = Some(stamped_event(200, "remote"));
+        }
+        store
+            .promote_remote_graph(job.id, graph(vec![remote]), "target", no_local_digests())
+            .unwrap();
+        assert_no_conflict(&pool, entry);
+        let (dirty,taken):(i64,i64)=pool.get().unwrap().query_row("SELECT e.native_dirty,m.taken_at FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(dirty, if keep_local { 2 } else { 0 });
+        assert_eq!(taken, if keep_local { 42 } else { 99 });
+    }
+}
+
+#[test]
+fn adoption_does_not_settle_shared_assets_still_needed_by_another_photo() {
+    let (store, pool, job) = store_with_job("adopt-shared-resources");
+    begin(&store, &job, "scope-1");
+    let first = empty_photo("a1", "camera/one.jpg");
+    let mut second = first.clone();
+    second.photo_id = "a2".into();
+    second.master_id = "master-a2".into();
+    second.relative_path = "camera/two.jpg".into();
+    enrol_local_file(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &first);
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![first, second]),
+            "target",
+            digests_of(&store, job.id, "camera/one.jpg"),
+        )
+        .unwrap();
+    assert_eq!(store.pending_publications(job.id).unwrap().len(), 1);
+    let resources = store.outstanding_resources(job.id).unwrap();
+    assert_eq!(resources.len(), 2);
+    assert!(resources
+        .iter()
+        .all(|resource| resource.state == super::super::ResourceState::Pending));
 }

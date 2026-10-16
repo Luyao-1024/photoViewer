@@ -46,24 +46,12 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
     Ok(pool)
 }
 
-const SCHEMA_VERSION: i64 = 12;
+// Development builds share one schema definition. Before the first release,
+// schema shape changes require a fresh development database, not migrations.
+const SCHEMA_VERSION: i64 = 1;
 
-/// Create the library schema, or refuse a database this build is too old for.
-///
-/// There is deliberately no migration ladder. Every statement in `schema.sql` is
-/// `CREATE ... IF NOT EXISTS`, so it is the whole definition of a library, and
-/// a database that does not match it simply does not get the newer columns —
-/// which is a reason to throw it away, not to patch it in place. Ladders exist
-/// to carry a user's data across a change they cannot undo; before there is a
-/// release anyone's data worth keeping, there is only the current schema.
 fn init_schema(conn: &mut rusqlite::Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version > SCHEMA_VERSION {
-        return Err(AppError::Backend(format!(
-            "library schema {version} requires a newer Photo Viewer (supported: {SCHEMA_VERSION})"
-        )));
-    }
     tx.execute_batch(SCHEMA_SQL)?;
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     tx.commit()?;

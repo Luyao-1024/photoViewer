@@ -35,55 +35,22 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 
 ## Database
 
-Current schema is 10: native schema-9 data is preserved while cycle identity and unsafe old progress/checksum rows are corrected; see [native storage](native-sync-storage.md).
+Development builds keep SQLite `PRAGMA user_version` fixed at **1**. The
+application is not released yet, so `schema.sql` is the only current definition:
+initialization creates missing tables/indexes and always writes version 1.
+There is no version ladder, version-based rejection or compatibility promise for
+an older development schema. Recreate a development/test database when its
+structure no longer matches; normal initialization does not delete library data.
+See [native storage](native-sync-storage.md) for the sync-owned tables.
 
-Historical schema version 8 adds `sync_jobs.etag_is_sha256`, defaulting to false for
-existing jobs. This is an explicit server contract, never an inferred content
-hash. The idempotent migration preserves sync history and mappings; see
-[`sync.md`](sync.md#sha-256-content-etags).
-
-SQLite uses an r2d2 connection pool with WAL, foreign-key, and a 10-second
-busy timeout applied through the pool init hook. SQLite still permits only one
-writer at a time even in WAL mode; the timeout lets the filesystem watcher,
-startup scan, thumbnail workers, and foreground mutations wait through short
-writer contention instead of reporting a spurious `database is locked` error.
-`schema.sql` is embedded with `include_str!` and creates the current schema for
-new databases. Schema version 3 adds provider-neutral synchronization
-connections, jobs, entries, operation
-logs, and conflicts. Synchronization entries use `ON DELETE SET NULL` for their
-optional media association, so rebuilding the media index preserves mappings,
-baselines, operations, and conflicts. Schema version 2 introduced
-`file_mtime_ns` for change detection and normalized legacy raw file URIs through
-GIO. `init_pool` also runs transactional, versioned migrations using
-SQLite `PRAGMA user_version`; the version-1 migration upgrades historical
-unversioned libraries in place and preserves media, favorites, album order,
-and custom covers. A database newer than the running application is rejected
-without modification.
-
-Schema version 4 adds the per-job upload scope and
-`sync_job_upload_albums`. Existing version-3 jobs migrate as `all` so an
-upgrade never silently disables established uploads. Newly created jobs start
-as `selected_albums` with no checked album: cloud content can download, but no
-local album uploads until the user explicitly checks it. The semantics of those
-tables belong to [`sync.md`](sync.md).
-
-Schema version 7 adds `sync_inventory`, a per-job complete discovery snapshot
-with configuration generations. The migration seeds known historical and
-unfinished paths without changing baselines or transfer recovery records.
-Media-index rebuilds preserve inventory; task deletion cascades and explicit
-WebDAV Off clears it. The Photos overview uses it with proven baselines for a
-persisted historical-completed/all-known-items fraction; see [`sync.md`](sync.md).
-
-Schema version 6 adds per-entry suppressed content fingerprints and sizes for
-local deletions. They live in sync state, so media-index rebuilds preserve them.
-An explicit WebDAV Off clears those records and other synchronization history
-while retaining connection credentials and task configuration. Its UUID cleanup
-intent/error uses the existing `settings` table, so this needs no schema bump.
-Saved generations remain monotonic to reject obsolete workers. Index rebuilds
-and ordinary task configuration changes continue to preserve deletion records.
-Existing tasks retain their direction and upload scope; older upload-only jobs
-invalidate only cached cloud fingerprints to establish immutable history on the
-next Backup run. Pending direction edits use the existing durable JSON payload.
+SQLite uses an r2d2 connection pool with WAL, foreign keys, a 10-second busy
+timeout and normal synchronous mode applied through the pool init hook. SQLite
+still permits only one writer at a time even in WAL mode. The timeout allows
+scanner, watcher, thumbnail and foreground writes to wait for short contention.
+`schema.sql` is embedded with `include_str!`. Sync entries use `ON DELETE SET
+NULL` for their optional media association, preserving sync state during a media
+index rebuild. Newly created jobs use `selected_albums` with no selected album;
+cloud content can download before any local album is selected for upload.
 
 Filesystem paths and stored URIs must cross through `core::file_uri`; do not
 build or strip `file://` strings by hand. This preserves the identity of `%`,

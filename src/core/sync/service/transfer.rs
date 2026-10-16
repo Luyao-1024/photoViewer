@@ -380,6 +380,10 @@ impl SyncService {
                     .map(PathBuf::from)
                     .ok_or_else(|| error("publication recovery path is missing"))
             };
+            if details["collision"] == true {
+                super::receive::collisions::recover_collision(self, &id, &details)?;
+                continue;
+            }
             let target = value("target")?;
             let backup = value("backup")?;
             let next = value("new")?;

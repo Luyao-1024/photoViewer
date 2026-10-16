@@ -1,20 +1,18 @@
 # Native SyncServer Storage And Publication Design
 
-当前实现结构为 schema 11。schema 11 保留 schema 9/10 的任务及 dirty，新增 native_retired 以防止云端删除后由普通本地编辑自动复活；显式重新上传分配新身份。schema 9 已将旧 WebDAV 表换为原生同步结构；schema 10 增加轮次标识并保留性修正旧摘要和进度，不丢弃 schema 9 的任务、dirty、媒体或用户数据。旧 WebDAV 历史不迁移为原生关系。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。实现和本轮验证边界见[静态检视修订](native-sync-integration.md)。
+当前未正式发布，数据库版本始终固定为 **1**。`schema.sql` 是当前结构的唯一来源；结构变化时重新创建开发/测试数据库，不维护开发版本间的升级兼容。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。
 
-## Ownership And Migration
+## Ownership And Initialization
 
 All writes go through the existing DbActor. Native protocol/network code owns
 no SQL, GTK widgets or direct media-row admission. Extend SyncStore/DbCommand
 with typed native operations; background scans, editor/favorite changes, trash,
 recovery and callbacks use the same transaction owner.
 
-Schema 9 exists to preserve the *library*, not the WebDAV state: media IDs,
-favorites, album order, covers and edits survive the upgrade; sync connections,
-jobs, entries, tasks and conflicts are discarded because they describe a
-transport this build no longer speaks. `provider_kind` is native-only (a CHECK,
-not a default). A native connection is created explicitly by a completed probe;
-nothing enrolls local media automatically.
+Initialization executes `schema.sql` and writes `PRAGMA user_version=1` in one
+transaction. Previous development version numbers are not an admission gate;
+initialization does not migrate columns or discard existing data. Provider kind
+is native-only, and a connection is created by an explicit completed probe.
 
 ## Planned Fields On Existing Rows
 
@@ -47,7 +45,7 @@ with an unrelated occupant remains a conflict.
 
 ## Column Shapes And Index Keys
 
-The first native migration uses these types/defaults; additional physical
+The native schema uses these types/defaults; additional physical
 columns may split JSON only while preserving the same transaction contract.
 
 | Planned columns | Shape / meaning |
@@ -120,7 +118,9 @@ be reconciled before deciding whether restoration needs fresh remote IDs.
 Enrolling an eligible local item supplies NEW without inventing an edit time.
 Bootstrap/import/cache updates do not count as user edits. Existing same-path
 cloud content is not blindly recreated: verified matching pair identity may be
-adopted; different IDs/content/path ownership are explicit conflicts. Preserve
+adopted. A different record ID/path owner is not eligible for same-record timestamp
+resolution; the receive path preserves differing local bytes under a free numeric
+suffix. Preserve
 metadata that has no trustworthy comparison event instead of assigning migration
 time and declaring it newer.
 
@@ -155,12 +155,49 @@ Three states are not adoption, and none of them is a content conflict:
   no local representation to bind to, and adoption would silently cancel an
   explicit delete intent.
 
-Digests are measured in `SyncService::measure_unclaimed`, before the promotion
+Digests are measured in `SyncService::measure_local_matches`, before the promotion
 transaction opens — a transaction that hashed a library would hold the single
 write lock for the length of a disk sweep. `native_local_digest` caches the
 result so an unchanged file is read once rather than once per cycle, and
-`mark()` clears it, which is what makes it true: `mark` is the single funnel
-every local change passes through.
+`mark()` clears it whenever a local edit is recorded. Every measured or cached
+result, including its persisted cache, also carries `sync_entries.id` and the
+captured `native_local_version`.
+The promotion transaction verifies both before consuming or caching the digest.
+If an edit or entry replacement happened after measurement, adoption defers;
+the new edit's dirty bits and acknowledged versions remain untouched. Cache
+entries whose captured identity/version differs are discarded; successful file
+publication also clears the old local digest.
+
+### Local SHA-256 boundaries and name collisions
+
+Ordinary local indexing, browsing and editing do not compute or persist SHA-256.
+There is no SHA-256 field on `media_items`. Upload preparation hashes a stable
+snapshot of a selected new/modified local original, and builds the thumbnail
+from that same snapshot.
+
+Receive comparison is enabled only for configured cloud synchronization. It
+indexes existing local files at incoming paths even outside the upload scope,
+without enrolling other local files or hashing them. Matching record IDs use
+the timestamp rule directly. For a different/unbound identity at the same
+relative album and filename, compare size first; only equal-size files are
+hashed. Equal size and SHA-256 merge into the incoming cloud identity when the
+previous identity is no longer live. Distinct live record IDs keep their separate
+placements. Different bytes (or size) preserve the local file as `stem_1.ext`,
+`stem_2.ext`, and so on, using the first name unused by disk, local DB rows and
+this cloud inventory. The cloud photo retains its original filename. This does
+not grant upload permission to an unselected album.
+
+`service/receive/collisions.rs` runs file/metadata work off the runtime/UI thread.
+Before moving a collision it journals the captured entry/version and both paths
+in `sync_publications`. A no-overwrite hard link plus unlink preserves bytes;
+the actor then commits media/sync paths without inventing a user edit timestamp.
+A failed commit or an interrupted move restores the old name through ordinary
+publication recovery. Successful preservation clears only the obsolete path
+collision and leaves the renamed local version's upload eligibility intact.
+
+A local merge settles only that photo's local placement. When asset IDs are
+shared with another pending photo, that photo still needs staging bytes before
+publication; library-backed verification alone cannot satisfy it.
 
 ### What adoption settles about resources
 
@@ -224,6 +261,31 @@ write the intent immediately before an uncertain network mutation, including
 its exact captured input/version and stable operationId. Recover that intent
 before deriving a new operation for the same photo. Upload snapshots and their
 ownership records provide file recovery, not another dirty queue.
+
+## Same-record Concurrent Edits
+
+Timestamp resolution requires the existing entry's `native_photo_id` to equal
+the incoming photo record ID. A shared path alone never enables this rule.
+Missing identity still goes through the separate size/SHA-256 adoption proof.
+
+Metadata and content are decided independently against their confirmed
+baselines. A changed remote category and a pending local category compare real
+`editedAtMs` edit events; file mtime, capture date and upload/receive time are
+not substitutes. Reuse `native::records::latest_event`: compare edit time first,
+then `(source, eventId)` for deterministic ties. A known edit event beats a
+missing one. If both events are missing, preserve an explicit pending local
+edit rather than inventing a new timestamp or stopping synchronization.
+
+A newer local category remains dirty and uploads with the latest observed
+server revisions. Its losing remote content does not create download or
+publication obligations, and is never falsely labelled locally verified.
+A newer remote category clears only that local category and acknowledges its
+current captured version. Remote content uses the existing pair publication,
+with any independently newer local metadata preserved in the capture. A later
+local edit invalidates that publication through its version/dirty guard. A
+remote path change can publish after the winning local content has uploaded;
+library-backed resources without staging bytes are restaged before placement.
+Ordinary same-record edits do not create manual-resolution conflicts.
 
 ## Success Callback Transaction
 
@@ -347,7 +409,7 @@ only with current applied/scope readiness, no eligible unconfirmed dirty, no
 unresolved issued operation and current configuration; an empty runtime queue
 or ineligible dirty entries alone cannot determine that state.
 
-Startup order is migration → load owned publication/admission evidence → settle
+Startup order is schema initialization → load owned publication/admission evidence → settle
 or shield incomplete files and keep last complete versions → allow normal
 scanner/watcher admission → reconcile native receive/issued operations and run
 new cycles. Ordinary independent local media remains available; do not block
@@ -366,8 +428,7 @@ Global Off keeps configured jobs/credentials/roots/selected scope while discardi
 owned runtime/history state under the existing explicit reset contract. It never
 deletes ordinary media or remote history. Exit/restart, ordinary failure or scope
 uncheck is not Global Off and preserves dirty/unknown-operation evidence. Failed
-or deleted native jobs do not restart from old triggers. The entire native
-migration/recovery path must remain safe with existing WebDAV jobs in the same DB.
+or deleted native jobs do not restart from old triggers. Recovery preserves the current native jobs and their issued-operation evidence.
 
 
 ## C1.5 客户端决策与快照恢复
@@ -383,4 +444,4 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 
 ## 账户身份与重新认证
 
-用户信息是服务器 pinned scope 的一部分，在既有 JSON 中增加可选 authentication 字段即可保留原生 schema 11。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他用户可用不同根建立任务，物理路径重叠仍拒绝。细节见[账户接入方案](native-sync-accounts.md)。
+用户信息是服务器 pinned scope 的一部分，在既有 JSON 中保存可选 authentication 字段，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他用户可用不同根建立任务，物理路径重叠仍拒绝。细节见[账户接入方案](native-sync-accounts.md)。

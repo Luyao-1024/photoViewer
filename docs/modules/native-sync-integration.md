@@ -87,3 +87,10 @@ SYNC_SERVER_BIN=../syncserver/target/debug/syncserver cargo test --locked --test
 实际客户端已保存 `https://47.103.11.237/`、`PrimarySync`、本地根 `/home/luyao/图片`，上传范围只含 `截图`，总开关已启用。阿里云 SyncServer/Nginx 仍正常运行，服务端仓库保持原部署提交，无协议或部署变更。连接凭证在系统密钥环，仓库和报告均不包含密钥。
 
 实机证据目录：`/home/luyao/.local/state/photoviewer-native-verification/2026-10-15`。`report.json` 记录 167 项文件摘要、收藏往返与无变化结果；`acceptance-summary.json` 记录两个数据库的最终状态、原收藏保留和本次中断产生的未引用下载临时文件清理。图库数据库与设置的验证前备份、第二客户端接收目录一并保留。最终运行日志在 `target/aliyun-native-final.log`。本地程序已构建为 `target/debug/photo-viewer`，后续可从设置继续使用该连接。
+
+
+## 2026-10-16 开发阶段规则更新
+
+以上 schema 9/10/11 与迁移验证是此前阶段的历史记录。当前未发布版本的数据库编号始终固定为 **1**，不维护开发结构之间的迁移兼容，结构以 `schema.sql` 为准。
+
+相同 recordId 的双端修改改为按独立 metadata/content 事件时间自动决定结果；相同时间按来源和事件 ID 稳定排序。路径相同不启用这条规则；下行的不同身份同名文件按大小/SHA-256 合并或将本地文件保留到空闲的 `_x` 名称。纯本地索引不记录 SHA-256，上传时计算稳定快照摘要。接管身份时，现读与缓存摘要都带 entry ID 和测量时的本地版本，不能确认测量后产生的新编辑。当前契约见[存储方案](native-sync-storage.md#same-record-concurrent-edits)；真实双客户端旅程改为验证两种编辑先后顺序、独立元数据保留及同 recordId 的重命名收敛。

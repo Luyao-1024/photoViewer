@@ -185,10 +185,10 @@ pub enum NativeReceiveCommand {
         job_id: i64,
         graph: RemoteGraph,
         target_token: String,
-        /// SHA-256 of local originals, keyed by `relativePath`, measured outside
-        /// the promotion transaction. Only entries that have never been
+        /// Versioned SHA-256 observations, keyed by `relativePath`, measured
+        /// outside the promotion transaction. Only entries that have never been
         /// published consult it; see `runtime::adoption`.
-        local_digests: HashMap<String, ContentDigest>,
+        local_digests: HashMap<String, LocalDigest>,
     },
     /// Attempt to advance `applied`. Refused while any obligation is
     /// unresolved, which is what keeps a fully received but un-downloaded photo
@@ -200,9 +200,22 @@ pub enum NativeReceiveCommand {
     Reset { job_id: i64 },
 }
 
-/// A local file awaiting a first cloud identity.
+/// A comparison result belongs to one entry at one captured local version.
+/// A later edit (or replacement entry at the same path) cannot consume it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDigest {
+    pub entry_id: i64,
+    pub local_version: i64,
+    pub digest: ContentDigest,
+}
+
+/// A local file tracked by an enabled cloud job.
 #[derive(Debug, Clone)]
-pub struct UnclaimedEntry {
+pub struct LocalEntry {
+    pub photo_id: Option<String>,
+    pub entry_id: i64,
+    pub local_version: i64,
     pub relative_path: String,
     /// The file on disk, as the library recorded it.
     pub local_path: PathBuf,
@@ -672,7 +685,7 @@ fn promote(
     job_id: i64,
     graph: &RemoteGraph,
     target_token: &str,
-    local_digests: &HashMap<String, ContentDigest>,
+    local_digests: &HashMap<String, LocalDigest>,
 ) -> Result<NativeReceiveOutcome> {
     let progress = require_progress(tx, job_id)?;
     let generation = progress.database_generation.clone();
@@ -706,14 +719,18 @@ fn promote(
                 serde_json::to_string(photo).map_err(json_error)?,
             ],
         )?;
-        super::runtime::project_publication(tx, job_id, photo, local_digests)?;
+        if super::runtime::project_publication(tx, job_id, photo, local_digests)?
+            == super::runtime::ProjectedContent::Local
+        {
+            continue;
+        }
         for resource in photo.resources() {
             tx.execute(
                 "INSERT INTO sync_native_resources
                     (job_id, generation, asset_id, role, record_name, expected_sha256,
                      expected_size, state, verified_cache)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                    CASE WHEN EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id=?5 AND (json_extract(e.native_resource_baseline,'$.original.assetId')=?3 OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=?3)) THEN 'verified' ELSE 'pending' END,
+                    CASE WHEN EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id=?5 AND (json_extract(e.native_resource_baseline,'$.original.assetId')=?3 OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=?3) AND NOT EXISTS(SELECT 1 FROM sync_publications p WHERE p.entry_id=e.id AND p.state NOT IN ('complete','superseded'))) THEN 'verified' ELSE 'pending' END,
                     -- When the entry's confirmed baseline already names this
                     -- asset, the bytes are the library file's — adoption proved
                     -- it, and it is recorded here so the settled row points at
@@ -747,14 +764,14 @@ fn promote(
                     -- exists until someone cleans the staging directory.
                     state = CASE WHEN excluded.state = 'verified' AND 1 = (SELECT (e.native_dirty = 0
                     AND NOT EXISTS(SELECT 1 FROM sync_publications p
-                                    WHERE p.entry_id = e.id AND p.state <> 'complete'))
+                                    WHERE p.entry_id = e.id AND p.state NOT IN ('complete','superseded')))
                 FROM sync_entries e
                WHERE e.job_id = excluded.job_id AND e.native_photo_id = excluded.record_name
                LIMIT 1)
                                  THEN 'verified' ELSE sync_native_resources.state END,
                     verified_cache = CASE WHEN excluded.state = 'verified' AND 1 = (SELECT (e.native_dirty = 0
                     AND NOT EXISTS(SELECT 1 FROM sync_publications p
-                                    WHERE p.entry_id = e.id AND p.state <> 'complete'))
+                                    WHERE p.entry_id = e.id AND p.state NOT IN ('complete','superseded')))
                 FROM sync_entries e
                WHERE e.job_id = excluded.job_id AND e.native_photo_id = excluded.record_name
                LIMIT 1)
@@ -768,7 +785,7 @@ fn promote(
                                  ELSE sync_native_resources.verified_cache END,
                     staging_path = CASE WHEN excluded.state = 'verified' AND 1 = (SELECT (e.native_dirty = 0
                     AND NOT EXISTS(SELECT 1 FROM sync_publications p
-                                    WHERE p.entry_id = e.id AND p.state <> 'complete'))
+                                    WHERE p.entry_id = e.id AND p.state NOT IN ('complete','superseded')))
                 FROM sync_entries e
                WHERE e.job_id = excluded.job_id AND e.native_photo_id = excluded.record_name
                LIMIT 1)
@@ -830,6 +847,10 @@ fn promote(
         )?;
     }
 
+    // Asset IDs can be shared by multiple photos. Adoption of one local file
+    // does not provide staging bytes for another photo that still has to be
+    // placed. Resolve this after the complete graph, independently of order.
+    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=?2 AND staging_path IS NULL AND EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=sync_native_resources.job_id AND p.state IN ('pending','publishing') AND ((sync_native_resources.role='original' AND p.original_asset_id=sync_native_resources.asset_id) OR (sync_native_resources.role='thumbnail' AND p.thumbnail_asset_id=sync_native_resources.asset_id)))",params![job_id,generation])?;
     let resources = unresolved_in_tx(tx, job_id)?;
 
     tx.execute(
@@ -975,29 +996,45 @@ impl SyncStore {
     /// That association is a presentation convenience and it is not always
     /// populated: an entry first created by a cloud projection has no media row
     /// to point at, and enrolment's `ON CONFLICT DO NOTHING` never backfills
-    /// one. An entry's identity is its relative path; resolving anything about
-    /// it through a nullable pointer to a row it is not required to have is how
-    /// a whole library becomes invisible to adoption.
-    pub fn unclaimed_local_entries(&self, job: i64) -> Result<Vec<UnclaimedEntry>> {
+    /// one. Cloud identity remains the record ID; the relative path only locates
+    /// a candidate local file for receive comparison.
+    pub fn unclaimed_local_entries(&self, job: i64) -> Result<Vec<LocalEntry>> {
+        Ok(self
+            .local_entries(job)?
+            .into_iter()
+            .filter(|entry| entry.photo_id.is_none())
+            .collect())
+    }
+
+    pub fn local_entries(&self, job: i64) -> Result<Vec<LocalEntry>> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
-            "SELECT e.relative_path, m.path, m.file_size, e.native_local_digest
+            "SELECT e.relative_path, m.path, m.file_size, e.native_local_digest, e.id, e.native_local_version, e.native_photo_id
              FROM sync_entries e
              JOIN sync_jobs j ON j.id = e.job_id
+             JOIN sync_connections c ON c.id=j.connection_id AND c.enabled=1
              JOIN media_items m
                ON m.path = rtrim(j.local_root, '/') || '/' || e.relative_path
               AND m.trashed_at IS NULL
-             WHERE e.job_id = ?1 AND e.native_photo_id IS NULL",
+             WHERE e.job_id = ?1",
         )?;
         let rows = stmt
             .query_map([job], |row| {
-                Ok(UnclaimedEntry {
+                Ok(LocalEntry {
+                    photo_id: row.get(6)?,
+                    entry_id: row.get(4)?,
+                    local_version: row.get(5)?,
                     relative_path: row.get(0)?,
                     local_path: PathBuf::from(row.get::<_, String>(1)?),
                     file_size: row.get::<_, i64>(2)? as u64,
                     cached: row
                         .get::<_, Option<String>>(3)?
-                        .and_then(|raw| serde_json::from_str(&raw).ok()),
+                        .and_then(|raw| serde_json::from_str::<LocalDigest>(&raw).ok())
+                        .filter(|cached| {
+                            Some(cached.entry_id) == row.get(4).ok()
+                                && Some(cached.local_version) == row.get(5).ok()
+                        })
+                        .map(|cached| cached.digest),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1009,7 +1046,7 @@ impl SyncStore {
         job_id: i64,
         graph: RemoteGraph,
         target_token: &str,
-        local_digests: HashMap<String, ContentDigest>,
+        local_digests: HashMap<String, LocalDigest>,
     ) -> Result<(usize, usize, usize, bool)> {
         match self.write_receive(NativeReceiveCommand::Promote {
             job_id,
