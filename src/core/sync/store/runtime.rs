@@ -743,15 +743,18 @@ pub(super) fn project_publication(
             && old.thumbnail == photo.thumbnail
             && old.events.content == photo.events.content
     });
-    if identity.is_none() {
+    let missing_local = if identity.is_none() {
         match adoption(tx, job, entry, photo, dirty, local_digests)? {
             Adoption::Bound | Adoption::Deferred => return Ok(ProjectedContent::Remote),
-            Adoption::Divergent => {}
+            Adoption::MissingLocal => true,
+            Adoption::Divergent => false,
         }
-    }
+    } else {
+        false
+    };
     let conflict = if photo.is_hidden {
         Some("remote hidden photo has no supported local representation")
-    } else if identity.is_none() {
+    } else if identity.is_none() && !missing_local {
         Some("cloud content at this path differs from the local file")
     } else if identity.as_deref().is_some_and(|id| id != photo.photo_id) {
         Some("another local/cloud identity owns this path")
@@ -764,7 +767,8 @@ pub(super) fn project_publication(
     }
 
     let events = entry_events(tx, entry)?;
-    let preserve_metadata = dirty.contains(NativeDirty::METADATA)
+    let preserve_metadata = !missing_local
+        && dirty.contains(NativeDirty::METADATA)
         && (same_metadata
             || local_event_wins(events.metadata.as_ref(), photo.events.metadata.as_ref()));
     let latest_remote = super::super::native::records::latest_event(
@@ -773,10 +777,13 @@ pub(super) fn project_publication(
     );
     let keep_delete = dirty.contains(NativeDirty::DELETE)
         && local_event_wins(events.deletion.as_ref(), latest_remote.as_ref());
-    let keep_content = keep_delete
-        || (dirty.contains(NativeDirty::CONTENT) || dirty.contains(NativeDirty::NEW))
-            && (same_content
-                || local_event_wins(events.content.as_ref(), photo.events.content.as_ref()));
+    // NEW/CONTENT on an orphan entry cannot stand in for a local original.
+    // Busy operations and explicit deletions were excluded before MissingLocal.
+    let keep_content = !missing_local
+        && (keep_delete
+            || (dirty.contains(NativeDirty::CONTENT) || dirty.contains(NativeDirty::NEW))
+                && (same_content
+                    || local_event_wins(events.content.as_ref(), photo.events.content.as_ref())));
     let mut settled = dirty.without(NativeDirty::NEW);
     if dirty.contains(NativeDirty::NEW) && keep_content && !keep_delete {
         settled = settled.with(NativeDirty::CONTENT);
@@ -809,8 +816,9 @@ pub(super) fn project_publication(
     // decisions. Unsupported identities/representations keep their own handling.
     tx.execute("UPDATE sync_conflicts SET state='resolved',resolution='latest edit event',resolved_at=unixepoch() WHERE entry_id=?1 AND state='open' AND kind='native' AND json_extract(native_detail,'$.reason') IN ('remote change intersects an unconfirmed local edit; preserve both versions','cloud content at this path differs from the local file')",[entry])?;
 
-    let needs_placement = !keep_content
-        && (!same_content || (!preserve_metadata && local_path != photo.relative_path));
+    let needs_placement = missing_local
+        || !keep_content
+            && (!same_content || (!preserve_metadata && local_path != photo.relative_path));
     if !needs_placement {
         if !preserve_metadata {
             tx.execute("UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![entry,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))])?;
@@ -855,6 +863,8 @@ enum Adoption {
     /// revisions. Nothing is written and nothing is reported: this is a state
     /// that resolves itself, not a decision for the user.
     Deferred,
+    /// No live media exists to adopt. Download and admit the remote pair.
+    MissingLocal,
     /// The bytes differ, or could not be compared. A real conflict.
     Divergent,
 }
@@ -900,7 +910,7 @@ fn adoption(
     // An entry with no live local file has nothing to compare. Calling that a
     // divergence would be a lie, and worse, a conflict row here would block the
     // very download that would give the photo a local representation. The
-    // resource and admission paths own that outcome, so this stage stays out.
+    // caller must create the ordinary resource and admission obligations.
     //
     // Resolved by path, for the same reason `unclaimed_local_entries` does it
     // that way: `media_id` is a presentation association that an entry created
@@ -919,7 +929,7 @@ fn adoption(
         )
         .optional()?;
     let Some(media) = media else {
-        return Ok(Adoption::Deferred);
+        return Ok(Adoption::MissingLocal);
     };
 
     // Measuring and caching both capture the entry's local version before the
@@ -991,7 +1001,14 @@ fn adoption(
     let baseline_metadata = json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path});
 
     if !keep_metadata {
-        tx.execute("UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![entry,photo.is_favorite,photo.asset_date_ms.map(|ms|ms.div_euclid(1000))])?;
+        tx.execute(
+            "UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE id=?1",
+            params![
+                media,
+                photo.is_favorite,
+                photo.asset_date_ms.map(|ms| ms.div_euclid(1000))
+            ],
+        )?;
     }
     tx.execute(
         "UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,

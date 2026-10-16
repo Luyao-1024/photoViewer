@@ -150,10 +150,22 @@ Three states are not adoption, and none of them is a content conflict:
   path settles it.
 * **The entry has no live local file.** There is nothing to compare, and a
   conflict row would block the very download that would give the photo a local
-  representation. The resource and admission paths own that outcome.
+  representation. Unless an issued/publishing operation or explicit deletion
+  still owns the entry, promotion binds the remote identity and creates both
+  resource work and a publication intent in the same transaction. Stale NEW or
+  CONTENT bits cannot preserve a missing original. After the complete pair is
+  verified, ordinary publication admits the photo without a new upload obligation.
 * **The photo is hidden, or a deletion is pending.** A hidden cloud photo has
   no local representation to bind to, and adoption would silently cancel an
   explicit delete intent.
+
+Merging identical bytes settles content identity, independently of metadata. A
+pending local metadata edit survives as METADATA (`dirty=2`) and remains in the
+uplink view against the adopted record ID. Otherwise, cloud favorite/capture date
+is applied to the media ID found by path, even if the entry's old `media_id` is
+NULL; that write and identity/baseline confirmation share one transaction. Cloud
+metadata application is not a local edit and creates no upload obligation. A
+subsequent local metadata edit follows the ordinary dirty/version/event path.
 
 Digests are measured in `SyncService::measure_local_matches`, before the promotion
 transaction opens — a transaction that hashed a library would hold the single

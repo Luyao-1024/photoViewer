@@ -1101,8 +1101,69 @@ fn a_cloud_photo_with_no_local_file_is_never_a_conflict() {
         )
         .unwrap();
     assert_eq!(open, 0, "a missing local file was reported as a divergence");
-    // The download obligation still stands, so the cycle is not caught up.
+    // Downloading is not enough: the pair must also have an admission intent.
     assert!(store.unresolved_resource_count(job.id).unwrap() > 0);
+    let intents = store.pending_publications(job.id).unwrap();
+    assert_eq!(
+        intents.len(),
+        1,
+        "missing local photo has no admission intent"
+    );
+    assert_eq!(intents[0].photo_id, photo.photo_id);
+}
+
+#[test]
+fn missing_local_media_does_not_bypass_an_issued_operation_or_delete_intent() {
+    for owner in ["issued", "publishing", "delete"] {
+        let (store, pool, job) = store_with_job(&format!("missing-local-owner-{owner}"));
+        begin(&store, &job, "scope-1");
+        let photo = empty_photo("a1", "camera/one.jpg");
+        seed_inbox_revisions(&pool, &job, &photo);
+        let conn = pool.get().unwrap();
+        let dirty = if owner == "delete" { 9 } else { 1 };
+        conn.execute(
+            "INSERT INTO sync_entries(job_id,relative_path,native_dirty) VALUES(?1,'camera/one.jpg',?2)",
+            rusqlite::params![job.id,dirty],
+        ).unwrap();
+        let entry = conn.last_insert_rowid();
+        if owner == "issued" {
+            conn.execute(
+                "INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation) VALUES('op-1',?1,?2,'upload','issued',1,1)",
+                rusqlite::params![job.id,entry],
+            ).unwrap();
+        } else if owner == "publishing" {
+            conn.execute(
+                "INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,state) VALUES('pub-1',?1,?2,?3,'publishing')",
+                rusqlite::params![job.id,entry,photo.photo_id],
+            ).unwrap();
+        }
+        drop(conn);
+        store
+            .promote_remote_graph(
+                job.id,
+                graph(vec![photo]),
+                "zone.target",
+                no_local_digests(),
+            )
+            .unwrap();
+        let (identity, pending): (Option<String>, i64) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT native_photo_id,native_dirty FROM sync_entries WHERE id=?1",
+                [entry],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(identity.is_none(), "{owner} lost ownership of the entry");
+        assert_eq!(pending, dirty);
+        let publications = store.pending_publications(job.id).unwrap();
+        assert_eq!(publications.len(), usize::from(owner == "publishing"));
+        if owner == "publishing" {
+            assert_eq!(publications[0].publication_id, "pub-1");
+            assert_eq!(publications[0].state, "publishing");
+        }
+    }
 }
 
 /// An entry created by a cloud projection has no `media_id`: nothing local
@@ -1180,6 +1241,120 @@ fn an_entry_with_no_media_id_is_still_adopted_and_is_linked_by_adoption() {
         found.is_empty(),
         "a bound entry is still offered for adoption"
     );
+}
+
+#[test]
+fn adoption_of_unlinked_media_applies_cloud_metadata_or_keeps_local_dirty() {
+    for local_edit in [false, true] {
+        let (store, pool, job) = store_with_job(&format!("adopt-unlinked-metadata-{local_edit}"));
+        begin(&store, &job, "scope-1");
+        let mut photo = empty_photo("a1", "camera/one.jpg");
+        photo.is_favorite = true;
+        photo.asset_date_ms = Some(1_700_000_123_000);
+        let entry = enrol_unlinked(&pool, &job, "camera/one.jpg");
+        seed_inbox_revisions(&pool, &job, &photo);
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE media_items SET is_favorite=0,taken_at=42 WHERE path=?1",
+                [job.local_root.join("camera/one.jpg").to_string_lossy()],
+            )
+            .unwrap();
+        if local_edit {
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE sync_entries SET native_dirty=3,native_metadata_version=1 WHERE id=?1",
+                    [entry],
+                )
+                .unwrap();
+        }
+
+        // Exercise adoption directly, without the service's association backfill.
+        // Repeating the projection must preserve the same metadata and obligation.
+        for _ in 0..2 {
+            store
+                .promote_remote_graph(
+                    job.id,
+                    graph(vec![photo.clone()]),
+                    "zone.target",
+                    digests_of(&store, job.id, "camera/one.jpg"),
+                )
+                .unwrap();
+            let (identity, favorite, taken, dirty, acked): (String, bool, i64, i64, i64) = pool.get().unwrap().query_row(
+                "SELECT e.native_photo_id,m.is_favorite,m.taken_at,e.native_dirty,e.native_acked_metadata_version FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",
+                [entry], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+            ).unwrap();
+            assert_eq!(identity, photo.photo_id);
+            assert_eq!(favorite, !local_edit);
+            assert_eq!(taken, if local_edit { 42 } else { 1_700_000_123 });
+            assert_eq!(dirty, if local_edit { 2 } else { 0 });
+            assert_eq!(acked, 0, "local metadata was acknowledged without upload");
+            assert_eq!(store.unresolved_resource_count(job.id).unwrap(), 0);
+            let uploads = store.uplink_view(job.id).unwrap();
+            assert_eq!(uploads.len(), usize::from(local_edit));
+            if local_edit {
+                assert_eq!(uploads[0].dirty.bits(), 2);
+                assert_eq!(uploads[0].photo_id.as_deref(), Some("a1"));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_metadata_edit_after_adoption_remains_an_upload_obligation() {
+    let (store, pool, job) = store_with_job("adopt-then-edit-metadata");
+    begin(&store, &job, "scope-1");
+    let photo = empty_photo("a1", "camera/one.jpg");
+    let entry = enrol_unlinked(&pool, &job, "camera/one.jpg");
+    seed_inbox_revisions(&pool, &job, &photo);
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo.clone()]),
+            "zone.target",
+            digests_of(&store, job.id, "camera/one.jpg"),
+        )
+        .unwrap();
+    assert!(store.uplink_view(job.id).unwrap().is_empty());
+
+    let mut conn = pool.get().unwrap();
+    let tx = conn.transaction().unwrap();
+    let media = tx
+        .query_row(
+            "SELECT media_id FROM sync_entries WHERE id=?1",
+            [entry],
+            |row| row.get(0),
+        )
+        .unwrap();
+    tx.execute("UPDATE media_items SET is_favorite=1 WHERE id=?1", [media])
+        .unwrap();
+    SyncStore::note_local_change_in(
+        &tx,
+        media,
+        crate::core::sync::store::ChangeCategory::Metadata,
+        &crate::core::sync::store::EditEventStamp {
+            edited_at_ms: 1_800_000_000_000,
+            source: "local".into(),
+            event_id: "after-adoption".into(),
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    drop(conn);
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo]),
+            "zone.target",
+            no_local_digests(),
+        )
+        .unwrap();
+    let uploads = store.uplink_view(job.id).unwrap();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0].photo_id.as_deref(), Some("a1"));
+    assert_eq!(uploads[0].dirty.bits(), 2);
+    assert!(crate::core::db::is_media_favorite(&pool, media).unwrap());
 }
 
 fn stamped_event(time: i64, source: &str) -> crate::core::sync::native::receive::EditEvent {

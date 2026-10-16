@@ -203,6 +203,57 @@ fn a_complete_staged_pair_is_published_and_admitted_exactly_once() {
     );
 }
 #[test]
+fn a_missing_unbound_local_photo_is_published_from_a_staged_pair() {
+    // Stale NEW/CONTENT bits must not preserve bytes that no longer exist.
+    for dirty in [1, 5] {
+        let f = fixture(&format!("native-missing-unbound-{dirty}"));
+        f.service.pool().get().unwrap().execute(
+            "INSERT INTO sync_entries(job_id,relative_path,native_dirty) VALUES(?1,'camera/photo.jpg',?2)",
+            rusqlite::params![f.job.id,dirty],
+        ).unwrap();
+        let original = jpeg(0x446688FF);
+        let thumbnail = jpeg(0x223344FF);
+        let photo = project(&f, "one", &original, &thumbnail);
+        stage(&f, &photo, &original, &thumbnail);
+        let report = admit(&f);
+        assert_eq!(report.admitted, 1, "{report:?}");
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(
+            std::fs::read(f.root.join("camera/photo.jpg")).unwrap(),
+            original
+        );
+        let media = crate::core::db::list_all_media(f.service.pool()).unwrap();
+        assert_eq!(media.len(), 1);
+        assert!(media[0].is_favorite);
+        let (identity, pending): (String, i64) = f
+            .service
+            .pool()
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT native_photo_id,native_dirty FROM sync_entries WHERE job_id=?1",
+                [f.job.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(identity, photo.photo_id);
+        assert_eq!(
+            pending, 0,
+            "cloud admission manufactured an upload obligation"
+        );
+        assert_eq!(
+            f.service
+                .store()
+                .unresolved_resource_count(f.job.id)
+                .unwrap(),
+            0
+        );
+        assert!(f.service.store().advance_applied_token(f.job.id).unwrap());
+        assert_eq!(admit(&f).admitted, 0);
+    }
+}
+
+#[test]
 fn a_checksum_failure_preserves_the_previous_complete_photo() {
     let f = fixture("native-pair-mismatch");
     let old = jpeg(0x337799FF);
