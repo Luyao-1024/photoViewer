@@ -18,6 +18,8 @@ fn sample_item() -> MediaItem {
         blake3_hash: "abc123".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 
@@ -88,4 +90,19 @@ fn editable_capability_rejects_lossy_or_unsupported_semantics() {
     let mut hdr = sample_item();
     hdr.media_attributes = r#"{"hdr":true}"#.into();
     assert!(!hdr.is_editable_image());
+}
+
+#[test]
+fn cloud_preview_becomes_editable_only_after_original_download() {
+    let mut item = sample_item();
+    assert_eq!(MediaLocation::Local as i64, 1);
+    assert_eq!(MediaLocation::Cloud as i64, 2);
+    assert_eq!(MediaLocation::Both as i64, 3);
+    item.storage_location = MediaLocation::Cloud;
+    item.thumbnail_ready = true;
+    assert!(!item.storage_location.has_local_original());
+    assert!(!item.is_editable_image());
+    item.storage_location = MediaLocation::Both;
+    assert!(item.storage_location.has_local_original());
+    assert!(item.is_editable_image());
 }

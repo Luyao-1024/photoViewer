@@ -26,6 +26,8 @@ fn item_at(id: i64, uri: &str, year: i32, month: u32, day: u32, hour: u32) -> Me
         blake3_hash: "h".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

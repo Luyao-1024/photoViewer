@@ -38,6 +38,21 @@ pub struct Issued {
 
 #[derive(Debug)]
 pub enum Command {
+    ThumbnailReady {
+        publication: String,
+        media: i64,
+        mtime_ns: i64,
+        asset: String,
+    },
+    DiscardPendingDeletions {
+        job: i64,
+    },
+    ConfirmAbsentDeletion {
+        epoch: Epoch,
+        entry: i64,
+        version: i64,
+        lease: UploadLease,
+    },
     ClearAccount,
     SelectAccount {
         job: Option<i64>,
@@ -176,7 +191,7 @@ impl SyncStore {
     }
     pub(crate) fn local_metadata(&self, entry: i64) -> Result<Value> {
         let conn = self.pool.get()?;
-        let (favorite,date,path,baseline):(Option<i64>,Option<i64>,String,Option<String>)=conn.query_row("SELECT m.is_favorite,m.taken_at,e.relative_path,e.native_resource_baseline FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+        let (favorite,date,path,baseline,trashed):(Option<i64>,Option<i64>,String,Option<String>,bool)=conn.query_row("SELECT m.is_favorite,m.taken_at,e.relative_path,e.native_resource_baseline,m.trashed_at IS NOT NULL FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
         let baseline_ms = baseline
             .and_then(|json| serde_json::from_str::<Value>(&json).ok())
             .and_then(|value| value["assetDateMs"].as_i64());
@@ -186,7 +201,7 @@ impl SyncStore {
                 .unwrap_or_else(|| seconds.saturating_mul(1000))
         });
         Ok(
-            json!({"isFavorite":{"type":"INT64","value":favorite.unwrap_or(0)},"assetDate":date_ms.map(|ms|json!({"type":"TIMESTAMP","value":ms})),"relativePath":{"type":"STRING","value":path}}),
+            json!({"isTrashed":{"type":"INT64","value":trashed as i64},"isFavorite":{"type":"INT64","value":favorite.unwrap_or(0)},"assetDate":date_ms.map(|ms|json!({"type":"TIMESTAMP","value":ms})),"relativePath":{"type":"STRING","value":path}}),
         )
     }
 }
@@ -195,8 +210,55 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     match command {
+        Command::ThumbnailReady {
+            publication,
+            media,
+            mtime_ns,
+            asset,
+        } => {
+            // Resource bytes and all cache sizes were installed before this
+            // command. Ignore a late download for a replaced photo/version.
+            tx.execute("UPDATE media_items SET thumbnail_ready=1,thumbnail_generated_at=unixepoch() WHERE id=?1 AND file_mtime_ns=?2 AND EXISTS(SELECT 1 FROM sync_publications p JOIN sync_entries e ON e.id=p.entry_id JOIN sync_jobs j ON j.id=p.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE p.publication_id=?3 AND p.thumbnail_asset_id=?4 AND p.state IN ('pending','publishing') AND e.media_id=media_items.id AND e.native_dirty<>4 AND c.enabled=1 AND NOT EXISTS(SELECT 1 FROM sync_job_changes WHERE job_id=j.id))",params![media,mtime_ns,publication,asset])?;
+        }
+        Command::DiscardPendingDeletions { job } => {
+            let pending: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_entries WHERE job_id=?1 AND native_dirty=4)",
+                [job],
+                |r| r.get(0),
+            )?;
+            if pending {
+                // Account switching explicitly discards these local obligations,
+                // including uncertain evidence; returning starts fresh discovery.
+                tx.execute("DELETE FROM sync_tasks WHERE entry_id IN (SELECT id FROM sync_entries WHERE job_id=?1 AND native_dirty=4)",[job])?;
+                tx.execute("DELETE FROM sync_publications WHERE entry_id IN (SELECT id FROM sync_entries WHERE job_id=?1 AND native_dirty=4)",[job])?;
+                tx.execute(
+                    "DELETE FROM sync_entries WHERE job_id=?1 AND native_dirty=4",
+                    [job],
+                )?;
+                tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1",[job])?;
+                tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_state=NULL,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0 WHERE job_id=?1",[job])?;
+            }
+        }
+        Command::ConfirmAbsentDeletion {
+            epoch,
+            entry,
+            version,
+            lease,
+        } => {
+            valid_epoch(&tx, &epoch)?;
+            if !lease.valid_now() {
+                return Err(invalid("UPLOAD_LEASE_LOST"));
+            }
+            let removed=tx.execute("DELETE FROM sync_entries WHERE id=?1 AND job_id=?2 AND native_dirty=4 AND native_local_version=?3 AND native_photo_id IS NULL AND native_master_id IS NULL AND NOT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND (state='issued' OR (state='confirmed' AND action='create')))",params![entry,epoch.job,version])?;
+            if removed != 1 {
+                return Err(invalid(
+                    "an unconfirmed cloud operation still owns the deletion",
+                ));
+            }
+        }
         Command::ClearAccount => {
             tx.execute("UPDATE sync_connections SET enabled=0", [])?;
+            super::accounts::refresh_media_locations_in(&tx)?;
             tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_account','null') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
         }
         Command::SelectAccount { job } => super::accounts::select_in(&tx, job)?,
@@ -289,7 +351,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
         }
         Command::ObserveLocal { job, paths } => {
             for relative in paths {
-                tx.execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty) SELECT j.id,m.id,?2,1 FROM sync_jobs j JOIN sync_connections c ON c.id=j.connection_id JOIN media_items m ON m.path=rtrim(j.local_root,'/')||'/'||?2 AND m.trashed_at IS NULL WHERE j.id=?1 AND c.enabled=1 ON CONFLICT(job_id,relative_path) DO UPDATE SET media_id=COALESCE(sync_entries.media_id,excluded.media_id)",params![job,relative])?;
+                tx.execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty) SELECT j.id,m.id,?2,1 FROM sync_jobs j JOIN sync_connections c ON c.id=j.connection_id JOIN media_items m ON m.path=rtrim(j.local_root,'/')||'/'||?2 AND m.trashed_at IS NULL AND m.storage_location<>2 WHERE j.id=?1 AND c.enabled=1 ON CONFLICT(job_id,relative_path) DO UPDATE SET media_id=COALESCE(sync_entries.media_id,excluded.media_id)",params![job,relative])?;
             }
         }
         Command::BeginCollision {
@@ -380,7 +442,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
             let rows = {
-                let mut statement=tx.prepare("SELECT id,path FROM media_items WHERE trashed_at IS NULL AND substr(path,1,length(rtrim(?1,'/'))+1)=rtrim(?1,'/')||'/'")?;
+                let mut statement=tx.prepare("SELECT id,path FROM media_items WHERE trashed_at IS NULL AND storage_location<>2 AND substr(path,1,length(rtrim(?1,'/'))+1)=rtrim(?1,'/')||'/'")?;
                 let rows = statement
                     .query_map([&root], |r| {
                         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
@@ -388,7 +450,6 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 rows
             };
-            tx.execute("DELETE FROM sync_inventory WHERE job_id=?1", [epoch.job])?;
             for (media, path) in rows {
                 let relative = std::path::Path::new(&path)
                     .strip_prefix(&root)
@@ -401,7 +462,6 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     .unwrap_or_default();
                 let selected:bool=scope=="all" || tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_upload_albums WHERE job_id=?1 AND relative_album=?2)",params![epoch.job,album],|r|r.get(0))?;
                 if selected {
-                    tx.execute("INSERT INTO sync_inventory(job_id,relative_path,config_generation) VALUES(?1,?2,?3)",params![epoch.job,relative,epoch.config])?;
                     tx.execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty) VALUES(?1,?2,?3,1) ON CONFLICT(job_id,relative_path) DO NOTHING",params![epoch.job,media,relative])?;
                 }
             }
@@ -479,20 +539,13 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     return Err(invalid("delete response is not a tombstone"));
                 }
             }
-            let (local,metadata,content,deletion):(i64,i64,i64,i64)=tx.query_row("SELECT native_local_version,native_metadata_version,native_content_version,native_deletion_version FROM sync_entries WHERE id=?1 AND job_id=?2",params![operation.entry,epoch.job],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-            let versions = [local, metadata, content, deletion];
-            let mut clear = 0u8;
-            for (bit, index) in [(2u8, 1), (4, 2), (8, 3)] {
-                if operation.dirty & bit != 0 && versions[index] == operation.versions[index] {
-                    clear |= bit;
-                }
-            }
-            if operation.phase == "create" {
-                clear |= 1;
-            }
             if operation.phase == "delete" {
-                tx.execute("UPDATE sync_entries SET native_retired=CASE WHEN native_local_version=?2 THEN 1 ELSE 0 END WHERE id=?1",params![operation.entry,operation.versions[0]])?;
-                tx.execute("UPDATE sync_entries SET native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,native_content_generation=NULL,native_resource_baseline=NULL,native_baseline_metadata=NULL,native_confirmed_generation=NULL,native_dirty=(native_dirty & ?2) | CASE WHEN native_local_version<>?3 THEN 1 ELSE 0 END WHERE id=?1",params![operation.entry,!(clear as i64),operation.versions[0]])?;
+                tx.execute("UPDATE sync_entries SET native_retired=CASE WHEN native_local_version=?2 THEN 1 ELSE 0 END,
+                    native_photo_id=NULL,native_master_id=NULL,native_asset_revision=NULL,native_master_revision=NULL,
+                    native_content_generation=NULL,native_resource_baseline=NULL,native_baseline_metadata=NULL,
+                    native_confirmed_generation=NULL,native_dirty=CASE WHEN native_local_version=?2 THEN 0 ELSE 1 END,
+                    native_acked_deletion_version=MAX(native_acked_deletion_version,?3) WHERE id=?1",
+                    params![operation.entry,operation.versions[0],operation.versions[3]])?;
             } else {
                 let revision = |name: &str| {
                     records
@@ -500,7 +553,24 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                         .find(|r| r["recordName"].as_str() == Some(name))
                         .and_then(|r| r["recordChangeTag"].as_str())
                 };
-                tx.execute("UPDATE sync_entries SET native_retired=0,native_photo_id=?2,native_master_id=?3,native_asset_revision=COALESCE(?4,native_asset_revision),native_master_revision=COALESCE(?5,native_master_revision),native_content_generation=?6,native_confirmed_generation=?7,native_dirty=native_dirty & ?8,native_acked_metadata_version=MAX(native_acked_metadata_version,?9),native_acked_content_version=MAX(native_acked_content_version,?10) WHERE id=?1",params![operation.entry,operation.photo,operation.master,revision(&operation.photo),revision(&operation.master),operation.content_generation,generation,!(clear as i64),if operation.dirty&2!=0{operation.versions[1]}else{0},if operation.dirty&4!=0{operation.versions[2]}else{0}])?;
+                let metadata_sent =
+                    operation.phase == "create" || operation.preparation["sendMetadata"] == true;
+                let content_sent =
+                    operation.phase == "create" || operation.preparation.get("resources").is_some();
+                tx.execute("UPDATE sync_entries SET native_retired=0,native_photo_id=?2,native_master_id=?3,
+                    native_asset_revision=COALESCE(?4,native_asset_revision),native_master_revision=COALESCE(?5,native_master_revision),
+                    native_content_generation=?6,native_confirmed_generation=?7,
+                    native_acked_metadata_version=MAX(native_acked_metadata_version,?8),
+                    native_acked_content_version=MAX(native_acked_content_version,?9) WHERE id=?1",
+                    params![operation.entry,operation.photo,operation.master,revision(&operation.photo),revision(&operation.master),
+                        operation.content_generation,generation,
+                        if metadata_sent {operation.versions[1]} else {0},
+                        if content_sent {operation.versions[2]} else {0}])?;
+                tx.execute("UPDATE sync_entries SET native_dirty=CASE
+                    WHEN native_dirty=4 THEN 4
+                    WHEN native_local_version<>?2 OR native_metadata_version>native_acked_metadata_version
+                        OR native_content_version>native_acked_content_version THEN 2
+                    ELSE 0 END WHERE id=?1", params![operation.entry,operation.versions[0]])?;
                 let fields = operation.body["operations"]
                     .as_array()
                     .and_then(|ops| {
@@ -597,9 +667,14 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                     }
                 }
             }
+            tx.execute("UPDATE media_items SET storage_location=3,thumbnail_ready=CASE WHEN ?2 THEN 1 ELSE thumbnail_ready END WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1)",params![operation.entry,operation.preparation.get("resources").is_some()])?;
             tx.execute("UPDATE sync_tasks SET state='confirmed',updated_at=unixepoch() WHERE operation_id=?1",[operation.id])?;
             if !lease.valid_now() {
                 return Err(invalid("UPLOAD_LEASE_LOST"));
+            }
+            if operation.phase == "delete" {
+                tx.execute("DELETE FROM sync_entries WHERE id=?1 AND native_dirty=0 AND native_retired=1 AND native_local_version=?2",
+                    params![operation.entry,operation.versions[0]])?;
             }
         }
         Command::CleanPublication { id } => {
@@ -659,8 +734,10 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                 ],
             )?;
             let revision = |name: &str| -> Result<String> {
-                tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,name],|r|r.get(0)).map_err(Into::into)
+                super::receive::record_revision_in(&tx, job, name)?
+                    .ok_or_else(|| invalid("photo has no confirmed record revision"))
             };
+            tx.execute("UPDATE media_items SET storage_location=3,thumbnail_ready=1,thumbnail_generated_at=unixepoch() WHERE id=?1",[media.id])?;
             tx.execute("UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,native_content_generation=?7,native_confirmed_generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?8),native_baseline_metadata=?9,native_resource_baseline=?10,relative_path=?11,native_local_digest=NULL WHERE id=?1",params![entry,media.id,photo.photo_id,photo.master_id,revision(&photo.photo_id)?,revision(&photo.master_id)?,photo.content_generation,job,json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path}).to_string(),serde_json::to_string(&photo).map_err(|_|invalid("cannot encode publication baseline"))?,if capture["preserveMetadata"] == true { capture["localRelativePath"].as_str().ok_or_else(|| invalid("missing local metadata path"))? } else { &photo.relative_path }])?;
             for (asset, role) in [
                 (&photo.original.asset_id, "original"),
@@ -696,9 +773,11 @@ fn check_publication(tx: &Transaction<'_>, capture: &Value) -> Result<()> {
             "local edit/configuration superseded the publication",
         ));
     }
-    let current:Option<String>=tx.query_row("SELECT payload FROM sync_native_records WHERE job_id=?1 AND record_type='__photo__' AND record_name=(SELECT native_photo_id FROM sync_entries WHERE id=?2)",params![job,entry],|r|r.get(0)).optional()?;
+    let current:Option<String>=tx.query_row("SELECT json_extract(captured_versions,'$.projection') FROM sync_publications WHERE entry_id=?1 AND state IN ('pending','publishing') ORDER BY id DESC LIMIT 1",[entry],|r|r.get(0)).optional()?.flatten();
     if capture.get("projection").is_some() && current.as_deref() != capture["projection"].as_str() {
-        return Err(invalid("remote projection superseded the publication"));
+        return Err(invalid(
+            "a later received version superseded the publication",
+        ));
     }
     Ok(())
 }
@@ -760,7 +839,14 @@ pub(super) fn project_publication(
     } else {
         tx.execute("INSERT INTO sync_entries(job_id,relative_path,native_photo_id,native_master_id) VALUES(?1,?2,?3,?4)",params![job,photo.relative_path,photo.photo_id,photo.master_id])?;
         (
-            tx.last_insert_rowid(),
+            {
+                let created = tx.last_insert_rowid();
+                // Collision preservation moved the local occupant, not the
+                // received pair. Move its temporary fragments to the cloud row.
+                tx.execute("UPDATE sync_entries SET native_pending_master=(SELECT native_pending_master FROM sync_entries old WHERE old.job_id=?2 AND old.id<>?1 AND json_extract(old.native_pending_asset,'$.recordName')=?3 LIMIT 1),native_pending_asset=(SELECT native_pending_asset FROM sync_entries old WHERE old.job_id=?2 AND old.id<>?1 AND json_extract(old.native_pending_asset,'$.recordName')=?3 LIMIT 1) WHERE id=?1",params![created,job,photo.photo_id])?;
+                tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1 AND id<>?2 AND json_extract(native_pending_asset,'$.recordName')=?3",params![job,created,photo.photo_id])?;
+                created
+            },
             0,
             0,
             None,
@@ -769,11 +855,15 @@ pub(super) fn project_publication(
         )
     };
     let dirty = NativeDirty(dirty as u8);
+    let (metadata_pending, content_pending): (bool, bool) = tx.query_row(
+        "SELECT native_metadata_version>native_acked_metadata_version,native_content_version>native_acked_content_version FROM sync_entries WHERE id=?1",
+        [entry], |r| Ok((r.get(0)?,r.get(1)?)),
+    )?;
     let encoded = serde_json::to_string(photo).map_err(|_| invalid("invalid projected photo"))?;
     if baseline.as_deref() == Some(&encoded)
-        && (local_path == photo.relative_path || dirty.contains(NativeDirty::METADATA))
+        && (local_path == photo.relative_path || metadata_pending)
     {
-        if dirty.contains(NativeDirty::CONTENT) || dirty.contains(NativeDirty::DELETE) {
+        if content_pending || dirty.contains(NativeDirty::DELETE) {
             supersede_pending(tx, entry)?;
             return Ok(ProjectedContent::Local);
         }
@@ -794,7 +884,19 @@ pub(super) fn project_publication(
             && old.thumbnail == photo.thumbnail
             && old.events.content == photo.events.content
     });
-    let missing_local = if identity.is_none() {
+    // Metadata admission may already have bound the cloud ID. A cloud-only row
+    // still has no local bytes for a stale NEW/content obligation to preserve.
+    let cloud_only: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entries e JOIN media_items m ON m.id=e.media_id
+          WHERE e.id=?1 AND m.storage_location=2)
+          AND NOT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND state='issued')
+          AND NOT EXISTS(SELECT 1 FROM sync_publications WHERE entry_id=?1 AND state='publishing')",
+        [entry],
+        |r| r.get(0),
+    )?;
+    let missing_local = if cloud_only && !dirty.contains(NativeDirty::DELETE) {
+        true
+    } else if identity.is_none() {
         match adoption(tx, job, entry, photo, dirty, local_digests)? {
             Adoption::Bound | Adoption::Deferred => return Ok(ProjectedContent::Remote),
             Adoption::MissingLocal => true,
@@ -819,40 +921,31 @@ pub(super) fn project_publication(
 
     let events = entry_events(tx, entry)?;
     let preserve_metadata = !missing_local
-        && dirty.contains(NativeDirty::METADATA)
+        && metadata_pending
         && (same_metadata
             || local_event_wins(events.metadata.as_ref(), photo.events.metadata.as_ref()));
-    let latest_remote = super::super::native::records::latest_event(
-        photo.events.metadata.as_ref(),
-        photo.events.content.as_ref(),
-    );
-    let keep_delete = dirty.contains(NativeDirty::DELETE)
-        && local_event_wins(events.deletion.as_ref(), latest_remote.as_ref());
+    // Physical deletion is durable until cloud deletion is confirmed. A newer
+    // metadata/content event cannot resurrect the removed file or clear state 4.
+    let keep_delete = dirty.contains(NativeDirty::DELETE);
     // NEW/CONTENT on an orphan entry cannot stand in for a local original.
     // Busy operations and explicit deletions were excluded before MissingLocal.
     let keep_content = !missing_local
         && (keep_delete
-            || (dirty.contains(NativeDirty::CONTENT) || dirty.contains(NativeDirty::NEW))
+            || (content_pending || dirty.contains(NativeDirty::NEW))
                 && (same_content
                     || local_event_wins(events.content.as_ref(), photo.events.content.as_ref())));
-    let mut settled = dirty.without(NativeDirty::NEW);
-    if dirty.contains(NativeDirty::NEW) && keep_content && !keep_delete {
-        settled = settled.with(NativeDirty::CONTENT);
-    }
-    if !preserve_metadata {
-        settled = settled.without(NativeDirty::METADATA);
-    }
-    if !keep_content {
-        settled = settled.without(NativeDirty::CONTENT);
-    }
-    if !keep_delete {
-        settled = settled.without(NativeDirty::DELETE);
-    }
+    let settled = NativeDirty(if keep_delete {
+        NativeDirty::DELETE
+    } else if preserve_metadata || keep_content {
+        NativeDirty::MODIFIED
+    } else {
+        NativeDirty::CLEAN
+    });
     // Merely observing the newer remote event settles the losing local category;
     // it does not advance local edit versions. The ordinary publication captures
     // these exact versions, so a subsequent edit still invalidates placement.
     let revision = |name: &str| -> Result<Option<String>> {
-        tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,name],|r|r.get(0)).optional().map_err(Into::into)
+        super::receive::record_revision_in(tx, job, name)
     };
     tx.execute(
         "UPDATE sync_entries SET native_photo_id=?2,native_master_id=?3,native_dirty=?4,
@@ -899,13 +992,10 @@ pub(super) fn project_publication(
     let desired:(String,Option<i64>,Option<i64>)=tx.query_row("SELECT e.relative_path,m.is_favorite,m.taken_at FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let capture = json!({"job":job,"entry":entry,"local":local,"config":config,"dirty":settled.bits(),"contentGeneration":photo.content_generation,"projection":encoded,"preserveMetadata":preserve_metadata,"localRelativePath":desired.0,"favorite":desired.1,"takenAt":desired.2});
     tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,master_id,original_asset_id,thumbnail_asset_id,captured_versions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(publication_id) DO UPDATE SET state=CASE WHEN sync_publications.state='superseded' THEN 'pending' ELSE sync_publications.state END,captured_versions=CASE WHEN sync_publications.state IN ('pending','superseded') THEN excluded.captured_versions ELSE sync_publications.captured_versions END",params![id,job,entry,photo.photo_id,photo.master_id,photo.original.asset_id,photo.thumbnail.asset_id,capture.to_string()])?;
-    // A library-backed verification has no staging bytes: the bytes it proved
-    // are the library file itself. That only still proves them while the record
-    // points at the same path — a remote rename moves where the file has to
-    // land, and the pair has to be fetched again rather than handed to a
-    // publisher whose staging_path is NULL. Repromoting the same photo at the
-    // same path changes nothing, so the verified role survives it.
-    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND staging_path IS NULL AND EXISTS(SELECT 1 FROM sync_entries e WHERE e.id=?4 AND e.relative_path IS NOT ?5)",params![job,photo.original.asset_id,photo.thumbnail.asset_id,entry,photo.relative_path])?;
+    // Library-backed verification has no staging bytes. Any new publication
+    // (including a shared asset or rename) must obtain staging bytes again;
+    // a different photo's adoption cannot satisfy its placement obligation.
+    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND staging_path IS NULL",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
     Ok(ProjectedContent::Remote)
 }
 
@@ -976,7 +1066,7 @@ fn adoption(
                JOIN sync_jobs j ON j.id = e.job_id
                JOIN media_items m
                  ON m.path = rtrim(j.local_root, '/') || '/' || e.relative_path
-                AND m.trashed_at IS NULL
+                AND m.trashed_at IS NULL AND m.storage_location<>2
              WHERE e.id = ?1",
             [entry],
             |row| row.get(0),
@@ -1017,13 +1107,7 @@ fn adoption(
     // bound identity is worse than none: the next conditional update would go
     // out with a tag this client cannot produce. Wait for the inbox instead.
     let revision = |record: &str| -> Result<Option<String>> {
-        tx.query_row(
-            "SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",
-            params![job, record],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(Into::into)
+        super::receive::record_revision_in(tx, job, record)
     };
     let (Some(asset_revision), Some(master_revision)) =
         (revision(&photo.photo_id)?, revision(&photo.master_id)?)
@@ -1037,20 +1121,20 @@ fn adoption(
     // the cloud is authoritative. The same bit decides both questions: whether
     // the local row is overwritten, and whether the metadata obligation is
     // settled.
-    let keep_metadata = dirty.contains(NativeDirty::METADATA);
+    let keep_metadata: bool = tx.query_row(
+        "SELECT native_metadata_version>native_acked_metadata_version FROM sync_entries WHERE id=?1",
+        [entry], |r| r.get(0),
+    )?;
     let generation: String = tx.query_row(
         "SELECT database_generation FROM sync_native_progress WHERE job_id=?1",
         [job],
         |row| row.get(0),
     )?;
-    let settled = NativeDirty(
-        (dirty.bits() & !NativeDirty::NEW & !NativeDirty::CONTENT)
-            & if keep_metadata {
-                u8::MAX
-            } else {
-                !NativeDirty::METADATA
-            },
-    );
+    let settled = NativeDirty(if keep_metadata {
+        NativeDirty::MODIFIED
+    } else {
+        NativeDirty::CLEAN
+    });
     let encoded = serde_json::to_string(photo).map_err(|_| invalid("invalid projected photo"))?;
     let baseline_metadata = json!({"isFavorite":photo.is_favorite,"assetDate":photo.asset_date_ms,"relativePath":photo.relative_path});
 
@@ -1064,6 +1148,10 @@ fn adoption(
             ],
         )?;
     }
+    tx.execute(
+        "UPDATE media_items SET storage_location=3 WHERE id=?1",
+        [media],
+    )?;
     tx.execute(
         "UPDATE sync_entries SET media_id=?2,native_photo_id=?3,native_master_id=?4,native_asset_revision=?5,native_master_revision=?6,
             native_content_generation=?7,native_confirmed_generation=?8,native_resource_baseline=?9,

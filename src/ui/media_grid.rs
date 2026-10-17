@@ -207,6 +207,8 @@ pub(crate) mod test_support {
             blake3_hash: format!("hash-{id}"),
             is_favorite: false,
             trashed_at: None,
+            storage_location: crate::core::media::MediaLocation::Local,
+            thumbnail_ready: false,
         }
     }
 

@@ -446,6 +446,8 @@
   "native.logging_in": "正在登录并验证账户…",
   "native.login_ok": "已登录 {username}，请选择区域、本地目录和上传相册。",
   "native.relogin": "登录并继续",
+  "native.remove_account": "移除账号",
+  "native.remove_account_body": "移除此账号保存的全部同步任务及本地凭证。本地照片和云端照片均保留。",
   "native.logout": "退出登录",
   "native.logged_out": "已退出登录，同步已暂停。",
   "native.relogin_hint": "重新登录只更新此任务的同一账户凭证。其他账户请使用不同本地目录新建任务。",

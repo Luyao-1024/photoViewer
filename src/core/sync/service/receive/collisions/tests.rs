@@ -37,6 +37,16 @@ fn fixture() -> Fixture {
             crate::core::sync::NativeZone::new("PrimarySync"),
         )
         .unwrap();
+    service
+        .store()
+        .pin_native_snapshot(job.id, "fixture.snapshot", "fixture.zone")
+        .unwrap();
+    for kind in crate::core::sync::native::receive::SUPPORTED_RECORD_TYPES {
+        service
+            .store()
+            .save_bootstrap_page(job.id, kind, None, 0, "fixture.zone")
+            .unwrap();
+    }
     Fixture {
         _temp: temp,
         service,
@@ -82,9 +92,12 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().unwrap()
 }
 fn revisions(f: &Fixture) {
-    for (ordinal, name) in [(1, "cloud-photo"), (2, "cloud-master")] {
-        f.service.pool().get().unwrap().execute("INSERT INTO sync_native_inbox(job_id,generation,zone_name,owner,ordinal,record_name,record_type,record_change_tag,kind) VALUES(?1,'generation','PrimarySync','_defaultOwner',?2,?3,'CPLAsset','revision','updated')",rusqlite::params![f.job.id,ordinal,name]).unwrap();
-    }
+    let asset = json!({"recordName":"cloud-photo","recordType":"CPLAsset","recordChangeTag":"revision","fields":{}});
+    let master = json!({"recordName":"cloud-master","recordType":"CPLMaster","recordChangeTag":"revision","fields":{}});
+    f.service.pool().get().unwrap().execute(
+        "UPDATE sync_entries SET native_pending_asset=?2,native_pending_master=?3 WHERE job_id=?1 AND relative_path='album/photo.jpg'",
+        rusqlite::params![f.job.id,asset.to_string(),master.to_string()],
+    ).unwrap();
 }
 
 #[test]

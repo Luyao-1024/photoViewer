@@ -249,11 +249,11 @@ fn favorites_album(pool: &DbPool) -> Result<Album> {
             COALESCE(
             (SELECT cover_uri FROM album_covers c
              WHERE c.folder_path = ?1),
-            (SELECT uri FROM media_items m2
+            (SELECT uri FROM visible_media m2
              WHERE m2.trashed_at IS NULL AND m2.is_favorite = 1
              ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND is_favorite = 1",
     )?;
     let album = stmt.query_row([FAVORITES_ALBUM_PATH], |row| {
@@ -286,11 +286,11 @@ fn media_kind_album(
             COALESCE(
             (SELECT cover_uri FROM album_covers c
              WHERE c.folder_path = ?2),
-            (SELECT uri FROM media_items m2
+            (SELECT uri FROM visible_media m2
              WHERE m2.trashed_at IS NULL AND m2.media_kind = ?1
              ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND media_kind = ?1",
     )?;
     let album = stmt.query_row([media_kind, virtual_path], |row| {
@@ -323,11 +323,11 @@ fn media_type_album(
             COALESCE(
             (SELECT cover_uri FROM album_covers c
              WHERE c.folder_path = ?1),
-            (SELECT uri FROM media_items m2
+            (SELECT uri FROM visible_media m2
              WHERE m2.trashed_at IS NULL AND {}
              ORDER BY m2.file_mtime DESC LIMIT 1)),
             COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND {}",
         media_type.sql_predicate(),
         media_type.sql_predicate(),
@@ -397,12 +397,12 @@ where
                  COALESCE(
                  (SELECT cover_uri FROM album_covers c
                   WHERE c.folder_path = m.folder_path),
-                 (SELECT uri FROM media_items m2
+                 (SELECT uri FROM visible_media m2
                   WHERE m2.folder_path = m.folder_path AND m2.trashed_at IS NULL
                   ORDER BY m2.file_mtime DESC LIMIT 1)),
                  COUNT(*),
                  MAX(file_mtime)
-             FROM media_items m
+             FROM visible_media m
              WHERE trashed_at IS NULL
              GROUP BY folder_path",
             [],
@@ -453,14 +453,14 @@ fn insert_favorites_album_row(tx: &rusqlite::Transaction<'_>) -> Result<()> {
              ?2,
              COALESCE(
                  (SELECT cover_uri FROM album_covers c WHERE c.folder_path = ?1),
-                 (SELECT uri FROM media_items m2
+                 (SELECT uri FROM visible_media m2
                   WHERE m2.trashed_at IS NULL AND m2.is_favorite = 1
                   ORDER BY COALESCE(m2.taken_at, m2.file_mtime) DESC, m2.id DESC
                   LIMIT 1)
              ),
              COUNT(*),
              COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND is_favorite = 1
          HAVING COUNT(*) > 0",
         rusqlite::params![FAVORITES_ALBUM_PATH, tr("album.favorites.name")],
@@ -481,14 +481,14 @@ fn insert_media_kind_album_row(
              ?2,
              COALESCE(
                  (SELECT cover_uri FROM album_covers c WHERE c.folder_path = ?1),
-                 (SELECT uri FROM media_items m2
+                 (SELECT uri FROM visible_media m2
                   WHERE m2.trashed_at IS NULL AND m2.media_kind = ?3
                   ORDER BY COALESCE(m2.taken_at, m2.file_mtime) DESC, m2.id DESC
                   LIMIT 1)
              ),
              COUNT(*),
              COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND media_kind = ?3",
         rusqlite::params![virtual_path, name, media_kind],
     )?;
@@ -508,14 +508,14 @@ fn insert_media_type_album_row(
              ?2,
              COALESCE(
                  (SELECT cover_uri FROM album_covers c WHERE c.folder_path = ?1),
-                 (SELECT uri FROM media_items m2
+                 (SELECT uri FROM visible_media m2
                   WHERE m2.trashed_at IS NULL AND {}
                   ORDER BY COALESCE(m2.taken_at, m2.file_mtime) DESC, m2.id DESC
                   LIMIT 1)
              ),
              COUNT(*),
              COALESCE(MAX(file_mtime), 0)
-         FROM media_items
+         FROM visible_media
          WHERE trashed_at IS NULL AND {}",
         media_type.sql_predicate(),
         media_type.sql_predicate(),

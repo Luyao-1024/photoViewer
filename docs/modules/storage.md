@@ -46,7 +46,7 @@ reduction operate only on cached pixels. See [sync](sync.md) for deferred work.
 Development builds keep SQLite `PRAGMA user_version` fixed at **1**. The
 application is not released yet, so `schema.sql` is the only current definition:
 initialization creates missing tables/indexes and always writes version 1.
-There is no version ladder, version-based rejection or column migration.
+There is no version ladder or version-based rejection. Missing nullable/defaulted fields are added transactionally without clearing library or sync state.
 Before starting the pool/actor/scanner/sync service, initialization builds an
 in-memory reference from `schema.sql` and compares existing tables' column names,
 types, nullability, defaults, primary-key positions and hidden-column flags.
@@ -61,8 +61,8 @@ not cascade into `edits`). Other tables, custom indexes, account/configuration
 rows, ordinary media and original files are preserved. Rows in the incompatible
 table itself are discarded; this is recovery, not an upgrade.
 
-After any table rebuild, all sync runtime/history rows (entries, inventory,
-tasks, conflicts, native progress/inbox/records/resources and publications) are
+After any table rebuild, all sync runtime/history rows (entries,
+tasks, conflicts, native progress/resources and publications) are
 cleared with `DELETE`, **without rebuilding those other tables**. Job cycle IDs,
 start/completion times and errors are reset. Compatible account connections,
 credential references, account selection, tasks' configuration, explicit upload
@@ -370,6 +370,12 @@ prewarm jobs must register their cache keys in `ThumbnailLoader`'s in-flight
 map just like visible tile requests; otherwise multiple workers can race on the
 same final cache path and readers can observe a partially-created file.
 
+At background-prewarm startup a bounded background walk checks cache files for
+live media and invalidates stale generated markers through DbActor when all
+sizes are missing. This repairs independently evicted/deleted cache files without
+having native uplink decode originals. A background cache hit also settles its
+missing generated marker; foreground cache hits retain the no-write fast path.
+
 After startup scan and trash reconciliation, `ThumbnailLoader` enters background prewarm mode without waiting for full-library DB pagination: one idle worker pulls a live media row whose `thumbnail_generated_at` is missing or older than `file_mtime`, generates the Medium thumbnail, yields briefly, and immediately marks the row generated. This DB marker is part of the pull loop's convergence condition; do not defer it behind a large batch threshold, or small libraries will repeatedly regenerate the same thumbnails before they are considered complete. The prewarm pull loop must not hold `background_pull.offset` while running the DB query; mode switching resets that offset from the GTK thread when the target thumbnail size changes, so holding the mutex across SQL can block Year/Month/Day switching behind a background prewarm read.
 
 The prewarm pull offset follows the user's browsing position, not always the newest rows. Because the scrollbar can jump to any region instantly, the Photos grid calls `ThumbnailLoader::redirect_prewarm_to_offset(prewarm_offset)` when a virtual DB page lands, moving the prewarm pull start to the current full-library live-media offset so off-screen tiles around the current position warm next (ahead of irrelevant newest-first batches). `prewarm_offset` is interpreted in the unfiltered live-media DESC order, not in the filtered "needs thumbnail" result set; the DB query anchors on that live offset and then finds cold rows at or after the anchor, so already-generated thumbnails before the viewport do not push prewarm away from the user's position. Visible tiles still take `TIER_BOOST` (highest priority); this redirect only decides where the lower-priority off-screen prewarm work happens and keeps its one-worker throttle.
@@ -400,28 +406,24 @@ to gdk-pixbuf instead of logging recoverable turbojpeg fallback warnings.
 The per-video ffmpegthumbnailer fallback, GStreamer extraction, cache-hit, and generated-thumbnail progress messages are debug diagnostics only; default logs should retain warnings for unrecoverable decode/cache problems, not every recovered thumbnail path.
 
 
-## Native Sync Storage Design (C1 Pending)
+## Native photo presence and direct metadata admission
 
-The [native client contract](native-sync.md) and
-[storage/publication design](native-sync-storage.md) freeze the next C1 migration
-and actor boundaries. Current runtime schema remains version 8; no new columns,
-provider, dirty tracking or media-admission implementation is added by these docs.
-The server's pre-release compatibility waiver does not apply to existing
-PhotoViewer libraries: preserve media/favorites/albums and current WebDAV state
-when migrating to the next available schema version.
+The current native schema remains version 1. `media_items.storage_location` uses
+1=local, 2=cloud (original not downloaded), 3=both. `thumbnail_ready` is independent:
+it denotes a generated local thumbnail or a downloaded cloud thumbnail. The DB
+read model retains nanosecond source mtime so generation, downloaded previews and
+upload cache reuse share the same cache identity.
 
-Dirty and local/category versions/events belong on existing sync_entries records,
-separate from entry_generation, BLAKE3 fingerprints and WebDAV revisions. There
-is no independent dirty file/table/persistent scheduling queue. Existing
-sync_tasks retains issued-operation recovery facts only; received inbox,
-projection, ingest/applied progress, resource work and pair-publication intents
-have distinct responsibilities in the same DB. Only valid version/epoch-checked
-success confirmations settle dirty obligations.
+Remote metadata is inserted before bytes arrive. The `visible_media` view filters
+cloud-only rows without ready thumbnails and rows belonging only to inactive
+accounts; local and both rows remain browsable while thumbnails generate. All
+photo/album/search/navigation counts and pages use the same projection. Physical
+scanner snapshots and missing-file reconciliation exclude cloud-only rows.
 
-Native publication must be admitted consistently through scanner/watcher/direct
-upsert and startup recovery. Original and thumbnail are both verified, stable
-and mapped to the existing thumb-v4 source-path/final-mtime/size cache before
-media admission. Existing grid/viewer loading stays on local complete media;
-internal sync/cache events do not create fresh user dirty. See
-[NC01–NC20 acceptance](native-sync-plan.md#mandatory-acceptance-matrix) for real
-DB/file/network/UI evidence required before these become implemented guarantees.
+Current-schema additive fields are adopted transactionally without deleting media
+or dirty=4 records. No development-version migration ladder is introduced. The
+obsolete inbox, remote projection and sync_inventory are removed; watermarks,
+uncompleted per-photo fields and file-publication recovery remain. A successful
+upload registers cloud identity and both presence on the same entry/media row.
+Thumbnail downloads set readiness after normal cache installation; durable original
+publication changes cloud to both. Only real local mutations set dirty.

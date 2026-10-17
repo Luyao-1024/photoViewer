@@ -125,8 +125,8 @@ pub(in crate::core::thumbnails) fn worker_loop(
                     was_cache_hit,
                 );
                 if let Some(media_id) = generated_media_id {
-                    if was_cache_hit {
-                        // 磁盘命中：该行已被前一次冷生成标记过，无需重标——既省一次
+                    if was_cache_hit && req.tier != TIER_BACKGROUND {
+                        // 前台磁盘命中：该行已被前一次冷生成标记过，无需重标——既省一次
                         // 经单写 DbActor 的 UPDATE（其尾部拥塞正是滚动卡顿来源），也让
                         // 热路径纹理在零 DB 记账下立即送达。
                         debug!(
@@ -135,7 +135,7 @@ pub(in crate::core::thumbnails) fn worker_loop(
                             media_id, req.uri,
                         );
                     } else {
-                        // 冷生成：同步更新 thumbnail_generated_at，保持「交付前已标记」
+                        // 冷生成或后台补记缓存命中：同步更新 thumbnail_generated_at，保持「交付前已标记」
                         // 契约（集成测试与统计计数都依赖 rx 解析时该行已被标记）。
                         // debug span 度量 worker 在标记上的阻塞时间（仅冷路径）。
                         let result = {

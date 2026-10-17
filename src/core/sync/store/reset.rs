@@ -158,10 +158,11 @@ pub(super) fn finish(pool: &DbPool, token: String) -> Result<SyncWriteResult> {
         // Pending conflict actions are intentionally not replayed.
     }
     tx.execute_batch(
-        "DELETE FROM sync_tasks;
+        "DELETE FROM media_items WHERE storage_location=2;
+        UPDATE media_items SET storage_location=1 WHERE storage_location=3;
+        DELETE FROM sync_tasks;
         DELETE FROM sync_conflicts;
         DELETE FROM sync_entries;
-        DELETE FROM sync_inventory;
         DELETE FROM sync_job_changes;
         UPDATE sync_jobs SET paused=0,config_generation=config_generation+1,
             last_started_at=NULL,last_completed_at=NULL,last_error=NULL;",

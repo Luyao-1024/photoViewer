@@ -67,6 +67,9 @@ pub enum DbCommand {
     MarkThumbnailsGenerated {
         ids: Vec<MediaId>,
     },
+    InvalidateThumbnailMarks {
+        ids: Vec<MediaId>,
+    },
     MarkTrashed {
         ids: Vec<MediaId>,
     },
@@ -129,7 +132,9 @@ impl DbCommand {
             | Self::ResetLibraryDatabase
             | Self::ResetAccountData
             | Self::DeleteMediaRows { .. } => DbWritePriority::UserInteractive,
-            Self::MarkThumbnailsGenerated { .. } => DbWritePriority::Thumbnail,
+            Self::MarkThumbnailsGenerated { .. } | Self::InvalidateThumbnailMarks { .. } => {
+                DbWritePriority::Thumbnail
+            }
             Self::MarkTrashed { .. }
             | Self::RestoreTrashed { .. }
             | Self::DeleteTrashedRows { .. } => DbWritePriority::Trash,
@@ -467,6 +472,7 @@ fn db_command_item_count(command: &DbCommand) -> usize {
         DbCommand::SetFavorite { ids, .. }
         | DbCommand::DeleteMediaRows { ids }
         | DbCommand::MarkThumbnailsGenerated { ids }
+        | DbCommand::InvalidateThumbnailMarks { ids }
         | DbCommand::MarkTrashed { ids }
         | DbCommand::RestoreTrashed { ids }
         | DbCommand::DeleteTrashedRows { ids }
@@ -494,6 +500,7 @@ fn db_command_name(command: &DbCommand) -> &'static str {
         DbCommand::ResetAccountData => "reset_account_data",
         DbCommand::DeleteMediaRows { .. } => "delete_media_rows",
         DbCommand::MarkThumbnailsGenerated { .. } => "mark_thumbnails_generated",
+        DbCommand::InvalidateThumbnailMarks { .. } => "invalidate_thumbnail_marks",
         DbCommand::MarkTrashed { .. } => "mark_trashed",
         DbCommand::RestoreTrashed { .. } => "restore_trashed",
         DbCommand::DeleteTrashedRows { .. } => "delete_trashed_rows",
@@ -725,13 +732,10 @@ fn execute_command(
         }
         DbCommand::ResetAccountData => Ok(DbCommandResult::Count(db::reset_account_data(pool)?)),
         DbCommand::DeleteTrashedRows { ids } => {
-            for id in ids {
-                let conn = pool.get()?;
-                conn.execute(
-                    "DELETE FROM media_items WHERE id = ? AND trashed_at IS NOT NULL",
-                    [id.get()],
-                )?;
-            }
+            db::commit_permanent_deletions(
+                pool,
+                &ids.into_iter().map(MediaId::get).collect::<Vec<_>>(),
+            )?;
             events.send(DomainEvent::TrashChanged {
                 source: ChangeSource::UserInteractive,
             });
@@ -741,6 +745,13 @@ fn execute_command(
             for id in ids {
                 db::delete_media_item(pool, id.get())?;
             }
+            Ok(DbCommandResult::None)
+        }
+        DbCommand::InvalidateThumbnailMarks { ids } => {
+            db::invalidate_thumbnail_marks(
+                pool,
+                &ids.into_iter().map(MediaId::get).collect::<Vec<_>>(),
+            )?;
             Ok(DbCommandResult::None)
         }
         DbCommand::MarkThumbnailsGenerated { ids } => {
@@ -758,11 +769,12 @@ fn execute_command(
             Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::RestoreTrashed { ids } => {
-            let mut changed = Vec::new();
-            for id in ids {
-                db::unmark_trashed(pool, id.get())?;
-                changed.push(db::get_media_item(pool, id.get())?);
-            }
+            let raw = ids.iter().map(|id| id.get()).collect::<Vec<_>>();
+            db::restore_trashed_metadata(pool, &raw)?;
+            let changed = raw
+                .into_iter()
+                .map(|id| db::get_media_item(pool, id))
+                .collect::<Result<Vec<_>>>()?;
             events.send(DomainEvent::MediaRestored {
                 source: ChangeSource::UserInteractive,
                 items: changed.clone(),
@@ -773,6 +785,7 @@ fn execute_command(
             Ok(DbCommandResult::MediaItems(changed))
         }
         DbCommand::CommitMovedToTrash { items } => {
+            db::commit_trash_metadata(pool, &items.iter().map(|item| item.id).collect::<Vec<_>>())?;
             if !items.is_empty() {
                 events.send(DomainEvent::MediaMovedToTrash {
                     source: ChangeSource::UserInteractive,
@@ -824,6 +837,11 @@ fn execute_command(
                     job_id,
                     graph,
                     ..
+                }
+                | crate::core::sync::store::NativeReceiveCommand::PromoteDelta {
+                    job_id,
+                    graph,
+                    ..
                 } = receive.as_ref()
                 {
                     let conn = pool.get()?;
@@ -840,6 +858,9 @@ fn execute_command(
                     crate::core::sync::store::runtime::Command::Admit { item, .. } => {
                         Some(item.uri.clone())
                     }
+                    crate::core::sync::store::runtime::Command::ThumbnailReady {
+                        media, ..
+                    } => db::get_media_item(pool, *media).ok().map(|item| item.uri),
                     _ => None,
                 },
                 _ => None,
@@ -866,7 +887,19 @@ fn execute_command(
                 ),
                 _ => false,
             };
+            let visibility_changed = matches!(
+                &command,
+                crate::core::sync::store::SyncWrite::DeleteJob { .. }
+                    | crate::core::sync::store::SyncWrite::FinishReset { .. }
+            ) || matches!(&command,crate::core::sync::store::SyncWrite::Runtime(c)
+                    if matches!(c.as_ref(),crate::core::sync::store::runtime::Command::SelectAccount {job:Some(_)} | crate::core::sync::store::runtime::Command::ClearAccount));
             let result = crate::core::sync::store::execute_write(pool, command)?;
+            if visibility_changed {
+                events.send(DomainEvent::LiveCountDirty);
+                events.send(DomainEvent::AlbumsDirty {
+                    source: ChangeSource::Synchronization,
+                });
+            }
             let updated = changed_metadata
                 .into_iter()
                 .filter_map(|id| db::get_media_item(pool, id).ok())
@@ -893,6 +926,9 @@ fn execute_command(
                     events.send(DomainEvent::MediaUpserted {
                         source: ChangeSource::Synchronization,
                         items: vec![item],
+                    });
+                    events.send(DomainEvent::AlbumsDirty {
+                        source: ChangeSource::Synchronization,
                     });
                     events.send(DomainEvent::SyncStateDirty);
                 }

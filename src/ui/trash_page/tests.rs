@@ -29,6 +29,8 @@ fn media_item(id: i64) -> MediaItem {
         blake3_hash: "hash".to_string(),
         is_favorite: false,
         trashed_at: Some(Utc::now()),
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

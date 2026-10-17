@@ -85,7 +85,7 @@ fn fixture(name: &str) -> Fixture {
         master: "master".into(),
         content_generation: "11111111-1111-4111-8111-111111111111".into(),
         body: json!({"operations":[{"operationType":"update","record":{"recordName":"photo","recordChangeTag":"old-asset","fields":{"isFavorite":{"type":"INT64","value":1}}}}]}),
-        preparation: Value::Null,
+        preparation: json!({"sendMetadata":true}),
     };
     store
         .runtime(Command::Save(epoch.clone(), operation.clone()))

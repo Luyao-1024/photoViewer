@@ -49,6 +49,8 @@ fn item(id: i64, folder: &str, file: &str) -> MediaItem {
         blake3_hash: format!("hash-{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

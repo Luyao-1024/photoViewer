@@ -57,6 +57,20 @@ impl SyncService {
         Ok(())
     }
 
+    /// Forget all folders of a saved account without requiring a valid session.
+    /// Folder removal owns draining, publication recovery and credential cleanup.
+    pub async fn remove_native_account(&self, id: i64) -> Result<bool> {
+        let jobs = self.account_jobs(id)?;
+        for job in &jobs {
+            self.store.set_job_paused(job.id, true)?;
+        }
+        let mut cleaned = true;
+        for job in jobs {
+            cleaned &= self.delete_job(job.id).await?;
+        }
+        Ok(cleaned)
+    }
+
     fn account_jobs(&self, id: i64) -> Result<Vec<SyncJob>> {
         let job = self
             .store
@@ -86,18 +100,30 @@ impl SyncService {
             .store
             .get_job(id)?
             .ok_or_else(|| AppError::Backend("job removed".into()))?;
-        let client = self.credential_client_for(&job).await?;
-        match client.probe().await {
-            Ok(scope) => {
-                let expected = self
-                    .store
-                    .native_scope(job.connection_id)?
-                    .ok_or_else(|| AppError::Backend("connection has no pinned identity".into()))?;
-                validate_identity(&expected, &scope)?;
-                client.logout().await.map_err(provider_error)?;
+        let revoke = async {
+            let client = self.credential_client_for(&job).await?;
+            match client.probe().await {
+                Ok(scope) => {
+                    let expected =
+                        self.store.native_scope(job.connection_id)?.ok_or_else(|| {
+                            AppError::Backend("connection has no pinned identity".into())
+                        })?;
+                    validate_identity(&expected, &scope)?;
+                    client.logout().await.map_err(provider_error)?;
+                }
+                Err(super::super::SyncError::Authentication) => {} // already revoked/expired
+                Err(error) => return Err(provider_error(error)),
             }
-            Err(super::super::SyncError::Authentication) => {} // already revoked/expired
-            Err(error) => return Err(provider_error(error)),
+            Ok::<_, AppError>(())
+        };
+        if !matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), revoke).await,
+            Ok(Ok(()))
+        ) {
+            tracing::warn!(
+                job_id = id,
+                "remote session revocation could not be confirmed; signing out locally"
+            );
         }
         let reference = job.credential_ref.clone();
         tokio::task::spawn_blocking(move || {
@@ -193,7 +219,7 @@ impl SyncService {
             ));
         }
         let previous_account = self.store.list_jobs()?.first().map(|job| job.id);
-        let previous = self.store.saved_jobs()?;
+        let previous = self.store.list_jobs()?;
         self.store
             .runtime(Command::SelectAccount { job: Some(id) })?;
         // Disable old epochs first. Keep admission closed until every old
@@ -223,6 +249,9 @@ impl SyncService {
         let settled = tokio::task::spawn_blocking(move || {
             for id in retired {
                 service.recover_publications(id)?;
+                service
+                    .store
+                    .runtime(Command::DiscardPendingDeletions { job: id })?;
             }
             Ok::<_, AppError>(())
         })

@@ -21,25 +21,11 @@
 //! operation was in flight advances the version, so the callback no longer
 //! matches and the obligation correctly survives.
 //!
-//! ## The categories are a bitmask, and that is not negotiable
-//!
-//! `native_dirty` is `NEW=1 | METADATA=2 | CONTENT=4 | DELETE=8`. Two bits set
-//! at once is the ordinary result of an edit landing during an upload, and the
-//! per-category version counters are what let the callback clear the one bit
-//! it can prove and keep the one it cannot. Collapse the value into a single
-//! enumeration and one of those edits is silently dropped — the favourite made
-//! while a photo was uploading would vanish with no undo and no record that it
-//! ever happened.
-//!
-//! So: ask per category with `NativeDirty::contains`, never `dirty == 2`.
-//! `Confirm` and the receive-side projection both read this column and must
-//! read it the same way.
-//!
-//! A new entry absorbing metadata is a separate, deliberate fact, not an
-//! exception to the above: a create carries metadata unconditionally, so the
-//! bit changes nothing about what is sent. It is recorded anyway because a
-//! *later* edit — one made after the create's snapshot — is what the version
-//! comparison must catch. See `docs/modules/native-sync-storage.md`.
+//! `native_dirty` is one operation state: 0=clean, 1=new, 2=modified,
+//! 4=permanently deleted. Content and metadata share state 2; their independent
+//! version/acknowledgement counters decide which payload the update needs.
+//! Moving to or restoring from trash is metadata, never deletion. A callback
+//! settles only its captured versions and preserves edits made in flight.
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -49,7 +35,7 @@ use crate::core::error::{AppError, Result};
 
 use super::{SyncStore, SyncWrite, SyncWriteResult};
 
-/// Local-change obligations, as a bitmask on `sync_entries.native_dirty`.
+/// Pending operation state on `sync_entries.native_dirty`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NativeDirty(pub u8);
@@ -57,24 +43,31 @@ pub struct NativeDirty(pub u8);
 impl NativeDirty {
     pub const CLEAN: u8 = 0;
     pub const NEW: u8 = 1;
-    pub const METADATA: u8 = 2;
-    pub const CONTENT: u8 = 4;
-    pub const DELETE: u8 = 8;
+    pub const MODIFIED: u8 = 2;
+    pub const METADATA: u8 = Self::MODIFIED;
+    pub const CONTENT: u8 = Self::MODIFIED;
+    pub const DELETE: u8 = 4;
 
     pub fn bits(self) -> u8 {
         self.0
     }
 
     pub fn contains(self, bit: u8) -> bool {
-        self.0 & bit != 0
+        self.0 == bit
     }
 
     pub fn with(self, bit: u8) -> Self {
-        Self(self.0 | bit)
+        Self(if self.0 == Self::DELETE || bit == Self::DELETE {
+            Self::DELETE
+        } else if self.0 == Self::NEW || bit == Self::NEW {
+            Self::NEW
+        } else {
+            bit
+        })
     }
 
     pub fn without(self, bit: u8) -> Self {
-        Self(self.0 & !bit)
+        Self(if self.0 == bit { Self::CLEAN } else { self.0 })
     }
 
     pub fn is_clean(self) -> bool {
@@ -82,20 +75,12 @@ impl NativeDirty {
     }
 
     pub fn names(self) -> Vec<&'static str> {
-        let mut names = Vec::new();
-        if self.contains(Self::NEW) {
-            names.push("new");
+        match self.0 {
+            Self::NEW => vec!["new"],
+            Self::MODIFIED => vec!["modified"],
+            Self::DELETE => vec!["delete"],
+            _ => Vec::new(),
         }
-        if self.contains(Self::METADATA) {
-            names.push("metadata");
-        }
-        if self.contains(Self::CONTENT) {
-            names.push("content");
-        }
-        if self.contains(Self::DELETE) {
-            names.push("delete");
-        }
-        names
     }
 }
 
@@ -175,12 +160,21 @@ pub struct DirtyEntry {
     pub metadata_version: i64,
     pub content_version: i64,
     pub deletion_version: i64,
+    pub acked_metadata_version: i64,
+    pub acked_content_version: i64,
+    pub acked_deletion_version: i64,
     pub metadata_event: Option<EditEventStamp>,
     pub content_event: Option<EditEventStamp>,
     pub deletion_event: Option<EditEventStamp>,
 }
 
 impl DirtyEntry {
+    pub fn has_metadata_change(&self) -> bool {
+        self.metadata_version > self.acked_metadata_version
+    }
+    pub fn has_content_change(&self) -> bool {
+        self.content_version > self.acked_content_version
+    }
     pub fn version_for(&self, category: ChangeCategory) -> i64 {
         match category {
             ChangeCategory::Metadata => self.metadata_version,
@@ -368,7 +362,10 @@ fn note(
                    AND e.media_id = m.id
                    AND e.relative_path = substr(m.path, length(rtrim(j.local_root, '/')) + 2)
               WHERE c.enabled = 1
-                AND m.trashed_at IS NULL",
+                AND (j.upload_scope='all' OR EXISTS (
+                    SELECT 1 FROM sync_job_upload_albums a WHERE a.job_id=j.id
+                    AND m.folder_path=CASE WHEN a.relative_album='' THEN rtrim(j.local_root,'/')
+                        ELSE rtrim(j.local_root,'/')||'/'||a.relative_album END))",
         )?;
         let rows = stmt.query_map([media_id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
@@ -386,7 +383,7 @@ fn note(
                 [id],
                 |r| r.get(0),
             )?;
-            if retired {
+            if retired && category != ChangeCategory::Deletion {
                 continue;
             }
         }
@@ -445,7 +442,9 @@ fn mark(
     tx.execute(
         &format!(
             "UPDATE sync_entries
-                SET native_dirty = native_dirty | ?2,
+                SET native_dirty = CASE WHEN ?2=4 THEN 4
+                        WHEN native_dirty=4 THEN 4
+                        WHEN native_photo_id IS NULL THEN 1 ELSE 2 END,
                     native_local_version = native_local_version + 1,
                     native_local_digest = NULL,
                     {version} = {version} + 1,
@@ -483,7 +482,8 @@ fn read_entries(
                 native_photo_id, native_master_id, native_asset_revision,
                 native_master_revision, native_content_generation,
                 native_metadata_version, native_content_version, native_deletion_version,
-                native_metadata_event, native_content_event, native_deletion_event
+                native_metadata_event, native_content_event, native_deletion_event,
+                native_acked_metadata_version,native_acked_content_version,native_acked_deletion_version
          FROM sync_entries
          WHERE job_id = ?1 AND native_dirty <> 0
          ORDER BY id",
@@ -506,6 +506,9 @@ fn read_entries(
             row.get::<_, Option<String>>(13)?,
             row.get::<_, Option<String>>(14)?,
             row.get::<_, Option<String>>(15)?,
+            row.get::<_, i64>(16)?,
+            row.get::<_, i64>(17)?,
+            row.get::<_, i64>(18)?,
         ))
     })?;
     let mut entries = Vec::new();
@@ -529,6 +532,9 @@ fn read_entries(
             metadata_event: parse_event(r.13)?,
             content_event: parse_event(r.14)?,
             deletion_event: parse_event(r.15)?,
+            acked_metadata_version: r.16,
+            acked_content_version: r.17,
+            acked_deletion_version: r.18,
         });
     }
     Ok(entries)
@@ -688,18 +694,17 @@ fn confirm(
     // as another create.
     register_identity(&tx, entry_id, &identity)?;
     tx.execute(
-        "UPDATE sync_entries SET native_dirty = native_dirty & ?2, updated_at = unixepoch()
-          WHERE id = ?1",
-        params![entry_id, !category.bit()],
-    )?;
-    tx.execute(
         &format!(
-            "UPDATE sync_entries SET {acked} = {captured} WHERE id = ?1",
-            acked = category.acked_column(),
-            captured = captured_version
+            "UPDATE sync_entries SET {acked}=?2 WHERE id=?1",
+            acked = category.acked_column()
         ),
-        [entry_id],
+        params![entry_id, captured_version],
     )?;
+    tx.execute("UPDATE sync_entries SET native_dirty=CASE
+        WHEN native_dirty=4 AND native_deletion_version>native_acked_deletion_version THEN 4
+        WHEN native_photo_id IS NULL AND native_dirty=1 THEN 1
+        WHEN native_metadata_version>native_acked_metadata_version OR native_content_version>native_acked_content_version THEN 2
+        ELSE 0 END,updated_at=unixepoch() WHERE id=?1",[entry_id])?;
     tx.commit()?;
     Ok(DirtyOutcome::Confirmed(CategoryOutcome::Cleared))
 }

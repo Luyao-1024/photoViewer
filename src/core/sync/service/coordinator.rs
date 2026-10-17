@@ -47,24 +47,21 @@ struct UplinkBatch {
     metadata: usize,
 }
 impl UplinkBatch {
-    fn can_admit(&self, phase: UploadPhase, dirty: NativeDirty) -> bool {
-        if phase == UploadPhase::Create
-            || (phase == UploadPhase::Modify && dirty.contains(NativeDirty::CONTENT))
-        {
+    fn can_admit(&self, phase: UploadPhase, content: bool) -> bool {
+        if phase == UploadPhase::Create || (phase == UploadPhase::Modify && content) {
             self.assets < 5
         } else {
             self.metadata < 20
         }
     }
 
-    fn admit(&mut self, phase: UploadPhase, dirty: NativeDirty) -> bool {
-        let (used, limit) = if phase == UploadPhase::Create
-            || (phase == UploadPhase::Modify && dirty.contains(NativeDirty::CONTENT))
-        {
-            (&mut self.assets, 5)
-        } else {
-            (&mut self.metadata, 20)
-        };
+    fn admit(&mut self, phase: UploadPhase, content: bool) -> bool {
+        let (used, limit) =
+            if phase == UploadPhase::Create || (phase == UploadPhase::Modify && content) {
+                (&mut self.assets, 5)
+            } else {
+                (&mut self.metadata, 20)
+            };
         if *used >= limit {
             return false;
         }
@@ -597,7 +594,7 @@ impl SyncService {
                 {
                     continue;
                 }
-                if !batch.admit(phase, NativeDirty(operation.dirty)) {
+                if !batch.admit(phase, operation.preparation.get("resources").is_some()) {
                     report.uplink_deferred += 1;
                     continue;
                 }
@@ -740,7 +737,7 @@ impl SyncService {
     ) -> Result<(), CycleError> {
         // Once the batch is full, do not read/convert caches for every remaining
         // photo. Missing caches below still consume no allowance.
-        if !batch.can_admit(phase, entry.dirty) {
+        if !batch.can_admit(phase, entry.has_content_change()) {
             report.uplink_deferred += 1;
             return Ok(());
         }
@@ -752,8 +749,22 @@ impl SyncService {
         {
             return Ok(());
         }
+        if phase == UploadPhase::Delete && entry.photo_id.is_none() && entry.master_id.is_none() {
+            // The current-watermark gate has passed. A never-published item
+            // with no issued create already has the required cloud absence.
+            self.store()
+                .runtime(Command::ConfirmAbsentDeletion {
+                    epoch: epoch.clone(),
+                    entry: entry.entry_id,
+                    version: entry.local_version,
+                    lease: lease.clone(),
+                })
+                .map_err(setup)?;
+            report.mutations_confirmed += 1;
+            return Ok(());
+        }
         let content = if phase == UploadPhase::Create
-            || (phase == UploadPhase::Modify && entry.dirty.contains(NativeDirty::CONTENT))
+            || (phase == UploadPhase::Modify && entry.has_content_change())
         {
             let source = super::transfer::safe_destination(&job.local_root, &entry.relative_path)
                 .map_err(setup)?;
@@ -783,7 +794,7 @@ impl SyncService {
         } else {
             None
         };
-        if !batch.admit(phase, entry.dirty) {
+        if !batch.admit(phase, entry.has_content_change()) {
             report.uplink_deferred += 1;
             return Ok(());
         }
@@ -816,7 +827,7 @@ impl SyncService {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             body: Value::Null,
-            preparation: json!({"metadata":self.store().local_metadata(entry.entry_id).map_err(setup)?,"events":{"metadataEvent":entry.metadata_event,"contentEvent":entry.content_event,"deletionEvent":entry.deletion_event}}),
+            preparation: json!({"sendMetadata": phase == UploadPhase::Create || entry.has_metadata_change(),"metadata":self.store().local_metadata(entry.entry_id).map_err(setup)?,"events":{"metadataEvent":entry.metadata_event,"contentEvent":entry.content_event,"deletionEvent":entry.deletion_event}}),
         };
         if phase == UploadPhase::Delete {
             if entry.photo_id.is_none() || entry.master_id.is_none() {
@@ -1098,22 +1109,33 @@ fn matches_phase(entry: &DirtyEntry, phase: UploadPhase) -> bool {
     } else if entry.dirty.contains(NativeDirty::NEW) {
         phase == UploadPhase::Create
     } else {
-        phase == UploadPhase::Modify
-            && (entry.dirty.contains(NativeDirty::METADATA)
-                || entry.dirty.contains(NativeDirty::CONTENT))
+        phase == UploadPhase::Modify && entry.dirty.contains(NativeDirty::MODIFIED)
     }
 }
 fn eligible(service: &SyncService, job: &SyncJob, entry: &DirtyEntry) -> Result<bool, CycleError> {
     if entry.dirty.contains(NativeDirty::DELETE) {
+        // Only a durable physical deletion may dispatch a cloud delete. A
+        // stale state value, disconnected drive or trash move is insufficient.
+        if entry.deletion_event.is_none() || entry.deletion_version == 0 {
+            return Err(setup("deletion has no confirmed local removal event"));
+        }
+        let original = job.local_root.join(&entry.relative_path);
+        if original.exists()
+            || crate::core::trash::trashed_file_uri(&crate::core::file_uri::from_path(&original))
+                .is_ok()
+        {
+            return Ok(false);
+        }
         return Ok(true);
     }
     let path = job.local_root.join(&entry.relative_path);
-    if !path.is_file() {
+    if !path.is_file() && (entry.dirty.contains(NativeDirty::NEW) || entry.has_content_change()) {
         return Ok(false);
     }
-    if !std::fs::canonicalize(&path)
-        .map_err(setup)?
-        .starts_with(std::fs::canonicalize(&job.local_root).map_err(setup)?)
+    if path.is_file()
+        && !std::fs::canonicalize(&path)
+            .map_err(setup)?
+            .starts_with(std::fs::canonicalize(&job.local_root).map_err(setup)?)
     {
         return Err(setup("local source escaped the configured root"));
     }
@@ -1143,7 +1165,7 @@ fn body_for(operation: &Issued, zone: &NativeZone) -> Result<Value, CycleError> 
     let create = operation.phase == "create";
     let resources = operation.preparation.get("resources");
     let kind = if create { "create" } else { "update" };
-    let mut fields = if create || operation.dirty & NativeDirty::METADATA != 0 {
+    let mut fields = if create || operation.preparation["sendMetadata"] == true {
         operation.preparation["metadata"].clone()
     } else {
         json!({})
@@ -1158,7 +1180,7 @@ fn body_for(operation: &Issued, zone: &NativeZone) -> Result<Value, CycleError> 
         map.retain(|key, value| {
             !value.is_null()
                 && match key.as_str() {
-                    "metadataEvent" => create || operation.dirty & NativeDirty::METADATA != 0,
+                    "metadataEvent" => create || operation.preparation["sendMetadata"] == true,
                     "contentEvent" => resources.is_some(),
                     _ => false,
                 }

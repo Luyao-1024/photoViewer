@@ -4,13 +4,35 @@
 
 ## Ownership And Initialization
 
+Photo metadata has one database representation: `media_items` linked to its existing
+`sync_entries` record. `storage_location` is 1=local, 2=cloud with no downloaded
+original, 3=both. `thumbnail_ready` means generated for a local original or
+downloaded into the normal cache for a cloud-only record. Metadata-only rows are
+admitted immediately. `visible_media` exposes local/both rows and the current
+account's cloud rows whose thumbnails are ready. The original download changes
+2→3 only after durable publication; thumbnail availability is independent.
+
+On the first startup that removes obsolete mirror tables, only receive cursors
+and transient pair fragments are reset so a fresh snapshot can admit canonical
+media metadata. Media, dirty=4 rows, confirmed cloud IDs, versions, issued requests
+and publication recovery are preserved. Later startups keep their receive cursors.
+
+There is no persisted full remote inventory, inbox, projection or sync_inventory.
+Unfinished wire-pair fields use nullable `native_pending_master/native_pending_asset`
+on their existing entry and are removed after applying the pair. Watermarks and
+bootstrap markers remain on the job's receive progress. Download/publication
+obligations remain per photo; they do not describe a separate full library.
+
+
 All writes go through the existing DbActor. Native protocol/network code owns
 no SQL, GTK widgets or direct media-row admission. Extend SyncStore/DbCommand
 with typed native operations; background scans, editor/favorite changes, trash,
 recovery and callbacks use the same transaction owner.
 
 Initialization compares existing column layouts against an in-memory database
-created from `schema.sql`, then executes the current schema and writes
+created from `schema.sql`. Purely additive nullable/defaulted fields are adopted
+without rebuilding tables or deleting pending dirty records. Other incompatible
+layouts follow the single-table recovery rule. It then executes the current schema and writes
 `PRAGMA user_version=1` in one transaction. Previous development version numbers
 are not an admission gate; there are no column migrations. Recovery drops and
 recreates at most one incompatible table; multiple incompatible tables or
@@ -18,7 +40,7 @@ non-history dependent rows cause an error without changing data. It never
 removes the database file. See [storage recovery](storage.md#database).
 
 A table rebuild invalidates the whole sync history: initialization deletes rows
-from entries, inventory, tasks, conflicts, native progress/inbox/records/resources
+from entries, tasks, conflicts, native progress/resources
 and publications, and resets job cycle/completion/error fields. These other
 tables are not rebuilt. Compatible account/credential references, selected
 account, job configuration, explicit upload scope, pause state, pending edits
@@ -34,7 +56,7 @@ completed probe.
 |---|---|
 | sync_connections | provider_kind=native_syncserver (CHECK-enforced), credential_ref for Bearer, pinned capability document; no plaintext key |
 | sync_jobs | explicit NOT NULL zone/owner and scope metadata; config_generation still gates desired state; no path-shaped remote root exists |
-| sync_entries | native_dirty bitmask and native_local_version; independent metadata/content/deletion versions and edit events |
+| sync_entries | native_dirty operation state and native_local_version; independent metadata/content/deletion versions and edit events |
 | sync_entries | stable photo/master IDs, both confirmed record revisions, content generation and typed field baselines |
 | sync_entries | native original/thumbnail IDs, SHA-256/size baselines, acknowledged category versions and desired metadata snapshot |
 | sync_tasks | issued native operation evidence: captured job/config/cycle/entry/category versions, namespace generation, exact logical body, resource-session correlation |
@@ -64,7 +86,7 @@ columns may split JSON only while preserving the same transaction contract.
 
 | Planned columns | Shape / meaning |
 |---|---|
-| native_dirty | INTEGER NOT NULL DEFAULT 0, CHECK 0–15; bit semantics below |
+| native_dirty | INTEGER NOT NULL DEFAULT 0, CHECK IN (0,1,2,4); operation states below |
 | native_upload_error | nullable TEXT; latest upload error for this cycle, cleared per job by an accepted Begin; never dirty truth |
 | native_local_version | INTEGER NOT NULL DEFAULT 0, monotonic user-change counter |
 | native_metadata_version / native_content_version / native_deletion_version | INTEGER NOT NULL DEFAULT 0; independently captured/acknowledged |
@@ -84,41 +106,39 @@ explicit adoption; after a confirmed deletion recreation always gets fresh IDs.
 
 Progress has PRIMARY KEY(job_id, zone_name, owner); namespace, generation and
 scope digest (including local placement/download scope) are explicit fields.
-Inbox has an ordered receive ordinal and UNIQUE(job_id, generation, zone,
-record_name, revision) for replay, never sorts by opaque token/revision strings.
-Remote records use PRIMARY KEY(job_id, generation, zone, record_name); resource
-work uses (job_id, generation, asset_id, role) and ownership-qualified staging.
-Publication IDs and issued operation IDs are unique. New rows have job foreign
-keys and explicit cleanup; preserve pending operation evidence while an entry
-is deleted/unlinked. A task may reference a photo pair; child result correlation
-is persisted rather than inferred from recordName ordering.
+Incomplete Master/Asset fields reside on their entry until the atomic pair is
+complete, with the ingest token stored after those fields. Per-photo publication
+captures hold only pending target metadata and are cleared on completion. Confirmed
+resource/metadata baselines and record revisions live on that same sync entry.
+Resource work is keyed by (job,generation,asset,role). Issued operation captures
+remain separate recovery evidence for requests whose result is unknown.
 
 Index active native entries by (job_id, native_dirty, id) for derivation and
-partial-unique (job_id, native_photo_id) when non-NULL. Index inbox by scope/ordinal,
-resource work by job/state, and publication intents by job/state. All actor
+partial-unique (job_id, native_photo_id) when non-NULL. Index resource work by job/state, and publication intents by job/state. All actor
 commands check provider kind, scope/config and captured versions; SQL tracing
 and EXPLAIN tests cover actual statements. File/network waits never occur in
 these transactions, and no native triggers overwrite WebDAV fields.
 
 ## Dirty Truth And Mutation Transactions
 
-| Bit | Meaning | Derived uplink phase |
+| State | Meaning | Uplink phase |
 |---|---|---|
-| 0 / CLEAN | no unconfirmed local obligation | none |
-| 1 / NEW | no confirmed remote photo identity | create, optionally with later META/CONTENT bits |
-| 2 / METADATA | supported user metadata/path changed | modify; no asset upload |
-| 4 / CONTENT | original bytes/resource combination changed | modify; prepare changed resource pair |
-| 8 / DELETE | explicit cloud deletion intent | delete; retain entry/IDs/revisions/event |
+| 0 / CLEAN | no outstanding local change | none |
+| 1 / NEW | not yet created remotely | create |
+| 2 / MODIFIED | metadata and/or content changed | modify |
+| 4 / DELETE | physical file permanently removed | delete |
 
-Classification priority is DELETE, then NEW, then META/CONTENT, although global
-execution order is delete→modify→create. META+CONTENT is one photo update. A
-new item that was never submitted may cancel locally; uncertain creation first
-requires operation reconciliation, not an assumption that it never existed.
+States are exclusive. Metadata/content/deletion retain independent local and
+acknowledged version counters and edit events. Version differences decide which
+parts an update sends; new edits during a create become state 2 after the create
+is confirmed. A pending deletion stays 4 until deletion is confirmed, regardless
+of later remote metadata/content events. The sync row and cloud identities remain
+in SQLite after its local gallery row is removed. Only successful synchronization,
+an explicit account switch, or global Off may discard the deletion obligation.
 
 One user mutation transaction updates the affected media/desired fields, dirty
-bits, native_local_version and affected category versions/stamps. Favorite/path/
-capture-date changes are metadata; editor/EXIF byte changes are content; entering
-an explicit remote-delete workflow supplies deletionEvent before losing the
+state, native_local_version and affected category versions/stamps. Favorite/path/
+capture-date changes are metadata; editor/EXIF byte changes are content; a verified permanent physical deletion supplies deletionEvent before losing the
 media association. Row disappearance, external drive loss, local-only trash,
 leaving scope and unchecking an album never manufacture remote DELETE.
 Preserve propagate_deletes=false by default; C1.5 must connect an explicitly
@@ -254,32 +274,19 @@ like a hang and is not one.
 
 ### Reading `native_dirty`
 
-`native_dirty` is a **bitmask** — `NEW=1, METADATA=2, CONTENT=4, DELETE=8` —
-not an enumeration. The categories are tracked independently, each with its own
-version counter and its own acknowledgement, because they upload differently
-and are cleared by different evidence. Two bits set at once is the normal
-state, not an anomaly: it is exactly what an edit made while an operation was
-in flight produces, and it is how the residual obligation survives the callback
-that could not prove it was accepted.
+`native_dirty` is one operation state: 0=clean, 1=new, 2=modified, 4=permanently
+deleted. Metadata and content both use 2; their independent version and
+acknowledgement counters select the actual payload and preserve concurrent edits.
+A metadata-only edit consumes no asset allowance. Content replacement still sends
+a complete original/thumbnail pair.
 
-**Never compare it for equality against a combined value.** `dirty == 2` and
-`dirty == 4` read as "only metadata" and "only content" and are wrong for every
-combination; ask per category with `NativeDirty::contains` instead. This is
-what `Confirm` already does, and what promotion must do too — the two read the
-same column and must read it the same way.
-
-A new entry absorbs metadata, and the reason is on the wire: a create
-unconditionally carries metadata (`create ||` in the body builder), so a
-metadata bit set alongside `NEW` changes nothing about what is sent. It is still
-recorded, because a *later* metadata edit — one made after the create's
-snapshot was taken — is what the version comparison detects, and the mismatch
-is what forces the follow-up update. Absorbing the bit would lose it.
-
-After adoption, `native_dirty` keeps its `METADATA` bit only when the user had
-actually edited metadata locally. A set bit means the local value stands and
-the next uplink publishes it; a clear bit means there is nothing local to lose,
-the cloud is authoritative, and the value is written to the library row. The
-same bit decides both, so the two cannot disagree.
+Moving to or restoring from trash is metadata, never dirty=4. A successful physical
+permanent deletion records state 4 with its event/identity before removing the
+local gallery row. The sync row survives process restart, failures and retries;
+acknowledged cloud deletion removes it. A newer remote edit cannot clear it or
+re-download the removed local file. Explicit account switching and global Off are
+the other allowed cleanup boundaries. A never-published entry with no issued
+operation may be confirmed already absent at a valid current-watermark upload gate.
 
 The uplink queue is an in-memory view of these rows. Native code must not persist
 one sync_tasks row for every future dirty item or replay legacy pending actions
@@ -363,46 +370,24 @@ upload or HTTP 200 with item errors is not such confirmation. Conflict-selected
 remote state may supersede a captured local obligation only through a validated
 AlreadyCurrent/conflict completion; it cannot unconditionally zero dirty.
 
-## Receive Tables And Atomic Progress
+## Per-photo Receive And Atomic Progress
 
-New tables belong to the same application DB, with job/namespace/zone/generation
-scope and bounded indexes. They are not local-change truth:
+The persistent owners are the existing media/sync entries, job receive cursors,
+role-specific resource work and owned file-publication intents. No table mirrors
+the entire cloud inventory. A received Asset admits its user metadata immediately
+as cloud=2; incomplete Master/Asset fields are temporarily attached to that entry.
+At the end of a fixed-height delta round, only touched pairs are validated and
+applied, then those temporary fields are cleared. Bootstrap pages can apply their
+complete photos without waiting for the rest of the library. Missing entries never
+infer deletion; explicit server tombstones are the sole receive deletion evidence.
 
-| Planned table | Stored fact |
-|---|---|
-| sync_native_progress | snapshot + per-type bootstrap markers, separate database discovery/zone ingest/zone applied/target tokens, round state |
-| sync_native_inbox | ordered version events and pending projection work, deduplicated by scoped record revision |
-| sync_native_records | final-H remote projection keyed by recordName/type, not visible media_items |
-| sync_native_resources | role-specific expected IDs/digests/sizes, owned staging progress and verified cache locations |
-| sync_publications | owned pair/file/cache publication intent, captured local versions, old complete snapshot, recovery state |
-
-Per-job/zone progress keeps configured download scope distinct from discovery.
-One native job per zone avoids competing applied positions for the same local
-projection. A scope/namespace change invalidates old claims and re-evaluates
-unresolved in-scope work; old applied progress does not prove newly included
-resources are complete. Full-zone metadata retention remains independent from
-selected local upload albums. Do not erase unresolved work merely to make the
-new scope appear complete.
-
-Each page transaction validates current scope, saves inbox/projection work and
-ingestToken together. A bootstrap persists one snapshotToken and independent
-markers for every supported type; no deletions are inferred while incomplete.
-On a final fixed-H page, replay ordered inbox into a provisional projection,
-validate the complete pair graph, promote the remote projection and materialize
-resource/conflict obligations in one transaction. Do not expose half an atomic
-pair from an earlier page. Unknown types are retained and not silently counted
-as complete supported media.
-
-appliedToken reaches targetToken only when the final projection exists and all
-actual configured-scope publication/conflict obligations are settled. Empty
-inbox alone is insufficient. The sole exception is a successful, failure-free
-uplink batch under an exclusive lease: its atomic record response already
-registers record identity/revisions and resource baselines, so the client may
-adopt the server head without replaying its own writes through the inbox.
-Download failure retains ingest and work; restart
-resumes from those durable facts. Token expiry rebuilds metadata while retaining
-local dirty, valid confirmed facts, verified assets and unknown operations for
-reconciliation; it never performs mass deletion from a partial new listing.
+Each ingest position follows the durable fields it covers. A bootstrap retains its
+shared snapshot token and independent continuation markers. `applied` advances to
+`target` after bootstrap and actual pending pair/resource/conflict/publication work
+are settled. A failure-free upload already commits its canonical identity and
+resource baseline, so it can adopt its head without copying records to another
+inventory. Token expiry resets receive positions, preserving dirty=4, versions,
+confirmed identity and unknown issued operations for reconciliation.
 
 ## Stable Content And Incremental Hashing
 
@@ -439,8 +424,9 @@ Remote metadata → durable resource work → download/verify both roles
 ```
 
 Use current private sync-staging and safe job-root-relative mapping. Do not scan
-in-progress originals into media_items. The admission check must exist in every
-scanner/watcher/direct upsert path, including restart before normal scans.
+in-progress original files as complete local originals. The readiness check must
+exist in scanner/watcher/direct upsert paths; received metadata itself is already
+admitted as cloud=2 before those files are available.
 Recheck local/content/config versions immediately before publication; a user
 edit during download cannot be overwritten. Native-owned events update verified
 baselines/admission, not user dirty flags. Genuine concurrent events still do.
@@ -460,14 +446,16 @@ module; do not name cache files by remote URL or asset UUID alone. Missing nativ
 cache-import APIs are added inside that module, with orientation/color/aspect
 handling validated against the original and no repeated original decode merely
 to create another cache size. Do not fake thumbnail_generated_at before cache
-files are complete. Grid/viewer keep the existing local URI/thumbnail/preview/
-original loading pipeline; no remote placeholders, thumbnail-only admission or
-click-triggered network fetch. Each complete media item can appear independently
-while other items are still downloading.
+files are complete. Grid/viewer use the existing local URI/cache pipeline. Metadata-only rows stay
+hidden until their thumbnail is ready. A cloud-only row then shows that cached
+preview, and its original becomes available after publication changes location
+2→3. No click-triggered network fetch or repeated whole-library comparison is
+needed. Each photo can appear while other originals continue downloading.
 
 ## Completion, Overview And Startup
 
-Reuse the complete eligible sync_inventory for the denominator and retain the
+Derive the denominator from current-account sync entries, photo location/readiness,
+explicit upload scope and pending deletions; retain the
 historical completion fraction. Count one media item after its required complete
 pair/confirmation, not two resources or a received metadata row. A job is complete
 only with current applied/scope readiness, no eligible unconfirmed dirty, no
@@ -498,9 +486,9 @@ or deleted native jobs do not restart from old triggers. Recovery preserves the 
 
 ## C1.5 客户端决策与快照恢复
 
-首次清单先通过 DbActor 持久保存服务端返回的实际 snapshotToken 和对应 zone syncToken；所有记录类型复用该快照。页标记只推进自己的类型，不能把 zone token 放到 snapshot_token。墓碑即使 recordType 为 null 仍进入持久 inbox。只有完整固定水位图才可判定既有远端身份已删除。
+首次清单先通过 DbActor 持久保存服务端返回的实际 snapshotToken 和对应 zone syncToken；所有记录类型复用该快照。页标记只推进自己的类型，不能把 zone token 放到 snapshot_token。墓碑即使 recordType 为 null 仍作为该照片的临时字段持久化；只有明确墓碑才处理远端删除，不以清单缺项作判断。
 
-native_retired 保存在既有 sync_entries。干净的云端删除保留本地文件并使身份退役；有竞争本地修改则建立冲突。明确重新上传才清退役标识，并分配新 ID。相册范围变化、离线根和本地删除均不产生云端删除事件。
+native_retired 保存在既有 sync_entries。干净的云端删除保留本地文件并使身份退役；有竞争本地修改则建立冲突。明确重新上传才清退役标识，并分配新 ID。相册范围变化、离线根和移入回收站不产生云端删除事件；确认本地文件彻底删除才记录 dirty=4。
 
 用户选择版本时核对本地版本、冲突快照及未确认操作。UseCloud 先保留本地原图，再创建原有双资源发布意图；KeepLocal 先下载并保留竞争云端资源，已校验但未作为图库版本发布的资源以 retained 区分于 verified。该状态只结算明确用户选择覆盖的接收义务，不能用于普通媒体入库。确认的原子拒绝只结束已发出操作证据，不清 dirty；网络超时和未知回执继续保留。
 
@@ -510,3 +498,10 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 ## 账户身份与重新认证
 
 用户信息是服务器 pinned scope 的一部分，在既有 JSON 中保存可选 authentication 字段，数据库版本仍固定为 1。重登通过 actor 命令核对旧连接整体捕获、账户 ID、namespace、generation 和 endpoint 后更新认证信息，不清 dirty 或接收位置。旧无用户身份仅可升级至同 namespace/generation 的显式数据接管者。相同 endpoint/zone 的唯一映射检查增加既有 native_tenant，其他账号保留独立任务且可复用本地根；同账号内部仍拒绝重叠。settings.native_sync_account 持久化当前账号身份，sync_connections.enabled 只启用这个账号，切换通过 actor 事务使旧 epoch 失效，并等待旧运行退出后才允许新运行。细节见[账户接入方案](native-sync-accounts.md)。
+
+A received rename can wait for a newer local content upload. Once that upload is
+confirmed, its canonical baseline still names the accepted destination. The next
+cycle resumes placement for that specific row even when no later delta arrives;
+this uses local deferred work and does not enumerate or compare a cloud inventory.
+Shared verified assets without staging must be fetched again if another photo
+still needs publication; adopting one local file cannot settle another's placement.

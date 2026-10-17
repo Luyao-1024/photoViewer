@@ -483,6 +483,83 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
         ))
     );
     assert_eq!(store.upload_albums(job.id).unwrap(), vec![String::new()]);
+    // The server can revoke an inactive account while another account stays
+    // selected. Manage that saved account without authenticating/switching it.
+    let bob_key = photo_viewer::platform::credentials::load_api_key(&bob.credential_ref).unwrap();
+    let endpoint = photo_viewer::core::sync::NativeEndpoint::parse(&server.endpoint).unwrap();
+    runtime
+        .block_on(
+            photo_viewer::core::sync::NativeClient::new(&endpoint, &bob_key)
+                .unwrap()
+                .logout(),
+        )
+        .unwrap();
+    let switch = named::<gtk::Button>(&shell.window, "native-sync-switch-account");
+    Ui::for_widget(&switch).scroll_to_reveal(&switch, "Manage saved accounts");
+    Ui::for_widget(&switch).click(&switch, "Manage saved accounts");
+    let accounts = named::<adw::Dialog>(&shell.window, "native-sync-accounts-dialog");
+    for _ in 0..2 {
+        let menu = named::<gtk::MenuButton>(
+            &accounts,
+            &format!("native-sync-saved-account-menu-{}", bob.id),
+        );
+        Ui::for_widget(&menu).click(&menu, "Saved Bob account actions");
+        assert!(ui.wait_until(Duration::from_secs(3), || menu
+            .popover()
+            .unwrap()
+            .is_mapped()));
+        let popover = menu.popover().unwrap();
+        let logout =
+            named::<gtk::Button>(&popover, &format!("native-sync-saved-logout-{}", bob.id));
+        Ui::for_surface(&popover, "Saved account actions")
+            .click(&logout, "Sign out of expired or missing session");
+        assert!(ui.wait_until(Duration::from_secs(5), || {
+            photo_viewer::platform::credentials::load_api_key(&bob.credential_ref).is_err()
+                && store.get_job(bob.id).unwrap().unwrap().paused
+        }));
+        assert!(store.job_is_selected(job.id).unwrap());
+        ui.pump(Duration::from_millis(600));
+        let status = named::<gtk::Label>(&accounts, "native-sync-account-status");
+        assert!(status.label().is_empty(), "{}", status.label());
+    }
+    for accept in [false, true] {
+        let menu = named::<gtk::MenuButton>(
+            &accounts,
+            &format!("native-sync-saved-account-menu-{}", bob.id),
+        );
+        Ui::for_widget(&menu).click(&menu, "Saved Bob account actions");
+        assert!(ui.wait_until(Duration::from_secs(3), || menu
+            .popover()
+            .unwrap()
+            .is_mapped()));
+        let popover = menu.popover().unwrap();
+        let remove =
+            named::<gtk::Button>(&popover, &format!("native-sync-remove-account-{}", bob.id));
+        Ui::for_surface(&popover, "Saved account actions").click(&remove, "Remove expired account");
+        click_response(
+            &shell,
+            if accept {
+                "native.remove_account"
+            } else {
+                "button.cancel"
+            },
+        );
+        if accept {
+            assert!(ui.wait_until(Duration::from_secs(5), || store
+                .get_job(bob.id)
+                .unwrap()
+                .is_none()));
+        } else {
+            assert!(store.get_job(bob.id).unwrap().is_some());
+        }
+        assert!(store.job_is_selected(job.id).unwrap());
+        assert!(shell.photos_dir().is_dir());
+        ui.pump(Duration::from_millis(500));
+    }
+    capture(&shell, "sync-removed-expired-account");
+    let cancel = named::<gtk::Button>(&accounts, "native-sync-accounts-cancel");
+    Ui::for_widget(&cancel).click(&cancel, "Close saved accounts");
+    assert!(ui.wait_until(Duration::from_secs(3), || !accounts.is_mapped()));
     let general = named::<gtk::ListBoxRow>(&shell.window, "settings-category-general");
     Ui::for_widget(&general).click_native(&general, "General category");
     assert!(ui.wait_until(Duration::from_secs(3), || !page.is_mapped()));
@@ -498,6 +575,13 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
 
 fn click_response(shell: &Shell, key: &str) {
     let text = photo_viewer::core::i18n::tr(key);
+    let reachable = |b: &gtk::Button| {
+        b.is_mapped()
+            && b.label().as_deref() == Some(text.as_str())
+            && Ui::for_widget(b).target_of(b).is_some_and(|picked| {
+                picked == *b.upcast_ref::<gtk::Widget>() || picked.is_ancestor(b)
+            })
+    };
     assert!(
         shell
             .ui
@@ -505,7 +589,7 @@ fn click_response(shell: &Shell, key: &str) {
                 &shell.window
             )
             .iter()
-            .any(|b| b.is_mapped() && b.label().as_deref() == Some(text.as_str()))),
+            .any(reachable)),
         "missing dialog response {text}; buttons: {:?}; dialogs: {:?}",
         descendants::<gtk::Button>(&shell.window)
             .iter()
@@ -518,7 +602,7 @@ fn click_response(shell: &Shell, key: &str) {
     );
     let button = descendants::<gtk::Button>(&shell.window)
         .into_iter()
-        .find(|b| b.is_mapped() && b.label().as_deref() == Some(text.as_str()))
+        .find(reachable)
         .unwrap();
     Ui::for_widget(&button).click(&button, &text);
     shell.ui.pump(Duration::from_millis(250));

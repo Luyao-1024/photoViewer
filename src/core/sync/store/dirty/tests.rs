@@ -186,8 +186,10 @@ fn a_change_inside_a_job_root_enrolls_the_photo_as_a_new_obligation() {
         entry_state(&fixture, entry_id)
     };
     // Enrolling is an explicit obligation, not a silent success.
-    assert!(dirty.contains(NativeDirty::NEW));
-    assert!(dirty.contains(NativeDirty::METADATA));
+    assert_eq!(dirty.bits(), NativeDirty::NEW);
+    let entry = fixture.store.uplink_view(fixture.job.id).unwrap().remove(0);
+    assert_eq!(entry.metadata_version, 1);
+    assert!(entry.has_metadata_change());
     assert_eq!(local, 1);
 }
 
@@ -273,9 +275,11 @@ fn a_confirmation_at_the_captured_version_clears_only_that_category() {
     assert_eq!(outcome, CategoryOutcome::Cleared);
 
     let (dirty, _local, metadata, acked) = entry_state(&fixture, entry_id);
-    assert!(!dirty.contains(NativeDirty::METADATA));
+    assert_eq!(dirty.bits(), NativeDirty::MODIFIED);
+    let remaining = fixture.store.uplink_view(fixture.job.id).unwrap();
+    assert!(!remaining[0].has_metadata_change());
     assert!(
-        dirty.contains(NativeDirty::CONTENT),
+        remaining[0].has_content_change(),
         "a metadata confirmation must not clear an outstanding content change"
     );
     assert_eq!((metadata, acked), (1, 1));
@@ -404,8 +408,9 @@ fn the_uplink_view_derives_from_the_rows_and_skips_clean_entries() {
 }
 
 #[test]
-fn a_trashed_photo_is_not_re_enrolled_as_a_local_change() {
+fn a_trashed_photo_records_metadata_without_a_delete_intent() {
     let fixture = fixture("dirty-trashed");
+    confirm_identity(&fixture);
     fixture
         .pool
         .get()
@@ -415,31 +420,19 @@ fn a_trashed_photo_is_not_re_enrolled_as_a_local_change() {
             [fixture.media_id],
         )
         .unwrap();
-    assert!(note(&fixture, ChangeCategory::Metadata, 1, "m").is_none());
-    // Row disappearance is not a delete intent: a local removal, an unreachable
-    // drive and a scope change all leave the remote untouched.
-    let entries: i64 = fixture
-        .pool
-        .get()
-        .unwrap()
-        .query_row(
-            "SELECT COUNT(*) FROM sync_entries WHERE job_id = ?1",
-            [fixture.job.id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(entries, 0);
+    assert!(note(&fixture, ChangeCategory::Metadata, 1, "m").is_some());
+    let entry = fixture.store.uplink_view(fixture.job.id).unwrap().remove(0);
+    assert_eq!(entry.dirty.bits(), NativeDirty::MODIFIED);
+    assert!(entry.has_metadata_change());
+    assert_eq!(entry.deletion_version, 0);
+    assert!(entry.deletion_event.is_none());
 }
 
 #[test]
-fn dirty_bits_name_themselves_for_a_diagnostic() {
-    let dirty = NativeDirty(NativeDirty::CLEAN)
-        .with(NativeDirty::NEW)
-        .with(NativeDirty::CONTENT);
-    assert_eq!(dirty.names(), vec!["new", "content"]);
-    assert!(!dirty.is_clean());
+fn dirty_states_are_exclusive_and_delete_is_four() {
+    assert_eq!(NativeDirty(NativeDirty::NEW).names(), vec!["new"]);
+    assert_eq!(NativeDirty(NativeDirty::MODIFIED).names(), vec!["modified"]);
+    assert_eq!(NativeDirty(NativeDirty::DELETE).names(), vec!["delete"]);
+    assert_eq!(NativeDirty::DELETE, 4);
     assert!(NativeDirty(NativeDirty::CLEAN).is_clean());
-    assert_eq!(dirty.without(NativeDirty::NEW).names(), vec!["content"]);
-    // The mask is bounded to the four defined bits.
-    assert!(NativeDirty(15).bits() == 15);
 }

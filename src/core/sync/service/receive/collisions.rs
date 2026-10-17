@@ -166,11 +166,18 @@ impl SyncService {
                     .as_deref()
                         == Some(value.digest.hex.as_str())
             });
-            let old_identity_still_live = entry
-                .photo_id
-                .as_deref()
-                .is_some_and(|id| record_ids.contains(id));
-            if same_bytes && !old_identity_still_live && dirty & 8 == 0 {
+            let old_identity_still_live = match entry.photo_id.as_deref() {
+                Some(id) if graph.tombstones.iter().any(|deleted|deleted==id) => false,
+                Some(id) => record_ids.contains(id) || service.pool().get()?.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2 AND native_retired=0)",
+                    rusqlite::params![job,id],|r|r.get::<_,bool>(0),
+                )?,
+                None=>false,
+            };
+            if same_bytes
+                && !old_identity_still_live
+                && dirty != super::super::super::store::NativeDirty::DELETE as i64
+            {
                 if entry.photo_id.is_some() {
                     service
                         .store()

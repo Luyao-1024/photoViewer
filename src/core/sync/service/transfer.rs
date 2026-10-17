@@ -8,6 +8,7 @@ use crate::core::{
         ContentDigest,
     },
 };
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -70,6 +71,16 @@ impl SyncService {
             match fetched {
                 Ok(Some(resource)) => {
                     report.fetched += 1;
+                    if resource.role == AssetRole::Thumbnail {
+                        let service = self.clone();
+                        let path = resource.staged.clone();
+                        let asset = resource.asset_id.clone();
+                        tokio::task::spawn_blocking(move || {
+                            service.prepare_downloaded_thumbnail(job_id, &asset, &path)
+                        })
+                        .await
+                        .map_err(|_| error("thumbnail publication worker stopped"))??;
+                    }
                     tracing::info!(
                         target: crate::core::log_targets::SYNC,
                         job_id, asset_id = %obligation.asset_id, role = %obligation.role,
@@ -223,22 +234,87 @@ impl SyncService {
             digest: expected,
         }))
     }
+    fn prepare_downloaded_thumbnail(&self, job: i64, asset: &str, path: &Path) -> Result<()> {
+        let bytes = std::fs::read(path)?;
+        for intent in self.store().pending_publications(job)? {
+            if intent.thumbnail_asset_id.as_deref() != Some(asset) {
+                continue;
+            }
+            let media: Option<i64> = self
+                .pool()
+                .get()?
+                .query_row(
+                    "SELECT media_id FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+                    rusqlite::params![job, intent.photo_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            let Some(media) = media else {
+                continue;
+            };
+            let item = crate::core::db::get_media_item(self.pool(), media)?;
+            if item.storage_location != crate::core::media::MediaLocation::Cloud {
+                continue;
+            }
+            for size in [
+                crate::core::thumbnails::ThumbnailSize::Small,
+                crate::core::thumbnails::ThumbnailSize::Medium,
+                crate::core::thumbnails::ThumbnailSize::Large,
+            ] {
+                crate::core::thumbnails::import_cached_thumbnail(
+                    &crate::config::cache_dir(),
+                    &item.uri,
+                    size,
+                    Some(item.file_mtime.into()),
+                    &bytes,
+                )
+                .map_err(|e| error(format!("cannot install downloaded thumbnail: {e}")))?;
+            }
+            self.store().runtime(Command::ThumbnailReady {
+                publication: intent.publication_id,
+                media,
+                mtime_ns: item.file_mtime.timestamp_nanos_opt().unwrap_or(0),
+                asset: asset.into(),
+            })?;
+        }
+        Ok(())
+    }
+
     fn admit_complete_publications(&self, job_id: i64, report: &mut TransferReport) -> Result<()> {
-        let graph = self
-            .store()
-            .remote_graph(job_id, &self.generation_of(job_id)?)?;
-        for intent in self.store().pending_publications(job_id)? {
+        let staged_thumbnails = {
+            let conn = self.pool().get()?;
+            let mut stmt=conn.prepare("SELECT asset_id,staging_path FROM sync_native_resources WHERE job_id=?1 AND role='thumbnail' AND state IN ('staged','verified') AND staging_path IS NOT NULL AND EXISTS(SELECT 1 FROM sync_publications p JOIN sync_entries e ON e.id=p.entry_id JOIN media_items m ON m.id=e.media_id WHERE p.job_id=?1 AND p.thumbnail_asset_id=sync_native_resources.asset_id AND p.state='pending' AND m.storage_location=2 AND m.thumbnail_ready=0)")?;
+            let rows = stmt.query_map([job_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    PathBuf::from(r.get::<_, String>(1)?),
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (asset, path) in staged_thumbnails {
+            self.prepare_downloaded_thumbnail(job_id, &asset, &path)?;
+        }
+        let intents = self.store().pending_publications(job_id)?;
+        if intents.is_empty() {
+            return Ok(());
+        }
+        for intent in intents {
             if !self.store().publication_ready(&intent.publication_id)? {
                 continue;
             }
-            let Some(photo) = graph.photos.iter().find(|p| {
-                p.photo_id == intent.photo_id
-                    && intent.original_asset_id.as_deref() == Some(&p.original.asset_id)
-                    && intent.thumbnail_asset_id.as_deref() == Some(&p.thumbnail.asset_id)
-            }) else {
+            let Some(photo) = self
+                .store()
+                .current_remote_photo(job_id, &intent.photo_id)?
+                .filter(|p| {
+                    intent.original_asset_id.as_deref() == Some(&p.original.asset_id)
+                        && intent.thumbnail_asset_id.as_deref() == Some(&p.thumbnail.asset_id)
+                })
+            else {
                 report.failures.push((
                     intent.photo_id,
-                    "publication no longer matches the projection".into(),
+                    "publication no longer matches its photo metadata".into(),
                 ));
                 continue;
             };
@@ -250,7 +326,7 @@ impl SyncService {
             let thumbnail = path(&photo.thumbnail.asset_id, "thumbnail")?;
             drop(conn);
             match self.publish_pair(
-                photo,
+                &photo,
                 &self.local_root_of(job_id)?,
                 &original,
                 &thumbnail,

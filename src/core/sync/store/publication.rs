@@ -285,8 +285,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                             expected_size, state, staging_path, verified_cache
                      FROM sync_native_resources
                      WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state IN ('pending', 'staged')
-                     ORDER BY record_name,
-                              CASE role WHEN 'original' THEN 0 ELSE 1 END",
+                     ORDER BY CASE role WHEN 'thumbnail' THEN 0 ELSE 1 END, record_name",
                 )?;
                 let rows = stmt.query_map([job_id], |row| {
                     Ok((

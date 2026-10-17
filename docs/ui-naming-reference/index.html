@@ -456,6 +456,7 @@
 <tr><td>settings-navigation / native-sync-entry / native-sync-enabled</td><td>NavigationView / ActionRow / Switch：分类设置容器、云同步分类内的启用行和总开关；不再导航到子页面</td></tr>
 <tr><td>native-sync-account / native-sync-current-account</td><td>Box / ActionRow：顶部当前同步账号与服务器，只展示一个账号</td></tr>
 <tr><td>native-sync-switch-account / native-sync-account-menu</td><td>Button / MenuButton：切换账号、登录/退出等账号操作；与目录运行按钮分开</td></tr>
+<tr><td>native-sync-saved-account-menu-{id} / native-sync-saved-relogin-{id} / native-sync-saved-logout-{id} / native-sync-remove-account-{id}</td><td>MenuButton / Button：已保存账号的更多菜单、重新登录、退出和确认后移除账号全部目录；失效或缺失凭证无需先切换账号，本地及云端照片保留</td></tr>
 <tr><td>native-sync-accounts-dialog / native-sync-use-account-{id} / native-sync-other-account / native-sync-accounts-cancel / native-sync-account-status / native-sync-account-login-{id}</td><td>Dialog / Button / Button / Button / Label / Button：保存的账号选择、使用此账号、登录其他账号、取消、切换失败和失效会话的重新登录；验证草稿不改变当前账号</td></tr>
 <tr><td>native-sync-content</td><td>Box：云同步分类直接展示概览、任务、范围说明；任务详情原地展开</td></tr>
 <tr><td>native-sync-settings / native-sync-overview / native-sync-status</td><td>PreferencesGroup / ActionRow / Label：分类内的概览、历史完成比例及冲突提示、操作失败消息</td></tr>
@@ -470,7 +471,7 @@
 <tr><td>native-sync-details-{id} / native-sync-scope-{id}</td><td>ExpanderRow / Button：「任务详情」独立展开行，默认折叠；展开后查看服务器/账户/区域/完整路径和编辑上传范围，展开不影响运行状态；照片通过现有图库查看和管理</td></tr>
 <tr><td>native-sync-menu-{id}</td><td>MenuButton：带本地化名称的目录操作菜单，仅包含移除</td></tr>
 <tr><td>native-sync-pause-{id} / native-sync-remove-{id}</td><td>Button：标题行始终可见的暂停或继续（不改变详情展开状态）、菜单中确认后移除任务</td></tr>
-<tr><td>native-sync-relogin-{id} / native-sync-logout-{id}</td><td>Button：同账户登录并继续、撤销当前会话并暂停任务</td></tr>
+<tr><td>native-sync-relogin-{id} / native-sync-logout-{id}</td><td>Button：同账户登录并继续、暂停该账号任务并删除本地会话；远端会话尽力撤销</td></tr>
 <tr><td>native-sync-relogin-username / native-sync-relogin-password / native-sync-relogin-status</td><td>EntryRow / PasswordEntryRow / Label：重新登录草稿与结果</td></tr>
 <tr><td>native-sync-relogin-submit / native-sync-relogin-cancel</td><td>Button：接受同账户登录或取消，不切换为其他账户</td></tr>
 </tbody></table></section>

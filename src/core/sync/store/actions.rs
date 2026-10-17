@@ -63,6 +63,16 @@ pub(super) fn apply(
             "an operation is still being reconciled; synchronize before choosing a resolution",
         ));
     }
+    let deletion_pending: bool = tx.query_row(
+        "SELECT native_dirty=4 FROM sync_entries WHERE id=?1",
+        [entry],
+        |r| r.get(0),
+    )?;
+    if deletion_pending && !matches!(action, PhotoAction::DeleteCloud) {
+        return Err(invalid(
+            "the permanent deletion must be confirmed by cloud synchronization first",
+        ));
+    }
     let stamp = serde_json::to_string(&EditEventStamp {
         edited_at_ms: chrono::Utc::now().timestamp_millis(),
         source: super::super::device::device_id_in(tx)?,
@@ -71,12 +81,21 @@ pub(super) fn apply(
     .map_err(|e| invalid(&e.to_string()))?;
     match action {
         PhotoAction::DeleteCloud => {
+            let has_local: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1)",
+                [entry], |r|r.get(0),
+            )?;
+            if has_local {
+                return Err(invalid(
+                    "permanently remove the local file before synchronizing its deletion",
+                ));
+            }
             if current.1.is_none() || current.3.is_some() {
                 return Err(invalid(
                     "cloud deletion requires a confirmed identity without a conflict",
                 ));
             }
-            tx.execute("UPDATE sync_entries SET native_dirty=native_dirty|8,native_local_version=native_local_version+1,native_deletion_version=native_deletion_version+1,native_deletion_event=?2 WHERE id=?1",params![entry,stamp])?;
+            tx.execute("UPDATE sync_entries SET native_dirty=4,native_local_version=native_local_version+1,native_deletion_version=native_deletion_version+1,native_deletion_event=?2 WHERE id=?1",params![entry,stamp])?;
         }
         PhotoAction::Recreate => {
             if current.1.is_some() || current.3.is_some() {
@@ -105,14 +124,16 @@ pub(super) fn apply(
                         "hidden cloud photos require a supported local representation",
                     ));
                 }
-                let projection:Option<String>=tx.query_row("SELECT payload FROM sync_native_records WHERE job_id=?1 AND record_name=?2 AND record_type='__photo__'",params![job,photo.photo_id],|r|r.get(0)).optional()?;
+                let projection = super::receive::current_remote_photo_in(tx, job, &photo.photo_id)?;
                 let encoded = serde_json::to_string(&photo)
                     .map_err(|_| invalid("invalid competing photo"))?;
                 if projection.as_deref() != Some(&encoded) {
                     return Err(invalid("cloud projection changed; refresh the conflict"));
                 }
-                let asset:String=tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,photo.photo_id],|r|r.get(0))?;
-                let master:String=tx.query_row("SELECT record_change_tag FROM sync_native_inbox WHERE job_id=?1 AND record_name=?2 ORDER BY ordinal DESC LIMIT 1",params![job,photo.master_id],|r|r.get(0))?;
+                let asset = super::receive::record_revision_in(tx, job, &photo.photo_id)?
+                    .ok_or_else(|| invalid("photo has no asset revision"))?;
+                let master = super::receive::record_revision_in(tx, job, &photo.master_id)?
+                    .ok_or_else(|| invalid("photo has no master revision"))?;
                 tx.execute("UPDATE sync_entries SET native_photo_id=?2,native_master_id=?3,native_asset_revision=?4,native_master_revision=?5,native_content_generation=?6,native_retired=0,native_local_version=native_local_version+1 WHERE id=?1",params![entry,photo.photo_id,photo.master_id,asset,master,photo.content_generation])?;
                 match action {
                     PhotoAction::KeepLocal => {
@@ -123,7 +144,7 @@ pub(super) fn apply(
                         }
                         tx.execute("UPDATE sync_native_resources SET state='retained' WHERE job_id=?1 AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND state='staged'",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
 
-                        tx.execute("UPDATE sync_entries SET native_dirty=6,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1,native_metadata_event=?2,native_content_event=?2,native_resource_baseline=?3 WHERE id=?1",params![entry,stamp,encoded])?;
+                        tx.execute("UPDATE sync_entries SET native_dirty=2,native_metadata_version=native_metadata_version+1,native_content_version=native_content_version+1,native_metadata_event=?2,native_content_event=?2,native_resource_baseline=?3 WHERE id=?1",params![entry,stamp,encoded])?;
                     }
                     PhotoAction::UseCloud => {
                         if recovery.is_none() {

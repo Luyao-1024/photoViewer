@@ -298,6 +298,17 @@ async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() 
     service.switch_native_account(b.id).await.unwrap();
     assert_eq!(service.run_cycle(b.id).await.unwrap().outstanding, 0);
     assert_eq!(target.run_cycle(job.id).await.unwrap().outstanding, 0);
+    // Missing credentials must not trap an inactive saved account. Sign-out
+    // is idempotent, and removal covers every folder without selecting it.
+    service.logout_native_job(a.id).await.unwrap();
+    assert!(service.store().job_is_selected(b.id).unwrap());
+    let before_media = db::list_all_media(&pool).unwrap().len();
+    assert!(service.remove_native_account(a.id).await.unwrap());
+    assert!(service.store().get_job(a.id).unwrap().is_none());
+    assert!(service.store().get_job(archive.id).unwrap().is_none());
+    assert!(service.store().job_is_selected(b.id).unwrap());
+    assert_eq!(db::list_all_media(&pool).unwrap().len(), before_media);
+    assert!(alice_photo.is_file());
 }
 
 #[tokio::test(flavor = "multi_thread")]

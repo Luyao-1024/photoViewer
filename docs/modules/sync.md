@@ -33,7 +33,7 @@ management surface. Versioned photo-decision APIs remain available internally. T
 implementation boundaries are the connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,
 paired with an existing local thumbnail, uploaded, downloaded, verified and
-published. A photo becomes visible only when its whole pair is usable, and
+published. A cloud photo becomes visible when its thumbnail is ready; the original can arrive later, and
 `applied` cannot advance past work that is still owed. Native user choices are described in the [usage guide](native-sync-usage.md).
 
 Native uplink reads the existing local thumbnail cache (Large, Medium, then
@@ -64,8 +64,8 @@ Protocol definitions remain exclusively in the sibling server repository.
 | `src/core/sync/native/provider.rs` | `NativeProvider`: a connection + pinned scope + zone |
 | `src/core/sync/native/receive.rs` | receive-side wire types: snapshot/query/zone-delta DTOs, the record envelope, and the shared authenticated JSON POST |
 | `src/core/sync/native/records.rs` | the typed remote graph: pair validation, path safety, resource expectations |
-| `src/core/sync/store/receive.rs` | durable receive state: bootstrap markers, the ordered inbox, promotion, and the `applied` gate |
-| `src/core/sync/store/dirty.rs` | dirty truth: category bits, versions, edit events, the derived uplink view, and confirmation |
+| `src/core/sync/store/receive.rs` | durable receive state: bootstrap markers, temporary pair fragments, metadata admission, and the `applied` gate |
+| `src/core/sync/store/dirty.rs` | dirty truth: exclusive states, category versions, edit events, the derived uplink view, and confirmation |
 | `src/core/sync/service/coordinator.rs` | one cycle: receive, acquire, gate, phases, dispatch, callbacks, release |
 | `src/core/sync/content.rs` | stable snapshots, dual-encoded digests, bounded thumbnail generation |
 | `src/core/sync/native/assets.rs` | asset reservation, byte upload, session status, describe and download |
@@ -74,7 +74,7 @@ Protocol definitions remain exclusively in the sibling server repository.
 | `src/core/sync/device.rs` | this installation's stable device identity |
 | `src/core/sync/service/receive.rs` | one receive cycle: bootstrap when needed, then a fixed-height delta round |
 | `src/core/sync/model.rs` | `ProviderKind`, `SyncDirection`, `UploadScope` |
-| `src/core/sync/store.rs` | `SyncStore`: jobs/connections/inventory/overview, native job creation + zone/pin validation, run lifecycle |
+| `src/core/sync/store.rs` | `SyncStore`: jobs/connections/media-derived overview, native job creation + zone/pin validation, run lifecycle |
 | `src/core/sync/store/configuration.rs` | durable accepted-edit queue (`sync_job_changes`) |
 | `src/core/sync/store/reset.rs` | global-off history reset |
 | `src/core/sync/service.rs` | `SyncService`: `probe_native_connection`, `create_native_job`, interrupted-run reconciliation |
@@ -132,6 +132,14 @@ checks that name the offending task.
 
 ## Receive Position And The Applied Gate
 
+Remote metadata is admitted directly to `media_items`: storage_location 1=local,
+2=cloud without a downloaded original, 3=both. `thumbnail_ready` means locally
+generated for local originals and downloaded for cloud-only rows. Metadata is not
+kept in a second full inventory; only incomplete pair fields, per-photo download
+work and file-publication captures survive between pages. A cloud thumbnail can
+be displayed before its original arrives. Original publication then changes 2→3.
+
+
 Four token positions, never interchanged: `snapshot_token` pins a full read at
 one height; `ingest_token` is where the delta stream resumes; `target_token` is
 the height of the newest complete projection; `applied_token` is the height
@@ -151,8 +159,18 @@ applied position says nothing about work that was never in scope.
 
 ## Dirty Truth And Local Change
 
-A dirty bit is a field on the existing record, never a queue: 1=NEW, 2=METADATA,
-4=CONTENT, 8=DELETE. Each of the three categories carries its own version, its
+Trash/restore is metadata, carried as the optional `isTrashed` field through the
+server's generic field support. Permanent physical removal leaves the existing
+sync entry, cloud IDs, revisions and deletion event durably at dirty=4. Ordinary
+scans, restarts, retries and later remote edits never discard this record. A
+successful guarded cloud deletion removes it; an explicit account switch or
+global Off may clear it. Failed physical deletion creates no deletion intent.
+A never-published item with no issued create is settled as already absent only
+after the current-watermark upload gate succeeds.
+
+
+Dirty is a state on the existing record, never a queue: 0=CLEAN, 1=NEW,
+2=MODIFIED (metadata or content), 4=DELETE after physical permanent removal. Each change category carries its own version, its
 own acknowledged counter and its own edit event, and the uplink view is derived
 from those fields at dispatch time.
 
@@ -171,33 +189,30 @@ identity it proved but leaves the newer obligation standing.
 
 A local upload snapshots the original into owned staging first — a user editing
 the file mid-upload would otherwise produce bytes that no longer match the
-declared digest — and generates the thumbnail from that copy, so the pair
-describes one version. The digest is stated twice in two encodings (hex for
+declared digest — and reuses the existing source-path/mtime thumbnail cache; it does not decode
+originals to produce upload thumbnails. The digest is stated twice in two encodings (hex for
 reservation and photo field, Base64 for a descriptor); `ContentDigest` is the
 join and never a re-hash.
 
 Downloads verify what arrived against what the projection promised, before
 anything is written. Publication is ordered: staged → published (file in the job
 root) → verified (cache artifact exists) → complete (both roles verified) →
-admitted (media row written, exactly once). A crash between any two steps leaves
+original ready (existing metadata row changes cloud=2 to both=3). A crash between any two steps leaves
 the previous complete version readable and the work still owed; a photo that
 left the projection cannot be resurrected from a stale intent.
 
 ## Badges And Overview
 
-Promotion also rejects an incomplete graph: an asset without its master, a master
-no asset references, mismatched content generations, a cross-zone reference, a
-duplicate or unsafe relative path, or a thumbnail digest that is not SHA-256 hex
-are all refusals, never partial accepts. Unknown record types are retained in
-the projection and never counted as complete supported media.
+Received photo pairs validate references, generations, safe paths and asset
+descriptors only for affected photos. Incomplete cross-page pairs remain on their
+own entries; unrelated confirmed photos are not replayed or compared.
 
-`sync_entries.native_dirty` (bitmask 0–15: 1=NEW, 2=METADATA, 4=CONTENT,
-8=DELETE) is the only dirty truth; there is no second queue. Cloud badges read
-`native_confirmed_generation IS NOT NULL AND native_dirty = 0` — a confirmed
-complete pair with nothing outstanding. The overview counts a media item after
-its required complete pair is confirmed, using `sync_inventory` as the eligible
-denominator. Nothing writes these yet beyond defaults; the mutation hooks land
-in C1.3.
+`sync_entries.native_dirty` (0=CLEAN, 1=NEW, 2=MODIFIED, 4=DELETE) is the only dirty
+truth. Cloud badges use the media's declared location plus its current-account
+cloud identity. Overview counts fully confirmed, clean, both=3 photos with ready
+thumbnails and no pending publication. Its denominator derives from current-account
+entries, photo fields, explicit upload scope and persistent pending deletions.
+There is no separate sync_inventory or per-run counter that resets earlier success.
 
 ## Credentials
 

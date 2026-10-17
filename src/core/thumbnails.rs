@@ -375,9 +375,13 @@ impl ThumbnailLoader {
     /// 启动后台预热拉取：设置标志，worker 在队列空时自动从 DB 拉取下一张
     /// 未缓存的缩略图生成。幂等——多次调用与一次等效。
     pub fn start_background_prewarm(&self) {
-        self.background_pull
+        let already_started = self
+            .background_pull
             .enabled
-            .store(true, AtomicOrdering::Relaxed);
+            .swap(true, AtomicOrdering::Relaxed);
+        if !already_started {
+            cache::recover_missing_marks(self);
+        }
         if let Ok(mut off) = self.background_pull.offset.lock() {
             *off = 0;
         }

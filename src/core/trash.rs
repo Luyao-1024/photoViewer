@@ -628,7 +628,7 @@ fn rollback_migrated_entry(entry: &MigratedTrashEntry) {
 pub fn move_to_trash_marked(pool: &DbPool, id: i64, uri: &str) -> Result<()> {
     db::mark_trashed(pool, id)?;
     match move_to_configured_trash(uri) {
-        Ok(()) => Ok(()),
+        Ok(()) => db::commit_trash_metadata(pool, &[id]),
         Err(e) => {
             // The row is still marked trashed when the rollback itself fails, so the photo
             // vanishes from the library while its file is untouched. Surface that instead of
@@ -787,7 +787,7 @@ fn prepare_trash_reconcile_for_roots_in(
         if row.path.exists() {
             continue; // 已还原，交给扫描
         }
-        if !present_originals.contains(&row.path) {
+        if row.path.parent().is_some_and(Path::is_dir) && !present_originals.contains(&row.path) {
             plan.prune_ids.push(MediaId::from(row.id));
         }
     }
@@ -805,6 +805,7 @@ pub(crate) fn commit_trash_reconcile(
     };
     for id in plan.mark_ids {
         db::mark_trashed(pool, id.get())?;
+        db::commit_trash_metadata(pool, &[id.get()])?;
         stats.marked += 1;
     }
     let inserted = db::upsert_media_items_batch(pool, &plan.new_items)?;
@@ -813,7 +814,7 @@ pub(crate) fn commit_trash_reconcile(
         stats.inserted += 1;
     }
     for id in plan.prune_ids {
-        db::delete_media_item(pool, id.get())?;
+        db::commit_permanent_deletions(pool, &[id.get()])?;
         stats.pruned += 1;
     }
     Ok(stats)
@@ -890,10 +891,10 @@ pub(crate) fn prepare_restore(uri: &str) -> Result<PreparedRestore> {
     prepare_restore_in_roots(uri, &trash_roots_for_original_path(&path))
 }
 
-/// Stage a trash file under a hidden sibling name. If the following database
-/// delete fails, dropping this value restores the original trash entry. Once
-/// committed, cleanup is best-effort; an undeletable staged file remains
-/// recoverable on disk instead of leaving a DB row pointing at no file.
+/// Stage a trash file under a hidden sibling name. A failed physical unlink
+/// restores the trash entry on drop. Only a successful commit permits the caller
+/// to persist dirty=4 and remove the gallery row. If that database write fails,
+/// its retained trash row is reconciled on the next startup.
 pub(crate) struct PreparedPermanentDelete {
     original: PathBuf,
     staged: PathBuf,
@@ -902,20 +903,15 @@ pub(crate) struct PreparedPermanentDelete {
 }
 
 impl PreparedPermanentDelete {
-    pub(crate) fn commit(mut self) {
+    pub(crate) fn commit(mut self) -> Result<()> {
+        std::fs::remove_file(&self.staged)?;
         self.committed = true;
-        if let Err(error) = std::fs::remove_file(&self.staged) {
-            tracing::error!(
-                "permanent delete committed, but staged file remains at {}: {error}",
-                self.staged.display()
-            );
-            return;
-        }
         if let Err(error) = std::fs::remove_file(&self.info) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!("failed to remove {}: {error}", self.info.display());
             }
         }
+        Ok(())
     }
 }
 
@@ -924,7 +920,7 @@ impl Drop for PreparedPermanentDelete {
         if !self.committed {
             if let Err(error) = std::fs::rename(&self.staged, &self.original) {
                 tracing::error!(
-                    "delete database commit failed; trash file remains at {}: {error}",
+                    "permanent deletion was not committed; trash file remains at {}: {error}",
                     self.staged.display()
                 );
             }

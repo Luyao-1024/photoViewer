@@ -21,6 +21,8 @@ fn sample_item(uri: &str) -> MediaItem {
         blake3_hash: "h".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

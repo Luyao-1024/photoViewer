@@ -206,8 +206,7 @@ impl SyncStore {
         }
         let placeholders = vec!["?"; media_ids.len()].join(",");
         let sql = format!(
-            "SELECT m.id, MAX(CASE WHEN e.native_confirmed_generation IS NOT NULL
-                            AND e.native_dirty = 0
+            "SELECT m.id, MAX(CASE WHEN m.storage_location IN (2,3) AND e.native_photo_id IS NOT NULL
                        THEN 1 ELSE 0 END)
              FROM media_items m
              JOIN sync_jobs j ON substr(m.path, 1, length(rtrim(j.local_root, '/')) + 1)
@@ -390,20 +389,23 @@ impl SyncStore {
     fn overview_with_sync_enabled(&self, sync_enabled: bool) -> Result<SyncOverview> {
         let conn = self.pool.get()?;
         let (synced_items, total_items) = conn.query_row(
-            "WITH paths(path, synced) AS (
-                 SELECT j.local_root || '/' || e.relative_path, 1
-                 FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
-                 JOIN sync_connections c ON c.id = j.connection_id
-                 WHERE c.enabled = 1 AND e.native_confirmed_generation IS NOT NULL
-                   AND e.native_dirty = 0
-                 UNION ALL
-                 SELECT j.local_root || '/' || i.relative_path, 0
-                 FROM sync_inventory i JOIN sync_jobs j ON j.id = i.job_id
-                 JOIN sync_connections c ON c.id = j.connection_id
-                 WHERE c.enabled = 1 AND i.config_generation = j.config_generation
-             )
-             SELECT COUNT(DISTINCT CASE WHEN synced = 1 THEN path END),
-                    COUNT(DISTINCT path) FROM paths",
+            "WITH paths(path,synced) AS (
+                SELECT rtrim(j.local_root,'/')||'/'||e.relative_path,
+                    CASE WHEN e.native_confirmed_generation IS NOT NULL AND e.native_dirty=0
+                        AND m.storage_location=3 AND m.thumbnail_ready=1
+                        AND NOT EXISTS(SELECT 1 FROM sync_publications p WHERE p.entry_id=e.id AND p.state NOT IN ('complete','superseded'))
+                        THEN 1 ELSE 0 END
+                FROM sync_entries e JOIN sync_jobs j ON j.id=e.job_id
+                JOIN sync_connections c ON c.id=j.connection_id
+                LEFT JOIN media_items m ON m.id=e.media_id
+                WHERE c.enabled=1 AND e.native_retired=0 AND (
+                    e.native_dirty=4 OR e.native_confirmed_generation IS NOT NULL
+                    OR (e.native_photo_id IS NOT NULL AND j.direction<>'upload_only')
+                    OR (m.trashed_at IS NULL AND m.storage_location<>2 AND
+                        (j.upload_scope='all' OR EXISTS(SELECT 1 FROM sync_job_upload_albums a
+                            WHERE a.job_id=j.id AND m.folder_path=CASE WHEN a.relative_album='' THEN rtrim(j.local_root,'/') ELSE rtrim(j.local_root,'/')||'/'||a.relative_album END)))
+                )
+            ) SELECT COUNT(DISTINCT CASE WHEN synced=1 THEN path END),COUNT(DISTINCT path) FROM paths",
             [],
             |row| {
                 Ok((
@@ -893,6 +895,7 @@ pub(crate) fn execute_write(pool: &DbPool, command: SyncWrite) -> Result<SyncWri
             } else {
                 None
             };
+            accounts::refresh_media_locations_in(&tx)?;
             tx.commit()?;
             Ok(SyncWriteResult::DeletedJob(orphaned_credential))
         }

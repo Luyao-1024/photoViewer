@@ -105,7 +105,6 @@ async fn categories_preserve_or_remove_login_records_and_secrets_together() {
                 "sync_entries",
                 "sync_tasks",
                 "sync_native_progress",
-                "sync_native_records",
                 "sync_native_resources",
                 "sync_publications",
                 "sync_job_changes",

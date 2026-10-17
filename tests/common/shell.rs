@@ -742,5 +742,7 @@ pub fn sample_item_with(
         blake3_hash: format!("shell-hash-{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }

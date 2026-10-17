@@ -39,6 +39,12 @@ fn identity(id: i64, document: &Option<String>) -> Result<String> {
     .map_err(configuration::json_error)
 }
 
+pub(crate) fn refresh_media_locations_in(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute("DELETE FROM media_items WHERE storage_location=2 AND NOT EXISTS(SELECT 1 FROM sync_entries WHERE media_id=media_items.id)",[])?;
+    tx.execute("UPDATE media_items SET storage_location=CASE WHEN EXISTS(SELECT 1 FROM sync_entries e JOIN sync_jobs j ON j.id=e.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE e.media_id=media_items.id AND c.enabled=1 AND e.native_photo_id IS NOT NULL AND e.native_confirmed_generation IS NOT NULL AND e.native_retired=0) THEN 3 ELSE 1 END WHERE storage_location IN (1,3)",[])?;
+    Ok(())
+}
+
 pub(crate) fn select_in(tx: &rusqlite::Transaction<'_>, job: Option<i64>) -> Result<()> {
     let connections = {
         let mut stmt = tx.prepare("SELECT c.id,c.native_pinned_scope,c.enabled FROM sync_connections c WHERE EXISTS(SELECT 1 FROM sync_jobs j WHERE j.connection_id=c.id) ORDER BY c.enabled DESC,c.id")?;
@@ -81,10 +87,13 @@ pub(crate) fn select_in(tx: &rusqlite::Transaction<'_>, job: Option<i64>) -> Res
                 .transpose()?,
         },
     };
+    let selection_changed = selected.as_ref() != previous.as_ref();
+    let mut enabled_changed = false;
     for (id, document, enabled) in &connections {
         let current = identity(*id, document)?;
         let selected_here = selected.as_ref() == Some(&current);
         if selected_here != *enabled {
+            enabled_changed = true;
             tx.execute(
                 "UPDATE sync_connections SET enabled=?2 WHERE id=?1",
                 params![id, selected_here],
@@ -93,6 +102,9 @@ pub(crate) fn select_in(tx: &rusqlite::Transaction<'_>, job: Option<i64>) -> Res
     }
     if let Some(selected) = selected.filter(|value| Some(value) != previous.as_ref()) {
         tx.execute("INSERT INTO settings(key,value) VALUES('native_sync_account',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [selected])?;
+    }
+    if enabled_changed || selection_changed {
+        refresh_media_locations_in(tx)?;
     }
     Ok(())
 }

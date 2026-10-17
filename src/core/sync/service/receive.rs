@@ -143,7 +143,7 @@ impl SyncService {
             // without dropping what the earlier cycle already read. Promotion
             // therefore always reads the inbox — one code path, no in-memory
             // inventory that a restart would lose.
-            self.promote_from_inbox(job_id, &progress.zone, &snapshot.token, &mut report)
+            self.promote_pending(job_id, &progress.zone, &snapshot.token, &mut report)
                 .await?;
         }
 
@@ -246,6 +246,10 @@ impl SyncService {
                     )
                     .map_err(|error| ReceiveError::Transport(error.to_string()))?;
                 report.events_saved += saved;
+                if record_type == "CPLAsset" {
+                    self.promote_pending(progress.job_id, zone, &page.sync_token, report)
+                        .await?;
+                }
                 self.store
                     .save_bootstrap_page(
                         progress.job_id,
@@ -335,38 +339,85 @@ impl SyncService {
             .map_err(|error| ReceiveError::Transport(error.to_string()))?
             .map(|progress| progress.zone)
             .ok_or(ReceiveError::NoZone(job_id))?;
-        self.promote_from_inbox(job_id, &zone_now, &last_token, report)
+        self.promote_pending(job_id, &zone_now, &last_token, report)
             .await
     }
 
-    /// Replay the durable inbox at the current generation into a validated
-    /// projection and promote it at `target`.
-    async fn promote_from_inbox(
+    /// Pair only the changed photo fragments stored on their existing entries.
+    /// Already-applied photos are never replayed into a second remote inventory.
+    async fn promote_pending(
         &self,
-        job_id: i64,
+        job: i64,
         zone: &NativeZone,
-        target_token: &str,
+        target: &str,
         report: &mut ReceiveReport,
     ) -> std::result::Result<(), ReceiveError> {
-        let progress = self
+        let records = self
             .store()
-            .native_progress(job_id)
-            .map_err(|error| ReceiveError::Transport(error.to_string()))?
-            .ok_or(ReceiveError::NoScope(job_id))?;
-        let events = self
-            .store()
-            .inbox_events(job_id, &progress.database_generation)
-            .map_err(|error| ReceiveError::Transport(error.to_string()))?;
-        let set = RecordSet::from_events(&events)
-            .map_err(|error| ReceiveError::IncompleteGraph(error.to_string()))?;
-        let graph = set
-            .to_graph(&super::super::native::receive::ZoneId::from(zone))
-            .map_err(|error| ReceiveError::IncompleteGraph(error.to_string()))?;
-        self.prepare_local_matches(job_id, &graph).await?;
-        let local_digests = self.measure_local_matches(job_id, &graph).await;
-        self.preserve_collisions(job_id, &graph, &local_digests)
-            .await?;
-        self.promote(graph, target_token, local_digests, report)
+            .pending_records(job)
+            .map_err(|e| ReceiveError::Transport(e.to_string()))?;
+        let mut photos = HashMap::<String, Vec<NativeRecord>>::new();
+        for record in records {
+            let photo = match record.record_type.as_deref() {
+                Some("CPLAsset") => Some(record.record_name.clone()),
+                Some("CPLMaster") => record
+                    .fields
+                    .as_ref()
+                    .and_then(|f| f.get("photoId"))
+                    .and_then(|f| f["value"].as_str())
+                    .map(str::to_owned),
+                _ => self
+                    .store()
+                    .photo_id_for_record(job, &record.record_name)
+                    .map_err(|e| ReceiveError::Transport(e.to_string()))?,
+            };
+            if let Some(photo) = photo {
+                photos.entry(photo).or_default().push(record);
+            }
+        }
+        let mut graph = RemoteGraph::default();
+        for (id, changed) in photos {
+            let mut pair = self
+                .store()
+                .current_pair_records(job, &id)
+                .map_err(|e| ReceiveError::Transport(e.to_string()))?
+                .into_iter()
+                .map(|r| (r.record_name.clone(), r))
+                .collect::<HashMap<_, _>>();
+            for record in changed {
+                pair.insert(record.record_name.clone(), record);
+            }
+            let deleted = pair.values().filter(|r| r.is_tombstone()).count();
+            if deleted > 0 {
+                if deleted != 2 {
+                    return Err(ReceiveError::IncompleteGraph(
+                        "incomplete photo deletion pair".into(),
+                    ));
+                }
+                graph.tombstones.extend(pair.into_keys());
+                continue;
+            }
+            let mut set = RecordSet::default();
+            for record in pair.into_values() {
+                set.apply(record);
+            }
+            let complete = set
+                .to_graph(&super::super::native::receive::ZoneId::from(zone))
+                .map_err(|e| ReceiveError::IncompleteGraph(e.to_string()))?;
+            graph.photos.extend(complete.photos);
+        }
+        if !graph.photos.is_empty() {
+            self.prepare_local_matches(job, &graph).await?;
+        }
+        let digests = if graph.photos.is_empty() {
+            HashMap::new()
+        } else {
+            self.measure_local_matches(job, &graph).await
+        };
+        if !graph.photos.is_empty() {
+            self.preserve_collisions(job, &graph, &digests).await?;
+        }
+        self.promote(graph, target, digests, report, true)
     }
 
     /// Hash only equal-size, same-path local candidates with no matching cloud
@@ -458,12 +509,18 @@ impl SyncService {
         target_token: &str,
         local_digests: HashMap<String, LocalDigest>,
         report: &mut ReceiveReport,
+        delta: bool,
     ) -> std::result::Result<(), ReceiveError> {
-        let (photos, unknown, resources, applied) = self
-            .store
-            .promote_remote_graph(report.job_id, graph, target_token, local_digests)
-            .map_err(|error| ReceiveError::Transport(error.to_string()))?;
-        report.photos_projected = photos;
+        let result = if delta {
+            self.store
+                .promote_remote_delta(report.job_id, graph, target_token, local_digests)
+        } else {
+            self.store
+                .promote_remote_graph(report.job_id, graph, target_token, local_digests)
+        };
+        let (photos, unknown, resources, applied) =
+            result.map_err(|error| ReceiveError::Transport(error.to_string()))?;
+        report.photos_projected += photos;
         report.unknown_records = unknown;
         report.outstanding_resources = resources;
         report.applied = applied;

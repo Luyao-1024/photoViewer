@@ -23,10 +23,14 @@ pub fn ui_media_list_cap() -> usize {
 pub fn apply_to_media_list(list: &gtk::gio::ListStore, event: &DomainEvent) {
     match event {
         DomainEvent::MediaUpserted { source, items } => {
-            apply_upserted_batch(list, *source, items.clone());
+            let hidden=items.iter().filter(|item|!item.can_display()).map(|item|item.uri.clone()).collect::<Vec<_>>();
+            remove_uris_batch(list,&hidden);
+            apply_upserted_batch(list,*source,items.iter().filter(|item|item.can_display()).cloned().collect());
         }
         DomainEvent::MediaUpdated { items, .. } | DomainEvent::MediaRestored { items, .. } => {
-            apply_upserted_batch(list, ChangeSource::UserInteractive, items.clone());
+            let hidden=items.iter().filter(|item|!item.can_display()).map(|item|item.uri.clone()).collect::<Vec<_>>();
+            remove_uris_batch(list,&hidden);
+            apply_upserted_batch(list,ChangeSource::UserInteractive,items.iter().filter(|item|item.can_display()).cloned().collect());
         }
         DomainEvent::MediaRemoved { uris, .. } => {
             remove_uris_batch(list, uris);

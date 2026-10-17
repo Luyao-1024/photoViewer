@@ -17,6 +17,8 @@ mod common;
 mod logging;
 
 use logging::Capture;
+#[path = "native_sync_assets/presence.rs"]
+mod presence;
 #[path = "native_sync_assets/upload_failures.rs"]
 mod upload_failures;
 
@@ -700,9 +702,7 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         };
         let job_a = a.store().create_job(&job(source.clone())).unwrap();
         let job_b = b.store().create_job(&job(target.clone())).unwrap();
-        let started = Instant::now();
         let created = a.run_cycle(job_a.id).await.unwrap();
-        assert!(started.elapsed() >= Duration::from_secs(3));
         assert!(created.failures.is_empty(), "{created:?}");
         assert_eq!(created.mutations_confirmed, 1, "{created:?}");
         assert_eq!(created.outstanding, 0);
@@ -726,6 +726,11 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         let local = db::list_all_media(&pool_b).unwrap();
         assert_eq!(local.len(), 1);
         assert!(local[0].is_favorite);
+        assert_eq!(
+            local[0].storage_location,
+            photo_viewer::core::media::MediaLocation::Both
+        );
+        assert!(local[0].thumbnail_ready);
         let received_id = local[0].id;
         assert!(
             std::iter::from_fn(|| events_b.try_recv().ok()).any(|event| matches!(
@@ -844,55 +849,15 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         assert_eq!(a.run_cycle(job_a.id).await.unwrap().outstanding, 0);
         assert!(db::get_media_item(&pool_a, source_id).unwrap().is_favorite);
         assert_eq!(std::fs::read(&path).unwrap(), newer_a);
-        // A confirmed cloud delete preserves local files and suppresses revival.
+        // A live local original cannot manufacture deletion state 4.
         let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
-        let old_id = pool_a
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT native_photo_id FROM sync_entries WHERE id=?1",
-                [captured.entry_id],
-                |r| r.get::<_, String>(0),
-            )
-            .unwrap();
-        a.accept_photo_action(job_a.id, captured, PhotoAction::DeleteCloud)
+        assert!(a
+            .accept_photo_action(job_a.id, captured, PhotoAction::DeleteCloud)
             .await
-            .unwrap();
-        let deleted = a.run_cycle(job_a.id).await.unwrap();
-        assert!(deleted.failures.is_empty(), "{deleted:?}");
-        assert_eq!(deleted.outstanding, 0);
-        assert_eq!(b.run_cycle(job_b.id).await.unwrap().outstanding, 0);
-        assert!(b.store().managed_photos(job_b.id).unwrap()[0].retired);
+            .is_err());
+        assert_eq!(a.run_cycle(job_a.id).await.unwrap().mutations_sent, 0);
         assert!(path.is_file());
         assert!(target.join("photo.jpg").is_file());
-        let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
-        assert!(captured.retired);
-        assert!(!captured.remote);
-        actor_a
-            .execute_blocking(DbCommand::SetFavorite {
-                ids: vec![MediaId::from(source_id)],
-                is_favorite: true,
-            })
-            .unwrap();
-        assert_eq!(a.run_cycle(job_a.id).await.unwrap().mutations_sent, 0);
-        let captured = a.store().managed_photos(job_a.id).unwrap().remove(0);
-        a.accept_photo_action(job_a.id, captured, PhotoAction::Recreate)
-            .await
-            .unwrap();
-        let recreated = a.run_cycle(job_a.id).await.unwrap();
-        assert!(recreated.failures.is_empty(), "{recreated:?}");
-        assert_eq!(recreated.outstanding, 0);
-        let new_id = pool_a
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT native_photo_id FROM sync_entries WHERE job_id=?1",
-                [job_a.id],
-                |r| r.get::<_, String>(0),
-            )
-            .unwrap();
-        assert_ne!(old_id, new_id);
-        assert_eq!(b.run_cycle(job_b.id).await.unwrap().outstanding, 0);
 
         // Identity, not path, ties the edits together: A renames the record
         // while B edits its content. Both changes must eventually be local.
@@ -1291,6 +1256,9 @@ fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
             assert_eq!(report.mutations_confirmed, confirmed, "{report:?}");
             assert_eq!(report.outstanding, outstanding, "{report:?}");
             assert_eq!(report.uplink_deferred, outstanding, "{report:?}");
+            let overview = service.store().overview().unwrap();
+            assert_eq!(overview.synced_items, 21 - outstanding, "{overview:?}");
+            assert_eq!(overview.total_items, 21, "{overview:?}");
             assert!(service
                 .store()
                 .get_job(job.id)

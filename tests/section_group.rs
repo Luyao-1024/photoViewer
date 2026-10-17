@@ -23,6 +23,8 @@ fn item(id: i64, year: i32, month: u32, day: u32) -> MediaItem {
         blake3_hash: format!("h{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 
@@ -45,6 +47,8 @@ fn item_without_taken_at(id: i64, year: i32, month: u32, day: u32) -> MediaItem 
         blake3_hash: format!("hash-{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

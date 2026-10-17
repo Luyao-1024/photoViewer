@@ -216,7 +216,7 @@ pub(crate) fn upsert_media_items_in(
         let external_content_changed = if let Some(id) = existing {
             publication.is_none()
                 && tx.query_row(
-                    "SELECT file_mtime_ns<>?2 OR file_size<>?3 FROM media_items WHERE id=?1",
+                    "SELECT storage_location=2 OR file_mtime_ns<>?2 OR file_size<>?3 FROM media_items WHERE id=?1",
                     rusqlite::params![id, ts_ns(item.file_mtime), item.file_size as i64],
                     |r| r.get::<_, bool>(0),
                 )?
@@ -230,7 +230,8 @@ pub(crate) fn upsert_media_items_in(
                      media_subkind=?6, media_attributes=?7, media_type_flags=?8, width=?9, height=?10,
                      video_duration_secs=?11, taken_at=?12, file_mtime=?13,
                      file_mtime_ns=?14, file_size=?15, blake3_hash=?16,
-                     trashed_at=NULL, indexed_at=unixepoch()
+                     trashed_at=NULL, indexed_at=unixepoch(),
+                     storage_location=CASE WHEN storage_location=2 THEN 3 ELSE storage_location END
                  WHERE id=?1",
                 rusqlite::params![
                     id,
@@ -295,7 +296,7 @@ pub(crate) fn upsert_media_items_in(
         out.push(tx.query_row(
             "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                     media_attributes, width, height, video_duration_secs, taken_at,
-                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
              FROM media_items WHERE id = ?1",
             [id],
             row_to_media_item,
@@ -310,7 +311,7 @@ pub fn get_media_item(pool: &DbPool, id: i64) -> Result<MediaItem> {
     let item = conn.query_row(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
          FROM media_items WHERE id = ?1",
         [id],
         row_to_media_item,
@@ -325,7 +326,7 @@ pub fn get_media_item_by_uri(pool: &DbPool, uri: &str) -> Result<Option<MediaIte
         .query_row(
             "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                     media_attributes, width, height, video_duration_secs, taken_at,
-                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
              FROM media_items WHERE uri = ?1",
             [uri],
             row_to_media_item,
@@ -341,8 +342,8 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC",
     )?;
@@ -357,7 +358,7 @@ pub fn list_all_media(pool: &DbPool) -> Result<Vec<MediaItem>> {
 pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, PathBuf, PathBuf)>> {
     let conn = pool.get()?;
     let mut stmt = conn
-        .prepare("SELECT id, uri, path, folder_path FROM media_items WHERE trashed_at IS NULL")?;
+        .prepare("SELECT id, uri, path, folder_path FROM media_items WHERE trashed_at IS NULL AND storage_location<>2")?;
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -374,7 +375,7 @@ pub fn list_live_media_locations(pool: &DbPool) -> Result<Vec<(i64, String, Path
 pub fn count_live_media(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL",
+        "SELECT COUNT(*) FROM visible_media WHERE trashed_at IS NULL",
         [],
         |row| row.get(0),
     )?;
@@ -423,7 +424,7 @@ pub fn count_live_media_search(
     let count: i64 = if let Some(media_kind) = media_kind {
         conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM media_items
+                "SELECT COUNT(*) FROM visible_media
                  WHERE trashed_at IS NULL
                    AND media_kind = ?2
                    AND {field_clause}"
@@ -434,7 +435,7 @@ pub fn count_live_media_search(
     } else {
         conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM media_items
+                "SELECT COUNT(*) FROM visible_media
                  WHERE trashed_at IS NULL
                    AND {field_clause}"
             ),
@@ -449,7 +450,7 @@ pub fn count_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Re
     let conn = pool.get()?;
     let folder_str = folder_path.to_string_lossy().to_string();
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items
+        "SELECT COUNT(*) FROM visible_media
          WHERE trashed_at IS NULL AND folder_path = ?1",
         [folder_str],
         |row| row.get(0),
@@ -460,7 +461,7 @@ pub fn count_media_by_folder(pool: &DbPool, folder_path: &std::path::Path) -> Re
 pub fn count_favorite_media(pool: &DbPool) -> Result<usize> {
     let conn = pool.get()?;
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items
+        "SELECT COUNT(*) FROM visible_media
          WHERE trashed_at IS NULL AND is_favorite = 1",
         [],
         |row| row.get(0),
@@ -471,7 +472,7 @@ pub fn count_favorite_media(pool: &DbPool) -> Result<usize> {
 pub fn count_media_by_kind(pool: &DbPool, media_kind: &str) -> Result<usize> {
     let conn = pool.get()?;
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items
+        "SELECT COUNT(*) FROM visible_media
          WHERE trashed_at IS NULL AND media_kind = ?1",
         [media_kind],
         |row| row.get(0),
@@ -482,7 +483,7 @@ pub fn count_media_by_kind(pool: &DbPool, media_kind: &str) -> Result<usize> {
 pub fn count_media_by_subkind(pool: &DbPool, media_subkind: &str) -> Result<usize> {
     let conn = pool.get()?;
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM media_items
+        "SELECT COUNT(*) FROM visible_media
          WHERE trashed_at IS NULL AND media_subkind = ?1",
         [media_subkind],
         |row| row.get(0),
@@ -497,7 +498,7 @@ pub fn count_media_by_logical_type(
     let conn = pool.get()?;
     let count: i64 = conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM media_items WHERE trashed_at IS NULL AND {}",
+            "SELECT COUNT(*) FROM visible_media WHERE trashed_at IS NULL AND {}",
             media_type.sql_predicate()
         ),
         [],
@@ -528,7 +529,7 @@ pub fn count_media_by_date_for_filter(
                 CAST(strftime('%m', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) AS INTEGER),
                 CAST(strftime('%d', datetime(COALESCE(taken_at, file_mtime), 'unixepoch', 'localtime')) AS INTEGER),
                 COUNT(*)
-         FROM media_items
+         FROM visible_media
          WHERE {where_clause}
          GROUP BY 1, 2, 3"
     );
@@ -550,12 +551,24 @@ pub fn count_thumbnail_generated(pool: &DbPool) -> Result<usize> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM media_items
              WHERE trashed_at IS NULL
-               AND thumbnail_generated_at IS NOT NULL
-               AND thumbnail_generated_at >= file_mtime",
+               AND thumbnail_ready=1",
         [],
         |row| row.get(0),
     )?;
     Ok(count as usize)
+}
+
+pub(crate) fn invalidate_thumbnail_marks(pool: &DbPool, ids: &[i64]) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    for id in ids {
+        tx.execute(
+            "UPDATE media_items SET thumbnail_generated_at=NULL,thumbnail_ready=0 WHERE id=?1",
+            [id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn set_thumbnail_generated_at_for_tests(pool: &DbPool, id: i64, timestamp: i64) -> Result<()> {
@@ -579,10 +592,10 @@ pub fn list_media_needing_thumbnail(
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
          FROM media_items
          WHERE trashed_at IS NULL
-           AND (thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
+           AND storage_location<>2 AND (thumbnail_ready=0 OR thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?1 OFFSET ?2",
     )?;
@@ -621,10 +634,10 @@ pub fn list_media_needing_thumbnail_from_live_offset(
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
          FROM media_items
          WHERE trashed_at IS NULL
-           AND (thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
+           AND storage_location<>2 AND (thumbnail_ready=0 OR thumbnail_generated_at IS NULL OR thumbnail_generated_at < file_mtime)
            AND (
                 COALESCE(taken_at, file_mtime) < ?1
                 OR (COALESCE(taken_at, file_mtime) = ?1 AND id <= ?2)
@@ -651,7 +664,7 @@ pub(crate) fn mark_thumbnails_generated(pool: &DbPool, ids: &[i64]) -> Result<()
     );
     let conn = pool.get()?;
     let mut stmt =
-        conn.prepare("UPDATE media_items SET thumbnail_generated_at = unixepoch() WHERE id = ?1")?;
+        conn.prepare("UPDATE media_items SET thumbnail_generated_at = unixepoch(), thumbnail_ready=1 WHERE id = ?1")?;
     for id in ids {
         tracing::trace!(
             target: crate::core::log_targets::STORAGE,
@@ -675,8 +688,8 @@ pub fn list_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result<Vec<Med
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?1 OFFSET ?2",
@@ -708,11 +721,11 @@ pub fn list_media_search_page(
     };
     let columns = "id, uri, path, folder_path, mime_type, media_subkind,
                     media_attributes, width, height, video_duration_secs, taken_at,
-                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at";
+                    file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns";
     if let Some(media_kind) = media_kind {
         let mut stmt = conn.prepare(&format!(
             "SELECT {columns}
-             FROM media_items
+             FROM visible_media
              WHERE trashed_at IS NULL
                AND media_kind = ?2
                AND {field_clause}
@@ -728,7 +741,7 @@ pub fn list_media_search_page(
     } else {
         let mut stmt = conn.prepare(&format!(
             "SELECT {columns}
-             FROM media_items
+             FROM visible_media
              WHERE trashed_at IS NULL
                AND {field_clause}
              ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
@@ -754,8 +767,8 @@ pub fn list_media_by_folder_page(
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL AND folder_path = ?1
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?2 OFFSET ?3",
@@ -773,8 +786,8 @@ pub fn list_favorite_media_page(pool: &DbPool, offset: u32, limit: u32) -> Resul
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL AND is_favorite = 1
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?1 OFFSET ?2",
@@ -794,8 +807,8 @@ pub fn list_media_by_kind_page(
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL AND media_kind = ?1
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?2 OFFSET ?3",
@@ -818,8 +831,8 @@ pub fn list_media_by_subkind_page(
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL AND media_subkind = ?1
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?2 OFFSET ?3",
@@ -842,8 +855,8 @@ pub fn list_media_by_logical_type_page(
     let mut stmt = conn.prepare(&format!(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE trashed_at IS NULL AND {}
          ORDER BY COALESCE(taken_at, file_mtime) DESC, id DESC
          LIMIT ?1 OFFSET ?2",
@@ -1077,7 +1090,7 @@ fn rank_and_total(
 ) -> Result<(u32, u32)> {
     let sort = media_sort_expr(trashed);
     let total: u32 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause}"),
+        &format!("SELECT COUNT(*) FROM visible_media WHERE {where_clause}"),
         params_from_iter(filter_params.iter()),
         |r| r.get(0),
     )?;
@@ -1088,7 +1101,7 @@ fn rank_and_total(
         Value::Integer(id),
     ]);
     let index = conn.query_row(
-        &format!("SELECT COUNT(*) FROM media_items WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"),
+        &format!("SELECT COUNT(*) FROM visible_media WHERE {where_clause} AND {sort} >= ? AND ({sort} > ? OR id > ?)"),
         params_from_iter(params.iter()),
         |r| r.get(0),
     )?;
@@ -1116,7 +1129,7 @@ pub fn media_position(
     params.extend_from_slice(filter_params);
     let item_sort = conn
         .query_row(
-            &format!("SELECT {sort} FROM media_items WHERE id = ? AND {where_clause}"),
+            &format!("SELECT {sort} FROM visible_media WHERE id = ? AND {where_clause}"),
             params_from_iter(params.iter()),
             |r| r.get::<_, i64>(0),
         )
@@ -1155,7 +1168,7 @@ pub(crate) fn seek_media_neighbor(
     current_params.extend_from_slice(filter_params);
     let time: Option<i64> = conn
         .query_row(
-            &format!("SELECT {sort} FROM media_items WHERE id = ? AND {where_clause}"),
+            &format!("SELECT {sort} FROM visible_media WHERE id = ? AND {where_clause}"),
             params_from_iter(current_params.iter()),
             |r| r.get(0),
         )
@@ -1171,8 +1184,8 @@ pub(crate) fn seek_media_neighbor(
     let sql = format!(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
-         FROM media_items
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
+         FROM visible_media
          WHERE {where_clause} AND {sort} {cmp}= ? AND ({sort} {cmp} ? OR id {cmp} ?)
          ORDER BY {sort} {order}, id {order}
          LIMIT 1 OFFSET ?"
@@ -1211,7 +1224,7 @@ pub(crate) fn delete_media_item(pool: &DbPool, id: i64) -> Result<()> {
 pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>> {
     let conn = pool.get()?;
     let mut stmt = conn.prepare(
-        "SELECT uri, file_mtime_ns, file_size FROM media_items WHERE trashed_at IS NULL",
+        "SELECT uri, file_mtime_ns, file_size FROM media_items WHERE trashed_at IS NULL AND storage_location<>2",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -1235,37 +1248,56 @@ pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>
 /// 硬删，否则回收站页面会因为 `list_trashed_media` 返回空而"看不见图片"。
 /// 该函数目前只被 `notify_watcher` 经由 `backend.delete_path` 调用。
 pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
-    let conn = pool.get()?;
-    let uri = crate::core::file_uri::from_path(path);
-    let changed = conn.execute(
-        "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
-        rusqlite::params![path.to_string_lossy(), uri],
-    )?;
-    Ok(changed)
+    Ok(delete_live_media_by_paths(pool, &[path.to_owned()])?.len())
 }
 
 /// Delete multiple live rows in one transaction and return the exact URIs
 /// that were removed. Duplicate paths are harmless; trashed rows remain
 /// protected by the same guard as [`delete_media_by_path`].
 pub fn delete_live_media_by_paths(pool: &DbPool, paths: &[PathBuf]) -> Result<Vec<String>> {
-    if paths.is_empty() {
-        return Ok(Vec::new());
-    }
+    // Local watcher evidence is classified before taking SQLite's write lock.
+    // A missing drive/directory or an unreadable path is not a deletion.
+    let removed = paths
+        .iter()
+        .filter_map(|path| {
+            if !path.parent().is_some_and(Path::is_dir)
+                || !std::fs::symlink_metadata(path)
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
+                return None;
+            }
+            let uri = crate::core::file_uri::from_path(path);
+            let in_trash = crate::core::trash::trashed_file_uri(&uri).is_ok();
+            Some((path, uri, in_trash))
+        })
+        .collect::<Vec<_>>();
     let mut conn = pool.get()?;
     let tx = conn.transaction()?;
-    let mut removed = Vec::new();
-    for path in paths {
-        let uri = crate::core::file_uri::from_path(path);
-        let changed = tx.execute(
-            "DELETE FROM media_items WHERE (path = ?1 OR uri = ?2) AND trashed_at IS NULL",
-            rusqlite::params![path.to_string_lossy(), uri],
-        )?;
-        if changed > 0 {
-            removed.push(uri);
+    let mut uris = Vec::new();
+    for (path, uri, in_trash) in removed {
+        let id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM media_items WHERE (path=?1 OR uri=?2) AND trashed_at IS NULL AND storage_location<>2",
+                rusqlite::params![path.to_string_lossy(), uri],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = id {
+            if in_trash {
+                tx.execute(
+                    "UPDATE media_items SET trashed_at=unixepoch() WHERE id=?1",
+                    [id],
+                )?;
+                note_sync_change_in(&tx, id, crate::core::sync::store::ChangeCategory::Metadata)?;
+            } else {
+                note_sync_change_in(&tx, id, crate::core::sync::store::ChangeCategory::Deletion)?;
+                tx.execute("DELETE FROM media_items WHERE id=?1", [id])?;
+            }
+            uris.push(uri);
         }
     }
     tx.commit()?;
-    Ok(removed)
+    Ok(uris)
 }
 
 /// 删除指定文件夹相册下的 live 媒体索引。只删除数据库行，不触碰磁盘文件。
@@ -1304,28 +1336,34 @@ pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
 /// filesystem reconciliation: the scan/stat phase runs outside the DB actor,
 /// while this short transaction is serialized by the actor.
 pub fn delete_media_by_ids_returning(pool: &DbPool, ids: &[i64]) -> Result<Vec<i64>> {
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    const CHUNK: usize = 500;
-    let mut conn = pool.get()?;
-    let tx = conn.transaction()?;
-    let mut removed = Vec::new();
-    for chunk in ids.chunks(CHUNK) {
-        let placeholders = std::iter::repeat_n("?", chunk.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "DELETE FROM media_items WHERE id IN ({placeholders}) AND trashed_at IS NULL RETURNING id"
-        );
-        let mut statement = tx.prepare(&sql)?;
-        let rows = statement.query_map(params_from_iter(chunk.iter()), |row| row.get(0))?;
-        for row in rows {
-            removed.push(row?);
+    let mut rows = Vec::new();
+    {
+        let conn = pool.get()?;
+        let mut stmt =
+            conn.prepare("SELECT id,path,uri FROM media_items WHERE id=?1 AND trashed_at IS NULL")?;
+        for id in ids {
+            if let Some(row) = stmt
+                .query_row([id], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        PathBuf::from(r.get::<_, String>(1)?),
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .optional()?
+            {
+                rows.push(row);
+            }
         }
     }
-    tx.commit()?;
-    Ok(removed)
+    let paths = rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>();
+    let removed = delete_live_media_by_paths(pool, &paths)?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, _, uri)| removed.contains(&uri).then_some(id))
+        .collect())
 }
 
 /// 重置媒体库数据库内容。返回删除的媒体记录数。
@@ -1349,6 +1387,11 @@ pub(crate) fn reset_account_data(pool: &DbPool) -> Result<usize> {
     let mut conn = pool.get()?;
     conn.execute_batch("PRAGMA secure_delete=ON;")?;
     let tx = conn.transaction()?;
+    tx.execute("DELETE FROM media_items WHERE storage_location=2", [])?;
+    tx.execute(
+        "UPDATE media_items SET storage_location=1 WHERE storage_location=3",
+        [],
+    )?;
     let count = tx.execute("DELETE FROM sync_connections", [])?;
     tx.execute("DELETE FROM settings", [])?;
     tx.commit()?;
@@ -1356,7 +1399,66 @@ pub(crate) fn reset_account_data(pool: &DbPool) -> Result<usize> {
     Ok(count)
 }
 
-/// 标记为已删除（不立即物理删除）
+/// Commit a real local mutation and its sync obligation in the same transaction.
+pub(crate) fn note_sync_change_in(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    category: crate::core::sync::store::ChangeCategory,
+) -> Result<()> {
+    let stamp = crate::core::sync::store::EditEventStamp {
+        edited_at_ms: crate::core::sync::device::now_millis(),
+        source: crate::core::sync::device::device_id_in(tx)?,
+        event_id: crate::core::sync::device::new_event_id(),
+    };
+    crate::core::sync::store::note_local_change_in(tx, id, category, &stamp)?;
+    Ok(())
+}
+
+/// Call only after physical permanent deletion succeeds. A failed DB commit
+/// leaves the trash row available for startup recovery; the dirty deletion and
+/// row removal cannot become separated by a crash.
+pub(crate) fn commit_permanent_deletions(pool: &DbPool, ids: &[i64]) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    for id in ids {
+        let trashed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM media_items WHERE id=?1 AND trashed_at IS NOT NULL)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if trashed {
+            note_sync_change_in(&tx, *id, crate::core::sync::store::ChangeCategory::Deletion)?;
+            tx.execute(
+                "DELETE FROM media_items WHERE id=?1 AND trashed_at IS NOT NULL",
+                [id],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn restore_trashed_metadata(pool: &DbPool, ids: &[i64]) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    for id in ids {
+        tx.execute("UPDATE media_items SET trashed_at=NULL WHERE id=?1", [id])?;
+        note_sync_change_in(&tx, *id, crate::core::sync::store::ChangeCategory::Metadata)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn commit_trash_metadata(pool: &DbPool, ids: &[i64]) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction()?;
+    for id in ids {
+        note_sync_change_in(&tx, *id, crate::core::sync::store::ChangeCategory::Metadata)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub(crate) fn mark_trashed(pool: &DbPool, id: i64) -> Result<()> {
     let conn = pool.get()?;
     conn.execute(
@@ -1449,7 +1551,7 @@ pub(crate) fn update_media_edit_metadata(
     tx.execute(
         "UPDATE media_items
          SET file_mtime = ?2, file_size = ?3, blake3_hash = ?4,
-             file_mtime_ns = ?10, thumbnail_generated_at = NULL, width = ?5, height = ?6,
+             file_mtime_ns = ?10, thumbnail_generated_at = NULL, thumbnail_ready=0, width = ?5, height = ?6,
              media_subkind = ?7, media_attributes = ?8, media_type_flags = ?9,
              video_duration_secs = NULL
          WHERE id = ?1",
@@ -1500,7 +1602,7 @@ pub fn list_trashed_media_page(pool: &DbPool, offset: u32, limit: u32) -> Result
     let mut stmt = conn.prepare(
         "SELECT id, uri, path, folder_path, mime_type, media_subkind,
                 media_attributes, width, height, video_duration_secs, taken_at,
-                file_mtime, file_size, blake3_hash, is_favorite, trashed_at
+                file_mtime, file_size, blake3_hash, is_favorite, trashed_at, storage_location, thumbnail_ready, file_mtime_ns
          FROM media_items
          WHERE trashed_at IS NOT NULL
          ORDER BY trashed_at DESC, id DESC
@@ -1625,10 +1727,41 @@ fn row_to_media_item(row: &rusqlite::Row) -> rusqlite::Result<MediaItem> {
         height: row.get(8)?,
         video_duration_secs: row.get(9)?,
         taken_at: optional_ts(taken_at, 10)?,
-        file_mtime: required_ts(file_mtime, 11)?,
+        file_mtime: {
+            let ns = row.get::<_, i64>(18)?;
+            if ns == 0 {
+                required_ts(file_mtime, 11)?
+            } else {
+                Utc.timestamp_opt(
+                    ns.div_euclid(1_000_000_000),
+                    ns.rem_euclid(1_000_000_000) as u32,
+                )
+                .single()
+                .ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        18,
+                        Type::Integer,
+                        "invalid nanosecond timestamp".into(),
+                    )
+                })?
+            }
+        },
         file_size: row.get::<_, i64>(12)? as u64,
         blake3_hash: row.get(13)?,
         is_favorite: row.get::<_, i64>(14)? == 1,
         trashed_at: optional_ts(trashed_at, 15)?,
+        storage_location: match row.get::<_, i64>(16)? {
+            1 => crate::core::media::MediaLocation::Local,
+            2 => crate::core::media::MediaLocation::Cloud,
+            3 => crate::core::media::MediaLocation::Both,
+            value => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    16,
+                    Type::Integer,
+                    format!("invalid media storage location: {value}").into(),
+                ))
+            }
+        },
+        thumbnail_ready: row.get::<_, bool>(17)?,
     })
 }

@@ -44,6 +44,16 @@ fn fixture(name: &str) -> Fixture {
             crate::core::sync::NativeZone::new("PrimarySync"),
         )
         .unwrap();
+    service
+        .store()
+        .pin_native_snapshot(job.id, "fixture.snapshot", "fixture.zone")
+        .unwrap();
+    for kind in crate::core::sync::native::receive::SUPPORTED_RECORD_TYPES {
+        service
+            .store()
+            .save_bootstrap_page(job.id, kind, None, 0, "fixture.zone")
+            .unwrap();
+    }
     Fixture { service, job, root }
 }
 fn jpeg(color: u32) -> Vec<u8> {
@@ -88,13 +98,11 @@ fn project(f: &Fixture, revision: &str, original: &[u8], thumbnail: &[u8]) -> Re
         .store()
         .save_delta_page(f.job.id, events, &format!("token-{revision}"))
         .unwrap();
-    let events = f
-        .service
-        .store()
-        .inbox_events(f.job.id, GENERATION)
-        .unwrap();
-    let graph = RecordSet::from_events(&events)
-        .unwrap()
+    let mut set = RecordSet::default();
+    for record in f.service.store().pending_records(f.job.id).unwrap() {
+        set.apply(record);
+    }
+    let graph = set
         .to_graph(&crate::core::sync::native::receive::ZoneId::from(
             &crate::core::sync::NativeZone::new("PrimarySync"),
         ))
@@ -205,10 +213,10 @@ fn a_complete_staged_pair_is_published_and_admitted_exactly_once() {
 #[test]
 fn a_missing_unbound_local_photo_is_published_from_a_staged_pair() {
     // Stale NEW/CONTENT bits must not preserve bytes that no longer exist.
-    for dirty in [1, 5] {
+    for dirty in [1, 2] {
         let f = fixture(&format!("native-missing-unbound-{dirty}"));
         f.service.pool().get().unwrap().execute(
-            "INSERT INTO sync_entries(job_id,relative_path,native_dirty) VALUES(?1,'camera/photo.jpg',?2)",
+            "INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_content_version) VALUES(?1,'camera/photo.jpg',?2,1)",
             rusqlite::params![f.job.id,dirty],
         ).unwrap();
         let original = jpeg(0x446688FF);
@@ -321,4 +329,84 @@ fn a_database_failure_after_replace_restores_the_old_file_and_can_retry() {
     let media = crate::core::db::list_all_media(f.service.pool()).unwrap();
     assert_eq!(media.len(), 1);
     assert_eq!(media[0].id, id);
+}
+
+#[test]
+fn metadata_thumbnail_and_original_advance_independent_presence_fields() {
+    use crate::core::media::MediaLocation;
+    let f = fixture("photo-presence-stages");
+    let original = jpeg(0x22AA55FF);
+    let thumbnail = jpeg(0x335577FF);
+    let photo = project(&f, "presence", &original, &thumbnail);
+    let pool = f.service.pool();
+    let id: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT media_id FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+            rusqlite::params![f.job.id, photo.photo_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let first = crate::core::db::get_media_item(pool, id).unwrap();
+    assert_eq!(first.storage_location, MediaLocation::Cloud);
+    assert!(!first.thumbnail_ready);
+    assert!(crate::core::db::list_all_media(pool).unwrap().is_empty());
+    assert!(crate::core::db::list_live_media_locations(pool)
+        .unwrap()
+        .is_empty());
+    let path = f
+        .service
+        .stage_verified(&photo.thumbnail.asset_id, AssetRole::Thumbnail, &thumbnail)
+        .unwrap();
+    f.service
+        .store()
+        .stage_resource(
+            f.job.id,
+            &photo.thumbnail.asset_id,
+            "thumbnail",
+            &path.to_string_lossy(),
+        )
+        .unwrap();
+    assert_eq!(admit(&f).admitted, 0);
+    let preview = crate::core::db::get_media_item(pool, id).unwrap();
+    assert_eq!(preview.storage_location, MediaLocation::Cloud);
+    assert!(preview.thumbnail_ready);
+    assert_eq!(crate::core::db::list_all_media(pool).unwrap().len(), 1);
+    assert!(!preview.path.exists());
+    assert!(
+        crate::core::thumbnails::cached_upload_thumbnail(
+            &crate::config::cache_dir(),
+            &preview.path,
+            2048,
+            2 * 1024 * 1024
+        )
+        .is_err(),
+        "no original exists to stat for upload"
+    );
+    let path = f
+        .service
+        .stage_verified(&photo.original.asset_id, AssetRole::Original, &original)
+        .unwrap();
+    f.service
+        .store()
+        .stage_resource(
+            f.job.id,
+            &photo.original.asset_id,
+            "original",
+            &path.to_string_lossy(),
+        )
+        .unwrap();
+    assert_eq!(admit(&f).admitted, 1);
+    let complete = crate::core::db::get_media_item(pool, id).unwrap();
+    assert_eq!(complete.storage_location, MediaLocation::Both);
+    assert!(complete.thumbnail_ready);
+    assert_eq!(std::fs::read(&complete.path).unwrap(), original);
+    assert_eq!(
+        f.service
+            .store()
+            .unresolved_resource_count(f.job.id)
+            .unwrap(),
+        0
+    );
 }

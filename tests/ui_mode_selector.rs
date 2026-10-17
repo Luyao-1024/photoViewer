@@ -133,6 +133,8 @@ fn mode_selector_integration_suite() {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }));
     let tmp = tempfile::tempdir().unwrap();
     let pool = photo_viewer::core::db::init_pool(&tmp.path().join("test.db")).unwrap();
@@ -193,6 +195,8 @@ fn mode_selector_integration_suite() {
         blake3_hash: "hash2".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }));
     assert_eq!(
         empty_page

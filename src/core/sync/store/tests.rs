@@ -17,6 +17,7 @@ pub(crate) fn new_job(root: PathBuf) -> NewSyncJob {
 }
 
 pub(crate) fn temp_root(name: &str) -> PathBuf {
+    crate::testing::Sandbox::install();
     let root = std::env::temp_dir().join(format!(
         "photoviewer-sync-store-{name}-{}",
         std::process::id()
@@ -301,26 +302,11 @@ fn overview_remains_running_until_the_complete_inventory_is_synced() {
         .create_job(&new_job(temp_root("overview-outstanding-media")))
         .unwrap();
     let conn = pool.get().unwrap();
-    for path in ["a.jpg", "b.jpg"] {
-        conn.execute(
-            "INSERT INTO sync_inventory(job_id,relative_path,config_generation)
-             VALUES(?1,?2,?3)",
-            rusqlite::params![job.id, path, job.config_generation],
-        )
-        .unwrap();
+    for (i, name) in ["a.jpg", "b.jpg"].iter().enumerate() {
+        let path = job.local_root.join(name);
+        conn.execute("INSERT INTO media_items(id,uri,path,folder_path,mime_type,file_mtime,file_size,blake3_hash,indexed_at,storage_location,thumbnail_ready) VALUES(?1,?2,?3,?4,'image/jpeg',1,1,'',1,3,1)",params![i as i64+1,crate::core::file_uri::from_path(&path),path.to_string_lossy(),job.local_root.to_string_lossy()]).unwrap();
+        conn.execute("INSERT INTO sync_entries(job_id,media_id,relative_path,native_dirty,native_confirmed_generation) VALUES(?1,?2,?3,?4,?5)",params![job.id,i as i64+1,name,if i==0{0}else{1},if i==0{Some("generation")}else{None}]).unwrap();
     }
-    conn.execute(
-        "INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_confirmed_generation)
-         VALUES(?1,'a.jpg',0,'generation')",
-        [job.id],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sync_entries(job_id,relative_path,native_dirty)
-         VALUES(?1,'b.jpg',1)",
-        [job.id],
-    )
-    .unwrap();
     conn.execute(
         "UPDATE sync_jobs SET last_started_at=100,last_completed_at=101 WHERE id=?1",
         [job.id],

@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS media_items (
     is_favorite     INTEGER NOT NULL DEFAULT 0,
     trashed_at      INTEGER,
     indexed_at      INTEGER NOT NULL,
-    thumbnail_generated_at INTEGER
+    thumbnail_generated_at INTEGER,
+    storage_location INTEGER NOT NULL DEFAULT 1 CHECK (storage_location IN (1,2,3)),
+    thumbnail_ready INTEGER NOT NULL DEFAULT 0 CHECK (thumbnail_ready IN (0,1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_media_taken_at
@@ -184,17 +186,8 @@ CREATE TABLE IF NOT EXISTS sync_job_upload_albums (
     PRIMARY KEY(job_id, relative_album)
 );
 
--- Complete discovered sync scope, independent from transfer/baseline state.
-CREATE TABLE IF NOT EXISTS sync_inventory (
-    job_id               INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
-    relative_path        TEXT NOT NULL,
-    config_generation    INTEGER NOT NULL,
-    PRIMARY KEY(job_id, relative_path)
-);
-
 -- One synchronized path per job. Native dirty truth lives on this row as
--- fields, never in a second queue: 1=NEW, 2=METADATA, 4=CONTENT, 8=DELETE,
--- 0=CLEAN. `media_id` is a presentation association only; `sync_entries.id` is
+-- fields, never in a second queue: 0=CLEAN, 1=NEW, 2=MODIFIED, 4=DELETE. `media_id` is a presentation association only; `sync_entries.id` is
 -- the stable identity through media-index rebuilds.
 CREATE TABLE IF NOT EXISTS sync_entries (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -203,7 +196,7 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     relative_path        TEXT NOT NULL,
     entry_generation     INTEGER NOT NULL DEFAULT 1,
     native_retired         INTEGER NOT NULL DEFAULT 0 CHECK (native_retired IN (0,1)),
-    native_dirty           INTEGER NOT NULL DEFAULT 0 CHECK (native_dirty BETWEEN 0 AND 15),
+    native_dirty           INTEGER NOT NULL DEFAULT 0 CHECK (native_dirty IN (0, 1, 2, 4)),
     -- Diagnostic/dispatch guard for one upload cycle; Begin clears it per job.
     native_upload_error    TEXT,
     native_local_version   INTEGER NOT NULL DEFAULT 0,
@@ -229,6 +222,8 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     native_desired_metadata  TEXT CHECK (native_desired_metadata IS NULL OR json_valid(native_desired_metadata)),
     native_baseline_metadata TEXT CHECK (native_baseline_metadata IS NULL OR json_valid(native_baseline_metadata)),
     native_resource_baseline  TEXT CHECK (native_resource_baseline IS NULL OR json_valid(native_resource_baseline)),
+    native_pending_master TEXT CHECK (native_pending_master IS NULL OR json_valid(native_pending_master)),
+    native_pending_asset TEXT CHECK (native_pending_asset IS NULL OR json_valid(native_pending_asset)),
     -- Versioned local digest, {entryId, localVersion, digest: {size, hex, base64}}.
     -- Valid only for that entry/version; local edits clear it. It exists
     -- so identity adoption hashes each file once, not once per receive cycle.
@@ -236,6 +231,8 @@ CREATE TABLE IF NOT EXISTS sync_entries (
     updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
     UNIQUE(job_id, relative_path)
 );
+
+CREATE INDEX IF NOT EXISTS idx_sync_entries_media ON sync_entries(media_id,job_id);
 
 -- Issued native operation evidence: the intent is written immediately before
 -- an uncertain network mutation, including its captured versions and the exact
@@ -307,40 +304,6 @@ CREATE TABLE IF NOT EXISTS sync_native_progress (
     PRIMARY KEY (job_id, zone_name, owner)
 );
 
--- Ordered receive events. Replay is deduplicated by scoped record revision and
--- never sorts by opaque token or revision strings.
-CREATE TABLE IF NOT EXISTS sync_native_inbox (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    job_id          INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
-    generation      TEXT NOT NULL,
-    zone_name       TEXT NOT NULL,
-    owner           TEXT NOT NULL,
-    ordinal         INTEGER NOT NULL,
-    record_name     TEXT NOT NULL,
-    record_type     TEXT NOT NULL,
-    record_change_tag TEXT NOT NULL,
-    kind            TEXT NOT NULL CHECK (kind IN ('created', 'updated', 'deleted')),
-    payload         TEXT CHECK (payload IS NULL OR json_valid(payload)),
-    created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
-    UNIQUE (job_id, generation, zone_name, owner, record_name, record_change_tag)
-);
-
--- The projected remote graph at one fixed height. Not visible media_items; a
--- photo becomes visible only through a validated, published pair.
-CREATE TABLE IF NOT EXISTS sync_native_records (
-    job_id             INTEGER NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
-    generation         TEXT NOT NULL,
-    zone_name          TEXT NOT NULL,
-    owner              TEXT NOT NULL,
-    record_name        TEXT NOT NULL,
-    record_type        TEXT NOT NULL,
-    record_change_tag  TEXT,
-    content_generation TEXT,
-    payload            TEXT NOT NULL CHECK (json_valid(payload)),
-    updated_at         INTEGER NOT NULL DEFAULT (unixepoch()),
-    PRIMARY KEY (job_id, generation, zone_name, owner, record_name)
-);
-
 -- Role-specific resource expectations and owned staging progress. Never holds
 -- a lease token or an expiring URL as identity.
 CREATE TABLE IF NOT EXISTS sync_native_resources (
@@ -391,8 +354,6 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_open
     ON sync_conflicts(job_id, state) WHERE state = 'open';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_conflicts_one_open_per_entry
     ON sync_conflicts(entry_id) WHERE state = 'open';
-CREATE INDEX IF NOT EXISTS idx_sync_native_inbox_scope_ordinal
-    ON sync_native_inbox(job_id, generation, zone_name, owner, ordinal);
 CREATE INDEX IF NOT EXISTS idx_sync_native_resources_job_state
     ON sync_native_resources(job_id, state);
 CREATE INDEX IF NOT EXISTS idx_sync_publications_job_state
@@ -403,3 +364,12 @@ CREATE TABLE IF NOT EXISTS sync_job_changes (
     job_id INTEGER PRIMARY KEY REFERENCES sync_jobs(id) ON DELETE CASCADE,
     payload TEXT NOT NULL CHECK(json_valid(payload))
 );
+
+-- Presentation uses declared file/thumbnail availability, never path probes.
+CREATE VIEW IF NOT EXISTS visible_media AS
+SELECT m.* FROM media_items m
+WHERE m.storage_location<>2 OR (m.thumbnail_ready=1 AND EXISTS(
+    SELECT 1 FROM sync_entries e JOIN sync_jobs j ON j.id=e.job_id
+    JOIN sync_connections c ON c.id=j.connection_id
+    WHERE e.media_id=m.id AND c.enabled=1 AND e.native_dirty<>4
+));

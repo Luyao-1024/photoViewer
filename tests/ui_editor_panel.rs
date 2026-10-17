@@ -51,6 +51,8 @@ fn make_media() -> MediaItem {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 
@@ -72,6 +74,8 @@ fn make_media_for_path(path: std::path::PathBuf) -> MediaItem {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

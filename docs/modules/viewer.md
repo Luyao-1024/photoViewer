@@ -631,3 +631,11 @@ closing. Closing the editor restores filmstrip interaction and prefetches the
 surviving photo's neighbours again. The same thumbnail press must work after
 editing ends, and refused navigation must retain pending edits and the save
 target.
+
+## Cloud-only previews
+
+`storage_location=2` with `thumbnail_ready=1` opens the downloaded cached preview.
+The viewer does not decode a missing original, start video/motion playback, or
+permit image editing. Normal sync continues downloading the original. When file
+publication sets location=3, the sync-state event reloads the current record by ID
+and upgrades that same viewer to the original; stale item/token results are ignored.

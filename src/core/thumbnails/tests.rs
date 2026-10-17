@@ -620,6 +620,7 @@ fn background_tier_thumbnail_populates_mem_cache() {
 /// （==0 表示冷没标记；==2 表示命中又标了一次）。
 #[test]
 fn disk_cache_hit_skips_thumbnail_mark_callback() {
+    crate::testing::Sandbox::install();
     let dir = tempfile::tempdir().unwrap();
     let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
     let src = dir.path().join("src.png");
@@ -699,6 +700,15 @@ fn disk_cache_hit_skips_thumbnail_mark_callback() {
         .blocking_recv()
         .expect("cold generate should deliver a texture");
     assert!(loaded1.texture.width() > 0);
+    let stored = crate::core::db::get_media_item(&pool, id).unwrap();
+    assert_eq!(
+        stored.storage_location,
+        crate::core::media::MediaLocation::Local
+    );
+    assert!(
+        stored.thumbnail_ready,
+        "successful local generation must set the shared readiness flag"
+    );
 
     // 清掉 mem_cache，强制请求2 miss mem → 走 worker → 命中磁盘缓存。
     loader.clear_mem_cache();

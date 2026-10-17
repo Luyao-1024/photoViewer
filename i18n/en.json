@@ -446,6 +446,8 @@
   "native.logging_in": "Signing in and verifying the account…",
   "native.login_ok": "Signed in as {username}. Choose the zone, local root and upload albums.",
   "native.relogin": "Sign in and resume",
+  "native.remove_account": "Remove account",
+  "native.remove_account_body": "Removes all saved sync tasks and local credentials for this account. Local and cloud photos are retained.",
   "native.logout": "Sign out",
   "native.logged_out": "Signed out; synchronization is paused.",
   "native.relogin_hint": "Sign in again to update this task’s credential for the same account. Use a new task with a different local root for another account.",

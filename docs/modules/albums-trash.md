@@ -372,3 +372,18 @@ For Flatpak/Flathub trash regressions, reproduce with
 `tools/flatpak-trash-portal-repro.sh` instead of host `gio trash`. Host GIO does
 not exercise `org.freedesktop.portal.Trash.TrashFile`, so it can pass while the
 sandbox path fails.
+
+## Synchronization and physical deletion
+
+A move to trash records metadata only after the file move succeeds; a failed move
+or its rollback creates no sync edit. Restore records metadata with the live-row
+transition. Both use dirty=2 (or preserve a pending create), with `isTrashed` sent
+as metadata; neither dispatches cloud deletion.
+
+Permanent deletion first removes the staged physical file. Failure restores the
+trash entry and leaves synchronization untouched. Only successful unlink permits
+the actor to record dirty=4 and remove the local gallery row in one transaction.
+The separate existing sync record remains, with identity/revisions/deletion event,
+until guarded cloud confirmation deletes it. If the DB commit fails after unlink,
+the retained trash row lets startup reconciliation finish that same obligation.
+Account switching and global Off are the explicit alternate cleanup boundaries.

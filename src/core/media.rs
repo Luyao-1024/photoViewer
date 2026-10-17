@@ -116,6 +116,24 @@ pub fn is_supported_media_path(path: &Path) -> bool {
     mime_from_extension(path).is_some()
 }
 
+/// Original-file presence. Thumbnail readiness is independent of these values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
+pub enum MediaLocation {
+    Local = 1,
+    Cloud = 2,
+    Both = 3,
+}
+
+impl MediaLocation {
+    pub fn has_local_original(self) -> bool {
+        matches!(self, Self::Local | Self::Both)
+    }
+    pub fn has_cloud_original(self) -> bool {
+        matches!(self, Self::Cloud | Self::Both)
+    }
+}
+
 /// 单张媒体项的完整元数据
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaItem {
@@ -135,9 +153,16 @@ pub struct MediaItem {
     pub blake3_hash: String,
     pub is_favorite: bool,
     pub trashed_at: Option<DateTime<Utc>>,
+    pub storage_location: MediaLocation,
+    /// Generated locally for local originals; downloaded for cloud-only media.
+    pub thumbnail_ready: bool,
 }
 
 impl MediaItem {
+    pub fn can_display(&self) -> bool {
+        self.storage_location.has_local_original() || self.thumbnail_ready
+    }
+
     pub fn media_kind(&self) -> Option<MediaKind> {
         media_kind_from_mime(&self.mime_type)
     }
@@ -153,7 +178,8 @@ impl MediaItem {
     /// Formats whose current edit pipeline can decode and encode without
     /// silently flattening animation, motion-photo, or HDR semantics.
     pub fn is_editable_image(&self) -> bool {
-        self.is_image()
+        self.storage_location.has_local_original()
+            && self.is_image()
             && self.media_subkind == MEDIA_SUBKIND_STANDARD
             && !self.is_animated()
             && !self.is_hdr()

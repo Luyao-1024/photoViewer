@@ -476,7 +476,7 @@ fn asset_descriptor(
 /// A job-root-relative placement with no traversal, no empty segment and no
 /// symlink-indicating component. This is checked here rather than at admission
 /// so an unsafe remote path can never reach the filesystem layer.
-fn is_safe_relative_path(path: &str) -> bool {
+pub(crate) fn is_safe_relative_path(path: &str) -> bool {
     if path.is_empty() || path.starts_with('/') || path.contains('\\') {
         return false;
     }

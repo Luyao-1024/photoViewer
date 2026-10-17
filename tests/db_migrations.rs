@@ -29,13 +29,13 @@ fn schema_creates_all_tables() {
     assert!(tables.contains(&"sync_jobs".to_string()));
     assert!(tables.contains(&"sync_job_upload_albums".to_string()));
     assert!(tables.contains(&"sync_entries".to_string()));
-    assert!(tables.contains(&"sync_inventory".to_string()));
+    assert!(!tables.contains(&"sync_inventory".to_string()));
     assert!(tables.contains(&"sync_tasks".to_string()));
     assert!(tables.contains(&"sync_conflicts".to_string()));
     assert!(tables.contains(&"sync_job_changes".to_string()));
     assert!(tables.contains(&"sync_native_progress".to_string()));
-    assert!(tables.contains(&"sync_native_inbox".to_string()));
-    assert!(tables.contains(&"sync_native_records".to_string()));
+    assert!(!tables.contains(&"sync_native_inbox".to_string()));
+    assert!(!tables.contains(&"sync_native_records".to_string()));
     assert!(tables.contains(&"sync_native_resources".to_string()));
     assert!(tables.contains(&"sync_publications".to_string()));
 }

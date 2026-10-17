@@ -36,6 +36,15 @@ test files such as `src/ui/media_grid/tests.rs`,
 
 ## Behavior
 
+Photo availability comes from `media_items.storage_location` (1 local, 2 cloud
+with no downloaded original, 3 both) and `thumbnail_ready`. Local/both photos can
+request normal thumbnail generation. Cloud-only photos enter grids, album/search
+counts and navigation only after their downloaded thumbnail is cached and marked
+ready. These paths share `visible_media`; they never probe original-file existence
+to decide whether remote metadata should be shown. Thumbnail/original completion
+publishes normal media events so queries and existing tiles refresh.
+
+
 Full FlowBox rebuilds are coordinated in `media_grid/rebuild.rs`; incremental
 model changes remain in `updates.rs`. Rebuild helpers separate the progressive
 seed, section grouping, tile attachment, activation/context-menu wiring and
@@ -49,8 +58,8 @@ The Photos overview shows a persisted `synced_items/total_items` fraction while
 bounded batches drain and after the complete eligible inventory is confirmed.
 The numerator counts distinct local paths with a proven complete pair and no
 remaining dirty obligation, including earlier successful runs.
-The denominator is the union of those historical paths and the complete known
-sync inventory: eligible local uploads and remote downloads across enabled
+The denominator derives directly from current-account entries and media fields,
+including historical paths and eligible local uploads and remote downloads across enabled
 connections. It excludes local-only files outside selected upload albums and
 cloud-only files in UploadOnly mode. Both sides count paths, not transfer
 operations, so verifying or replacing an already synchronized file does not

@@ -118,3 +118,68 @@ pub(in crate::core::thumbnails) fn cache_stem_for(
         .join(&hash[..2])
         .join(hash.as_str()))
 }
+
+/// Cache files can be evicted independently of SQLite. Reconcile only cache
+/// bookkeeping on the background side; sync never decodes originals itself.
+pub(super) fn recover_missing_marks(loader: &super::ThumbnailLoader) {
+    let pool = loader.pool.clone();
+    let cache_dir = loader.cache_dir.clone();
+    let actor = loader.db_actor.lock().ok().and_then(|slot| slot.clone());
+    let queue = loader.queue.clone();
+    std::thread::spawn(move || {
+        let mut offset = 0;
+        loop {
+            if queue.0.lock().is_ok_and(|q| q.closed) {
+                break;
+            }
+            let page = match crate::core::db::list_media_page(&pool, offset, 128) {
+                Ok(page) if !page.is_empty() => page,
+                Ok(_) => break,
+                Err(error) => {
+                    warn!("thumbnail cache bookkeeping recovery failed: {error}");
+                    break;
+                }
+            };
+            offset += page.len() as u32;
+            let missing = page
+                .iter()
+                .filter(|item| item.storage_location.has_local_original())
+                .filter(|item| {
+                    let mtime = Some(std::time::SystemTime::from(item.file_mtime));
+                    [
+                        ThumbnailSize::Large,
+                        ThumbnailSize::Medium,
+                        ThumbnailSize::Small,
+                    ]
+                    .iter()
+                    .all(|size| {
+                        matches!(
+                            existing_cache_path(&cache_dir, &item.uri, *size, mtime),
+                            Ok(None)
+                        )
+                    })
+                })
+                .map(|item| item.id)
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                continue;
+            }
+            let result = match &actor {
+                Some(actor) => actor
+                    .execute_blocking(crate::core::db_actor::DbCommand::InvalidateThumbnailMarks {
+                        ids: missing
+                            .into_iter()
+                            .map(crate::core::identity::MediaId::from)
+                            .collect(),
+                    })
+                    .map(|_| ()),
+                None => crate::core::db::invalidate_thumbnail_marks(&pool, &missing),
+            };
+            if let Err(error) = result {
+                warn!("thumbnail cache bookkeeping recovery failed: {error}");
+                break;
+            }
+            queue.1.notify_all();
+        }
+    });
+}

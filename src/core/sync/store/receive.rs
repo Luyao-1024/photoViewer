@@ -1,10 +1,10 @@
-//! Durable receive state: bootstrap markers, the ordered inbox, and promotion
-//! of a validated graph.
+//! Receive cursors and per-photo metadata application. Incomplete wire pairs
+//! are temporarily stored on their existing sync entries, then discarded.
 //!
 //! These tables are **not** local-change truth. They record what the cloud has
-//! said and what this client still owes it, which is why a failed download or a
-//! crash mid-round loses no work: the next cycle resumes from the tokens and the
-//! inbox rather than starting over.
+//! said and what this client still owes it. Each page persists incomplete photo
+//! fields and its ingest position together. Complete metadata goes directly into
+//! media_items; file and thumbnail readiness control presentation.
 //!
 //! The token ladder is deliberately four distinct positions. `snapshot_token`
 //! pins a full read at one height; `ingest_token` is where the delta stream
@@ -25,8 +25,10 @@ use crate::core::error::{AppError, Result};
 
 use super::super::content::ContentDigest;
 use super::super::native::protocol::{NativeNamespace, NativeZone};
-use super::super::native::records::{RemoteGraph, PHOTO_PAYLOAD_MARKER};
+use super::super::native::receive::NativeRecord;
+use super::super::native::records::RemoteGraph;
 use super::{SyncStore, SyncWrite, SyncWriteResult};
+use serde_json::{json, Value};
 
 /// Per-record-type bootstrap progress. One type or one page is never a
 /// complete inventory, so each type carries its own marker.
@@ -122,7 +124,12 @@ impl NativeProgress {
     /// Whether `applied` may advance to `target`. Both must exist, be from the
     /// same round, and have no unresolved work behind them.
     pub fn can_apply(&self, unresolved: usize) -> bool {
-        self.target_token.is_some() && self.applied_token != self.target_token && unresolved == 0
+        self.target_token.is_some()
+            && self.applied_token != self.target_token
+            && unresolved == 0
+            && self
+                .bootstrap
+                .is_complete(&super::super::native::receive::SUPPORTED_RECORD_TYPES)
     }
 }
 
@@ -190,6 +197,13 @@ pub enum NativeReceiveCommand {
         /// published consult it; see `runtime::adoption`.
         local_digests: HashMap<String, LocalDigest>,
     },
+    /// Apply only records affected by a completed delta round.
+    PromoteDelta {
+        job_id: i64,
+        graph: RemoteGraph,
+        target_token: String,
+        local_digests: HashMap<String, LocalDigest>,
+    },
     /// Attempt to advance `applied`. Refused while any obligation is
     /// unresolved, which is what keeps a fully received but un-downloaded photo
     /// from reporting itself as synchronized.
@@ -250,47 +264,92 @@ impl super::SyncStore {
         read_progress(&conn, job_id)
     }
 
-    /// Ordered inbox events for this job's current generation, oldest first.
-    pub fn inbox_events(&self, job_id: i64, generation: &str) -> Result<Vec<InboxEvent>> {
+    /// Only incomplete/unapplied photo fragments, removed after application.
+    pub fn pending_records(&self, job: i64) -> Result<Vec<NativeRecord>> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT ordinal, record_name, record_type, record_change_tag, kind, payload
-             FROM sync_native_inbox
-             WHERE job_id = ?1 AND generation = ?2
-             ORDER BY ordinal",
-        )?;
-        let rows = stmt.query_map(params![job_id, generation], |row| {
-            let payload: Option<String> = row.get(5)?;
+        let mut stmt=conn.prepare("SELECT native_pending_master,native_pending_asset FROM sync_entries WHERE job_id=?1 AND (native_pending_asset IS NOT NULL OR (native_pending_master IS NOT NULL AND native_resource_baseline IS NOT NULL)) ORDER BY id")?;
+        let rows = stmt.query_map([job], |r| {
             Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                payload,
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
             ))
         })?;
-        let mut events = Vec::new();
+        let mut records: Vec<NativeRecord> = Vec::new();
         for row in rows {
-            let (ordinal, record_name, record_type, record_change_tag, kind, payload) = row?;
-            events.push(InboxEvent {
-                ordinal,
-                record_name,
-                record_type,
-                record_change_tag,
-                kind: match kind.as_str() {
-                    "created" => InboxKind::Created,
-                    "updated" => InboxKind::Updated,
-                    _ => InboxKind::Deleted,
-                },
-                payload: payload
-                    .map(|value| serde_json::from_str(&value))
-                    .transpose()
-                    .map_err(json_error)?
-                    .unwrap_or(serde_json::Value::Null),
-            });
+            let (master, asset) = row?;
+            for raw in [master, asset].into_iter().flatten() {
+                records.push(serde_json::from_str(&raw).map_err(json_error)?);
+            }
         }
-        Ok(events)
+        drop(stmt);
+        drop(conn);
+        // A local edit/delete can invalidate an owned pending download without
+        // any new server event. A received rename may also await confirmation
+        // of newer local content before placement. Re-evaluate only those local
+        // obligations from their already confirmed baseline; do not list cloud data.
+        let invalidated = {
+            let conn = self.pool.get()?;
+            let mut stmt=conn.prepare("SELECT DISTINCT p.photo_id FROM sync_publications p JOIN sync_entries e ON e.id=p.entry_id WHERE p.job_id=?1 AND p.state='pending' AND e.native_local_version<>json_extract(p.captured_versions,'$.local')
+                UNION SELECT native_photo_id FROM sync_entries WHERE job_id=?1 AND native_dirty=0 AND native_photo_id IS NOT NULL AND relative_path<>json_extract(native_resource_baseline,'$.relativePath')")?;
+            let rows = stmt.query_map([job], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut names = records
+            .iter()
+            .map(|r| r.record_name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for photo in invalidated {
+            for record in self.current_pair_records(job, &photo)? {
+                if names.insert(record.record_name.clone()) {
+                    records.push(record);
+                }
+            }
+        }
+        Ok(records)
+    }
+
+    pub fn current_remote_photo(
+        &self,
+        job: i64,
+        photo: &str,
+    ) -> Result<Option<super::super::RemotePhoto>> {
+        let conn = self.pool.get()?;
+        current_remote_photo_in(&conn, job, photo)?
+            .map(|raw| serde_json::from_str(&raw).map_err(json_error))
+            .transpose()
+    }
+
+    pub fn current_pair_records(&self, job: i64, photo: &str) -> Result<Vec<NativeRecord>> {
+        let conn = self.pool.get()?;
+        let Some(raw) = current_remote_photo_in(&conn, job, photo)? else {
+            return Ok(Vec::new());
+        };
+        let photo: super::super::RemotePhoto = serde_json::from_str(&raw).map_err(json_error)?;
+        let revisions: (Option<String>,Option<String>)=conn.query_row(
+            "SELECT native_asset_revision,native_master_revision FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+            params![job,photo.photo_id],|r|Ok((r.get(0)?,r.get(1)?)),
+        )?;
+        let Some(asset_revision) = revisions.0 else {
+            return Ok(Vec::new());
+        };
+        let Some(master_revision) = revisions.1 else {
+            return Ok(Vec::new());
+        };
+        [json!({"recordName":photo.master_id,"recordType":"CPLMaster","recordChangeTag":master_revision,"fields":{
+            "photoId":{"type":"STRING","value":photo.photo_id},"contentGeneration":{"type":"STRING","value":photo.content_generation},
+            "thumbnailSourceOriginalSHA256":{"type":"STRING","value":photo.thumbnail_source_sha256},
+            "resOriginalRes":{"type":"ASSETID","value":photo.original},"resJPEGThumbRes":{"type":"ASSETID","value":photo.thumbnail}}}),
+         json!({"recordName":photo.photo_id,"recordType":"CPLAsset","recordChangeTag":asset_revision,"fields":{
+            "masterRef":{"type":"REFERENCE","value":{"recordName":photo.master_id,"action":"NONE"}},
+            "contentGeneration":{"type":"STRING","value":photo.content_generation},"relativePath":{"type":"STRING","value":photo.relative_path},
+            "isFavorite":{"type":"INT64","value":photo.is_favorite as i64},"isHidden":{"type":"INT64","value":photo.is_hidden as i64},
+            "assetDate":{"type":"TIMESTAMP","value":photo.asset_date_ms}},"_syncserver":photo.events})]
+            .into_iter().map(|v|serde_json::from_value(v).map_err(json_error)).collect()
+    }
+
+    pub fn photo_id_for_record(&self, job: i64, name: &str) -> Result<Option<String>> {
+        let conn = self.pool.get()?;
+        conn.query_row("SELECT COALESCE(native_photo_id,json_extract(native_pending_asset,'$.recordName'),json_extract(native_pending_master,'$.fields.photoId.value')) FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR native_master_id=?2 OR json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.recordName')=?2) LIMIT 1",params![job,name],|r|r.get(0)).optional().map(|v|v.flatten()).map_err(Into::into)
     }
 
     /// Resource work this job still owes, across every generation. Counted
@@ -303,29 +362,18 @@ impl super::SyncStore {
     }
 
     /// The projection this job currently exposes, at `target`.
-    pub fn remote_graph(&self, job_id: i64, generation: &str) -> Result<RemoteGraph> {
+    #[doc(hidden)]
+    pub fn remote_graph(&self, job: i64, _generation: &str) -> Result<RemoteGraph> {
         let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT record_name, record_type, payload FROM sync_native_records
-             WHERE job_id = ?1 AND generation = ?2 ORDER BY record_name",
-        )?;
-        let rows = stmt.query_map(params![job_id, generation], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut records = Vec::new();
-        for row in rows {
-            let (record_name, record_type, payload) = row?;
-            records.push((
-                record_name,
-                record_type,
-                serde_json::from_str(&payload).map_err(json_error)?,
-            ));
+        let mut stmt=conn.prepare("SELECT native_resource_baseline FROM sync_entries WHERE job_id=?1 AND native_resource_baseline IS NOT NULL")?;
+        let rows = stmt.query_map([job], |r| r.get::<_, String>(0))?;
+        let mut graph = RemoteGraph::default();
+        for raw in rows {
+            graph
+                .photos
+                .push(serde_json::from_str(&raw?).map_err(json_error)?);
         }
-        Ok(rebuild_graph(&records))
+        Ok(graph)
     }
 }
 
@@ -418,37 +466,6 @@ struct ProgressRow {
     target_token: Option<String>,
 }
 
-/// Rebuild the typed graph from projected rows. The projection is stored as
-/// validated photos plus retained unknown records, so this only has to split
-/// them back apart.
-fn rebuild_graph(rows: &[(String, String, serde_json::Value)]) -> RemoteGraph {
-    let mut photos = Vec::new();
-    let mut records = Vec::new();
-    for (record_name, record_type, payload) in rows {
-        if record_type == PHOTO_PAYLOAD_MARKER {
-            if let Ok(photo) = serde_json::from_value(payload.clone()) {
-                photos.push(photo);
-            }
-            continue;
-        }
-        records.push(crate::core::sync::native::records::ProjectedRecord {
-            record_name: record_name.clone(),
-            record_type: record_type.clone(),
-            record_change_tag: payload
-                .get("recordChangeTag")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            payload: payload.clone(),
-        });
-    }
-    RemoteGraph {
-        photos,
-        records,
-        tombstones: Vec::new(),
-    }
-}
-
 pub(super) fn execute(
     pool: &DbPool,
     command: &NativeReceiveCommand,
@@ -480,7 +497,7 @@ pub(super) fn execute(
                      WHERE job_id = ?1",
                     [job_id],
                 )?;
-                tx.execute("DELETE FROM sync_native_inbox WHERE job_id = ?1", [job_id])?;
+                tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1",[job_id])?;
             }
             tx.execute(
                 "INSERT INTO sync_native_progress
@@ -566,41 +583,7 @@ pub(super) fn execute(
             next_token,
         } => {
             let progress = require_progress(&tx, *job_id)?;
-            let generation = progress.database_generation.clone();
-            let zone_name = progress.zone.zone_name.clone();
-            let owner = progress.zone.owner.clone();
-            let mut ordinal = next_ordinal(&tx, *job_id, &generation)?;
-            let mut saved = 0usize;
-            for event in events {
-                ordinal += 1;
-                // Replay must be idempotent: the same (record, revision) seen
-                // twice keeps its first position and is skipped the second time.
-                let inserted = tx.execute(
-                    "INSERT OR IGNORE INTO sync_native_inbox
-                        (job_id, generation, zone_name, owner, ordinal, record_name,
-                         record_type, record_change_tag, kind, payload)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    params![
-                        job_id,
-                        generation,
-                        zone_name,
-                        owner,
-                        ordinal,
-                        event.record_name,
-                        event.record_type,
-                        event.record_change_tag,
-                        match event.kind {
-                            InboxKind::Created => "created",
-                            InboxKind::Updated => "updated",
-                            InboxKind::Deleted => "deleted",
-                        },
-                        serde_json::to_string(&event.payload).map_err(json_error)?,
-                    ],
-                )?;
-                if inserted > 0 {
-                    saved += 1;
-                }
-            }
+            let saved = stage_records(&tx, &progress, events)?;
             // The token moves in the same transaction as the rows it covers, so
             // a crash can only ever replay, never skip.
             tx.execute(
@@ -615,7 +598,13 @@ pub(super) fn execute(
             graph,
             target_token,
             local_digests,
-        } => promote(&tx, *job_id, graph, target_token, local_digests)?,
+        } => promote(&tx, *job_id, graph, target_token, local_digests, true)?,
+        NativeReceiveCommand::PromoteDelta {
+            job_id,
+            graph,
+            target_token,
+            local_digests,
+        } => promote(&tx, *job_id, graph, target_token, local_digests, false)?,
         NativeReceiveCommand::AdvanceApplied { job_id } => {
             let unresolved = unresolved_in_tx(&tx, *job_id)?;
             let progress = require_progress(&tx, *job_id)?;
@@ -668,7 +657,7 @@ pub(super) fn execute(
                  WHERE job_id = ?1",
                 [job_id],
             )?;
-            tx.execute("DELETE FROM sync_native_inbox WHERE job_id = ?1", [job_id])?;
+            tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1",[job_id])?;
             NativeReceiveOutcome::Reset
         }
     };
@@ -702,13 +691,199 @@ fn persist_bootstrap(
     Ok(())
 }
 
-fn next_ordinal(tx: &rusqlite::Transaction<'_>, job_id: i64, generation: &str) -> Result<i64> {
-    let current: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(ordinal), 0) FROM sync_native_inbox WHERE job_id = ?1 AND generation = ?2",
-        params![job_id, generation],
-        |row| row.get(0),
+pub(super) fn current_remote_photo_in(
+    conn: &rusqlite::Connection,
+    job: i64,
+    photo: &str,
+) -> Result<Option<String>> {
+    let pending:Option<String>=conn.query_row(
+        "SELECT json_extract(p.captured_versions,'$.projection') FROM sync_publications p WHERE p.job_id=?1 AND p.photo_id=?2 AND p.state IN ('pending','publishing') ORDER BY p.id DESC LIMIT 1",
+        params![job,photo],|r|r.get(0),
+    ).optional()?.flatten();
+    if pending.is_some() {
+        return Ok(pending);
+    }
+    conn.query_row(
+        "SELECT native_resource_baseline FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+        params![job, photo],
+        |r| r.get(0),
+    )
+    .optional()
+    .map(|v| v.flatten())
+    .map_err(Into::into)
+}
+
+pub(super) fn record_revision_in(
+    conn: &rusqlite::Connection,
+    job: i64,
+    name: &str,
+) -> Result<Option<String>> {
+    conn.query_row("SELECT CASE WHEN json_extract(native_pending_asset,'$.recordName')=?2 THEN json_extract(native_pending_asset,'$.recordChangeTag') WHEN json_extract(native_pending_master,'$.recordName')=?2 THEN json_extract(native_pending_master,'$.recordChangeTag') WHEN native_photo_id=?2 THEN native_asset_revision ELSE native_master_revision END FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR native_master_id=?2 OR json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.recordName')=?2) ORDER BY native_photo_id IS NOT NULL DESC LIMIT 1",params![job,name],|r|r.get(0)).optional().map(|v|v.flatten()).map_err(Into::into)
+}
+
+fn stage_records(
+    tx: &rusqlite::Transaction<'_>,
+    progress: &NativeProgress,
+    events: &[InboxEvent],
+) -> Result<usize> {
+    let mut saved = 0;
+    for event in events {
+        let record: NativeRecord =
+            serde_json::from_value(event.payload.clone()).map_err(json_error)?;
+        let value = &event.payload;
+        let asset = record.record_type.as_deref() == Some("CPLAsset");
+        let master = record.record_type.as_deref() == Some("CPLMaster");
+        let existing:Option<(i64,Option<String>)>=tx.query_row(
+            "SELECT id,native_photo_id FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR native_master_id=?2 OR json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.recordName')=?2) LIMIT 1",
+            params![progress.job_id,record.record_name],|r|Ok((r.get(0)?,r.get(1)?)),
+        ).optional()?;
+        let photo_name = if asset {
+            Some(record.record_name.as_str())
+        } else {
+            value["fields"]["photoId"]["value"].as_str()
+        };
+        if !asset && !master && existing.is_none() {
+            continue;
+        }
+        let path = value["fields"]["relativePath"]["value"].as_str();
+        let mut entry = existing.map(|r| r.0);
+        if entry.is_none() {
+            if let Some(photo) = photo_name {
+                entry=tx.query_row("SELECT id FROM sync_entries WHERE job_id=?1 AND (native_photo_id=?2 OR json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.fields.photoId.value')=?2) LIMIT 1",params![progress.job_id,photo],|r|r.get(0)).optional()?;
+            }
+        }
+        if let Some(path) = path {
+            if !super::super::native::records::is_safe_relative_path(path) {
+                return Err(AppError::Backend("unsafe remote photo path".into()));
+            }
+            let local:Option<i64>=tx.query_row("SELECT id FROM sync_entries WHERE job_id=?1 AND relative_path=?2 AND (native_photo_id IS NULL OR native_photo_id=?3)",params![progress.job_id,path,photo_name],|r|r.get(0)).optional()?;
+            if let Some(local) = local {
+                if let Some(old) = entry.filter(|old| *old != local) {
+                    tx.execute("UPDATE sync_entries SET native_pending_master=COALESCE(native_pending_master,(SELECT native_pending_master FROM sync_entries WHERE id=?2)) WHERE id=?1",params![local,old])?;
+                    tx.execute("DELETE FROM sync_entries WHERE id=?1 AND native_photo_id IS NULL AND relative_path LIKE '.photoviewer-sync-pending/%'",[old])?;
+                }
+                entry = Some(local);
+            }
+        }
+        let entry = match entry {
+            Some(entry) => entry,
+            None => {
+                let placeholder = format!(
+                    ".photoviewer-sync-pending/{}",
+                    photo_name.unwrap_or(&record.record_name)
+                );
+                let relative = path.unwrap_or(&placeholder);
+                let occupied:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_entries WHERE job_id=?1 AND relative_path=?2)",params![progress.job_id,relative],|r|r.get(0))?;
+                tx.execute(
+                    "INSERT INTO sync_entries(job_id,relative_path) VALUES(?1,?2)",
+                    params![
+                        progress.job_id,
+                        if occupied { &placeholder } else { relative }
+                    ],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        if let Some(path) = path {
+            tx.execute("UPDATE sync_entries SET relative_path=?2 WHERE id=?1 AND relative_path LIKE '.photoviewer-sync-pending/%' AND NOT EXISTS(SELECT 1 FROM sync_entries other WHERE other.job_id=?3 AND other.relative_path=?2 AND other.id<>?1)",params![entry,path,progress.job_id])?;
+        }
+        let column = if asset
+            || record.is_tombstone()
+                && tx
+                    .query_row(
+                        "SELECT native_photo_id=?2 FROM sync_entries WHERE id=?1",
+                        params![entry, record.record_name],
+                        |r| r.get::<_, Option<bool>>(0),
+                    )?
+                    .unwrap_or(false)
+        {
+            "native_pending_asset"
+        } else {
+            "native_pending_master"
+        };
+        tx.execute(
+            &format!("UPDATE sync_entries SET {column}=?2 WHERE id=?1"),
+            params![entry, serde_json::to_string(&record).map_err(json_error)?],
+        )?;
+        saved += 1;
+        if asset {
+            admit_asset_metadata(tx, progress.job_id, entry, &record)?;
+        }
+    }
+    Ok(saved)
+}
+
+fn admit_asset_metadata(
+    tx: &rusqlite::Transaction<'_>,
+    job: i64,
+    entry: i64,
+    record: &NativeRecord,
+) -> Result<()> {
+    let deleting: bool = tx.query_row(
+        "SELECT native_dirty=4 FROM sync_entries WHERE id=?1",
+        [entry],
+        |r| r.get(0),
     )?;
-    Ok(current)
+    if deleting {
+        return Ok(());
+    }
+    let fields = record
+        .fields
+        .as_ref()
+        .ok_or_else(|| AppError::Backend("photo metadata has no fields".into()))?;
+    let field = |name: &str| {
+        fields
+            .get(name)
+            .map(|v| v["value"].clone())
+            .unwrap_or(Value::Null)
+    };
+    let relative = field("relativePath");
+    let Some(relative) = relative.as_str() else {
+        return Ok(());
+    };
+    let root: String =
+        tx.query_row("SELECT local_root FROM sync_jobs WHERE id=?1", [job], |r| {
+            r.get(0)
+        })?;
+    let path = std::path::Path::new(&root).join(relative);
+    let uri = crate::core::file_uri::from_path(&path);
+    let linked:Option<(i64,i64,String)>=tx.query_row(
+        "SELECT m.id,m.storage_location,m.uri FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",
+        [entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+    ).optional()?;
+    if let Some((media, location, old_uri)) = linked {
+        // Keep the identity of an existing local file through publication. A
+        // metadata rename must not insert another row at its destination URI.
+        if location != 2 {
+            return Ok(());
+        }
+        if old_uri != uri {
+            let occupied: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM media_items WHERE uri=?1 AND id<>?2)",
+                params![uri, media],
+                |r| r.get(0),
+            )?;
+            if occupied {
+                return Ok(());
+            }
+            tx.execute("UPDATE media_items SET uri=?2,path=?3,folder_path=?4,thumbnail_ready=0 WHERE id=?1",params![media,uri,path.to_string_lossy(),path.parent().map(|p|p.to_string_lossy().into_owned())])?;
+            tx.execute("UPDATE sync_entries SET relative_path=?2 WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM sync_entries other WHERE other.job_id=?3 AND other.relative_path=?2 AND other.id<>?1)",params![entry,relative,job])?;
+        }
+    }
+    let mime = crate::core::media::mime_from_extension(&path).unwrap_or("image/jpeg");
+    tx.execute("INSERT INTO media_items(uri,path,folder_path,mime_type,media_kind,file_mtime,file_mtime_ns,file_size,blake3_hash,indexed_at,storage_location,thumbnail_ready,is_favorite,taken_at) VALUES(?1,?2,?3,?4,?5,0,0,0,'',unixepoch(),2,0,?6,?7) ON CONFLICT(uri) DO NOTHING",params![uri,path.to_string_lossy(),path.parent().map(|p|p.to_string_lossy().into_owned()).unwrap_or(root),mime,crate::core::db::media_kind_db_value(mime),field("isFavorite").as_i64().unwrap_or(0),field("assetDate").as_i64().map(|ms|ms.div_euclid(1000))])?;
+    tx.execute("UPDATE sync_entries SET media_id=COALESCE(media_id,(SELECT id FROM media_items WHERE uri=?2)) WHERE id=?1",params![entry,uri])?;
+    tx.execute(
+        "UPDATE media_items SET is_favorite=?2,taken_at=?3 WHERE uri=?1 AND storage_location=2 AND NOT EXISTS(SELECT 1 FROM sync_entries e WHERE e.media_id=media_items.id AND e.native_metadata_version>e.native_acked_metadata_version)",
+        params![
+            uri,
+            field("isFavorite").as_i64().unwrap_or(0),
+            field("assetDate").as_i64().map(|ms| ms.div_euclid(1000))
+        ],
+    )?;
+    // Receipt is not confirmation of a local/cloud identity match. The pending
+    // Asset already names this photo; projection binds IDs after collision checks.
+    Ok(())
 }
 
 fn promote(
@@ -717,42 +892,39 @@ fn promote(
     graph: &RemoteGraph,
     target_token: &str,
     local_digests: &HashMap<String, LocalDigest>,
+    _replace: bool,
 ) -> Result<NativeReceiveOutcome> {
     let progress = require_progress(tx, job_id)?;
     let generation = progress.database_generation.clone();
-    let zone_name = progress.zone.zone_name.clone();
-    let owner = progress.zone.owner.clone();
 
-    // Replace atomically: the projection is only ever read whole.
-    tx.execute(
-        "DELETE FROM sync_native_records WHERE job_id = ?1 AND generation = ?2",
-        params![job_id, generation],
-    )?;
-    tx.execute(
-        "UPDATE sync_native_resources SET record_name=NULL WHERE job_id=?1 AND generation=?2",
-        params![job_id, generation],
-    )?;
     for photo in &graph.photos {
-        tx.execute(
-            "INSERT INTO sync_native_records
-                (job_id, generation, zone_name, owner, record_name, record_type,
-                 record_change_tag, content_generation, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                job_id,
-                generation,
-                zone_name,
-                owner,
-                photo.photo_id,
-                PHOTO_PAYLOAD_MARKER,
-                photo.content_generation,
-                photo.content_generation,
-                serde_json::to_string(photo).map_err(json_error)?,
-            ],
-        )?;
-        if super::runtime::project_publication(tx, job_id, photo, local_digests)?
-            == super::runtime::ProjectedContent::Local
-        {
+        let content = super::runtime::project_publication(tx, job_id, photo, local_digests)?;
+        // A collision may have moved the previous local occupant aside. Admit
+        // the remote metadata at its final path immediately, before downloads.
+        let entry: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+                params![job_id, photo.photo_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(entry) = entry {
+            let metadata:NativeRecord=serde_json::from_value(json!({"recordName":photo.photo_id,"recordType":"CPLAsset","fields":{
+                "relativePath":{"type":"STRING","value":photo.relative_path},
+                "masterRef":{"type":"REFERENCE","value":{"recordName":photo.master_id,"action":"NONE"}},
+                "isFavorite":{"type":"INT64","value":photo.is_favorite as i64},
+                "assetDate":{"type":"TIMESTAMP","value":photo.asset_date_ms}
+            }})).map_err(json_error)?;
+            admit_asset_metadata(tx, job_id, entry, &metadata)?;
+        }
+        tx.execute("UPDATE media_items SET mime_type=?3,media_kind=?4,width=?5,height=?6,file_size=?7 WHERE id=(SELECT media_id FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2) AND storage_location=2",params![job_id,photo.photo_id,photo.original.mime_type,crate::core::db::media_kind_db_value(&photo.original.mime_type),photo.original.width,photo.original.height,photo.original.size as i64])?;
+        let asset_revision = record_revision_in(tx, job_id, &photo.photo_id)?;
+        let master_revision = record_revision_in(tx, job_id, &photo.master_id)?;
+        tx.execute("UPDATE sync_entries SET native_asset_revision=COALESCE(?3,native_asset_revision),native_master_revision=COALESCE(?4,native_master_revision) WHERE job_id=?1 AND native_photo_id=?2",params![job_id,photo.photo_id,asset_revision,master_revision])?;
+        tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1 AND native_photo_id=?2",params![job_id,photo.photo_id])?;
+        tx.execute("DELETE FROM sync_entries WHERE job_id=?1 AND native_photo_id IS NULL AND relative_path LIKE '.photoviewer-sync-pending/%' AND (json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.fields.photoId.value')=?2)",params![job_id,photo.photo_id])?;
+        if content == super::runtime::ProjectedContent::Local {
+            tx.execute("UPDATE sync_native_resources SET record_name=NULL WHERE job_id=?1 AND record_name=?2 AND NOT EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=?1 AND p.photo_id=?2 AND p.state IN ('pending','publishing'))",params![job_id,photo.photo_id])?;
             continue;
         }
         for resource in photo.resources() {
@@ -761,7 +933,7 @@ fn promote(
                     (job_id, generation, asset_id, role, record_name, expected_sha256,
                      expected_size, state, verified_cache)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                    CASE WHEN EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id=?5 AND (json_extract(e.native_resource_baseline,'$.original.assetId')=?3 OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=?3) AND NOT EXISTS(SELECT 1 FROM sync_publications p WHERE p.entry_id=e.id AND p.state NOT IN ('complete','superseded'))) THEN 'verified' ELSE 'pending' END,
+                    CASE WHEN EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id=?5 AND (json_extract(e.native_resource_baseline,'$.original.assetId')=?3 OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=?3) AND NOT EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=?1 AND p.state NOT IN ('complete','superseded') AND (p.original_asset_id=?3 OR p.thumbnail_asset_id=?3))) THEN 'verified' ELSE 'pending' END,
                     -- When the entry's confirmed baseline already names this
                     -- asset, the bytes are the library file's — adoption proved
                     -- it, and it is recorded here so the settled row points at
@@ -833,49 +1005,33 @@ fn promote(
             )?;
         }
     }
-    for record in &graph.records {
-        tx.execute(
-            "INSERT INTO sync_native_records
-                (job_id, generation, zone_name, owner, record_name, record_type,
-                 record_change_tag, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(job_id, generation, zone_name, owner, record_name) DO UPDATE SET
-                record_type = excluded.record_type,
-                record_change_tag = excluded.record_change_tag,
-                payload = excluded.payload,
-                updated_at = unixepoch()",
-            params![
-                job_id,
-                generation,
-                zone_name,
-                owner,
-                record.record_name,
-                record.record_type,
-                record.record_change_tag,
-                serde_json::to_string(&record.payload).map_err(json_error)?,
-            ],
-        )?;
-    }
-
-    // Absence is authoritative only after a complete fixed-height graph.
-    // Preserve local files; a concurrent edit becomes an explicit conflict.
-    let absent = {
-        let mut statement = tx.prepare("SELECT e.id,e.native_dirty FROM sync_entries e WHERE e.job_id=?1 AND e.native_photo_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sync_native_records r WHERE r.job_id=e.job_id AND r.record_name=e.native_photo_id AND r.record_type='__photo__') AND NOT EXISTS(SELECT 1 FROM sync_tasks t WHERE t.entry_id=e.id AND t.state='issued')")?;
-        let rows = statement
-            .query_map([job_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    for (entry, dirty) in absent {
-        if dirty == 0 || dirty == 8 {
-            super::actions::retire(tx, entry)?;
-        } else {
-            tx.execute("INSERT INTO sync_conflicts(job_id,entry_id,kind,native_detail) VALUES(?1,?2,'native',?3) ON CONFLICT(entry_id) WHERE state='open' DO UPDATE SET native_detail=excluded.native_detail",params![job_id,entry,serde_json::json!({"reason":"remote photo was deleted while local changes remain","remote":null}).to_string()])?;
+    // Only an explicit server tombstone can retire a confirmed identity.
+    // A missing row in a snapshot or delta is never a deletion notification.
+    for name in &graph.tombstones {
+        let entry: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT id,native_dirty FROM sync_entries WHERE job_id=?1 AND native_photo_id=?2",
+                params![job_id, name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((entry, dirty)) = entry {
+            if dirty == super::dirty::NativeDirty::DELETE as i64 {
+                // An explicit cloud tombstone proves the local deletion already
+                // converged. Unknown issued results keep their evidence until
+                // the ordinary callback reconciles them.
+                tx.execute("DELETE FROM sync_entries WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM sync_tasks WHERE entry_id=?1 AND state='issued')",[entry])?;
+            } else if dirty == 0 {
+                tx.execute("DELETE FROM media_items WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1) AND storage_location=2",[entry])?;
+                tx.execute("UPDATE media_items SET storage_location=1 WHERE id=(SELECT media_id FROM sync_entries WHERE id=?1) AND storage_location=3",[entry])?;
+                super::actions::retire(tx, entry)?;
+            } else {
+                tx.execute("INSERT INTO sync_conflicts(job_id,entry_id,kind,native_detail) VALUES(?1,?2,'native',?3) ON CONFLICT(entry_id) WHERE state='open' DO UPDATE SET native_detail=excluded.native_detail",params![job_id,entry,serde_json::json!({"reason":"remote photo was deleted while local changes remain","remote":null}).to_string()])?;
+            }
+            tx.execute("UPDATE sync_publications SET state='superseded' WHERE entry_id=?1 AND state='pending'",[entry])?;
         }
-        tx.execute(
-            "UPDATE sync_publications SET state='superseded' WHERE entry_id=?1 AND state='pending'",
-            [entry],
-        )?;
+        tx.execute("UPDATE sync_native_resources SET record_name=NULL WHERE job_id=?1 AND generation=?2 AND record_name=?3",params![job_id,generation,name])?;
+        tx.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE job_id=?1 AND (native_photo_id=?2 OR native_master_id=?2 OR json_extract(native_pending_asset,'$.recordName')=?2 OR json_extract(native_pending_master,'$.recordName')=?2)",params![job_id,name])?;
     }
 
     // Asset IDs can be shared by multiple photos. Adoption of one local file
@@ -925,7 +1081,8 @@ fn unresolved_in_tx(tx: &rusqlite::Transaction<'_>, job_id: i64) -> Result<usize
         [job_id],
         |row| row.get(0),
     )?;
-    Ok((resources + conflicts + publications) as usize)
+    let fragments:i64=tx.query_row("SELECT COUNT(*) FROM sync_entries WHERE job_id=?1 AND (native_pending_master IS NOT NULL OR native_pending_asset IS NOT NULL)",[job_id],|r|r.get(0))?;
+    Ok((resources + conflicts + publications + fragments) as usize)
 }
 
 #[cfg(test)]
@@ -1046,7 +1203,7 @@ impl SyncStore {
              JOIN sync_connections c ON c.id=j.connection_id AND c.enabled=1
              JOIN media_items m
                ON m.path = rtrim(j.local_root, '/') || '/' || e.relative_path
-              AND m.trashed_at IS NULL
+              AND m.trashed_at IS NULL AND m.storage_location<>2
              WHERE e.job_id = ?1",
         )?;
         let rows = stmt
@@ -1070,6 +1227,31 @@ impl SyncStore {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn promote_remote_delta(
+        &self,
+        job_id: i64,
+        graph: RemoteGraph,
+        target_token: &str,
+        local_digests: HashMap<String, LocalDigest>,
+    ) -> Result<(usize, usize, usize, bool)> {
+        match self.write_receive(NativeReceiveCommand::PromoteDelta {
+            job_id,
+            graph,
+            target_token: target_token.into(),
+            local_digests,
+        })? {
+            NativeReceiveOutcome::Promoted {
+                photos,
+                unknown_records,
+                resources,
+                applied,
+            } => Ok((photos, unknown_records, resources, applied)),
+            _ => Err(AppError::Backend(
+                "applying a remote delta returned an unexpected result".into(),
+            )),
+        }
     }
 
     pub fn promote_remote_graph(

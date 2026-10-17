@@ -248,6 +248,12 @@ fn bind_ready_cell(
     slot: u32,
     item: crate::core::media::MediaItem,
 ) {
+    if !item.can_display() {
+        cell.tile.show_loading_placeholder();
+        cell.tile.set_can_target(false);
+        list_item.set_activatable(false);
+        return;
+    }
     let spec = grid.spec();
     let loader = grid.loader();
     let item_mtime = thumbnail_request_mtime(&item);

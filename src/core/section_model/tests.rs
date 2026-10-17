@@ -54,6 +54,8 @@ fn group_items_preserves_first_seen_section_order_and_counts() {
         blake3_hash: format!("h{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
     let items = vec![
         mk(1, 2026, 5, 2),
@@ -188,6 +190,8 @@ fn apply_authoritative_counts_overrides_present_keys() {
         blake3_hash: format!("h{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
 
     let items = vec![mk(1, 2025, 3, 1), mk(2, 2025, 3, 1), mk(3, 2024, 12, 25)];
@@ -251,6 +255,8 @@ fn apply_authoritative_counts_leaves_unmapped_keys() {
         blake3_hash: format!("h{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
     let items = vec![mk(1, 2025, 3, 1), mk(2, 2025, 3, 1)];
     let mut sections = group_items(&items, GroupBy::Year);

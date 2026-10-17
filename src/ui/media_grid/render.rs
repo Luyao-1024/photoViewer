@@ -59,6 +59,11 @@ pub(super) fn build_photo_picture(
 ) -> SquareTile {
     let tile = SquareTile::new();
     tile.set_target(spec.pixel_size);
+    if !item.can_display() {
+        tile.show_loading_placeholder();
+        tile.set_can_target(false);
+        return tile;
+    }
     let is_day = spec.mode == GroupBy::Day;
     tile.set_motion_badge_visible(is_day && item.is_motion_photo());
     if is_day && item.is_video() {

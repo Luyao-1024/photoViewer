@@ -110,6 +110,8 @@ pub(super) mod test_support {
             blake3_hash: "hash".into(),
             is_favorite: false,
             trashed_at: None,
+            storage_location: crate::core::media::MediaLocation::Local,
+            thumbnail_ready: false,
         }
     }
 
@@ -170,6 +172,7 @@ mod imp {
         pub media_list: RefCell<Option<gtk::gio::ListStore>>,
         pub current_index: Cell<u32>,
         pub current_media_id: Cell<i64>,
+        pub displayed_location: Cell<i64>,
         /// The item committed by `show_at`, independent of an optimistic
         /// navigation target. Editor entry must stay anchored to this identity.
         pub displayed_media_id: Cell<i64>,
@@ -939,6 +942,9 @@ impl ViewerPage {
         };
         tracing::Span::current().record("item_id", item.id);
         self.imp().displayed_media_id.set(item.id);
+        self.imp()
+            .displayed_location
+            .set(item.storage_location as i64);
         if self.imp().current_index.get() != index {
             self.imp().current_index.set(index);
         }
@@ -979,6 +985,17 @@ impl ViewerPage {
         // first navigation. The same-video re-anchor branch below returns
         // early and still reaches it from here.
         self.prefetch_neighbors();
+        if !item.storage_location.has_local_original() {
+            self.stop_video_playback();
+            self.show_image_stage();
+            self.imp().edit_btn.get().set_sensitive(false);
+            self.imp().motion_play_btn.get().set_visible(false);
+            self.refresh_thumb_strip();
+            if item.thumbnail_ready {
+                self.request_current_preview_thumbnail(&item, token);
+            }
+            return;
+        }
         if item.is_video() {
             self.refresh_thumb_strip();
             self.imp().motion_play_btn.get().set_visible(false);
@@ -1089,9 +1106,38 @@ impl ViewerPage {
     }
 
     pub(crate) fn refresh_current_cloud_badge(&self) {
-        if let Some(item) = self.current_media_item() {
-            self.refresh_sync_badge(&item, self.imp().current_token.get());
+        let Some(item) = self.current_media_item() else {
+            return;
+        };
+        self.refresh_sync_badge(&item, self.imp().current_token.get());
+        if self.imp().displayed_location.get() != 2 {
+            return;
         }
+        let Some(pool) = self.imp().pool.borrow().clone() else {
+            return;
+        };
+        let weak = self.downgrade();
+        let token = self.imp().current_token.get();
+        let id = item.id;
+        glib::spawn_future_local(async move {
+            let Ok(Ok(fresh)) =
+                gtk::gio::spawn_blocking(move || crate::core::db::get_media_item(&pool, id)).await
+            else {
+                return;
+            };
+            let Some(viewer) = weak.upgrade() else {
+                return;
+            };
+            if viewer.imp().current_token.get() != token
+                || viewer.imp().current_media_id.get() != id
+                || viewer.imp().displayed_location.get() != 2
+                || !fresh.storage_location.has_local_original()
+            {
+                return;
+            }
+            viewer.replace_current_media_item(fresh);
+            viewer.show_at(viewer.imp().current_index.get());
+        });
     }
 
     fn setup_zoom_transform_provider(&self) {

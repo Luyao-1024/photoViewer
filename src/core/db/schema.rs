@@ -13,10 +13,7 @@ const SYNC_HISTORY_TABLES: &[&str] = &[
     "sync_tasks",
     "sync_publications",
     "sync_native_resources",
-    "sync_native_records",
-    "sync_native_inbox",
     "sync_native_progress",
-    "sync_inventory",
     "sync_entries",
 ];
 
@@ -108,7 +105,39 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
         let Some(wanted) = expected.get(table) else {
             continue;
         };
-        let actual = columns(&tx, table)?;
+        let mut actual = columns(&tx, table)?;
+        // Add current-schema fields without a version ladder, table rebuild,
+        // or loss of pending deletion records and existing library metadata.
+        let additions = wanted
+            .iter()
+            .filter(|c| !actual.iter().any(|a| a.name == c.name))
+            .collect::<Vec<_>>();
+        let compatible = actual.iter().all(|a| wanted.iter().any(|w| w == a));
+        if compatible
+            && !additions.is_empty()
+            && additions
+                .iter()
+                .all(|c| c.primary_key == 0 && (!c.not_null || c.default.is_some()))
+        {
+            for column in additions {
+                let declaration = format!(
+                    "{} {}{}{}",
+                    quote(&column.name),
+                    column.kind,
+                    if column.not_null { " NOT NULL" } else { "" },
+                    column
+                        .default
+                        .as_ref()
+                        .map(|v| format!(" DEFAULT {v}"))
+                        .unwrap_or_default()
+                );
+                tx.execute(
+                    &format!("ALTER TABLE {} ADD COLUMN {declaration}", quote(table)),
+                    [],
+                )?;
+            }
+            actual = columns(&tx, table)?;
+        }
         if &actual != wanted {
             let missing: Vec<_> = wanted
                 .iter()
@@ -154,6 +183,25 @@ pub(super) fn initialize(conn: &mut Connection) -> Result<()> {
 
     // Missing tables/indexes can be created normally; they are not mismatches.
     tx.execute_batch(SCHEMA_SQL)?;
+    // Replaced by canonical photo metadata and per-photo incomplete fragments.
+    // Bootstrap once into the new representation; preserve every dirty/version,
+    // confirmed identity, issued operation and owned publication. Old metadata
+    // may have advanced its cursor without a canonical media row.
+    if tables.iter().any(|name| {
+        matches!(
+            name.as_str(),
+            "sync_native_inbox" | "sync_native_records" | "sync_inventory"
+        )
+    }) {
+        tx.execute("UPDATE sync_native_progress SET snapshot_token=NULL,bootstrap_state=NULL,ingest_token=NULL,target_token=NULL,applied_token=NULL,discovery_token=NULL,discovery_complete=0",[])?;
+        tx.execute(
+            "UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL",
+            [],
+        )?;
+    }
+    tx.execute_batch(
+        "DROP TABLE IF EXISTS sync_native_inbox; DROP TABLE IF EXISTS sync_native_records; DROP TABLE IF EXISTS sync_inventory;",
+    )?;
     if !mismatches.is_empty() {
         tx.execute(
             "UPDATE sync_jobs SET native_cycle_id=NULL,last_started_at=NULL,last_completed_at=NULL,last_error=NULL",

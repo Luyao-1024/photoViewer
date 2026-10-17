@@ -33,6 +33,8 @@ fn sample_item(id: i64, name: &str) -> crate::core::media::MediaItem {
         blake3_hash: format!("hash-{id}"),
         is_favorite: false,
         trashed_at: None,
+        storage_location: crate::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     }
 }
 

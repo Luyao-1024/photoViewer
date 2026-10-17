@@ -574,6 +574,29 @@ fn append_account(
     let service_switch = service.clone();
     switch.connect_clicked(move |_| show_accounts(&parent_switch, service_switch.clone()));
     row.add_suffix(&switch);
+    row.add_suffix(&account_actions(
+        parent,
+        service,
+        job,
+        status,
+        "native-sync-account-menu",
+        false,
+        std::rc::Rc::new(|| {}),
+    ));
+
+    group.add(&row);
+    container.append(&group);
+}
+
+fn account_actions(
+    parent: &gtk::Widget,
+    service: &SyncService,
+    job: &crate::core::sync::store::SyncJob,
+    status: &gtk::Label,
+    name: &str,
+    saved: bool,
+    removed: std::rc::Rc<dyn Fn()>,
+) -> gtk::MenuButton {
     let menu = gtk::Popover::new();
     let actions = gtk::Box::new(gtk::Orientation::Vertical, 2);
     actions.set_margin_top(6);
@@ -587,19 +610,22 @@ fn append_account(
         .popover(&menu)
         .build();
     more.add_css_class("glass-icon-button");
-    more.set_widget_name("native-sync-account-menu");
+    more.set_widget_name(name);
     more.set_tooltip_text(Some(&tr("native.account_actions")));
-    row.add_suffix(&more);
     let login = menu_action(
         "native.relogin",
-        &format!("native-sync-relogin-{}", job.id),
+        &format!(
+            "native-sync-{}relogin-{}",
+            if saved { "saved-" } else { "" },
+            job.id
+        ),
         &menu,
     );
     actions.append(&login);
     let parent_login = parent.clone();
     let service_login = service.clone();
     let job_login = job.clone();
-    let account_login = account.clone();
+    let account_login = account_name(service, job);
     login.connect_clicked(move |_| {
         show_relogin(
             &parent_login,
@@ -608,10 +634,14 @@ fn append_account(
             account_login.clone().unwrap_or_default(),
         )
     });
-    if account.is_some() {
+    {
         let logout = menu_action(
             "native.logout",
-            &format!("native-sync-logout-{}", job.id),
+            &format!(
+                "native-sync-{}logout-{}",
+                if saved { "saved-" } else { "" },
+                job.id
+            ),
             &menu,
         );
         actions.append(&logout);
@@ -638,8 +668,58 @@ fn append_account(
         });
     }
 
-    group.add(&row);
-    container.append(&group);
+    let remove = menu_action(
+        "native.remove_account",
+        &format!("native-sync-remove-account-{}", job.id),
+        &menu,
+    );
+    remove.add_css_class("destructive-action");
+    actions.append(&remove);
+    let parent = parent.clone();
+    let service = service.clone();
+    let status = status.clone();
+    let id = job.id;
+    remove.connect_clicked(move |_| {
+        let dialog = adw::AlertDialog::builder()
+            .heading(tr("native.remove_account"))
+            .body(tr("native.remove_account_body"))
+            .build();
+        dialog.add_response("cancel", &tr("button.cancel"));
+        dialog.add_response("remove", &tr("native.remove_account"));
+        dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        dialog.set_close_response("cancel");
+        let service = service.clone();
+        let status = status.clone();
+        let removed = removed.clone();
+        dialog.connect_response(Some("remove"), move |_, _| {
+            let service = service.clone();
+            let status = status.clone();
+            let removed = removed.clone();
+            glib::spawn_future_local(async move {
+                match tokio::spawn(async move {
+                    service
+                        .remove_native_account(id)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                {
+                    Ok(Ok(cleaned)) => {
+                        if cleaned {
+                            status.set_label("");
+                        } else {
+                            status.set_label(&tr("native.credential_cleanup"));
+                        }
+                        removed();
+                    }
+                    Ok(Err(error)) => status.set_label(&error),
+                    Err(_) => status.set_label(&tr("native.worker_failed")),
+                }
+            });
+        });
+        dialog.present(&parent);
+    });
+    more
 }
 
 fn show_accounts(parent: &gtk::Widget, service: SyncService) {
@@ -701,6 +781,9 @@ fn show_accounts(parent: &gtk::Widget, service: SyncService) {
             show_relogin(&parent_login, service_login.clone(), id, account.clone());
         });
         row.add_suffix(&reauthenticate);
+        let account_job = job.clone();
+        let action_service = service.clone();
+        let action_status = status.clone();
         let service = service.clone();
         let weak = dialog.downgrade();
         let status = status.clone();
@@ -739,6 +822,22 @@ fn show_accounts(parent: &gtk::Widget, service: SyncService) {
             });
         });
         row.add_suffix(&use_account);
+        let weak_content = content.downgrade();
+        let weak_group = group.downgrade();
+        row.add_suffix(&account_actions(
+            dialog.upcast_ref(),
+            &action_service,
+            &account_job,
+            &action_status,
+            &format!("native-sync-saved-account-menu-{}", account_job.id),
+            true,
+            std::rc::Rc::new(move || {
+                if let (Some(content), Some(group)) = (weak_content.upgrade(), weak_group.upgrade())
+                {
+                    content.remove(&group);
+                }
+            }),
+        ));
         group.add(&row);
         content.append(&group);
     }

@@ -242,6 +242,14 @@ fn apply_domain_event_to_legacy_ui(
                 window.refresh_cloud_badges();
             }
         }
+        DomainEvent::LiveCountDirty => {
+            if let Some(window) = window.upgrade() {
+                window.refresh_shared_media_list_from_repository();
+                window.refresh_visible_album_detail_page();
+                window.refresh_cloud_badges();
+            }
+            album_refresh.mark_albums_dirty_async();
+        }
         DomainEvent::TrashChanged { .. } => {
             if let Some(window) = window.upgrade() {
                 window.refresh_visible_trash_page();

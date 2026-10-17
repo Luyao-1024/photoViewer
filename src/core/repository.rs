@@ -512,21 +512,23 @@ impl MediaRepository {
                                     ids: vec![id],
                                 })?;
                             }
-                            None => db::unmark_trashed(&self.pool, id.get())?,
+                            None => {
+                                db::restore_trashed_metadata(&self.pool, &[id.get()])?;
+                            }
                         }
                         prepared.commit();
                         item.trashed_at = None;
                     } else {
                         let prepared = crate::core::trash::prepare_permanent_delete(&item.uri)?;
+                        prepared.commit()?;
                         match actor {
                             Some(actor) => {
                                 actor.execute_blocking(DbCommand::DeleteTrashedRows {
                                     ids: vec![id],
                                 })?;
                             }
-                            None => db::delete_media_item(&self.pool, id.get())?,
+                            None => db::commit_permanent_deletions(&self.pool, &[id.get()])?,
                         }
-                        prepared.commit();
                     }
                     Ok(())
                 })();

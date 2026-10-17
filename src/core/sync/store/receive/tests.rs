@@ -89,6 +89,17 @@ fn begin(store: &SyncStore, job: &SyncJob, scope: &str) -> NativeProgress {
         .unwrap()
 }
 
+fn complete_bootstrap(store: &SyncStore, job: &SyncJob) {
+    store
+        .pin_native_snapshot(job.id, "fixture.snapshot", "fixture.zone")
+        .unwrap();
+    for kind in SUPPORTED_RECORD_TYPES {
+        store
+            .save_bootstrap_page(job.id, kind, None, 0, "fixture.zone")
+            .unwrap();
+    }
+}
+
 #[test]
 fn a_first_receive_starts_with_no_position_at_all() {
     let (store, _pool, job) = store_with_job("receive-fresh");
@@ -190,7 +201,7 @@ fn a_changed_scope_invalidates_every_previous_completeness_claim() {
         .get()
         .unwrap()
         .query_row(
-            "SELECT COUNT(*) FROM sync_native_inbox WHERE job_id=?1",
+            "SELECT COUNT(*) FROM sync_entries WHERE job_id=?1 AND (native_pending_master IS NOT NULL OR native_pending_asset IS NOT NULL)",
             [job.id],
             |row| row.get(0),
         )
@@ -226,71 +237,52 @@ fn a_changed_database_generation_also_invalidates_the_position() {
 }
 
 #[test]
-fn delta_events_are_ordered_deduplicated_and_never_skip_a_page() {
-    let (store, pool, job) = store_with_job("receive-inbox");
+fn delta_pages_replace_pending_photo_fields_without_a_second_inventory() {
+    let (store, pool, job) = store_with_job("receive-pending");
     begin(&store, &job, "scope-1");
-
-    let event = |ordinal: i64, name: &str, tag: &str| InboxEvent {
-        ordinal,
-        record_name: name.into(),
+    let event = |tag: &str, favorite: i64| InboxEvent {
+        ordinal: 0,
+        record_name: "a1".into(),
         record_type: "CPLAsset".into(),
         record_change_tag: tag.into(),
         kind: InboxKind::Updated,
-        payload: serde_json::json!({ "recordName": name }),
+        payload: serde_json::json!({"recordName":"a1","recordType":"CPLAsset","recordChangeTag":tag,
+            "fields":{"relativePath":{"type":"STRING","value":"Camera/a.jpg"},
+                "masterRef":{"type":"REFERENCE","value":{"recordName":"master-a1","action":"NONE"}},
+                "isFavorite":{"type":"INT64","value":favorite}}}),
     };
-
-    let first = store
-        .save_delta_page(
-            job.id,
-            vec![event(0, "a1", "tag-1"), event(0, "a2", "tag-2")],
-            "zone.page-1",
-        )
+    store
+        .save_delta_page(job.id, vec![event("tag-1", 0)], "zone.page-1")
         .unwrap();
-    assert_eq!(first, 2);
-
-    // Replaying the same page after a crash must not duplicate: the inbox's own
-    // uniqueness on (record, revision) is what makes replay safe.
-    let replayed = store
-        .save_delta_page(
-            job.id,
-            vec![event(0, "a1", "tag-1"), event(0, "a2", "tag-2")],
-            "zone.page-1",
-        )
+    store
+        .save_delta_page(job.id, vec![event("tag-1", 0)], "zone.page-1")
         .unwrap();
-    assert_eq!(replayed, 0);
-
-    let saved = store
-        .save_delta_page(job.id, vec![event(0, "a3", "tag-3")], "zone.page-2")
+    assert_eq!(store.pending_records(job.id).unwrap().len(), 1);
+    store
+        .save_delta_page(job.id, vec![event("tag-2", 1)], "zone.page-2")
         .unwrap();
-    assert_eq!(saved, 1);
-
-    let events = store
-        .inbox_events(job.id, "501855bb-18d3-4008-abc3-37e4948bf6f0")
-        .unwrap();
-    assert_eq!(events.len(), 3);
-    // Ordinals are dense and ascending; the replayed page did not create a gap
-    // or a second a1.
-    assert_eq!(
-        events
-            .iter()
-            .map(|event| event.record_name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["a1", "a2", "a3"]
-    );
-    assert!(events
-        .windows(2)
-        .all(|pair| pair[0].ordinal < pair[1].ordinal));
-
-    let token: String = pool
-        .get()
-        .unwrap()
+    let records = store.pending_records(job.id).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].record_change_tag.as_deref(), Some("tag-2"));
+    let conn = pool.get().unwrap();
+    let (location, ready, favorite): (i64, bool, bool) = conn
         .query_row(
+            "SELECT storage_location,thumbnail_ready,is_favorite FROM media_items",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!((location, ready, favorite), (2, false, true));
+    assert_eq!(
+        conn.query_row(
             "SELECT ingest_token FROM sync_native_progress WHERE job_id=?1",
             [job.id],
-            |row| row.get(0),
+            |r| r.get::<_, String>(0)
         )
-        .unwrap();
-    assert_eq!(token, "zone.page-2");
+        .unwrap(),
+        "zone.page-2"
+    );
+    assert!(!conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('sync_native_inbox','sync_native_records','sync_inventory'))",[],|r|r.get::<_,bool>(0)).unwrap());
 }
 
 #[test]
@@ -357,6 +349,7 @@ fn verified_resources_alone_do_not_authorize_an_unpublished_photo() {
 fn an_empty_zone_promotes_cleanly_and_applies_immediately() {
     let (store, _pool, job) = store_with_job("receive-empty");
     begin(&store, &job, "scope-1");
+    complete_bootstrap(&store, &job);
     let (_, _, resources, applied) = store
         .promote_remote_graph(
             job.id,
@@ -413,11 +406,9 @@ fn an_open_conflict_also_blocks_the_applied_position() {
 }
 
 #[test]
-fn the_projection_is_replaced_wholesale_not_merged_with_a_previous_one() {
-    let (store, _pool, job) = store_with_job("receive-replace");
+fn a_delta_updates_only_the_affected_photo_metadata() {
+    let (store, pool, job) = store_with_job("receive-local-metadata");
     begin(&store, &job, "scope-1");
-    let generation = "501855bb-18d3-4008-abc3-37e4948bf6f0";
-
     store
         .promote_remote_graph(
             job.id,
@@ -429,31 +420,35 @@ fn the_projection_is_replaced_wholesale_not_merged_with_a_previous_one() {
             no_local_digests(),
         )
         .unwrap();
+    let first = store.current_remote_photo(job.id, "a1").unwrap().unwrap();
+    let mut second = photo("a2", "gen-1", "camera/two.jpg");
+    second.is_favorite = true;
+    store
+        .promote_remote_delta(job.id, graph(vec![second]), "zone.t2", no_local_digests())
+        .unwrap();
     assert_eq!(
+        store.current_remote_photo(job.id, "a1").unwrap().unwrap(),
+        first
+    );
+    assert!(
         store
-            .remote_graph(job.id, generation)
+            .current_remote_photo(job.id, "a2")
             .unwrap()
-            .photo_count(),
+            .unwrap()
+            .is_favorite
+    );
+    assert_eq!(
+        pool.get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
         2
     );
-
-    // The next round saw a1 deleted. Promotion reflects the round that just
-    // completed; it does not accumulate across rounds.
-    store
-        .promote_remote_graph(
-            job.id,
-            graph(vec![photo("a2", "gen-1", "camera/two.jpg")]),
-            "zone.t2",
-            no_local_digests(),
-        )
-        .unwrap();
-    let graph = store.remote_graph(job.id, generation).unwrap();
-    assert_eq!(graph.photo_count(), 1);
-    assert_eq!(graph.photos[0].photo_id, "a2");
 }
 
 #[test]
-fn unknown_record_types_survive_promotion_and_are_never_counted_as_photos() {
+fn unknown_record_types_do_not_create_media_or_a_second_inventory() {
     let (store, _pool, job) = store_with_job("receive-unknown");
     begin(&store, &job, "scope-1");
     let mut graph = graph(vec![photo("a1", "gen-1", "camera/one.jpg")]);
@@ -468,13 +463,11 @@ fn unknown_record_types_survive_promotion_and_are_never_counted_as_photos() {
         .unwrap();
     assert_eq!((photos, unknown), (1, 1));
 
-    let read_back = store
-        .remote_graph(job.id, "501855bb-18d3-4008-abc3-37e4948bf6f0")
-        .unwrap();
-    assert_eq!(read_back.photo_count(), 1);
-    assert_eq!(read_back.records.len(), 1);
-    assert_eq!(read_back.records[0].record_type, "Album");
-    assert_eq!(read_back.unknown_record_types().get("Album"), Some(&1));
+    assert!(store.current_remote_photo(job.id, "a1").unwrap().is_some());
+    assert!(store
+        .current_remote_photo(job.id, "album-1")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -642,15 +635,14 @@ fn enrol_local_file(pool: &crate::core::db::DbPool, job: &SyncJob, path: &str) -
 /// Give the inbox the record revisions adoption binds against.
 fn seed_inbox_revisions(pool: &crate::core::db::DbPool, job: &SyncJob, photo: &RemotePhoto) {
     let conn = pool.get().unwrap();
-    for (ordinal, name, tag) in [
-        (0, photo.photo_id.as_str(), "tag-asset-1"),
-        (1, photo.master_id.as_str(), "tag-master-1"),
+    for (column, name, tag) in [
+        ("native_pending_asset", &photo.photo_id, "tag-asset-1"),
+        ("native_pending_master", &photo.master_id, "tag-master-1"),
     ] {
+        let record = serde_json::json!({"recordName":name,"recordChangeTag":tag});
         conn.execute(
-            "INSERT INTO sync_native_inbox
-                (job_id, generation, zone_name, owner, ordinal, record_name, record_type, record_change_tag, kind, payload)
-             VALUES (?1, ?2, 'PrimarySync', '_defaultOwner', ?3, ?4, 'CPLAsset', ?5, 'updated', NULL)",
-            rusqlite::params![job.id, "501855bb-18d3-4008-abc3-37e4948bf6f0", ordinal, name, tag],
+            &format!("UPDATE sync_entries SET {column}=?2 WHERE job_id=?1 AND relative_path=?3"),
+            rusqlite::params![job.id, record.to_string(), photo.relative_path],
         )
         .unwrap();
     }
@@ -684,6 +676,7 @@ fn digests_of(
 fn a_never_published_file_adopts_the_cloud_photo_it_is_proven_to_be() {
     let (store, pool, job) = store_with_job("adopt-identical");
     begin(&store, &job, "scope-1");
+    complete_bootstrap(&store, &job);
     let photo = empty_photo("a1", "camera/one.jpg");
     enrol_local_file(&pool, &job, "camera/one.jpg");
     seed_inbox_revisions(&pool, &job, &photo);
@@ -779,7 +772,7 @@ fn adoption_keeps_a_local_metadata_edit_and_leaves_it_to_publish() {
     pool.get()
         .unwrap()
         .execute(
-            "UPDATE sync_entries SET native_dirty = native_dirty | 2,
+            "UPDATE sync_entries SET native_dirty = 2,
                 native_metadata_version = native_metadata_version + 1
              WHERE id = ?1",
             [entry],
@@ -838,7 +831,7 @@ fn a_local_edit_blocks_the_cloud_value_from_reaching_the_library_row() {
     pool.get()
         .unwrap()
         .execute(
-            "UPDATE sync_entries SET native_dirty = native_dirty | 2,
+            "UPDATE sync_entries SET native_dirty = 2,
                 native_metadata_version = native_metadata_version + 1
              WHERE id = ?1",
             [entry],
@@ -1036,7 +1029,7 @@ fn an_unchanged_projection_preserves_both_pending_categories() {
         .unwrap()
         .execute(
             "UPDATE sync_entries SET native_photo_id = 'a1', native_master_id = 'master-a1',
-                native_resource_baseline = ?2, native_dirty = 6,
+                native_resource_baseline = ?2, native_dirty = 2,
                 native_metadata_version = 2, native_content_version = 2
              WHERE id = ?1",
             rusqlite::params![entry, serde_json::to_string(&photo).unwrap()],
@@ -1120,7 +1113,7 @@ fn missing_local_media_does_not_bypass_an_issued_operation_or_delete_intent() {
         let photo = empty_photo("a1", "camera/one.jpg");
         seed_inbox_revisions(&pool, &job, &photo);
         let conn = pool.get().unwrap();
-        let dirty = if owner == "delete" { 9 } else { 1 };
+        let dirty = if owner == "delete" { 4 } else { 1 };
         conn.execute(
             "INSERT INTO sync_entries(job_id,relative_path,native_dirty) VALUES(?1,'camera/one.jpg',?2)",
             rusqlite::params![job.id,dirty],
@@ -1264,7 +1257,7 @@ fn adoption_of_unlinked_media_applies_cloud_metadata_or_keeps_local_dirty() {
             pool.get()
                 .unwrap()
                 .execute(
-                    "UPDATE sync_entries SET native_dirty=3,native_metadata_version=1 WHERE id=?1",
+                    "UPDATE sync_entries SET native_dirty=1,native_metadata_version=1 WHERE id=?1",
                     [entry],
                 )
                 .unwrap();
@@ -1446,7 +1439,7 @@ fn adoption_cannot_confirm_an_edit_made_after_measurement() {
         .unwrap();
     let row:(i64,i64,Option<String>,Option<String>)=pool.get().unwrap().query_row(
         "SELECT native_dirty,native_acked_content_version,native_photo_id,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
-    assert_ne!(row.0 & 4, 0, "old digest must not clear the later edit");
+    assert_ne!(row.0, 0, "old digest must not clear the later edit");
     assert_eq!(row.1, 0);
     assert!(row.2.is_none());
     assert!(
@@ -1498,7 +1491,7 @@ fn independent_local_content_and_remote_metadata_merge_without_downloads() {
         .unwrap();
     assert_no_conflict(&pool, entry);
     let (dirty,favorite):(i64,bool)=pool.get().unwrap().query_row("SELECT e.native_dirty,m.is_favorite FROM sync_entries e JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
-    assert_eq!(dirty, 4);
+    assert_eq!(dirty, 2);
     assert!(favorite);
     assert!(store.outstanding_resources(job.id).unwrap().is_empty());
     assert!(store.pending_publications(job.id).unwrap().is_empty());
@@ -1553,7 +1546,7 @@ fn concurrent_content_and_metadata_choose_each_category_independently() {
             .unwrap();
         assert_eq!(
             dirty,
-            if content_wins { 4 } else { 0 } | if metadata_wins { 2 } else { 0 },
+            if content_wins || metadata_wins { 2 } else { 0 },
             "{name}"
         );
         if content_wins {
@@ -1671,7 +1664,7 @@ fn a_cached_digest_is_also_scoped_to_the_measured_version() {
         .promote_remote_graph(job.id, graph(vec![remote]), "target", measured)
         .unwrap();
     let (dirty,acked,cached):(i64,i64,Option<String>)=pool.get().unwrap().query_row("SELECT native_dirty,native_acked_content_version,native_local_digest FROM sync_entries WHERE id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
-    assert_ne!(dirty & 4, 0);
+    assert_ne!(dirty, 0);
     assert_eq!(acked, 0);
     assert!(cached.is_none());
 }
@@ -1801,4 +1794,94 @@ fn adoption_does_not_settle_shared_assets_still_needed_by_another_photo() {
     assert!(resources
         .iter()
         .all(|resource| resource.state == super::super::ResourceState::Pending));
+}
+
+#[test]
+fn empty_delta_preserves_confirmed_identity_and_unrelated_projection() {
+    let (store, pool, job) = store_with_job("receive-empty-delta");
+    begin(&store, &job, "scope-1");
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo("a1", "gen-1", "camera/one.jpg")]),
+            "zone.t1",
+            no_local_digests(),
+        )
+        .unwrap();
+    let before: (Option<String>, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT native_photo_id,native_retired FROM sync_entries WHERE job_id=?1",
+            [job.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    store
+        .promote_remote_delta(
+            job.id,
+            RemoteGraph::default(),
+            "zone.t2",
+            no_local_digests(),
+        )
+        .unwrap();
+    assert!(store.current_remote_photo(job.id, "a1").unwrap().is_some());
+    let after: (Option<String>, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT native_photo_id,native_retired FROM sync_entries WHERE job_id=?1",
+            [job.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after, (Some("a1".into()), 0));
+}
+
+#[test]
+fn missing_from_snapshot_does_not_retire_without_explicit_tombstone() {
+    let (store, pool, job) = store_with_job("receive-no-inferred-delete");
+    begin(&store, &job, "scope-1");
+    store
+        .promote_remote_graph(
+            job.id,
+            graph(vec![photo("a1", "gen-1", "camera/one.jpg")]),
+            "zone.t1",
+            no_local_digests(),
+        )
+        .unwrap();
+    store
+        .promote_remote_graph(
+            job.id,
+            RemoteGraph::default(),
+            "zone.t2",
+            no_local_digests(),
+        )
+        .unwrap();
+    let identity: (Option<String>, i64) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT native_photo_id,native_retired FROM sync_entries WHERE job_id=?1",
+            [job.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(identity, (Some("a1".into()), 0));
+    let mut deleted = RemoteGraph::default();
+    deleted.tombstones.push("a1".into());
+    store
+        .promote_remote_delta(job.id, deleted, "zone.t3", no_local_digests())
+        .unwrap();
+    let retired: bool = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT native_retired FROM sync_entries WHERE job_id=?1",
+            [job.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(retired);
 }

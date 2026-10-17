@@ -319,6 +319,8 @@ fn assert_viewer_date_label_updates() {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
 
     // today -> visible, reads the localized "today" string
@@ -377,6 +379,8 @@ fn assert_viewer_video_mode_disables_editing() {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
 
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
@@ -429,6 +433,8 @@ fn assert_viewer_motion_photo_mode_shows_play_button() {
         blake3_hash: "hash".into(),
         is_favorite: false,
         trashed_at: None,
+        storage_location: photo_viewer::core::media::MediaLocation::Local,
+        thumbnail_ready: false,
     };
 
     let media_list: gtk::gio::ListStore = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
