@@ -1,4 +1,5 @@
 //! SQLite 连接池与当前 schema 初始化。
+mod schema;
 use crate::core::error::{AppError, Result};
 use crate::core::media::{media_kind_from_mime, MediaItem, MediaKind, NewMediaItem};
 
@@ -27,8 +28,17 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 10_000;
 const UPSERT_RETRY_LIMIT: usize = 3;
-/// Open a library, creating its schema if it is not there yet.
+/// Open a library, detecting incompatible columns before background work starts.
 pub fn init_pool(path: &Path) -> Result<DbPool> {
+    let mut connection = rusqlite::Connection::open(path)?;
+    connection.busy_timeout(std::time::Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))?;
+    // Recovery recreates at most one table in one transaction. Suppress DROP's
+    // implicit FK cascades; the initializer protects dependents and validates
+    // references before committing. Every pooled connection enables FKs below.
+    connection.pragma_update(None, "foreign_keys", false)?;
+    schema::initialize(&mut connection)?;
+    drop(connection);
+
     let manager = SqliteConnectionManager::file(path).with_init(|c| {
         c.execute_batch(&format!(
             "PRAGMA journal_mode = WAL;
@@ -41,22 +51,11 @@ pub fn init_pool(path: &Path) -> Result<DbPool> {
         .max_size(8)
         .build(manager)
         .map_err(AppError::from)?;
-    let mut conn = pool.get()?;
-    init_schema(&mut conn)?;
     Ok(pool)
 }
 
-// Development builds share one schema definition. Before the first release,
-// schema shape changes require a fresh development database, not migrations.
+// Development builds share one schema definition rather than a migration ladder.
 const SCHEMA_VERSION: i64 = 1;
-
-fn init_schema(conn: &mut rusqlite::Connection) -> Result<()> {
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute_batch(SCHEMA_SQL)?;
-    tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    tx.commit()?;
-    Ok(())
-}
 
 fn ts(dt: DateTime<Utc>) -> i64 {
     dt.timestamp()

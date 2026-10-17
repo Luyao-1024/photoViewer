@@ -49,12 +49,17 @@ Run it alone during filmstrip work:
 tools/with-at-spi.sh xvfb-run -a -s "-screen 0 1920x1080x24" cargo test --locked --test ux_filmstrip_centering
 ```
 
-Startup closes synchronization runs a previous process left open before any new
-cycle starts; the focused case is
-`schema_nine_upgrade_discards_webdav_history_and_keeps_the_library` in
-`tests/db_migrations.rs`, with the store-level counterpart in
-`src/core/sync/store/tests.rs`
-(`startup_reconciliation_closes_runs_left_open_by_an_earlier_process`).
+Startup schema detection and single-table recovery are covered in
+`tests/db_schema_recovery.rs`. The cases cover a missing native upload column,
+indexed columns, type/default/extra-column drift, preserving unrelated data and
+other tables' indexes, unchanged compatible progress, fresh receive bootstrap,
+multiple-table refusal, dependent edit protection, non-schema errors and atomic
+rollback after a failed rebuild. Run only that target during recovery changes:
+`cargo test --locked --test db_schema_recovery`.
+
+Startup also closes synchronization runs a previous process left open before
+any new cycle starts; the store-level case is
+`src/core/sync/store/tests.rs::startup_reconciliation_closes_runs_left_open_by_an_earlier_process`.
 
 If a private D-Bus session cannot launch AT-SPI but the existing desktop session
 passes `tools/with-at-spi.sh --check`, reuse that session by setting

@@ -5,8 +5,11 @@
 This module owns PhotoViewer's synchronization with an independent Rust
 `Luyao-1024/syncserver` service. The previous WebDAV file-sync engine was
 removed outright: no provider, planner, reconciler or migration for it remains,
-and a schema-8 library is upgraded by dropping the WebDAV sync tables and
-recreating them empty (media, albums, favorites and edits are untouched).
+and no development-schema migration ladder remains. Column drift is detected
+at startup; [single-table recovery](storage.md#database) recreates at most one
+incompatible table and clears sync history with row deletions so synchronization
+starts from a fresh snapshot. Compatible configuration and library data survive;
+multiple incompatible tables are reported without automatic deletion.
 
 C1.1–C1.5 supported paths have focused runtime coverage; exhaustive recovery and the remote-release gate remain separate. See [implementation notes](native-sync-integration.md). A native connection can be created and probed,
 its accepted capability scope is pinned onto the connection row, a job can map a
@@ -173,5 +176,6 @@ Unit tests live beside the code (`native/protocol/tests.rs`,
 `native/receive/tests.rs`, `native/records/tests.rs`, `store/receive/tests.rs`,
 `store/tests.rs`, `service/tests.rs`); the real-server acceptance suites are
 `tests/native_sync_probe.rs` and `tests/native_sync_receive.rs` (see
-`docs/testing.md`). Schema shape and the schema-8 → 9 upgrade are covered in
-`tests/db_migrations.rs`.
+`docs/testing.md`). Current schema shape is covered in `tests/db_migrations.rs`; single-table
+recovery, preservation, rollback and fresh sync bootstrap are covered in
+`tests/db_schema_recovery.rs`.

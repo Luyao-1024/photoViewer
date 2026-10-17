@@ -9,7 +9,8 @@ Storage covers the SQLite schema, media rows, filesystem scanning, metadata extr
 | File | Role |
 |---|---|
 | `src/core/bootstrap.rs` | Launch wiring: pool/actor start, first index pass, scan-phase reporting |
-| `src/core/db.rs` | SQLite pool, current-schema initialization, pragmas |
+| `src/core/db.rs` | SQLite pool, pragmas, library queries |
+| `src/core/db/schema.rs` | Current-schema column detection and transactional single-table recovery |
 | `src/core/schema.sql` | Embedded schema |
 | `src/core/media.rs` | `MediaItem`, media kind helpers, and insert/update model |
 | `src/core/backend/local.rs` | Local filesystem scanner |
@@ -38,10 +39,37 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 Development builds keep SQLite `PRAGMA user_version` fixed at **1**. The
 application is not released yet, so `schema.sql` is the only current definition:
 initialization creates missing tables/indexes and always writes version 1.
-There is no version ladder, version-based rejection or compatibility promise for
-an older development schema. Recreate a development/test database when its
-structure no longer matches; normal initialization does not delete library data.
-See [native storage](native-sync-storage.md) for the sync-owned tables.
+There is no version ladder, version-based rejection or column migration.
+Before starting the pool/actor/scanner/sync service, initialization builds an
+in-memory reference from `schema.sql` and compares existing tables' column names,
+types, nullability, defaults, primary-key positions and hidden-column flags.
+Missing tables are created normally; column order and `user_version` do not
+trigger recovery.
+
+Automatic recovery may **drop and recreate at most one incompatible table**.
+It never deletes the database file. Multiple incompatible tables are reported
+without changing data. Recovery also refuses to discard foreign-key-dependent
+non-history rows in another table (for example, rebuilding `media_items` must
+not cascade into `edits`). Other tables, custom indexes, account/configuration
+rows, ordinary media and original files are preserved. Rows in the incompatible
+table itself are discarded; this is recovery, not an upgrade.
+
+After any table rebuild, all sync runtime/history rows (entries, inventory,
+tasks, conflicts, native progress/inbox/records/resources and publications) are
+cleared with `DELETE`, **without rebuilding those other tables**. Job cycle IDs,
+start/completion times and errors are reset. Compatible account connections,
+credential references, account selection, tasks' configuration, explicit upload
+scope, pause state and accepted pending edits survive. A previously running job
+can run again under the existing scheduler/global switch; paused jobs remain
+paused. The next receive starts a new snapshot/bootstrap and local enrollment
+runs from scratch instead of inheriting old tokens or completion claims.
+
+Detection, the single-table rebuild, sync-state clearing, foreign-key validation
+and version write share one SQLite transaction. Any error rolls everything back;
+I/O, lock and non-schema errors do not trigger destructive recovery. Foreign keys
+are suppressed only on the private initialization connection to prevent DROP
+cascades and are enabled on every pooled connection. See
+[native storage](native-sync-storage.md) for the sync-owned tables.
 
 SQLite uses an r2d2 connection pool with WAL, foreign keys, a 10-second busy
 timeout and normal synchronous mode applied through the pool init hook. SQLite

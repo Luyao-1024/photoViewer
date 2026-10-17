@@ -1,6 +1,6 @@
 # Native SyncServer Storage And Publication Design
 
-当前未正式发布，数据库版本始终固定为 **1**。`schema.sql` 是当前结构的唯一来源；结构变化时重新创建开发/测试数据库，不维护开发版本间的升级兼容。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。
+当前未正式发布，数据库版本始终固定为 **1**。`schema.sql` 是当前结构的唯一来源；结构变化时检测列布局，自动恢复最多只重建一个不兼容的表，不维护开发版本间的升级兼容。此文只定义 PhotoViewer 本地数据和发布方案；服务端规范统一引用[服务端契约索引](native-sync-protocol.md)。
 
 ## Ownership And Initialization
 
@@ -9,10 +9,24 @@ no SQL, GTK widgets or direct media-row admission. Extend SyncStore/DbCommand
 with typed native operations; background scans, editor/favorite changes, trash,
 recovery and callbacks use the same transaction owner.
 
-Initialization executes `schema.sql` and writes `PRAGMA user_version=1` in one
-transaction. Previous development version numbers are not an admission gate;
-initialization does not migrate columns or discard existing data. Provider kind
-is native-only, and a connection is created by an explicit completed probe.
+Initialization compares existing column layouts against an in-memory database
+created from `schema.sql`, then executes the current schema and writes
+`PRAGMA user_version=1` in one transaction. Previous development version numbers
+are not an admission gate; there are no column migrations. Recovery drops and
+recreates at most one incompatible table; multiple incompatible tables or
+non-history dependent rows cause an error without changing data. It never
+removes the database file. See [storage recovery](storage.md#database).
+
+A table rebuild invalidates the whole sync history: initialization deletes rows
+from entries, inventory, tasks, conflicts, native progress/inbox/records/resources
+and publications, and resets job cycle/completion/error fields. These other
+tables are not rebuilt. Compatible account/credential references, selected
+account, job configuration, explicit upload scope, pause state, pending edits
+and library data survive. With no snapshot/bootstrap/ingest/applied/target state,
+the next eligible cycle performs full receive discovery and local enrollment.
+Recovery rollback restores both the original table and all previous sync rows.
+Provider kind is native-only, and a connection is created by an explicit
+completed probe.
 
 ## Planned Fields On Existing Rows
 
