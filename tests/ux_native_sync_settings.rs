@@ -222,6 +222,12 @@ fn native_settings_probe_drafts_and_scope_use_real_controls() {
     Ui::for_widget(&disclosure).scroll_to_reveal(&disclosure, "Task details");
     Ui::for_widget(&disclosure).click_native(&disclosure, "Expand task details");
     assert!(ui.wait_until(Duration::from_secs(3), || task.is_expanded()));
+    assert!(
+        !descendants::<gtk::Button>(&task)
+            .iter()
+            .any(|button| button.widget_name().starts_with("native-sync-manage-")),
+        "task details contain configuration only; photos are browsed in the library"
+    );
     assert!(!store.get_job(job.id).unwrap().unwrap().paused);
     assert_eq!(
         store.get_job(job.id).unwrap().unwrap().config_generation,

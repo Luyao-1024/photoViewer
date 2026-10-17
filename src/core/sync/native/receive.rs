@@ -406,7 +406,7 @@ impl NativeClient {
 
     /// Page size to ask for, bounded by what the server announced.
     pub fn page_limit(&self, pinned: &super::protocol::NativePinnedScope) -> usize {
-        pinned.sync_limits.max_page.clamp(1, 200)
+        pinned.sync_limits.max_page.clamp(1, 100)
     }
 
     pub(super) fn cloudkit_url(

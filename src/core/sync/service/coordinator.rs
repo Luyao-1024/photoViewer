@@ -30,7 +30,32 @@ pub struct CycleReport {
     pub mutations_confirmed: usize,
     pub failures: Vec<ItemFailure>,
     pub outstanding: usize,
+    /// Entries left dirty because this cycle reached an uplink batch limit.
+    pub uplink_deferred: usize,
     pub released: bool,
+}
+/// One lease admits bounded work; retries consume the same allowance as new
+/// operations. Count photos, so an original/thumbnail pair occupies one slot.
+#[derive(Default)]
+struct UplinkBatch {
+    assets: usize,
+    metadata: usize,
+}
+impl UplinkBatch {
+    fn admit(&mut self, phase: UploadPhase, dirty: NativeDirty) -> bool {
+        let (used, limit) = if phase == UploadPhase::Create
+            || (phase == UploadPhase::Modify && dirty.contains(NativeDirty::CONTENT))
+        {
+            (&mut self.assets, 5)
+        } else {
+            (&mut self.metadata, 20)
+        };
+        if *used >= limit {
+            return false;
+        }
+        *used += 1;
+        true
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemFailure {
@@ -182,7 +207,7 @@ impl SyncService {
             Ok(report) if report.uplink_skipped => {
                 Some("another device holds the upload lease; retry scheduled".into())
             }
-            Ok(report) if report.outstanding > 0 => Some(format!(
+            Ok(report) if report.outstanding > report.uplink_deferred => Some(format!(
                 "{} synchronization obligations remain",
                 report.outstanding
             )),
@@ -358,6 +383,14 @@ impl SyncService {
             if operation.generation != pinned.database_generation {
                 return Err(CycleError::Behind("an issued operation belongs to an obsolete scope/configuration; reconciliation is required".into()));
             }
+            if self
+                .store()
+                .upload_error(job.id, operation.entry)
+                .map_err(setup)?
+                .is_some()
+            {
+                continue;
+            }
             if operation.body.is_null() {
                 if operation.config != job.config_generation {
                     self.store()
@@ -370,22 +403,40 @@ impl SyncService {
                 }
                 continue;
             }
-            if let OperationState::Committed(response) = client
-                .operation_status(&operation.id)
-                .await
-                .map_err(transport)?
-            {
-                self.store()
+            // A failed receipt lookup/confirmation belongs to this photo. Keep
+            // the issued evidence and exclude it from dispatch until next Begin.
+            let status = client.operation_status(&operation.id).await;
+            let result = match status {
+                Ok(OperationState::Committed(response)) => self
+                    .store()
                     .runtime(Command::Confirm {
                         epoch: epoch.clone(),
-                        operation,
+                        operation: operation.clone(),
                         response,
                         lease: lease.clone(),
                     })
-                    .map_err(setup)?;
-                report.mutations_confirmed += 1;
-            } else if operation.config != job.config_generation {
-                return Err(CycleError::Behind("an older configuration has an unconfirmed issued operation; its outcome must be reconciled before new writes".into()));
+                    .map_err(setup)
+                    .map(|()| {
+                        report.mutations_confirmed += 1;
+                    }),
+                Ok(_) if operation.config != job.config_generation => {
+                    return Err(CycleError::Behind("an older configuration has an unconfirmed issued operation; its outcome must be reconciled before new writes".into()));
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(transport(error)),
+            };
+            if let Err(error) = result {
+                self.upload_failed(
+                    epoch,
+                    lease,
+                    operation.entry,
+                    issued_path(&operation),
+                    error,
+                    report,
+                )?;
+                if operation.config != job.config_generation {
+                    return Err(CycleError::Behind("an older configuration has an unconfirmed issued operation; its outcome must be reconciled before new writes".into()));
+                }
             }
         }
         let mut ready = false;
@@ -429,6 +480,7 @@ impl SyncService {
             })
             .map_err(setup)?;
         let entries = self.store().uplink_view(job.id).map_err(setup)?;
+        let mut batch = UplinkBatch::default();
         for phase in UploadPhase::ORDER {
             if phase != UploadPhase::Delete {
                 client
@@ -438,22 +490,66 @@ impl SyncService {
             }
             let pending = self.store().pending_issued(job.id).map_err(setup)?;
             for operation in pending.iter().filter(|op| op.phase == phase.as_str()) {
-                self.execute_issued(
-                    client,
-                    lease,
-                    heartbeat,
-                    job,
-                    epoch,
-                    pinned,
-                    zone,
-                    operation.clone(),
-                    report,
-                )
-                .await?;
+                if self
+                    .store()
+                    .upload_error(job.id, operation.entry)
+                    .map_err(setup)?
+                    .is_some()
+                {
+                    continue;
+                }
+                if !batch.admit(phase, NativeDirty(operation.dirty)) {
+                    report.uplink_deferred += 1;
+                    continue;
+                }
+                if let Err(error) = self
+                    .execute_issued(
+                        client,
+                        lease,
+                        heartbeat,
+                        job,
+                        epoch,
+                        pinned,
+                        zone,
+                        operation.clone(),
+                        report,
+                    )
+                    .await
+                {
+                    self.upload_failed(
+                        epoch,
+                        lease,
+                        operation.entry,
+                        issued_path(operation),
+                        error,
+                        report,
+                    )?;
+                }
             }
             for entry in &entries {
-                if !eligible(self, job, entry)? || !matches_phase(entry, phase) {
+                if !matches_phase(entry, phase)
+                    || self
+                        .store()
+                        .upload_error(job.id, entry.entry_id)
+                        .map_err(setup)?
+                        .is_some()
+                {
                     continue;
+                }
+                match eligible(self, job, entry) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        self.upload_failed(
+                            epoch,
+                            lease,
+                            entry.entry_id,
+                            &entry.relative_path,
+                            error,
+                            report,
+                        )?;
+                        continue;
+                    }
                 }
                 if pending.iter().any(|op| op.entry == entry.entry_id) {
                     continue;
@@ -462,6 +558,10 @@ impl SyncService {
                 if !current.iter().any(|row| {
                     row.entry_id == entry.entry_id && row.local_version == entry.local_version
                 }) {
+                    continue;
+                }
+                if !batch.admit(phase, entry.dirty) {
+                    report.uplink_deferred += 1;
                     continue;
                 }
                 let phase_result = heartbeat
@@ -475,15 +575,44 @@ impl SyncService {
                     .await;
                 match phase_result {
                     Ok(()) => {}
-                    Err(CycleError::LeaseLost) => return Err(CycleError::LeaseLost),
-                    Err(error) => report.failures.push(ItemFailure {
-                        entry_id: entry.entry_id,
-                        relative_path: entry.relative_path.clone(),
-                        reason: error.to_string(),
-                    }),
+                    Err(error) => self.upload_failed(
+                        epoch,
+                        lease,
+                        entry.entry_id,
+                        &entry.relative_path,
+                        error,
+                        report,
+                    )?,
                 }
             }
         }
+        Ok(())
+    }
+    fn upload_failed(
+        &self,
+        epoch: &Epoch,
+        lease: &UploadLease,
+        entry: i64,
+        relative_path: &str,
+        error: CycleError,
+        report: &mut CycleReport,
+    ) -> Result<(), CycleError> {
+        if matches!(error, CycleError::LeaseLost) || !lease.valid_now() {
+            return Err(CycleError::LeaseLost);
+        }
+        let reason = error.to_string();
+        self.store()
+            .runtime(Command::UploadFailed {
+                epoch: epoch.clone(),
+                entry,
+                reason: reason.clone(),
+            })
+            .map_err(setup)?;
+        report.failures.push(ItemFailure {
+            entry_id: entry,
+            relative_path: relative_path.into(),
+            reason,
+        });
         Ok(())
     }
     #[allow(clippy::too_many_arguments)]
@@ -801,6 +930,11 @@ impl SyncService {
         super::authentication::validate_identity(&pinned, &current)?;
         Ok(client)
     }
+}
+fn issued_path(operation: &Issued) -> &str {
+    operation.preparation["metadata"]["relativePath"]["value"]
+        .as_str()
+        .unwrap_or("")
 }
 fn matches_phase(entry: &DirtyEntry, phase: UploadPhase) -> bool {
     if entry.dirty.contains(NativeDirty::DELETE) {

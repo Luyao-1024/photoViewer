@@ -197,3 +197,18 @@ fn a_zone_list_request_body_is_exactly_an_empty_object() {
     assert_eq!(serde_json::to_string(&()).unwrap(), "null");
     assert_eq!(String::from_utf8(b"{}".to_vec()).unwrap(), "{}");
 }
+
+#[test]
+fn receive_pages_request_100_records_or_the_smaller_server_limit() {
+    let endpoint =
+        super::super::protocol::NativeEndpoint::parse("https://sync.example.invalid/").unwrap();
+    let client = NativeClient::new(&endpoint, &"a".repeat(32)).unwrap();
+    let mut pinned = super::super::protocol::demo_pinned_scope(
+        "https://sync.example.invalid/",
+        &["PrimarySync"],
+    );
+    for (server_limit, expected) in [(200, 100), (100, 100), (40, 40), (1, 1)] {
+        pinned.sync_limits.max_page = server_limit;
+        assert_eq!(client.page_limit(&pinned), expected);
+    }
+}

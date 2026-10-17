@@ -51,6 +51,7 @@ columns may split JSON only while preserving the same transaction contract.
 | Planned columns | Shape / meaning |
 |---|---|
 | native_dirty | INTEGER NOT NULL DEFAULT 0, CHECK 0–15; bit semantics below |
+| native_upload_error | nullable TEXT; latest upload error for this cycle, cleared per job by an accepted Begin; never dirty truth |
 | native_local_version | INTEGER NOT NULL DEFAULT 0, monotonic user-change counter |
 | native_metadata_version / native_content_version / native_deletion_version | INTEGER NOT NULL DEFAULT 0; independently captured/acknowledged |
 | native_acked_metadata_version / native_acked_content_version / native_acked_deletion_version | INTEGER NOT NULL DEFAULT 0; never above their corresponding local version |
@@ -298,6 +299,26 @@ local edit invalidates that publication through its version/dirty guard. A
 remote path change can publish after the winning local content has uploaded;
 library-backed resources without staging bytes are restaged before placement.
 Ordinary same-record edits do not create manual-resolution conflicts.
+
+## Per-Cycle Upload Failures
+
+`sync_entries.native_upload_error` stores the individual photo's latest upload
+failure. An accepted `Begin` clears the current job's errors in the same actor
+transaction that admits its new cycle. A rejected start leaves errors intact.
+`UploadFailed` validates the current epoch and entry/job identity before writing;
+a stale callback cannot label a newer cycle as failed. The marker survives cycle
+completion and restart until that job's next accepted cycle.
+
+Receipt lookup/confirmation, pending-operation retries and new preparation or
+submission all isolate photo-specific failures. Marked entries are excluded from
+later dispatch within the same cycle while retaining dirty/category versions and
+issued evidence. A definitive server rejection retires only the rejected issued
+operation; its entry still waits until the next cycle before creating a fresh
+request. Unknown outcomes keep the original operation identity. Lease loss,
+superseded configuration, scope/database-generation mismatch and unresolved
+issued operations from an older configuration still prevent unsafe new writes.
+Other jobs' diagnostics and successful entries are unaffected. Batch allowances
+still count attempted uploads; receipt-only checks do not consume them.
 
 ## Success Callback Transaction
 

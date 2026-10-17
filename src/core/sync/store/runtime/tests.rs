@@ -312,3 +312,88 @@ fn authentication_upgrade_keeps_scope_but_cannot_replace_an_accepted_account() {
         accepted
     );
 }
+
+#[test]
+fn upload_failure_is_persisted_for_one_entry_until_the_next_accepted_cycle() {
+    let f = fixture("upload-failure-cycle");
+    let entry = f.operation.entry;
+    let before = f.store.uplink_view(f.epoch.job).unwrap();
+    assert!(f.store.upload_error(f.epoch.job, entry).unwrap().is_none());
+    let other_job_entry = {
+        let conn = f.store.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sync_jobs(connection_id,local_root,native_zone_name) SELECT connection_id,local_root||'-other','OtherZone' FROM sync_jobs WHERE id=?1",
+            [f.epoch.job],
+        ).unwrap();
+        let job = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_upload_error) VALUES(?1,'other-job.jpg',1,'other job failure')",
+            [job],
+        ).unwrap();
+        (job, conn.last_insert_rowid())
+    };
+    assert!(f
+        .store
+        .runtime(Command::UploadFailed {
+            epoch: f.epoch.clone(),
+            entry: other_job_entry.1,
+            reason: "wrong job".into(),
+        })
+        .is_err());
+    let other = {
+        let conn = f.store.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO sync_entries(job_id,relative_path,native_dirty) VALUES(?1,'other.jpg',1)",
+            [f.epoch.job],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    };
+    f.store
+        .runtime(Command::UploadFailed {
+            epoch: f.epoch.clone(),
+            entry,
+            reason: "original upload could not be completed".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        f.store.upload_error(f.epoch.job, entry).unwrap().as_deref(),
+        Some("original upload could not be completed")
+    );
+    assert!(f.store.upload_error(f.epoch.job, other).unwrap().is_none());
+    assert_eq!(f.store.uplink_view(f.epoch.job).unwrap()[0], before[0]);
+    assert_eq!(f.store.pending_issued(f.epoch.job).unwrap().len(), 1);
+    f.store.runtime(Command::End(f.epoch.clone())).unwrap();
+    assert!(f.store.upload_error(f.epoch.job, entry).unwrap().is_some());
+
+    let mut invalid = f.epoch.clone();
+    invalid.config += 1;
+    assert!(f.store.runtime(Command::Begin(invalid)).is_err());
+    assert!(f.store.upload_error(f.epoch.job, entry).unwrap().is_some());
+
+    let mut next = f.epoch.clone();
+    next.cycle = uuid::Uuid::new_v4().to_string();
+    f.store.runtime(Command::Begin(next)).unwrap();
+    assert!(f.store.upload_error(f.epoch.job, entry).unwrap().is_none());
+    assert_eq!(
+        f.store
+            .upload_error(other_job_entry.0, other_job_entry.1)
+            .unwrap()
+            .as_deref(),
+        Some("other job failure")
+    );
+    assert!(f
+        .store
+        .runtime(Command::UploadFailed {
+            epoch: f.epoch,
+            entry,
+            reason: "late result from the previous cycle".into(),
+        })
+        .is_err());
+    assert!(f
+        .store
+        .upload_error(f.operation.job, entry)
+        .unwrap()
+        .is_none());
+    assert_eq!(f.store.pending_issued(f.operation.job).unwrap().len(), 1);
+}

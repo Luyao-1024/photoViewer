@@ -60,6 +60,11 @@ pub enum Command {
         action: super::PhotoAction,
         recovery: Option<String>,
     },
+    UploadFailed {
+        epoch: Epoch,
+        entry: i64,
+        reason: String,
+    },
     Begin(Epoch),
     End(Epoch),
     Save(Epoch, Issued),
@@ -128,6 +133,16 @@ fn valid_epoch(tx: &Transaction<'_>, epoch: &Epoch) -> Result<()> {
 }
 
 impl SyncStore {
+    pub(crate) fn upload_error(&self, job: i64, entry: i64) -> Result<Option<String>> {
+        self.pool
+            .get()?
+            .query_row(
+                "SELECT native_upload_error FROM sync_entries WHERE job_id=?1 AND id=?2",
+                params![job, entry],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
     pub(crate) fn runtime(&self, command: Command) -> Result<()> {
         match self.write(SyncWrite::Runtime(Box::new(command)))? {
             SyncWriteResult::None => Ok(()),
@@ -237,6 +252,22 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
         } => {
             super::actions::apply(&tx, job, entry, version, conflict, action, recovery)?;
         }
+        Command::UploadFailed {
+            epoch,
+            entry,
+            reason,
+        } => {
+            valid_epoch(&tx, &epoch)?;
+            let changed = tx.execute(
+                "UPDATE sync_entries SET native_upload_error=?3 WHERE job_id=?1 AND id=?2",
+                params![epoch.job, entry, reason],
+            )?;
+            if changed != 1 {
+                return Err(invalid(
+                    "upload failure belongs to another job or missing entry",
+                ));
+            }
+        }
         Command::Begin(epoch) => {
             // The caller holds a process-wide job guard. A previous process's
             // epoch is never authority for a newly issued callback.
@@ -244,6 +275,10 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             if count != 1 {
                 return Err(invalid("job no longer accepts this synchronization cycle"));
             }
+            tx.execute(
+                "UPDATE sync_entries SET native_upload_error=NULL WHERE job_id=?1 AND native_upload_error IS NOT NULL",
+                [epoch.job],
+            )?;
         }
         Command::ObserveLocal { job, paths } => {
             for relative in paths {

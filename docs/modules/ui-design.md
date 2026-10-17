@@ -45,6 +45,10 @@ Key implementation locations:
 | Keyboard routing | `src/ui/keyboard/`, [`keyboard.md`](keyboard.md) |
 | Shared material | `src/ui/grid_css.rs`, `docs/modules/ui-liquid-glass.md` |
 
+Cloud-sync Settings owns accounts, jobs, run controls and upload scope. Photos
+are browsed and managed through the existing library, albums and viewer; do not
+add a parallel cloud-photo management page or dialog.
+
 ## Global Design Principles
 
 - Content owns the screen. Browsing grids, the active media item, and album or
@@ -530,8 +534,7 @@ Design intent:
   same values never pauses or restarts anything; only a validated, accepted
   effective edit stops obsolete work and automatically schedules the latest
   configuration. The durable-edit engine behind that rule is described in
-  [`sync.md`](sync.md). Conflicts over cloud content render as
-  explicit choices, never as silent overwrites.
+  [`sync.md`](sync.md). Unresolved conflicts remain visible in sync status.
 - Buttons inside the Settings dialog use always-on glass
   (`.glass-toolbar-button`), consistent with the toolbar-button rule for
   dedicated sub-window surfaces.
@@ -649,7 +652,7 @@ Native task management displays the accepted username and supports sign-out and 
 Cloud Sync shows a non-navigating ActionRow with a directly operable global
 switch. Overview/progress and task configuration follow inline in the category. Task cards start collapsed; details show the
 full folder and server/account/zone identity, an album-scope summary with a
-Choose button, and cloud-photo management. An accessible overflow menu groups
+Choose button. Photo browsing uses the existing library, albums and viewer. An accessible overflow menu groups
 pause/resume, sign-in, sign-out and confirmed removal. Existing glass button
 classes and libadwaita rows provide both material modes without custom fills.
 Background polling updates existing cards rather than replacing them.

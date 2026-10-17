@@ -22,7 +22,6 @@ use std::time::Duration;
 
 mod cleanup;
 mod layout;
-mod native_actions;
 mod native_sync;
 
 impl MainWindow {

@@ -453,15 +453,6 @@ fn append_job(
     scope_row.add_suffix(&scope);
     scope_row.set_activatable_widget(Some(&scope));
     row.add_row(&scope_row);
-    let manage_row = detail("native.manage", &tr("native.manage_summary"));
-    let manage = gtk::Button::from_icon_name("go-next-symbolic");
-    manage.add_css_class("glass-icon-button");
-    manage.set_widget_name(&format!("native-sync-manage-{}", job.id));
-    manage.set_tooltip_text(Some(&tr("native.manage")));
-    manage.set_valign(gtk::Align::Center);
-    manage_row.add_suffix(&manage);
-    manage_row.set_activatable_widget(Some(&manage));
-    row.add_row(&manage_row);
     group.add(&row);
     let remove = menu_action(
         "native.remove",
@@ -493,10 +484,6 @@ fn append_job(
             },
         );
     });
-    let parent_manage = parent.clone();
-    let service_manage = service.clone();
-    manage
-        .connect_clicked(move |_| show_managed_photos(&parent_manage, service_manage.clone(), id));
     let service_pause = service.clone();
     pause.connect_clicked(move |_| {
         let service = service_pause.clone();
@@ -1114,10 +1101,6 @@ fn show_albums(
         }
     });
     dialog.present(parent);
-}
-
-fn show_managed_photos(parent: &gtk::Widget, service: SyncService, job: i64) {
-    super::native_actions::show(parent, service, job);
 }
 
 fn show_relogin(parent: &gtk::Widget, service: SyncService, job: i64, account: String) {

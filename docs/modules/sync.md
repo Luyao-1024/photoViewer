@@ -24,7 +24,9 @@ The account surface owns switch-account and authentication actions; folder overf
 updates existing task widgets so progress changes preserve expansion and focus.
 
 The native Settings surface supports connection probes, explicit album scope,
-manual/automatic synchronization, pause/resume and cloud-photo decisions. The
+manual/automatic synchronization and pause/resume. Photo browsing and management
+use the existing library, albums and viewer; Settings has no separate cloud-photo
+management surface. Versioned photo-decision APIs remain available internally. The
 implementation boundaries are the connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,
 paired with a thumbnail from the same copy, uploaded, downloaded, verified and
