@@ -25,6 +25,22 @@ pub fn write_plain_jpeg(dir: &std::path::Path, name: &str) -> PathBuf {
     path
 }
 
+/// Prepare the local thumbnail worker's output before a sync upload fixture.
+pub fn cache_local_thumbnail(path: &std::path::Path) {
+    use photo_viewer::core::thumbnails::{
+        import_cached_thumbnail, render_jpeg_bytes, ThumbnailSize,
+    };
+    let bytes = render_jpeg_bytes(path, ThumbnailSize::Large.max_dim()).unwrap();
+    import_cached_thumbnail(
+        &photo_viewer::config::cache_dir(),
+        &photo_viewer::core::file_uri::from_path(path),
+        ThumbnailSize::Large,
+        None,
+        &bytes,
+    )
+    .unwrap();
+}
+
 /// Generate a solid-color PNG test image (no EXIF). Used by tests that need a
 /// non-JPEG image (e.g. Chinese-named folder roundtrip via notify watcher).
 pub fn write_plain_png(dir: &std::path::Path, name: &str) -> PathBuf {

@@ -123,6 +123,7 @@ async fn switching_accounts_preserves_isolation_and_only_one_account_can_sync() 
         .unwrap();
     assert_ne!(scope_a.namespace, scope_b.namespace);
     for path in [&alice_photo, &bob_photo] {
+        common::cache_local_thumbnail(path);
         let item = photo_viewer::core::backend::local::LocalBackend::new_item_from_path(path)
             .unwrap()
             .unwrap();

@@ -398,10 +398,18 @@ reconciliation; it never performs mass deletion from a partial new listing.
 
 Reuse current local hashing/snapshot machinery, with explicit native SHA-256
 for each original/thumbnail and BLAKE3 for current local/media baselines. Compute
-needed digests during one bounded streaming pass over a stable owned snapshot;
-regenerate the upload thumbnail from that exact original. New user content
-invalidates only that entry's cached snapshot/hash. mtime+length alone cannot
-prove unchanged content, and server commit time is not a user edit time.
+needed original digests during one bounded streaming pass over a stable owned
+snapshot. Read the upload thumbnail from the existing local cache, preferring
+Large, then Medium, then Small, using the usual source path/mtime cache identity.
+Do not require a source-content digest binding or regenerate a thumbnail for
+uplink: temporary original/cache version differences are accepted. Missing local
+thumbnails defer the entry without clearing dirty, recording an upload failure,
+issuing an operation, or consuming an attachment slot. Local thumbnail workers
+own generation; later automatic cycles retry. Reuse fitting JPEG/PNG bytes
+unchanged; conversion/size reduction decodes only cached thumbnail pixels.
+New user content invalidates only that entry's cached snapshot/hash.
+mtime+length alone cannot prove unchanged original content, and server commit
+time is not a user edit time.
 
 An app-offline/watcher-loss interval requires a bounded reconciliation audit of
 the eligible local scope before declaring local change tracking reliable. It

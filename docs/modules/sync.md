@@ -32,9 +32,19 @@ use the existing library, albums and viewer; Settings has no separate cloud-phot
 management surface. Versioned photo-decision APIs remain available internally. The
 implementation boundaries are the connection and probe, the durable receive path, the dirty-truth/lease
 coordinator, and complete media transfer — a local photo is snapshotted, digested,
-paired with a thumbnail from the same copy, uploaded, downloaded, verified and
+paired with an existing local thumbnail, uploaded, downloaded, verified and
 published. A photo becomes visible only when its whole pair is usable, and
 `applied` cannot advance past work that is still owed. Native user choices are described in the [usage guide](native-sync-usage.md).
+
+Native uplink reads the existing local thumbnail cache (Large, Medium, then
+Small) using its normal source path/mtime identity. It does not decode originals,
+extract video frames, request thumbnail generation, or require source-digest
+provenance for the cache. Missing thumbnails leave the photo dirty and deferred,
+without an upload error or consuming an attachment slot. A later automatic cycle
+retries after local thumbnail generation. Fitting JPEG/PNG caches are uploaded
+byte-for-byte; conversion or size reduction reads only the cached thumbnail.
+Metadata-only changes and deletions do not require a thumbnail.
+
 Protocol definitions remain exclusively in the sibling server repository.
 
 | Read | Owns |

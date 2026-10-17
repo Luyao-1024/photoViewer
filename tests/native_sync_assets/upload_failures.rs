@@ -84,10 +84,9 @@ impl Fixture {
     fn add(&self, indices: std::ops::Range<usize>) {
         let items = indices
             .map(|i| {
-                Self::item(&common::write_plain_jpeg(
-                    &self.source,
-                    &format!("photo-{i}.jpg"),
-                ))
+                let path = common::write_plain_jpeg(&self.source, &format!("photo-{i}.jpg"));
+                common::cache_local_thumbnail(&path);
+                Self::item(&path)
             })
             .collect();
         self.actor
@@ -169,6 +168,7 @@ fn pending_asset_failure_does_not_block_other_photos_and_retries_next_cycle() {
         let f = Fixture::new(server).await;
         for media in db::list_all_media(&f.pool).unwrap() {
             common::write_distinct_jpeg(&media.path, 96, 80, [220, 30, 60]);
+            common::cache_local_thumbnail(&media.path);
             f.actor
                 .execute_blocking(DbCommand::UpdateEditedMedia {
                     id: MediaId::from(media.id),
@@ -301,28 +301,29 @@ fn rejected_pending_metadata_is_not_reissued_in_the_same_cycle() {
 }
 
 #[test]
-fn a_new_photo_preparation_failure_is_saved_and_does_not_block_later_photos() {
+fn a_new_photo_without_a_cached_thumbnail_waits_and_does_not_block_later_photos() {
     let server = Server::start().expect("upload failure tests require SyncServer");
     block_on(async {
         let f = Fixture::new(server).await;
         f.add(3..6);
-        let broken = f.source.join("photo-3.jpg");
-        std::fs::write(&broken, b"not an image").unwrap();
+        let waiting = f.source.join("photo-3.jpg");
+        // A new mtime has no cache yet. Upload must neither decode these bytes
+        // nor report a preparation error, even though they are not an image.
+        std::fs::write(&waiting, b"not an image").unwrap();
         let first = f.service.run_cycle(f.job.id).await.unwrap();
-        assert_eq!(first.failures.len(), 1, "{first:?}");
+        assert!(first.failures.is_empty(), "{first:?}");
         assert_eq!(first.mutations_confirmed, 2, "{first:?}");
         assert_eq!(first.outstanding, 1, "{first:?}");
-        let entry = first.failures[0].entry_id;
-        assert_eq!(
-            f.failure(entry).as_deref(),
-            Some(first.failures[0].reason.as_str())
-        );
-        common::write_distinct_jpeg(&broken, 64, 48, [40, 180, 90]);
+        assert_eq!(first.uplink_deferred, 1, "{first:?}");
+        let entry = f.service.store().uplink_view(f.job.id).unwrap().remove(0);
+        assert!(f.failure(entry.entry_id).is_none());
+        common::write_distinct_jpeg(&waiting, 64, 48, [40, 180, 90]);
+        common::cache_local_thumbnail(&waiting);
         let next = f.service.run_cycle(f.job.id).await.unwrap();
         assert!(next.failures.is_empty(), "{next:?}");
         assert_eq!(next.mutations_confirmed, 1, "{next:?}");
         assert_eq!(next.outstanding, 0, "{next:?}");
-        assert!(f.failure(entry).is_none());
+        assert!(f.failure(entry.entry_id).is_none());
     });
 }
 
@@ -437,5 +438,100 @@ fn a_receipt_confirmation_failure_is_skipped_until_the_next_cycle() {
         );
         assert_eq!(next.outstanding, 0, "{next:?}");
         assert!(f.failure(entry.entry_id).is_none());
+    });
+}
+
+#[test]
+fn cached_video_upload_does_not_decode_or_transcode_the_original() {
+    let server = Server::start().expect("cached thumbnail tests require SyncServer");
+    block_on(async {
+        let f = Fixture::new(server).await;
+        let source = f.source.join("video.mp4");
+        let original = b"opaque video bytes that no media decoder can open";
+        std::fs::write(&source, original).unwrap();
+        let thumbnail = std::fs::read(f.source.join("photo-0.jpg")).unwrap();
+        photo_viewer::core::thumbnails::import_cached_thumbnail(
+            &photo_viewer::config::cache_dir(),
+            &photo_viewer::core::file_uri::from_path(&source),
+            photo_viewer::core::thumbnails::ThumbnailSize::Large,
+            None,
+            &thumbnail,
+        )
+        .unwrap();
+        let mut item = Fixture::item(&source);
+        item.mime_type = "video/mp4".into();
+        f.actor
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items: vec![item],
+            })
+            .unwrap();
+        let report = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(report.mutations_confirmed, 1, "{report:?}");
+        assert_eq!(report.outstanding, 0, "{report:?}");
+        assert_eq!(std::fs::read(source).unwrap(), original);
+    });
+}
+
+#[test]
+fn missing_thumbnails_preserve_dirty_work_without_consuming_upload_slots() {
+    let server = Server::start().expect("cached thumbnail tests require SyncServer");
+    block_on(async {
+        let f = Fixture::new(server).await;
+        let paths: Vec<_> = (3..9)
+            .map(|i| common::write_plain_jpeg(&f.source, &format!("photo-{i}.jpg")))
+            .collect();
+        f.actor
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items: paths.iter().map(|path| Fixture::item(path)).collect(),
+            })
+            .unwrap();
+        let waiting = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(waiting.failures.is_empty(), "{waiting:?}");
+        assert_eq!(waiting.mutations_sent, 0, "{waiting:?}");
+        assert_eq!(waiting.outstanding, 6, "{waiting:?}");
+        assert_eq!(waiting.uplink_deferred, 6, "{waiting:?}");
+        let issued: i64 = f
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM sync_tasks WHERE job_id=?1 AND state='issued'",
+                [f.job.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            issued, 0,
+            "waiting photos must not become issued operations"
+        );
+        for entry in f.service.store().uplink_view(f.job.id).unwrap() {
+            assert!(f.failure(entry.entry_id).is_none());
+        }
+        assert!(f
+            .service
+            .store()
+            .get_job(f.job.id)
+            .unwrap()
+            .unwrap()
+            .last_error
+            .is_none());
+        f.add(9..10);
+        let ready = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(ready.failures.is_empty(), "{ready:?}");
+        assert_eq!(ready.mutations_confirmed, 1, "{ready:?}");
+        assert_eq!(ready.outstanding, 6, "{ready:?}");
+        assert_eq!(ready.uplink_deferred, 6, "{ready:?}");
+        for path in &paths {
+            common::cache_local_thumbnail(path);
+        }
+        for (confirmed, outstanding) in [(5, 1), (1, 0)] {
+            let resumed = f.service.run_cycle(f.job.id).await.unwrap();
+            assert!(resumed.failures.is_empty(), "{resumed:?}");
+            assert_eq!(resumed.mutations_confirmed, confirmed, "{resumed:?}");
+            assert_eq!(resumed.outstanding, outstanding, "{resumed:?}");
+        }
     });
 }

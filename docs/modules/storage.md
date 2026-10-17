@@ -34,6 +34,13 @@ bodies in paths such as `src/core/metadata/tests.rs`,
 `src/core/trash/tests.rs`, `src/core/thumbnails/tests.rs`, and
 `src/core/runtime_config/tests.rs`.
 
+Native uploads consume the existing thumbnail cache through
+`thumbnails::cached_upload_thumbnail`, preferring Large/Medium/Small. A missing
+cache returns no thumbnail without decoding media or scheduling generation;
+normal thumbnail workers remain the only generation path for sync eligibility.
+Fitting JPEG/PNG bytes are reused exactly. WebP conversion and server-limit
+reduction operate only on cached pixels. See [sync](sync.md) for deferred work.
+
 ## Database
 
 Development builds keep SQLite `PRAGMA user_version` fixed at **1**. The

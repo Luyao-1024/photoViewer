@@ -30,7 +30,7 @@ pub struct CycleReport {
     pub mutations_confirmed: usize,
     pub failures: Vec<ItemFailure>,
     pub outstanding: usize,
-    /// Entries left dirty because this cycle reached an uplink batch limit.
+    /// Entries left dirty for the batch limit or an unavailable local thumbnail.
     pub uplink_deferred: usize,
     pub released: bool,
 }
@@ -42,6 +42,16 @@ struct UplinkBatch {
     metadata: usize,
 }
 impl UplinkBatch {
+    fn can_admit(&self, phase: UploadPhase, dirty: NativeDirty) -> bool {
+        if phase == UploadPhase::Create
+            || (phase == UploadPhase::Modify && dirty.contains(NativeDirty::CONTENT))
+        {
+            self.assets < 5
+        } else {
+            self.metadata < 20
+        }
+    }
+
     fn admit(&mut self, phase: UploadPhase, dirty: NativeDirty) -> bool {
         let (used, limit) = if phase == UploadPhase::Create
             || (phase == UploadPhase::Modify && dirty.contains(NativeDirty::CONTENT))
@@ -560,16 +570,12 @@ impl SyncService {
                 }) {
                     continue;
                 }
-                if !batch.admit(phase, entry.dirty) {
-                    report.uplink_deferred += 1;
-                    continue;
-                }
                 let phase_result = heartbeat
                     .guard(
                         lease,
                         self.prepare_and_send(
                             client, lease, heartbeat, job, epoch, pinned, zone, entry, phase,
-                            report,
+                            report, &mut batch,
                         ),
                     )
                     .await;
@@ -628,7 +634,45 @@ impl SyncService {
         entry: &DirtyEntry,
         phase: UploadPhase,
         report: &mut CycleReport,
+        batch: &mut UplinkBatch,
     ) -> Result<(), CycleError> {
+        // Once the batch is full, do not read/convert caches for every remaining
+        // photo. Missing caches below still consume no allowance.
+        if !batch.can_admit(phase, entry.dirty) {
+            report.uplink_deferred += 1;
+            return Ok(());
+        }
+        let content = if phase == UploadPhase::Create
+            || (phase == UploadPhase::Modify && entry.dirty.contains(NativeDirty::CONTENT))
+        {
+            let source = super::transfer::safe_destination(&job.local_root, &entry.relative_path)
+                .map_err(setup)?;
+            let cache_source = source.clone();
+            let cache_dir = crate::config::cache_dir();
+            let thumb_max = pinned.limits.thumbnail_max_bytes;
+            let thumbnail = tokio::task::spawn_blocking(move || {
+                crate::core::thumbnails::cached_upload_thumbnail(
+                    &cache_dir,
+                    &cache_source,
+                    2048,
+                    thumb_max,
+                )
+            })
+            .await
+            .map_err(|_| setup("thumbnail cache worker stopped"))?
+            .map_err(setup)?;
+            let Some(thumbnail) = thumbnail else {
+                report.uplink_deferred += 1;
+                return Ok(());
+            };
+            Some((source, thumbnail))
+        } else {
+            None
+        };
+        if !batch.admit(phase, entry.dirty) {
+            report.uplink_deferred += 1;
+            return Ok(());
+        }
         let photo = entry
             .photo_id
             .clone()
@@ -668,18 +712,14 @@ impl SyncService {
         } else {
             operation.preparation["assetRevision"] = json!(entry.asset_revision);
             operation.preparation["masterRevision"] = json!(entry.master_revision);
-            if phase == UploadPhase::Create || entry.dirty.contains(NativeDirty::CONTENT) {
+            if let Some((source, thumbnail)) = content {
                 operation.content_generation = uuid::Uuid::new_v4().to_string();
-                let source =
-                    super::transfer::safe_destination(&job.local_root, &entry.relative_path)
-                        .map_err(setup)?;
                 let folder = self.staging_root().join("uploads").join(&operation.id);
                 let max = pinned.limits.max_asset_bytes;
-                let thumb_max = pinned.limits.thumbnail_max_bytes;
                 let prepared=tokio::task::spawn_blocking(move||{
                     let _read=super::super::publication_io::read()?;
                     let snapshot=super::super::content::snapshot_source(&source,&folder,"original",max)?;
-                    let (thumbnail,digest)=super::super::content::thumbnail_from(&snapshot,2048,thumb_max)?;
+                    let digest=super::super::content::ContentDigest::of(&thumbnail);
                     let path=folder.join("thumbnail.jpg");std::fs::write(&path,&thumbnail)?;std::fs::File::open(&path)?.sync_all()?;
                     Ok::<_,AppError>(json!({"original":{"path":snapshot.path,"hex":snapshot.digest.hex,"base64":snapshot.digest.base64,"size":snapshot.digest.size},"thumbnail":{"path":path,"hex":digest.hex,"base64":digest.base64,"size":digest.size}}))
                 }).await.map_err(|_|setup("snapshot preparation worker stopped"))?.map_err(setup)?;

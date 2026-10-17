@@ -940,12 +940,73 @@ impl Drop for ThumbnailLoader {
     }
 }
 
+/// Read an existing local thumbnail for native upload, largest bucket first.
+///
+/// Missing caches defer upload; this function never decodes the original or
+/// requests thumbnail generation. JPEG/PNG bytes that fit are reused exactly.
+/// Other formats or oversized caches are converted using only cached pixels.
+pub fn cached_upload_thumbnail(
+    cache_dir: &std::path::Path,
+    source: &std::path::Path,
+    max_edge: u32,
+    max_bytes: u64,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let uri = crate::core::file_uri::from_path(source);
+    for size in [
+        ThumbnailSize::Large,
+        ThumbnailSize::Medium,
+        ThumbnailSize::Small,
+    ] {
+        let Some(path) = existing_cache_path(cache_dir, &uri, size, None)? else {
+            continue;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let reader = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format()?;
+        let format = reader.format();
+        let (width, height) = reader.into_dimensions()?;
+        if matches!(
+            format,
+            Some(image::ImageFormat::Jpeg | image::ImageFormat::Png)
+        ) && width.max(height) <= max_edge
+            && bytes.len() as u64 <= max_bytes
+        {
+            return Ok(Some(bytes));
+        }
+        let data = glib::Bytes::from_owned(bytes);
+        let stream = gtk4::gio::MemoryInputStream::from_bytes(&data);
+        let pixbuf = gdk_pixbuf::Pixbuf::from_stream(&stream, None::<&gtk4::gio::Cancellable>)?;
+        let opaque = decode::ensure_opaque(&pixbuf);
+        let mut edge = max_edge.min(width.max(height));
+        let mut quality = 90u8;
+        for _ in 0..10 {
+            let scaled = decode::scale_pixbuf_to_fit(&opaque, edge);
+            let encoded = scaled.save_to_bufferv("jpeg", &[("quality", &quality.to_string())])?;
+            if encoded.len() as u64 <= max_bytes {
+                return Ok(Some(encoded));
+            }
+            if quality > 40 {
+                quality -= 10;
+            } else {
+                if edge > 64 {
+                    edge = (edge / 2).max(64);
+                }
+                quality = 80;
+            }
+        }
+        anyhow::bail!("the cached thumbnail could not be encoded within {max_bytes} bytes");
+    }
+    Ok(None)
+}
+
 /// Render a source file to JPEG bytes, bounded by its longest edge.
 ///
-/// This is the native upload's path: it produces bytes to send, not a cache
-/// entry. It reuses the same decode and scaling the grid uses, so an uploaded
-/// thumbnail and a locally generated one of the same size agree about
-/// orientation and colour.
+/// Explicit rendering reuses the grid's image decode, orientation and scaling.
+/// Native uplink uses [`cached_upload_thumbnail`] instead so it never renders
+/// originals merely to upload them.
 pub fn render_jpeg_bytes(source: &std::path::Path, max_edge: u32) -> anyhow::Result<Vec<u8>> {
     render_jpeg_bytes_at(source, max_edge, 90)
 }

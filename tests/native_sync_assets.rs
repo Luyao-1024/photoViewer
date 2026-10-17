@@ -148,8 +148,7 @@ fn lease_at_create(client: &NativeClient, zone: &NativeZone) -> UploadLease {
     lease
 }
 
-/// A real JPEG and the thumbnail derived from its staged copy, exactly as an
-/// upload would build them.
+/// A stable original and a rendered thumbnail for the asset endpoint fixtures.
 fn photo_fixtures() -> (ContentDigest, Vec<u8>, Vec<u8>, ContentDigest) {
     let dir = tempfile::tempdir().expect("temp dir");
     let source = dir.path().join("original.jpg");
@@ -166,8 +165,8 @@ fn photo_fixtures() -> (ContentDigest, Vec<u8>, Vec<u8>, ContentDigest) {
     )
     .expect("snapshot");
     let original_bytes = snapshot.read().expect("read snapshot");
-    // The thumbnail comes from the *staged* copy, never the source: the pair has
-    // to describe one version.
+    // Protocol fixtures explicitly render their thumbnail. Production uplink
+    // instead reads a thumbnail already produced by the local cache pipeline.
     let (thumbnail_bytes, thumbnail_digest) =
         photo_viewer::core::sync::content::thumbnail_from(&snapshot, 2048, 2 * 1024 * 1024)
             .expect("thumbnail");
@@ -659,20 +658,23 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
         let key = server.api_key.clone();
         let b = SyncService::with_actor(pool_b.clone(), actor_b.clone())
             .with_credential_reader(move |_| Ok(key.clone()));
-        let item = |path: &Path| NewMediaItem {
-            uri: photo_viewer::core::file_uri::from_path(path),
-            path: path.into(),
-            folder_path: path.parent().unwrap().into(),
-            mime_type: "image/jpeg".into(),
-            media_subkind: "standard".into(),
-            media_attributes: "{}".into(),
-            width: Some(64),
-            height: Some(48),
-            video_duration_secs: None,
-            taken_at: None,
-            file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
-            file_size: std::fs::metadata(path).unwrap().len(),
-            blake3_hash: String::new(),
+        let item = |path: &Path| {
+            common::cache_local_thumbnail(path);
+            NewMediaItem {
+                uri: photo_viewer::core::file_uri::from_path(path),
+                path: path.into(),
+                folder_path: path.parent().unwrap().into(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(64),
+                height: Some(48),
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
+                file_size: std::fs::metadata(path).unwrap().len(),
+                blake3_hash: String::new(),
+            }
         };
         actor_a
             .execute_blocking(DbCommand::UpsertMediaBatch {
@@ -971,6 +973,7 @@ fn a_second_job_downloads_from_its_own_server_and_credential() {
         std::fs::create_dir_all(path).unwrap();
     }
     let path = common::write_plain_jpeg(&source, "second-server.jpg");
+    common::cache_local_thumbnail(&path);
     block_on(async {
         let first_scope = first.client().probe().await.unwrap();
         let second_scope = second.client().probe().await.unwrap();
@@ -1043,6 +1046,7 @@ fn a_second_job_downloads_from_its_own_server_and_credential() {
             .create_job(&job(second_scope, target.clone(), "second"))
             .unwrap();
         assert_eq!(second_job.id, 2);
+        b.switch_native_account(second_job.id).await.unwrap();
         let downloaded = b.run_cycle(second_job.id).await.unwrap();
         assert!(downloaded.failures.is_empty(), "{downloaded:?}");
         assert_eq!(downloaded.outstanding, 0);
@@ -1105,6 +1109,7 @@ fn receiving_path_collisions_merge_matching_bytes_and_preserve_local_variants() 
         let items = ["same.jpg", "different.jpg", "size.jpg"]
             .into_iter()
             .map(|name| {
+                common::cache_local_thumbnail(&source.join("album").join(name));
                 photo_viewer::core::backend::local::LocalBackend::new_item_from_path(
                     &source.join("album").join(name),
                 )
@@ -1208,20 +1213,23 @@ fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
         let key = server.api_key.clone();
         let service = SyncService::with_actor(pool.clone(), actor.clone())
             .with_credential_reader(move |_| Ok(key.clone()));
-        let item = |path: &Path| NewMediaItem {
-            uri: photo_viewer::core::file_uri::from_path(path),
-            path: path.into(),
-            folder_path: path.parent().unwrap().into(),
-            mime_type: "image/jpeg".into(),
-            media_subkind: "standard".into(),
-            media_attributes: "{}".into(),
-            width: Some(64),
-            height: Some(48),
-            video_duration_secs: None,
-            taken_at: None,
-            file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
-            file_size: std::fs::metadata(path).unwrap().len(),
-            blake3_hash: String::new(),
+        let item = |path: &Path| {
+            common::cache_local_thumbnail(path);
+            NewMediaItem {
+                uri: photo_viewer::core::file_uri::from_path(path),
+                path: path.into(),
+                folder_path: path.parent().unwrap().into(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: Some(64),
+                height: Some(48),
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: std::fs::metadata(path).unwrap().modified().unwrap().into(),
+                file_size: std::fs::metadata(path).unwrap().len(),
+                blake3_hash: String::new(),
+            }
         };
         let items = (0..21)
             .map(|i| {

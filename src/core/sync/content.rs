@@ -12,8 +12,10 @@
 //! would otherwise produce a body that no longer matches the digest that was
 //! declared: the service rejects that with `CHECKSUM_MISMATCH`, and the retry
 //! would fail the same way. Copying into owned staging first makes the upload
-//! read a file nothing else can change, and the thumbnail is generated from
-//! *that* copy — so the pair describes one version, never two.
+//! read a file nothing else can change. Native uplink separately snapshots an
+//! existing local thumbnail: it does not regenerate one from the original or
+//! require digest-bound cache provenance. Missing local thumbnails defer upload;
+//! later content changes remain subject to the existing version/dirty guards.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -233,7 +235,10 @@ pub fn digest_file(path: &Path) -> Result<ContentDigest> {
     })
 }
 
-/// A photo's thumbnail, generated from its staged original.
+/// Render a thumbnail from a supplied snapshot when explicitly requested.
+///
+/// Native uplink uses `thumbnails::cached_upload_thumbnail` instead; this
+/// renderer remains available to callers preparing local/test media.
 ///
 /// Quality is lowered before size, and the number of attempts is bounded: an
 /// over-ceiling thumbnail is a limit to report, not something to retry forever.

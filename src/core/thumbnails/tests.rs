@@ -1542,3 +1542,74 @@ fn exif_thumb_cache_round_trips_and_clears() {
         "clear_mem_cache must also evict the EXIF cache"
     );
 }
+
+#[test]
+fn upload_reuses_cached_jpeg_bytes_without_decoding_the_video() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("video.mp4");
+    std::fs::write(&source, b"intentionally not a decodable video").unwrap();
+    let cache = root.path().join("cache");
+    let uri = crate::core::file_uri::from_path(&source);
+    for size in [
+        ThumbnailSize::Small,
+        ThumbnailSize::Medium,
+        ThumbnailSize::Large,
+    ] {
+        let stem = cache_stem_for(&cache, &uri, size, None).unwrap();
+        std::fs::create_dir_all(stem.parent().unwrap()).unwrap();
+        let image = image::RgbImage::from_pixel(64, 48, image::Rgb([30, 70, 120]));
+        let path = stem.with_extension("jpg");
+        image.save(&path).unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        assert_eq!(
+            cached_upload_thumbnail(&cache, &source, 2048, 2 * 1024 * 1024).unwrap(),
+            Some(expected),
+            "any existing size bucket can supply the upload without decoding the original"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn upload_without_a_cached_thumbnail_does_not_generate_one() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("photo.jpg");
+    image::RgbImage::from_pixel(64, 48, image::Rgb([30, 70, 120]))
+        .save(&source)
+        .unwrap();
+    let cache = root.path().join("cache");
+    assert!(
+        cached_upload_thumbnail(&cache, &source, 2048, 2 * 1024 * 1024)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !cache.exists(),
+        "upload must leave thumbnail generation to the local workers"
+    );
+}
+
+#[test]
+fn upload_converts_only_the_cached_webp_and_obeys_server_limits() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("video.mp4");
+    std::fs::write(&source, b"intentionally not a decodable video").unwrap();
+    let cache = root.path().join("cache");
+    let uri = crate::core::file_uri::from_path(&source);
+    let stem = cache_stem_for(&cache, &uri, ThumbnailSize::Large, None).unwrap();
+    std::fs::create_dir_all(stem.parent().unwrap()).unwrap();
+    image::RgbaImage::from_pixel(256, 128, image::Rgba([30, 70, 120, 128]))
+        .save(stem.with_extension("webp"))
+        .unwrap();
+    let bytes = cached_upload_thumbnail(&cache, &source, 64, 2048)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        image::guess_format(&bytes).unwrap(),
+        image::ImageFormat::Jpeg
+    );
+    assert!(bytes.len() <= 2048);
+    let thumbnail = image::load_from_memory(&bytes).unwrap();
+    assert_eq!((thumbnail.width(), thumbnail.height()), (64, 32));
+    assert!(cached_upload_thumbnail(&cache, &source, 64, 16).is_err());
+}
