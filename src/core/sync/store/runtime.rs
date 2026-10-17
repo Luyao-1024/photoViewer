@@ -899,10 +899,13 @@ pub(super) fn project_publication(
     let desired:(String,Option<i64>,Option<i64>)=tx.query_row("SELECT e.relative_path,m.is_favorite,m.taken_at FROM sync_entries e LEFT JOIN media_items m ON m.id=e.media_id WHERE e.id=?1",[entry],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let capture = json!({"job":job,"entry":entry,"local":local,"config":config,"dirty":settled.bits(),"contentGeneration":photo.content_generation,"projection":encoded,"preserveMetadata":preserve_metadata,"localRelativePath":desired.0,"favorite":desired.1,"takenAt":desired.2});
     tx.execute("INSERT INTO sync_publications(publication_id,job_id,entry_id,photo_id,master_id,original_asset_id,thumbnail_asset_id,captured_versions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(publication_id) DO UPDATE SET state=CASE WHEN sync_publications.state='superseded' THEN 'pending' ELSE sync_publications.state END,captured_versions=CASE WHEN sync_publications.state IN ('pending','superseded') THEN excluded.captured_versions ELSE sync_publications.captured_versions END",params![id,job,entry,photo.photo_id,photo.master_id,photo.original.asset_id,photo.thumbnail.asset_id,capture.to_string()])?;
-    // A library-backed verification has no staging bytes. Placement at a new
-    // path still needs the pair; fetch those roles rather than handing the
-    // publisher a verified resource with a NULL staging_path.
-    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND staging_path IS NULL",params![job,photo.original.asset_id,photo.thumbnail.asset_id])?;
+    // A library-backed verification has no staging bytes: the bytes it proved
+    // are the library file itself. That only still proves them while the record
+    // points at the same path — a remote rename moves where the file has to
+    // land, and the pair has to be fetched again rather than handed to a
+    // publisher whose staging_path is NULL. Repromoting the same photo at the
+    // same path changes nothing, so the verified role survives it.
+    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND ((asset_id=?2 AND role='original') OR (asset_id=?3 AND role='thumbnail')) AND staging_path IS NULL AND EXISTS(SELECT 1 FROM sync_entries e WHERE e.id=?4 AND e.relative_path IS NOT ?5)",params![job,photo.original.asset_id,photo.thumbnail.asset_id,entry,photo.relative_path])?;
     Ok(ProjectedContent::Remote)
 }
 

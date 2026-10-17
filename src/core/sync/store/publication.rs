@@ -284,7 +284,7 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                     "SELECT job_id, generation, asset_id, role, record_name, expected_sha256,
                             expected_size, state, staging_path, verified_cache
                      FROM sync_native_resources
-                     WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state IN ('pending', 'staged', 'failed')
+                     WHERE job_id = ?1 AND generation=(SELECT database_generation FROM sync_native_progress WHERE job_id=?1) AND record_name IS NOT NULL AND state IN ('pending', 'staged')
                      ORDER BY record_name,
                               CASE role WHEN 'original' THEN 0 ELSE 1 END",
                 )?;
@@ -429,8 +429,20 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
             thumbnail_asset_id,
         } => {
             let conn = pool.get()?;
+            // One photo owes at most one pending intent. A projection that is
+            // being re-promoted, and a caller re-opening a publication after a
+            // restart, both name the photo rather than its previous intent, so
+            // the earlier intent is stood down here — otherwise the second row
+            // sits beside the first as an obligation nobody will ever settle,
+            // and completing one leaves the other pending forever.
+            conn.execute(
+                "UPDATE sync_publications SET state='superseded'
+                  WHERE job_id=?1 AND photo_id=?2 AND publication_id<>?3 AND state='pending'",
+                rusqlite::params![job_id, photo_id, publication_id],
+            )?;
             // Re-opening an existing intent is idempotent: a retry after a
-            // restart must not create a second one for the same photo.
+            // restart must not create a second one for the same photo. A row
+            // that was stood down and is now the one being asked for comes back.
             conn.execute(
                 "INSERT INTO sync_publications
                     (publication_id, job_id, entry_id, photo_id, master_id,
@@ -440,6 +452,8 @@ pub(super) fn execute(pool: &DbPool, command: &PublicationCommand) -> Result<Pub
                     entry_id = excluded.entry_id,
                     original_asset_id = excluded.original_asset_id,
                     thumbnail_asset_id = excluded.thumbnail_asset_id,
+                    state = CASE WHEN sync_publications.state='superseded'
+                                 THEN 'pending' ELSE sync_publications.state END,
                     updated_at = unixepoch()",
                 params![
                     publication_id,

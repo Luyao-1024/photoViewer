@@ -321,8 +321,35 @@ fn settings_page_exposes_trash_backend_controls() {
     );
 }
 
+/// The description carried by a preferences group with this title.
+///
+/// A section that lives inline states what it covers on its group header; there
+/// is no row to hang a subtitle on. Kept beside the row equivalent,
+/// `find_action_row_subtitle`, which this complements.
+fn find_group_description(widget: &gtk::Widget, title: &str) -> Option<String> {
+    if let Some(group) = widget.downcast_ref::<adw::PreferencesGroup>() {
+        if group.title() == title {
+            return group.description().map(|text| text.to_string());
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        child = current.next_sibling();
+        if let Some(description) = find_group_description(&current, title) {
+            return Some(description);
+        }
+    }
+    None
+}
+
+/// Cleanup is listed inline in its category, not behind a page of its own.
+///
+/// `a28e52a` moved the categories up into the settings body and removed the
+/// navigation entry, so the description the entry used to carry now belongs to
+/// the group header. The categories stay separately measured, which is what the
+/// description promises.
 #[test]
-fn settings_cleanup_has_a_separate_navigation_entry() {
+fn settings_cleanup_is_inline_and_explains_its_separately_measured_categories() {
     let _sandbox = crate::testing::Sandbox::install();
     gtk::test_synced(|| {
         let app = adw::Application::builder()
@@ -336,9 +363,14 @@ fn settings_cleanup_has_a_separate_navigation_entry() {
         let page = window.build_settings_page(&host);
         let page = page.upcast::<gtk::Widget>();
         assert_eq!(
-            find_action_row_subtitle(&page, &tr("setting.cleanup.title")).as_deref(),
+            find_group_description(&page, &tr("setting.cleanup.title")).as_deref(),
             Some(tr("setting.cleanup.description").as_str()),
-            "cleanup should navigate to separately measured categories"
+            "the inline cleanup section should say what its categories cover"
+        );
+        assert!(
+            find_action_row_subtitle(&page, &tr("setting.cleanup.title")).is_none(),
+            "cleanup no longer navigates to a page of its own, so it must not \
+             reintroduce a row that looks like a way in"
         );
     });
 }

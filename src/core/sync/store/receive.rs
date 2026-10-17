@@ -881,7 +881,7 @@ fn promote(
     // Asset IDs can be shared by multiple photos. Adoption of one local file
     // does not provide staging bytes for another photo that still has to be
     // placed. Resolve this after the complete graph, independently of order.
-    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=?2 AND staging_path IS NULL AND EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=sync_native_resources.job_id AND p.state IN ('pending','publishing') AND ((sync_native_resources.role='original' AND p.original_asset_id=sync_native_resources.asset_id) OR (sync_native_resources.role='thumbnail' AND p.thumbnail_asset_id=sync_native_resources.asset_id)))",params![job_id,generation])?;
+    tx.execute("UPDATE sync_native_resources SET state='pending',verified_cache=NULL WHERE job_id=?1 AND generation=?2 AND staging_path IS NULL AND EXISTS(SELECT 1 FROM sync_publications p WHERE p.job_id=sync_native_resources.job_id AND p.state IN ('pending','publishing') AND ((sync_native_resources.role='original' AND p.original_asset_id=sync_native_resources.asset_id) OR (sync_native_resources.role='thumbnail' AND p.thumbnail_asset_id=sync_native_resources.asset_id)) AND EXISTS(SELECT 1 FROM sync_entries e WHERE e.job_id=sync_native_resources.job_id AND e.native_photo_id IS NOT NULL AND e.native_photo_id<>sync_native_resources.record_name AND (json_extract(e.native_resource_baseline,'$.original.assetId')=sync_native_resources.asset_id OR json_extract(e.native_resource_baseline,'$.thumbnail.assetId')=sync_native_resources.asset_id)))",params![job_id,generation])?;
     let resources = unresolved_in_tx(tx, job_id)?;
 
     tx.execute(
