@@ -30,6 +30,9 @@ pub const BROWSING: &str = "browsing";
 /// 缩略图生成与加载
 pub const THUMBNAILS: &str = "thumbnails";
 
+/// 云同步 — 批次、收取分页、资源传输与发布
+pub const SYNC: &str = "sync";
+
 /// 存储层 — 数据库、扫描、文件监听
 pub const STORAGE: &str = "storage";
 

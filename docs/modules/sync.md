@@ -85,6 +85,32 @@ Protocol definitions remain exclusively in the sibling server repository.
 | `src/platform/credentials.rs` | Bearer API key in the platform secret store; SQLite keeps only the reference |
 | `src/core/schema.sql` | sync tables, native columns, receive tables |
 
+## Sync Activity Logs
+
+Cloud synchronization is a normal `INFO` activity under target `sync`; no debug
+switch is needed at the default log level. Use `RUST_LOG=sync=info` to isolate it.
+Session files and stderr use the existing [diagnostics pipeline](diagnostics.md).
+
+Each admitted `run_cycle` logs a batch start and one terminal result with the
+same `job_id` and `cycle_id` (also the stored native cycle ID). The terminal
+summary records sent/confirmed mutations, failed items, remaining obligations,
+work deferred by the 5-photo asset / 20-photo metadata limits, lease skip/release
+state and elapsed milliseconds. `complete` means no reported obligations remain;
+`pending` means more work remains, `partial` means items failed, and `deferred`
+means uplink was skipped. A hard failure, including failure to persist the run
+result, logs a `WARN` terminal event instead of a success summary. Individual
+upload failures also log `WARN` with the entry and cycle IDs.
+
+Every full-snapshot page and delta page logs its received/saved record counts,
+page number, zone, continuation presence and elapsed time **after persistence**.
+These events report durable metadata receipt, not completed photo publication.
+Resource download logs appear after verification/staging; successfully admitted
+photo pairs report publication batch counts. Nonempty download batches report
+requested/fetched/admitted/failed counts and elapsed time. No byte-progress loop,
+heartbeat or UI poll emits `INFO` activity. Credentials, lease proofs, opaque
+snapshot/delta tokens, continuation markers and raw record bodies are not log
+fields.
+
 ## Connection And Probe
 
 PhotoViewer applies a root-origin connection policy and rejects insecure non-loopback
@@ -188,4 +214,9 @@ Unit tests live beside the code (`native/protocol/tests.rs`,
 `tests/native_sync_probe.rs` and `tests/native_sync_receive.rs` (see
 `docs/testing.md`). Current schema shape is covered in `tests/db_migrations.rs`; single-table
 recovery, preservation, rollback and fresh sync bootstrap are covered in
-`tests/db_schema_recovery.rs`.
+`tests/db_schema_recovery.rs`. The focused asset cases
+`uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume`,
+`two_clients_create_receive_edit_and_replace_a_complete_photo` and
+`upload_failures::pending_asset_failure_does_not_block_other_photos_and_retries_next_cycle`
+capture `sync=info` events from real SyncServer runs and check batch correlation,
+counts/status, receipt/download/publication coverage and failure visibility.

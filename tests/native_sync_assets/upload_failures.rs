@@ -163,6 +163,7 @@ impl Fixture {
 
 #[test]
 fn pending_asset_failure_does_not_block_other_photos_and_retries_next_cycle() {
+    let (logs, _subscriber) = logging::Capture::install();
     let server = Server::start().expect("upload failure tests require SyncServer");
     block_on(async {
         let f = Fixture::new(server).await;
@@ -246,6 +247,19 @@ fn pending_asset_failure_does_not_block_other_photos_and_retries_next_cycle() {
             .unwrap();
         assert_eq!(state, "confirmed");
     });
+    let partial = logs
+        .lines("云同步批次结束")
+        .into_iter()
+        .filter(|line| line.contains("outcome=\"partial\""))
+        .collect::<Vec<_>>();
+    assert_eq!(partial.len(), 2, "{}", logs.text());
+    assert!(
+        partial
+            .iter()
+            .all(|line| line.contains("failed=1 ") && line.contains("outstanding=1 ")),
+        "{partial:?}"
+    );
+    assert_eq!(logs.lines("云同步上传项目失败").len(), 2, "{}", logs.text());
 }
 
 #[test]

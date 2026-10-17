@@ -13,6 +13,8 @@
 //! here is that the *transfer* is real.
 
 mod common;
+#[path = "native_sync_assets/logging.rs"]
+mod logging;
 #[path = "native_sync_assets/upload_failures.rs"]
 mod upload_failures;
 
@@ -616,6 +618,7 @@ fn an_empty_reservation_is_refused() {
 /// Unlike transport tests, this does not manufacture verified resource rows.
 #[test]
 fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
+    let (logs, _subscriber) = logging::Capture::install();
     let sandbox = photo_viewer::testing::Sandbox::install();
     let Some(server) = Server::start_with_lease(2, 1) else {
         return skip();
@@ -947,6 +950,23 @@ fn two_clients_create_receive_edit_and_replace_a_complete_photo() {
             .to_string_lossy()
             .starts_with(".photoviewer-sync-")));
     });
+    for message in [
+        "云同步全量数据批次已保存",
+        "云同步增量数据批次已保存",
+        "云同步资源下载完成",
+        "云同步照片发布批次完成",
+        "云同步下载批次结束",
+    ] {
+        assert!(
+            !logs.lines(message).is_empty(),
+            "missing {message}: {}",
+            logs.text()
+        );
+    }
+    assert!(
+        !logs.text().contains(&server.api_key),
+        "credentials must not enter sync logs"
+    );
 }
 
 #[test]
@@ -1190,6 +1210,7 @@ fn receiving_path_collisions_merge_matching_bytes_and_preserve_local_variants() 
 
 #[test]
 fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
+    let (logs, _subscriber) = logging::Capture::install();
     let sandbox = photo_viewer::testing::Sandbox::install();
     let Some(server) = Server::start() else {
         return skip();
@@ -1342,5 +1363,70 @@ fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
         assert!(idle.failures.is_empty(), "{idle:?}");
         assert_eq!(idle.mutations_sent, 0, "{idle:?}");
         assert_eq!(idle.outstanding, 0, "{idle:?}");
+        let failed = service.clone().with_credential_reader(|_| {
+            Err(photo_viewer::core::error::AppError::Backend(
+                "test credential unavailable".into(),
+            ))
+        });
+        assert!(failed.run_cycle(job.id).await.is_err());
     });
+    let starts = logs.lines("云同步批次开始");
+    let ends = logs.lines("云同步批次结束");
+    let failures = logs.lines("云同步批次失败");
+    assert_eq!(starts.len(), 11, "{}", logs.text());
+    assert_eq!(ends.len(), 10, "{}", logs.text());
+    assert_eq!(failures.len(), 1, "{}", logs.text());
+    for (line, (confirmed, outstanding)) in ends.iter().zip([
+        (5, 16),
+        (5, 11),
+        (5, 6),
+        (5, 1),
+        (1, 0),
+        (25, 2),
+        (2, 0),
+        (5, 1),
+        (1, 0),
+        (0, 0),
+    ]) {
+        assert!(line.contains("INFO sync:"), "{line}");
+        assert!(
+            line.contains(&format!("mutations_confirmed={confirmed} ")),
+            "{line}"
+        );
+        assert!(
+            line.contains(&format!("outstanding={outstanding} ")),
+            "{line}"
+        );
+        assert!(
+            line.contains(if outstanding > 0 {
+                "outcome=\"pending\""
+            } else {
+                "outcome=\"complete\""
+            }),
+            "{line}"
+        );
+        for field in ["job_id=", "cycle_id=", "elapsed_ms=", "uplink_deferred="] {
+            assert!(line.contains(field), "missing {field}: {line}");
+        }
+    }
+    for (start, end) in starts.iter().zip(ends.iter().chain(failures.iter())) {
+        let cycle = start
+            .split_whitespace()
+            .find(|field| field.starts_with("cycle_id="))
+            .unwrap();
+        assert!(
+            end.contains(cycle),
+            "batch correlation lost: {start} -> {end}"
+        );
+    }
+    assert!(failures[0].contains("WARN sync:"), "{}", failures[0]);
+    assert!(
+        failures[0].contains("test credential unavailable"),
+        "{}",
+        failures[0]
+    );
+    assert!(
+        !logs.text().contains(&server.api_key),
+        "credentials must not enter sync logs"
+    );
 }

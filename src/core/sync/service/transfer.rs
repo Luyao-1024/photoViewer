@@ -10,6 +10,7 @@ use crate::core::{
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TransferReport {
@@ -47,7 +48,11 @@ impl SyncService {
             .ok_or_else(|| error("job removed"))?
             .config_generation;
         let mut report = TransferReport::default();
-        for obligation in self.store().outstanding_resources(job_id)? {
+        let obligations = self.store().outstanding_resources(job_id)?;
+        let requested = obligations.len();
+        let started = Instant::now();
+        for obligation in obligations {
+            let fetch_started = Instant::now();
             let fetched = {
                 let fetch = self.fetch_one(&obligation, &mut report);
                 tokio::pin!(fetch);
@@ -63,7 +68,16 @@ impl SyncService {
                 }
             };
             match fetched {
-                Ok(Some(_)) => report.fetched += 1,
+                Ok(Some(resource)) => {
+                    report.fetched += 1;
+                    tracing::info!(
+                        target: crate::core::log_targets::SYNC,
+                        job_id, asset_id = %obligation.asset_id, role = %obligation.role,
+                        bytes = resource.digest.size, fetched = report.fetched,
+                        elapsed_ms = fetch_started.elapsed().as_millis() as u64,
+                        "云同步资源下载完成"
+                    );
+                }
                 Ok(None) => {}
                 Err(failure) => {
                     let reason = failure.to_string();
@@ -73,11 +87,18 @@ impl SyncService {
                         &obligation.role,
                         &reason,
                     )?;
+                    tracing::warn!(
+                        target: crate::core::log_targets::SYNC,
+                        job_id, asset_id = %obligation.asset_id, role = %obligation.role,
+                        error = %reason,
+                        "云同步资源下载失败"
+                    );
                     report.failures.push((obligation.asset_id, reason));
                 }
             }
             // Publish ready photos as their own pair arrives, without waiting
             // for the rest of the album (which can include very large files).
+            let previously_admitted = report.admitted;
             let service = self.clone();
             let mut available = std::mem::take(&mut report);
             report = tokio::task::spawn_blocking(move || {
@@ -86,7 +107,9 @@ impl SyncService {
             })
             .await
             .map_err(|_| error("publication worker stopped"))??;
+            log_published_batch(job_id, report.admitted - previously_admitted);
         }
+        let previously_admitted = report.admitted;
         let service = self.clone();
         report = tokio::task::spawn_blocking(move || {
             service.admit_complete_publications(job_id, &mut report)?;
@@ -94,6 +117,7 @@ impl SyncService {
         })
         .await
         .map_err(|_| error("publication worker stopped"))??;
+        log_published_batch(job_id, report.admitted - previously_admitted);
         if report.failures.is_empty()
             && self.store().unresolved_resource_count(job_id)? == 0
             && self
@@ -102,6 +126,15 @@ impl SyncService {
                 .is_some_and(|p| p.target_token.is_some() && p.target_token != p.applied_token)
         {
             self.store().advance_applied_token(job_id)?;
+        }
+        if requested > 0 || report.admitted > 0 || !report.failures.is_empty() {
+            tracing::info!(
+                target: crate::core::log_targets::SYNC,
+                job_id, requested, fetched = report.fetched, admitted = report.admitted,
+                failed = report.failures.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "云同步下载批次结束"
+            );
         }
         Ok(report)
     }
@@ -626,4 +659,14 @@ fn cleanup_renamed_source(details: &Value) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn log_published_batch(job_id: i64, admitted: usize) {
+    if admitted > 0 {
+        tracing::info!(
+            target: crate::core::log_targets::SYNC,
+            job_id, admitted,
+            "云同步照片发布批次完成"
+        );
+    }
 }

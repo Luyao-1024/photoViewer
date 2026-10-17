@@ -17,7 +17,11 @@ use crate::core::{
     },
 };
 use serde_json::{json, Value};
-use std::{future::Future, path::PathBuf, time::Duration};
+use std::{
+    future::Future,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CycleReport {
@@ -203,7 +207,15 @@ impl SyncService {
             .get_job(job_id)
             .map_err(setup)?
             .ok_or_else(|| setup("job was removed"))?;
-        let result = self.run_owned_cycle(job_id).await;
+        let cycle_id = uuid::Uuid::new_v4().to_string();
+        let started = Instant::now();
+        tracing::info!(
+            target: crate::core::log_targets::SYNC,
+            job_id, connection_id = job.connection_id, %cycle_id,
+            config_generation = job.config_generation,
+            "云同步批次开始"
+        );
+        let result = self.run_owned_cycle(job_id, &cycle_id).await;
         let reason = match &result {
             Err(error) => Some(error.to_string()),
             Ok(report) if !report.failures.is_empty() => Some(
@@ -223,12 +235,57 @@ impl SyncService {
             )),
             _ => None,
         };
-        self.store()
-            .finish_run(job_id, job.config_generation, reason.as_deref())
-            .map_err(setup)?;
+        if let Err(error) =
+            self.store()
+                .finish_run(job_id, job.config_generation, reason.as_deref())
+        {
+            tracing::warn!(
+                target: crate::core::log_targets::SYNC,
+                job_id, %cycle_id, stage = "finish_run", error = %error,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "云同步批次失败"
+            );
+            return Err(setup(error));
+        }
+        match &result {
+            Ok(report) => {
+                let outcome = if !report.failures.is_empty() {
+                    "partial"
+                } else if report.uplink_skipped {
+                    "deferred"
+                } else if report.outstanding > 0 {
+                    "pending"
+                } else {
+                    "complete"
+                };
+                tracing::info!(
+                    target: crate::core::log_targets::SYNC,
+                    job_id, %cycle_id, outcome,
+                    mutations_sent = report.mutations_sent,
+                    mutations_confirmed = report.mutations_confirmed,
+                    failed = report.failures.len(),
+                    outstanding = report.outstanding,
+                    uplink_deferred = report.uplink_deferred,
+                    uplink_skipped = report.uplink_skipped,
+                    released = report.released,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "云同步批次结束"
+                );
+            }
+            Err(error) => tracing::warn!(
+                target: crate::core::log_targets::SYNC,
+                job_id, %cycle_id, error = %error,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "云同步批次失败"
+            ),
+        }
         result
     }
-    async fn run_owned_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
+    async fn run_owned_cycle(
+        &self,
+        job_id: i64,
+        cycle_id: &str,
+    ) -> Result<CycleReport, CycleError> {
         let job = self
             .store()
             .get_job(job_id)
@@ -238,7 +295,7 @@ impl SyncService {
         let epoch = Epoch {
             job: job.id,
             config: job.config_generation,
-            cycle: uuid::Uuid::new_v4().to_string(),
+            cycle: cycle_id.to_owned(),
         };
         self.store()
             .runtime(Command::Begin(epoch.clone()))
@@ -614,6 +671,12 @@ impl SyncService {
                 reason: reason.clone(),
             })
             .map_err(setup)?;
+        tracing::warn!(
+            target: crate::core::log_targets::SYNC,
+            job_id = epoch.job, cycle_id = %epoch.cycle, entry_id = entry,
+            error = %reason,
+            "云同步上传项目失败"
+        );
         report.failures.push(ItemFailure {
             entry_id: entry,
             relative_path: relative_path.into(),

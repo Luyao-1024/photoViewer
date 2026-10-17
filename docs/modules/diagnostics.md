@@ -53,6 +53,13 @@ history, archives and crash reports, truncates the **live writer's inode**, and
 resets an active performance trace. New events keep writing to a visible file.
 No media rows, account records or keyring credentials participate in log cleanup.
 
+Cloud-sync batch activity uses target `sync` at `INFO`, including cycle results,
+persisted receive pages, verified resource downloads and admitted photo pairs.
+Failures use `WARN`. Default `info` logging retains this activity in both the
+session log and stderr; `RUST_LOG=sync=info` selects it independently. See the
+[sync logging contract](sync.md#sync-activity-logs) for counters and status
+semantics. These logs do not depend on optional performance-chain capture.
+
 ## Layer contract
 
 1. File + stderr subscriber under a reloadable EnvFilter. A 1024-event queue

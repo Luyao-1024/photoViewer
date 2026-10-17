@@ -12,6 +12,7 @@
 //! of them is outstanding. That is the honest C1.2 state.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::super::native::protocol::{NativeClient, NativePinnedScope, NativeZone};
 use super::super::native::receive::{NativeRecord, ZoneChangesEntry, SUPPORTED_RECORD_TYPES};
@@ -217,6 +218,7 @@ impl SyncService {
             let mut continuation = marker.continuation_marker.clone();
             let mut count = marker.record_count;
             loop {
+                let started = Instant::now();
                 let page = client
                     .query_records(
                         &pinned.namespace,
@@ -254,6 +256,14 @@ impl SyncService {
                     )
                     .map_err(|error| ReceiveError::Transport(error.to_string()))?;
                 report.pages_received += 1;
+                tracing::info!(
+                    target: crate::core::log_targets::SYNC,
+                    job_id = progress.job_id, zone_name = %zone.zone_name,
+                    record_type, page = report.pages_received,
+                    received = page.records.len(), saved, more_coming = !finished,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "云同步全量数据批次已保存"
+                );
                 if finished {
                     report.bootstrap_types_completed += 1;
                 }
@@ -288,6 +298,7 @@ impl SyncService {
         let mut last_token = String::new();
         let mut more_coming = true;
         while more_coming {
+            let started = Instant::now();
             let entry: ZoneChangesEntry = client
                 .changes_zone(&pinned.namespace, zone, position.as_deref(), page_limit)
                 .await
@@ -302,6 +313,13 @@ impl SyncService {
                 .save_delta_page(job_id, events, &token)
                 .map_err(|error| ReceiveError::Transport(error.to_string()))?;
             report.pages_received += 1;
+            tracing::info!(
+                target: crate::core::log_targets::SYNC,
+                job_id, zone_name = %zone.zone_name, page = report.pages_received,
+                received = entry.records.len(), saved, more_coming = entry.more_coming,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "云同步增量数据批次已保存"
+            );
             report.events_saved += saved;
             position = Some(token.clone());
             last_token = token;
