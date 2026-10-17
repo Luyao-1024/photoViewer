@@ -43,6 +43,10 @@ CREATE INDEX IF NOT EXISTS idx_media_trashed
     ON media_items(trashed_at)     WHERE trashed_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_blake3
     ON media_items(blake3_hash);
+-- Native sync joins its per-job relative paths back to the physical media row.
+-- Without this index each receive reconciliation scans the complete library.
+CREATE INDEX IF NOT EXISTS idx_media_path
+    ON media_items(path);
 
 CREATE INDEX IF NOT EXISTS idx_media_favorite
     ON media_items(is_favorite)

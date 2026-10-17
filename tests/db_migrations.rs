@@ -430,3 +430,43 @@ fn native_dirty_uplift_query_uses_its_index_without_temp_btree() {
         "a covering index must not need an intermediate sort: {plan}"
     );
 }
+
+/// Native receive reconciliation joins every sync entry back to its physical
+/// media row by path. That lookup must use an index even when the library has
+/// thousands of photos; scanning media_items once per receive stage is what
+/// made each synchronization cycle spend tens of seconds in SQLite.
+#[test]
+fn native_local_entry_join_uses_the_media_path_index() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("explain.db");
+    let pool = db::init_pool(&path).unwrap();
+    let conn = pool.get().unwrap();
+
+    let plan: String = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT e.id
+               FROM sync_entries e
+               JOIN sync_jobs j ON j.id = e.job_id
+               JOIN sync_connections c ON c.id = j.connection_id AND c.enabled = 1
+               JOIN media_items m
+                 ON m.path = rtrim(j.local_root, '/') || '/' || e.relative_path
+                AND m.trashed_at IS NULL
+              WHERE e.job_id = 1",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        plan.contains("idx_media_path"),
+        "the native local-entry join must use the path index: {plan}"
+    );
+    assert!(
+        !plan.contains("SCAN m"),
+        "the native local-entry join must not scan the complete media table: {plan}"
+    );
+}

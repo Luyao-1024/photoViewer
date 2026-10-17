@@ -15,6 +15,8 @@
 mod common;
 #[path = "native_sync_assets/logging.rs"]
 mod logging;
+
+use logging::Capture;
 #[path = "native_sync_assets/upload_failures.rs"]
 mod upload_failures;
 
@@ -1429,4 +1431,125 @@ fn uplink_batches_limit_assets_to_5_and_metadata_to_20_and_resume() {
         !logs.text().contains(&server.api_key),
         "credentials must not enter sync logs"
     );
+}
+
+#[test]
+fn successful_batches_chain_immediately_while_work_remains() {
+    let sandbox = photo_viewer::testing::Sandbox::install();
+    photo_viewer::core::prefs::set_sync_enabled(true).unwrap();
+    let Some(server) = Server::start() else {
+        return skip();
+    };
+    let (logs, _logs_guard) = Capture::install();
+    let root = sandbox.scratch("native-uplink-auto-chain");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    block_on(async {
+        use photo_viewer::core::{
+            db,
+            db_actor::{start_db_actor, DbCommand},
+            events::{ChangeSource, DomainEventSender},
+            media::NewMediaItem,
+            sync::{NewSyncJob, ProviderKind, SyncDirection, SyncService, UploadScope},
+        };
+        let scope = server.client().probe().await.unwrap();
+        let (sender, _events) = DomainEventSender::new();
+        let pool = db::init_pool(&root.path().join("library.sqlite")).unwrap();
+        let actor = start_db_actor(pool.clone(), sender);
+        let key = server.api_key.clone();
+        let service = SyncService::with_actor(pool.clone(), actor.clone())
+            .with_credential_reader(move |_| Ok(key.clone()));
+        let items = (0..7)
+            .map(|index| {
+                let path = common::write_plain_jpeg(&source, &format!("photo-{index:02}.jpg"));
+                common::cache_local_thumbnail(&path);
+                NewMediaItem {
+                    uri: photo_viewer::core::file_uri::from_path(&path),
+                    path: path.clone(),
+                    folder_path: path.parent().unwrap().into(),
+                    mime_type: "image/jpeg".into(),
+                    media_subkind: "standard".into(),
+                    media_attributes: "{}".into(),
+                    width: Some(64),
+                    height: Some(48),
+                    video_duration_secs: None,
+                    taken_at: None,
+                    file_mtime: std::fs::metadata(&path).unwrap().modified().unwrap().into(),
+                    file_size: std::fs::metadata(&path).unwrap().len(),
+                    blake3_hash: String::new(),
+                }
+            })
+            .collect();
+        actor
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items,
+            })
+            .unwrap();
+        let job = service
+            .store()
+            .create_job(&NewSyncJob {
+                provider_kind: ProviderKind::NativeSyncServer,
+                endpoint: server.base_url.clone(),
+                credential_ref: "auto-chain-key".into(),
+                local_root: source.clone(),
+                direction: SyncDirection::Bidirectional,
+                upload_scope: UploadScope::All,
+                upload_albums: vec![],
+                native_zone: Some(NativeZone::new("PrimarySync")),
+                native_pinned: Some(scope),
+            })
+            .unwrap();
+
+        service.request_job_sync(job.id).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let confirmed: i64 = pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_entries
+                      WHERE job_id=?1 AND native_dirty=0
+                        AND native_confirmed_generation IS NOT NULL",
+                    [job.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if confirmed == 7 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "seven photos must drain through two immediate batches: {}",
+                logs.text()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(service
+            .store()
+            .get_job(job.id)
+            .unwrap()
+            .unwrap()
+            .last_error
+            .is_none());
+        let confirmed: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entries
+                  WHERE job_id=?1 AND native_dirty=0
+                    AND native_confirmed_generation IS NOT NULL",
+                [job.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(confirmed, 7);
+        let delta_rounds = logs.lines("云同步增量数据批次已保存");
+        assert_eq!(
+            delta_rounds.len(),
+            1,
+            "continuation batches must upload without another downlink projection: {}",
+            logs.text()
+        );
+    });
 }

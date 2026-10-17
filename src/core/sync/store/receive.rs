@@ -194,6 +194,10 @@ pub enum NativeReceiveCommand {
     /// unresolved, which is what keeps a fully received but un-downloaded photo
     /// from reporting itself as synchronized.
     AdvanceApplied { job_id: i64 },
+    /// Adopt the server head produced exclusively by this client's confirmed
+    /// upload batch. The mutation response already established record identity,
+    /// revisions and resource baselines locally.
+    AdoptConfirmedHead { job_id: i64, sync_token: String },
     /// Drop the receive position after token expiry. Local dirty, confirmed
     /// facts and verified assets are untouched; only the cloud-side position is
     /// rebuilt.
@@ -235,6 +239,7 @@ pub enum NativeReceiveOutcome {
         /// False while obligations remain, which is the normal C1.2 state.
         applied: bool,
     },
+    AdoptedHead,
     Reset,
 }
 
@@ -625,6 +630,32 @@ pub(super) fn execute(
                 [job_id],
             )?;
             NativeReceiveOutcome::Reset
+        }
+        NativeReceiveCommand::AdoptConfirmedHead { job_id, sync_token } => {
+            let unresolved = unresolved_in_tx(&tx, *job_id)?;
+            if unresolved != 0 {
+                return Err(AppError::Backend(format!(
+                    "cannot adopt a confirmed upload head: {unresolved} unresolved items remain"
+                )));
+            }
+            let issued: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM sync_tasks WHERE job_id = ?1 AND state = 'issued'",
+                [*job_id],
+                |row| row.get(0),
+            )?;
+            if issued != 0 {
+                return Err(AppError::Backend(
+                    "cannot adopt a confirmed upload head while issued operations remain".into(),
+                ));
+            }
+            tx.execute(
+                "UPDATE sync_native_progress
+                    SET ingest_token = ?2, target_token = ?2, applied_token = ?2,
+                        updated_at = unixepoch()
+                  WHERE job_id = ?1",
+                params![job_id, sync_token],
+            )?;
+            NativeReceiveOutcome::AdoptedHead
         }
         NativeReceiveCommand::Reset { job_id } => {
             // Token expiry rebuilds the cloud-side position only. Local dirty
@@ -1070,6 +1101,18 @@ impl SyncStore {
         match self.write_receive(NativeReceiveCommand::AdvanceApplied { job_id })? {
             NativeReceiveOutcome::Reset => Ok(true),
             _ => Ok(false),
+        }
+    }
+
+    pub fn adopt_confirmed_head(&self, job_id: i64, sync_token: &str) -> Result<()> {
+        match self.write_receive(NativeReceiveCommand::AdoptConfirmedHead {
+            job_id,
+            sync_token: sync_token.to_string(),
+        })? {
+            NativeReceiveOutcome::AdoptedHead => Ok(()),
+            _ => Err(AppError::Backend(
+                "adopting a confirmed upload head returned an unexpected result".into(),
+            )),
         }
     }
 

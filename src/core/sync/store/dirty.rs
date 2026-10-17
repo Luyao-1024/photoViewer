@@ -288,6 +288,25 @@ impl SyncStore {
         }
     }
 
+    /// The current local version of one dirty entry, if it is still dirty.
+    ///
+    /// Dispatch already holds the ordered uplink snapshot. This lookup is the
+    /// narrow recheck used around asynchronous preparation, so one changed
+    /// entry does not force every remaining entry to be re-read.
+    pub(crate) fn uplink_entry_version(&self, job_id: i64, entry_id: i64) -> Result<Option<i64>> {
+        self.pool
+            .get()?
+            .query_row(
+                "SELECT native_local_version
+                   FROM sync_entries
+                  WHERE job_id = ?1 AND id = ?2 AND native_dirty <> 0",
+                params![job_id, entry_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// Confirm one category against the version that was actually sent.
     #[cfg(test)]
     pub fn confirm_category(

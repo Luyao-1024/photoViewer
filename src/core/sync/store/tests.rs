@@ -293,6 +293,69 @@ fn startup_reconciliation_closes_runs_left_open_by_an_earlier_process() {
 }
 
 #[test]
+fn overview_remains_running_until_the_complete_inventory_is_synced() {
+    let pool =
+        crate::core::db::init_pool(&temp_root("overview-outstanding").join("library.db")).unwrap();
+    let store = SyncStore::new(pool.clone());
+    let job = store
+        .create_job(&new_job(temp_root("overview-outstanding-media")))
+        .unwrap();
+    let conn = pool.get().unwrap();
+    for path in ["a.jpg", "b.jpg"] {
+        conn.execute(
+            "INSERT INTO sync_inventory(job_id,relative_path,config_generation)
+             VALUES(?1,?2,?3)",
+            rusqlite::params![job.id, path, job.config_generation],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO sync_entries(job_id,relative_path,native_dirty,native_confirmed_generation)
+         VALUES(?1,'a.jpg',0,'generation')",
+        [job.id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sync_entries(job_id,relative_path,native_dirty)
+         VALUES(?1,'b.jpg',1)",
+        [job.id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE sync_jobs SET last_started_at=100,last_completed_at=101 WHERE id=?1",
+        [job.id],
+    )
+    .unwrap();
+
+    let overview = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(overview.status, SyncOverviewStatus::Running);
+    assert_eq!(overview.synced_items, 1);
+    assert_eq!(overview.total_items, 2);
+
+    conn.execute(
+        "UPDATE sync_entries SET native_dirty=0,native_confirmed_generation='generation'
+          WHERE job_id=?1 AND relative_path='b.jpg'",
+        [job.id],
+    )
+    .unwrap();
+    let complete = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(complete.status, SyncOverviewStatus::Completed);
+    assert_eq!(complete.synced_items, 2);
+    assert_eq!(complete.total_items, 2);
+
+    conn.execute(
+        "UPDATE sync_entries SET native_dirty=1
+          WHERE job_id=?1 AND relative_path='a.jpg'",
+        [job.id],
+    )
+    .unwrap();
+    let edited = store.overview_with_sync_enabled(true).unwrap();
+    assert_eq!(edited.status, SyncOverviewStatus::Running);
+    assert_eq!(edited.synced_items, 1);
+    assert_eq!(edited.total_items, 2);
+}
+
+#[test]
 fn an_insecure_or_mislocated_endpoint_is_rejected() {
     for endpoint in [
         // A base path would silently prefix every control call.

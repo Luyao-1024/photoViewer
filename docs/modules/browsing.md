@@ -45,9 +45,10 @@ sync selection, then schedule scroll restoration and thumbnail reprioritization.
 Existing grid tests in `updates/tests.rs`, `loading/tests.rs` and
 `selection/tests.rs` continue to exercise this path through `MediaGrid`.
 
-The Photos overview shows a persisted `synced_items/total_items` fraction both
-while a WebDAV cycle runs and after it completes. The numerator counts distinct
-local paths with a proven common baseline, including earlier successful runs.
+The Photos overview shows a persisted `synced_items/total_items` fraction while
+bounded batches drain and after the complete eligible inventory is confirmed.
+The numerator counts distinct local paths with a proven complete pair and no
+remaining dirty obligation, including earlier successful runs.
 The denominator is the union of those historical paths and the complete known
 sync inventory: eligible local uploads and remote downloads across enabled
 connections. It excludes local-only files outside selected upload albums and
@@ -57,8 +58,11 @@ add a second item. Uploading changes only the activity text, never the counting
 scope. New sessions retain the persisted fraction; complete discovery refreshes
 the inventory before any transfer, and new baselines advance the numerator on
 the next overview poll. Before first discovery, only previously known paths can
-be counted. When unresolved image conflicts exist, the completed label also
-shows their count. These are library-wide totals, not current-run progress.
+be counted. `Completed` is reserved for `synced_items == total_items`; an
+individual 5-photo or 20-metadata batch ending does not by itself change the
+verdict from `Running` to `Completed`. When unresolved image conflicts exist,
+the completed label also shows their count. These are library-wide totals, not
+current-run progress.
 
 The window keeps Photos and the currently active `AlbumDetailPage` as peer
 children of `MainWindow`'s `browsing_stack`. That stack uses `crossfade` with a

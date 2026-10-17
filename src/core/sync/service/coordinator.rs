@@ -200,6 +200,14 @@ impl Heartbeat {
 }
 impl SyncService {
     pub async fn run_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
+        self.run_cycle_mode(job_id, true).await
+    }
+
+    pub(super) async fn run_uplink_cycle(&self, job_id: i64) -> Result<CycleReport, CycleError> {
+        self.run_cycle_mode(job_id, false).await
+    }
+
+    async fn run_cycle_mode(&self, job_id: i64, downlink: bool) -> Result<CycleReport, CycleError> {
         let _slot = self.acquire_run_slot(job_id).await.map_err(setup)?;
         self.require_selected_account(job_id).map_err(setup)?;
         let job = self
@@ -215,7 +223,7 @@ impl SyncService {
             config_generation = job.config_generation,
             "云同步批次开始"
         );
-        let result = self.run_owned_cycle(job_id, &cycle_id).await;
+        let result = self.run_owned_cycle(job_id, &cycle_id, downlink).await;
         let reason = match &result {
             Err(error) => Some(error.to_string()),
             Ok(report) if !report.failures.is_empty() => Some(
@@ -228,6 +236,9 @@ impl SyncService {
             ),
             Ok(report) if report.uplink_skipped => {
                 Some("another device holds the upload lease; retry scheduled".into())
+            }
+            Ok(report) if report.caught_up_behind_lock => {
+                Some("cloud head advanced after downlink; retry scheduled".into())
             }
             Ok(report) if report.outstanding > report.uplink_deferred => Some(format!(
                 "{} synchronization obligations remain",
@@ -252,6 +263,8 @@ impl SyncService {
                 let outcome = if !report.failures.is_empty() {
                     "partial"
                 } else if report.uplink_skipped {
+                    "deferred"
+                } else if report.caught_up_behind_lock {
                     "deferred"
                 } else if report.outstanding > 0 {
                     "pending"
@@ -285,6 +298,7 @@ impl SyncService {
         &self,
         job_id: i64,
         cycle_id: &str,
+        downlink: bool,
     ) -> Result<CycleReport, CycleError> {
         let job = self
             .store()
@@ -304,7 +318,7 @@ impl SyncService {
             job_id,
             ..Default::default()
         };
-        let result = self.cycle_inner(&job, &epoch, &mut report).await;
+        let result = self.cycle_inner(&job, &epoch, &mut report, downlink).await;
         self.store().runtime(Command::End(epoch)).map_err(setup)?;
         match result {
             Err(CycleError::UplinkBusy) => report.uplink_skipped = true,
@@ -371,6 +385,7 @@ impl SyncService {
         job: &SyncJob,
         epoch: &Epoch,
         report: &mut CycleReport,
+        downlink: bool,
     ) -> Result<(), CycleError> {
         self.index_upload_sources(job).await.map_err(setup)?;
         self.store()
@@ -378,12 +393,14 @@ impl SyncService {
                 epoch: epoch.clone(),
             })
             .map_err(setup)?;
-        // Even when publication is blocked, read-only receipt reconciliation
-        // after acquisition can settle an earlier committed local operation.
-        match self.receive_complete(job.id).await {
-            Ok(_) => report.received = true,
-            Err(CycleError::Behind(_)) => report.received = true,
-            Err(e) => return Err(e),
+        if downlink {
+            // Even when publication is blocked, read-only receipt reconciliation
+            // after acquisition can settle an earlier committed local operation.
+            match self.receive_complete(job.id).await {
+                Ok(_) => report.received = true,
+                Err(CycleError::Behind(_)) => report.received = true,
+                Err(e) => return Err(e),
+            }
         }
         if !self.store().epoch_current(epoch).map_err(setup)? {
             return Err(setup("synchronization configuration was superseded"));
@@ -506,39 +523,29 @@ impl SyncService {
                 }
             }
         }
-        let mut ready = false;
-        for _ in 0..3 {
-            self.receive_complete(job.id).await?;
-            let progress = self
-                .store()
-                .native_progress(job.id)
-                .map_err(setup)?
-                .ok_or_else(|| setup("job has no receive progress"))?;
-            let Some(applied) = progress.applied_token.as_deref() else {
-                return Err(CycleError::Behind(
-                    "local resources/conflicts have not been applied".into(),
-                ));
-            };
-            let local_ready = self
-                .store()
-                .unresolved_resource_count(job.id)
-                .map_err(setup)?
-                == 0
-                && progress.target_token == progress.applied_token;
-            let check = client
-                .check_lease(lease.proof(), zone, applied, local_ready)
-                .await
-                .map_err(transport)?;
-            if check.may_upload {
-                ready = true;
-                break;
-            }
-            report.caught_up_behind_lock = true;
-        }
-        if !ready {
+        let progress = self
+            .store()
+            .native_progress(job.id)
+            .map_err(setup)?
+            .ok_or_else(|| setup("job has no receive progress"))?;
+        let Some(applied) = progress.applied_token.clone() else {
             return Err(CycleError::Behind(
-                "cloud head did not converge within this bounded catch-up cycle".into(),
+                "local resources/conflicts have not been applied".into(),
             ));
+        };
+        let local_ready = self
+            .store()
+            .unresolved_resource_count(job.id)
+            .map_err(setup)?
+            == 0
+            && progress.target_token == progress.applied_token;
+        let check = client
+            .check_lease(lease.proof(), zone, &applied, local_ready)
+            .await
+            .map_err(transport)?;
+        if !check.may_upload {
+            report.caught_up_behind_lock = true;
+            return Ok(());
         }
         // Freeze the DB-derived view after the gate. Later user edits remain dirty.
         self.store()
@@ -621,12 +628,6 @@ impl SyncService {
                 if pending.iter().any(|op| op.entry == entry.entry_id) {
                     continue;
                 }
-                let current = self.store().uplink_view(job.id).map_err(setup)?;
-                if !current.iter().any(|row| {
-                    row.entry_id == entry.entry_id && row.local_version == entry.local_version
-                }) {
-                    continue;
-                }
                 let phase_result = heartbeat
                     .guard(
                         lease,
@@ -647,6 +648,19 @@ impl SyncService {
                         report,
                     )?,
                 }
+            }
+        }
+        if report.failures.is_empty() {
+            let local_ready = self
+                .store()
+                .unresolved_resource_count(job.id)
+                .map_err(setup)?
+                == 0;
+            if local_ready {
+                let head = client.snapshot(zone).await.map_err(transport)?;
+                self.store()
+                    .adopt_confirmed_head(job.id, &head.sync_token)
+                    .map_err(setup)?;
             }
         }
         Ok(())
@@ -705,11 +719,23 @@ impl SyncService {
             report.uplink_deferred += 1;
             return Ok(());
         }
+        if self
+            .store()
+            .uplink_entry_version(job.id, entry.entry_id)
+            .map_err(setup)?
+            != Some(entry.local_version)
+        {
+            return Ok(());
+        }
         let content = if phase == UploadPhase::Create
             || (phase == UploadPhase::Modify && entry.dirty.contains(NativeDirty::CONTENT))
         {
             let source = super::transfer::safe_destination(&job.local_root, &entry.relative_path)
                 .map_err(setup)?;
+            if std::fs::metadata(&source).map_err(setup)?.len() > pinned.limits.max_asset_bytes {
+                report.uplink_deferred += 1;
+                return Ok(());
+            }
             let cache_source = source.clone();
             let cache_dir = crate::config::cache_dir();
             let thumb_max = pinned.limits.thumbnail_max_bytes;
@@ -789,10 +815,11 @@ impl SyncService {
                 operation.preparation["resources"] = prepared;
             }
         }
-        let current = self.store().uplink_view(job.id).map_err(setup)?;
-        if !current
-            .iter()
-            .any(|row| row.entry_id == entry.entry_id && row.local_version == entry.local_version)
+        if self
+            .store()
+            .uplink_entry_version(job.id, entry.entry_id)
+            .map_err(setup)?
+            != Some(entry.local_version)
         {
             return Err(setup("local version changed while preparing the operation"));
         }

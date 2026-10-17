@@ -342,6 +342,60 @@ fn a_new_photo_without_a_cached_thumbnail_waits_and_does_not_block_later_photos(
 }
 
 #[test]
+fn an_oversized_original_waits_without_consuming_upload_slots() {
+    let server = Server::start().expect("upload failure tests require SyncServer");
+    block_on(async {
+        let f = Fixture::new(server).await;
+        let oversized = f.source.join("oversized.jpg");
+        common::write_plain_jpeg(&f.source, "oversized.jpg");
+        common::cache_local_thumbnail(&oversized);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&oversized)
+            .unwrap()
+            .set_len(536_870_913)
+            .unwrap();
+        f.actor
+            .execute_blocking(DbCommand::UpsertMediaBatch {
+                source: ChangeSource::UserInteractive,
+                items: vec![Fixture::item(&oversized)],
+            })
+            .unwrap();
+        f.add(3..8);
+
+        let report = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(report.failures.is_empty(), "{report:?}");
+        assert_eq!(report.mutations_confirmed, 5, "{report:?}");
+        assert_eq!(report.outstanding, 1, "{report:?}");
+        assert_eq!(report.uplink_deferred, 1, "{report:?}");
+        let second = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(second.failures.is_empty(), "{second:?}");
+        assert_eq!(second.mutations_sent, 0, "{second:?}");
+        assert_eq!(second.outstanding, 1, "{second:?}");
+        assert_eq!(second.uplink_deferred, 1, "{second:?}");
+
+        common::write_distinct_jpeg(&oversized, 96, 80, [220, 30, 60]);
+        common::cache_local_thumbnail(&oversized);
+        let media_id = db::list_all_media(&f.pool)
+            .unwrap()
+            .into_iter()
+            .find(|media| media.path == oversized)
+            .unwrap()
+            .id;
+        f.actor
+            .execute_blocking(DbCommand::UpdateEditedMedia {
+                id: MediaId::from(media_id),
+                item: Fixture::item(&oversized),
+            })
+            .unwrap();
+        let recovered = f.service.run_cycle(f.job.id).await.unwrap();
+        assert!(recovered.failures.is_empty(), "{recovered:?}");
+        assert_eq!(recovered.mutations_confirmed, 1, "{recovered:?}");
+        assert_eq!(recovered.outstanding, 0, "{recovered:?}");
+    });
+}
+
+#[test]
 fn a_receipt_confirmation_failure_is_skipped_until_the_next_cycle() {
     let server = Server::start().expect("upload failure tests require SyncServer");
     block_on(async {

@@ -387,6 +387,7 @@ impl SyncStore {
                  FROM sync_entries e JOIN sync_jobs j ON j.id = e.job_id
                  JOIN sync_connections c ON c.id = j.connection_id
                  WHERE c.enabled = 1 AND e.native_confirmed_generation IS NOT NULL
+                   AND e.native_dirty = 0
                  UNION ALL
                  SELECT j.local_root || '/' || i.relative_path, 0
                  FROM sync_inventory i JOIN sync_jobs j ON j.id = i.job_id
@@ -496,6 +497,18 @@ impl SyncStore {
         if active.clone().any(|(_, started, completed, _)| {
             started.is_some_and(|started| completed.is_none_or(|completed| started > completed))
         }) {
+            return Ok(SyncOverview {
+                status: SyncOverviewStatus::Running,
+                job_count,
+                synced_items,
+                total_items,
+                conflict_images,
+            });
+        }
+        let cycle_finished = active
+            .clone()
+            .any(|(_, _, completed, _)| completed.is_some());
+        if cycle_finished && synced_items < total_items {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Running,
                 job_count,

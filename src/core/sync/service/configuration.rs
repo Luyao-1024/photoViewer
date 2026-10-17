@@ -209,7 +209,16 @@ impl SyncService {
     /// edit that landed between the last check and the `working` release.
     async fn configuration_worker(&self, id: i64, work: Arc<JobWork>) {
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            let coalesce_pending_edit = self
+                .store
+                .pending_change(id)
+                .map(|pending| pending.is_some())
+                .unwrap_or(true);
+            if coalesce_pending_edit {
+                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            } else {
+                tokio::task::yield_now().await;
+            }
             if !work.requested.swap(false, Ordering::AcqRel) {
                 break;
             }
@@ -227,8 +236,40 @@ impl SyncService {
             if crate::core::prefs::sync_enabled() && !self.store.reset_pending().unwrap_or(true) {
                 if let Ok(Some(job)) = self.store.get_job(id) {
                     if !job.paused {
-                        if let Err(error) = self.run_cycle(id).await {
-                            tracing::warn!("synchronization cycle failed: {error}");
+                        match self.run_cycle(id).await {
+                            Ok(report) => {
+                                if report.caught_up_behind_lock {
+                                    work.requested.store(true, Ordering::Release);
+                                } else {
+                                    let mut made_progress =
+                                        report.mutations_sent > 0 || report.mutations_confirmed > 0;
+                                    let mut outstanding = report.outstanding;
+                                    let mut chain = made_progress && outstanding > 0;
+                                    while chain {
+                                        match self.run_uplink_cycle(id).await {
+                                            Ok(report) => {
+                                                if report.caught_up_behind_lock {
+                                                    work.requested.store(true, Ordering::Release);
+                                                    break;
+                                                }
+                                                made_progress = report.mutations_sent > 0
+                                                    || report.mutations_confirmed > 0;
+                                                outstanding = report.outstanding;
+                                                chain = made_progress && outstanding > 0;
+                                            }
+                                            Err(error) => {
+                                                tracing::warn!(
+                                                    "synchronization uplink cycle failed: {error}"
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!("synchronization cycle failed: {error}");
+                            }
                         }
                     }
                 }

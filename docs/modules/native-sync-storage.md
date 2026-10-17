@@ -334,6 +334,12 @@ issued operations from an older configuration still prevent unsafe new writes.
 Other jobs' diagnostics and successful entries are unaffected. Batch allowances
 still count attempted uploads; receipt-only checks do not consume them.
 
+An original whose current size exceeds the pinned server asset limit is a
+waiting condition, not an upload failure. It is rejected before an attachment
+slot is consumed and before a source snapshot is made. Later cycles re-check
+its metadata cheaply; a content edit or a changed server capability can make it
+eligible again.
+
 ## Success Callback Transaction
 
 Validate authenticated response/scope, current job/config/cycle, operationId,
@@ -389,7 +395,11 @@ as complete supported media.
 
 appliedToken reaches targetToken only when the final projection exists and all
 actual configured-scope publication/conflict obligations are settled. Empty
-inbox alone is insufficient. Download failure retains ingest and work; restart
+inbox alone is insufficient. The sole exception is a successful, failure-free
+uplink batch under an exclusive lease: its atomic record response already
+registers record identity/revisions and resource baselines, so the client may
+adopt the server head without replaying its own writes through the inbox.
+Download failure retains ingest and work; restart
 resumes from those durable facts. Token expiry rebuilds metadata while retaining
 local dirty, valid confirmed facts, verified assets and unknown operations for
 reconciliation; it never performs mass deletion from a partial new listing.
@@ -494,7 +504,7 @@ native_retired 保存在既有 sync_entries。干净的云端删除保留本地�
 
 用户选择版本时核对本地版本、冲突快照及未确认操作。UseCloud 先保留本地原图，再创建原有双资源发布意图；KeepLocal 先下载并保留竞争云端资源，已校验但未作为图库版本发布的资源以 retained 区分于 verified。该状态只结算明确用户选择覆盖的接收义务，不能用于普通媒体入库。确认的原子拒绝只结束已发出操作证据，不清 dirty；网络超时和未知回执继续保留。
 
-新范围的本地索引通过已有 scanner 的 mtime/size 短路和 DbActor 批次完成；未变化的本地原图不参与每 15 秒检查的正文哈希。每个资源后检查可以入库的照片，后台发布任务完成前不释放运行屏障。下载期间接受配置编辑可以停止旧网络传输；文件发布仍等待完成或回滚。
+新范围的本地索引通过已有 scanner 的 mtime/size 短路和 DbActor 批次完成；未变化的本地原图不参与回退调度的正文哈希。每个资源后检查可以入库的照片，后台发布任务完成前不释放运行屏障。下载期间接受配置编辑可以停止旧网络传输；文件发布仍等待完成或回滚。成功批次后仍有义务时，配置 worker 立即续跑下一批；只有无进展时才等待回退调度。
 
 
 ## 账户身份与重新认证
