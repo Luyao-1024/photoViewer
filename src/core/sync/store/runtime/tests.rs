@@ -248,7 +248,8 @@ fn uncertain_mutations_cannot_be_discarded_as_superseded_preparation() {
         .runtime(Command::RetireIssued {
             epoch: f.epoch.clone(),
             operation: f.operation.clone(),
-            rejected: false
+            rejected: false,
+            reason: String::new(),
         })
         .is_err());
     assert_eq!(f.store.pending_issued(f.epoch.job).unwrap().len(), 1);
@@ -262,6 +263,7 @@ fn a_definitive_atomic_rejection_keeps_dirty_and_unblocks_a_new_decision() {
             epoch: f.epoch.clone(),
             operation: f.operation.clone(),
             rejected: true,
+            reason: "HTTP 400 BAD_REQUEST: Invalid record request".into(),
         })
         .unwrap();
     assert!(f.store.pending_issued(f.epoch.job).unwrap().is_empty());

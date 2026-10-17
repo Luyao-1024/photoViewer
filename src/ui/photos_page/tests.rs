@@ -149,12 +149,13 @@ fn photos_overview_requires_an_extra_pull_at_the_grid_top() {
     if crate::core::prefs::sync_enabled() {
         assert_eq!(
             page.imp().overview_sync_label.get().label(),
-            sync_overview_text(SyncOverview {
+            sync_overview_markup(SyncOverview {
                 status: SyncOverviewStatus::Paused,
                 job_count: 1,
                 synced_items: 0,
                 total_items: 0,
                 conflict_images: 0,
+                cause: None,
             },)
         );
         assert!(page.imp().overview_sync_row.get().is_visible());
@@ -188,6 +189,7 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
             synced_items: 0,
             total_items: 0,
             conflict_images: 0,
+            cause: None,
         },
     });
 
@@ -201,7 +203,7 @@ fn running_sync_uses_a_rotating_indicator_and_stops_for_static_states() {
         "the visible spinner should replace the static icon while synchronization is running"
     );
 
-    page.apply_overview_sync_icon(SyncOverviewStatus::Completed);
+    page.apply_overview_sync_icon(SyncOverviewStatus::Completed, None);
     assert!(
         !imp.overview_sync_running.get(),
         "the spinner should stop once synchronization is no longer running"
@@ -231,6 +233,7 @@ fn overview_snapshot(status: SyncOverviewStatus) -> PhotosOverviewSnapshot {
             synced_items: 0,
             total_items: 0,
             conflict_images: 0,
+            cause: None,
         },
     }
 }
@@ -370,6 +373,7 @@ fn globally_disabled_sync_has_no_home_overview_hint() {
             synced_items: 8,
             total_items: 8,
             conflict_images: 1,
+            cause: None,
         },
     });
 
@@ -477,6 +481,144 @@ fn scan_failure_text_names_the_reason_when_there_is_one() {
     );
 }
 
+#[gtk::test]
+fn the_sync_row_renders_its_aside_instead_of_printing_the_markup() {
+    // `GtkLabel` defaults to `uses-markup = false`, so handing this string over
+    // with `set_label` prints the `<span>` verbatim instead of dimming the
+    // second line. This goes through the real page so it guards the call site
+    // rather than just the string builder.
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = crate::core::db::init_pool(&tmp.path().join("sync-aside.db")).unwrap();
+    let loader = Arc::new(ThumbnailLoader::new(pool, tmp.path().join("thumbs")));
+    let page = PhotosPage::new(gtk::gio::ListStore::new::<glib::BoxedAnyObject>(), loader);
+
+    page.apply_overview_snapshot(PhotosOverviewSnapshot {
+        photos: 510,
+        videos: 0,
+        live_total: 510,
+        sync: SyncOverview {
+            status: SyncOverviewStatus::Failed,
+            job_count: 1,
+            synced_items: 0,
+            total_items: 510,
+            conflict_images: 0,
+            cause: Some(SyncCause::Network),
+        },
+    });
+
+    // `label()` hands back the raw markup; `text()` is what Pango actually laid out.
+    let rendered = page.imp().overview_sync_label.get().text().to_string();
+    assert!(!rendered.contains("<span"), "{rendered}");
+    assert!(!rendered.contains("</span>"), "{rendered}");
+    // The aside makes this a two-line label, and a wrapped line is governed by
+    // `justify` rather than `xalign` — left by default, which looked ragged
+    // against the centred count line above it.
+    assert_eq!(
+        page.imp().overview_sync_label.get().justify(),
+        gtk::Justification::Center
+    );
+    assert!(
+        rendered.contains(&tr("photos.overview.sync.network")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&tr("photos.overview.sync.network_detail")),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_quota_failure_names_the_cause_and_leaves_the_count_of_waiting_items() {
+    let overview = SyncOverview {
+        status: SyncOverviewStatus::Failed,
+        job_count: 1,
+        synced_items: 0,
+        total_items: 510,
+        conflict_images: 0,
+        cause: Some(SyncCause::Quota),
+    };
+    let text = sync_overview_markup(overview);
+    // The headline must stop being the undifferentiated "synchronization failed".
+    assert_ne!(text, tr("photos.overview.sync.failed"));
+    assert!(text.contains("510"), "{text}");
+    // Without a reading yet, the headline stands alone rather than inventing a
+    // figure: the aside is dropped, not filled with a placeholder.
+    assert!(
+        !text.contains("photos.overview.sync.quota_detail"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_failure_keeps_the_service_reason_out_of_the_row() {
+    let overview = SyncOverview {
+        status: SyncOverviewStatus::Failed,
+        job_count: 1,
+        synced_items: 0,
+        total_items: 0,
+        conflict_images: 0,
+        cause: Some(SyncCause::Unknown),
+    };
+    let text = sync_overview_markup(overview);
+    assert!(!text.contains("HTTP 409"), "{text}");
+    assert!(!text.contains("STORAGE_QUOTA_EXCEEDED"), "{text}");
+}
+
+#[test]
+fn only_states_that_explain_themselves_get_a_second_line() {
+    let neutral = SyncOverview {
+        status: SyncOverviewStatus::Running,
+        job_count: 1,
+        synced_items: 3,
+        total_items: 9,
+        conflict_images: 0,
+        cause: None,
+    };
+    assert!(!sync_overview_markup(neutral).contains('\n'));
+    let failed = SyncOverview {
+        status: SyncOverviewStatus::Failed,
+        cause: Some(SyncCause::Network),
+        ..neutral
+    };
+    assert!(sync_overview_markup(failed).contains('\n'));
+}
+
+#[test]
+fn a_reason_that_looks_like_markup_cannot_swallow_the_row() {
+    assert_eq!(escape_markup("a & b <c>"), "a &amp; b &lt;c&gt;");
+    assert_eq!(
+        escape_markup("remote version changed: HTTP 409 <script>"),
+        "remote version changed: HTTP 409 &lt;script&gt;"
+    );
+}
+
+#[test]
+fn a_failure_the_service_will_clear_keeps_the_spinning_glyph() {
+    // A lost connection is still in progress from the reader's side; only
+    // something that needs the user earns the warning triangle.
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Failed, Some(SyncCause::Network)),
+        "emblem-synchronizing-symbolic"
+    );
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Failed, Some(SyncCause::Quota)),
+        "dialog-warning-symbolic"
+    );
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Failed, Some(SyncCause::Credential)),
+        "dialog-warning-symbolic"
+    );
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Failed, Some(SyncCause::Incompatible)),
+        "dialog-warning-symbolic"
+    );
+    // A run with no cause to report keeps the warning it always had.
+    assert_eq!(
+        sync_overview_icon(SyncOverviewStatus::Failed, None),
+        "dialog-warning-symbolic"
+    );
+}
+
 #[test]
 fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
     let overview = SyncOverview {
@@ -485,16 +627,17 @@ fn completed_sync_overview_includes_items_and_optional_image_conflicts() {
         synced_items: 103,
         total_items: 105,
         conflict_images: 0,
+        cause: None,
     };
-    assert!(sync_overview_text(overview).contains("103/105"));
+    assert!(sync_overview_markup(overview).contains("103/105"));
     let with_conflicts = SyncOverview {
         conflict_images: 2,
         ..overview
     };
-    let text = sync_overview_text(with_conflicts);
+    let text = sync_overview_markup(with_conflicts);
     assert!(text.contains("103"));
     assert!(text.contains('2'));
-    assert_ne!(sync_overview_text(overview), text);
+    assert_ne!(sync_overview_markup(overview), text);
 }
 
 /// A run cannot report a fraction before discovery has proven any scope, and on
@@ -1073,13 +1216,14 @@ fn edit_first_overview_text_describes_automatic_reconfiguration() {
         synced_items: 0,
         total_items: 0,
         conflict_images: 0,
+        cause: None,
     };
     assert_eq!(
-        sync_overview_text(overview),
+        sync_overview_markup(overview),
         tr("photos.overview.sync.applying")
     );
     assert_eq!(
-        sync_overview_icon(SyncOverviewStatus::Applying),
+        sync_overview_icon(SyncOverviewStatus::Applying, None),
         "emblem-synchronizing-symbolic"
     );
 }

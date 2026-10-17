@@ -7,6 +7,7 @@ use crate::core::db::DbPool;
 use crate::core::db_actor::{DbActorHandle, DbCommand, DbCommandResult};
 use crate::core::error::{AppError, Result};
 
+use super::error::{classify_detail, SyncCause};
 use super::model::{ProviderKind, SyncDirection, UploadScope};
 use super::native::protocol::{NativePinnedScope, NativeZone};
 use super::remote_path::{has_empty_segment, has_navigation_segment};
@@ -85,6 +86,13 @@ pub struct SyncOverview {
     /// Historical paths plus the complete discovered scope, deduplicated across jobs.
     pub total_items: usize,
     pub conflict_images: usize,
+    /// Why the run stopped, recovered from the job's stored failure detail.
+    ///
+    /// Set only while a failure is being reported: a clean cycle clears the
+    /// detail it stores, so this returns to `None` by itself once the cause is
+    /// gone. No column is added for it — see `classify_detail` for why the
+    /// stored text is enough to tell a quota rejection from a lost connection.
+    pub cause: Option<SyncCause>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,6 +445,17 @@ impl SyncStore {
         })?;
         let jobs = rows.collect::<rusqlite::Result<Vec<_>>>()?;
         let job_count = jobs.len();
+        // A job that reports a failure says why in the detail it stored, and
+        // that text outlives the process. An empty or blank string is not a
+        // failure, so it is filtered once here rather than re-tested — and
+        // re-tested differently — at each branch below.
+        fn failure(error: &Option<String>) -> Option<&str> {
+            error.as_deref().filter(|detail| !detail.trim().is_empty())
+        }
+        let cause = jobs
+            .iter()
+            .find_map(|(_, _, _, error)| failure(error).map(classify_detail));
+        let failed_any = jobs.iter().any(|(_, _, _, error)| failure(error).is_some());
         if !sync_enabled {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Disabled,
@@ -444,6 +463,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         if jobs.is_empty() {
@@ -453,14 +473,13 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         let pending = self.reset_pending()? || conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_job_changes p JOIN sync_jobs j ON j.id=p.job_id JOIN sync_connections c ON c.id=j.connection_id WHERE c.enabled=1)",[],|row|row.get::<_, bool>(0))?;
         if pending {
             return Ok(SyncOverview {
-                status: if self.reset_error()?.is_some()
-                    || jobs.iter().any(|(_, _, _, error)| error.is_some())
-                {
+                status: if self.reset_error()?.is_some() || failed_any {
                     SyncOverviewStatus::Failed
                 } else {
                     SyncOverviewStatus::Applying
@@ -469,6 +488,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         if jobs.iter().all(|(paused, _, _, _)| *paused) {
@@ -478,13 +498,14 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
 
         let active = jobs.iter().filter(|(paused, _, _, _)| !paused);
         if active
             .clone()
-            .any(|(_, _, _, error)| error.as_deref().is_some_and(|error| !error.is_empty()))
+            .any(|(_, _, _, error)| failure(error).is_some())
         {
             return Ok(SyncOverview {
                 status: SyncOverviewStatus::Failed,
@@ -492,6 +513,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         if active.clone().any(|(_, started, completed, _)| {
@@ -503,6 +525,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         let cycle_finished = active
@@ -515,6 +538,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         if active
@@ -527,6 +551,7 @@ impl SyncStore {
                 synced_items,
                 total_items,
                 conflict_images,
+                cause,
             });
         }
         Ok(SyncOverview {
@@ -535,7 +560,21 @@ impl SyncStore {
             synced_items,
             total_items,
             conflict_images,
+            cause,
         })
+    }
+
+    /// The cause of the failure this job last recorded, if it recorded one.
+    ///
+    /// Recovered from the stored detail rather than kept beside it: the detail
+    /// is what the job already persists, and `classify_detail` already turns it
+    /// back into a cause, so the answer needs no column of its own.
+    pub fn failure_cause(&self, id: i64) -> Result<Option<SyncCause>> {
+        Ok(self
+            .get_job(id)?
+            .and_then(|job| job.last_error)
+            .filter(|detail| !detail.trim().is_empty())
+            .map(|detail| classify_detail(&detail)))
     }
 
     pub fn set_upload_albums(&self, id: i64, relative_albums: &[String]) -> Result<()> {

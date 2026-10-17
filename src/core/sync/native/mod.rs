@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod provider;
 pub mod receive;
 pub mod records;
+pub mod usage;
 
 pub use lease::{LeaseError, LeaseGrant, LeaseProof, UploadLease, UploadPhase};
 pub use modify::{ModifyOutcome, MutationBatch, OperationState};
@@ -26,6 +27,7 @@ pub use protocol::{
 pub use provider::NativeProvider;
 pub use receive::{NativeRecord, ZoneId};
 pub use records::{GraphError, RemoteGraph, RemotePhoto, RemoteResource};
+pub use usage::StorageUsage;
 
 #[cfg(test)]
 pub(crate) use protocol::demo_pinned_scope;

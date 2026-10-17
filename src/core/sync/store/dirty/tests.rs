@@ -151,7 +151,8 @@ fn a_change_outside_any_job_root_creates_no_obligation() {
     tx.commit().unwrap();
     assert!(
         outcome.is_none(),
-        "a photo nobody syncs must not gain an obligation"
+        "a photo nobody syncs must not gain an obligation — and, since this is the \
+         branch that arms the debounce trigger, must not schedule a run either"
     );
     let entries: i64 = fixture
         .pool

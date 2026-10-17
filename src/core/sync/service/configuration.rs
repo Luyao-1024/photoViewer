@@ -21,6 +21,15 @@ struct JobWork {
 static WORK: OnceLock<Mutex<HashMap<JobKey, Arc<JobWork>>>> = OnceLock::new();
 pub(super) static GLOBAL_RUN_EPOCH: AtomicU64 = AtomicU64::new(0);
 
+/// How many cycles one worker may chain back-to-back before handing the job
+/// back to the scheduler.
+///
+/// Chaining exists so a large library does not wait a whole scheduler interval
+/// per batch. Left open it is a tight loop with no delay at all, which is the
+/// wrong shape for anything that can fail repeatedly: the worker holds its slot,
+/// and the rest of the app starves behind it.
+const MAX_CHAINED_CYCLES: usize = 8;
+
 impl SyncService {
     pub(super) fn job_key(&self, id: i64) -> Result<JobKey> {
         let conn = self.pool().get()?;
@@ -68,6 +77,22 @@ impl SyncService {
             return Err(AppError::Backend("configuration is being applied".into()));
         }
         ActiveJobGuard::acquire(self.job_key(id)?)
+    }
+
+    /// Whether another cycle may start without waiting for a trigger.
+    ///
+    /// A cycle that stopped for a reason the user has to clear gets no
+    /// follow-up, however much work is left: the service will refuse exactly
+    /// the same way, and each attempt spends a lease and a round trip to learn
+    /// nothing. The remaining work is not lost — it stays dirty, and the job
+    /// resumes as soon as the cause is gone.
+    fn may_chain_another_cycle(&self, id: i64, chained: usize) -> Result<bool> {
+        if chained >= MAX_CHAINED_CYCLES {
+            return Ok(false);
+        }
+        Ok(super::scheduling::unattended_retry_is_worthwhile(
+            self.store.failure_cause(id)?,
+        ))
     }
 
     pub fn has_pending_work(&self, id: i64) -> Result<bool> {
@@ -239,23 +264,42 @@ impl SyncService {
                         match self.run_cycle(id).await {
                             Ok(report) => {
                                 if report.caught_up_behind_lock {
-                                    work.requested.store(true, Ordering::Release);
+                                    // A store read that fails stops the chain:
+                                    // not knowing why the cycle stopped is no
+                                    // reason to keep starting them.
+                                    if self.may_chain_another_cycle(id, 0).unwrap_or(false) {
+                                        work.requested.store(true, Ordering::Release);
+                                    }
                                 } else {
-                                    let mut made_progress =
-                                        report.mutations_sent > 0 || report.mutations_confirmed > 0;
                                     let mut outstanding = report.outstanding;
-                                    let mut chain = made_progress && outstanding > 0;
+                                    let mut chained = 0usize;
+                                    let mut chain = (report.mutations_sent > 0
+                                        || report.mutations_confirmed > 0)
+                                        && outstanding > 0;
                                     while chain {
+                                        if !self
+                                            .may_chain_another_cycle(id, chained)
+                                            .unwrap_or(false)
+                                        {
+                                            break;
+                                        }
+                                        chained += 1;
                                         match self.run_uplink_cycle(id).await {
                                             Ok(report) => {
                                                 if report.caught_up_behind_lock {
-                                                    work.requested.store(true, Ordering::Release);
+                                                    if self
+                                                        .may_chain_another_cycle(id, chained)
+                                                        .unwrap_or(false)
+                                                    {
+                                                        work.requested
+                                                            .store(true, Ordering::Release);
+                                                    }
                                                     break;
                                                 }
-                                                made_progress = report.mutations_sent > 0
-                                                    || report.mutations_confirmed > 0;
                                                 outstanding = report.outstanding;
-                                                chain = made_progress && outstanding > 0;
+                                                chain = (report.mutations_sent > 0
+                                                    || report.mutations_confirmed > 0)
+                                                    && outstanding > 0;
                                             }
                                             Err(error) => {
                                                 tracing::warn!(

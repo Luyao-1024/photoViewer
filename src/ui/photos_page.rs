@@ -30,7 +30,8 @@ use crate::core::identity::MediaId;
 use crate::core::media::MediaItem;
 use crate::core::repository::MediaQuery;
 use crate::core::section_model::GroupBy;
-use crate::core::sync::{SyncOverview, SyncOverviewStatus, SyncStore};
+use crate::core::sync::native::usage;
+use crate::core::sync::{SyncCause, SyncClass, SyncOverview, SyncOverviewStatus, SyncStore};
 use crate::core::thumbnails::{ThumbnailLoader, ThumbnailSize};
 use crate::ui::album_picker;
 use crate::ui::empty_states;
@@ -58,14 +59,51 @@ struct PhotosOverviewSnapshot {
     sync: SyncOverview,
 }
 
-fn sync_overview_text(overview: SyncOverview) -> String {
+fn sync_overview_markup(overview: SyncOverview) -> String {
+    let headline = sync_overview_headline(overview);
+    match sync_overview_detail(overview) {
+        // The row carries no button, so the second line is the only place that
+        // can say what to do about the failure. It is set smaller and dimmer to
+        // read as an aside to the headline rather than as a second headline.
+        Some(detail) => format!(
+            "{}\n<span size=\"small\" alpha=\"72%\">{}</span>",
+            escape_markup(&headline),
+            escape_markup(&detail)
+        ),
+        None => escape_markup(&headline),
+    }
+}
+
+/// Neutral Pango escaping for text that reaches the label.
+///
+/// The label parses markup, and the fallback detail line carries a failure
+/// reason that came back over the wire — a reason containing `&` or `<` would
+/// otherwise be read as a tag and silently swallow the rest of the row.
+fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn sync_overview_headline(overview: SyncOverview) -> String {
     match overview.status {
         SyncOverviewStatus::Disabled => String::new(),
         SyncOverviewStatus::NotConfigured => tr("photos.overview.sync.not_configured"),
         SyncOverviewStatus::Paused => tr("photos.overview.sync.paused"),
         SyncOverviewStatus::Applying => tr("photos.overview.sync.applying"),
         SyncOverviewStatus::Running => sync_running_text(overview),
-        SyncOverviewStatus::Failed => tr("photos.overview.sync.failed"),
+        // A stored failure says why it failed, so name that instead of
+        // reporting the same undifferentiated failure for every cause.
+        SyncOverviewStatus::Failed => match overview.cause {
+            Some(cause) => trf(
+                cause.headline_key(),
+                &[
+                    ("pending", &pending_items(overview).to_string()),
+                    ("conflicts", &overview.conflict_images.to_string()),
+                ],
+            ),
+            None => tr("photos.overview.sync.failed"),
+        },
         SyncOverviewStatus::Ready => tr("photos.overview.sync.ready"),
         SyncOverviewStatus::Completed if overview.conflict_images > 0 => trf(
             "photos.overview.sync.completed_conflicts",
@@ -82,6 +120,58 @@ fn sync_overview_text(overview: SyncOverview) -> String {
                 ("total", &overview.total_items.to_string()),
             ],
         ),
+    }
+}
+
+/// Everything discovered but not yet proven to be on the service.
+fn pending_items(overview: SyncOverview) -> usize {
+    overview.total_items.saturating_sub(overview.synced_items)
+}
+
+/// The aside under a failure headline, and nothing at all when there is no
+/// failure worth explaining.
+fn sync_overview_detail(overview: SyncOverview) -> Option<String> {
+    if overview.status != SyncOverviewStatus::Failed {
+        return None;
+    }
+    let cause = overview.cause?;
+    // A quota figure is the one aside that needs a request of its own, and it
+    // is only ever read while the account is over quota. Until — or unless —
+    // that reading arrives, the headline alone is still accurate.
+    if cause == SyncCause::Quota {
+        let usage = usage::cached()?;
+        return Some(trf(
+            cause.detail_key(),
+            &[
+                ("used", &format_decimal_bytes(usage.used_bytes)),
+                ("limit", &format_decimal_bytes(usage.quota_bytes)),
+            ],
+        ));
+    }
+    Some(tr(cause.detail_key()))
+}
+
+/// Decimal units, because the limit is set in decimal.
+///
+/// The service counts logical bytes and its administration tooling spells a
+/// limit in decimal (`users quota NAME 200G` is 200_000_000_000). Formatting
+/// with binary multiples would report that limit as 186 GB, disagreeing with
+/// the number the user just typed.
+fn format_decimal_bytes(bytes: u64) -> String {
+    const KB: u64 = 1_000;
+    const MB: u64 = KB * 1_000;
+    const GB: u64 = MB * 1_000;
+    const TB: u64 = GB * 1_000;
+    if bytes >= TB {
+        format!("{:.1} TB", bytes as f64 / TB as f64)
+    } else if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -106,11 +196,17 @@ fn sync_running_text(overview: SyncOverview) -> String {
     )
 }
 
-fn sync_overview_icon(status: SyncOverviewStatus) -> &'static str {
+fn sync_overview_icon(status: SyncOverviewStatus, cause: Option<SyncCause>) -> &'static str {
     match status {
         SyncOverviewStatus::Disabled => "",
         SyncOverviewStatus::Paused => "media-playback-pause-symbolic",
         SyncOverviewStatus::Running | SyncOverviewStatus::Applying => {
+            "emblem-synchronizing-symbolic"
+        }
+        // A failure the service expects to clear by itself is still in progress
+        // as far as the reader is concerned, so it keeps the sync glyph rather
+        // than being shown as a settled warning.
+        SyncOverviewStatus::Failed if cause.is_some_and(|c| c.class() == SyncClass::Retryable) => {
             "emblem-synchronizing-symbolic"
         }
         SyncOverviewStatus::Failed => "dialog-warning-symbolic",
@@ -1120,14 +1216,14 @@ impl PhotosPage {
         self.imp()
             .overview_sync_label
             .get()
-            .set_label(&sync_overview_text(sync));
+            .set_markup(&sync_overview_markup(sync));
         let sync_visible = sync.status != SyncOverviewStatus::Disabled;
         self.imp().overview_sync_row.get().set_visible(sync_visible);
         if !sync_visible {
             self.set_overview_sync_running(false);
             return;
         }
-        self.apply_overview_sync_icon(sync.status);
+        self.apply_overview_sync_icon(sync.status, sync.cause);
     }
 
     pub(crate) fn refresh_day_sync_badges(&self) {
@@ -1136,7 +1232,7 @@ impl PhotosPage {
         }
     }
 
-    fn apply_overview_sync_icon(&self, status: SyncOverviewStatus) {
+    fn apply_overview_sync_icon(&self, status: SyncOverviewStatus, cause: Option<SyncCause>) {
         let imp = self.imp();
         let spinner = imp.overview_sync_spinner.get();
         let icon = imp.overview_sync_icon.get();
@@ -1150,7 +1246,7 @@ impl PhotosPage {
         let was_running = self.set_overview_sync_running(running);
         self.reveal_overview_for_started_sync_run(running, was_running);
         if !running {
-            icon.set_icon_name(Some(sync_overview_icon(status)));
+            icon.set_icon_name(Some(sync_overview_icon(status, cause)));
         }
     }
 

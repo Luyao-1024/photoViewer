@@ -219,6 +219,11 @@ template $PhotosPage : Adw.NavigationPage {
             halign: center;
             xalign: 0.5;
             wrap: true;
+            // `xalign` centres the text only while the label fits on one line.
+            // A failure adds a second line, and a wrapped line falls back to
+            // `justify`, which defaults to filling from the left — so the aside
+            // would hang off the left edge while the headline stayed centred.
+            justify: center;
           }
         }
       }

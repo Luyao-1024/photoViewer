@@ -51,6 +51,12 @@ pub enum Command {
         epoch: Epoch,
         operation: Issued,
         rejected: bool,
+        /// The service's own reason for a rejection, kept verbatim.
+        ///
+        /// Without it a refusal is filed as an unexplained failure, which is
+        /// indistinguishable from a transient one and gets retried against a
+        /// service that has already given its final answer.
+        reason: String,
     },
     UserAction {
         job: i64,
@@ -230,6 +236,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             epoch,
             operation,
             rejected,
+            reason,
         } => {
             valid_epoch(&tx, &epoch)?;
             if !rejected && (!operation.body.is_null() || operation.config == epoch.config) {
@@ -237,7 +244,7 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
             }
             let encoded = serde_json::to_string(&operation)
                 .map_err(|_| invalid("invalid issued evidence"))?;
-            let changed=tx.execute("UPDATE sync_tasks SET state='failed',last_error=?4 WHERE operation_id=?1 AND job_id=?2 AND state='issued' AND native_capture=?3",params![operation.id,epoch.job,encoded,if rejected {"server rejected the atomic mutation"} else {"configuration superseded preparation before mutation"}])?;
+            let changed=tx.execute("UPDATE sync_tasks SET state='failed',last_error=?4 WHERE operation_id=?1 AND job_id=?2 AND state='issued' AND native_capture=?3",params![operation.id,epoch.job,encoded,if rejected {reason.as_str()} else {"configuration superseded preparation before mutation"}])?;
             if changed != 1 {
                 return Err(invalid("issued evidence changed before retirement"));
             }

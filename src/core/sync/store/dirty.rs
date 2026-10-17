@@ -411,10 +411,17 @@ fn note(
 
     Ok(match recorded.len() {
         0 => None,
-        _ => Some(DirtyOutcome::Recorded {
-            entry_id: recorded[0].0,
-            dirty: recorded[0].1,
-        }),
+        _ => {
+            // A change nobody syncs — a file outside every job root, or one
+            // written while synchronization is off — never reaches `recorded`,
+            // so it never schedules a run either. Only a change that became an
+            // obligation restarts the quiet period.
+            crate::core::sync::debounce::note_local_change();
+            Some(DirtyOutcome::Recorded {
+                entry_id: recorded[0].0,
+                dirty: recorded[0].1,
+            })
+        }
     })
 }
 

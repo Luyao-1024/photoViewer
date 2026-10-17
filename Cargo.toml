@@ -15,7 +15,9 @@ path = "src/main.rs"
 gtk4 = { version = "0.8", features = ["v4_8"] }
 libadwaita = { version = "0.6", features = ["v1_5"] }
 gdk-pixbuf = "0.19"
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "macros", "sync", "time"] }
+# `test-util` backs the debounce timing tests: a ten-second quiet period
+# proved with a real sleep is a test that either wastes wall clock or flakes.
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "macros", "sync", "time", "test-util"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"

@@ -822,6 +822,32 @@ impl NativeClient {
         })
     }
 
+    /// Fetch the account's storage usage unless a recent reading is still good,
+    /// and remember the result for the overview row.
+    ///
+    /// Call this only once a cycle has actually been refused for quota — which
+    /// is what keeps it to one request per reading rather than one per attempt.
+    /// It is deliberately not part of a cycle's outcome: failing to read a
+    /// figure we chose to display must not turn a quota failure into some other
+    /// failure.
+    pub async fn ensure_storage_usage(&self) -> SyncResult<super::usage::StorageUsage> {
+        if let Some(usage) = super::usage::cached() {
+            return Ok(usage);
+        }
+        let url = self.base.join(&["v1", "storage"])?;
+        let response = self.request(url).send().await?;
+        let status = response.status();
+        let body = response.bytes().await?;
+        if !status.is_success() {
+            return Err(map_status(status.as_u16(), &body));
+        }
+        let usage: super::usage::StorageUsage = serde_json::from_slice(&body).map_err(|error| {
+            SyncError::Protocol(format!("storage usage is not decodable: {error}"))
+        })?;
+        super::usage::record(usage);
+        Ok(usage)
+    }
+
     /// Health, then capabilities, then validation. Nothing is persisted here, so
     /// an invalid draft leaves no trace.
     pub async fn probe(&self) -> SyncResult<NativePinnedScope> {

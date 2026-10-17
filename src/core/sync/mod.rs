@@ -1,6 +1,7 @@
 //! Provider-neutral, local-first bidirectional file synchronization.
 
 pub mod content;
+pub mod debounce;
 pub mod device;
 mod error;
 pub mod model;
@@ -11,7 +12,7 @@ pub mod service;
 pub mod store;
 
 pub use content::ContentDigest;
-pub use error::{SyncError, SyncResult};
+pub use error::{classify_detail, SyncCause, SyncClass, SyncError, SyncResult};
 pub use model::{ProviderKind, SyncDirection, UploadScope};
 pub use native::lease::{UploadLease, UploadPhase};
 pub use native::records::{AssetDescriptor, RemoteGraph, RemotePhoto, RemoteResource};

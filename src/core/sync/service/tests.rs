@@ -140,3 +140,77 @@ async fn single_account_switch_drains_old_runs_before_admitting_the_new_account(
     assert!(reopened.store().job_is_selected(b.id).unwrap());
     assert!(!reopened.store().job_is_selected(a.id).unwrap());
 }
+
+/// Every cause is answered by the retry policy on purpose, so this table is the
+/// policy: a cause added later has to be placed here deliberately.
+#[test]
+fn only_failures_the_user_can_clear_stop_the_unattended_scheduler() {
+    use crate::core::sync::{SyncCause, SyncClass};
+    let stops = |cause: SyncCause| !super::scheduling::unattended_retry_is_worthwhile(Some(cause));
+
+    // The service answers these again exactly as before until the user acts, so
+    // a timer that keeps asking spends a lease and a round trip to be told the
+    // same thing.
+    assert!(stops(SyncCause::Quota));
+    assert!(stops(SyncCause::Credential));
+    assert_eq!(SyncCause::Quota.class(), SyncClass::NeedsUser);
+    assert_eq!(SyncCause::Credential.class(), SyncClass::NeedsUser);
+
+    // These may well clear on their own, so the scheduler keeps trying them.
+    for cause in [
+        SyncCause::Network,
+        SyncCause::ServerBusy,
+        SyncCause::Conflict,
+        SyncCause::Checksum,
+        SyncCause::Unknown,
+    ] {
+        assert!(
+            super::scheduling::unattended_retry_is_worthwhile(Some(cause)),
+            "{cause:?} should still be retried unattended"
+        );
+    }
+    // A job that has not failed yet is always worth a cycle.
+    assert!(super::scheduling::unattended_retry_is_worthwhile(None));
+}
+
+#[test]
+fn a_stored_quota_rejection_is_recognised_from_the_job_error_alone() {
+    let root = std::env::temp_dir().join(format!("photoviewer-sync-cause-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("temp root");
+    let pool = crate::core::db::init_pool(&root.join("library.db")).unwrap();
+    let store = crate::core::sync::SyncStore::new(pool);
+    let job = store
+        .create_job(&crate::core::sync::NewSyncJob {
+            provider_kind: crate::core::sync::ProviderKind::NativeSyncServer,
+            endpoint: "https://sync.example.test/".into(),
+            credential_ref: "cause-credential".into(),
+            local_root: root.clone(),
+            native_zone: Some(crate::core::sync::NativeZone::new("PrimarySync")),
+            native_pinned: Some(crate::core::sync::native::demo_pinned_scope(
+                "https://sync.example.test/",
+                &["PrimarySync"],
+            )),
+            direction: crate::core::sync::SyncDirection::Bidirectional,
+            upload_scope: crate::core::sync::UploadScope::All,
+            upload_albums: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(store.failure_cause(job.id).unwrap(), None);
+    store
+        .mark_job_failed(
+            job.id,
+            "a/photo.png: transport failed: remote version changed: \
+             HTTP 409 STORAGE_QUOTA_EXCEEDED: Account storage quota exceeded",
+        )
+        .unwrap();
+    assert_eq!(
+        store.failure_cause(job.id).unwrap(),
+        Some(crate::core::sync::SyncCause::Quota)
+    );
+    // A clean run clears the recorded failure, so the scheduler resumes on its
+    // own once the cause is gone.
+    store.mark_job_completed(job.id).unwrap();
+    assert_eq!(store.failure_cause(job.id).unwrap(), None);
+}

@@ -3,6 +3,7 @@ use super::{receive, SyncService};
 use crate::core::{
     error::AppError,
     sync::{
+        classify_detail,
         native::{
             assets::{AssetRole, ReservationRequest, UploadIntent},
             modify::OperationState,
@@ -13,7 +14,7 @@ use crate::core::{
             runtime::{Command, Epoch, Issued},
             SyncJob,
         },
-        SyncError,
+        SyncCause, SyncError,
     },
 };
 use serde_json::{json, Value};
@@ -258,13 +259,36 @@ impl SyncService {
             );
             return Err(setup(error));
         }
+        // A quota refusal is the one failure whose headline is incomplete on its
+        // own: "cloud storage full" does not say how full, and only the service
+        // knows. Ask once here, after the job has recorded the failure, and let
+        // the reading stand for the next few attempts.
+        if reason
+            .as_deref()
+            .is_some_and(|reason| classify_detail(reason) == SyncCause::Quota)
+        {
+            match self.transport_client_for(&job).await {
+                Ok(client) => {
+                    if let Err(error) = client.ensure_storage_usage().await {
+                        tracing::info!(
+                            target: crate::core::log_targets::SYNC,
+                            job_id, %cycle_id, error = %error,
+                            "cloud storage usage is unavailable; reporting the quota failure without it"
+                        );
+                    }
+                }
+                Err(error) => tracing::info!(
+                    target: crate::core::log_targets::SYNC,
+                    job_id, %cycle_id, error = %error,
+                    "cannot reach the service for storage usage; reporting the quota failure without it"
+                ),
+            }
+        }
         match &result {
             Ok(report) => {
                 let outcome = if !report.failures.is_empty() {
                     "partial"
-                } else if report.uplink_skipped {
-                    "deferred"
-                } else if report.caught_up_behind_lock {
+                } else if report.uplink_skipped || report.caught_up_behind_lock {
                     "deferred"
                 } else if report.outstanding > 0 {
                     "pending"
@@ -482,6 +506,7 @@ impl SyncService {
                             epoch: epoch.clone(),
                             operation,
                             rejected: false,
+                            reason: String::new(),
                         })
                         .map_err(setup)?;
                 }
@@ -1003,6 +1028,7 @@ impl SyncService {
                                     epoch: epoch.clone(),
                                     operation: operation.clone(),
                                     rejected: true,
+                                    reason: error.to_string(),
                                 })
                                 .map_err(setup)?;
                         }
