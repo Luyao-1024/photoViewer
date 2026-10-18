@@ -346,67 +346,81 @@ pub(crate) fn migrate_legacy(conn: &Connection) -> Result<()> {
     if !legacy.iter().any(|name| name == "native_resource_baseline") {
         return Ok(());
     }
+    // Pre-release databases sit at different points of the JSON-column era:
+    // an older intermediate schema carries the event, digest and metadata
+    // document columns but not the pending-record or baseline-flag columns.
+    // Each conversion block runs only when every column it reads exists, and
+    // the final DROP removes only columns that are present, so every
+    // intermediate state converts instead of failing startup.
+    let has = |column: &str| legacy.iter().any(|name| name == column);
 
-    let mut s=conn.prepare("SELECT id,native_pending_master,native_pending_asset,native_resource_baseline FROM sync_entries WHERE native_pending_master IS NOT NULL OR native_pending_asset IS NOT NULL OR (native_resource_baseline IS NOT NULL AND native_has_baseline=0)")?;
-    let rows = s
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, Option<String>>(3)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(s);
-    for (entry, master, asset, baseline) in rows {
-        for (master, raw) in [(true, master), (false, asset)] {
-            if let Some(raw) = raw {
-                let record = serde_json::from_str(&raw)
-                    .map_err(|e| invalid(&format!("cannot convert pending record: {e}")))?;
-                set_pending(conn, entry, master, Some(&record))?;
-            }
-        }
-        if let Some(raw) = baseline {
-            set_baseline_document(conn, entry, Some(&raw))?;
-        }
-        conn.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE id=?1",[entry])?;
-    }
-    let rows = {
-        let mut stmt=conn.prepare("SELECT id,native_metadata_event,native_content_event,native_deletion_event,native_local_digest FROM sync_entries WHERE native_metadata_event IS NOT NULL OR native_content_event IS NOT NULL OR native_deletion_event IS NOT NULL OR native_local_digest IS NOT NULL")?;
-        let rows = stmt
+    if has("native_pending_master") && has("native_pending_asset") && has("native_has_baseline") {
+        let mut s=conn.prepare("SELECT id,native_pending_master,native_pending_asset,native_resource_baseline FROM sync_entries WHERE native_pending_master IS NOT NULL OR native_pending_asset IS NOT NULL OR (native_resource_baseline IS NOT NULL AND native_has_baseline=0)")?;
+        let rows = s
             .query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, Option<String>>(1)?,
                     r.get::<_, Option<String>>(2)?,
                     r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    for (entry, metadata, content, deletion, digest) in rows {
-        for (category, doc) in [
-            ("metadata", metadata),
-            ("content", content),
-            ("deletion", deletion),
-        ] {
-            if let Some(doc) = doc {
-                set_event_document(conn, entry, category, Some(&doc))?;
+        drop(s);
+        for (entry, master, asset, baseline) in rows {
+            for (master, raw) in [(true, master), (false, asset)] {
+                if let Some(raw) = raw {
+                    let record = serde_json::from_str(&raw)
+                        .map_err(|e| invalid(&format!("cannot convert pending record: {e}")))?;
+                    set_pending(conn, entry, master, Some(&record))?;
+                }
             }
+            if let Some(raw) = baseline {
+                set_baseline_document(conn, entry, Some(&raw))?;
+            }
+            conn.execute("UPDATE sync_entries SET native_pending_master=NULL,native_pending_asset=NULL WHERE id=?1",[entry])?;
         }
-        if let Some(raw) = digest {
-            let captured = serde_json::from_str(&raw)
-                .map_err(|e| invalid(&format!("cannot convert cached digest: {e}")))?;
-            set_digest(conn, entry, Some(&captured))?;
+    }
+    if has("native_metadata_event") && has("native_local_digest") {
+        let rows = {
+            let mut stmt=conn.prepare("SELECT id,native_metadata_event,native_content_event,native_deletion_event,native_local_digest FROM sync_entries WHERE native_metadata_event IS NOT NULL OR native_content_event IS NOT NULL OR native_deletion_event IS NOT NULL OR native_local_digest IS NOT NULL")?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        };
+        for (entry, metadata, content, deletion, digest) in rows {
+            for (category, doc) in [
+                ("metadata", metadata),
+                ("content", content),
+                ("deletion", deletion),
+            ] {
+                if let Some(doc) = doc {
+                    set_event_document(conn, entry, category, Some(&doc))?;
+                }
+            }
+            if let Some(raw) = digest {
+                let captured = serde_json::from_str(&raw)
+                    .map_err(|e| invalid(&format!("cannot convert cached digest: {e}")))?;
+                set_digest(conn, entry, Some(&captured))?;
+            }
         }
     }
     for (column, kind) in [
         ("native_desired_metadata", "desired_metadata"),
         ("native_baseline_metadata", "baseline_metadata"),
     ] {
+        if !has(column) {
+            continue;
+        }
         let rows = {
             let mut stmt = conn.prepare(&format!(
                 "SELECT id,job_id,{column} FROM sync_entries WHERE {column} IS NOT NULL"
@@ -457,6 +471,9 @@ pub(crate) fn migrate_legacy(conn: &Connection) -> Result<()> {
         }
     }
     for column in LEGACY_ENTRY_COLUMNS {
+        if !has(column) {
+            continue;
+        }
         conn.execute(
             &format!("ALTER TABLE sync_entries DROP COLUMN {column}"),
             [],
