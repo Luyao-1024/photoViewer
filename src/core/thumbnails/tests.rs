@@ -1753,3 +1753,91 @@ fn cache_reconciliation_ignores_edited_renamed_and_cloud_only_observations() {
         );
     }
 }
+
+/// Orphan cache purging keys off `media_items` membership, not visibility:
+/// caches of live and trashed rows survive, files matching no row disappear.
+/// This is the reclamation path for rows deleted by reconciliation, the
+/// watcher, trash cleanup or resets — none of which touch the disk cache.
+#[test]
+fn orphan_thumbnail_cache_files_are_purged_and_row_caches_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+    let cache_dir = dir.path().join("cache");
+
+    // A whole-second timestamp survives the DB round trip unchanged, so the
+    // stem recomputed from the row equals the one written here.
+    let stamp = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    let stamp_system = std::time::SystemTime::from(stamp);
+    let insert = |name: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, b"x").unwrap();
+        db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: crate::core::file_uri::from_path(&path),
+                path,
+                folder_path: dir.path().to_path_buf(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: "standard".into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: stamp,
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap()
+    };
+    let live_id = insert("live.jpg");
+    let trashed_id = insert("trashed.jpg");
+    db::mark_trashed(&pool, trashed_id).unwrap();
+
+    let write_cache = |name: &str, stem: &str, bytes: &[u8]| {
+        let path = cache_dir
+            .join("thumbnails")
+            .join("medium")
+            .join(&stem[..2])
+            .join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path
+    };
+    let live_uri = {
+        let path = dir.path().join("live.jpg");
+        crate::core::file_uri::from_path(&path)
+    };
+    let trashed_uri = {
+        let path = dir.path().join("trashed.jpg");
+        crate::core::file_uri::from_path(&path)
+    };
+    let live_stem =
+        crate::core::thumbnails::cache::disk_cache_stem_name(&live_uri, Some(stamp_system))
+            .unwrap();
+    let trashed_stem =
+        crate::core::thumbnails::cache::disk_cache_stem_name(&trashed_uri, Some(stamp_system))
+            .unwrap();
+    let live_cache = write_cache(&format!("{live_stem}.jpg"), &live_stem, b"live cache");
+    let trashed_cache = write_cache(
+        &format!("{trashed_stem}.jpg"),
+        &trashed_stem,
+        b"trashed cache",
+    );
+    let orphan_stem = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let orphan_cache = write_cache(&format!("{orphan_stem}.jpg"), orphan_stem, b"orphan cache");
+
+    cache::purge_orphan_thumbnails(&pool, &cache_dir);
+
+    assert!(!orphan_cache.exists(), "orphan cache file must be removed");
+    assert!(live_cache.exists(), "live row cache must survive the purge");
+    assert!(
+        trashed_cache.exists(),
+        "trashed row cache must survive the purge — Trash view thumbnails stay browsable"
+    );
+    assert!(
+        db::get_media_item(&pool, live_id).is_ok(),
+        "purge must not touch media rows"
+    );
+}

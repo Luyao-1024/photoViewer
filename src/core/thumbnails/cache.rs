@@ -107,16 +107,27 @@ pub(in crate::core::thumbnails) fn cache_stem_for(
     size: ThumbnailSize,
     mtime: Option<SystemTime>,
 ) -> anyhow::Result<PathBuf> {
-    let (src_path, mtime) = resolve_src(uri, mtime)?;
-    // v4 invalidates caches generated before video thumbnails stopped embedding
-    // the playback triangle and before failure placeholders became memory-only.
-    let key = format!("thumb-v4:{}{:?}", src_path.display(), mtime);
-    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
+    let hash = disk_cache_stem_name(uri, mtime)?;
     Ok(cache_dir
         .join("thumbnails")
         .join(size.subdir())
         .join(&hash[..2])
         .join(hash.as_str()))
+}
+
+/// The size-independent on-disk cache stem for a source: one blake3 of
+/// `thumb-v4:{path}{mtime}`, shared by the Small/Medium/Large bucket
+/// subdirectories. Orphan purging rebuilds the same stems to decide which
+/// cache files no longer belong to any media row.
+pub(in crate::core::thumbnails) fn disk_cache_stem_name(
+    uri: &str,
+    mtime: Option<SystemTime>,
+) -> anyhow::Result<String> {
+    let (src_path, mtime) = resolve_src(uri, mtime)?;
+    // v4 invalidates caches generated before video thumbnails stopped embedding
+    // the playback triangle and before failure placeholders became memory-only.
+    let key = format!("thumb-v4:{}{:?}", src_path.display(), mtime);
+    Ok(blake3::hash(key.as_bytes()).to_hex().to_string())
 }
 
 /// Cache files can be evicted independently of SQLite. Reconcile only cache
@@ -127,6 +138,7 @@ pub(super) fn recover_cache_marks(loader: &super::ThumbnailLoader) {
     let actor = loader.db_actor.lock().ok().and_then(|slot| slot.clone());
     let queue = loader.queue.clone();
     std::thread::spawn(move || {
+        purge_orphan_thumbnails(&pool, &cache_dir);
         let mut offset = 0;
         loop {
             if queue.0.lock().is_ok_and(|q| q.closed) {
@@ -200,4 +212,69 @@ pub(super) fn recover_cache_marks(loader: &super::ThumbnailLoader) {
             queue.1.notify_all();
         }
     });
+}
+
+/// Delete thumbnail cache files whose source media row no longer exists.
+///
+/// Rows disappear through several paths (startup reconciliation, watcher
+/// deletions, trash cleanup, library/account resets) and none of them touch
+/// the disk cache; capacity eviction is the only other reclamation and it
+/// fires just once the cache outgrows its budget. This one-shot walk runs at
+/// background-prewarm startup, before cache mark recovery, and removes every
+/// cache file whose `thumb-v4:{path}{mtime}` stem matches no row in
+/// `media_items` — keyed off plain table membership, so trashed rows and
+/// cloud-only rows keep their (downloaded) thumbnails.
+///
+/// The stem set is a snapshot: a row indexed after the snapshot whose cache
+/// file lands before the walk loses one regenerable file. Prewarm starts
+/// after the startup scan, so newly indexed rows are normally in the set
+/// already; a missed cache regenerates on the next request.
+pub(super) fn purge_orphan_thumbnails(pool: &crate::core::db::DbPool, cache_dir: &Path) {
+    let rows = match crate::core::db::list_media_uri_mtimes(pool) {
+        Ok(rows) => rows,
+        Err(error) => {
+            warn!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB orphan_cache_purge_skipped error={error}"
+            );
+            return;
+        }
+    };
+    let mut live_stems = std::collections::HashSet::with_capacity(rows.len());
+    for (uri, mtime) in rows.iter() {
+        if let Some(stem) = mtime.and_then(|mtime| disk_cache_stem_name(uri, Some(mtime)).ok()) {
+            live_stems.insert(stem);
+        }
+    }
+    let mut removed = 0usize;
+    for entry in walkdir::WalkDir::new(cache_dir.join("thumbnails"))
+        .min_depth(1)
+        .into_iter()
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some(stem) = entry.path().file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if live_stems.contains(stem) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) => warn!(
+                target: crate::core::log_targets::THUMBNAILS,
+                "THUMB orphan_cache_remove_failed cache_path={} error={}",
+                entry.path().display(),
+                error
+            ),
+        }
+    }
+    if removed > 0 {
+        tracing::info!(
+            target: crate::core::log_targets::THUMBNAILS,
+            "THUMB orphan_cache_purged count={removed}"
+        );
+    }
 }
