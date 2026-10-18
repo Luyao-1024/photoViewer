@@ -129,35 +129,10 @@ impl Fixture {
         })
     }
     fn save_capture(&self, capture: &serde_json::Value) {
-        // Issued evidence is compared byte-for-byte when it is retired. Match
-        // the production serializer's field order for this restart fixture.
-        let fields = [
-            "id",
-            "job",
-            "config",
-            "entry",
-            "generation",
-            "phase",
-            "versions",
-            "dirty",
-            "photo",
-            "master",
-            "content_generation",
-            "body",
-            "preparation",
-        ];
-        let encoded = format!(
-            "{{{}}}",
-            fields
-                .iter()
-                .map(|key| format!("\"{key}\":{}", capture[key]))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        self.pool.get().unwrap().execute(
-            "INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation,native_capture) VALUES(?1,?2,?3,'modify','issued',?4,?5,?6)",
-            rusqlite::params![capture["id"].as_str(), self.job.id, capture["entry"].as_i64(), self.job.config_generation, capture["versions"][0].as_i64(), encoded],
-        ).unwrap();
+        // Issued evidence is compared structurally when it is retired. The
+        // production typed writer is the only faithful way to persist it since
+        // the JSON capture column was split into typed fields.
+        photo_viewer::testing::save_issued_operation(&self.pool, capture).unwrap();
     }
 }
 
@@ -499,7 +474,11 @@ fn a_receipt_confirmation_failure_is_skipped_until_the_next_cycle() {
             .unwrap();
         let next = f.service.run_cycle(f.job.id).await.unwrap();
         assert!(next.failures.is_empty(), "{next:?}");
-        assert_eq!(next.mutations_confirmed, 1, "{next:?}");
+        // Two confirmations, zero sends: the injected receipt settles from the
+        // committed server state, and the entry's still-dirty favorite is
+        // confirmed through the lookup-current fast path — the server already
+        // holds the committed mutation, so nothing is resent.
+        assert_eq!(next.mutations_confirmed, 2, "{next:?}");
         assert_eq!(
             next.mutations_sent, 0,
             "a committed operation must not be resent"

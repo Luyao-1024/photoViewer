@@ -669,15 +669,16 @@ pub(super) fn execute(pool: &DbPool, command: Command) -> Result<()> {
                 // enabled and dirty=4 hid it from the grid). The cloud copy is
                 // gone, so the row goes too — unless it became local again in
                 // the meantime (restored file) or another live entry still
-                // shares it.
-                let media: Option<i64> = tx
+                // shares it. `media_id` is nullable: rows deleted by the older
+                // immediate-delete path left their entry unlinked.
+                let media: Option<Option<i64>> = tx
                     .query_row(
                         "SELECT media_id FROM sync_entries WHERE id=?1 AND native_dirty=0 AND native_retired=1 AND native_local_version=?2",
                         params![operation.entry, operation.versions[0]],
                         |r| r.get(0),
                     )
                     .optional()?;
-                if let Some(media) = media {
+                if let Some(Some(media)) = media {
                     tx.execute(
                         "DELETE FROM media_items WHERE id=?1 AND storage_location=2
                           AND NOT EXISTS(SELECT 1 FROM sync_entries e

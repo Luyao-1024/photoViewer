@@ -268,6 +268,35 @@ fn set_env(key: &str, value: PathBuf) {
     std::env::set_var(key, value);
 }
 
+/// Persist an issued-operation restart fixture through the same typed writer
+/// the runtime uses (`Command::Issue` → `issued::write`). Integration tests
+/// inject "operation in flight" state — receipt failure, restart mid-cycle —
+/// without a live server round-trip; hand-built SQL cannot represent the
+/// capture since the JSON column was split into typed fields.
+pub fn save_issued_operation(
+    pool: &crate::core::db::DbPool,
+    capture: &serde_json::Value,
+) -> std::result::Result<(), String> {
+    let issued: crate::core::sync::store::runtime::Issued =
+        serde_json::from_value(capture.clone()).map_err(|error| error.to_string())?;
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    tx.execute(
+        "INSERT INTO sync_tasks(operation_id,job_id,entry_id,action,state,config_generation,entry_generation) VALUES(?1,?2,?3,?4,'issued',?5,?6)",
+        rusqlite::params![
+            issued.id,
+            issued.job,
+            issued.entry,
+            issued.phase,
+            issued.config,
+            issued.versions[0]
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    crate::core::sync::store::issued::write(&tx, &issued).map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// Apply one already-fetched native bootstrap page through the production
 /// receive path. Used by isolated tests and read-only-service diagnostics.
 pub async fn apply_native_sync_page(
