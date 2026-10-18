@@ -35,6 +35,14 @@ fn make_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
     }
 }
 
+/// 图片/视频相册仅在有对应媒体时显示（空库的侧栏只保留「照片」），
+/// 排序 fixture 需要一段视频让 VIDEOS 相册在场。
+fn make_video_item(uri: &str, path: &str, folder: &str, day: u32) -> NewMediaItem {
+    let mut item = make_item(uri, path, folder, day);
+    item.mime_type = "video/mp4".into();
+    item
+}
+
 /// 两个文件夹相册 + 三个虚拟相册（收藏 / 图片 / 视频）的图库快照。
 fn seed(pool: &db::DbPool) {
     let camera_id = common::db::insert_media_item(
@@ -50,6 +58,16 @@ fn seed(pool: &db::DbPool) {
             "/p/Screenshots/b.jpg",
             "/p/Screenshots",
             1,
+        ),
+    )
+    .unwrap();
+    common::db::insert_media_item(
+        pool,
+        &make_video_item(
+            "file:///p/Camera/clip.mp4",
+            "/p/Camera/clip.mp4",
+            "/p/Camera",
+            2,
         ),
     )
     .unwrap();
@@ -161,4 +179,36 @@ fn empty_order_keeps_default_virtual_first_layout() {
     // 文件夹相册在虚拟相册之后（Camera 更新 → 默认在前）。
     assert_eq!(list[3].folder_path, PathBuf::from("/p/Camera"));
     assert_eq!(list[4].folder_path, PathBuf::from("/p/Screenshots"));
+}
+
+/// 图片/视频相册仅在对应媒体存在时显示：空库的侧栏只剩「照片」（本列表
+/// 为空），只有图片时也不显示视频相册。
+#[test]
+fn images_and_videos_albums_hidden_without_matching_media() {
+    let dir = tempdir().unwrap();
+    let pool = db::init_pool(&dir.path().join("test.db")).unwrap();
+
+    // 空库：无任何媒体，无文件夹相册，虚拟相册全部隐藏。
+    let empty = folder_paths(&albums::list_with_favorites(&pool).unwrap());
+    assert!(
+        empty.is_empty(),
+        "an empty library shows no virtual albums: {empty:?}"
+    );
+
+    // 只有图片：视频相册隐藏，图片相册显示。
+    common::db::insert_media_item(
+        &pool,
+        &make_item("file:///p/only/x.jpg", "/p/only/x.jpg", "/p/only", 1),
+    )
+    .unwrap();
+    albums::refresh(&pool).unwrap();
+    let only_images = folder_paths(&albums::list_with_favorites(&pool).unwrap());
+    assert!(
+        !only_images.contains(&VIDEOS_ALBUM_PATH.to_string()),
+        "no videos in the library: the videos album must be hidden"
+    );
+    assert!(
+        only_images.contains(&IMAGES_ALBUM_PATH.to_string()),
+        "images exist: the images album must stay visible"
+    );
 }

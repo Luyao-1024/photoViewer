@@ -467,15 +467,17 @@ fn sidebar_navigation_suite() {
         "Media Types header should be non-selectable so it never claims the navigation slot",
     );
 
-    // Album entries are nested under the header. Even with an empty DB the
-    // two type virtual albums (images / videos) are present; Favorites is
-    // hidden until at least one item is favorited. The
+    // Album entries are nested under the header. Virtual albums appear only
+    // when they have content: this library holds two images and no videos, so
+    // the images album is listed while the videos album stays hidden;
+    // Favorites remains hidden until at least one item is favorited. The
     // ListView realizes their widgets lazily, so assert against its model.
     {
         let album_targets = window.imp().album_targets.borrow();
-        assert!(
-            album_targets.len() >= 2,
-            "sidebar should list the virtual albums, got {}",
+        assert_eq!(
+            album_targets.len(),
+            1,
+            "only the images virtual album has content in this library, got {}",
             album_targets.len()
         );
         assert_eq!(
@@ -689,8 +691,8 @@ fn assert_album_sidebar_scroll_region_contains_all_albums() {
     );
     assert_eq!(
         window.imp().album_targets.borrow().len(),
-        27,
-        "sidebar album list should render all 25 folder albums plus Images and Videos; empty Favorites stays hidden",
+        26,
+        "sidebar album list should render all 25 folder albums plus Images; empty Videos and Favorites stay hidden",
     );
     assert!(
         visible_flag(window.imp().album_scroll.get().upcast_ref()),

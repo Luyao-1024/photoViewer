@@ -71,7 +71,8 @@ impl Album {
 }
 
 /// 列出实体相册 + 虚拟“收藏/图片/视频”相册（放在列表首位）。
-/// 收藏相册仅在至少有一项收藏时显示。
+/// 收藏、图片、视频相册仅在对应内容存在时显示——一个没有任何图片或
+/// 视频的库在侧边栏只保留“照片”，不摆空相册。
 ///
 /// 若 `album_order` 表中存有用户拖动重排后的顺序，则按该顺序重排结果；
 /// 未记录顺序的相册追加到末尾并保留其默认相对顺序（虚拟相册在前、文件夹按
@@ -90,8 +91,12 @@ pub fn list_with_favorites(pool: &DbPool) -> Result<Vec<Album>> {
     if favorites.photo_count > 0 {
         virtual_albums.push(favorites);
     }
-    virtual_albums.push(images);
-    virtual_albums.push(videos);
+    if images.photo_count > 0 {
+        virtual_albums.push(images);
+    }
+    if videos.photo_count > 0 {
+        virtual_albums.push(videos);
+    }
     virtual_albums.append(&mut list);
     apply_saved_order(virtual_albums, pool)
 }

@@ -247,8 +247,11 @@ Album rows are **drag-to-reorder** (long-press + drag). The order is persisted i
 The Albums page also has virtual logical albums:
 
 - Favorites: filtered by `is_favorite`; hidden when it has no live media.
-- Photos: filtered by `media_items.media_kind = 'image'`.
-- Videos: filtered by `media_items.media_kind = 'video'`.
+- Photos: filtered by `media_items.media_kind = 'image'`; hidden when the
+  library holds no images.
+- Videos: filtered by `media_items.media_kind = 'video'`; hidden when the
+  library holds no videos. A library with no images and no videos shows no
+  type albums at all — the sidebar keeps only the Photos entry.
 
 The Photos and Videos virtual albums are type-based only. Do not infer them from folder paths; images and videos may live under either picture or video roots.
 
