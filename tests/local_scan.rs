@@ -53,6 +53,10 @@ fn scan_and_delete_round_trip_reserved_and_unicode_file_names() {
     assert!(selected_item.uri.contains("%23"));
     assert!(selected_item.uri.contains("%3F"));
 
+    // The watcher-delete contract only attributes a Remove event to deletion
+    // when the file is actually gone — an existing file must never drop its
+    // row. Simulate the external deletion first.
+    std::fs::remove_file(&selected).unwrap();
     assert_eq!(db::delete_media_by_path(&pool, &selected).unwrap(), 1);
     let remaining = db::list_all_media(&pool).unwrap();
     assert_eq!(remaining.len(), 1);

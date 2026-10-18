@@ -2792,12 +2792,19 @@ fn synced_image_badge_survives_the_jump_from_day_grid_to_viewer() {
         })
         .unwrap();
     // The badge claims a *confirmed* complete pair with nothing outstanding, so
-    // the fixture writes exactly that fact and nothing weaker.
+    // the fixture writes exactly that fact and nothing weaker: a confirmed,
+    // clean entry linked to its media row, with the row itself marked
+    // local+cloud and thumbnail-ready — the availability the badge reads.
     let conn = shell.pool.get().unwrap();
     conn.execute(
-        "INSERT INTO sync_entries(job_id,relative_path,native_confirmed_generation,native_dirty)
-         VALUES(?1,?2,'501855bb-18d3-4008-abc3-37e4948bf6f0',0)",
-        rusqlite::params![job.id, synced.display_name()],
+        "INSERT INTO sync_entries(job_id,media_id,relative_path,native_photo_id,native_confirmed_generation,native_dirty)
+         VALUES(?1,?2,?3,'ux-sync-badge-photo','501855bb-18d3-4008-abc3-37e4948bf6f0',0)",
+        rusqlite::params![job.id, synced.id, synced.display_name()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE media_items SET storage_location=3,thumbnail_ready=1 WHERE id=?1",
+        [synced.id],
     )
     .unwrap();
 

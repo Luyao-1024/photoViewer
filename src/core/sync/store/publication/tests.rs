@@ -94,11 +94,11 @@ fn a_projected_pair_creates_one_obligation_per_role() {
 
     let outstanding = fixture.store.outstanding_resources(fixture.job.id).unwrap();
     assert_eq!(outstanding.len(), 2);
-    // The original is attempted first: the thumbnail is generated from it, and
-    // publishing a thumbnail with no original would leave a tile nothing else
-    // agrees with.
-    assert_eq!(outstanding[0].role, "original");
-    assert_eq!(outstanding[1].role, "thumbnail");
+    // The thumbnail is attempted first: a downloaded preview makes the
+    // cloud-only row browsable immediately, while the original follows at its
+    // own pace — publish thumbnail previews before originals.
+    assert_eq!(outstanding[0].role, "thumbnail");
+    assert_eq!(outstanding[1].role, "original");
     for work in &outstanding {
         assert_eq!(work.state, ResourceState::Pending);
         assert_eq!(work.record_name.as_deref(), Some("a1"));
@@ -248,6 +248,18 @@ fn reopening_a_publication_after_a_restart_does_not_duplicate_it() {
 fn a_verified_resource_is_not_lost_when_the_projection_is_replaced() {
     let fixture = fixture("pub-replace");
     owe_pair(&fixture, "a1", "asset-original", "asset-thumb");
+    // Verification follows the transfer flow: bytes land in staging first,
+    // then verify promotes the staged role. Verifying a pending role directly
+    // is not a state the downlink ever produces.
+    fixture
+        .store
+        .stage_resource(
+            fixture.job.id,
+            "asset-original",
+            "original",
+            "/staging/o.part",
+        )
+        .unwrap();
     fixture
         .store
         .verify_resource(fixture.job.id, "asset-original", "original", "/cache/o.jpg")

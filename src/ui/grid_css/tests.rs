@@ -196,12 +196,14 @@ fn viewer_media_error_background_has_dedicated_visual_style() {
 }
 
 /// The viewer's overlay controls float directly on the photo, so their hit area
-/// is a deliberate minimum rather than an icon side effect, and the zoom cluster
-/// needs a resting outline to read as a control group at all. Both are painted
-/// in black over the image rather than as glass, so they live in base.css only
+/// is a deliberate minimum rather than an icon side effect. The zoom cluster
+/// shares the prev/next pair's quiet presentation: at rest it keeps only
+/// grouping geometry (padding, radius) on a fully transparent surface —
+/// individual controls reveal their feedback on hover. Both are painted in
+/// black over the image rather than as glass, so they live in base.css only
 /// and stay identical in both materials.
 #[test]
-fn overlay_viewer_controls_keep_their_hit_area_and_resting_outline() {
+fn overlay_viewer_controls_keep_their_hit_area_and_quiet_resting_surface() {
     for liquid in [true, false] {
         let css = build_css(liquid);
         assert!(
@@ -216,9 +218,10 @@ fn overlay_viewer_controls_keep_their_hit_area_and_resting_outline() {
             .expect("the zoom cluster block")
             .to_string();
         assert!(
-            cluster.contains("alpha(black, 0.16)")
-                && cluster.contains("border: 1px solid alpha(black"),
-            "the resting outline must stay a faint dark wash, not a theme fill: {cluster}"
+            cluster.contains("background: transparent")
+                && cluster.contains("border: 0")
+                && cluster.contains("box-shadow: none"),
+            "the resting cluster must stay fully transparent — feedback comes from the individual controls on hover: {cluster}"
         );
     }
 }

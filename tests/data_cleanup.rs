@@ -129,35 +129,47 @@ async fn categories_preserve_or_remove_login_records_and_secrets_together() {
         }
         assert_eq!(prefs::sync_enabled(), kind == DataKind::Library);
     }
-}
-#[test]
-fn clearing_logs_alone_keeps_login_and_media_records() {
-    let sandbox = photo_viewer::testing::Sandbox::install();
-    common::credentials::install();
-    let directory = sandbox.scratch("cleanup-logs-only");
-    let pool = db::init_pool(&directory.path().join("photos.db")).unwrap();
-    let original = common::write_plain_jpeg(directory.path(), "keep.jpg");
-    pool.get().unwrap().execute("INSERT INTO sync_connections(endpoint,credential_ref) VALUES('https://sync.invalid/','keep-reference')", []).unwrap();
-    pool.get().unwrap().execute(
-        "INSERT INTO media_items(uri,path,folder_path,mime_type,file_mtime,file_size,blake3_hash,indexed_at) VALUES(?1,?2,?3,'image/jpeg',0,1,'',0)",
-        rusqlite::params![photo_viewer::core::file_uri::from_path(&original), original.to_string_lossy(),directory.path().to_string_lossy()],
-    ).unwrap();
-    credentials::store_api_key("keep-reference", "keep-token").unwrap();
-    photo_viewer::core::diagnostics::clear_logs().unwrap();
-    assert_eq!(
+
+    // Log cleanup is its own category: it must clear the shared log directory
+    // without touching login or media records. This scenario runs inside this
+    // test — not as a parallel sibling — because `clear_logs` empties the whole
+    // sandbox log directory, which would race another test's fixtures.
+    {
+        let directory = sandbox.scratch("cleanup-logs-only");
+        let pool = db::init_pool(&directory.path().join("photos.db")).unwrap();
+        let original = common::write_plain_jpeg(directory.path(), "keep.jpg");
         pool.get()
             .unwrap()
-            .query_row("SELECT credential_ref FROM sync_connections", [], |r| {
-                r.get::<_, String>(0)
-            })
-            .unwrap(),
-        "keep-reference"
-    );
-    assert_eq!(
-        credentials::load_api_key("keep-reference").unwrap(),
-        "keep-token"
-    );
-    assert_eq!(db::list_all_media(&pool).unwrap().len(), 1);
-    assert!(original.exists());
-    credentials::delete_api_key("keep-reference").unwrap();
+            .execute("INSERT INTO sync_connections(endpoint,credential_ref) VALUES('https://sync.invalid/','keep-reference')", [])
+            .unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO media_items(uri,path,folder_path,mime_type,file_mtime,file_size,blake3_hash,indexed_at) VALUES(?1,?2,?3,'image/jpeg',0,1,'',0)",
+                rusqlite::params![
+                    photo_viewer::core::file_uri::from_path(&original),
+                    original.to_string_lossy(),
+                    directory.path().to_string_lossy()
+                ],
+            )
+            .unwrap();
+        credentials::store_api_key("keep-reference", "keep-token").unwrap();
+        photo_viewer::core::diagnostics::clear_logs().unwrap();
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT credential_ref FROM sync_connections", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+            "keep-reference"
+        );
+        assert_eq!(
+            credentials::load_api_key("keep-reference").unwrap(),
+            "keep-token"
+        );
+        assert_eq!(db::list_all_media(&pool).unwrap().len(), 1);
+        assert!(original.exists());
+        credentials::delete_api_key("keep-reference").unwrap();
+    }
 }
