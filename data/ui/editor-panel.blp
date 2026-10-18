@@ -35,16 +35,18 @@ template $EditorPanel : Gtk.Box {
     }
 
     Gtk.Button reset_btn {
+      valign: center;
       icon-name: "edit-undo-symbolic";
       tooltip-text: "";
       sensitive: false;
-      css-classes: ["glass-toolbar-button", "circular"];
+      css-classes: ["glass-toolbar-button", "glass-icon-button", "circular"];
     }
 
     Gtk.Button editor_close_btn {
+      valign: center;
       icon-name: "window-close-symbolic";
       tooltip-text: "";
-      css-classes: ["glass-toolbar-button"];
+      css-classes: ["glass-toolbar-button", "glass-icon-button"];
     }
   }
 
@@ -125,7 +127,7 @@ template $EditorPanel : Gtk.Box {
             width-request: 28;
             height-request: 40;
             valign: center;
-            css-classes: ["glass-toolbar-button", "crop-ratio-arrow-button"];
+            css-classes: ["glass-toolbar-button", "glass-icon-button", "crop-ratio-arrow-button"];
           }
 
           Gtk.Box {
@@ -152,7 +154,7 @@ template $EditorPanel : Gtk.Box {
             width-request: 28;
             height-request: 40;
             valign: center;
-            css-classes: ["glass-toolbar-button", "crop-ratio-arrow-button"];
+            css-classes: ["glass-toolbar-button", "glass-icon-button", "crop-ratio-arrow-button"];
           }
         }
 

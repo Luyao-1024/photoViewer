@@ -459,7 +459,7 @@
   "native.conflicts": "{count} photos have unresolved sync conflicts",
   "native.up_to_date_hint": "Includes photos completed in earlier syncs",
   "native.disabled": "Sync is off",
-  "native.needs_attention": "Needs attention · Expand for details",
+  "native.needs_attention": "Needs attention",
   "native.ready": "Automatic sync is ready",
   "native.receive_only": "Receive only · No upload albums selected",
   "native.all_albums": "Upload all albums",

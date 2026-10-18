@@ -459,7 +459,7 @@
   "native.conflicts": "{count} 张照片存在未解决的同步冲突",
   "native.up_to_date_hint": "进度包含历史已完成的照片",
   "native.disabled": "同步已关闭",
-  "native.needs_attention": "需要处理 · 展开查看详情",
+  "native.needs_attention": "需要处理",
   "native.ready": "自动同步已就绪",
   "native.receive_only": "仅接收云端照片 · 未选择上传相册",
   "native.all_albums": "上传所有相册",

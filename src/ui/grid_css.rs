@@ -77,10 +77,11 @@ fn build_css(liquid_glass: bool) -> String {
 /// motion-on so the string tests describe the authored sheet, not whatever the
 /// machine running them happens to prefer.
 fn live_css() -> String {
-    build_css_with_motion(
+    build_css_for_theme(
         crate::core::prefs::liquid_glass_enabled(),
         crate::core::prefs::liquid_glass_transparency(),
         !crate::ui::motion::enabled(),
+        libadwaita::StyleManager::default().is_dark(),
     )
 }
 
@@ -89,6 +90,15 @@ fn build_css_with_transparency(liquid_glass: bool, transparency: f64) -> String 
 }
 
 fn build_css_with_motion(liquid_glass: bool, transparency: f64, reduce_motion: bool) -> String {
+    build_css_for_theme(liquid_glass, transparency, reduce_motion, true)
+}
+
+fn build_css_for_theme(
+    liquid_glass: bool,
+    transparency: f64,
+    reduce_motion: bool,
+    dark: bool,
+) -> String {
     let transparency = normalized_transparency(transparency);
     let material = if liquid_glass {
         LIQUID_GLASS_MATERIAL_CSS
@@ -101,8 +111,27 @@ fn build_css_with_motion(liquid_glass: bool, transparency: f64, reduce_motion: b
     // and still resolve the current Adwaita palette live on theme changes.
     let reading_alpha = format_alpha(reading_surface_alpha(liquid_glass, transparency));
     let content_alpha = format_alpha(0.66 + 0.12 * (1.0 - transparency));
+    let (button_hover, button_pressed, button_hover_border, button_pressed_border) = if dark {
+        (
+            "alpha(@window_fg_color, 0.12)",
+            "alpha(@window_fg_color, 0.18)",
+            "alpha(@window_fg_color, 0.28)",
+            "alpha(@window_fg_color, 0.38)",
+        )
+    } else {
+        (
+            "alpha(@card_bg_color, 0.82)",
+            "alpha(@card_bg_color, 0.96)",
+            "alpha(@window_fg_color, 0.12)",
+            "alpha(@window_fg_color, 0.20)",
+        )
+    };
     let sheet = format!(
         "@define-color glass_reading_bg alpha(@window_bg_color, {reading_alpha});\n\
+         @define-color glass_button_hover_bg {button_hover};\n\
+         @define-color glass_button_pressed_bg {button_pressed};\n\
+         @define-color glass_button_hover_border {button_hover_border};\n\
+         @define-color glass_button_pressed_border {button_pressed_border};\n\
          @define-color glass_content_dark_bg alpha(#17191e, {content_alpha});\n\
          @define-color glass_content_light_bg alpha(#ffffff, {content_alpha});\n\
          {BASE_CSS}\n{material}\n{A11Y_CSS}"
@@ -355,6 +384,9 @@ pub fn install() {
     // duplicate CssProviders on the default display.
     if CSS_INSTALLED.set(()).is_ok() {
         register(&live_css());
+        libadwaita::StyleManager::default().connect_dark_notify(|_| {
+            register(&live_css());
+        });
         // The desktop's reduce-animation toggle is a session preference users
         // flip without restarting, and the tail block is part of the sheet, so
         // the only way to honour it live is to rebuild the provider.

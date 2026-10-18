@@ -39,6 +39,7 @@ BADGE_SOURCE_COLOR = "#222222"
 # is not something to ship.
 FAVORITE_BADGE = {
     "photoviewer-heart-symbolic.png": ("photoviewer-heart-symbolic.svg", 0xFF, "#bebebe"),
+    "photoviewer-heart-filled-symbolic.png": ("photoviewer-heart-filled-symbolic.svg", 0xFF, "#bebebe"),
 }
 CLOUD_BADGES = {
     "gnome-cloud-white.png": ("gnome-cloud-symbolic.svg", 0xFF, BADGE_SOURCE_COLOR),

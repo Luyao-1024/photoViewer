@@ -82,6 +82,24 @@ contract (hairline stroke, a silhouette that fills its box, identical geometry
 across states and themes) lives with the badge in `src/ui/cloud_badge.rs` and is
 documented in [docs/modules/sync.md](sync.md).
 
+The titlebar's favorite, edit, delete and details actions have no resting
+surface or visible border. Hover and keyboard focus reveal the shared icon
+button material; its border scales with the button's shared press/release
+feedback. Pressing Edit toggles the editor sidebar through its guarded close
+path, including the existing unsaved-changes confirmation. The heart stays outlined when not
+favorited and becomes an opaque red filled heart when favorited; both masks
+share the same outer contour and toolbar size. The tint cache includes the
+shape so state changes cannot reuse the other state's texture. Grid favorite
+badges retain their existing photo-overlay treatment.
+
+On-image previous/next and zoom/rotate/fullscreen controls keep their light
+icons and hover-only feedback. The zoom group has no resting fill, border or
+visible separators; spacing alone groups the controls. The six tool positions
+use 3 px box spacing while retaining independent button allocations and hit
+areas. On-image buttons share the same press compression and rebound as the
+titlebar. This change removes the
+pre-existing zoom-group backdrop, rather than adding a second glass surface.
+
 Overlay controls should have stable dimensions. Hidden panels should not leave child content measured in a collapsed allocation path, because that can produce warnings such as negative width or height in `gtk_widget_size_allocate`.
 
 Original image decode must apply orientation metadata before creating the display texture. Rotate from the editor changes metadata only, so the viewer must not rely on pixel dimensions from `image::open` to infer display direction.

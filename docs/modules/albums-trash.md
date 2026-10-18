@@ -95,7 +95,10 @@ worker after the Photos page is usable.
 Folder and virtual album entries are held in a `Gio.ListStore` and displayed by
 the `GtkListView album_list` factory. GTK realizes only the rows in or near the
 sidebar viewport; snapshot refreshes replace model items while preserving the
-active album selection. During album batch mode, preserve selected real folders
+active album selection. Album rows use the shared hover/press feedback and a
+persistent neutral tint, border and stronger label for selection (milky white
+in light mode, stronger contrast in dark mode); only their visual contents compress,
+so list positions, drag ordering and scrolling stay stable. During album batch mode, preserve selected real folders
 by `folder_path`, then restore their positions against the new projection and
 synchronize `selected_album_paths` once. Ignore intermediate selection signals
 while updating the model; a removed folder drops out of the pending deletion.
@@ -171,8 +174,18 @@ Entering batch mode from a real album's context menu preselects that folder;
 a virtual album's menu starts with no folder selected. The virtualized sidebar
 keeps GTK's selection semantics: plain click selects one row, Ctrl+click toggles
 a row while retaining other selected folders. Virtual rows cannot enter the
-pending deletion. Tests must check folder identities in both the current GTK
-selection model and the pending-deletion cache, rather than counts alone.
+pending deletion. Outside batch mode, an explicit primary release on an
+already selected album row also returns from a pushed viewer/search page to
+that album. Native keyboard/double-click activation shares that path. GTK's
+`single-click-activate` stays disabled in every mode because it also selects
+items on hover: pointer movement must change neither the open album nor the
+persistent selection. First-click navigation remains driven by selection
+changes without duplicate opens. The primary gesture never claims the input
+sequence; Ctrl/Shift selection, drag cancellation and recycled row identity
+remain guarded. Batch activation never opens an album or leaves batch mode.
+Tests check exact folder identities in both the current GTK selection model
+and the pending-deletion cache, and move the native pointer without pressing
+before checking that navigation and selection stayed unchanged.
 
 `MainWindow::sidebar_album_row_for_tests` is a read-only observation of the
 factory ListItems' current Album bindings. It uses weak references, creates no

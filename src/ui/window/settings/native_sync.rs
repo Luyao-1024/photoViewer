@@ -316,7 +316,6 @@ fn set_enabled(service: SyncService, enabled: bool, status: &gtk::Label) {
 struct JobCard {
     group: adw::PreferencesGroup,
     header: adw::ActionRow,
-    state: gtk::Label,
     pause: gtk::Button,
     scope: adw::ActionRow,
 }
@@ -332,9 +331,6 @@ impl JobCard {
             "native.ready"
         });
         self.header.set_subtitle(&state);
-        self.state
-            .set_label(job.last_error.as_deref().unwrap_or(""));
-        self.state.set_visible(job.last_error.is_some());
         self.pause.set_label(&tr(if job.paused {
             "native.resume"
         } else {
@@ -436,13 +432,6 @@ fn append_job(
     more.set_widget_name(&format!("native-sync-menu-{}", job.id));
     more.set_tooltip_text(Some(&tr("native.task_actions")));
     header.add_suffix(&more);
-    let state = label();
-    state.add_css_class("error");
-    state.set_margin_start(16);
-    state.set_margin_end(16);
-    state.set_margin_top(8);
-    state.set_margin_bottom(8);
-    row.add_row(&state);
     row.add_row(&detail("native.root", &job.local_root.to_string_lossy()));
     row.add_row(&detail("native.endpoint", &job.endpoint));
     if let Some(zone) = &job.native_zone {
@@ -535,7 +524,6 @@ fn append_job(
     JobCard {
         group,
         header,
-        state,
         pause,
         scope: scope_row,
     }

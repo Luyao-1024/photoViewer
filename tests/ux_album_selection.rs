@@ -16,8 +16,93 @@ fn album_selection_tracks_the_pressed_folder_identities() {
     gtk::init().expect("GTK init failed");
     let runtime = tokio::runtime::Runtime::new().expect("Tokio runtime for album UX");
     let _guard = runtime.enter();
+    hovering_albums_does_not_select_or_navigate();
+    reselecting_the_open_album_returns_from_the_viewer();
     additive_selection_and_deselection();
     duplicate_names_survive_scroll_and_refresh(&runtime);
+}
+
+fn hovering_albums_does_not_select_or_navigate() {
+    let shell = Shell::new();
+    let extra = shell.seed_extra_album();
+    let ui = &shell.ui;
+    let window = &shell.window;
+    let row = common::sidebar::album_row(ui, window, &extra);
+    let (x, y) = ui.pointer_at_center_of(&row).expect("a visible album row");
+    ui.pointer_motion(x, y, "Hover an album without clicking");
+    ui.pump(Duration::from_millis(900));
+    assert!(
+        window.imp().active_album.borrow().is_none(),
+        "hovering from Photos must not open an album"
+    );
+    assert!(
+        common::sidebar::model_selected_album_paths(window).is_empty(),
+        "hovering must not change persistent album selection"
+    );
+    common::sidebar::open_album(&shell, &extra);
+    let root = shell.photos_dir();
+    let row = common::sidebar::album_row(ui, window, &root);
+    let (x, y) = ui
+        .pointer_at_center_of(&row)
+        .expect("another visible album row");
+    ui.pointer_motion(x, y, "Hover another album without clicking");
+    ui.pump(Duration::from_millis(900));
+    assert_eq!(
+        window.imp().active_album.borrow().as_ref(),
+        Some(&extra),
+        "hovering another album must not change the open album"
+    );
+    assert_eq!(
+        common::sidebar::model_selected_album_paths(window),
+        BTreeSet::from([extra])
+    );
+    common::sidebar::open_album(&shell, &root);
+    assert_eq!(window.imp().active_album.borrow().as_ref(), Some(&root));
+}
+
+fn reselecting_the_open_album_returns_from_the_viewer() {
+    use common::interaction::descendants;
+    use photo_viewer::core::identity::MediaId;
+    use photo_viewer::ui::{virtual_media_grid::VirtualMediaGrid, AlbumDetailPage, ViewerPage};
+    let shell = Shell::new();
+    let ui = &shell.ui;
+    let album = shell.photos_dir();
+    common::sidebar::open_album(&shell, &album);
+    let detail = shell
+        .window
+        .browsing_stack()
+        .visible_child()
+        .and_downcast::<AlbumDetailPage>()
+        .unwrap();
+    let grid = descendants::<VirtualMediaGrid>(&detail)
+        .into_iter()
+        .next()
+        .unwrap();
+    let tile = shell.tile_for(
+        &grid,
+        MediaId::from(shell.items[0].id),
+        "the selected album",
+    );
+    ui.click(&tile, "Open a photo from the selected album");
+    assert!(ui.wait_until(Duration::from_secs(5), || shell
+        .window
+        .nav_view()
+        .visible_page()
+        .is_some_and(|page| page.is::<ViewerPage>())));
+    let row = common::sidebar::album_row(ui, &shell.window, &album);
+    ui.click_native(&row, "Return through the already selected album row");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || shell
+            .window
+            .nav_view()
+            .visible_page()
+            .is_some_and(|page| !page.is::<ViewerPage>())),
+        "clicking the selected album must return from the viewer to its album"
+    );
+    assert_eq!(
+        shell.window.imp().active_album.borrow().as_ref(),
+        Some(&album)
+    );
 }
 
 fn additive_selection_and_deselection() {

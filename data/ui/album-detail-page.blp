@@ -25,7 +25,7 @@ template $AlbumDetailPage : Adw.NavigationPage {
       Gtk.Button search_btn {
         icon-name: "system-search-symbolic";
         tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "round-search-button"];
+        css-classes: ["glass-toolbar-button", "glass-icon-button", "round-search-button"];
       }
 
       // Multi-select has no persistent header entry (removed by owner
@@ -61,7 +61,7 @@ template $AlbumDetailPage : Adw.NavigationPage {
         Gtk.Button delete_to_trash_btn {
           icon-name: "user-trash-symbolic";
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button", "glass-toolbar-danger"];
         }
       }
 
@@ -73,7 +73,7 @@ template $AlbumDetailPage : Adw.NavigationPage {
         Gtk.Button add_to_album_btn {
           icon-name: "list-add-symbolic";
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button"];
         }
       }
 

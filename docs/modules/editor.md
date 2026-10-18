@@ -84,8 +84,16 @@ Orientation-metadata rotation is still implemented in `src/core/orientation.rs` 
 
 The editor footer exposes Save Copy as the suggested action and Save Overwrite as a direct danger-styled button. Save Overwrite still shows its confirmation dialog before writing.
 
-Every user-initiated exit — header close, footer Cancel, `Esc`, and the
-navigation pop — goes through `EditorPanel::request_close`, the only exit gate.
+Editor controls use the shared toolbar press/release and hover feedback.
+Reset, close and ratio arrows also carry `glass-icon-button`, so icon controls
+do not inherit text-button side padding. Reset remains circular; ratio arrows
+keep their explicit narrow geometry. Rotation, crop completion, compare,
+cancel and both save actions retain their existing semantics and sensitivity.
+Photo-overlay viewer controls are excluded from this material/motion change.
+
+
+Every user-initiated exit — header Edit pressed again, header close, footer
+Cancel, `Esc`, and the navigation pop — goes through `EditorPanel::request_close`, the only exit gate.
 A clean panel closes at once; a panel with pending edits presents an
 `adw::AlertDialog` whose default and close response are both `keep`, so
 dismissing the dialog cannot discard work, and only the destructive `discard`

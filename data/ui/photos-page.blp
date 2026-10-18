@@ -41,7 +41,7 @@ template $PhotosPage : Adw.NavigationPage {
       Gtk.Button search_btn {
         icon-name: "system-search-symbolic";
         tooltip-text: "";
-        css-classes: ["glass-toolbar-button", "round-search-button"];
+        css-classes: ["glass-toolbar-button", "glass-icon-button", "round-search-button"];
       }
 
       // Multi-select has no persistent header entry (removed by owner
@@ -78,7 +78,7 @@ template $PhotosPage : Adw.NavigationPage {
         Gtk.Button delete_to_trash_btn {
           icon-name: "user-trash-symbolic";
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button", "glass-toolbar-danger"];
         }
       }
 
@@ -129,7 +129,7 @@ template $PhotosPage : Adw.NavigationPage {
           icon-name: "list-add-symbolic";
           tooltip-text: "";
           // Hidden until user has selected one or more photos.
-          css-classes: ["glass-toolbar-button"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button"];
         }
       }
 

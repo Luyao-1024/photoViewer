@@ -125,6 +125,19 @@ impl MainWindow {
             }),
         );
 
+        // GTK's single-click mode also selects on hover. Leave it disabled:
+        // selection changes handle ordinary clicks, and explicit activation
+        // handles returning through an already selected album.
+        self.imp().album_list.set_single_click_activate(false);
+        self.imp().album_list.connect_activate(
+            glib::clone!(@weak self as window => move |_, position| {
+                let album = window.imp().album_targets.borrow().get(position as usize).cloned();
+                if let Some(album) = album {
+                    window.reactivate_sidebar_album(album);
+                }
+            }),
+        );
+
         album_selection.connect_selection_changed(
             glib::clone!(@weak self as window, @weak nav_view => move |_model, position, changed| {
                 if window.imp().selecting_programmatically.get() {
@@ -293,6 +306,31 @@ impl MainWindow {
             }
         }
         self.imp().selecting_programmatically.set(false);
+    }
+
+    pub(super) fn reactivate_sidebar_album(&self, album: Album) {
+        if self.imp().selecting_programmatically.get()
+            || self.imp().album_selection_mode.get()
+            || self.browsing_root_is_visible()
+            || self.imp().active_album.borrow().as_ref() != Some(&album.folder_path)
+        {
+            return;
+        }
+        let Some(position) = self
+            .imp()
+            .album_targets
+            .borrow()
+            .iter()
+            .position(|current| current.folder_path == album.folder_path)
+        else {
+            return;
+        };
+        self.schedule_album_open_from_sidebar(
+            &self.nav_view(),
+            album,
+            "album_reactivate",
+            position as i32,
+        );
     }
 
     fn schedule_album_open_from_sidebar(

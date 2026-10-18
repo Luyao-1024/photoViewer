@@ -28,7 +28,7 @@ button.album-picker-tile {
 
 button.album-picker-tile:hover,
 button.album-picker-tile:focus-visible {
-  background: alpha(@window_fg_color, 0.06);
+  background: @glass_button_hover_bg;
   box-shadow: none;
 }
 
@@ -430,6 +430,56 @@ box.mode-dot {
   transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
 }
 
+/* Shared controls compress on press and settle back on release. Transform
+   native buttons and row contents, not GtkMenuButton's popover container.
+   On-image controls share this motion while keeping hover-only surfaces. */
+button.glass-toolbar-button,
+.glass-header windowcontrols button,
+button.glass-icon-button,
+.glass-icon-button > button,
+button.glass-menu-item,
+button.glass-context-menu-item,
+button.album-picker-tile,
+button.search-more-tile,
+.glass-sidebar-row,
+.settings-dialog-backdrop button,
+.glass-alert-dialog button.text-button {
+  transform: scale(1);
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 200ms cubic-bezier(0.2, 0.85, 0.25, 1.3);
+}
+
+button.glass-toolbar-button:active,
+.glass-header windowcontrols button:active,
+button.glass-icon-button:active,
+.glass-icon-button > button:active,
+button.glass-menu-item:active,
+button.glass-context-menu-item:active,
+button.album-picker-tile:active,
+button.search-more-tile:active,
+.glass-sidebar-row:active,
+.glass-sidebar-album-list > row:active .glass-sidebar-row,
+.settings-dialog-backdrop button:active,
+.glass-alert-dialog button.text-button:active {
+  transform: scale(0.96);
+  transition: background 70ms ease-out, border-color 70ms ease-out, box-shadow 70ms ease-out, color 70ms ease-out, transform 70ms ease-out;
+}
+
+/* State feedback is functional, so its contrast stays visible at every glass
+   transparency setting. Foreground tint works in both light and dark themes;
+   destructive and suggested actions keep their own semantic colors. */
+.settings-dialog-backdrop button:not(.destructive-action):not(.suggested-action):hover,
+.glass-alert-dialog button.text-button:not(.destructive-action):not(.suggested-action):hover {
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
+}
+
+.settings-dialog-backdrop button:not(.destructive-action):not(.suggested-action):active,
+.settings-dialog-backdrop button:not(.destructive-action):not(.suggested-action):checked,
+.glass-alert-dialog button.text-button:not(.destructive-action):not(.suggested-action):active {
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
+}
+
 /* glass-icon-button — the icon-only sibling of .glass-toolbar-button: same
    glass material, square geometry. The text geometry (padding: 0 14px) turns
    an icon-only button into a wide flat oval, and a GtkMenuButton paints its
@@ -443,6 +493,10 @@ box.mode-dot {
   border-radius: 10px;
   padding: 0;
   color: inherit;
+}
+
+.glass-icon-button.circular {
+  border-radius: 999px;
 }
 
 .glass-toolbar-button.round-search-button {
@@ -644,6 +698,35 @@ box.mode-dot {
   border-radius: 12px;
   margin-bottom: 3px;
   padding: 0 10px;
+}
+
+/* Navigation selection is functional state: keep it visible even at maximum
+   material transparency. ListView owns selected/active state on its wrapper. */
+.glass-sidebar-row:hover,
+.glass-sidebar-album-list > row:hover .glass-sidebar-row {
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
+}
+
+/* Clear GTK's selection surface on virtual wrappers; the inner row owns
+   the neutral highlight, just as a checked ordinary button does. */
+.glass-sidebar-album-list > row:selected:not(.glass-sidebar-row) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.glass-sidebar-row:selected,
+.glass-sidebar-album-list > row:selected .glass-sidebar-row {
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
+  box-shadow: 0 1px 3px alpha(black, 0.06), inset 0 1px alpha(white, 0.30);
+  color: @window_fg_color;
+}
+
+.glass-sidebar-row:selected .glass-sidebar-label,
+.glass-sidebar-album-list > row:selected .glass-sidebar-row .glass-sidebar-label {
+  font-weight: 600;
 }
 
 .glass-sidebar-row:focus-visible,
@@ -921,13 +1004,13 @@ video.viewer-media-surface controls scale slider {
    translucent red — the button itself stays bare (no capsule), matching the
    rest of the viewer chrome. 透明质感的半透明红,不是实心红。 */
 .viewer-favorite-btn.favorite-active {
-  color: alpha(#ff5e51, 0.92);
+  color: #ff5e51;
 }
 
-/* A touch brighter on hover so the red heart still reads against the lit
-   glass capsule that appears behind it on pointer-over. */
+/* Keep the favorited mark solid red on hover as well; the shared button
+   surface and press motion provide the interaction feedback. */
 .viewer-favorite-btn.favorite-active:hover {
-  color: alpha(#ff7a6e, 0.96);
+  color: #ff5e51;
 }
 
 /* glass-thumb-card — photo tile wrapper. NO backdrop-filter here; it
@@ -1109,14 +1192,14 @@ gridview.virtual-media-grid-view > child:hover .thumb-state-glass {
 }
 
 .search-more-tile:hover {
-  background: alpha(@window_fg_color, 0.12);
-  border-color: alpha(@window_fg_color, 0.22);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
   color: @window_fg_color;
 }
 
 .search-more-tile:active {
-  background: alpha(@window_fg_color, 0.16);
-  border-color: alpha(@window_fg_color, 0.28);
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
 }
 
 /* ── Viewer filmstrip carousel — 缩略图预览栏 ────────────────────────────
@@ -1212,23 +1295,18 @@ button.viewer-thumb-item picture {
   opacity: 0.32;
 }
 
-/* viewer-zoom-controls — the top-right cluster carries six controls that all
-   look like part of the photograph when nothing is hovered, so the cluster
-   itself was never discoverable. A faint resting outline says "this is a
-   control group" without promoting the buttons to a blocking chrome bar.
-   It is deliberately not a glass surface: no blur, no theme fill, just black
-   over the photo, which is why it needs no liquid/plain mirror and behaves the
-   same in both materials. The prev/next pair keeps no container so it stays
-   two light arrows. */
+/* Image tools share the previous/next pair's quiet presentation: keep only
+   grouping geometry here; individual controls reveal feedback on hover. */
 .viewer-zoom-controls {
   padding: 4px;
   border-radius: 14px;
-  background: alpha(black, 0.16);
-  border: 1px solid alpha(black, 0.30);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .viewer-zoom-controls separator {
-  background: alpha(black, 0.38);
+  background: transparent;
   margin: 4px 0;
 }
 

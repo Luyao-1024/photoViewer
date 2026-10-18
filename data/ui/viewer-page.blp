@@ -20,8 +20,8 @@ template $ViewerPage : Adw.NavigationPage {
 
       Adw.HeaderBar header_bar {
         show-end-title-buttons: true;
-        // `viewer-chrome` scopes the shared hover-only glass + square button
-        // geometry. `viewer-toolbar` is retained as the header identity
+        // `viewer-chrome` owns square titlebar geometry. Titlebar actions
+        // use shared glass material and press feedback. `viewer-toolbar` is retained as the header identity
         // asserted by tests.
         css-classes: ["glass-header", "viewer-toolbar", "viewer-chrome"];
 
@@ -77,21 +77,21 @@ template $ViewerPage : Adw.NavigationPage {
         Gtk.Button details_btn {
           icon-name: "info-symbolic";
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button"];
         }
 
         [end]
         Gtk.Button delete_btn {
           icon-name: "user-trash-symbolic";
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "glass-toolbar-danger"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button", "glass-toolbar-danger"];
         }
 
         [end]
         Gtk.Button edit_btn {
           tooltip-text: "";
           icon-name: "document-edit-symbolic";
-          css-classes: ["glass-toolbar-button"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button"];
         }
 
         // The icon is set from `favorite_icon::NAME` in
@@ -101,7 +101,7 @@ template $ViewerPage : Adw.NavigationPage {
         [end]
         Gtk.Button favorite_btn {
           tooltip-text: "";
-          css-classes: ["glass-toolbar-button", "viewer-favorite-btn"];
+          css-classes: ["glass-toolbar-button", "glass-icon-button", "viewer-favorite-btn"];
         }
       }
     }
@@ -317,7 +317,7 @@ template $ViewerPage : Adw.NavigationPage {
                 // is the contract: zoom out/in, then transform, then view state.
                 Gtk.Box viewer_zoom_controls {
                   orientation: horizontal;
-                  spacing: 6;
+                  spacing: 3;
                   halign: end;
                   valign: start;
                   margin-top: 10;
@@ -438,7 +438,7 @@ template $ViewerPage : Adw.NavigationPage {
           Gtk.Button details_close_btn {
             icon-name: "window-close-symbolic";
             tooltip-text: "";
-            css-classes: ["glass-toolbar-button"];
+            css-classes: ["glass-toolbar-button", "glass-icon-button"];
           }
         }
 

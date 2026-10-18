@@ -25,10 +25,10 @@ use std::rc::Rc;
 pub fn add_action(page: &adw::StatusPage, label: &str, on_activate: Rc<dyn Fn()>) -> gtk::Button {
     let button = gtk::Button::builder()
         .label(label)
-        // `AdwStatusPage` fills its child, which would stretch a pill button
+        // `AdwStatusPage` fills its child, which would stretch the action button
         // across the whole page width.
         .halign(gtk::Align::Center)
-        .css_classes(["pill", "suggested-action"])
+        .css_classes(["glass-toolbar-button", "glass-toolbar-suggested"])
         .build();
     button.connect_clicked(move |_| on_activate());
     page.set_child(Some(&button));

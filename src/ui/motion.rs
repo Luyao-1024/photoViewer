@@ -14,10 +14,39 @@ use gtk4::prelude::*;
 /// GTK's CSS subset has no `@media` feature queries - and `grid_css.rs` keeps
 /// them out of the sheets on purpose - so the preference is applied by
 /// rebuilding the provider with this tail rather than by a conditional style.
-/// Only the duration is touched: the authored `transition-property` lists stay
-/// as they are, so nothing changes *which* properties animate, only that they
-/// arrive immediately.
-pub const REDUCED_MOTION_CSS: &str = "\n/* reduce-motion: GtkSettings:gtk-enable-animations is off */\n* {\n  transition-duration: 0ms;\n}\n";
+/// Color feedback arrives immediately. Button press scaling is also suppressed
+/// so reduced motion does not turn the compression/rebound into a sudden jump.
+pub const REDUCED_MOTION_CSS: &str = "
+/* reduce-motion: GtkSettings:gtk-enable-animations is off */
+* {
+  transition-duration: 0ms;
+}
+button.glass-toolbar-button,
+button.glass-toolbar-button:active,
+.glass-header windowcontrols button,
+.glass-header windowcontrols button:active,
+button.glass-icon-button,
+button.glass-icon-button:active,
+.glass-icon-button > button,
+.glass-icon-button > button:active,
+button.glass-menu-item,
+button.glass-menu-item:active,
+button.glass-context-menu-item,
+button.glass-context-menu-item:active,
+button.album-picker-tile,
+button.album-picker-tile:active,
+button.search-more-tile,
+button.search-more-tile:active,
+.glass-sidebar-row,
+.glass-sidebar-row:active,
+.glass-sidebar-album-list > row:active .glass-sidebar-row,
+.settings-dialog-backdrop button,
+.settings-dialog-backdrop button:active,
+.glass-alert-dialog button.text-button,
+.glass-alert-dialog button.text-button:active {
+  transform: none;
+}
+";
 
 /// Whether the desktop currently wants animations. GTK's own default is true,
 /// so a session that never set the property behaves as before.

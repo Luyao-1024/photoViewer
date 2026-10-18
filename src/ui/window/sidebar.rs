@@ -470,6 +470,7 @@ impl MainWindow {
                 observed.push(list_item.downgrade());
                 drop(observed);
                 let cell = build_virtual_album_cell();
+                window.attach_album_reactivation(&cell.content, cell.binding.clone());
                 window.attach_album_dnd(cell.content.upcast_ref(), cell.binding.clone());
                 window.attach_album_context_menu(cell.content.upcast_ref(), cell.binding.clone());
                 list_item.set_child(Some(&cell.content));
@@ -509,6 +510,63 @@ impl MainWindow {
         self.imp().album_list.set_model(Some(&selection));
         *self.imp().album_model.borrow_mut() = Some(model);
         *self.imp().album_selection.borrow_mut() = Some(selection);
+    }
+
+    fn attach_album_reactivation(&self, row: &gtk::Box, binding: AlbumBinding) {
+        let gesture = gtk::GestureClick::new();
+        gesture.set_button(gtk::gdk::BUTTON_PRIMARY);
+        gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let pressed = Rc::new(RefCell::new(None::<std::path::PathBuf>));
+        let press_binding = binding.clone();
+        let press_identity = pressed.clone();
+        gesture.connect_pressed(move |gesture, _, _, _| {
+            *press_identity.borrow_mut() = if gesture.current_event_state().intersects(
+                gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+            ) {
+                None
+            } else {
+                press_binding
+                    .borrow()
+                    .as_ref()
+                    .map(|album| album.folder_path.clone())
+            };
+        });
+        let cancelled = pressed.clone();
+        gesture.connect_cancel(move |_, _| {
+            cancelled.borrow_mut().take();
+        });
+        let stopped = pressed.clone();
+        gesture.connect_stopped(move |_| {
+            stopped.borrow_mut().take();
+        });
+        let weak = self.downgrade();
+        let row_weak = row.downgrade();
+        gesture.connect_released(move |_, _, x, y| {
+            let identity = pressed.borrow_mut().take();
+            let Some(row) = row_weak.upgrade() else {
+                return;
+            };
+            if x < 0.0
+                || y < 0.0
+                || x >= f64::from(row.width())
+                || y >= f64::from(row.height())
+                || row.has_css_class("glass-sidebar-row-dragging")
+            {
+                return;
+            }
+            let Some(album) = binding
+                .borrow()
+                .as_ref()
+                .filter(|album| identity.as_ref() == Some(&album.folder_path))
+                .cloned()
+            else {
+                return;
+            };
+            if let Some(window) = weak.upgrade() {
+                window.reactivate_sidebar_album(album);
+            }
+        });
+        row.add_controller(gesture);
     }
 
     /// Read-only observation for pointer UX tests: resolve a realized row from

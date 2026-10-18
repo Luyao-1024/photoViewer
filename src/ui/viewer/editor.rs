@@ -20,8 +20,8 @@ const EDITOR_SLIDE_OUT_GUARD_MS: u64 = 400;
 
 impl ViewerPage {
     /// Wire the Edit button: configure the embedded `EditorPanel` for the
-    /// current item and reveal it as a right-side overlay (same pattern as
-    /// the details panel), instead of pushing a separate `NavigationPage`.
+    /// current item and reveal it as a right-side overlay. Pressing it again
+    /// uses the existing guarded close path instead of reconfiguring the panel.
     pub(super) fn setup_edit_button(&self) {
         let imp = self.imp();
         let weak = self.downgrade();
@@ -29,6 +29,10 @@ impl ViewerPage {
             let Some(this) = weak.upgrade() else {
                 return;
             };
+            if this.is_editing_keyboard_scope() {
+                this.request_editor_close();
+                return;
+            }
             let pool = match this.imp().pool.borrow().as_ref() {
                 Some(p) => p.clone(),
                 None => {

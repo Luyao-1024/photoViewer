@@ -3,6 +3,20 @@ use super::*;
 mod render;
 
 #[test]
+fn button_feedback_palette_tracks_light_and_dark_themes() {
+    for liquid in [false, true] {
+        for transparency in [0.0, 1.0] {
+            let light = build_css_for_theme(liquid, transparency, false, false);
+            let dark = build_css_for_theme(liquid, transparency, false, true);
+            assert!(light.contains("glass_button_hover_bg alpha(@card_bg_color, 0.82)"));
+            assert!(light.contains("glass_button_pressed_bg alpha(@card_bg_color, 0.96)"));
+            assert!(dark.contains("glass_button_hover_bg alpha(@window_fg_color, 0.12)"));
+            assert!(dark.contains("glass_button_pressed_bg alpha(@window_fg_color, 0.18)"));
+        }
+    }
+}
+
+#[test]
 fn reading_surfaces_remain_legible_at_every_transparency() {
     for liquid in [true, false] {
         let mut previous = 1.0;
@@ -256,69 +270,36 @@ fn viewer_video_controls_use_light_glass_progress_style() {
     );
 }
 
-/// Viewer chrome (header buttons + prev/next overlay nav) floats over a
-/// full-bleed photo, so it must be bare at rest and only gain its glass
-/// material on hover/focus — in BOTH glass modes. The reset is scoped to
-/// .viewer-chrome / .viewer-overlay-nav-btn so the shared
-/// .glass-toolbar-button rule used by every other header (photos, trash,
-/// albums, editor) stays always-on. A favorited photo signals state
-/// via a translucent red heart icon, not a button capsule.
+/// Titlebar and image controls reveal their frames on hover/focus, share
+/// press motion, and leave the zoom group free of a resting backdrop.
 #[test]
-fn viewer_chrome_is_glass_only_on_hover() {
+fn viewer_titlebar_uses_shared_buttons_and_image_controls_stay_quiet() {
     for liquid in [true, false] {
         let css = build_css(liquid);
-
-        // At rest: viewer chrome + overlay nav are bare (transparent),
-        // scoped to the viewer so other headers keep always-on glass.
+        assert!(!css.contains(".viewer-chrome .glass-toolbar-button,\n.viewer-overlay-nav-btn {"));
+        let header = last_css_block(&css, ".viewer-chrome .glass-toolbar-button").unwrap();
+        assert!(header.contains("background: transparent"));
+        assert!(header.contains("border-color: transparent"));
+        let overlay =
+            last_css_block(&css, ".viewer-overlay-nav-btn,\n.viewer-motion-play-button").unwrap();
+        assert!(overlay.contains("background: transparent"));
+        assert!(overlay.contains("border-color: transparent"));
+        assert!(css.contains(".viewer-overlay-nav-btn:hover"));
+        assert!(css.contains(".viewer-overlay-nav-btn:focus-visible"));
+        let group = css_block(&css, ".viewer-zoom-controls").unwrap();
+        assert!(group.contains("background: transparent"));
+        assert!(group.contains("border: 0;"));
+        assert!(css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {"));
+        assert!(css.contains(".viewer-favorite-btn.favorite-active {\n  color: #ff5e51;"));
+        assert!(!css.contains("alpha(#f6c344"));
         assert!(
-            css.contains(".viewer-chrome .glass-toolbar-button,\n.viewer-overlay-nav-btn {"),
-            "viewer chrome buttons must be reset to bare at rest ({liquid} mode)"
+            !css.split('}')
+                .any(|block| block.contains("transform: none;")
+                    && (block.contains("viewer-overlay-nav-btn")
+                        || block.contains("viewer-motion-play-button"))),
+            "on-image controls must participate in shared press motion"
         );
-        assert!(
-            css.contains(".viewer-overlay-nav-btn {\n  background: transparent"),
-            "overlay nav arrows must be bare at rest ({liquid} mode)"
-        );
-
-        // The prev/next capsule container is gone — bare background in
-        // both modes, so only the buttons light up on hover.
-        assert!(
-            css.contains(".viewer-overlay-nav {\n  background: transparent"),
-            "viewer overlay nav capsule must be bare/transparent ({liquid} mode)"
-        );
-
-        // On hover / keyboard focus the glass material returns.
-        assert!(
-            css.contains(".viewer-chrome .glass-toolbar-button:hover"),
-            "viewer chrome buttons must regain material on hover ({liquid} mode)"
-        );
-        assert!(
-            css.contains(".viewer-chrome .glass-toolbar-button:focus-visible"),
-            "keyboard focus must also reveal viewer buttons ({liquid} mode)"
-        );
-        assert!(
-            css.contains(".viewer-overlay-nav-btn:hover"),
-            "overlay nav arrows must regain material on hover ({liquid} mode)"
-        );
-
-        // The shared (non-viewer) toolbar button material stays always-on.
-        assert!(
-            css.contains(".glass-toolbar-button,\n.glass-header windowcontrols button image {"),
-            "shared toolbar button base rule must remain always-on ({liquid} mode)"
-        );
-
-        // Favorite state = translucent red heart icon, no gold capsule.
-        assert!(
-            css.contains(".viewer-favorite-btn.favorite-active {"),
-            "favorited heart must have a color rule ({liquid} mode)"
-        );
-        assert!(
-            css.contains("alpha(#ff5e51, 0.92)"),
-            "favorited heart must be translucent red ({liquid} mode)"
-        );
-        assert!(
-            !css.contains("alpha(#f6c344"),
-            "favorite must no longer use the gold capsule color ({liquid} mode)"
-        );
+        assert!(css.contains("transform: scale(0.96)"));
     }
 }
 
@@ -339,6 +320,17 @@ fn icon_only_glass_button_is_square_in_both_modes() {
                 .is_some_and(|block| block.contains("padding: 0 14px")),
             "text buttons must keep their horizontal padding ({liquid} mode)"
         );
+
+        let transparent = build_css_with_transparency(liquid, 1.0);
+        for color in [
+            "glass_button_hover_bg alpha(@window_fg_color, 0.12)",
+            "glass_button_pressed_bg alpha(@window_fg_color, 0.18)",
+        ] {
+            assert!(
+                transparent.contains(color),
+                "interaction feedback must not vanish at maximum transparency: {color}"
+            );
+        }
 
         // Square geometry, and the GtkMenuButton's internal child is matched
         // with it — otherwise the child paints a narrower fill inside the
@@ -371,12 +363,16 @@ fn icon_only_glass_button_is_square_in_both_modes() {
             let block = last_css_block(&css, selector)
                 .unwrap_or_else(|| panic!("icon button {state} material missing ({liquid} mode)"));
             assert!(
-                block.contains("background: alpha(@window_bg_color"),
+                block.contains(match state {
+                    "rest" => "background: alpha(@window_bg_color",
+                    "hover" => "background: @glass_button_hover_bg;",
+                    _ => "background: @glass_button_pressed_bg;",
+                }),
                 "icon button {state} must paint its surface ({liquid} mode)"
             );
             assert!(
                 block.contains("border: 1px solid alpha(@window_fg_color")
-                    || block.contains("border-color: alpha(@window_fg_color"),
+                    || block.contains("border-color: @glass_button_"),
                 "icon button {state} must keep the button outline ({liquid} mode)"
             );
         }
@@ -1113,7 +1109,7 @@ fn glass_menu_items_are_transparent_at_rest_like_segmented_slots() {
             "menu items should not add a second resting translucency layer over the raised menu surface",
         );
     assert!(
-        css.contains(".glass-menu-item:hover {\n  background: alpha(@window_fg_color, 0.08);"),
+        css.contains(".glass-menu-item:hover {\n  background: @glass_button_hover_bg;"),
         "menu items should still show lightweight hover state",
     );
 }
@@ -1131,9 +1127,7 @@ fn custom_context_menu_reuses_raised_panel_material() {
             "custom context menu items should stay transparent at rest",
         );
     assert!(
-        css.contains(
-            ".glass-context-menu-item:hover {\n  background: alpha(@window_fg_color, 0.08);"
-        ),
+        css.contains(".glass-context-menu-item:hover {\n  background: @glass_button_hover_bg;"),
         "custom context menu should use lightweight internal hover state",
     );
 }
@@ -1424,7 +1418,7 @@ fn reduced_motion_tail_block_zeroes_every_authored_transition() {
         "exactly one override, appended"
     );
     assert!(
-        reduced.ends_with("* {\n  transition-duration: 0ms;\n}\n"),
+        reduced.ends_with(crate::ui::motion::REDUCED_MOTION_CSS),
         "the override must be last so it wins the cascade"
     );
     assert!(

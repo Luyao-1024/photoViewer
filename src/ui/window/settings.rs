@@ -69,6 +69,8 @@ impl MainWindow {
         let lang_box = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let btn_zh = gtk::Button::with_label(&tr("setting.lang.zh"));
         let btn_en = gtk::Button::with_label(&tr("setting.lang.en"));
+        btn_zh.add_css_class("glass-toolbar-button");
+        btn_en.add_css_class("glass-toolbar-button");
 
         btn_zh.set_sensitive(current != "zh-CN");
         btn_en.set_sensitive(current != "en");
@@ -901,6 +903,7 @@ fn add_scan_path_section(
     add_button.set_icon_name("list-add-symbolic");
     add_button.set_valign(gtk::Align::Center);
     add_button.add_css_class("glass-toolbar-button");
+    add_button.add_css_class("glass-icon-button");
     add_button.set_tooltip_text(Some(&tr("setting.scan_paths.add")));
     row.add_suffix(&add_button);
     group.add(&row);
@@ -945,6 +948,7 @@ fn add_scan_path_value_row(
     remove_button.set_icon_name("user-trash-symbolic");
     remove_button.set_valign(gtk::Align::Center);
     remove_button.add_css_class("glass-toolbar-button");
+    remove_button.add_css_class("glass-icon-button");
     remove_button.add_css_class("glass-toolbar-danger");
     remove_button.set_tooltip_text(Some(&tr("setting.scan_paths.remove")));
     row.add_suffix(&remove_button);

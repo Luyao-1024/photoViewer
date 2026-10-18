@@ -66,7 +66,15 @@ and destructive actions use `@accent_color` and `@error_color`, including
 hover states, so light mode does not inherit pale dark-mode action text.
 Specular top highlights use translucent white independently of text color;
 drop shadows use black. Neither light source should reverse with the theme.
-GTK resolves these colors live without a CSS reinstall on theme changes.
+GTK resolves named theme colors live. Switching between light and dark also
+rebuilds the provider to choose the corresponding interaction palette.
+
+Settings and shared alert background styling must exclude native `popover` and `tooltip`
+root nodes, even though GTK gives them the `.background` class. A popover's
+allocation includes transparent space for its shadow; painting that root with
+the dialog material creates a second oversized panel around the menu. Keep
+that margin clear and let the menu's `contents` own its visible surface in both
+Liquid Glass and plain translucent modes.
 
 Focus rings on photo-backed surfaces use `@accent_bg_color`, not
 `@accent_color`: libadwaita derives `@accent_color` as the *legible-on-accent
@@ -190,9 +198,10 @@ accent states remain separate.
 
 ## Button Material Modes
 
-The shared `.glass-toolbar-button` material is **always-on** by default — photos, trash, albums, and editor headers all carry their glass capsule at rest. Three scopes opt out to a **hover-only** treatment (bare icon at rest, glass surface only on `:hover` / `:focus-visible`), because they float over content that should stay uncluttered:
+The shared `.glass-toolbar-button` material is **always-on** by default — photos, trash, albums and editor headers carry their glass capsule at rest. Four scopes opt out to a **hover-only** treatment (bare icon at rest, glass surface only on `:hover` / `:focus-visible`), because they float over content that should stay uncluttered:
 
-- `.viewer-chrome .glass-toolbar-button` + `.viewer-overlay-nav-btn` — the viewer header actions and the bottom-right prev/next arrows, floating over a full-bleed photo.
+- `.viewer-chrome .glass-toolbar-button` — the four titlebar actions reveal a shared glass frame only on hover or keyboard focus.
+- `.viewer-overlay-nav-btn` and `.viewer-motion-play-button` — controls floating over the image remain bare until hover/focus.
 - `.sidebar-settings-button` — the sidebar footer settings button (`preferences-system-symbolic`), floating over the sidebar surface.
 - `.round-search-button` — the compact circular search actions floating over
   content in the Photos and album-detail headers.
@@ -212,6 +221,28 @@ both halves.
 
 ## Motion and reduce-motion
 
+Toolbar, icon, menu, album-picker and dialog buttons share one press/release
+feedback language. Ordinary actions use a theme-adaptive foreground tint on
+hover, with a stronger tint while pressed. Native menu
+buttons keep the stronger tint while their menu is open. This functional state
+feedback is independent of the glass transparency slider; destructive and
+suggested actions retain their semantic colors.
+
+The native button scales to 0.96 over 70 ms on press, then returns over 200 ms
+with a gentle rebound curve. Sidebar album rows use the same feedback on their
+contents, and keep a neutral pressed tint, border and stronger label for the
+selected album. The virtual row wrapper stays transparent so GTK cannot add a
+second accent-colored selection surface.
+Sidebar interaction contrast is functional and does not fade with material
+transparency. Light mode uses a milky card tint with fine borders instead of
+a dark foreground veil; dark mode keeps the stronger foreground tint. The
+provider rebuilds on `StyleManager:dark` changes so manual/system theme switches
+update the interaction palette immediately. The viewer titlebar uses this shared feedback. On-image navigation, zoom,
+fullscreen and play controls keep their lightweight surfaces and share the same press/release scaling;
+the zoom group itself has no constant backdrop or border. Scaling applies to the button itself, leaving the
+GtkMenuButton container, popover anchor and surrounding layout stable. Reduced
+motion suppresses scaling entirely while retaining immediate color feedback.
+
 `src/ui/motion.rs` is the only place that reads the desktop's
 `GtkSettings:gtk-enable-animations` (GNOME Settings → Accessibility → Reduced
 Animations). Two channels carry it, because GTK gives them no common hook:
@@ -220,8 +251,9 @@ Animations). Two channels carry it, because GTK gives them no common hook:
   `* { transition-duration: 0ms; }` — after the base, material and a11y blocks.
   The tail block is deliberate: GTK's CSS subset has no `@media` feature
   queries, and `grid_css.rs` keeps them out of the sheets, so a conditional
-  style is not available. Only the duration is overridden, so which properties
-  may animate stays as authored. `install()` connects
+  style is not available. The tail also resets shared button/sidebar transforms
+  so reducing motion suppresses press scaling rather than making it jump.
+  `install()` connects
   `notify::gtk-enable-animations` and rebuilds the provider, so the toggle is
   live in both directions.
 - **Widget-level transitions.** `GtkRevealer` and `GtkStack` take their

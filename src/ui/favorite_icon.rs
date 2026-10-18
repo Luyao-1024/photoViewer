@@ -23,7 +23,9 @@
 //! the whole requested box, where the same file is a 0.16-fill ring on 4.22 —
 //! and which of the two you get is not something a caller can ask about. The
 //! raster renders the same shape everywhere, with librsvg out of the picture at
-//! runtime.
+//! runtime. Favorite buttons use a filled mask with the same outer contour
+//! when `favorite-active` is set, and restore the outline when it is cleared.
+//! Shape is part of the bounded tint-cache key alongside color.
 //!
 //! What the raster costs is tinting. GTK tints a symbolic *vector* by handing
 //! librsvg a colour callback; there is no equivalent for a raster, so CSS
@@ -86,6 +88,8 @@ pub(crate) const TILE_PIXEL_SIZE: i32 = 18;
 
 /// The shipped asset: the mark as white on transparent, shape in alpha.
 const RESOURCE: &str = "/io/github/luyao_1024/photoviewer/icons/photoviewer-heart-symbolic.png";
+const FILLED_RESOURCE: &str =
+    "/io/github/luyao_1024/photoviewer/icons/photoviewer-heart-filled-symbolic.png";
 
 /// The mark painted in `colour`.
 ///
@@ -103,22 +107,23 @@ const RESOURCE: &str = "/io/github/luyao_1024/photoviewer/icons/photoviewer-hear
 /// megabytes of textures; [`TINT_CACHE_ENTRIES`] keeps it to about a megabyte
 /// and a miss costs one composite of a handful of pixels.
 pub(crate) fn tinted(colour: gdk::RGBA) -> gdk::Texture {
-    tinted_key(key_of(colour))
+    tinted_key(key_of(colour), false)
 }
 
 /// The mark painted in an already-quantised colour, which is what the follow
 /// tick has: it compares colours to decide whether they are still moving, and
 /// it must not compare floats to do it.
-fn tinted_key(key: [u8; 4]) -> gdk::Texture {
+fn tinted_key(key: [u8; 4], filled: bool) -> gdk::Texture {
     static CACHE: Mutex<Option<TintCache>> = Mutex::new(None);
 
     let mut cache = CACHE.lock().expect("the tint cache is not poisoned");
     let cache = cache.get_or_insert_with(TintCache::default);
-    if let Some(found) = cache.get(&key) {
+    let cache_key = [key[0], key[1], key[2], key[3], u8::from(filled)];
+    if let Some(found) = cache.get(&cache_key) {
         return found;
     }
-    let texture = paint(key);
-    cache.insert(key, texture.clone());
+    let texture = paint(key, filled);
+    cache.insert(cache_key, texture.clone());
     texture
 }
 
@@ -141,16 +146,16 @@ fn key_of(colour: gdk::RGBA) -> [u8; 4] {
 /// Insertion-ordered so eviction is a pop off the front rather than a scan.
 #[derive(Default)]
 struct TintCache {
-    textures: HashMap<[u8; 4], gdk::Texture>,
-    order: VecDeque<[u8; 4]>,
+    textures: HashMap<[u8; 5], gdk::Texture>,
+    order: VecDeque<[u8; 5]>,
 }
 
 impl TintCache {
-    fn get(&self, key: &[u8; 4]) -> Option<gdk::Texture> {
+    fn get(&self, key: &[u8; 5]) -> Option<gdk::Texture> {
         self.textures.get(key).cloned()
     }
 
-    fn insert(&mut self, key: [u8; 4], texture: gdk::Texture) {
+    fn insert(&mut self, key: [u8; 5], texture: gdk::Texture) {
         self.textures.insert(key, texture);
         self.order.push_back(key);
         while self.order.len() > TINT_CACHE_ENTRIES {
@@ -161,7 +166,7 @@ impl TintCache {
     }
 }
 
-fn paint(key: [u8; 4]) -> gdk::Texture {
+fn paint(key: [u8; 4], filled: bool) -> gdk::Texture {
     // `from_resource` reads the asset straight out of the GResource, so there is
     // no path to get wrong and no file handle to leak. Only the bundle is
     // registered — the icon-theme side effect of the public helper changes how
@@ -169,8 +174,9 @@ fn paint(key: [u8; 4]) -> gdk::Texture {
     // ensured here rather than assumed: reaching this code before any widget
     // constructor ran would otherwise find an empty resource database.
     crate::ensure_resource_bundle();
-    let mask = gdk_pixbuf::Pixbuf::from_resource(RESOURCE)
-        .unwrap_or_else(|err| panic!("{RESOURCE} should be in the GResource: {err}"));
+    let resource = if filled { FILLED_RESOURCE } else { RESOURCE };
+    let mask = gdk_pixbuf::Pixbuf::from_resource(resource)
+        .unwrap_or_else(|err| panic!("{resource} should be in the GResource: {err}"));
     let (pw, ph) = (mask.width(), mask.height());
     let (width, height) = (pw as usize, ph as usize);
     let (channels, rowstride) = (mask.n_channels() as usize, mask.rowstride() as usize);
@@ -400,7 +406,10 @@ fn repaint(button: &gtk::Button) {
 /// asks the style context once per frame rather than twice.
 fn repaint_in(button: &gtk::Button, colour: [u8; 4]) {
     if let Some(image) = button.child().and_downcast::<gtk::Image>() {
-        image.set_from_paintable(Some(&tinted_key(colour)));
+        image.set_from_paintable(Some(&tinted_key(
+            colour,
+            button.has_css_class("favorite-active"),
+        )));
     }
 }
 

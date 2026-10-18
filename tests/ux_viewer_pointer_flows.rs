@@ -454,6 +454,41 @@ fn zoom_cluster_operates_the_stage_by_pointer(run: &ViewerRun) {
     ui.wait_until(Duration::from_secs(5), || {
         imp.rotate_right_btn.get().is_visible()
     });
+    let controls = imp
+        .zoom_in_btn
+        .get()
+        .parent()
+        .and_downcast::<gtk::Box>()
+        .unwrap();
+    let mut bounds = [
+        imp.zoom_out_btn.get(),
+        imp.zoom_in_btn.get(),
+        imp.rotate_left_btn.get(),
+        imp.rotate_right_btn.get(),
+        imp.zoom_reset_btn.get(),
+        imp.fullscreen_btn.get(),
+    ]
+    .into_iter()
+    .filter(|button| button.is_mapped())
+    .map(|button| {
+        ui.assert_reachable(&button, "Zoom toolbar button");
+        button
+            .compute_bounds(&controls)
+            .expect("mapped button bounds")
+    })
+    .collect::<Vec<_>>();
+    bounds.sort_by(|a, b| a.x().partial_cmp(&b.x()).unwrap());
+    for pair in bounds.windows(2) {
+        assert!(
+            pair[0].x() + pair[0].width() <= pair[1].x(),
+            "adjacent zoom buttons must have independent, non-overlapping areas"
+        );
+    }
+    assert_eq!(
+        controls.spacing(),
+        3,
+        "the toolbar uses compact positive gaps"
+    );
     ui.click(&imp.rotate_right_btn.get(), "Rotate right");
     let right = run.wait_for_rotation(|deg| deg != 0);
     assert_ne!(right, 0, "pressing Rotate right should turn the stage");
@@ -479,6 +514,18 @@ fn zoom_cluster_operates_the_stage_by_pointer(run: &ViewerRun) {
 /// The header actions, reached by real presses, must open their panels and persist
 /// their mutations. The editor also takes the navigation lock, and the lock has to
 /// hold against a real press rather than only against a signal.
+fn favorite_center_pixel(button: &gtk::Button) -> [u8; 4] {
+    let image = button.child().and_downcast::<gtk::Image>().unwrap();
+    let texture = image
+        .paintable()
+        .unwrap()
+        .downcast::<gtk::gdk::Texture>()
+        .unwrap();
+    let png = texture.save_to_png_bytes();
+    let pixels = image::load_from_memory(png.as_ref()).unwrap().to_rgba8();
+    pixels.get_pixel(pixels.width() / 2, pixels.height() / 2).0
+}
+
 fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
     let viewer = &run.viewer;
     let imp = viewer.imp();
@@ -494,6 +541,13 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
         .unwrap_or(false)),
         "pressing Favorite should persist the heart"
     );
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || {
+            let pixel = favorite_center_pixel(&imp.favorite_btn.get());
+            pixel[3] >= 240 && pixel[0] >= 220 && pixel[1] < 160 && pixel[2] < 160
+        }),
+        "a favorited header heart must have an opaque red center"
+    );
     ui.click(&imp.favorite_btn.get(), "Favorite (toggle back)");
     assert!(
         ui.wait_until(Duration::from_secs(10), || !db::is_media_favorite(
@@ -502,6 +556,13 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
         )
         .unwrap_or(false)),
         "pressing Favorite again should clear the heart"
+    );
+
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || favorite_center_pixel(
+            &imp.favorite_btn.get()
+        )[3] < 32),
+        "removing Favorite restores the hollow heart"
     );
 
     ui.click(&imp.details_btn.get(), "Details");
@@ -529,6 +590,18 @@ fn header_actions_reach_their_panels_and_mutations(run: &ViewerRun) {
             .shows_sidebar()
             && imp.editor_panel.get().imp().source_image.borrow().is_some()),
         "pressing Edit should open the editor side panel on the real file"
+    );
+    ui.click(&imp.edit_btn.get(), "Toggle the clean editor closed");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !imp.is_editing.get()
+            && !imp.editor_split_view.get().shows_sidebar()),
+        "pressing Edit again closes a clean editor"
+    );
+    ui.click(&imp.edit_btn.get(), "Toggle the editor open again");
+    assert!(
+        ui.wait_until(Duration::from_secs(10), || imp.is_editing.get()
+            && imp.editor_split_view.get().shows_sidebar()
+            && imp.editor_panel.get().imp().source_image.borrow().is_some())
     );
     let locked_id = imp.current_media_id.get();
 
@@ -665,6 +738,22 @@ fn editing_keeps_the_filmstrip_on_the_same_photo(run: &ViewerRun) {
         .source_image
         .borrow()
         .is_some()));
+    for (name, button) in [
+        ("Reset edits", editor.reset_btn.get()),
+        ("Close editor", editor.editor_close_btn.get()),
+    ] {
+        assert!(
+            button.has_css_class("glass-icon-button"),
+            "{name} uses shared icon geometry"
+        );
+        ui.scroll_to_reveal(&button, name);
+        assert!(
+            (button.width() - button.height()).abs() <= 2,
+            "{name} must be square, got {}x{}",
+            button.width(),
+            button.height()
+        );
+    }
     ui.scroll_to_reveal(&editor.rotate_90_cw.get(), "Rotate clockwise in editor");
     ui.click(&editor.rotate_90_cw.get(), "Rotate clockwise in editor");
     let rotation = editor.state.borrow().rotation;
@@ -673,6 +762,23 @@ fn editing_keeps_the_filmstrip_on_the_same_photo(run: &ViewerRun) {
         90,
         "the session must contain a real pending edit"
     );
+
+    ui.scroll_to_reveal(&editor.start_crop_btn.get(), "Start crop");
+    ui.click(&editor.start_crop_btn.get(), "Start crop");
+    assert!(ui.wait_until(Duration::from_secs(3), || editor
+        .crop_ratio_box
+        .get()
+        .is_mapped()));
+    let arrow = editor.crop_ratio_next_btn.get();
+    ui.scroll_to_reveal(&arrow, "Next crop ratio");
+    assert!(
+        arrow.width() < arrow.height(),
+        "crop arrows retain narrow geometry"
+    );
+    ui.click(&arrow, "Next crop ratio");
+    assert_eq!(editor.crop_ratio_index.get(), 1);
+    ui.scroll_to_reveal(&editor.start_crop_btn.get(), "Finish crop");
+    ui.click(&editor.start_crop_btn.get(), "Finish crop");
 
     for index in [1, 3] {
         let thumb = imp.thumb_items.borrow()[index].clone();
@@ -715,8 +821,32 @@ fn editing_keeps_the_filmstrip_on_the_same_photo(run: &ViewerRun) {
 
     // Close still uses the unsaved-changes gate, and answering it is a real
     // press. The same thumbnail must then work, ruling out a dead filmstrip.
-    ui.scroll_to_reveal(&editor.editor_close_btn.get(), "Close editor");
-    ui.click(&editor.editor_close_btn.get(), "Close editor");
+    ui.click(
+        &imp.edit_btn.get(),
+        "Toggle editor closed with pending edits",
+    );
+    assert!(ui.wait_until(Duration::from_secs(5), || editor
+        .close_guard
+        .borrow()
+        .is_some()));
+    let keep_guard = editor.close_guard.borrow().as_ref().unwrap().clone();
+    let keep = common::interaction::find_button_with_label(
+        &keep_guard,
+        &photo_viewer::core::i18n::tr("editor.unsaved.keep"),
+    )
+    .unwrap();
+    ui.click(&keep, "Keep editing");
+    assert!(
+        ui.wait_until(Duration::from_secs(5), || !keep_guard.is_mapped()
+            && editor.close_guard.borrow().is_none())
+    );
+    assert!(imp.is_editing.get() && imp.editor_split_view.get().shows_sidebar());
+    assert_eq!(
+        editor.state.borrow().rotation,
+        rotation,
+        "cancelling a toggle-close must retain pending edits"
+    );
+    ui.click(&imp.edit_btn.get(), "Toggle editor closed again");
     assert!(ui.wait_until(Duration::from_secs(5), || editor
         .close_guard
         .borrow()

@@ -82,8 +82,8 @@ box.mode-selector.glass-raised.on-light-background {
 
 .glass-toolbar-button:hover,
 .glass-header windowcontrols button:hover image {
-  background: alpha(@window_bg_color, 0.62);
-  border-color: alpha(@window_fg_color, 0.20);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
   box-shadow:
     0 5px 14px alpha(black, 0.18),
     inset 0 1px alpha(white, 0.38),
@@ -94,6 +94,25 @@ box.mode-selector.glass-raised.on-light-background {
 .glass-toolbar-button:checked,
 .glass-header windowcontrols button:active image,
 .glass-header windowcontrols button:checked image {
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
+  box-shadow:
+    0 1px 4px alpha(black, 0.12),
+    inset 0 1px alpha(white, 0.22),
+    inset 0 -1px alpha(black, 0.18);
+}
+
+/* The play button on the image retains its existing feedback. */
+.viewer-motion-play-button:hover {
+  background: alpha(@window_bg_color, 0.62);
+  border-color: alpha(@window_fg_color, 0.20);
+  box-shadow:
+    0 5px 14px alpha(black, 0.18),
+    inset 0 1px alpha(white, 0.38),
+    inset 0 -1px alpha(black, 0.14);
+}
+
+.viewer-motion-play-button:active {
   background: alpha(@window_bg_color, 0.72);
   border-color: alpha(@window_fg_color, 0.24);
   box-shadow:
@@ -119,8 +138,8 @@ box.mode-selector.glass-raised.on-light-background {
 
 .glass-icon-button:hover,
 .glass-icon-button > button:hover {
-  background: alpha(@window_bg_color, 0.62);
-  border-color: alpha(@window_fg_color, 0.20);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
   box-shadow:
     0 5px 14px alpha(black, 0.18),
     inset 0 1px alpha(white, 0.38),
@@ -129,8 +148,8 @@ box.mode-selector.glass-raised.on-light-background {
 
 .glass-icon-button:active,
 .glass-icon-button > button:active {
-  background: alpha(@window_bg_color, 0.72);
-  border-color: alpha(@window_fg_color, 0.24);
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
   box-shadow:
     0 1px 4px alpha(black, 0.12),
     inset 0 1px alpha(white, 0.22),
@@ -172,11 +191,17 @@ box.mode-selector.glass-raised.on-light-background {
 }
 
 .glass-menu-item:hover {
-  background: alpha(@window_fg_color, 0.08);
-  border-color: alpha(@window_fg_color, 0.14);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
   box-shadow:
     inset 0 1px alpha(white, 0.22),
     inset 0 -1px alpha(black, 0.10);
+}
+
+.glass-menu-item:active,
+.glass-context-menu-item:active {
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
 }
 
 .glass-menu-item-suggested:hover {
@@ -199,8 +224,8 @@ box.mode-selector.glass-raised.on-light-background {
 }
 
 .glass-context-menu-item:hover {
-  background: alpha(@window_fg_color, 0.08);
-  border-color: alpha(@window_fg_color, 0.12);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
   box-shadow:
     inset 0 1px alpha(white, 0.22);
 }
@@ -222,23 +247,6 @@ box.mode-selector.glass-raised.on-light-background {
   border: 1px solid transparent;
 }
 
-.glass-sidebar-row:hover,
-.glass-sidebar-album-list > row:hover .glass-sidebar-row {
-  background: alpha(@accent_bg_color, 0.14);
-  border-color: alpha(@accent_bg_color, 0.26);
-  box-shadow:
-    inset 0 1px alpha(white, 0.22);
-}
-
-.glass-sidebar-row:selected,
-.glass-sidebar-album-list > row:selected .glass-sidebar-row {
-  background: alpha(@accent_bg_color, 0.22);
-  border-color: alpha(@accent_bg_color, 0.42);
-  box-shadow:
-    inset 0 1px alpha(white, 0.22),
-    inset 0 -1px alpha(black, 0.12);
-}
-
 .settings-dialog-content .boxed-list {
   background: alpha(@card_bg_color, 0.62);
   background-clip: padding-box;
@@ -255,7 +263,9 @@ row.settings-action-row:hover {
   transition: opacity 200ms ease;
 }
 
-.settings-dialog-backdrop .background {
+/* Popover/tooltip roots include transparent shadow space; only the dialog
+   background should receive this material. Their contents paint the popup. */
+.settings-dialog-backdrop .background:not(popover):not(tooltip) {
   background: @glass_reading_bg;
   border-color: alpha(@window_fg_color, 0.12);
   color: @window_fg_color;
@@ -296,17 +306,9 @@ row.settings-action-row:hover {
   border-color: alpha(@window_fg_color, 0.22);
 }
 
-/* ── Viewer chrome: glass material only on hover/focus ──────────────
-   The viewer floats over a full-bleed photo, so its header buttons and the
-   prev/next overlay arrows are bare at rest (icon only, no capsule) and only
-   gain their glass material when the pointer hovers or keyboard focus lands
-   on them — keeping the photo uncluttered. .glass-toolbar-button is shared
-   by every header bar (photos, trash, albums, editor), so the bare-at-rest
-   reset is scoped to .viewer-chrome (carried by the viewer header) and
-   .viewer-overlay-nav-btn. A favorited photo signals state through its red
-   heart icon, not a button capsule. */
-.viewer-chrome .glass-toolbar-button,
-.viewer-overlay-nav-btn {
+/* Titlebar actions reveal the shared glass capsule only on hover/focus.
+   Its transparent border keeps allocation stable during press compression. */
+.viewer-chrome .glass-toolbar-button {
   background: transparent;
   background-clip: padding-box;
   border-color: transparent;
@@ -314,9 +316,29 @@ row.settings-action-row:hover {
 }
 
 .viewer-chrome .glass-toolbar-button:hover,
-.viewer-chrome .glass-toolbar-button:focus-visible,
+.viewer-chrome .glass-toolbar-button:focus-visible {
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
+  box-shadow: 0 5px 14px alpha(black, 0.18), inset 0 1px alpha(white, 0.38), inset 0 -1px alpha(black, 0.14);
+}
+
+.viewer-chrome .glass-toolbar-button:active {
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
+}
+
+/* On-image controls use the same press motion, with no resting frame. */
+.viewer-overlay-nav-btn,
+.viewer-motion-play-button {
+  background: transparent;
+  background-clip: padding-box;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .viewer-overlay-nav-btn:hover,
-.viewer-overlay-nav-btn:focus-visible {
+.viewer-overlay-nav-btn:focus-visible,
+.viewer-motion-play-button:focus-visible {
   background: alpha(@window_bg_color, 0.62);
   background-clip: padding-box;
   border: 1px solid alpha(@window_fg_color, 0.20);
@@ -324,16 +346,6 @@ row.settings-action-row:hover {
     0 5px 14px alpha(black, 0.18),
     inset 0 1px alpha(white, 0.38),
     inset 0 -1px alpha(black, 0.14);
-}
-
-.viewer-chrome .glass-toolbar-button:active,
-.viewer-chrome .glass-toolbar-button:checked {
-  background: alpha(@window_bg_color, 0.72);
-  border: 1px solid alpha(@window_fg_color, 0.24);
-  box-shadow:
-    0 1px 4px alpha(black, 0.12),
-    inset 0 1px alpha(white, 0.22),
-    inset 0 -1px alpha(black, 0.18);
 }
 
 /* Delete keeps its red danger treatment on hover inside the viewer. */
@@ -421,7 +433,7 @@ row.settings-action-row:hover {
   background: transparent;
 }
 
-.glass-alert-dialog .background {
+.glass-alert-dialog .background:not(popover):not(tooltip) {
   background: @glass_reading_bg;
   background-clip: padding-box;
   border: 1px solid alpha(@window_fg_color, 0.16);
@@ -447,20 +459,20 @@ row.settings-action-row:hover {
   min-height: 38px;
   border-radius: 12px;
   padding: 0 18px;
-  background: alpha(@window_bg_color, 0.54);
+  background: alpha(@window_bg_color, 0.48);
   border: 1px solid alpha(@window_fg_color, 0.14);
   color: @window_fg_color;
   font-weight: 600;
-  transition: background 120ms ease, border-color 120ms ease;
 }
 
 .glass-alert-dialog button.text-button:hover {
-  background: alpha(@window_bg_color, 0.68);
-  border-color: alpha(@window_fg_color, 0.22);
+  background: @glass_button_hover_bg;
+  border-color: @glass_button_hover_border;
 }
 
 .glass-alert-dialog button.text-button:active {
-  background: alpha(@window_bg_color, 0.78);
+  background: @glass_button_pressed_bg;
+  border-color: @glass_button_pressed_border;
 }
 
 /* Destructive response — 红色调液态玻璃 */
