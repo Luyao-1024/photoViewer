@@ -743,41 +743,44 @@ fn prepare_trash_reconcile_for_roots_in(
             plan.skipped += 1;
             continue;
         }
+        // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
+        // （目录条目也适用：目录回来了，里面的文件交给启动扫描。）
+        if original_path.exists() {
+            plan.skipped += 1;
+            continue;
+        }
+        let trash_file = entry.file_path;
+        if trash_file.is_dir() {
+            // 文件管理器删除整个相册目录只产生一条目录 `.trashinfo`，其中的
+            // 媒体文件没有各自的条目。下钻目录，把每个文件按
+            // 「原目录 + 相对路径」还原原位置并走同一条 trashed 入库路径。
+            for media in walkdir::WalkDir::new(&trash_file)
+                .into_iter()
+                .flatten()
+                .filter(|child| child.file_type().is_file())
+                .map(|child| child.into_path())
+                .filter(|media| is_supported_media_path(media))
+            {
+                let relative = media
+                    .strip_prefix(&trash_file)
+                    .expect("WalkDir paths start at the trash entry root");
+                admit_trashed_media(
+                    &backend,
+                    pool,
+                    &original_path.join(relative),
+                    &media,
+                    &mut plan,
+                );
+            }
+            continue;
+        }
         // HOST 回收站包含文档、文本等非本 App 索引的文件。先按媒体扩展
         // 跳过，避免普通非媒体条目进入元数据解析并产生启动 warning。
         if !is_supported_media_path(&original_path) {
             plan.skipped += 1;
             continue;
         }
-        // 原路径仍存在 → 已还原/还在原位，保持 live，不标 trashed。
-        if original_path.exists() {
-            plan.skipped += 1;
-            continue;
-        }
-        let trash_file = entry.file_path;
-
-        let uri = crate::core::file_uri::from_path(&original_path);
-        match db::get_media_item_by_uri(pool, &uri)? {
-            Some(existing) if existing.trashed_at.is_some() => {
-                plan.skipped += 1; // 已是 trashed，无需处理
-            }
-            Some(existing) => {
-                plan.mark_ids.push(MediaId::from(existing.id));
-            }
-            None => {
-                let folder = original_path.parent().unwrap_or_else(|| Path::new("/"));
-                match backend.process_file_at(&trash_file, &uri, &original_path, folder) {
-                    Ok(item) => {
-                        plan.new_items.push(item);
-                    }
-                    Err(e) => {
-                        // 非图片 / 无法解码：跳过，不影响其余条目。
-                        tracing::warn!("回收站对账：解析 {} 失败: {}", trash_file.display(), e);
-                        plan.skipped += 1;
-                    }
-                }
-            }
-        }
+        admit_trashed_media(&backend, pool, &original_path, &trash_file, &mut plan);
     }
 
     // 删（prune）：DB 里 trashed、但系统回收站已无对应文件的行（外部清空/永久删除）。
@@ -793,6 +796,45 @@ fn prepare_trash_reconcile_for_roots_in(
     }
 
     Ok(plan)
+}
+
+/// Admit one trashed media file into the plan: mark a still-live row trashed,
+/// or insert a fresh trashed row extracted from the trash copy. The row keeps
+/// the original uri/path so restore moves it back where it came from. A query
+/// or extraction failure skips this entry without failing the whole plan.
+fn admit_trashed_media(
+    backend: &LocalBackend,
+    pool: &DbPool,
+    original_path: &Path,
+    trash_file: &Path,
+    plan: &mut TrashReconcilePlan,
+) {
+    let uri = crate::core::file_uri::from_path(original_path);
+    match db::get_media_item_by_uri(pool, &uri) {
+        Ok(Some(existing)) if existing.trashed_at.is_some() => {
+            plan.skipped += 1; // 已是 trashed，无需处理
+        }
+        Ok(Some(existing)) => {
+            plan.mark_ids.push(MediaId::from(existing.id));
+        }
+        Ok(None) => {
+            let folder = original_path.parent().unwrap_or_else(|| Path::new("/"));
+            match backend.process_file_at(trash_file, &uri, original_path, folder) {
+                Ok(item) => {
+                    plan.new_items.push(item);
+                }
+                Err(e) => {
+                    // 非图片 / 无法解码：跳过，不影响其余条目。
+                    tracing::warn!("回收站对账：解析 {} 失败: {}", trash_file.display(), e);
+                    plan.skipped += 1;
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("回收站对账：查询 {} 失败: {}", original_path.display(), e);
+            plan.skipped += 1;
+        }
+    }
 }
 
 pub(crate) fn commit_trash_reconcile(

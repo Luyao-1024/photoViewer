@@ -340,7 +340,10 @@ fn startup_prune_batches_whole_missing_folder() {
         crate::core::db::insert_media_item(
             &pool,
             &crate::core::media::NewMediaItem {
-                uri: format!("file://{}", path.display()),
+                // The scanner always stores `file_uri::from_path` URIs (percent-
+                // encoded for non-ASCII). A hand-built `file://{path}` string
+                // diverges from every deletion path's uri matching.
+                uri: crate::core::file_uri::from_path(&path),
                 path,
                 folder_path: album.clone(),
                 mime_type: "image/jpeg".into(),
@@ -373,6 +376,284 @@ fn startup_prune_batches_whole_missing_folder() {
     assert!(
         crate::core::db::list_all_media(&pool).unwrap().is_empty(),
         "whole-album-gone prune must delete every live row under it"
+    );
+}
+
+/// The watcher-evidence parent guard must survive the prune evidence split:
+/// an offline or moved directory produces Remove events whose file paths have
+/// a vanished parent, and watcher evidence must not attribute those to
+/// deletion — only startup reconciliation (which verified the scan root is
+/// readable) may.
+#[test]
+fn watcher_evidence_keeps_rows_whose_parent_directory_vanished() {
+    let dir = tempfile::tempdir().unwrap();
+    let album = dir.path().join("external-disk");
+    std::fs::create_dir_all(&album).unwrap();
+    let path = album.join("photo.jpg");
+    std::fs::write(&path, b"x").unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+    crate::core::db::insert_media_item(
+        &pool,
+        &crate::core::media::NewMediaItem {
+            uri: crate::core::file_uri::from_path(&path),
+            path: path.clone(),
+            folder_path: album.clone(),
+            mime_type: "image/jpeg".into(),
+            media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+            media_attributes: "{}".into(),
+            width: None,
+            height: None,
+            video_duration_secs: None,
+            taken_at: None,
+            file_mtime: chrono::Utc::now(),
+            file_size: 1,
+            blake3_hash: String::new(),
+        },
+    )
+    .unwrap();
+    // The whole containing directory disappears (unmounted drive, moved album).
+    std::fs::remove_dir_all(&album).unwrap();
+
+    let removed = crate::core::db::delete_live_media_by_paths(
+        &pool,
+        std::slice::from_ref(&path),
+        crate::core::db::DeletionEvidence::ParentMustSurvive,
+    )
+    .unwrap();
+
+    assert!(
+        removed.is_empty(),
+        "watcher evidence must not delete rows whose parent directory vanished"
+    );
+    assert_eq!(
+        crate::core::db::list_all_media(&pool).unwrap().len(),
+        1,
+        "the row must be retained until the storage becomes available again"
+    );
+    // The same paths under reconciliation evidence are deleted: the scan root
+    // is readable, so the vanished directory is a real deletion.
+    let removed = crate::core::db::delete_live_media_by_paths(
+        &pool,
+        &[path],
+        crate::core::db::DeletionEvidence::PruneVerified,
+    )
+    .unwrap();
+    assert_eq!(removed.len(), 1, "prune evidence deletes the gone file");
+    assert!(
+        crate::core::db::list_all_media(&pool).unwrap().is_empty(),
+        "the row must be gone after reconciliation evidence"
+    );
+}
+
+/// A whole album directory trashed from outside (file manager) must converge
+/// to the Trash view: startup reconciliation deletes the live rows (the
+/// files are gone), then `reconcile_trash` walks the directory's single
+/// `.trashinfo` and re-admits every contained media as a trashed row
+/// recorded under its original location.
+#[test]
+fn prune_deletes_whole_trashed_directory_and_reconcile_re_admits() {
+    // gio 的回收站按同一文件系统重命名，tmpfs 会被拒绝；用沙箱里的真实
+    // 文件系统 scratch（不落在真实 $HOME）。
+    let base = crate::testing::Sandbox::install()
+        .scratch("pv-prune-trash-dir-")
+        .keep();
+    let root = base.join("library");
+    let album = root.join("album");
+    std::fs::create_dir_all(&album).unwrap();
+    let pool = crate::core::db::init_pool(&base.join("t.db")).unwrap();
+
+    for name in ["a.jpg", "b.jpg"] {
+        let path = album.join(name);
+        std::fs::write(&path, b"x").unwrap();
+        crate::core::db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: crate::core::file_uri::from_path(&path),
+                path,
+                folder_path: album.clone(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: chrono::Utc::now(),
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap();
+    }
+    // The file manager trashes the whole directory: one move, one .trashinfo.
+    use gtk4::gio::prelude::FileExt;
+    gtk4::gio::File::for_path(&album)
+        .trash(gtk4::gio::Cancellable::NONE)
+        .unwrap();
+    assert!(!album.exists(), "directory must have moved to trash");
+
+    // Startup reconciliation first: the files are gone, the rows are live.
+    let backend = LocalBackend::new(pool.clone());
+    let removed = backend
+        .prune_missing_live_media_under_roots(std::slice::from_ref(&root), &[])
+        .unwrap();
+    assert_eq!(
+        removed.len(),
+        2,
+        "both vanished files must be processed by reconciliation"
+    );
+    assert!(
+        crate::core::db::list_all_media(&pool).unwrap().is_empty(),
+        "reconciliation removes the live rows for the gone directory"
+    );
+
+    // Then trash reconciliation walks the directory entry and re-admits both
+    // files as trashed rows under their original locations.
+    crate::core::trash::reconcile_trash(&pool, &root).unwrap();
+    let trashed = crate::core::db::list_trashed_media(&pool).unwrap();
+    let trashed_paths = trashed
+        .iter()
+        .map(|item| item.path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(
+        trashed.len(),
+        2,
+        "both contained files must be re-admitted into the Trash view"
+    );
+    for name in ["a.jpg", "b.jpg"] {
+        assert!(
+            trashed_paths.contains(&album.join(name)),
+            "{name} must be recorded under its original path"
+        );
+    }
+    assert!(
+        crate::core::db::list_live_media_locations(&pool)
+            .unwrap()
+            .is_empty(),
+        "no live rows may remain for the trashed directory"
+    );
+}
+
+/// With sync enabled and the row still holding a cloud copy, an externally
+/// deleted file must not drop the DB row: it becomes cloud-only with
+/// dirty=4, waiting for the uplink delete to remove the cloud copy, and
+/// `visible_media` hides it in the meantime. A row no enabled job claims is
+/// deleted outright — there is nothing to wait for.
+#[test]
+fn prune_keeps_cloud_copy_rows_for_uplink_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let album = dir.path().join("album");
+    std::fs::create_dir_all(&album).unwrap();
+    let pool = crate::core::db::init_pool(&dir.path().join("t.db")).unwrap();
+
+    let insert = |name: &str| {
+        let path = album.join(name);
+        std::fs::write(&path, b"x").unwrap();
+        crate::core::db::insert_media_item(
+            &pool,
+            &crate::core::media::NewMediaItem {
+                uri: crate::core::file_uri::from_path(&path),
+                path: path.clone(),
+                folder_path: album.clone(),
+                mime_type: "image/jpeg".into(),
+                media_subkind: crate::core::media::MEDIA_SUBKIND_STANDARD.into(),
+                media_attributes: "{}".into(),
+                width: None,
+                height: None,
+                video_duration_secs: None,
+                taken_at: None,
+                file_mtime: chrono::Utc::now(),
+                file_size: 1,
+                blake3_hash: String::new(),
+            },
+        )
+        .unwrap()
+    };
+    let synced_id = insert("synced.jpg");
+    let local_id = insert("local-only.jpg");
+
+    // A confirmed upload made the first row local+cloud; the second never
+    // left this machine. One enabled bidirectional job covers the album.
+    let conn = pool.get().unwrap();
+    conn.execute(
+        "INSERT INTO sync_connections(endpoint, credential_ref, enabled) VALUES('https://sync.example','cred-prune',1)",
+        [],
+    )
+    .unwrap();
+    let connection_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO sync_jobs(connection_id, local_root, upload_scope, native_zone_name, direction)
+         VALUES(?1, ?2, 'all', 'zone', 'bidirectional')",
+        rusqlite::params![connection_id, dir.path().to_string_lossy()],
+    )
+    .unwrap();
+    let job_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO sync_entries(job_id, media_id, relative_path, native_photo_id)
+         VALUES(?1, ?2, 'album/synced.jpg', 'photo-synced')",
+        rusqlite::params![job_id, synced_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE media_items SET storage_location=3 WHERE id=?1",
+        [synced_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Both files disappear while the app is closed.
+    std::fs::remove_file(album.join("synced.jpg")).unwrap();
+    std::fs::remove_file(album.join("local-only.jpg")).unwrap();
+
+    let backend = LocalBackend::new(pool.clone());
+    let removed = backend
+        .prune_missing_live_media_under_roots(&[dir.path().to_path_buf()], &[])
+        .unwrap();
+
+    assert_eq!(removed.len(), 2, "both vanished files are processed");
+    let (location, dirty): (i64, i64) = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT m.storage_location, e.native_dirty FROM media_items m
+             JOIN sync_entries e ON e.media_id=m.id WHERE m.id=?1",
+            [synced_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        location, 2,
+        "the cloud copy row must stay as cloud-only, not be deleted"
+    );
+    assert_eq!(
+        dirty, 4,
+        "the entry must carry the exclusive pending-deletion dirty bit"
+    );
+    let hidden: i64 = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM visible_media WHERE id=?1",
+            [synced_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        hidden, 0,
+        "a row pending cloud deletion must not show in the grid"
+    );
+    let gone: i64 = {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM media_items WHERE id=?1",
+            [local_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        gone, 0,
+        "a row no enabled job claims must be deleted outright"
     );
 }
 

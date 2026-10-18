@@ -201,10 +201,13 @@ impl LocalBackend {
     ) -> Result<Vec<String>> {
         let missing = self.collect_missing_live_media_under_roots(roots, excluded_roots)?;
         let ids: Vec<i64> = missing.iter().map(|item| item.id.get()).collect();
-        let removed_ids: std::collections::HashSet<i64> =
-            db::delete_media_by_ids_returning(&self.pool, &ids)?
-                .into_iter()
-                .collect();
+        let removed_ids: std::collections::HashSet<i64> = db::delete_media_by_ids_returning(
+            &self.pool,
+            &ids,
+            db::DeletionEvidence::PruneVerified,
+        )?
+        .into_iter()
+        .collect();
         Ok(missing
             .into_iter()
             .filter(|item| removed_ids.contains(&item.id.get()))

@@ -21,7 +21,7 @@ use rusqlite::types::{Type, Value};
 use rusqlite::{params_from_iter, OptionalExtension};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
@@ -68,6 +68,41 @@ fn ts_ns(dt: DateTime<Utc>) -> i64 {
 
 fn from_ts(ts: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_opt(ts, 0).single()
+}
+
+/// Every media row's uri + file_mtime, with no visibility filter. Orphan
+/// thumbnail purging keys off plain table membership: trashed rows and
+/// cloud-only rows keep browsable (downloaded) thumbnails, so they must stay
+/// keyed even though no live query returns them.
+///
+/// The mtime reconstruction mirrors [`row_to_media_item`]: nanosecond
+/// `file_mtime_ns` first, whole-second `file_mtime` only as the ns==0
+/// fallback. The disk cache stem hashes the SystemTime Debug form, so a
+/// whole-second shortcut here would misclassify every real cache file.
+pub fn list_media_uri_mtimes(pool: &DbPool) -> Result<Vec<(String, Option<SystemTime>)>> {
+    let conn = pool.get()?;
+    let mut stmt = conn.prepare("SELECT uri, file_mtime_ns, file_mtime FROM media_items")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(AppError::from)
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(uri, nanos, secs)| {
+                    let mtime = if nanos == 0 {
+                        from_ts(secs).map(SystemTime::from)
+                    } else {
+                        Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(nanos as u64))
+                    };
+                    (uri, mtime)
+                })
+                .collect()
+        })
 }
 
 fn required_ts(ts: i64, col: usize) -> rusqlite::Result<DateTime<Utc>> {
@@ -1273,6 +1308,21 @@ pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>
     Ok(map)
 }
 
+/// How the caller proved a live file disappeared. Watcher Remove events must
+/// not attribute a vanished parent directory to deletion — an unmounted drive
+/// or a moved directory produces the same events. Startup reconciliation has
+/// already verified the scan root is readable and the containing directory is
+/// gone, so only the file's own NotFound status still needs rechecking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeletionEvidence {
+    /// Watcher evidence: the parent directory must still exist, otherwise the
+    /// disappearance is attributed to an offline/moved directory and is kept.
+    ParentMustSurvive,
+    /// Reconciliation evidence: the scan root was readable and the containing
+    /// directory no longer exists; the parent check is skipped.
+    PruneVerified,
+}
+
 /// 删除指定本地路径对应的媒体行。返回受影响行数。
 ///
 /// 注意：只有 `trashed_at IS NULL` 的行才会被删。被应用标记为回收站
@@ -1281,25 +1331,43 @@ pub fn load_unchanged_index(pool: &DbPool) -> Result<HashMap<String, (i64, i64)>
 /// 硬删，否则回收站页面会因为 `list_trashed_media` 返回空而"看不见图片"。
 /// 该函数目前只被 `notify_watcher` 经由 `backend.delete_path` 调用。
 pub fn delete_media_by_path(pool: &DbPool, path: &Path) -> Result<usize> {
-    Ok(delete_live_media_by_paths(pool, &[path.to_owned()])?.len())
+    Ok(delete_live_media_by_paths(
+        pool,
+        &[path.to_owned()],
+        DeletionEvidence::ParentMustSurvive,
+    )?
+    .len())
 }
 
 /// Delete multiple live rows in one transaction and return the exact URIs
 /// that were removed. Duplicate paths are harmless; trashed rows remain
 /// protected by the same guard as [`delete_media_by_path`].
-pub fn delete_live_media_by_paths(pool: &DbPool, paths: &[PathBuf]) -> Result<Vec<String>> {
+pub fn delete_live_media_by_paths(
+    pool: &DbPool,
+    paths: &[PathBuf],
+    evidence: DeletionEvidence,
+) -> Result<Vec<String>> {
     // Local watcher evidence is classified before taking SQLite's write lock.
-    // A missing drive/directory or an unreadable path is not a deletion.
+    // A missing drive/directory or an unreadable path is not a deletion — but
+    // only for watcher evidence. Prune callers have already confirmed the scan
+    // root is readable and the containing directory is gone, so a vanished
+    // parent directory is exactly the deletion they came to report.
+    let require_parent = evidence == DeletionEvidence::ParentMustSurvive;
     let removed = paths
         .iter()
         .filter_map(|path| {
-            if !path.parent().is_some_and(Path::is_dir)
+            if (require_parent && !path.parent().is_some_and(Path::is_dir))
                 || !std::fs::symlink_metadata(path)
                     .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             {
                 return None;
             }
             let uri = crate::core::file_uri::from_path(path);
+            // A file trashed from outside (file manager) keeps its row as
+            // trashed instead of being deleted. Files inside a whole trashed
+            // directory have no exact entry of their own; startup
+            // reconciliation deletes those rows and `reconcile_trash`
+            // re-admits them by walking the directory's single entry.
             let in_trash = crate::core::trash::trashed_file_uri(&uri).is_ok();
             Some((path, uri, in_trash))
         })
@@ -1321,10 +1389,32 @@ pub fn delete_live_media_by_paths(pool: &DbPool, paths: &[PathBuf]) -> Result<Ve
                     "UPDATE media_items SET trashed_at=unixepoch() WHERE id=?1",
                     [id],
                 )?;
-                note_sync_change_in(&tx, id, crate::core::sync::store::ChangeCategory::Metadata)?;
+                let _ = note_sync_change_in(
+                    &tx,
+                    id,
+                    crate::core::sync::store::ChangeCategory::Metadata,
+                )?;
             } else {
-                note_sync_change_in(&tx, id, crate::core::sync::store::ChangeCategory::Deletion)?;
-                tx.execute("DELETE FROM media_items WHERE id=?1", [id])?;
+                let outcome = note_sync_change_in(
+                    &tx,
+                    id,
+                    crate::core::sync::store::ChangeCategory::Deletion,
+                )?;
+                // With sync enabled and a cloud copy still holding the
+                // original, the row must not leave the library yet: dirty=4
+                // (set by the note above) already hides it from
+                // `visible_media`, and the uplink delete confirmation removes
+                // it once the cloud copy is gone. Anything else — no enabled
+                // job covers this path, or the row never reached the cloud —
+                // has nothing to wait for and is deleted now.
+                let kept_for_uplink = outcome.is_some()
+                    && tx.execute(
+                        "UPDATE media_items SET storage_location=2 WHERE id=?1 AND storage_location=3",
+                        [id],
+                    )? > 0;
+                if !kept_for_uplink {
+                    tx.execute("DELETE FROM media_items WHERE id=?1", [id])?;
+                }
             }
             uris.push(uri);
         }
@@ -1368,7 +1458,11 @@ pub fn delete_media_by_ids(pool: &DbPool, ids: &[i64]) -> Result<usize> {
 /// Delete live rows and return their exact ids. This is used by two-phase
 /// filesystem reconciliation: the scan/stat phase runs outside the DB actor,
 /// while this short transaction is serialized by the actor.
-pub fn delete_media_by_ids_returning(pool: &DbPool, ids: &[i64]) -> Result<Vec<i64>> {
+pub fn delete_media_by_ids_returning(
+    pool: &DbPool,
+    ids: &[i64],
+    evidence: DeletionEvidence,
+) -> Result<Vec<i64>> {
     let mut rows = Vec::new();
     {
         let conn = pool.get()?;
@@ -1390,7 +1484,7 @@ pub fn delete_media_by_ids_returning(pool: &DbPool, ids: &[i64]) -> Result<Vec<i
         }
     }
     let paths = rows.iter().map(|r| r.1.clone()).collect::<Vec<_>>();
-    let removed = delete_live_media_by_paths(pool, &paths)?
+    let removed = delete_live_media_by_paths(pool, &paths, evidence)?
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
     Ok(rows
@@ -1433,18 +1527,21 @@ pub(crate) fn reset_account_data(pool: &DbPool) -> Result<usize> {
 }
 
 /// Commit a real local mutation and its sync obligation in the same transaction.
+/// The `Option` tells whether any enabled job claimed the change: `Some` means
+/// a sync obligation exists (dirty bits were set), `None` means nobody syncs
+/// this path — deletion callers use that to decide whether the row must wait
+/// for the uplink delete instead of being removed immediately.
 pub(crate) fn note_sync_change_in(
     tx: &rusqlite::Transaction<'_>,
     id: i64,
     category: crate::core::sync::store::ChangeCategory,
-) -> Result<()> {
+) -> Result<Option<crate::core::sync::store::DirtyOutcome>> {
     let stamp = crate::core::sync::store::EditEventStamp {
         edited_at_ms: crate::core::sync::device::now_millis(),
         source: crate::core::sync::device::device_id_in(tx)?,
         event_id: crate::core::sync::device::new_event_id(),
     };
-    crate::core::sync::store::note_local_change_in(tx, id, category, &stamp)?;
-    Ok(())
+    crate::core::sync::store::note_local_change_in(tx, id, category, &stamp)
 }
 
 /// Call only after physical permanent deletion succeeds. A failed DB commit

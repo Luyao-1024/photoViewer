@@ -296,10 +296,31 @@ storage tasks in order, off the GTK thread:
 3. Reconcile indexed live rows against disk for the scanned roots: if a row is
    `trashed_at IS NULL`, is not under an excluded root, and its `path` no longer
    exists, delete that DB row and emit `DomainEvent::MediaRemoved`. This covers
-   files deleted outside the app while it was closed. The filesystem stat pass
+   files deleted outside the app while it was closed — including the whole
+   album folder being deleted, which is the common way users remove a library.
+   The filesystem stat pass
    runs in the background startup worker and produces a missing-row plan; only
    the short guarded batch delete is sent to the DB actor. The root/excluded
    scope and `trashed_at IS NULL` guard remain authoritative.
+
+   Deletion evidence is split into two classes (`db::DeletionEvidence`).
+   Watcher Remove events must prove the parent directory still exists — an
+   unmounted drive or a moved directory produces the same events and must not
+   delete rows. Startup reconciliation (`PruneVerified`) has already confirmed
+   the scan root is readable and the containing directory is gone, so it does
+   not re-apply the parent check: a vanished directory under a readable root
+   is a real deletion. This distinction is what makes
+   "deleted the whole album folder while the app was closed" converge;
+   `startup_prune_batches_whole_missing_folder` pins it.
+
+   With sync enabled, a deleted row that still holds a confirmed cloud copy is
+   **not** removed: `note_sync_change_in(Deletion)` sets the entry's exclusive
+   `native_dirty=4` and the row becomes cloud-only (`storage_location=2`),
+   which `visible_media` already hides. The uplink delete confirmation
+   (`Command::Confirm` with `phase == "delete"`) removes the row once the cloud
+   copy is gone — unless the file came back in the meantime or another live
+   entry still shares the row. Rows with no cloud identity are deleted
+   immediately; there is nothing to wait for.
 4. Refresh album projections/sidebar data after scan and prune have converged.
 5. Reconcile known trash roots into the DB and emit `TrashChanged` so a
    visible Trash view refreshes.
@@ -322,7 +343,7 @@ Emission goes through `DbActorHandle::emit`, which publishes without running a D
 **Re-indexing a present file clears `trashed_at` (external restore).** Restoring a photo from the system trash via the file manager makes it reappear at its original path; the app must notice. `LocalBackend::upsert` sets `trashed_at=NULL` on every existing-row update — a trashed row whose file is present was restored, so it becomes live again and the `DomainEvent::MediaUpserted` event re-adds it to the Photos grid. To keep the startup scan from short-circuiting such a row, `db::is_media_unchanged` also filters `AND trashed_at IS NULL`, so a restored file is re-upserted (not skipped) even when its mtime/size are unchanged. The Trash view itself is rebuilt fresh on each navigation, so a restored item disappears from it on next open.
 
 **Startup reconciles known trash roots into the DB (`trash::reconcile_trash`), bidirectionally.** The Trash view is a DB projection (`trashed_at IS NOT NULL`), not a live mirror of only `~/.local/share/Trash`. At startup, after the pictures scan (so externally-restored files are already live again), `reconcile_trash` makes the DB match the system trash roots and the app-owned fallback trash root:
-- **Add:** for each `info/*.trashinfo` whose decoded `Path=` is under the pictures dir and no longer present, insert a trashed row (metadata from the `Trash/files` copy via `LocalBackend::process_file_at`, recorded under the **original** uri/path) or mark an existing live row trashed. Files from outside the pictures library are ignored.
+- **Add:** for each `info/*.trashinfo` whose decoded `Path=` is under the pictures dir and no longer present, insert a trashed row (metadata from the `Trash/files` copy via `LocalBackend::process_file_at`, recorded under the **original** uri/path) or mark an existing live row trashed. Files from outside the pictures library are ignored. A directory entry is walked: the file manager trashing a whole album folder produces one `.trashinfo` for the directory, so reconciliation descends into the `Trash/files` copy and admits each contained media file under `original + relative path`. Startup order matters here: the missing-file reconciliation first deletes the live rows for the vanished directory, then this pass re-admits them as trashed — same end state as a per-file trash, one extra insert.
 - **Skip non-media:** trash entries whose original path has no supported image/video extension are ignored before metadata extraction. Host trash roots may contain `.txt`, documents, and other files unrelated to the app, and those should not emit default warning logs.
 - **Prune:** for each DB trashed row, if the original path is gone AND no known trash root has a matching entry, delete the row — it was emptied/permanently-deleted externally. Rows whose original file is present (restored) are never pruned here; the scan already turned them live.
 
@@ -361,6 +382,17 @@ error triggers a full scan followed by permission-safe missing-row reconciliatio
 `ThumbnailLoader` owns a priority queue feeding blocking workers. The configured worker count serves foreground requests. Background prewarm is separately limited to one worker with a short yield after each image, so the `fastest` setting cannot fan out whole-library startup work across every core. Queue capacity, memory LRU size, disk cache size, and background prewarm wait intervals come from `runtime.json`.
 
 Cache keys include path and mtime, hashed with blake3, so file modifications invalidate prior thumbnails. Disk cache is bucketed by requested size and a small in-memory LRU avoids unnecessary decoding near the current viewport. Keep the memory LRU conservative because Large textures are several MB each; disk cache, not RAM, is the durable thumbnail cache. Opaque thumbnails are cached as JPEG; thumbnails with transparency are cached as lossless WebP so transparent PNG screenshots do not gain white edges. The disk hash includes a thumbnail-cache version prefix, so format changes invalidate older cached files automatically.
+Deleted media rows do not touch their cache files on any deletion path
+(reconciliation, watcher, trash cleanup, resets); capacity eviction used to be
+the only reclamation. At background-prewarm startup the cache-bookkeeping walk
+now starts with an orphan purge: it rebuilds every `media_items` row's disk
+stem (uri + nanosecond `file_mtime_ns`, mirroring `row_to_media_item` — the
+stem hashes the `SystemTime` Debug form, so a whole-second shortcut would
+misclassify every real cache file) and removes cache files whose stem matches
+no row. Membership, not visibility, decides: trashed and cloud-only rows keep
+their browsable (downloaded) thumbnails. The stem set is a snapshot taken
+after the startup scan, so a row indexed afterwards can lose one regenerable
+cache file; the next request regenerates it.
 Disk capacity is enforced asynchronously at startup and after each 128 cold
 generations. Cleanup counts only successful unlinks as reclaimed bytes; failed
 removals stay in the reported remaining-size total.

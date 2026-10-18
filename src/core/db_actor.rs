@@ -565,7 +565,11 @@ fn execute_command(
             }
         }
         DbCommand::DeleteLiveByPaths { source, paths } => {
-            let removed = db::delete_live_media_by_paths(pool, &paths)?;
+            let removed = db::delete_live_media_by_paths(
+                pool,
+                &paths,
+                db::DeletionEvidence::ParentMustSurvive,
+            )?;
             if !removed.is_empty() {
                 events.send(DomainEvent::MediaRemoved {
                     source,
@@ -605,7 +609,8 @@ fn execute_command(
                 .map(|item| (item.id.get(), item))
                 .collect();
             let ids: Vec<i64> = by_id.keys().copied().collect();
-            let removed_ids = db::delete_media_by_ids_returning(pool, &ids)?;
+            let removed_ids =
+                db::delete_media_by_ids_returning(pool, &ids, db::DeletionEvidence::PruneVerified)?;
             let removed: Vec<String> = removed_ids
                 .iter()
                 .filter_map(|id| by_id.get(id).map(|item| item.uri.clone()))
